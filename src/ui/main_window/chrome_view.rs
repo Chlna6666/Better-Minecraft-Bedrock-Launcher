@@ -278,8 +278,12 @@ impl NavChromeView {
 impl Render for NavChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
+        let native_resizing = window.is_live_resizing();
         let (colors, theme_animating) = colors(window, cx);
-        if theme_animating {
+        // Native WM_SIZE already schedules the newest geometry. Adding another
+        // NavChrome layout-animation clock under a heavy page competes with
+        // the Win32 drag loop without increasing visible resize progress.
+        if theme_animating && !native_resizing {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         let nav = cx.global::<NavState>();
@@ -308,7 +312,7 @@ impl Render for NavChromeView {
             // Chrome-nav's cached boundary has a fixed full-size box. Label
             // expansion only rearranges descendants inside that box and never
             // changes the parent shell's flow geometry.
-            .with_local_layout_animation_target(labels_animating)
+            .with_local_layout_animation_target(labels_animating && !native_resizing)
     }
 }
 

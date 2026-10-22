@@ -12,6 +12,13 @@ fn viewport_change_needs_ui_commit(
 }
 
 impl Window {
+    /// Whether native interactive window resizing currently owns the client geometry.
+    /// Layout animations can sample on incoming resize frames rather than
+    /// scheduling an additional independent UI frame during this interval.
+    pub fn is_live_resizing(&self) -> bool {
+        self.platform_window.is_live_resizing()
+    }
+
     fn invalidate_text_rasterization(&mut self) {
         // Platform shaping/layout is expressed in logical Pixels and its API does not depend on
         // the window DPI/scale factor. Moving between displays therefore invalidates glyph bitmap

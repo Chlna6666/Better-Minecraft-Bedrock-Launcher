@@ -187,16 +187,16 @@ const SIZE_MOVE_LOOP_TIMER_ID: usize = 0x4750_5549;
 // animation clock alongside DWM VSync. Recover only if native frame delivery stalls.
 const UNPACED_FRAME_WATCHDOG_INTERVAL: Duration = Duration::from_millis(33);
 
+/// Prefer DWM's cadence even during live resizing. Running a full GPUI
+/// commit on every WM_SIZE/WM_APP wake can starve the native drag loop when
+/// layout takes longer than one high-refresh interval. If VSync stalls, the
+/// bounded watchdog still makes forward progress without stretching old Scenes.
 fn allow_unpaced_native_frame(
     scheduler_active: bool,
-    resize_pending: bool,
     now: Instant,
     last_vsync: Option<Instant>,
     last_fallback: Option<Instant>,
 ) -> bool {
-    if resize_pending {
-        return true;
-    }
     if !scheduler_active {
         return true;
     }
@@ -2069,10 +2069,11 @@ impl WindowsWindow {
         // Keep the previous scene paired with its own geometry until the matching
         // new layout arrives; a native size event alone does not update scene layout.
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
+        // The VSync scheduler already owns the queued commit. Do not post
+        // another immediate modal UI wake on every WM_SIZE: those unpaced
+        // commits contend with Win32's native edge-drag message processing.
+        // The modal timer remains a fallback if DWM stops delivering frames.
         self.request_frame(PlatformFrameRequest::ui_commit());
-        if self.is_live_resizing() {
-            self.0.vsync_scheduler.wake_modal_ui_tasks();
-        }
     }
 
     /// Asks the GPU owner to re-present the retained frame over a client area that grew
@@ -2215,18 +2216,13 @@ impl WindowsWindow {
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
-        // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer can
-        // all reach this method. Generic redraws remain VSync-coalesced; a pending
-        // native resize is the exception because waiting for VSync leaves newly
-        // exposed client pixels uncovered for another refresh.
+        // WM_PAINT, modal UI-task wakes and the fallback timer may all arrive
+        // between DWM ticks. Only the native VSync callback consumes pending
+        // resize generations while DWM is healthy; otherwise these wakes can
+        // repeatedly rebuild the layout before Windows handles the next drag.
         let now = Instant::now();
-        let resize_pending = self.0.size_move_active.get()
-            && (self.0.pending_resize.get().is_some()
-                || self.0.pending_renderer_size.get().is_some()
-                || self.0.pending_native_size_retry.get());
         if !allow_unpaced_native_frame(
             self.0.vsync_scheduler.is_active(),
-            resize_pending,
             now,
             self.0.last_native_vsync_frame_at.get(),
             self.0.last_unpaced_frame_at.get(),
@@ -3450,27 +3446,23 @@ mod tests {
         let fresh_native = now - Duration::from_millis(4);
         assert!(!allow_unpaced_native_frame(
             true,
-            false,
             now,
             Some(fresh_native),
             None
         ));
         assert!(!allow_unpaced_native_frame(
             true,
-            false,
             now,
             Some(now - Duration::from_millis(32)),
             None,
         ));
         assert!(allow_unpaced_native_frame(
             true,
-            false,
             now,
             Some(now - UNPACED_FRAME_WATCHDOG_INTERVAL),
             None,
         ));
         assert!(allow_unpaced_native_frame(
-            false,
             false,
             now,
             Some(fresh_native),
@@ -3479,14 +3471,14 @@ mod tests {
     }
 
     #[test]
-    fn pending_resize_bypasses_healthy_dwm_vsync_coalescing() {
+    fn native_resize_does_not_bypass_healthy_dwm_vsync_coalescing() {
         use super::allow_unpaced_native_frame;
         use std::time::Instant;
 
         let now = Instant::now();
         let fresh_native = now - Duration::from_millis(4);
-        assert!(allow_unpaced_native_frame(
-            true,
+        // A pending WM_SIZE no longer makes a modal UI wake a second clock.
+        assert!(!allow_unpaced_native_frame(
             true,
             now,
             Some(fresh_native),
@@ -3500,30 +3492,26 @@ mod tests {
         use std::time::Instant;
 
         let now = Instant::now();
-        assert!(allow_unpaced_native_frame(true, false, now, None, None));
+        assert!(allow_unpaced_native_frame(true, now, None, None));
         assert!(!allow_unpaced_native_frame(
             true,
-            false,
             now,
             None,
             Some(now)
         ));
         assert!(!allow_unpaced_native_frame(
             true,
-            false,
             now + Duration::from_millis(32),
             None,
             Some(now),
         ));
         assert!(allow_unpaced_native_frame(
             true,
-            false,
             now + Duration::from_millis(33),
             None,
             Some(now),
         ));
         assert!(allow_unpaced_native_frame(
-            false,
             false,
             now,
             None,
