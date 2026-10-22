@@ -229,11 +229,24 @@ impl NavChromeView {
             }),
             cx.observe_window_bounds(window, |_, window, cx| {
                 let width = window.bounds().size.width / px(1.0);
-                let visible = cx.global::<NavState>().labels_target_visible;
+                let now = window.animation_time();
+                let resizing = window.is_live_resizing();
+                let nav = cx.global::<NavState>();
+                let visible = nav.labels_target_visible;
                 let next = nav_labels_visible_for_width(width, visible);
-                if next != visible {
+                // A native resize already changes the viewport constraints. Let the
+                // responsive label layout follow those constraints immediately,
+                // rather than starting an independent spring relayout clock for
+                // every breakpoint crossing. Also settle a transition that was
+                // running before the drag began, even if its target is unchanged.
+                let needs_update = next != visible || (resizing && nav.labels_animating(now));
+                if needs_update {
                     cx.update_global(|state: &mut NavState, _| {
-                        state.set_labels_target(next, Instant::now());
+                        if resizing {
+                            state.set_labels_target_immediate(next);
+                        } else {
+                            state.set_labels_target(next, now);
+                        }
                     });
                     cx.notify();
                 }

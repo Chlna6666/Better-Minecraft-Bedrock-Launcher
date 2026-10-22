@@ -158,6 +158,30 @@ mod tests {
     }
 
     #[test]
+    fn resize_settles_active_label_spring_without_waiting_for_mouse_release() {
+        let started = Instant::now();
+        let mut nav = NavState::default();
+        assert!(nav.set_labels_target(false, started));
+        let while_animating = started + Duration::from_millis(40);
+        assert!(nav.labels_animating(while_animating));
+
+        // A live WM_SIZE settles the current responsive target immediately,
+        // so held resize frames never start an independent LayoutAnimation loop.
+        nav.set_labels_target_immediate(false);
+        assert!(!nav.labels_animating(while_animating));
+        assert_eq!(nav.labels_layout_factor(while_animating), 0.0);
+
+        // Further breakpoint crossings change the layout once, with no spring.
+        nav.set_labels_target_immediate(true);
+        assert!(!nav.labels_animating(while_animating));
+        assert_eq!(nav.labels_layout_factor(while_animating), 1.0);
+
+        // Ordinary navigation after the resize still uses the existing spring.
+        assert!(nav.set_labels_target(false, while_animating));
+        assert!(nav.labels_animating(while_animating + Duration::from_millis(10)));
+    }
+
+    #[test]
     fn responsive_label_reveal_interpolates_and_retargets_continuously() {
         let now = Instant::now();
         let mut nav = NavState::default();
