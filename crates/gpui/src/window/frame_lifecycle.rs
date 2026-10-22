@@ -11,7 +11,12 @@ pub(super) use throttle::WindowFrameThrottle;
 const BACKGROUND_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_millis(42);
 const MINIMIZED_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_secs(1);
 const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
-const MIN_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(1);
+// A missed native callback must be distinguished from ordinary OS scheduling
+// jitter and UI task handoff. At 1000 FPS a 1-2ms watchdog is shorter than a
+// normal main-thread dispatch: it races valid frames, discards a pending native
+// request and repeatedly forces recovery instead of improving cadence.
+// This is a liveness watchdog, not a per-frame pacing deadline.
+const MIN_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(16);
 const MAX_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
 const FRAME_WATCHDOG_MISSED_FRAME_COUNT: u32 = 2;
 const MAX_FRAME_WATCHDOG_BACKOFF_SHIFT: u32 = 5;
@@ -738,11 +743,13 @@ impl Window {
             u32::from(watchdog.platform_recovery_attempts).min(MAX_FRAME_WATCHDOG_BACKOFF_SHIFT);
         let missed_frame_count =
             FRAME_WATCHDOG_MISSED_FRAME_COUNT.saturating_mul(1_u32 << backoff_shift);
-        // Allow two missed intervals at this window's effective cadence. In System mode the
-        // compositor may throttle an inactive but visible window below the display refresh rate;
-        // observed callback/presentation cadence and an explicit inactive redraw interval take
-        // precedence in that case. Repeated misses back off so an unavailable compositor callback
-        // cannot turn recovery into a high-frequency request loop.
+        // Allow two missed intervals at this window's effective cadence, but
+        // never mistake a sub-16ms main-thread handoff for a hung native frame.
+        // In System mode the compositor may throttle an inactive but visible window
+        // below the display refresh rate; observed callback/presentation cadence
+        // and an explicit inactive redraw interval take precedence in that case.
+        // Repeated misses back off so an unavailable compositor callback cannot
+        // turn recovery into a high-frequency request loop.
         configured_interval
             .max(observed_callback_interval)
             .max(observed_present_interval)
@@ -1752,6 +1759,18 @@ mod tests {
             true,
             true,
         ));
+    }
+
+    #[test]
+    fn watchdog_is_liveness_recovery_not_a_1000_fps_timer() {
+        // Native 1000 FPS pacing may tick every 1ms while a normal UI handoff
+        // takes several milliseconds. Do not recover a healthy frame in that
+        // interval and inject a second scheduling request.
+        assert!(MIN_FRAME_WATCHDOG_TIMEOUT >= Duration::from_millis(16));
+        assert!(
+            MIN_FRAME_WATCHDOG_TIMEOUT
+                > Duration::from_millis(1) * FRAME_WATCHDOG_MISSED_FRAME_COUNT
+        );
     }
 
     #[test]

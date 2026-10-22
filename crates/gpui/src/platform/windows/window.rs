@@ -1110,12 +1110,16 @@ impl WindowsWindow {
     }
 
     pub(crate) fn clear_timed_out_frame_request(&self, _options: PlatformFrameRequest) {
-        let state = self.0.state.borrow();
-        state
-            .pending_frame_request
-            .set(clear_pending_frame_request_after_timeout(
-                state.pending_frame_request.get(),
-            ));
+        // The UI watchdog covers an outstanding UI-owner callback, not the
+        // lifetime of the native latest-wins slot. A newer native request may
+        // have merged into that slot while the UI callback was queued. Clearing
+        // it here loses that newer work (including presentation animation).
+        // The watchdog retry merges its original request into the same slot;
+        // explicitly wake the native scheduler when the slot is already armed.
+        let pending = self.0.state.borrow().pending_frame_request.get();
+        if pending.requires_frame() && !self.0.vsync_scheduler.request_frame() {
+            self.window().request_redraw();
+        }
     }
 
     pub(crate) fn restore_minimized_window(&self) {
@@ -1542,18 +1546,6 @@ fn merge_frame_request(
         pending.merge(options),
         !already_pending && options.requires_frame(),
     )
-}
-
-fn clear_pending_frame_request_after_timeout(
-    pending: PlatformFrameRequest,
-) -> PlatformFrameRequest {
-    // A pending request is tied to one foreground callback. If that callback timed out,
-    // merged flags in the same slot are stranded too.
-    if pending.requires_frame() {
-        PlatformFrameRequest::default()
-    } else {
-        pending
-    }
 }
 
 #[derive(Default)]
@@ -3783,14 +3775,17 @@ mod tests {
     }
 
     #[test]
-    fn timed_out_request_clears_merged_pending_request() {
+    fn watchdog_retry_does_not_discard_newer_native_frame_flags() {
         let timed_out = PlatformFrameRequest::ui_commit();
-        let pending = timed_out.merge(PlatformFrameRequest::presentation());
+        let merged_native = timed_out.merge(PlatformFrameRequest::presentation());
 
-        assert_eq!(
-            clear_pending_frame_request_after_timeout(pending),
-            PlatformFrameRequest::default()
-        );
+        // A new native frame may already be waiting when the UI watchdog fires.
+        // It must remain in the latest-wins slot; the retry path explicitly
+        // wakes the scheduler instead of clearing these flags.
+        let (pending, requires_explicit_native_wake) =
+            merge_frame_request(merged_native, timed_out);
+        assert_eq!(pending, PlatformFrameRequest::ui_commit_and_presentation());
+        assert!(!requires_explicit_native_wake);
     }
 
     #[test]
