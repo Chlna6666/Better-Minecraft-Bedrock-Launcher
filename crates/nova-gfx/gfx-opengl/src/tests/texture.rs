@@ -41,34 +41,34 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
         .create_sampler(&SamplerDescriptor::default())
         .expect("sampler");
     let layout = device
-        .create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        .create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 3,
-                    binding_type: ResourceBindingType::SampledTexture,
+                    binding_type: BindingType::SampledTexture,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 4,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
             ],
         })
         .expect("sample layout");
     let set = device
-        .create_resource_set(&ResourceSetDescriptor {
+        .create_bind_group(&BindGroupDescriptor {
             label: None,
             layout,
             bindings: vec![
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::Texture(TextureBinding {
                         texture_view: image_view,
                     }),
                 },
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 4,
                     resource: BindingResource::Sampler(SamplerBinding { sampler }),
                 },
@@ -78,7 +78,7 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
     let layout = device
         .create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            resource_set_layouts: vec![layout],
+            bind_group_layouts: vec![layout],
         })
         .expect("pipeline layout");
     let source = "@group(0) @binding(3) var image: texture_2d<f32>; @group(0) @binding(4) var image_sampler: sampler; @vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> { let points = array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0)); return vec4<f32>(points[v],0.0,1.0); } @fragment fn fs() -> @location(0) vec4<f32> { return textureSampleLevel(image, image_sampler, vec2<f32>(0.5),1.0); }";
@@ -92,20 +92,23 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
         false,
     );
     device
-        .draw_steps_to_texture(
-            view,
-            pass,
-            &[DrawStepDescriptor {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: pass,
+            commands: &[RenderCommand::Draw(DrawCommand {
                 pipeline,
-                resource_sets: resource_set_list([set]),
+                bind_groups: bind_group_list([set]),
                 vertex_count: 3,
                 first_vertex: 0,
                 instance_count: 1,
                 first_instance: 0,
                 scissor: None,
-            }],
-            LoadOp::Clear(CLEAR),
-        )
+            })],
+            color_load_op: LoadOp::Clear(CLEAR),
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+        }])
         .expect("sample draw");
     let result = device.read_texture(target).expect("sample readback");
     assert!(

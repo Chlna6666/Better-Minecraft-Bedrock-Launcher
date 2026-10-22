@@ -33,8 +33,8 @@ pub(crate) struct Mirror {
     pub(crate) binding: u32,
     pub(crate) native: glow::NativeBuffer,
 }
-pub(crate) struct ResourceSet {
-    pub(crate) desc: ResourceSetDescriptor,
+pub(crate) struct BindGroup {
+    pub(crate) desc: BindGroupDescriptor,
     pub(crate) mirrors: Vec<Mirror>,
 }
 pub(crate) fn format(value: Format) -> (u32, u32, u32) {
@@ -159,10 +159,15 @@ impl ResourceDevice for OpenGlDevice {
                 continue;
             }
             let buffer = self.buffers.get(write.descriptor.buffer)?;
-            if write.descriptor.offset.checked_add(write.data.len() as u64)
+            if write
+                .descriptor
+                .offset
+                .checked_add(write.data.len() as u64)
                 .is_none_or(|end| end > buffer.desc.size)
             {
-                return Err(Error::InvalidInput("OpenGL buffer write out of bounds".into()));
+                return Err(Error::InvalidInput(
+                    "OpenGL buffer write out of bounds".into(),
+                ));
             }
             if bound.is_none() {
                 self.park()?;
@@ -170,10 +175,14 @@ impl ResourceDevice for OpenGlDevice {
             // SAFETY: The owner context is current and GL consumes each validated source slice.
             unsafe {
                 if bound != Some(write.descriptor.buffer) {
-                    self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.native));
+                    self.gl
+                        .bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.native));
                 }
-                self.gl.buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER,
-                    write.descriptor.offset as i32, write.data);
+                self.gl.buffer_sub_data_u8_slice(
+                    glow::COPY_WRITE_BUFFER,
+                    write.descriptor.offset as i32,
+                    write.data,
+                );
             }
             bound = Some(write.descriptor.buffer);
             stats.calls = stats.calls.saturating_add(1);
@@ -365,21 +374,21 @@ impl ResourceDevice for OpenGlDevice {
         }
         Ok(self.samplers.insert(sampler))
     }
-    fn create_resource_set_layout(
+    fn create_bind_group_layout(
         &mut self,
-        desc: &ResourceSetLayoutDescriptor,
-    ) -> Result<ResourceSetLayoutId> {
+        desc: &BindGroupLayoutDescriptor,
+    ) -> Result<BindGroupLayoutId> {
         desc.validate()?;
         Ok(self.layouts.insert(desc.clone()))
     }
-    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+    fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         let layout = self.layouts.get(desc.layout)?;
         desc.validate_against(layout)?;
         self.park()?;
         // Validate every resource before allocating mirrors, so an invalid later
         // binding cannot leak native buffers allocated for earlier bindings.
         let mut ranges = Vec::new();
-        for binding in &desc.bindings {
+        for binding in &desc.entries {
             if let BindingResource::Buffer(range) = binding.resource {
                 let buffer = self.buffers.get(range.buffer)?;
                 range.validate_against(buffer.desc.size)?;
@@ -389,7 +398,7 @@ impl ResourceDevice for OpenGlDevice {
                     .find(|entry| entry.binding == binding.binding)
                     .ok_or_else(|| Error::InvalidInput("missing OpenGL layout entry".into()))?
                     .binding_type;
-                let (usage, alignment) = if kind == ResourceBindingType::UniformBuffer {
+                let (usage, alignment) = if kind == BindingType::UniformBuffer {
                     (BufferUsage::UNIFORM, self.uniform_alignment)
                 } else {
                     (BufferUsage::STORAGE, self.storage_alignment)
@@ -409,7 +418,7 @@ impl ResourceDevice for OpenGlDevice {
             }
         }
         let mirrors = self.create_mirrors(&ranges)?;
-        Ok(self.sets.insert(ResourceSet {
+        Ok(self.sets.insert(BindGroup {
             desc: desc.clone(),
             mirrors,
         }))
@@ -446,11 +455,11 @@ impl ResourceDevice for OpenGlDevice {
         }
         self.check()
     }
-    fn destroy_resource_set_layout(&mut self, id: ResourceSetLayoutId) -> Result<()> {
+    fn destroy_bind_group_layout(&mut self, id: BindGroupLayoutId) -> Result<()> {
         self.layouts.take(id)?;
         Ok(())
     }
-    fn destroy_resource_set(&mut self, id: ResourceSetId) -> Result<()> {
+    fn destroy_bind_group(&mut self, id: BindGroupId) -> Result<()> {
         self.park()?;
         let set = self.sets.take(id)?;
         for mirror in set.mirrors {

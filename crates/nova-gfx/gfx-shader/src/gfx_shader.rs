@@ -225,7 +225,7 @@ impl WgslModule {
     ///
     /// Returns [`ShaderError::Msl`] when the entry point or translation fails.
     pub fn compile_msl(&self, stage: ShaderStage, entry_point: &str) -> Result<ShaderBinary> {
-        self.compile_msl_with_version(stage, entry_point, MslVersion::V1_0)
+        self.compile_msl_versioned(stage, entry_point, MslVersion::V1_0)
     }
 
     /// Compiles one entry point to Metal Shading Language at an explicit language version.
@@ -236,7 +236,7 @@ impl WgslModule {
     ///
     /// Returns [`ShaderError::Msl`] when the entry point or translation is unsupported by the
     /// selected MSL version.
-    pub fn compile_msl_with_version(
+    pub fn compile_msl_versioned(
         &self,
         stage: ShaderStage,
         entry_point: &str,
@@ -323,13 +323,13 @@ pub fn compile_wgsl_to_msl(
 /// # Errors
 ///
 /// Returns [`ShaderError`] when parsing, validation, or translation fails for the selected version.
-pub fn compile_wgsl_to_msl_with_version(
+pub fn compile_wgsl_to_msl_versioned(
     source: &str,
     stage: ShaderStage,
     entry_point: &str,
     version: MslVersion,
 ) -> Result<ShaderBinary> {
-    WgslModule::parse(source)?.compile_msl_with_version(stage, entry_point, version)
+    WgslModule::parse(source)?.compile_msl_versioned(stage, entry_point, version)
 }
 
 /// Parses and compiles one WGSL entry point to backend-specific code.
@@ -337,7 +337,7 @@ pub fn compile_wgsl_to_msl_with_version(
 /// # Errors
 ///
 /// Returns [`ShaderError`] when parsing, validation, or translation fails.
-pub fn compile_wgsl_for_backend(
+pub fn compile_wgsl_to_backend(
     source: &str,
     backend: BackendKind,
     stage: ShaderStage,
@@ -636,13 +636,9 @@ mod tests {
                 return vec4<f32>(f32(instance_index), 0.0, 0.0, 1.0);
             }
         ";
-        let binary = compile_wgsl_to_msl_with_version(
-            source,
-            ShaderStage::Vertex,
-            "vs_main",
-            MslVersion::V1_2,
-        )
-        .expect("MSL 1.2 should support instance_index");
+        let binary =
+            compile_wgsl_to_msl_versioned(source, ShaderStage::Vertex, "vs_main", MslVersion::V1_2)
+                .expect("MSL 1.2 should support instance_index");
         let gfx_core::ShaderCode::Msl(source) = binary.code else {
             panic!("expected MSL shader code");
         };

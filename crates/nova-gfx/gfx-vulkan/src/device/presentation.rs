@@ -227,6 +227,42 @@ pub(super) fn device_extension(
         .then_some(name)
 }
 
+/// Picks the presentation scaling behavior for a surface.
+///
+/// Compositor `STRETCH` is preferred so a client area that grew ahead of its next
+/// Scene is covered by the last presented frame; `ONE_TO_ONE` remains the fallback
+/// for drivers that only expose native pixel presentation.
+fn preferred_present_scaling(
+    supported: vk::PresentScalingFlagsEXT,
+) -> Option<vk::PresentScalingFlagsEXT> {
+    let stretch = vk::PresentScalingFlagsEXT::STRETCH;
+    if supported.contains(stretch) {
+        return Some(stretch);
+    }
+    let one_to_one = vk::PresentScalingFlagsEXT::ONE_TO_ONE;
+    supported.contains(one_to_one).then_some(one_to_one)
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    use super::*;
+
+    #[test]
+    fn compositor_stretch_is_preferred_over_native_one_to_one() {
+        let stretch = vk::PresentScalingFlagsEXT::STRETCH;
+        let one_to_one = vk::PresentScalingFlagsEXT::ONE_TO_ONE;
+        assert_eq!(
+            preferred_present_scaling(stretch | one_to_one),
+            Some(stretch)
+        );
+        assert_eq!(preferred_present_scaling(one_to_one), Some(one_to_one));
+        assert_eq!(
+            preferred_present_scaling(vk::PresentScalingFlagsEXT::empty()),
+            None
+        );
+    }
+}
+
 pub(super) fn scaling(
     loader: &khr::get_surface_capabilities2::Instance,
     physical_device: vk::PhysicalDevice,
@@ -246,7 +282,14 @@ pub(super) fn scaling(
         loader.get_physical_device_surface_capabilities2(physical_device, &info, &mut capabilities)
     }
     .map_err(VulkanError::from)?;
-    let one_to_one = vk::PresentScalingFlagsEXT::ONE_TO_ONE;
+    // Prefer compositor scaling: a Win32 client area can grow ahead of the next
+    // Scene/swapchain, and STRETCH lets the presentation engine cover that strip
+    // with the last presented frame instead of exposing undefined black pixels.
+    // The swapchain is still resized to the exact client extent before the
+    // matching Scene is presented, so settled frames stay one-to-one.
+    let Some(behavior) = preferred_present_scaling(scaling.supported_present_scaling) else {
+        return Ok(None);
+    };
     let minimum = vk::PresentGravityFlagsEXT::MIN;
     // Win32 surfaces may expose native gravity (zero flags); keep presentation
     // anchored to the top-left so a larger retained image exposes only the client-sized region.
@@ -262,8 +305,7 @@ pub(super) fn scaling(
     } else {
         None
     };
-    let supported = scaling.supported_present_scaling.contains(one_to_one)
-        && gravity.is_some()
+    let supported = gravity.is_some()
         && extent.width >= scaling.min_scaled_image_extent.width
         && extent.height >= scaling.min_scaled_image_extent.height
         && extent.width <= scaling.max_scaled_image_extent.width
@@ -272,7 +314,7 @@ pub(super) fn scaling(
         let gravity = gravity.expect("supported gravity was checked");
         Scaling {
             info: vk::SwapchainPresentScalingCreateInfoEXT::default()
-                .scaling_behavior(one_to_one)
+                .scaling_behavior(behavior)
                 .present_gravity_x(gravity)
                 .present_gravity_y(gravity),
             minimum: scaling.min_scaled_image_extent,

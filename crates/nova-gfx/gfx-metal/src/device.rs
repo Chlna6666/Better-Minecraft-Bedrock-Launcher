@@ -31,19 +31,19 @@
 
 use crate::error::MetalError;
 use gfx_core::{
-    AddressMode, Backend, BackendKind, BeginRenderPassDescriptor, BindingResource, BlendMode,
-    BufferDescriptor, BufferId, BufferUsage, ClearColor, CommandDevice, CommandEncoderDescriptor,
-    CommandEncoderId, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor,
-    Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice,
-    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId,
-    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
-    RenderStepRef, RenderTarget, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
-    SamplerId, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, SubmissionDevice,
-    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
-    SwapchainId, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
-    TextureViewDescriptor, TextureViewId, TextureWriteDescriptor, ThreadingMode,
+    AddressMode, Backend, BackendKind, BeginRenderPassDescriptor, BindGroupDescriptor, BindGroupId,
+    BindGroupLayoutDescriptor, BindGroupLayoutId, BindingResource, BlendMode, BufferDescriptor,
+    BufferId, BufferUsage, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
+    DepthAttachment, DeviceDescriptor, DiagnosticsDevice, DrawCommand, DrawDescriptor, Error,
+    FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineDevice,
+    PipelineLayoutDescriptor, PipelineLayoutId, PresentFrameDescriptor, PresentationDevice,
+    PresentedFrame, PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor,
+    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice,
+    ResourceStats, Result, SamplerDescriptor, SamplerId, ShaderCode, ShaderModuleDescriptor,
+    ShaderModuleId, ShaderStage, SubmissionDevice, SubmissionId, SubmissionStatus,
+    SurfaceCapabilities, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
+    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
+    TextureViewId, TextureWriteDescriptor, ThreadingMode,
 };
 
 #[cfg(target_vendor = "apple")]
@@ -84,8 +84,8 @@ mod platform {
         textures: ResourceRegistry<MetalTexture>,
         texture_views: ResourceRegistry<MetalTextureView>,
         samplers: ResourceRegistry<MetalSampler>,
-        resource_set_layouts: ResourceRegistry<MetalResourceSetLayout>,
-        resource_sets: ResourceRegistry<MetalResourceSet>,
+        bind_group_layouts: ResourceRegistry<MetalResourceSetLayout>,
+        bind_groups: ResourceRegistry<MetalResourceSet>,
         pipeline_layouts: ResourceRegistry<MetalPipelineLayout>,
         shader_modules: ResourceRegistry<MetalShaderModule>,
         render_passes: ResourceRegistry<MetalRenderPass>,
@@ -115,8 +115,8 @@ mod platform {
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
                 samplers: ResourceRegistry::new("sampler"),
-                resource_set_layouts: ResourceRegistry::new("resource set layout"),
-                resource_sets: ResourceRegistry::new("resource set"),
+                bind_group_layouts: ResourceRegistry::new("bind group layout"),
+                bind_groups: ResourceRegistry::new("bind group"),
                 pipeline_layouts: ResourceRegistry::new("pipeline layout"),
                 shader_modules: ResourceRegistry::new("shader module"),
                 render_passes: ResourceRegistry::new("render pass"),
@@ -288,13 +288,13 @@ mod platform {
             }))
         }
 
-        fn create_resource_set_layout(
+        fn create_bind_group_layout(
             &mut self,
-            desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
+            desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
             desc.validate()?;
             Ok(self
-                .resource_set_layouts
+                .bind_group_layouts
                 .insert(MetalResourceSetLayout { desc: desc.clone() }))
         }
 
@@ -303,19 +303,19 @@ mod platform {
             desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             desc.validate()?;
-            for layout in &desc.resource_set_layouts {
-                let _ = self.resource_set_layouts.get(*layout)?;
+            for layout in &desc.bind_group_layouts {
+                let _ = self.bind_group_layouts.get(*layout)?;
             }
             Ok(self.pipeline_layouts.insert(MetalPipelineLayout {
-                resource_set_layouts: desc.resource_set_layouts.clone(),
+                bind_group_layouts: desc.bind_group_layouts.clone(),
             }))
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
-            let layout = self.resource_set_layouts.get(desc.layout)?.desc.clone();
+        fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
+            let layout = self.bind_group_layouts.get(desc.layout)?.desc.clone();
             desc.validate_against(&layout)?;
-            let mut bindings = Vec::with_capacity(desc.bindings.len());
-            for binding in &desc.bindings {
+            let mut bindings = Vec::with_capacity(desc.entries.len());
+            for binding in &desc.entries {
                 match binding.resource {
                     BindingResource::Buffer(buffer_binding) => {
                         let _ = self.buffers.get(buffer_binding.buffer)?;
@@ -329,7 +329,7 @@ mod platform {
                 }
                 bindings.push(*binding);
             }
-            Ok(self.resource_sets.insert(MetalResourceSet {
+            Ok(self.bind_groups.insert(MetalResourceSet {
                 layout: desc.layout,
                 bindings,
             }))
@@ -444,8 +444,8 @@ mod platform {
             let _swapchain = self.swapchains.get(swapchain)?;
             let _render_pass = self.render_passes.get(draw.pass.render_pass)?;
             let _pipeline = self.render_pipelines.get(draw.pipeline)?;
-            for resource_set in &draw.resource_sets {
-                let _ = self.resource_sets.get(*resource_set)?;
+            for bind_group in &draw.bind_groups {
+                let _ = self.bind_groups.get(*bind_group)?;
             }
             Ok(())
         }
@@ -456,58 +456,16 @@ mod platform {
             Ok(())
         }
 
-        fn draw_steps_and_present(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: gfx_core::ClearColor,
-        ) -> Result<()> {
-            self.draw_internal(
-                swapchain,
-                render_pass,
-                RenderStepList::from_draw_steps(steps),
-                clear_color,
-            )
-        }
-
-        fn render_steps_and_present(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: gfx_core::ClearColor,
-        ) -> Result<()> {
-            self.draw_internal(
-                swapchain,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-            )
-        }
-
-        fn draw_steps_to_texture(
-            &mut self,
-            _texture_view: TextureViewId,
-            _render_pass: RenderPassId,
-            _steps: &[DrawStepDescriptor],
-            _color_load_op: gfx_core::LoadOp<gfx_core::ClearColor>,
-        ) -> Result<()> {
-            Err(Error::Unavailable(
-                "Metal offscreen render target is not implemented yet".to_string(),
-            ))
-        }
-
         fn draw_internal(
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
+            steps: &[RenderCommand],
             clear_color: gfx_core::ClearColor,
         ) -> Result<()> {
             if steps.is_empty() {
                 return Err(Error::InvalidInput(
-                    "Metal draw step list must not be empty".to_string(),
+                    "Metal render command list must not be empty".to_string(),
                 ));
             }
             let swapchain = self.swapchains.get(swapchain)?;
@@ -557,7 +515,7 @@ mod platform {
         fn prepare_render_step(
             &self,
             render_pass: &MetalRenderPass,
-            step: RenderStepRef<'_>,
+            step: &RenderCommand,
         ) -> Result<PreparedMetalRenderStep> {
             let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
             if render_pass.color_format != pipeline.color_format {
@@ -565,20 +523,20 @@ mod platform {
                     "render pass and pipeline color formats do not match".to_string(),
                 ));
             }
-            let resource_sets = step
-                .resource_sets()
+            let bind_groups = step
+                .bind_groups()
                 .iter()
                 .copied()
-                .map(|resource_set| Ok(self.resource_sets.get(resource_set)?.clone()))
+                .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.clone()))
                 .collect::<Result<Vec<_>>>()?;
             let draw = match step {
-                RenderStepRef::Draw(step) => PreparedMetalDraw::NonIndexed {
+                RenderCommand::Draw(step) => PreparedMetalDraw::NonIndexed {
                     vertex_start: step.first_vertex,
                     vertex_count: step.vertex_count,
                     instance_count: step.instance_count,
                     base_instance: step.first_instance,
                 },
-                RenderStepRef::DrawIndexed(step) => {
+                RenderCommand::DrawIndexed(step) => {
                     let buffer = self.buffers.get(step.index_buffer.buffer)?;
                     validate_index_buffer_range(
                         buffer.desc.usage,
@@ -619,7 +577,7 @@ mod platform {
             };
             Ok(PreparedMetalRenderStep {
                 pipeline,
-                resource_sets,
+                bind_groups,
                 draw,
                 scissor: step.scissor(),
             })
@@ -662,13 +620,13 @@ mod platform {
             Ok(())
         }
 
-        fn destroy_resource_set_layout(&mut self, layout: ResourceSetLayoutId) -> Result<()> {
-            let _layout = self.resource_set_layouts.take(layout)?;
+        fn destroy_bind_group_layout(&mut self, layout: BindGroupLayoutId) -> Result<()> {
+            let _layout = self.bind_group_layouts.take(layout)?;
             Ok(())
         }
 
-        fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            let _resource_set = self.resource_sets.take(resource_set)?;
+        fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
+            let _resource_set = self.bind_groups.take(bind_group)?;
             Ok(())
         }
 
@@ -736,8 +694,8 @@ mod platform {
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),
                 samplers: self.samplers.live_len(),
-                resource_set_layouts: self.resource_set_layouts.live_len(),
-                resource_sets: self.resource_sets.live_len(),
+                bind_group_layouts: self.bind_group_layouts.live_len(),
+                bind_groups: self.bind_groups.live_len(),
                 pipeline_layouts: self.pipeline_layouts.live_len(),
                 shader_modules: self.shader_modules.live_len(),
                 render_passes: self.render_passes.live_len(),
@@ -755,6 +713,10 @@ mod platform {
 
     impl Backend for MetalDevice {
         const BACKEND_KIND: BackendKind = BackendKind::Metal;
+
+        fn adapter_name(&self) -> &str {
+            "Metal"
+        }
     }
 
     impl SurfaceDevice for MetalDevice {
@@ -821,15 +783,15 @@ mod platform {
             Self::create_sampler(self, desc)
         }
 
-        fn create_resource_set_layout(
+        fn create_bind_group_layout(
             &mut self,
-            desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
-            Self::create_resource_set_layout(self, desc)
+            desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
+            Self::create_bind_group_layout(self, desc)
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
-            Self::create_resource_set(self, desc)
+        fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
+            Self::create_bind_group(self, desc)
         }
 
         fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
@@ -848,12 +810,12 @@ mod platform {
             Self::destroy_sampler(self, sampler)
         }
 
-        fn destroy_resource_set_layout(&mut self, layout: ResourceSetLayoutId) -> Result<()> {
-            Self::destroy_resource_set_layout(self, layout)
+        fn destroy_bind_group_layout(&mut self, layout: BindGroupLayoutId) -> Result<()> {
+            Self::destroy_bind_group_layout(self, layout)
         }
 
-        fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            Self::destroy_resource_set(self, resource_set)
+        fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
+            Self::destroy_bind_group(self, bind_group)
         }
     }
 
@@ -964,63 +926,11 @@ mod platform {
     }
 
     impl PresentationDevice for MetalDevice {
-        fn draw_steps_and_present(
+        fn render_and_present(
             &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<()> {
-            Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
-        }
-
-        fn draw_steps_to_texture(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
-        }
-
-        fn render_steps_and_present_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
-        }
-
-        fn render_steps_to_texture_compat(
-            &mut self,
-            _texture_view: TextureViewId,
-            _render_pass: RenderPassId,
-            _steps: &[RenderStepDescriptor],
-            _color_load_op: LoadOp<ClearColor>,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Err(Error::Unavailable(
-                "Metal offscreen render target is not implemented yet".to_string(),
-            ))
-        }
-
-        fn render_steps_and_present_deferred_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
-            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)?;
-            Ok(SubmissionId::from_parts(0, 0))
+            _frame: &PresentFrameDescriptor<'_>,
+        ) -> Result<Option<PresentedFrame>> {
+            unavailable()
         }
     }
 
@@ -1067,18 +977,18 @@ mod platform {
 
     #[derive(Clone)]
     struct MetalResourceSetLayout {
-        desc: ResourceSetLayoutDescriptor,
+        desc: BindGroupLayoutDescriptor,
     }
 
     #[derive(Clone)]
     struct MetalResourceSet {
-        layout: ResourceSetLayoutId,
-        bindings: Vec<gfx_core::ResourceBinding>,
+        layout: BindGroupLayoutId,
+        bindings: Vec<gfx_core::BindGroupEntry>,
     }
 
     #[derive(Clone)]
     struct MetalPipelineLayout {
-        resource_set_layouts: Vec<ResourceSetLayoutId>,
+        bind_group_layouts: Vec<BindGroupLayoutId>,
     }
 
     #[derive(Clone)]
@@ -1256,7 +1166,7 @@ mod platform {
 
     struct PreparedMetalRenderStep {
         pipeline: MetalRenderPipeline,
-        resource_sets: Vec<MetalResourceSet>,
+        bind_groups: Vec<MetalResourceSet>,
         draw: PreparedMetalDraw,
         scissor: Option<gfx_core::ScissorRect>,
     }
@@ -1297,8 +1207,8 @@ mod platform {
             let _ = (pipeline.blend_mode, pipeline.pipeline_layout);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
             encoder.setScissorRect(metal_scissor_rect(step.scissor, config.size));
-            for resource_set in &step.resource_sets {
-                let _ = (resource_set.layout, resource_set.bindings.len());
+            for bind_group in &step.bind_groups {
+                let _ = (bind_group.layout, bind_group.bindings.len());
             }
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
@@ -1328,7 +1238,7 @@ mod platform {
                     instance_count,
                     base_instance,
                 } => {
-                    // SAFETY: The index buffer is retained by the prepared draw step and the
+                    // SAFETY: The index buffer is retained by the prepared render command and the
                     // checked index range is within that buffer.
                     unsafe {
                         encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
@@ -1488,16 +1398,17 @@ mod platform {
 #[cfg(not(target_vendor = "apple"))]
 mod platform {
     use gfx_core::{
-        Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
-        CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
-        DrawDescriptor, DrawStepDescriptor, Error, LoadOp, PipelineDevice,
-        PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice, RenderPassDepthAttachment,
-        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
-        RenderStepDescriptor, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
-        SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice, SubmissionId,
-        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
-        TextureDescriptor, TextureId, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
+        Backend, BackendKind, BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor,
+        BindGroupLayoutId, BufferDescriptor, BufferId, ClearColor, CommandDevice,
+        CommandEncoderDescriptor, CommandEncoderId, DepthAttachment, DeviceDescriptor,
+        DiagnosticsDevice, DrawCommand, DrawDescriptor, Error, LoadOp, PipelineDevice,
+        PipelineLayoutDescriptor, PipelineLayoutId, PresentFrameDescriptor, PresentationDevice,
+        PresentedFrame, RenderCommand, RenderPassDescriptor, RenderPassId,
+        RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, ResourceStats, Result,
+        SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice,
+        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+        SwapchainId, TextureDescriptor, TextureId, TextureViewDescriptor, TextureViewId,
+        TextureWriteDescriptor,
     };
 
     /// Stub Metal device for non-Apple targets.
@@ -1524,6 +1435,10 @@ mod platform {
 
     impl Backend for MetalDevice {
         const BACKEND_KIND: BackendKind = BackendKind::Metal;
+
+        fn adapter_name(&self) -> &str {
+            "Metal"
+        }
     }
 
     impl SurfaceDevice for MetalDevice {
@@ -1579,14 +1494,14 @@ mod platform {
             unavailable()
         }
 
-        fn create_resource_set_layout(
+        fn create_bind_group_layout(
             &mut self,
-            _desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
+            _desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
             unavailable()
         }
 
-        fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+        fn create_bind_group(&mut self, _desc: &BindGroupDescriptor) -> Result<BindGroupId> {
             unavailable()
         }
 
@@ -1606,11 +1521,11 @@ mod platform {
             unavailable()
         }
 
-        fn destroy_resource_set_layout(&mut self, _layout: ResourceSetLayoutId) -> Result<()> {
+        fn destroy_bind_group_layout(&mut self, _layout: BindGroupLayoutId) -> Result<()> {
             unavailable()
         }
 
-        fn destroy_resource_set(&mut self, _resource_set: ResourceSetId) -> Result<()> {
+        fn destroy_bind_group(&mut self, _resource_set: BindGroupId) -> Result<()> {
             unavailable()
         }
     }
@@ -1699,59 +1614,10 @@ mod platform {
     }
 
     impl PresentationDevice for MetalDevice {
-        fn draw_steps_and_present(
+        fn render_and_present(
             &mut self,
-            _swapchain: SwapchainId,
-            _render_pass: RenderPassId,
-            _steps: &[DrawStepDescriptor],
-            _clear_color: ClearColor,
-        ) -> Result<()> {
-            unavailable()
-        }
-
-        fn draw_steps_to_texture(
-            &mut self,
-            _texture_view: TextureViewId,
-            _render_pass: RenderPassId,
-            _steps: &[DrawStepDescriptor],
-            _color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            unavailable()
-        }
-
-        fn render_steps_and_present_compat(
-            &mut self,
-            _swapchain: SwapchainId,
-            _render_pass: RenderPassId,
-            _steps: &[RenderStepDescriptor],
-            _clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            unavailable()
-        }
-
-        fn render_steps_to_texture_compat(
-            &mut self,
-            _texture_view: TextureViewId,
-            _render_pass: RenderPassId,
-            _steps: &[RenderStepDescriptor],
-            _color_load_op: LoadOp<ClearColor>,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            unavailable()
-        }
-
-        fn render_steps_and_present_deferred_compat(
-            &mut self,
-            _swapchain: SwapchainId,
-            _render_pass: RenderPassId,
-            _steps: &[RenderStepDescriptor],
-            _clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
+            _frame: &PresentFrameDescriptor<'_>,
+        ) -> Result<Option<PresentedFrame>> {
             unavailable()
         }
     }

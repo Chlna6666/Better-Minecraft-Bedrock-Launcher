@@ -5,42 +5,53 @@ pub(super) struct Composition {
     pub(super) device: IDCompositionDesktopDevice,
     target: IDCompositionTarget,
     pub(super) visual: IDCompositionVisual,
+    pub(super) scale: [f32; 2],
     active: Option<IDXGISwapChain3>,
     fallback_hwnd: Option<IDXGISwapChain3>,
 }
 
 impl Composition {
     pub(super) fn publish(&mut self, candidate: &IDXGISwapChain3) -> Result<()> {
-        if self.active.as_ref() == Some(candidate) {
+        if self.active.as_ref() == Some(candidate) && self.scale == [1.0, 1.0] {
             return Ok(());
         }
         // SAFETY: the candidate has successfully presented a matching frame. Both native
         // generations stay owned until Commit or rollback completes on this device owner.
-        let result = unsafe {
-            self.visual
-                .SetContent(candidate)
-                .and_then(|()| self.target.SetRoot(&self.visual))
-                .and_then(|()| self.device.Commit())
-        };
+        let result = self.commit_content(Some(candidate), [1.0, 1.0]);
         if let Err(error) = result {
-            let rollback = unsafe {
-                match &self.active {
-                    Some(active) => self
-                        .visual
-                        .SetContent(active)
-                        .and_then(|()| self.target.SetRoot(&self.visual)),
-                    None => self.target.SetRoot(None),
-                }
-                .and_then(|()| self.device.Commit())
-            };
+            let rollback = self.commit_content(self.active.as_ref(), self.scale);
             if let Err(rollback_error) = rollback {
                 log::warn!("D3D11 composition content rollback failed: {rollback_error}");
             }
             return Err(backend(error));
         }
         self.active = Some(candidate.clone());
+        self.scale = [1.0, 1.0];
         self.fallback_hwnd = None;
         Ok(())
+    }
+
+    fn commit_content(
+        &self,
+        content: Option<&IDXGISwapChain3>,
+        scale: [f32; 2],
+    ) -> windows::core::Result<()> {
+        // SAFETY: content and transform belong to this live composition owner.
+        // Publish both in one transaction so new pixels never inherit the old stretch.
+        unsafe {
+            self.visual.SetTransform2(&windows_numerics::Matrix3x2 {
+                M11: scale[0],
+                M22: scale[1],
+                ..Default::default()
+            })?;
+            if let Some(content) = content {
+                self.visual.SetContent(content)?;
+                self.target.SetRoot(&self.visual)?;
+            } else {
+                self.target.SetRoot(None)?;
+            }
+            self.device.Commit()
+        }
     }
 
     pub(super) fn retain_hwnd(&mut self, content: IDXGISwapChain3) {
@@ -80,56 +91,9 @@ pub(super) fn create(native: &ID3D11Device, hwnd: HWND) -> Result<Composition> {
             device,
             target,
             visual: visual.into(),
+            scale: [1.0, 1.0],
             active: None,
             fallback_hwnd: None,
         })
     }
-}
-
-pub(super) fn prepare_resize(
-    device: &mut Dx11Device,
-    id: SwapchainId,
-    size: Extent2d,
-) -> Result<()> {
-    let old = device.swapchains.get(id)?;
-    // SAFETY: the old native chain and factory belong to this live device owner.
-    let mut descriptor = unsafe { old.native.GetDesc1() }.map_err(backend)?;
-    descriptor.Width = size.width();
-    descriptor.Height = size.height();
-    let native: IDXGISwapChain3 = unsafe {
-        device
-            .factory
-            .CreateSwapChainForComposition(&device.native, &descriptor, None)
-    }
-    .map_err(backend)?
-    .cast()
-    .map_err(backend)?;
-    unsafe { native.SetMaximumFrameLatency(1) }.map_err(backend)?;
-    let latency = unsafe { native.GetFrameLatencyWaitableObject() };
-    // Own the wait handle immediately so failed RTV preparation closes it as well.
-    let mut next = Swapchain {
-        native,
-        view: None,
-        config: SurfaceConfig { size, ..old.config },
-        source_extent: size,
-        surface: old.surface,
-        composition: None,
-        latency,
-        pacing: FrameLatencyWait::default(),
-        generation: old.generation.wrapping_add(1),
-        resize_retirement: None,
-    };
-    if next.latency.is_invalid() {
-        return Err(Error::Backend(
-            "DXGI returned no frame latency handle".into(),
-        ));
-    }
-    next.view = Some(backbuffer_view(&device.native, &next.native)?);
-    let old = device.swapchains.get_mut(id)?;
-    next.composition = old.composition.take();
-    // The composition still owns the last successfully published native chain.
-    // Superseding an unpresented candidate never replaces that active content.
-    let previous = std::mem::replace(old, next);
-    drop(previous);
-    Ok(())
 }

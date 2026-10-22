@@ -11,10 +11,10 @@ fn main() {
 #[cfg(target_vendor = "apple")]
 mod apple_example {
     use gfx_core::{
-        BufferBinding, BufferDescriptor, BufferUsage, DeviceDescriptor, Format, PipelineDevice,
-        ResourceDevice, MemoryLocation, PipelineLayoutDescriptor, ResourceBinding,
-        BindingResource, ResourceBindingType, ResourceSetDescriptor, ResourceSetLayoutDescriptor,
-        ResourceSetLayoutEntry, SamplerBinding, SamplerDescriptor, ShaderStage, ShaderStages,
+        BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+        BindingResource, BindingType, BufferBinding, BufferDescriptor, BufferUsage,
+        DeviceDescriptor, Format, MemoryLocation, PipelineDevice, PipelineLayoutDescriptor,
+        ResourceDevice, SamplerBinding, SamplerDescriptor, ShaderStage, ShaderStages,
         TextureBinding, TextureDescriptor, TextureDimension, TextureUsage, TextureViewDescriptor,
     };
     use gfx_metal::MetalDevice;
@@ -60,29 +60,29 @@ fn fs_main() -> @location(0) vec4<f32> {
         })?;
         let _vertex_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Vertex, "vs_main")?;
         let _fragment_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Fragment, "fs_main")?;
-        let layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
-            label: Some("atlas metal resource set layout".to_string()),
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("atlas metal bind group layout".to_string()),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 1,
-                    binding_type: ResourceBindingType::SampledTexture,
+                    binding_type: BindingType::SampledTexture,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 2,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
             ],
         })?;
         let _pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("atlas metal pipeline layout".to_string()),
-            resource_set_layouts: vec![layout],
+            bind_group_layouts: vec![layout],
         })?;
         let uniform = device.create_buffer(&BufferDescriptor {
             label: Some("atlas metal uniform".to_string()),
@@ -107,11 +107,11 @@ fn fs_main() -> @location(0) vec4<f32> {
             format: Format::Rgba8Unorm,
         })?;
         let sampler = device.create_sampler(&SamplerDescriptor::default())?;
-        let _resource_set = device.create_resource_set(&ResourceSetDescriptor {
-            label: Some("atlas metal resource set".to_string()),
+        let _resource_set = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("atlas metal bind group".to_string()),
             layout,
-            bindings: vec![
-                ResourceBinding {
+            entries: vec![
+                BindGroupEntry {
                     binding: 0,
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: uniform,
@@ -120,11 +120,11 @@ fn fs_main() -> @location(0) vec4<f32> {
                         stride: None,
                     }),
                 },
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 1,
                     resource: BindingResource::Texture(TextureBinding { texture_view }),
                 },
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::Sampler(SamplerBinding { sampler }),
                 },

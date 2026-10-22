@@ -15,63 +15,74 @@ impl OpenGlDevice {
         &self,
         target: RenderTarget,
         pass: RenderPassId,
-        steps: RenderStepList<'_>,
+        steps: &[RenderCommand],
         load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
+        depth: Option<DepthAttachment>,
     ) -> Result<()> {
-        self.render_target_with_clear_region(target, pass, steps, load, depth, None, None)
+        self.render_target_clipped(target, pass, steps, load, depth, None, None)
     }
 
-    pub(crate) fn render_target_with_clear_region(
+    pub(crate) fn render_target_clipped(
         &self,
         target: RenderTarget,
         pass: RenderPassId,
-        steps: RenderStepList<'_>,
+        steps: &[RenderCommand],
         load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
+        depth: Option<DepthAttachment>,
         clear_region: Option<ScissorRect>,
-        viewport: Option<RenderViewport>,
+        viewport: Option<Viewport>,
     ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
-        let (texture, framebuffer, size, format, viewport_size) = match target {
-            RenderTarget::TextureView(id) => {
-                let view = self.views.get(id)?;
-                if !view.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
-                    return Err(Error::InvalidInput(
-                        "OpenGL target is not a color attachment".into(),
-                    ));
+        let (texture, framebuffer, size, format, viewport_size, viewport_origin, scissor_extent) =
+            match target {
+                RenderTarget::TextureView(id) => {
+                    let view = self.views.get(id)?;
+                    if !view.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+                        return Err(Error::InvalidInput(
+                            "OpenGL target is not a color attachment".into(),
+                        ));
+                    }
+                    (
+                        view.native,
+                        self.framebuffer,
+                        view.size,
+                        view.format,
+                        viewport
+                            .map(|viewport| viewport.for_target(view.size))
+                            .transpose()?
+                            .unwrap_or(view.size),
+                        viewport
+                            .map(|viewport| viewport.mapped_origin(view.size))
+                            .transpose()?
+                            .unwrap_or(SignedOrigin2d::ZERO),
+                        viewport
+                            .map(|viewport| viewport.mapped_scissor_extent(view.size))
+                            .transpose()?
+                            .unwrap_or(view.size),
+                    )
                 }
-                (
-                    view.native,
-                    self.framebuffer,
-                    view.size,
-                    view.format,
-                    viewport
-                        .map(|viewport| viewport.for_target(view.size))
-                        .transpose()?
-                        .unwrap_or(view.size),
-                )
-            }
-            RenderTarget::Swapchain {
-                swapchain,
-                image_index,
-            } => {
-                if image_index != 0 {
-                    return Err(Error::InvalidInput(
-                        "OpenGL presents logical image zero".into(),
-                    ));
+                RenderTarget::Swapchain {
+                    swapchain,
+                    image_index,
+                } => {
+                    if image_index != 0 {
+                        return Err(Error::InvalidInput(
+                            "OpenGL presents logical image zero".into(),
+                        ));
+                    }
+                    let chain = self.swapchains.get(swapchain)?;
+                    (
+                        chain.color,
+                        chain.framebuffer,
+                        chain.config.size,
+                        chain.config.format,
+                        chain.source_extent,
+                        SignedOrigin2d::ZERO,
+                        chain.source_extent,
+                    )
                 }
-                let chain = self.swapchains.get(swapchain)?;
-                (
-                    chain.color,
-                    chain.framebuffer,
-                    chain.config.size,
-                    chain.config.format,
-                    chain.source_extent,
-                )
-            }
-        };
+            };
         if pass.color_attachment.format != format {
             return Err(Error::InvalidInput(
                 "OpenGL render pass color mismatch".into(),
@@ -89,8 +100,12 @@ impl OpenGlDevice {
                 "OpenGL depth extent/usage mismatch".into(),
             ));
         }
-        // Follow the same framebuffer-coordinate convention as draw_step.
-        // A Clear outside the source-capture region need not touch the texture.
+        let clear_region = match (viewport, clear_region) {
+            (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, size)?),
+            (_, clear_region) => clear_region,
+        };
+        // ScissorRect is expressed from the top-left. OpenGL consumes a bottom-left
+        // framebuffer origin; PixelExact maps that source rectangle into the tile first.
         let clear_scissor = clear_region.and_then(|scissor| {
             let x = scissor.x.min(size.width());
             let y = scissor.y.min(size.height());
@@ -99,13 +114,34 @@ impl OpenGlDevice {
             if width == 0 || height == 0 {
                 return None;
             }
+            let gl_y = if viewport
+                .is_some_and(|viewport| viewport.mapping == ViewportMapping::PixelExact)
+            {
+                size.height().saturating_sub(y.saturating_add(height))
+            } else {
+                y
+            };
             Some((
                 i32::try_from(x).ok()?,
-                i32::try_from(y).ok()?,
+                i32::try_from(gl_y).ok()?,
                 i32::try_from(width).ok()?,
                 i32::try_from(height).ok()?,
             ))
         });
+        let viewport_x = viewport_origin.x;
+        let viewport_y = i32::try_from(
+            i64::from(size.height())
+                - (i64::from(viewport_origin.y) + i64::from(viewport_size.height())),
+        )
+        .map_err(|error| {
+            Error::InvalidInput(format!("OpenGL viewport origin overflow: {error}"))
+        })?;
+        let viewport_width = i32::try_from(viewport_size.width()).map_err(|error| {
+            Error::InvalidInput(format!("OpenGL viewport width overflow: {error}"))
+        })?;
+        let viewport_height = i32::try_from(viewport_size.height()).map_err(|error| {
+            Error::InvalidInput(format!("OpenGL viewport height overflow: {error}"))
+        })?;
         // SAFETY: live texture views are attached to one owner FBO. Scissor/depth writes
         // are reset before clears so previous draw state cannot limit this pass.
         unsafe {
@@ -136,12 +172,7 @@ impl OpenGlDevice {
                 return Err(Error::Backend("OpenGL pass framebuffer incomplete".into()));
             }
             self.gl
-                .viewport(
-                    0,
-                    (size.height() - viewport_size.height()) as i32,
-                    viewport_size.width() as i32,
-                    viewport_size.height() as i32,
-                );
+                .viewport(viewport_x, viewport_y, viewport_width, viewport_height);
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.depth_mask(true);
             if format.is_srgb() {
@@ -153,13 +184,17 @@ impl OpenGlDevice {
                 self.gl.enable(glow::SCISSOR_TEST);
                 self.gl.scissor(x, y, width, height);
             }
-            if let LoadOp::Clear(color) = load {
+            if let LoadOp::Clear(color) = load
+                && (clear_region.is_none() || clear_scissor.is_some())
+            {
                 self.gl
                     .clear_color(color.red, color.green, color.blue, color.alpha);
                 self.gl.clear(glow::COLOR_BUFFER_BIT);
             }
             if let Some(attachment) = depth {
-                if let LoadOp::Clear(value) = attachment.depth_load_op {
+                if let LoadOp::Clear(value) = attachment.depth_load_op
+                    && (clear_region.is_none() || clear_scissor.is_some())
+                {
                     self.gl.clear_depth_f32(value);
                     self.gl.clear(glow::DEPTH_BUFFER_BIT);
                 }
@@ -170,10 +205,21 @@ impl OpenGlDevice {
         let result = (|| {
             let mut state = GlPassState::default();
             for step in steps.iter() {
+                let scissor = match (viewport, step.scissor()) {
+                    (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
+                    (_, scissor) => scissor,
+                };
+                if scissor.is_some_and(ScissorRect::is_empty) {
+                    continue;
+                }
                 self.draw_step(
                     step,
+                    scissor,
                     size,
                     viewport_size,
+                    scissor_extent,
+                    viewport
+                        .is_some_and(|viewport| viewport.mapping == ViewportMapping::PixelExact),
                     format,
                     depth_view.is_some(),
                     &mut state,
@@ -213,9 +259,12 @@ impl OpenGlDevice {
     }
     fn draw_step(
         &self,
-        step: RenderStepRef<'_>,
+        step: &RenderCommand,
+        step_scissor: Option<ScissorRect>,
         target_size: Extent2d,
         viewport_size: Extent2d,
+        scissor_extent: Extent2d,
+        pixel_exact: bool,
         format: Format,
         depth: bool,
         state: &mut GlPassState,
@@ -231,31 +280,33 @@ impl OpenGlDevice {
             .pipeline_layout
             .map(|id| self.pipeline_layouts.get(id))
             .transpose()?;
-        let expected = layout.map_or(&[][..], |layout| layout.resource_set_layouts.as_slice());
-        if expected.len() != step.resource_sets().len() {
+        let expected = layout.map_or(&[][..], |layout| layout.bind_group_layouts.as_slice());
+        if expected.len() != step.bind_groups().len() {
             return Err(Error::InvalidInput(
                 "OpenGL set count differs from pipeline".into(),
             ));
         }
-        let set = if let Some(id) = step.resource_sets().first() {
+        let set = if let Some(id) = step.bind_groups().first() {
             let set = self.sets.get(*id)?;
             if expected[0] != set.desc.layout {
                 return Err(Error::InvalidInput(
-                    "OpenGL resource set layout mismatch".into(),
+                    "OpenGL bind group layout mismatch".into(),
                 ));
             }
             Some(set)
         } else {
             None
         };
-        let scissor = step.scissor().unwrap_or(ScissorRect {
+        let scissor = step_scissor.unwrap_or(ScissorRect {
             x: 0,
             y: 0,
-            width: viewport_size.width(),
-            height: viewport_size.height(),
+            width: scissor_extent.width(),
+            height: scissor_extent.height(),
         });
-        let x = scissor.x.min(viewport_size.width());
-        let y = scissor.y.min(viewport_size.height());
+        let x = scissor.x.min(scissor_extent.width());
+        let y = scissor.y.min(scissor_extent.height());
+        let width = scissor.width.min(scissor_extent.width() - x);
+        let height = scissor.height.min(scissor_extent.height() - y);
         // SAFETY: the graphics owner holds the current context throughout this pass.
         // Reuse program/VAO/depth/blend state between successive draws of one pipeline.
         // Resource bindings still run for every draw (they may include GPU mirror copies).
@@ -284,7 +335,9 @@ impl OpenGlDevice {
                     let (source, destination) = match pipeline.desc.blend_mode {
                         BlendMode::Alpha => (glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA),
                         #[cfg(windows)]
-                        BlendMode::SubpixelDualSource => (glow::SRC1_COLOR, glow::ONE_MINUS_SRC1_COLOR),
+                        BlendMode::SubpixelDualSource => {
+                            (glow::SRC1_COLOR, glow::ONE_MINUS_SRC1_COLOR)
+                        }
                         _ => (glow::ONE, glow::ONE_MINUS_SRC_ALPHA),
                     };
                     self.gl.blend_func_separate(
@@ -300,12 +353,14 @@ impl OpenGlDevice {
                 }
                 state.pipeline = Some(pipeline_key);
             }
-            let clamped_scissor = (
-                x as i32,
-                (target_size.height() - viewport_size.height() + y) as i32,
-                scissor.width.min(viewport_size.width() - x) as i32,
-                scissor.height.min(viewport_size.height() - y) as i32,
-            );
+            let gl_y = if pixel_exact {
+                target_size
+                    .height()
+                    .saturating_sub(y.saturating_add(height))
+            } else {
+                target_size.height() - viewport_size.height() + y
+            };
+            let clamped_scissor = (x as i32, gl_y as i32, width as i32, height as i32);
             if state.scissor != Some(clamped_scissor) {
                 self.gl.scissor(
                     clamped_scissor.0,
@@ -322,7 +377,7 @@ impl OpenGlDevice {
                 glow::TRIANGLE_STRIP
             };
             match step {
-                RenderStepRef::Draw(draw) => {
+                RenderCommand::Draw(draw) => {
                     self.gl
                         .uniform_1_u32(pipeline.first_instance.as_ref(), draw.first_instance);
                     self.gl.draw_arrays_instanced(
@@ -332,7 +387,7 @@ impl OpenGlDevice {
                         i32::try_from(draw.instance_count).map_err(native)?,
                     );
                 }
-                RenderStepRef::DrawIndexed(draw) => {
+                RenderCommand::DrawIndexed(draw) => {
                     let buffer = self.buffers.get(draw.index_buffer.buffer)?;
                     let (bytes, kind) = if draw.index_buffer.format == IndexFormat::Uint16 {
                         (2u64, glow::UNSIGNED_SHORT)

@@ -42,19 +42,19 @@ impl Dx11Device {
         let mut draws = std::mem::take(self.encoders.get_mut(encoder)?);
         let result = (|| {
             for draw in draws.drain(..) {
-                let step = DrawStepDescriptor {
+                let command = RenderCommand::Draw(DrawCommand {
                     pipeline: draw.pipeline,
-                    resource_sets: draw.resource_sets,
+                    bind_groups: draw.bind_groups,
                     vertex_count: draw.vertex_count,
                     first_vertex: draw.first_vertex,
                     instance_count: draw.instance_count,
                     first_instance: draw.first_instance,
                     scissor: draw.scissor,
-                };
+                });
                 self.render_target(
                     draw.pass.target,
                     draw.pass.render_pass,
-                    RenderStepList::Draw(&[step]),
+                    std::slice::from_ref(&command),
                     draw.pass.color_load_op,
                     None,
                 )?;
@@ -69,25 +69,25 @@ impl Dx11Device {
         &mut self,
         target: RenderTarget,
         pass: RenderPassId,
-        steps: RenderStepList<'_>,
+        commands: &[RenderCommand],
         load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
+        depth: Option<DepthAttachment>,
     ) -> Result<()> {
-        self.render_target_with_clear_region(target, pass, steps, load, depth, None, None)
+        self.render_target_clipped(target, pass, commands, load, depth, None, None)
     }
 
-    pub(crate) fn render_target_with_clear_region(
+    pub(crate) fn render_target_clipped(
         &mut self,
         target: RenderTarget,
         pass: RenderPassId,
-        steps: RenderStepList<'_>,
+        commands: &[RenderCommand],
         load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
+        depth: Option<DepthAttachment>,
         clear_region: Option<ScissorRect>,
-        viewport: Option<RenderViewport>,
+        viewport: Option<Viewport>,
     ) -> Result<()> {
         let pass = self.passes.get(pass)?;
-        let (rtv, size, target_format, viewport_size) = match target {
+        let (rtv, size, target_format, viewport_size, viewport_origin) = match target {
             RenderTarget::TextureView(id) => {
                 let view = self.views.get(id)?;
                 (
@@ -100,6 +100,10 @@ impl Dx11Device {
                         .map(|viewport| viewport.for_target(view.size))
                         .transpose()?
                         .unwrap_or(view.size),
+                    viewport
+                        .map(|viewport| viewport.mapped_origin(view.size))
+                        .transpose()?
+                        .unwrap_or(SignedOrigin2d::ZERO),
                 )
             }
             RenderTarget::Swapchain {
@@ -120,6 +124,7 @@ impl Dx11Device {
                     chain.config.size,
                     chain.config.format,
                     chain.source_extent,
+                    SignedOrigin2d::ZERO,
                 )
             }
         };
@@ -141,6 +146,10 @@ impl Dx11Device {
         if depth_view.is_some_and(|view| view.size != size) {
             return Err(Error::InvalidInput("depth extent mismatch".into()));
         }
+        let clear_region = match (viewport, clear_region) {
+            (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, size)?),
+            (_, clear_region) => clear_region,
+        };
         // D3D11.1 ClearView accepts a rectangle unlike ClearRenderTargetView.
         // Clamp the optional source-capture halo before using it for color/depth.
         let clear_rect = clear_region.and_then(|scissor| {
@@ -163,10 +172,7 @@ impl Dx11Device {
         // 128-entry native calls for every offscreen/blur pass.
         unsafe {
             let none: [Option<ID3D11ShaderResourceView>; 128] = [const { None }; 128];
-            for (mask, vertex) in [
-                (&self.vs_srv_slots, true),
-                (&self.ps_srv_slots, false),
-            ] {
+            for (mask, vertex) in [(&self.vs_srv_slots, true), (&self.ps_srv_slots, false)] {
                 let occupied = mask.replace(0);
                 if occupied == 0 {
                     continue;
@@ -182,37 +188,61 @@ impl Dx11Device {
             }
             self.context
                 .OMSetRenderTargets(Some(&[Some(rtv.clone())]), dsv);
-            self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "D3D11 viewport coordinates and dimensions are f32 by API contract"
+            )]
+            let viewport = D3D11_VIEWPORT {
+                TopLeftX: viewport_origin.x as f32,
+                TopLeftY: viewport_origin.y as f32,
                 Width: viewport_size.width() as f32,
                 Height: viewport_size.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
                 ..Default::default()
-            }]));
+            };
+            self.context.RSSetViewports(Some(&[viewport]));
             if let LoadOp::Clear(color) = load {
-                let rgba = [color.red, color.green, color.blue, color.alpha];
-                if let Some(rects) = clear_rect.as_ref() {
-                    self.context.ClearView(rtv, &rgba, Some(rects));
-                } else {
-                    self.context.ClearRenderTargetView(rtv, &rgba);
+                if clear_region.is_none() || clear_rect.is_some() {
+                    let rgba = [color.red, color.green, color.blue, color.alpha];
+                    if let Some(rects) = clear_rect.as_ref() {
+                        self.context.ClearView(rtv, &rgba, Some(rects));
+                    } else {
+                        self.context.ClearRenderTargetView(rtv, &rgba);
+                    }
                 }
             }
             if let (Some(depth), Some(dsv)) = (depth, dsv) {
                 if let LoadOp::Clear(value) = depth.depth_load_op {
-                    if let Some(rects) = clear_rect.as_ref() {
-                        // GPUI uses a depth-only attachment for its blur passes.
-                        self.context.ClearView(dsv, &[value, 0.0, 0.0, 0.0], Some(rects));
-                    } else {
-                        self.context
-                            .ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH.0 as u32, value, 0);
+                    if clear_region.is_none() || clear_rect.is_some() {
+                        if let Some(rects) = clear_rect.as_ref() {
+                            // Depth-only attachments may be cleared through a view.
+                            self.context
+                                .ClearView(dsv, &[value, 0.0, 0.0, 0.0], Some(rects));
+                        } else {
+                            self.context.ClearDepthStencilView(
+                                dsv,
+                                D3D11_CLEAR_DEPTH.0 as u32,
+                                value,
+                                0,
+                            );
+                        }
                     }
                 }
             }
         }
         let mut state = Dx11PassState::default();
-        for step in steps.iter() {
+        for command in commands {
+            let scissor = match (viewport, command.scissor()) {
+                (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
+                (_, scissor) => scissor,
+            };
+            if scissor.is_some_and(ScissorRect::is_empty) {
+                continue;
+            }
             self.draw_step(
-                step,
+                command,
+                scissor,
                 viewport_size,
                 target_format,
                 dsv.is_some(),
@@ -227,13 +257,14 @@ impl Dx11Device {
     }
     fn draw_step(
         &self,
-        step: RenderStepRef<'_>,
+        command: &RenderCommand,
+        step_scissor: Option<ScissorRect>,
         size: Extent2d,
         target_format: Format,
         has_depth: bool,
         state: &mut Dx11PassState,
     ) -> Result<()> {
-        let pipeline = self.pipelines.get(step.pipeline())?;
+        let pipeline = self.pipelines.get(command.pipeline())?;
         if pipeline.desc.color_format != target_format
             || (pipeline.desc.depth_state.is_some() && !has_depth)
         {
@@ -246,13 +277,13 @@ impl Dx11Device {
             .pipeline_layout
             .map(|id| self.pipeline_layouts.get(id))
             .transpose()?;
-        let expected = layouts.map_or(&[][..], |value| value.resource_set_layouts.as_slice());
-        if step.resource_sets().len() != expected.len() {
+        let expected = layouts.map_or(&[][..], |value| value.bind_group_layouts.as_slice());
+        if command.bind_groups().len() != expected.len() {
             return Err(Error::InvalidInput(
-                "resource set count differs from pipeline layout".into(),
+                "bind group count differs from pipeline layout".into(),
             ));
         }
-        let scissor = step.scissor().unwrap_or(ScissorRect {
+        let scissor = step_scissor.unwrap_or(ScissorRect {
             x: 0,
             y: 0,
             width: size.width(),
@@ -270,7 +301,7 @@ impl Dx11Device {
         // remain live through calls. Shader/resource bindings still update for
         // every draw; only unchanged pass-local pipeline/scissor state is skipped.
         unsafe {
-            let pipeline_key = step.pipeline().raw();
+            let pipeline_key = command.pipeline().raw();
             if state.pipeline != Some(pipeline_key) {
                 self.context.VSSetShader(&pipeline.vertex, None);
                 self.context.PSSetShader(&pipeline.fragment, None);
@@ -292,18 +323,18 @@ impl Dx11Device {
                 state.scissor = Some(scissor_key);
             }
         }
-        for (id, layout) in step.resource_sets().iter().zip(expected) {
+        for (id, layout) in command.bind_groups().iter().zip(expected) {
             let set = self.sets.get(*id)?;
             if &set.layout != layout {
-                return Err(Error::InvalidInput("resource set layout mismatch".into()));
+                return Err(Error::InvalidInput("bind group layout mismatch".into()));
             }
             for (slot, stages, binding) in &set.bindings {
                 self.bind(*slot, *stages, binding);
             }
         }
-        let (vertex_offset, instance_offset) = match step {
-            RenderStepRef::Draw(step) => (step.first_vertex, step.first_instance),
-            RenderStepRef::DrawIndexed(step) => (step.base_vertex as u32, step.first_instance),
+        let (vertex_offset, instance_offset) = match command {
+            RenderCommand::Draw(draw) => (draw.first_vertex, draw.first_instance),
+            RenderCommand::DrawIndexed(draw) => (draw.base_vertex as u32, draw.first_instance),
         };
         let constants = [vertex_offset, instance_offset, 0, 0];
         // SAFETY: constants contain 16 initialized bytes and match the reserved NagaConstants ABI.
@@ -318,24 +349,24 @@ impl Dx11Device {
             );
             self.context
                 .VSSetConstantBuffers(13, Some(&[Some(self.draw_constants.clone())]));
-            match step {
-                RenderStepRef::Draw(step) => {
+            match command {
+                RenderCommand::Draw(draw) => {
                     self.context
-                        .DrawInstanced(step.vertex_count, step.instance_count, 0, 0)
+                        .DrawInstanced(draw.vertex_count, draw.instance_count, 0, 0)
                 }
-                RenderStepRef::DrawIndexed(step) => {
-                    let buffer = self.buffers.get(step.index_buffer.buffer)?;
-                    let index_size = match step.index_buffer.format {
+                RenderCommand::DrawIndexed(draw) => {
+                    let buffer = self.buffers.get(draw.index_buffer.buffer)?;
+                    let index_size = match draw.index_buffer.format {
                         IndexFormat::Uint16 => 2u64,
                         IndexFormat::Uint32 => 4,
                     };
                     if !buffer.desc.usage.contains(BufferUsage::INDEX)
-                        || step.index_buffer.offset % index_size != 0
-                        || step
+                        || draw.index_buffer.offset % index_size != 0
+                        || draw
                             .index_buffer
                             .offset
                             .checked_add(
-                                (u64::from(step.first_index) + u64::from(step.index_count))
+                                (u64::from(draw.first_index) + u64::from(draw.index_count))
                                     * index_size,
                             )
                             .is_none_or(|end| end > buffer.desc.size)
@@ -351,12 +382,12 @@ impl Dx11Device {
                         } else {
                             DXGI_FORMAT_R32_UINT
                         },
-                        step.index_buffer.offset as u32,
+                        draw.index_buffer.offset as u32,
                     );
                     self.context.DrawIndexedInstanced(
-                        step.index_count,
-                        step.instance_count,
-                        step.first_index,
+                        draw.index_count,
+                        draw.instance_count,
+                        draw.first_index,
                         0,
                         0,
                     );
@@ -399,12 +430,14 @@ impl Dx11Device {
                     if stages.contains(ShaderStages::VERTEX) {
                         self.context
                             .VSSetShaderResources(slot, Some(&[Some(view.clone())]));
-                        self.vs_srv_slots.set(self.vs_srv_slots.get() | (1_u128 << slot));
+                        self.vs_srv_slots
+                            .set(self.vs_srv_slots.get() | (1_u128 << slot));
                     }
                     if stages.contains(ShaderStages::FRAGMENT) {
                         self.context
                             .PSSetShaderResources(slot, Some(&[Some(view.clone())]));
-                        self.ps_srv_slots.set(self.ps_srv_slots.get() | (1_u128 << slot));
+                        self.ps_srv_slots
+                            .set(self.ps_srv_slots.get() | (1_u128 << slot));
                     }
                 }
                 Bound::Sampler(sampler) => {
@@ -423,122 +456,46 @@ impl Dx11Device {
 }
 
 impl PresentationDevice for Dx11Device {
-    fn render_step_lists_to_textures_compat(
+    fn render_and_present(
         &mut self,
-        passes: &[TextureRenderStepList<'_>],
-    ) -> Result<()> {
-        for pass in passes {
-            self.render_target_with_clear_region(
-                RenderTarget::TextureView(pass.texture_view),
-                pass.render_pass,
-                pass.steps,
-                pass.color_load_op,
-                pass.depth_attachment,
-                pass.clear_region,
-                pass.viewport,
-            )?;
-        }
-        Ok(())
+        frame: &PresentFrameDescriptor<'_>,
+    ) -> Result<Option<PresentedFrame>> {
+        let submission = self.present_steps(
+            frame.swapchain,
+            frame.render_pass,
+            frame.commands,
+            frame.color_load_op,
+            frame.depth_attachment,
+        )?;
+        Ok(Some(PresentedFrame {
+            submission: Some(submission),
+            timings: None,
+        }))
     }
 
-    fn render_steps_to_texture_compat(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_step_list_to_texture_compat(
-            view,
-            pass,
-            RenderStepList::Render(steps),
-            load,
-            depth,
+    fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+        self.render_target_clipped(
+            RenderTarget::TextureView(pass.texture_view),
+            pass.render_pass,
+            pass.commands,
+            pass.color_load_op,
+            pass.depth_attachment,
+            pass.clear_region,
+            pass.viewport,
         )
     }
-    fn render_steps_and_present_compat(
+
+    fn render_to_textures(
         &mut self,
-        chain: SwapchainId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_step_list_and_present_compat(
-            chain,
-            pass,
-            RenderStepList::Render(steps),
-            color,
-            depth,
-        )
+        passes: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        for pass in passes {
+            self.render_to_texture(pass)?;
+        }
+        Ok(None)
     }
-    fn render_steps_and_present_deferred_compat(
-        &mut self,
-        chain: SwapchainId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.present_steps(chain, pass, RenderStepList::Render(steps), color, depth)
-    }
-    fn draw_steps_and_present(
-        &mut self,
-        chain: SwapchainId,
-        pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        color: ClearColor,
-    ) -> Result<()> {
-        self.render_step_list_and_present_compat(
-            chain,
-            pass,
-            RenderStepList::Draw(steps),
-            color,
-            None,
-        )
-    }
-    fn draw_steps_to_texture(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        load: LoadOp<ClearColor>,
-    ) -> Result<()> {
-        self.render_step_list_to_texture_compat(view, pass, RenderStepList::Draw(steps), load, None)
-    }
-    fn render_step_list_to_texture_compat(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_target(RenderTarget::TextureView(view), pass, steps, load, depth)
-    }
-    fn render_step_list_and_present_compat(
-        &mut self,
-        chain: SwapchainId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        let submission = self.present_steps(chain, pass, steps, color, depth)?;
-        SubmissionDevice::wait_submission(self, submission)
-    }
-    fn render_step_list_and_present_deferred_compat(
-        &mut self,
-        chain: SwapchainId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.present_steps(chain, pass, steps, color, depth)
-    }
-    fn arm_swapchain_frame_ready(
+
+    fn request_frame_ready(
         &mut self,
         chain: SwapchainId,
         callback: Box<dyn FnOnce() + Send + 'static>,
@@ -547,17 +504,19 @@ impl PresentationDevice for Dx11Device {
         chain.pacing.arm(chain.latency, callback)?;
         Ok(true)
     }
-    fn presentation_capabilities(&self, chain: SwapchainId) -> PresentationCapabilities {
-        PresentationCapabilities {
+
+    fn surface_capabilities(&self, chain: SwapchainId) -> SurfaceCapabilities {
+        SurfaceCapabilities {
             partial_presentation: false,
             frame_ready_notification: self.swapchains.get(chain).is_ok(),
         }
     }
-    fn set_swapchain_content_stretch(
-        &mut self,
-        chain: SwapchainId,
-        scale: Option<[f32; 2]>,
-    ) -> Result<()> {
+
+    fn can_present_now(&mut self, chain: SwapchainId) -> Result<bool> {
+        self.swapchain_frame_ready(chain)
+    }
+
+    fn set_content_stretch(&mut self, chain: SwapchainId, scale: Option<[f32; 2]>) -> Result<()> {
         self.stretch(chain, scale)
     }
 }

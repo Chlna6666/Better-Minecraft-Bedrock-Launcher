@@ -22,9 +22,9 @@ mod windows_example {
 
     use gfx_core::{
         BlendMode, ClearColor, ColorAttachmentDescriptor, DeviceDescriptor, Format, PipelineDevice,
-        PresentationDevice, SurfaceDevice, PresentMode, RenderPassDescriptor, RenderPassId,
-        RenderPipelineDescriptor, RenderPipelineId, ShaderBinary, ShaderModuleDescriptor, ShaderStage,
-        SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId,
+        PresentMode, PresentationDevice, RenderPassDescriptor, RenderPassId,
+        RenderPipelineDescriptor, RenderPipelineId, ShaderBinary, ShaderModuleDescriptor,
+        ShaderStage, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
     };
     use gfx_dx12::Dx12Device;
     use gfx_shader::compile_wgsl_to_hlsl;
@@ -282,12 +282,24 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
 
         fn draw_triangle(&mut self) -> gfx_core::Result<()> {
-            self.device.draw_and_present(
-                self.swapchain,
-                self.render_pass,
-                self.pipeline,
-                clear_color(),
-            )?;
+            let command = gfx_core::RenderCommand::Draw(gfx_core::DrawCommand {
+                pipeline: self.pipeline,
+                bind_groups: gfx_core::bind_group_list_empty(),
+                vertex_count: 3,
+                first_vertex: 0,
+                instance_count: 1,
+                first_instance: 0,
+                scissor: None,
+            });
+            let frame = gfx_core::PresentFrameDescriptor {
+                swapchain: self.swapchain,
+                render_pass: self.render_pass,
+                commands: std::slice::from_ref(&command),
+                color_load_op: gfx_core::LoadOp::Clear(clear_color()),
+                depth_attachment: None,
+                present_region: None,
+            };
+            self.device.render_and_present(&frame)?;
             self.metrics.submitted_frames = self.metrics.submitted_frames.saturating_add(1);
             if self.metrics.first_frame_time.is_none() {
                 self.metrics.first_frame_time = Some(self.metrics_started_at.elapsed());

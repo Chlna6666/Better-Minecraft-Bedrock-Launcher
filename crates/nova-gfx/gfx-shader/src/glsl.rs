@@ -12,7 +12,7 @@ impl WgslModule {
     /// Returns a GLSL error for unsupported resources, features or translation failures.
     pub fn compile_glsl(&self, stage: ShaderStage, entry_point: &str) -> Result<ShaderBinary> {
         use gfx_core::{
-            GlslBufferBinding, GlslShader, GlslTextureBinding, ResourceBindingType, ShaderCode,
+            BindingType, GlslBufferBinding, GlslShader, GlslTextureBinding, ShaderCode,
         };
         use naga::back::glsl;
         for (_, variable) in self.module.global_variables.iter() {
@@ -73,8 +73,8 @@ impl WgslModule {
                 continue;
             };
             let kind = match variable.space {
-                naga::AddressSpace::Uniform => ResourceBindingType::UniformBuffer,
-                naga::AddressSpace::Storage { .. } => ResourceBindingType::StorageBuffer,
+                naga::AddressSpace::Uniform => BindingType::UniformBuffer,
+                naga::AddressSpace::Storage { .. } => BindingType::StorageBuffer,
                 _ => continue,
             };
             buffers.push(GlslBufferBinding {
@@ -120,7 +120,7 @@ impl WgslModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gfx_core::{ResourceBindingType, ShaderCode};
+    use gfx_core::{BindingType, ShaderCode};
 
     #[test]
     fn reflection_retains_sparse_logical_slots_and_first_instance() {
@@ -133,7 +133,7 @@ mod tests {
         assert!(shader.source.contains("naga_vs_first_instance"));
         assert_eq!(shader.buffers.len(), 1);
         assert_eq!(shader.buffers[0].binding, 31);
-        assert_eq!(shader.buffers[0].kind, ResourceBindingType::StorageBuffer);
+        assert_eq!(shader.buffers[0].kind, BindingType::StorageBuffer);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use gfx_core::{
-    Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
-    CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
-    DrawDescriptor, DrawStepDescriptor, Error, LoadOp, PipelineDevice, PipelineLayoutDescriptor,
-    PipelineLayoutId, PresentationDevice, RenderPassDepthAttachment, RenderPassDescriptor,
-    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, ResourceDevice,
-    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
+    Backend, BackendKind, BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor,
+    BindGroupLayoutId, BufferDescriptor, BufferId, ClearColor, CommandDevice,
+    CommandEncoderDescriptor, CommandEncoderId, DepthAttachment, DeviceDescriptor,
+    DiagnosticsDevice, DrawCommand, DrawDescriptor, Error, LoadOp, PipelineDevice,
+    PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice, RenderCommand,
+    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceDevice,
     ResourceStats, Result, SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId,
     SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor,
     SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor, TextureId, TextureViewDescriptor,
@@ -33,6 +33,10 @@ fn unavailable<T>() -> Result<T> {
 
 impl Backend for WebGlDevice {
     const BACKEND_KIND: BackendKind = BackendKind::WebGl;
+
+    fn adapter_name(&self) -> &str {
+        "WebGL"
+    }
 }
 
 impl SurfaceDevice for WebGlDevice {
@@ -88,14 +92,14 @@ impl ResourceDevice for WebGlDevice {
         unavailable()
     }
 
-    fn create_resource_set_layout(
+    fn create_bind_group_layout(
         &mut self,
-        _desc: &ResourceSetLayoutDescriptor,
-    ) -> Result<ResourceSetLayoutId> {
+        _desc: &BindGroupLayoutDescriptor,
+    ) -> Result<BindGroupLayoutId> {
         unavailable()
     }
 
-    fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+    fn create_bind_group(&mut self, _desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         unavailable()
     }
 
@@ -115,11 +119,11 @@ impl ResourceDevice for WebGlDevice {
         unavailable()
     }
 
-    fn destroy_resource_set_layout(&mut self, _layout: ResourceSetLayoutId) -> Result<()> {
+    fn destroy_bind_group_layout(&mut self, _layout: BindGroupLayoutId) -> Result<()> {
         unavailable()
     }
 
-    fn destroy_resource_set(&mut self, _resource_set: ResourceSetId) -> Result<()> {
+    fn destroy_bind_group(&mut self, _resource_set: BindGroupId) -> Result<()> {
         unavailable()
     }
 }
@@ -205,59 +209,10 @@ impl SubmissionDevice for WebGlDevice {
 }
 
 impl PresentationDevice for WebGlDevice {
-    fn draw_steps_and_present(
+    fn render_and_present(
         &mut self,
-        _swapchain: SwapchainId,
-        _render_pass: RenderPassId,
-        _steps: &[DrawStepDescriptor],
-        _clear_color: ClearColor,
-    ) -> Result<()> {
-        unavailable()
-    }
-
-    fn draw_steps_to_texture(
-        &mut self,
-        _texture_view: TextureViewId,
-        _render_pass: RenderPassId,
-        _steps: &[DrawStepDescriptor],
-        _color_load_op: LoadOp<ClearColor>,
-    ) -> Result<()> {
-        unavailable()
-    }
-
-    fn render_steps_and_present_compat(
-        &mut self,
-        _swapchain: SwapchainId,
-        _render_pass: RenderPassId,
-        _steps: &[RenderStepDescriptor],
-        _clear_color: ClearColor,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        unavailable()
-    }
-
-    fn render_steps_to_texture_compat(
-        &mut self,
-        _texture_view: TextureViewId,
-        _render_pass: RenderPassId,
-        _steps: &[RenderStepDescriptor],
-        _color_load_op: LoadOp<ClearColor>,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        unavailable()
-    }
-
-    fn render_steps_and_present_deferred_compat(
-        &mut self,
-        _swapchain: SwapchainId,
-        _render_pass: RenderPassId,
-        _steps: &[RenderStepDescriptor],
-        _clear_color: ClearColor,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId>
-    where
-        Self: SubmissionDevice,
-    {
+        _frame: &gfx_core::PresentFrameDescriptor<'_>,
+    ) -> Result<Option<gfx_core::PresentedFrame>> {
         unavailable()
     }
 }

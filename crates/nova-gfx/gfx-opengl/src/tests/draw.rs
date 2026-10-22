@@ -33,7 +33,7 @@ fn command_storage_survives_submission_errors_and_pressure_reclaims_it() {
                 color_load_op: LoadOp::Clear(CLEAR),
             },
             pipeline: ResourceId::new(u64::MAX),
-            resource_sets: resource_set_list([]),
+            bind_groups: bind_group_list([]),
             vertex_count: 3,
             first_vertex: 0,
             instance_count: 1,
@@ -91,7 +91,7 @@ fn viewport_scissor_fragment_coordinates_and_texture_rows_share_top_origin() {
     let layout = device
         .create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            resource_set_layouts: vec![],
+            bind_group_layouts: vec![],
         })
         .expect("empty layout");
     let source = "@vertex fn vs(@builtin(vertex_index) v:u32)->@builtin(position) vec4<f32>{ let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[v],0.0,1.0); } @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{if p.y<8.0{return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,1.0,1.0);}";
@@ -103,9 +103,9 @@ fn viewport_scissor_fragment_coordinates_and_texture_rows_share_top_origin() {
         gfx_core::BlendMode::Replace,
         false,
     );
-    let draw = DrawStepDescriptor {
+    let draw = DrawCommand {
         pipeline,
-        resource_sets: resource_set_list([]),
+        bind_groups: bind_group_list([]),
         vertex_count: 3,
         first_vertex: 0,
         instance_count: 1,
@@ -118,7 +118,15 @@ fn viewport_scissor_fragment_coordinates_and_texture_rows_share_top_origin() {
         }),
     };
     device
-        .draw_steps_to_texture(view, pass, &[draw], LoadOp::Clear(CLEAR))
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: pass,
+            commands: &[RenderCommand::Draw(draw)],
+            color_load_op: LoadOp::Clear(CLEAR),
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+        }])
         .expect("top scissor draw");
     let readback = device.read_texture(target).expect("row readback");
     assert!(
@@ -155,17 +163,17 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
     );
     let pass = pass(&mut device, true);
     let layout = device
-        .create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        .create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 119,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 120,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
             ],
@@ -174,7 +182,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
     let pipeline_layout = device
         .create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            resource_set_layouts: vec![layout],
+            bind_group_layouts: vec![layout],
         })
         .expect("pipeline layout");
     let pipeline = pipeline(
@@ -209,11 +217,11 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         .expect("indices");
     let constants = buffer(&mut device, 512, BufferUsage::UNIFORM);
     let set = device
-        .create_resource_set(&ResourceSetDescriptor {
+        .create_bind_group(&BindGroupDescriptor {
             label: None,
             layout,
             bindings: vec![
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 119,
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: vertices,
@@ -222,7 +230,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
                         stride: Some(16),
                     }),
                 },
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 120,
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: constants,
@@ -234,23 +242,21 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
             ],
         })
         .expect("offset bindings");
-    let steps = [RenderStepDescriptor::DrawIndexed(
-        DrawIndexedStepDescriptor {
-            pipeline,
-            resource_sets: resource_set_list([set]),
-            index_buffer: IndexBufferBinding {
-                buffer: indices,
-                format: IndexFormat::Uint32,
-                offset: 0,
-            },
-            index_count: 3,
-            first_index: 1,
-            base_vertex: 3,
-            instance_count: 1,
-            first_instance: 2,
-            scissor: None,
+    let steps = [RenderCommand::DrawIndexed(DrawIndexedCommand {
+        pipeline,
+        bind_groups: bind_group_list([set]),
+        index_buffer: IndexBufferBinding {
+            buffer: indices,
+            format: IndexFormat::Uint32,
+            offset: 0,
         },
-    )];
+        index_count: 3,
+        first_index: 1,
+        base_vertex: 3,
+        instance_count: 1,
+        first_instance: 2,
+        scissor: None,
+    })];
     device
         .write_buffer(
             constants,
@@ -259,16 +265,18 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         )
         .expect("near green");
     device
-        .render_steps_to_texture_compat(
-            view,
-            pass,
-            &steps,
-            LoadOp::Clear(CLEAR),
-            Some(RenderPassDepthAttachment {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: pass,
+            commands: &steps,
+            color_load_op: LoadOp::Clear(CLEAR),
+            clear_region: None,
+            depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Clear(1.0),
             }),
-        )
+            viewport: None,
+        }])
         .expect("near draw");
     device
         .write_buffer(
@@ -278,16 +286,18 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         )
         .expect("far red");
     device
-        .render_steps_to_texture_compat(
-            view,
-            pass,
-            &steps,
-            LoadOp::Load,
-            Some(RenderPassDepthAttachment {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: pass,
+            commands: &steps,
+            color_load_op: LoadOp::Load,
+            clear_region: None,
+            depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Load,
             }),
-        )
+            viewport: None,
+        }])
         .expect("occluded draw");
     let result = device.read_texture(target).expect("native GPU readback");
     assert!(
@@ -329,16 +339,18 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         }
     );
     device
-        .render_steps_to_texture_compat(
-            view,
-            pass,
-            &steps,
-            LoadOp::Load,
-            Some(RenderPassDepthAttachment {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: pass,
+            commands: &steps,
+            color_load_op: LoadOp::Load,
+            clear_region: None,
+            depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Load,
             }),
-        )
+            viewport: None,
+        }])
         .expect("alpha draw");
     let result = device.read_texture(target).expect("alpha readback");
     assert!(

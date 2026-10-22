@@ -49,8 +49,8 @@ pub(crate) enum Bound {
     Srv(ID3D11ShaderResourceView),
     Sampler(ID3D11SamplerState),
 }
-pub(crate) struct ResourceSet {
-    pub(crate) layout: ResourceSetLayoutId,
+pub(crate) struct BindGroup {
+    pub(crate) layout: BindGroupLayoutId,
     pub(crate) bindings: Vec<(u32, ShaderStages, Bound)>,
 }
 
@@ -429,16 +429,16 @@ impl ResourceDevice for Dx11Device {
         .map_err(backend)?;
         Ok(self.samplers.insert(required(sampler)?))
     }
-    fn create_resource_set_layout(
+    fn create_bind_group_layout(
         &mut self,
-        desc: &ResourceSetLayoutDescriptor,
-    ) -> Result<ResourceSetLayoutId> {
+        desc: &BindGroupLayoutDescriptor,
+    ) -> Result<BindGroupLayoutId> {
         desc.validate()?;
         for entry in &desc.entries {
             let limit = match entry.binding_type {
-                ResourceBindingType::UniformBuffer => 13,
-                ResourceBindingType::Sampler => 16,
-                ResourceBindingType::StorageBuffer | ResourceBindingType::SampledTexture => 128,
+                BindingType::UniformBuffer => 13,
+                BindingType::Sampler => 16,
+                BindingType::StorageBuffer | BindingType::SampledTexture => 128,
             };
             if entry.binding >= limit {
                 return Err(Error::InvalidInput(
@@ -448,11 +448,11 @@ impl ResourceDevice for Dx11Device {
         }
         Ok(self.layouts.insert(desc.clone()))
     }
-    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+    fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         let layout = self.layouts.get(desc.layout)?;
         desc.validate_against(layout)?;
         let bindings = desc
-            .bindings
+            .entries
             .iter()
             .map(|binding| {
                 let entry = layout
@@ -467,7 +467,7 @@ impl ResourceDevice for Dx11Device {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(self.sets.insert(ResourceSet {
+        Ok(self.sets.insert(BindGroup {
             layout: desc.layout,
             bindings,
         }))
@@ -488,27 +488,23 @@ impl ResourceDevice for Dx11Device {
         self.samplers.take(id)?;
         Ok(())
     }
-    fn destroy_resource_set_layout(&mut self, id: ResourceSetLayoutId) -> Result<()> {
+    fn destroy_bind_group_layout(&mut self, id: BindGroupLayoutId) -> Result<()> {
         self.layouts.take(id)?;
         Ok(())
     }
-    fn destroy_resource_set(&mut self, id: ResourceSetId) -> Result<()> {
+    fn destroy_bind_group(&mut self, id: BindGroupId) -> Result<()> {
         self.sets.take(id)?;
         Ok(())
     }
 }
 
 impl Dx11Device {
-    fn bind_resource(
-        &self,
-        resource: &BindingResource,
-        kind: ResourceBindingType,
-    ) -> Result<Bound> {
+    fn bind_resource(&self, resource: &BindingResource, kind: BindingType) -> Result<Bound> {
         match resource {
             BindingResource::Buffer(binding) => {
                 let buffer = self.buffers.get(binding.buffer)?;
                 binding.validate_against(buffer.desc.size)?;
-                if kind == ResourceBindingType::UniformBuffer {
+                if kind == BindingType::UniformBuffer {
                     if !buffer.desc.usage.contains(BufferUsage::UNIFORM)
                         || binding.offset % 256 != 0
                     {

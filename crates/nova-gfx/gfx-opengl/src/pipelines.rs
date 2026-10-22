@@ -12,7 +12,7 @@ pub(crate) struct Shader {
 pub(crate) struct BufferSlot {
     pub(crate) logical: u32,
     pub(crate) slot: u32,
-    pub(crate) kind: ResourceBindingType,
+    pub(crate) kind: BindingType,
 }
 pub(crate) struct TextureSlot {
     pub(crate) logical: u32,
@@ -32,12 +32,12 @@ impl PipelineDevice for OpenGlDevice {
         &mut self,
         desc: &PipelineLayoutDescriptor,
     ) -> Result<PipelineLayoutId> {
-        if desc.resource_set_layouts.len() > 1 {
+        if desc.bind_group_layouts.len() > 1 {
             return Err(Error::Unavailable(
                 "OpenGL supports resource group zero".into(),
             ));
         }
-        for id in &desc.resource_set_layouts {
+        for id in &desc.bind_group_layouts {
             self.layouts.get(*id)?;
         }
         Ok(self.pipeline_layouts.insert(desc.clone()))
@@ -183,7 +183,7 @@ impl OpenGlDevice {
             self.gl.use_program(Some(program));
             for shader in shaders {
                 for binding in &shader.buffers {
-                    let uniform = binding.kind == ResourceBindingType::UniformBuffer;
+                    let uniform = binding.kind == BindingType::UniformBuffer;
                     let index = if uniform {
                         self.gl.get_uniform_block_index(program, &binding.name)
                     } else {

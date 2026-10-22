@@ -21,11 +21,7 @@ struct PresentCopy {
     source_top: i32,
 }
 
-fn present_copy(
-    allocated_height: i32,
-    source: (i32, i32),
-    client: (i32, i32),
-) -> PresentCopy {
+fn present_copy(allocated_height: i32, source: (i32, i32), client: (i32, i32)) -> PresentCopy {
     PresentCopy {
         width: source.0.min(client.0).max(0),
         height: source.1.min(client.1).max(0),
@@ -136,6 +132,18 @@ impl SurfaceDevice for OpenGlDevice {
         chain.source_extent = extent;
         Ok(())
     }
+    fn resize_swapchain(&mut self, id: SwapchainId, size: Extent2d) -> Result<()> {
+        Self::resize_swapchain(self, id, size.width(), size.height())
+    }
+
+    fn recreate_swapchain(
+        &mut self,
+        id: SwapchainId,
+        config: SurfaceConfig,
+    ) -> Result<SwapchainId> {
+        Self::recreate_swapchain(self, id, config)
+    }
+
     fn destroy_swapchain(&mut self, id: SwapchainId) -> Result<()> {
         self.park()?;
         let chain = self.swapchains.take(id)?;
@@ -266,39 +274,22 @@ impl OpenGlDevice {
         self.park()?;
         Ok(id)
     }
-    pub(crate) fn present(
-        &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.render_target(
-            RenderTarget::Swapchain {
-                swapchain: id,
-                image_index: 0,
-            },
-            pass,
-            steps,
-            LoadOp::Clear(color),
-            depth,
-        )?;
-        let chain = self.swapchains.get(id)?;
-        self.make_window_current(&chain.window)?;
-        let width = chain.config.size.width() as i32;
+    /// Copies the retained scene target into the window back buffer.
+    ///
+    /// The committed scene is copied one-to-one from its logical top-left; a native
+    /// client that grew ahead of it receives an edge extension of the last valid
+    /// column/row, so no undefined black pixels and no resampled UI controls appear.
+    fn blit_retained_to_window(
+        &self,
+        chain: &Swapchain,
+        native_size: (i32, i32),
+        clear: Option<ClearColor>,
+    ) -> Result<()> {
         let height = chain.config.size.height() as i32;
         let source_size = (
             chain.source_extent.width() as i32,
             chain.source_extent.height() as i32,
         );
-        #[cfg(target_os = "windows")]
-        let native_size = (
-            i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
-            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?,
-        );
-        #[cfg(not(target_os = "windows"))]
-        let native_size = (width, height);
         let copy = present_copy(height, source_size, native_size);
         // SAFETY: both framebuffers belong to the current GL context.
         // The scene has already been rendered into the retained allocation;
@@ -311,8 +302,11 @@ impl OpenGlDevice {
             self.gl
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(chain.framebuffer));
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            self.gl.clear_color(color.red, color.green, color.blue, color.alpha);
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
+            if let Some(color) = clear {
+                self.gl
+                    .clear_color(color.red, color.green, color.blue, color.alpha);
+                self.gl.clear(glow::COLOR_BUFFER_BIT);
+            }
             if copy.width > 0 && copy.height > 0 {
                 let right = native_size.0;
                 let bottom = native_size.1 - copy.height;
@@ -376,10 +370,72 @@ impl OpenGlDevice {
             }
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
-        self.check()?;
+        self.check()
+    }
+
+    pub(crate) fn present(
+        &mut self,
+        id: SwapchainId,
+        pass: RenderPassId,
+        commands: &[RenderCommand],
+        load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>,
+    ) -> Result<SubmissionId> {
+        self.render_target(
+            RenderTarget::Swapchain {
+                swapchain: id,
+                image_index: 0,
+            },
+            pass,
+            commands,
+            load,
+            depth,
+        )?;
+        let chain = self.swapchains.get(id)?;
+        self.make_window_current(&chain.window)?;
+        let width = chain.config.size.width() as i32;
+        let height = chain.config.size.height() as i32;
+        #[cfg(target_os = "windows")]
+        let native_size = (
+            i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
+            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?,
+        );
+        #[cfg(not(target_os = "windows"))]
+        let native_size = (width, height);
+        let clear = match load {
+            LoadOp::Clear(color) => Some(color),
+            LoadOp::Load => None,
+        };
+        self.blit_retained_to_window(chain, native_size, clear)?;
         chain.window.swap_buffers(&self.context).map_err(native)?;
         self.park()?;
         self.signal()
+    }
+
+    /// Presents the retained scene target over a native client extent that grew ahead
+    /// of the next buffer resize.
+    ///
+    /// Only the native window surface changes here: the scene target is retained, so
+    /// this path performs no scene render, upload or target allocation. The blit copies
+    /// the scene one-to-one and extends its edges into the newly exposed strip.
+    pub(crate) fn present_retained_frame(
+        &mut self,
+        id: SwapchainId,
+        target: Extent2d,
+    ) -> Result<()> {
+        let chain = self.swapchains.get(id)?;
+        self.make_window_current(&chain.window)?;
+        chain.window.resize(
+            &self.context,
+            NonZeroU32::new(target.width())
+                .ok_or_else(|| Error::InvalidInput("zero retained width".into()))?,
+            NonZeroU32::new(target.height())
+                .ok_or_else(|| Error::InvalidInput("zero retained height".into()))?,
+        );
+        self.blit_retained_to_window(chain, (target.width() as i32, target.height() as i32), None)?;
+        chain.window.swap_buffers(&self.context).map_err(native)?;
+        self.park()?;
+        Ok(())
     }
 }
 

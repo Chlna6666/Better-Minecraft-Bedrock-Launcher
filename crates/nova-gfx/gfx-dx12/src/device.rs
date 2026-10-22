@@ -45,24 +45,23 @@ mod platform {
     use crate::error::Dx12Error;
     use crate::registry::ResourceRegistry;
     use gfx_core::{
-        AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindingResource,
+        AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindGroupDescriptor,
+        BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId, BindingResource, BindingType,
         BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
         BufferWrite, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-        CompareFunction, CompositeAlphaMode, DepthState, DeviceDescriptor, DeviceMemoryBudget,
-        DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor, FilterMode, Format,
+        CompareFunction, CompositeAlphaMode, DepthAttachment, DepthState, DeviceDescriptor,
+        DeviceMemoryBudget, DiagnosticsDevice, DrawDescriptor, FilterMode, Format,
         IndexBufferBinding, IndexFormat, LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation,
         MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
-        PowerPreference, PresentMode, PresentationDevice, PrimitiveTopology,
-        RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
-        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
-        ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, SamplerDescriptor,
-        SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage,
-        ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
-        SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor,
-        TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
+        PowerPreference, PresentFrameDescriptor, PresentMode, PresentationDevice,
+        PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPassId,
+        RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice, ResourceStats,
+        SamplerDescriptor, SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor,
+        ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice, SubmissionId,
+        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
+        TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureTransferDevice,
         TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
-        ThreadingMode, resource_set_list,
+        ThreadingMode,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -152,7 +151,7 @@ mod platform {
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                 DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS,
-                DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
                 DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
@@ -205,8 +204,8 @@ mod platform {
         textures: ResourceRegistry<Dx12Texture>,
         texture_views: ResourceRegistry<Dx12TextureView>,
         samplers: ResourceRegistry<Dx12Sampler>,
-        resource_set_layouts: ResourceRegistry<Dx12ResourceSetLayout>,
-        resource_sets: ResourceRegistry<Dx12ResourceSet>,
+        bind_group_layouts: ResourceRegistry<Dx12ResourceSetLayout>,
+        bind_groups: ResourceRegistry<Dx12ResourceSet>,
         pipeline_layouts: ResourceRegistry<Dx12PipelineLayout>,
         shader_modules: ResourceRegistry<Dx12ShaderModule>,
         render_passes: ResourceRegistry<Dx12RenderPass>,
@@ -311,8 +310,8 @@ mod platform {
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
                 samplers: ResourceRegistry::new("sampler"),
-                resource_set_layouts: ResourceRegistry::new("resource set layout"),
-                resource_sets: ResourceRegistry::new("resource set"),
+                bind_group_layouts: ResourceRegistry::new("bind group layout"),
+                bind_groups: ResourceRegistry::new("bind group"),
                 pipeline_layouts: ResourceRegistry::new("pipeline layout"),
                 shader_modules: ResourceRegistry::new("shader module"),
                 render_passes: ResourceRegistry::new("render pass"),
@@ -420,9 +419,9 @@ mod platform {
                     config.alpha_mode,
                     CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Postmultiplied
                 );
-            // The frame-latency waitable object is polled before recording. GPUI must never block
-            // its UI thread on this handle; an unavailable slot is deferred to a later platform
-            // frame instead.
+            // The frame-latency waitable object is polled before recording. The device owner
+            // must never block on this handle; an unavailable slot is deferred to a later
+            // platform frame instead.
             let mut creation_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32;
             if self.allow_tearing && !uses_composition {
                 creation_flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32;
@@ -438,8 +437,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // CreateSwapChainForComposition requires STRETCH. Its visual uses an
-                // identity transform; the HWND fallback has its own no-scaling descriptor.
+                // CreateSwapChainForComposition requires STRETCH. The HWND fallback
+                // also stretches so a client area that grew ahead of its next Scene is
+                // covered by the previous frame instead of undefined black pixels.
                 Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
@@ -596,6 +596,7 @@ mod platform {
                     _target: composition_target,
                     visual: composition_visual.into(),
                     transform: composition_transform,
+                    scale: [1.0, 1.0],
                     active_content: None,
                     fallback_hwnd: None,
                 }),
@@ -626,8 +627,10 @@ mod platform {
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
                 // Native client geometry may overtake the next Scene/ResizeBuffers.
-                // Do not let DXGI resample the preceding frame's glyph pixels meanwhile.
-                Scaling: DXGI_SCALING_NONE,
+                // Let DWM scale the last presented frame across that exposed strip
+                // instead of showing undefined black pixels. The matching new-size
+                // Scene is still presented one-to-one once the buffers are replaced.
+                Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -652,14 +655,14 @@ mod platform {
             .map_err(|error| Error::Backend(error.to_string()))
         }
 
-        fn release_resource_set_descriptors(&mut self, resource_set: &Dx12ResourceSet) {
-            for table in &resource_set.resource_tables {
+        fn release_resource_set_descriptors(&mut self, bind_group: &Dx12ResourceSet) {
+            for table in &bind_group.resource_tables {
                 self.resource_heap.free_index(table.descriptor_index);
             }
-            if let Some(table) = resource_set.sampler_index_table {
+            if let Some(table) = bind_group.sampler_index_table {
                 self.resource_heap.free_index(table.descriptor_index);
             }
-            for table in &resource_set.sampler_tables {
+            for table in &bind_group.sampler_tables {
                 self.sampler_heap.free_index(table.descriptor_index);
             }
         }
@@ -1172,14 +1175,14 @@ mod platform {
             }))
         }
 
-        /// Creates a resource set layout.
-        fn create_resource_set_layout(
+        /// Creates a bind group layout.
+        fn create_bind_group_layout(
             &mut self,
-            desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
+            desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
             desc.validate()?;
             Ok(self
-                .resource_set_layouts
+                .bind_group_layouts
                 .insert(Dx12ResourceSetLayout { desc: desc.clone() }))
         }
 
@@ -1190,34 +1193,34 @@ mod platform {
         ) -> Result<PipelineLayoutId> {
             desc.validate()?;
             let layouts = desc
-                .resource_set_layouts
+                .bind_group_layouts
                 .iter()
                 .copied()
-                .map(|layout| Ok(self.resource_set_layouts.get(layout)?.desc.clone()))
+                .map(|layout| Ok(self.bind_group_layouts.get(layout)?.desc.clone()))
                 .collect::<Result<Vec<_>>>()?;
             let cache_key = stable_hash_debug(&layouts);
             let root_signature = create_root_signature(&self.device, &layouts)?;
             let draw_step_constants_root_index = draw_step_constants_root_index(&layouts)?;
             Ok(self.pipeline_layouts.insert(Dx12PipelineLayout {
                 root_signature,
-                resource_set_layouts: Arc::from(desc.resource_set_layouts.as_slice()),
+                bind_group_layouts: Arc::from(desc.bind_group_layouts.as_slice()),
                 draw_step_constants_root_index,
                 cache_key,
             }))
         }
 
-        /// Creates a resource set and writes D3D12 descriptors.
+        /// Creates a bind group and writes D3D12 descriptors.
         #[expect(
             clippy::too_many_lines,
-            reason = "D3D12 descriptor writes stay together at the resource set FFI boundary"
+            reason = "D3D12 descriptor writes stay together at the bind group FFI boundary"
         )]
-        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
-            let layout = self.resource_set_layouts.get(desc.layout)?.desc.clone();
+        fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
+            let layout = self.bind_group_layouts.get(desc.layout)?.desc.clone();
             desc.validate_against(&layout)?;
             let mut resource_tables = Vec::new();
             let mut sampler_tables = Vec::new();
 
-            for binding in &desc.bindings {
+            for binding in &desc.entries {
                 match binding.resource {
                     BindingResource::Buffer(buffer_binding) => {
                         let buffer = self.buffers.get(buffer_binding.buffer)?;
@@ -1228,7 +1231,7 @@ mod platform {
                             .find(|entry| entry.binding == binding.binding)
                             .ok_or_else(|| {
                                 Error::InvalidInput(format!(
-                                    "resource set layout is missing binding {}",
+                                    "bind group layout is missing binding {}",
                                     binding.binding
                                 ))
                             })?;
@@ -1236,13 +1239,13 @@ mod platform {
                             Error::Backend("DX12 buffer has no native resource".to_string())
                         })?;
                         match entry.binding_type {
-                            ResourceBindingType::UniformBuffer => {
+                            BindingType::UniformBuffer => {
                                 validate_uniform_buffer_binding(buffer_binding, buffer.desc.size)?;
                             }
-                            ResourceBindingType::StorageBuffer => {
+                            BindingType::StorageBuffer => {
                                 validate_storage_buffer_binding(buffer_binding)?;
                             }
-                            ResourceBindingType::SampledTexture | ResourceBindingType::Sampler => {
+                            BindingType::SampledTexture | BindingType::Sampler => {
                                 return Err(Error::InvalidInput(format!(
                                     "unexpected buffer binding type {:?}",
                                     entry.binding_type
@@ -1251,7 +1254,7 @@ mod platform {
                         }
                         let slot = self.resource_heap.allocate()?;
                         match entry.binding_type {
-                            ResourceBindingType::UniformBuffer => {
+                            BindingType::UniformBuffer => {
                                 let size = align_to_u32(buffer_binding.size, 256)?;
                                 let desc =
                                 windows::Win32::Graphics::Direct3D12::D3D12_CONSTANT_BUFFER_VIEW_DESC {
@@ -1267,7 +1270,7 @@ mod platform {
                                     );
                                 }
                             }
-                            ResourceBindingType::StorageBuffer => {
+                            BindingType::StorageBuffer => {
                                 let byte_offset = buffer_binding.offset;
                                 let byte_size = buffer_binding.size;
                                 let num_elements =
@@ -1301,7 +1304,7 @@ mod platform {
                                     );
                                 }
                             }
-                            ResourceBindingType::SampledTexture | ResourceBindingType::Sampler => {
+                            BindingType::SampledTexture | BindingType::Sampler => {
                                 unreachable!(
                                     "unexpected buffer binding type was validated earlier"
                                 );
@@ -1404,7 +1407,7 @@ mod platform {
                     descriptor_index: slot.index,
                 })
             };
-            Ok(self.resource_sets.insert(Dx12ResourceSet {
+            Ok(self.bind_groups.insert(Dx12ResourceSet {
                 layout: desc.layout,
                 resource_tables,
                 sampler_tables,
@@ -1514,14 +1517,14 @@ mod platform {
             let (
                 root_signature,
                 draw_step_constants_root_index,
-                resource_set_layouts,
+                bind_group_layouts,
                 pipeline_layout_cache_key,
             ) = if let Some(pipeline_layout) = desc.pipeline_layout {
                 let pipeline_layout = self.pipeline_layouts.get(pipeline_layout)?;
                 (
                     pipeline_layout.root_signature.clone(),
                     pipeline_layout.draw_step_constants_root_index,
-                    pipeline_layout.resource_set_layouts.clone(),
+                    pipeline_layout.bind_group_layouts.clone(),
                     pipeline_layout.cache_key,
                 )
             } else {
@@ -1550,7 +1553,7 @@ mod platform {
                 primitive_topology: desc.primitive_topology,
                 pipeline_state: Some(pipeline_state),
                 root_signature: Some(root_signature),
-                resource_set_layouts,
+                bind_group_layouts,
                 draw_step_constants_root_index,
             }))
         }
@@ -1577,7 +1580,7 @@ mod platform {
                 })?;
                 // SAFETY: poll_cleanup only places encoders here when their queue
                 // fence has completed. Reset clears every previous command so even
-                // the legacy submit path cannot accidentally replay an old frame.
+                // the older submit path cannot accidentally replay an old frame.
                 unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
                 unsafe { command_list.Reset(&allocator, None) }
                     .map_err(|error| Error::Backend(error.to_string()))?;
@@ -1603,7 +1606,7 @@ mod platform {
             }))
         }
 
-        /// Records a draw call with optional resource sets.
+        /// Records a draw call with optional bind groups.
         fn record_draw_desc(
             &mut self,
             encoder: CommandEncoderId,
@@ -1618,8 +1621,8 @@ mod platform {
             let _swapchain = self.swapchains.get(swapchain)?;
             let _render_pass = self.render_passes.get(draw.pass.render_pass)?;
             let _pipeline = self.render_pipelines.get(draw.pipeline)?;
-            for resource_set in &draw.resource_sets {
-                let _ = self.resource_sets.get(*resource_set)?;
+            for bind_group in &draw.bind_groups {
+                let _ = self.bind_groups.get(*bind_group)?;
             }
             Ok(())
         }
@@ -1710,181 +1713,9 @@ mod platform {
             }
         }
 
-        /// Draws and presents one frame with multiple draw steps.
-        fn draw_steps_and_present(
+        fn record_texture_passes(
             &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<()> {
-            self.prepare_swapchain_damage(swapchain, None)?;
-            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
-            let result = self
-                .record_resource_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
-                .and_then(|()| self.submit(encoder));
-            self.finish_temporary_command_encoder(encoder, result)?;
-            self.present(swapchain, 0)
-        }
-
-        fn render_steps_and_present(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<()> {
-            self.render_steps_and_present_with_depth(
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                None,
-            )
-        }
-
-        fn render_steps_and_present_with_depth(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.render_step_list_and_present_with_depth(
-                swapchain,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_and_present_with_depth(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.render_step_list_and_present_with_depth_and_damage(
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                None,
-            )
-        }
-
-        fn render_step_list_and_present_with_depth_and_damage(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-            damage: Option<ScissorRect>,
-        ) -> Result<()> {
-            let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
-            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
-            let result = self
-                .record_render_step_list_frame(
-                    encoder,
-                    swapchain,
-                    render_pass,
-                    steps,
-                    clear_color,
-                    depth_attachment,
-                    render_damage,
-                )
-                .and_then(|()| self.submit(encoder));
-            self.finish_temporary_command_encoder(encoder, result)?;
-            self.present_with_damage(swapchain, 0, render_damage)
-        }
-
-        /// Records and submits draw steps into a regular texture view.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`Error`] when the texture view is not renderable or command recording fails.
-        fn draw_steps_to_texture(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
-            let result = self
-                .record_resource_steps_texture(
-                    encoder,
-                    texture_view,
-                    render_pass,
-                    steps,
-                    color_load_op,
-                )
-                .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
-            self.finish_temporary_command_encoder_after_result(encoder, result)
-        }
-
-        fn render_steps_to_texture(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            self.render_steps_to_texture_with_depth(
-                texture_view,
-                render_pass,
-                steps,
-                color_load_op,
-                None,
-            )
-        }
-
-        fn render_steps_to_texture_with_depth(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.render_step_list_to_texture_with_depth(
-                texture_view,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                color_load_op,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_to_texture_with_depth(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.render_step_lists_to_textures(&[TextureRenderStepList {
-                texture_view,
-                render_pass,
-                steps,
-                color_load_op,
-                clear_region: None,
-                depth_attachment,
-                viewport: None,
-            }])
-            .map(|_| ())
-        }
-
-        fn render_step_lists_to_textures(
-            &mut self,
-            passes: &[TextureRenderStepList<'_>],
+            passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
             if passes.is_empty() {
                 return Ok(None);
@@ -1907,7 +1738,7 @@ mod platform {
             // draws (for example, an isolated blur source clear); find the
             // first real PSO, or reset the list without a PSO when all passes
             // consist solely of attachment clears.
-            let initial_step = passes.iter().find_map(|pass| pass.steps.first());
+            let initial_step = passes.iter().find_map(|pass| pass.commands.first());
             let result = self
                 .begin_texture_command_encoder(encoder, initial_step)
                 .and_then(|()| {
@@ -1916,7 +1747,7 @@ mod platform {
                             encoder,
                             pass.texture_view,
                             pass.render_pass,
-                            pass.steps,
+                            pass.commands,
                             pass.color_load_op,
                             pass.depth_attachment,
                             pass.clear_region,
@@ -1945,7 +1776,7 @@ mod platform {
         fn begin_texture_command_encoder(
             &mut self,
             encoder_id: CommandEncoderId,
-            first_step: Option<RenderStepRef<'_>>,
+            first_step: Option<&RenderCommand>,
         ) -> Result<()> {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
@@ -1992,69 +1823,15 @@ mod platform {
             unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))
         }
 
-        fn render_steps_and_present_deferred(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<SubmissionId> {
-            self.render_step_list_and_present_deferred(
-                swapchain,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-                None,
-            )
-        }
-
-        fn render_step_list_and_present_deferred(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<SubmissionId> {
-            self.render_step_list_and_present_deferred_with_damage(
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                None,
-            )
-        }
-
-        fn render_step_list_and_present_deferred_with_damage(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-            damage: Option<ScissorRect>,
-        ) -> Result<SubmissionId> {
-            self.render_step_list_and_present_deferred_timed(
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                damage,
-            )
-            .map(|(submission, _)| submission)
-        }
-
         fn render_step_list_and_present_deferred_timed(
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
+            steps: &[RenderCommand],
             clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<DepthAttachment>,
             damage: Option<ScissorRect>,
-        ) -> Result<(SubmissionId, gfx_core::PresentationTimings)> {
+        ) -> Result<(SubmissionId, gfx_core::PresentTimings)> {
             let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
             let encoder_started = Instant::now();
             let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
@@ -2085,7 +1862,7 @@ mod platform {
             self.present_with_damage(swapchain, 0, render_damage)?;
             Ok((
                 submission,
-                gfx_core::PresentationTimings {
+                gfx_core::PresentTimings {
                     command_encoder_create,
                     command_record,
                     queue_submit,
@@ -2156,7 +1933,7 @@ mod platform {
         /// Returns whether the swapchain can accept another frame without blocking.
         ///
         /// The DXGI frame-latency handle is queried with a zero timeout because Nova presentation
-        /// runs on GPUI's UI thread. Parking that thread delays input dispatch, view updates, timers,
+        /// runs on the device owner's thread. Parking that thread delays input dispatch, view updates, timers,
         /// and every renderer-owned animation in the window.
         ///
         /// # Errors
@@ -2249,7 +2026,7 @@ mod platform {
             if let Err(error) = publication {
                 // No frame completion handle reaches the renderer on error. Retire the
                 // already submitted writes before its upload slot can be reused.
-                self.retire_swapchain_for_resize(swapchain)?;
+                self.retire_swapchain(swapchain)?;
                 return Err(error);
             }
             Ok(())
@@ -2320,19 +2097,19 @@ mod platform {
             Ok(())
         }
 
-        /// Destroys a resource set layout.
-        fn destroy_resource_set_layout(&mut self, layout: ResourceSetLayoutId) -> Result<()> {
-            let _layout = self.resource_set_layouts.take(layout)?;
+        /// Destroys a bind group layout.
+        fn destroy_bind_group_layout(&mut self, layout: BindGroupLayoutId) -> Result<()> {
+            let _layout = self.bind_group_layouts.take(layout)?;
             Ok(())
         }
 
-        /// Destroys a resource set once in-flight GPU work has retired.
+        /// Destroys a bind group once in-flight GPU work has retired.
         ///
         /// Shader-visible descriptor slots are recycled only after the fence
         /// completes so in-flight command lists never observe rewritten tables.
-        fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            let resource_set = self.resource_sets.take(resource_set)?;
-            self.defer_release(DeferredDx12Release::ResourceSet(resource_set));
+        fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
+            let bind_group = self.bind_groups.take(bind_group)?;
+            self.defer_release(DeferredDx12Release::BindGroup(bind_group));
             Ok(())
         }
 
@@ -2370,7 +2147,7 @@ mod platform {
         /// Destroys a swapchain.
         ///
         /// Unlike ordinary GPU buffers, an HWND-bound DXGI swapchain must not
-        /// outlive the native window whose renderer is being retired. The GPUI
+        /// outlive the native window whose renderer is being retired. The
         /// GPU owner holds its HWND keep-alive only until renderer destruction
         /// returns; deferring the swapchain COM release past that point can
         /// leave DXGI attached to an already-destroyed child HWND.
@@ -2397,13 +2174,18 @@ mod platform {
             let detached = if let Some(composition) = &swapchain.composition {
                 // SAFETY: this final owner retires the HWND attachment before releasing
                 // the active content and any unpresented candidate.
-                unsafe { composition._target.SetRoot(None).and_then(|()| composition._device.Commit()) }
-                    .map_err(|error| Error::Backend(error.to_string()))
+                unsafe {
+                    composition
+                        ._target
+                        .SetRoot(None)
+                        .and_then(|()| composition._device.Commit())
+                }
+                .map_err(|error| Error::Backend(error.to_string()))
             } else {
                 Ok(())
             };
             // Release IDXGISwapChain3, its backbuffer COM references and the
-            // DirectComposition attachment *before* returning control to GPUI.
+            // DirectComposition attachment *before* returning control to the caller.
             // On device removal, drop the swapchain even if the wait fails.
             log::debug!(target: "nova_dx12_surface", "DX12 swapchain close: releasing native resources drain_result={drained:?}");
             drop(swapchain);
@@ -2561,8 +2343,8 @@ mod platform {
                         self.dsv_heap.free(slot);
                     }
                 }
-                DeferredDx12Release::ResourceSet(resource_set) => {
-                    self.release_resource_set_descriptors(&resource_set);
+                DeferredDx12Release::BindGroup(bind_group) => {
+                    self.release_resource_set_descriptors(&bind_group);
                 }
                 DeferredDx12Release::Swapchain(swapchain) => drop(swapchain),
                 DeferredDx12Release::Buffer(_)
@@ -2606,8 +2388,8 @@ mod platform {
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),
                 samplers: self.samplers.live_len(),
-                resource_set_layouts: self.resource_set_layouts.live_len(),
-                resource_sets: self.resource_sets.live_len(),
+                bind_group_layouts: self.bind_group_layouts.live_len(),
+                bind_groups: self.bind_groups.live_len(),
                 pipeline_layouts: self.pipeline_layouts.live_len(),
                 shader_modules: self.shader_modules.live_len(),
                 render_passes: self.render_passes.live_len(),
@@ -2838,76 +2620,6 @@ mod platform {
         }
 
         #[expect(
-            clippy::too_many_arguments,
-            reason = "D3D12 compatibility frame recording mirrors the command-list inputs directly"
-        )]
-        fn record_resource_frame(
-            &mut self,
-            encoder_id: CommandEncoderId,
-            swapchain_id: SwapchainId,
-            render_pass_id: RenderPassId,
-            pipeline_id: RenderPipelineId,
-            resource_sets: &[ResourceSetId],
-            clear_color: ClearColor,
-            vertex_count: u32,
-        ) -> Result<()> {
-            self.record_resource_steps_frame(
-                encoder_id,
-                swapchain_id,
-                render_pass_id,
-                &[DrawStepDescriptor {
-                    pipeline: pipeline_id,
-                    resource_sets: resource_set_list(resource_sets.iter().copied()),
-                    vertex_count,
-                    first_vertex: 0,
-                    instance_count: 1,
-                    first_instance: 0,
-                    scissor: None,
-                }],
-                clear_color,
-            )
-        }
-
-        fn record_resource_steps_frame(
-            &mut self,
-            encoder_id: CommandEncoderId,
-            swapchain_id: SwapchainId,
-            render_pass_id: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<()> {
-            self.record_render_step_list_frame(
-                encoder_id,
-                swapchain_id,
-                render_pass_id,
-                RenderStepList::from_draw_steps(steps),
-                clear_color,
-                None,
-                None,
-            )
-        }
-
-        fn record_render_steps_frame(
-            &mut self,
-            encoder_id: CommandEncoderId,
-            swapchain_id: SwapchainId,
-            render_pass_id: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.record_render_step_list_frame(
-                encoder_id,
-                swapchain_id,
-                render_pass_id,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-                depth_attachment,
-                None,
-            )
-        }
-
-        #[expect(
             clippy::too_many_lines,
             reason = "D3D12 frame recording stays together at the command-list FFI boundary"
         )]
@@ -2916,9 +2628,9 @@ mod platform {
             encoder_id: CommandEncoderId,
             swapchain_id: SwapchainId,
             render_pass_id: RenderPassId,
-            steps: RenderStepList<'_>,
+            steps: &[RenderCommand],
             clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<DepthAttachment>,
             frame_damage: Option<ScissorRect>,
         ) -> Result<()> {
             self.bind_swapchain_generation(encoder_id, swapchain_id)?;
@@ -2937,7 +2649,7 @@ mod platform {
             let depth_handle =
                 self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
-                Error::InvalidInput("DX12 draw step list must not be empty".to_string())
+                Error::InvalidInput("DX12 render command list must not be empty".to_string())
             })?;
             let (pipeline_state, root_signature, pipeline_color_format, primitive_topology) = {
                 let pipeline = self.render_pipelines.get(first_step.pipeline())?;
@@ -3013,7 +2725,7 @@ mod platform {
                 .or_else(|| {
                     steps
                         .iter()
-                        .filter_map(RenderStepRef::scissor)
+                        .filter_map(RenderCommand::scissor)
                         .find(|scissor| !scissor.is_empty())
                 })
                 .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
@@ -3084,7 +2796,7 @@ mod platform {
                     pipeline_state,
                     root_signature,
                     primitive_topology,
-                    resource_set_layouts,
+                    bind_group_layouts,
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
@@ -3103,7 +2815,7 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
-                        pipeline.resource_set_layouts.clone(),
+                        pipeline.bind_group_layouts.clone(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
@@ -3115,12 +2827,7 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(
-                    &command_list,
-                    self,
-                    &resource_set_layouts,
-                    step.resource_sets(),
-                )?;
+                bind_resource_sets(&command_list, self, &bind_group_layouts, step.bind_groups())?;
                 self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
             record_transition_barrier(
@@ -3134,47 +2841,6 @@ mod platform {
             Ok(())
         }
 
-        fn record_resource_steps_texture(
-            &mut self,
-            encoder_id: CommandEncoderId,
-            texture_view_id: TextureViewId,
-            render_pass_id: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            self.record_render_step_list_texture(
-                encoder_id,
-                texture_view_id,
-                render_pass_id,
-                RenderStepList::from_draw_steps(steps),
-                color_load_op,
-                None,
-                None,
-                None,
-            )
-        }
-
-        fn record_render_steps_texture(
-            &mut self,
-            encoder_id: CommandEncoderId,
-            texture_view_id: TextureViewId,
-            render_pass_id: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            self.record_render_step_list_texture(
-                encoder_id,
-                texture_view_id,
-                render_pass_id,
-                RenderStepList::from_render_steps(steps),
-                color_load_op,
-                depth_attachment,
-                None,
-                None,
-            )
-        }
-
         #[expect(
             clippy::too_many_lines,
             reason = "D3D12 offscreen frame recording stays together at the command-list FFI boundary"
@@ -3184,11 +2850,11 @@ mod platform {
             encoder_id: CommandEncoderId,
             texture_view_id: TextureViewId,
             render_pass_id: RenderPassId,
-            steps: RenderStepList<'_>,
+            steps: &[RenderCommand],
             color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<DepthAttachment>,
             clear_region: Option<ScissorRect>,
-            viewport: Option<gfx_core::RenderViewport>,
+            viewport: Option<gfx_core::Viewport>,
         ) -> Result<()> {
             self.command_encoders.get_mut(encoder_id)?.swapchain = None;
             // Empty render-step lists are valid for attachment clears. Do not
@@ -3232,6 +2898,20 @@ mod platform {
                 .map(|viewport| viewport.for_target(texture_desc.size))
                 .transpose()?
                 .unwrap_or(texture_desc.size);
+            let viewport_origin = viewport
+                .map(|viewport| viewport.mapped_origin(texture_desc.size))
+                .transpose()?
+                .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
+            let scissor_extent = viewport
+                .map(|viewport| viewport.mapped_scissor_extent(texture_desc.size))
+                .transpose()?
+                .unwrap_or(texture_desc.size);
+            let clear_region = match (viewport, clear_region) {
+                (Some(viewport), Some(region)) => {
+                    Some(viewport.map_scissor(region, texture_desc.size)?)
+                }
+                (_, clear_region) => clear_region,
+            };
 
             if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
                 record_transition_barrier(
@@ -3243,11 +2923,11 @@ mod platform {
             }
             #[expect(
                 clippy::cast_precision_loss,
-                reason = "D3D12 viewport dimensions are f32 by API contract"
+                reason = "D3D12 viewport coordinates and dimensions are f32 by API contract"
             )]
-            let viewport = D3D12_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
+            let native_viewport = D3D12_VIEWPORT {
+                TopLeftX: viewport_origin.x as f32,
+                TopLeftY: viewport_origin.y as f32,
                 Width: viewport_size.width() as f32,
                 Height: viewport_size.height() as f32,
                 MinDepth: 0.0,
@@ -3256,17 +2936,17 @@ mod platform {
             let scissor = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
-                right: i32::try_from(viewport_size.width()).map_err(|error| {
+                right: i32::try_from(scissor_extent.width()).map_err(|error| {
                     Error::InvalidInput(format!("texture width overflow: {error}"))
                 })?,
-                bottom: i32::try_from(viewport_size.height()).map_err(|error| {
+                bottom: i32::try_from(scissor_extent.height()).map_err(|error| {
                     Error::InvalidInput(format!("texture height overflow: {error}"))
                 })?,
             };
             // Restrict color/depth clears to the filter dependency region.
             let clear_rect = clear_region
                 .filter(|region| !region.is_empty())
-                .and_then(|region| dx12_rect_for_scissor(region, viewport_size).ok())
+                .and_then(|region| dx12_rect_for_scissor(region, scissor_extent).ok())
                 .map(|rect| [rect]);
             let rtv_handle_pointer = &raw const rtv_handle;
             let dsv_handle_pointer = depth_handle
@@ -3279,7 +2959,7 @@ mod platform {
             // SAFETY: All command arguments reference resources owned by this device.
             unsafe {
                 command_list.SetDescriptorHeaps(&heaps);
-                command_list.RSSetViewports(&[viewport]);
+                command_list.RSSetViewports(&[native_viewport]);
                 command_list.RSSetScissorRects(&[scissor]);
                 command_list.OMSetRenderTargets(
                     1,
@@ -3288,32 +2968,40 @@ mod platform {
                     dsv_handle_pointer,
                 );
                 if let LoadOp::Clear(clear_color) = color_load_op {
-                    let clear = [
-                        clear_color.red,
-                        clear_color.green,
-                        clear_color.blue,
-                        clear_color.alpha,
-                    ];
-                    command_list.ClearRenderTargetView(
-                        rtv_handle,
-                        &clear,
-                        clear_rect.as_ref().map(|rects| rects.as_slice()),
-                    );
+                    if clear_region.is_none() || clear_rect.is_some() {
+                        let clear = [
+                            clear_color.red,
+                            clear_color.green,
+                            clear_color.blue,
+                            clear_color.alpha,
+                        ];
+                        command_list.ClearRenderTargetView(
+                            rtv_handle,
+                            &clear,
+                            clear_rect.as_ref().map(|rects| rects.as_slice()),
+                        );
+                    }
                 }
                 if let Some((dsv_handle, depth_load_op)) = depth_handle {
                     if let LoadOp::Clear(depth) = depth_load_op {
-                        command_list.ClearDepthStencilView(
-                            dsv_handle,
-                            D3D12_CLEAR_FLAG_DEPTH,
-                            depth,
-                            0,
-                            clear_rect.as_ref().map(|rects| rects.as_slice()),
-                        );
+                        if clear_region.is_none() || clear_rect.is_some() {
+                            command_list.ClearDepthStencilView(
+                                dsv_handle,
+                                D3D12_CLEAR_FLAG_DEPTH,
+                                depth,
+                                0,
+                                clear_rect.as_ref().map(|rects| rects.as_slice()),
+                            );
+                        }
                     }
                 }
             }
             for step in steps.iter() {
                 let step_scissor = if let Some(region) = step.scissor() {
+                    let region = match viewport {
+                        Some(viewport) => viewport.map_scissor(region, texture_desc.size)?,
+                        None => region,
+                    };
                     if region.is_empty() {
                         continue;
                     }
@@ -3330,7 +3018,7 @@ mod platform {
                     pipeline_state,
                     root_signature,
                     primitive_topology,
-                    resource_set_layouts,
+                    bind_group_layouts,
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
@@ -3349,7 +3037,7 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
-                        pipeline.resource_set_layouts.clone(),
+                        pipeline.bind_group_layouts.clone(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
@@ -3361,12 +3049,7 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(
-                    &command_list,
-                    self,
-                    &resource_set_layouts,
-                    step.resource_sets(),
-                )?;
+                bind_resource_sets(&command_list, self, &bind_group_layouts, step.bind_groups())?;
                 self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
             record_transition_barrier(
@@ -3383,7 +3066,7 @@ mod platform {
         fn depth_stencil_view_for_attachment(
             &self,
             render_pass: &Dx12RenderPass,
-            depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<DepthAttachment>,
         ) -> Result<Option<(D3D12_CPU_DESCRIPTOR_HANDLE, LoadOp<f32>)>> {
             let Some(depth_attachment) = depth_attachment else {
                 if render_pass.depth_format.is_some() {
@@ -3423,10 +3106,10 @@ mod platform {
             &self,
             command_list: &ID3D12GraphicsCommandList,
             draw_step_constants_root_index: u32,
-            step: RenderStepRef<'_>,
+            step: &RenderCommand,
         ) -> Result<()> {
             match step {
-                RenderStepRef::Draw(step) => {
+                RenderCommand::Draw(step) => {
                     let offsets = non_indexed_draw_offsets(step.first_vertex, step.first_instance);
                     // SAFETY: Command list is open and pipeline/root signature are bound.
                     unsafe {
@@ -3446,7 +3129,7 @@ mod platform {
                     }
                     Ok(())
                 }
-                RenderStepRef::DrawIndexed(step) => {
+                RenderCommand::DrawIndexed(step) => {
                     let index_buffer_view = self.index_buffer_view(
                         step.index_buffer,
                         step.first_index,
@@ -4471,6 +4154,10 @@ mod platform {
 
     impl Backend for Dx12Device {
         const BACKEND_KIND: BackendKind = BackendKind::Dx12;
+
+        fn adapter_name(&self) -> &str {
+            &self.adapter_name
+        }
     }
 
     impl SurfaceDevice for Dx12Device {
@@ -4502,6 +4189,22 @@ mod platform {
             extent: gfx_core::Extent2d,
         ) -> Result<()> {
             Self::set_swapchain_source_extent(self, swapchain, extent)
+        }
+
+        fn resize_swapchain(
+            &mut self,
+            swapchain: SwapchainId,
+            size: gfx_core::Extent2d,
+        ) -> Result<()> {
+            Self::resize_swapchain(self, swapchain, size.width(), size.height())
+        }
+
+        fn recreate_swapchain(
+            &mut self,
+            swapchain: SwapchainId,
+            config: SurfaceConfig,
+        ) -> Result<SwapchainId> {
+            Self::recreate_swapchain(self, swapchain, config)
         }
 
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
@@ -4556,15 +4259,15 @@ mod platform {
             Self::create_sampler(self, desc)
         }
 
-        fn create_resource_set_layout(
+        fn create_bind_group_layout(
             &mut self,
-            desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
-            Self::create_resource_set_layout(self, desc)
+            desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
+            Self::create_bind_group_layout(self, desc)
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
-            Self::create_resource_set(self, desc)
+        fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
+            Self::create_bind_group(self, desc)
         }
 
         fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
@@ -4583,12 +4286,12 @@ mod platform {
             Self::destroy_sampler(self, sampler)
         }
 
-        fn destroy_resource_set_layout(&mut self, layout: ResourceSetLayoutId) -> Result<()> {
-            Self::destroy_resource_set_layout(self, layout)
+        fn destroy_bind_group_layout(&mut self, layout: BindGroupLayoutId) -> Result<()> {
+            Self::destroy_bind_group_layout(self, layout)
         }
 
-        fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            Self::destroy_resource_set(self, resource_set)
+        fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
+            Self::destroy_bind_group(self, bind_group)
         }
     }
 
@@ -4685,30 +4388,7 @@ mod platform {
     }
 
     impl PresentationDevice for Dx12Device {
-        fn render_step_list_and_present_deferred_with_damage_measured(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-            damage: Option<ScissorRect>,
-        ) -> Result<Option<gfx_core::PresentationFrame>> {
-            let (submission, timings) = self.render_step_list_and_present_deferred_timed(
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                damage,
-            )?;
-            Ok(Some(gfx_core::PresentationFrame {
-                submission: Some(submission),
-                timings: Some(timings),
-            }))
-        }
-
-        fn arm_swapchain_frame_ready(
+        fn request_frame_ready(
             &mut self,
             swapchain: SwapchainId,
             callback: Box<dyn FnOnce() + Send + 'static>,
@@ -4721,29 +4401,33 @@ mod platform {
             Ok(true)
         }
 
-        fn presentation_capabilities(
-            &self,
-            swapchain: SwapchainId,
-        ) -> gfx_core::PresentationCapabilities {
+        fn surface_capabilities(&self, swapchain: SwapchainId) -> gfx_core::SurfaceCapabilities {
             self.swapchains.get(swapchain).map_or_else(
                 |_| Default::default(),
-                |swapchain| gfx_core::PresentationCapabilities {
+                |swapchain| gfx_core::SurfaceCapabilities {
                     partial_presentation: swapchain.partial_presentation,
                     frame_ready_notification: swapchain.frame_latency_waitable.is_some(),
                 },
             )
         }
 
-        fn set_swapchain_content_stretch(
+        fn can_present_now(&mut self, swapchain: SwapchainId) -> Result<bool> {
+            self.swapchain_frame_ready(swapchain)
+        }
+
+        fn set_content_stretch(
             &mut self,
             swapchain: SwapchainId,
             scale: Option<[f32; 2]>,
         ) -> Result<()> {
-            let record = self.swapchains.get(swapchain)?;
-            let Some(composition) = record.composition.as_ref() else {
+            let record = self.swapchains.get_mut(swapchain)?;
+            let Some(composition) = record.composition.as_mut() else {
                 return Ok(());
             };
             let [scale_x, scale_y] = scale.unwrap_or([1.0, 1.0]);
+            if composition.scale == [scale_x, scale_y] {
+                return Ok(());
+            }
             let matrix = Matrix3x2 {
                 M11: scale_x,
                 M12: 0.0,
@@ -4765,218 +4449,43 @@ mod platform {
                     .map_err(|error| Error::Backend(error.to_string()))?;
                 Self::commit_composition(composition)?;
             }
+            composition.scale = [scale_x, scale_y];
             Ok(())
         }
 
-        fn draw_steps_and_present(
+        fn render_and_present(
             &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<()> {
-            Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
-        }
-
-        fn draw_steps_to_texture(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
-            Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
-        }
-
-        fn draw_steps_and_present_deferred(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[DrawStepDescriptor],
-            clear_color: ClearColor,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
-            Self::render_step_list_and_present_deferred(
-                self,
-                swapchain,
-                render_pass,
-                RenderStepList::from_draw_steps(steps),
+            frame: &PresentFrameDescriptor<'_>,
+        ) -> Result<Option<gfx_core::PresentedFrame>> {
+            let LoadOp::Clear(clear_color) = frame.color_load_op else {
+                return Err(Error::Unavailable(
+                    "DX12 swapchain LoadOp::Load is not implemented".to_string(),
+                ));
+            };
+            let (submission, timings) = self.render_step_list_and_present_deferred_timed(
+                frame.swapchain,
+                frame.render_pass,
+                frame.commands,
                 clear_color,
-                None,
-            )
+                frame.depth_attachment,
+                frame.present_region,
+            )?;
+            Ok(Some(gfx_core::PresentedFrame {
+                submission: Some(submission),
+                timings: Some(timings),
+            }))
         }
 
-        fn render_steps_and_present_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Self::render_steps_and_present_with_depth(
-                self,
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-            )
+        fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+            self.record_texture_passes(std::slice::from_ref(pass))
+                .map(|_| ())
         }
 
-        fn render_step_list_and_present_compat(
+        fn render_to_textures(
             &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Self::render_step_list_and_present_with_depth(
-                self,
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_and_present_with_damage_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-            damage: Option<ScissorRect>,
-        ) -> Result<()> {
-            Self::render_step_list_and_present_with_depth_and_damage(
-                self,
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                damage,
-            )
-        }
-
-        fn render_steps_to_texture_compat(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Self::render_steps_to_texture_with_depth(
-                self,
-                texture_view,
-                render_pass,
-                steps,
-                color_load_op,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_to_texture_compat(
-            &mut self,
-            texture_view: TextureViewId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            color_load_op: LoadOp<ClearColor>,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<()> {
-            Self::render_step_list_to_texture_with_depth(
-                self,
-                texture_view,
-                render_pass,
-                steps,
-                color_load_op,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_lists_to_textures_compat(
-            &mut self,
-            passes: &[TextureRenderStepList<'_>],
-        ) -> Result<()> {
-            Self::render_step_lists_to_textures(self, passes).map(|_| ())
-        }
-
-        fn render_step_lists_to_textures_deferred(
-            &mut self,
-            passes: &[TextureRenderStepList<'_>],
+            passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
-            Self::render_step_lists_to_textures(self, passes)
-        }
-
-        fn render_steps_and_present_deferred_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: &[RenderStepDescriptor],
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
-            Self::render_step_list_and_present_deferred(
-                self,
-                swapchain,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_and_present_deferred_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
-            Self::render_step_list_and_present_deferred(
-                self,
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-            )
-        }
-
-        fn render_step_list_and_present_deferred_with_damage_compat(
-            &mut self,
-            swapchain: SwapchainId,
-            render_pass: RenderPassId,
-            steps: RenderStepList<'_>,
-            clear_color: ClearColor,
-            depth_attachment: Option<RenderPassDepthAttachment>,
-            damage: Option<ScissorRect>,
-        ) -> Result<SubmissionId>
-        where
-            Self: SubmissionDevice,
-        {
-            Self::render_step_list_and_present_deferred_with_damage(
-                self,
-                swapchain,
-                render_pass,
-                steps,
-                clear_color,
-                depth_attachment,
-                damage,
-            )
+            self.record_texture_passes(passes)
         }
     }
 
@@ -5119,7 +4628,7 @@ mod platform {
 
     fn create_root_signature(
         device: &ID3D12Device,
-        layouts: &[ResourceSetLayoutDescriptor],
+        layouts: &[BindGroupLayoutDescriptor],
     ) -> Result<ID3D12RootSignature> {
         // Naga's HLSL backend lowers every sampler to one shared sampler heap plus a per-resource-set
         // sampler-index buffer. A layout may bind several samplers (for example the material sampler
@@ -5131,7 +4640,7 @@ mod platform {
             let sampler_index_register = sampler_index_buffer_register(group_index)?;
             let mut sampler_emitted = false;
             for entry in &layout.entries {
-                if entry.binding_type == ResourceBindingType::Sampler {
+                if entry.binding_type == BindingType::Sampler {
                     if sampler_emitted {
                         continue;
                     }
@@ -5155,11 +4664,11 @@ mod platform {
                     continue;
                 }
                 let range_type = match entry.binding_type {
-                    ResourceBindingType::UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-                    ResourceBindingType::StorageBuffer | ResourceBindingType::SampledTexture => {
+                    BindingType::UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                    BindingType::StorageBuffer | BindingType::SampledTexture => {
                         D3D12_DESCRIPTOR_RANGE_TYPE_SRV
                     }
-                    ResourceBindingType::Sampler => unreachable!("sampler handled above"),
+                    BindingType::Sampler => unreachable!("sampler handled above"),
                 };
                 ranges.push(D3D12_DESCRIPTOR_RANGE {
                     RangeType: range_type,
@@ -5190,16 +4699,16 @@ mod platform {
     }
     fn sampler_index_buffer_register(group_index: usize) -> Result<u32> {
         u32::try_from(group_index).map_err(|error| {
-            Error::InvalidInput(format!("resource set group index overflow: {error}"))
+            Error::InvalidInput(format!("bind group group index overflow: {error}"))
         })
     }
 
-    fn draw_step_constants_root_index(layouts: &[ResourceSetLayoutDescriptor]) -> Result<u32> {
+    fn draw_step_constants_root_index(layouts: &[BindGroupLayoutDescriptor]) -> Result<u32> {
         let mut root_index = 0_u32;
         for layout in layouts {
             let mut sampler_emitted = false;
             for entry in &layout.entries {
-                if entry.binding_type == ResourceBindingType::Sampler {
+                if entry.binding_type == BindingType::Sampler {
                     if sampler_emitted {
                         continue;
                     }
@@ -5893,7 +5402,7 @@ mod platform {
     fn create_sampler_index_buffer(
         device: &ID3D12Device,
         sampler_tables: &[Dx12DescriptorTable],
-        layout: &ResourceSetLayoutDescriptor,
+        layout: &BindGroupLayoutDescriptor,
     ) -> Result<ID3D12Resource> {
         let count = layout_sampler_index_count(layout)?;
         let mut indices = vec![
@@ -5931,14 +5440,14 @@ mod platform {
         Ok(buffer)
     }
 
-    fn layout_sampler_index_count(layout: &ResourceSetLayoutDescriptor) -> Result<u32> {
+    fn layout_sampler_index_count(layout: &BindGroupLayoutDescriptor) -> Result<u32> {
         let max_binding = layout
             .entries
             .iter()
-            .filter(|entry| entry.binding_type == ResourceBindingType::Sampler)
+            .filter(|entry| entry.binding_type == BindingType::Sampler)
             .map(|entry| entry.binding)
             .max()
-            .ok_or_else(|| Error::InvalidInput("resource set has no samplers".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("bind group has no samplers".to_string()))?;
         max_binding
             .checked_add(1)
             .ok_or_else(|| Error::InvalidInput("sampler binding count overflow".to_string()))
@@ -6008,7 +5517,7 @@ mod platform {
     fn validate_resource_set_layout_count(expected: usize, actual: usize) -> Result<()> {
         if expected != actual {
             return Err(Error::InvalidInput(format!(
-                "DX12 pipeline expects {expected} resource sets, got {actual}"
+                "DX12 pipeline expects {expected} bind groups, got {actual}"
             )));
         }
         Ok(())
@@ -6016,12 +5525,12 @@ mod platform {
 
     fn validate_resource_set_layout_id(
         set_index: usize,
-        expected: ResourceSetLayoutId,
-        actual: ResourceSetLayoutId,
+        expected: BindGroupLayoutId,
+        actual: BindGroupLayoutId,
     ) -> Result<()> {
         if expected != actual {
             return Err(Error::InvalidInput(format!(
-                "DX12 resource set {set_index} layout does not match pipeline layout"
+                "DX12 bind group {set_index} layout does not match pipeline layout"
             )));
         }
         Ok(())
@@ -6030,30 +5539,30 @@ mod platform {
     fn bind_resource_sets(
         command_list: &ID3D12GraphicsCommandList,
         device: &Dx12Device,
-        expected_layouts: &[ResourceSetLayoutId],
-        resource_sets: &[ResourceSetId],
+        expected_layouts: &[BindGroupLayoutId],
+        bind_groups: &[BindGroupId],
     ) -> Result<()> {
-        validate_resource_set_layout_count(expected_layouts.len(), resource_sets.len())?;
+        validate_resource_set_layout_count(expected_layouts.len(), bind_groups.len())?;
         let mut root_index = 0;
-        for (set_index, (resource_set, expected_layout)) in
-            resource_sets.iter().zip(expected_layouts).enumerate()
+        for (set_index, (bind_group, expected_layout)) in
+            bind_groups.iter().zip(expected_layouts).enumerate()
         {
-            let set = device.resource_sets.get(*resource_set)?;
+            let set = device.bind_groups.get(*bind_group)?;
             validate_resource_set_layout_id(set_index, *expected_layout, set.layout)?;
-            let layout = device.resource_set_layouts.get(*expected_layout)?;
+            let layout = device.bind_group_layouts.get(*expected_layout)?;
             let mut sampler_bound = false;
             for entry in &layout.desc.entries {
                 match entry.binding_type {
-                    ResourceBindingType::UniformBuffer
-                    | ResourceBindingType::StorageBuffer
-                    | ResourceBindingType::SampledTexture => {
+                    BindingType::UniformBuffer
+                    | BindingType::StorageBuffer
+                    | BindingType::SampledTexture => {
                         let table = set
                             .resource_tables
                             .iter()
                             .find(|table| table.binding == entry.binding)
                             .ok_or_else(|| {
                                 Error::InvalidInput(format!(
-                                    "DX12 resource set is missing binding {}",
+                                    "DX12 bind group is missing binding {}",
                                     entry.binding
                                 ))
                             })?;
@@ -6064,9 +5573,9 @@ mod platform {
                         }
                         root_index += 1;
                     }
-                    ResourceBindingType::Sampler => {
+                    BindingType::Sampler => {
                         if sampler_bound {
-                            // All samplers in one resource set share the sampler heap and index
+                            // All samplers in one bind group share the sampler heap and index
                             // buffer; only the first sampler entry binds the root parameters.
                             continue;
                         }
@@ -6078,7 +5587,7 @@ mod platform {
                             .or_else(|| set.sampler_tables.first())
                             .ok_or_else(|| {
                                 Error::InvalidInput(format!(
-                                    "DX12 resource set is missing sampler binding {}",
+                                    "DX12 bind group is missing sampler binding {}",
                                     entry.binding
                                 ))
                             })?;
@@ -6090,7 +5599,7 @@ mod platform {
                         root_index += 1;
                         let index_table = set.sampler_index_table.as_ref().ok_or_else(|| {
                             Error::InvalidInput(
-                                "DX12 resource set is missing sampler index table".to_string(),
+                                "DX12 bind group is missing sampler index table".to_string(),
                             )
                         })?;
                         // SAFETY: Root parameter index follows create_root_signature order.
@@ -6346,7 +5855,7 @@ mod platform {
         Buffer(Dx12Buffer),
         Texture(Dx12Texture),
         TextureView(Dx12TextureView),
-        ResourceSet(Dx12ResourceSet),
+        BindGroup(Dx12ResourceSet),
         Swapchain(Dx12Swapchain),
         CommandEncoder(Dx12CommandEncoder),
     }
@@ -6373,12 +5882,12 @@ mod platform {
 
     #[derive(Clone)]
     struct Dx12ResourceSetLayout {
-        desc: ResourceSetLayoutDescriptor,
+        desc: BindGroupLayoutDescriptor,
     }
 
     #[derive(Clone)]
     struct Dx12ResourceSet {
-        layout: ResourceSetLayoutId,
+        layout: BindGroupLayoutId,
         resource_tables: Vec<Dx12DescriptorTable>,
         sampler_tables: Vec<Dx12DescriptorTable>,
         sampler_index_table: Option<Dx12DescriptorTable>,
@@ -6388,7 +5897,7 @@ mod platform {
     #[derive(Clone)]
     struct Dx12PipelineLayout {
         root_signature: ID3D12RootSignature,
-        resource_set_layouts: Arc<[ResourceSetLayoutId]>,
+        bind_group_layouts: Arc<[BindGroupLayoutId]>,
         draw_step_constants_root_index: u32,
         cache_key: u64,
     }
@@ -6541,7 +6050,7 @@ mod platform {
         primitive_topology: PrimitiveTopology,
         pipeline_state: Option<ID3D12PipelineState>,
         root_signature: Option<ID3D12RootSignature>,
-        resource_set_layouts: Arc<[ResourceSetLayoutId]>,
+        bind_group_layouts: Arc<[BindGroupLayoutId]>,
         draw_step_constants_root_index: u32,
     }
 
@@ -6569,6 +6078,7 @@ mod platform {
         visual: IDCompositionVisual,
         /// Presentation transform; resize publication keeps it at identity.
         transform: IDCompositionMatrixTransform,
+        scale: [f32; 2],
         /// Last successfully published content, retained while a candidate is prepared.
         active_content: Option<IDXGISwapChain3>,
         /// An HWND-to-composition transition keeps its prior opaque presentation alive.
@@ -6651,7 +6161,7 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use gfx_core::{BufferUsage, ResourceSetLayoutEntry};
+        use gfx_core::{BindGroupLayoutEntry, BufferUsage};
 
         #[test]
         fn depth_comparison_maps_to_d3d12_functions() {
@@ -6894,26 +6404,26 @@ mod platform {
         #[test]
         fn draw_step_constants_root_index_follows_resource_tables() {
             let layouts = [
-                ResourceSetLayoutDescriptor {
+                BindGroupLayoutDescriptor {
                     label: None,
                     entries: vec![
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: 0,
-                            binding_type: ResourceBindingType::UniformBuffer,
+                            binding_type: BindingType::UniformBuffer,
                             stages: ShaderStages::VERTEX,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: 1,
-                            binding_type: ResourceBindingType::Sampler,
+                            binding_type: BindingType::Sampler,
                             stages: ShaderStages::FRAGMENT,
                         },
                     ],
                 },
-                ResourceSetLayoutDescriptor {
+                BindGroupLayoutDescriptor {
                     label: None,
-                    entries: vec![ResourceSetLayoutEntry {
+                    entries: vec![BindGroupLayoutEntry {
                         binding: 2,
-                        binding_type: ResourceBindingType::StorageBuffer,
+                        binding_type: BindingType::StorageBuffer,
                         stages: ShaderStages::VERTEX,
                     }],
                 },
@@ -6937,8 +6447,8 @@ mod platform {
 
         #[test]
         fn resource_set_layout_validation_rejects_wrong_count_or_layout() {
-            let first = ResourceSetLayoutId::from_parts(1, 1);
-            let second = ResourceSetLayoutId::from_parts(2, 1);
+            let first = BindGroupLayoutId::from_parts(1, 1);
+            let second = BindGroupLayoutId::from_parts(2, 1);
 
             assert!(validate_resource_set_layout_count(1, 1).is_ok());
             assert!(validate_resource_set_layout_count(1, 2).is_err());
@@ -7080,12 +6590,12 @@ mod platform {
 mod platform {
     use super::*;
     use gfx_core::{
-        AdapterInfo, Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
-        CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
-        DrawDescriptor, DrawStepDescriptor, LoadOp, PipelineDevice, PipelineLayoutDescriptor,
-        PipelineLayoutId, PresentationDevice, RenderPassDescriptor, RenderPassId,
-        RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, ResourceSetDescriptor,
-        ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats,
+        AdapterInfo, Backend, BackendKind, BindGroupDescriptor, BindGroupId,
+        BindGroupLayoutDescriptor, BindGroupLayoutId, BufferDescriptor, BufferId, ClearColor,
+        CommandDevice, CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor,
+        DiagnosticsDevice, DrawCommand, DrawDescriptor, LoadOp, PipelineDevice,
+        PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice, RenderPassDescriptor,
+        RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, ResourceStats,
         SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice,
         SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
         SwapchainId, TextureDescriptor, TextureId, TextureViewDescriptor, TextureViewId,
@@ -7125,6 +6635,10 @@ mod platform {
 
     impl Backend for Dx12Device {
         const BACKEND_KIND: BackendKind = BackendKind::Dx12;
+
+        fn adapter_name(&self) -> &str {
+            &self.adapter_name
+        }
     }
 
     impl SurfaceDevice for Dx12Device {
@@ -7184,14 +6698,14 @@ mod platform {
             unavailable()
         }
 
-        fn create_resource_set_layout(
+        fn create_bind_group_layout(
             &mut self,
-            _desc: &ResourceSetLayoutDescriptor,
-        ) -> Result<ResourceSetLayoutId> {
+            _desc: &BindGroupLayoutDescriptor,
+        ) -> Result<BindGroupLayoutId> {
             unavailable()
         }
 
-        fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+        fn create_bind_group(&mut self, _desc: &BindGroupDescriptor) -> Result<BindGroupId> {
             unavailable()
         }
 
@@ -7211,11 +6725,11 @@ mod platform {
             unavailable()
         }
 
-        fn destroy_resource_set_layout(&mut self, _layout: ResourceSetLayoutId) -> Result<()> {
+        fn destroy_bind_group_layout(&mut self, _layout: BindGroupLayoutId) -> Result<()> {
             unavailable()
         }
 
-        fn destroy_resource_set(&mut self, _resource_set: ResourceSetId) -> Result<()> {
+        fn destroy_bind_group(&mut self, _resource_set: BindGroupId) -> Result<()> {
             unavailable()
         }
     }
@@ -7304,23 +6818,10 @@ mod platform {
     }
 
     impl PresentationDevice for Dx12Device {
-        fn draw_steps_and_present(
+        fn render_and_present(
             &mut self,
-            _swapchain: SwapchainId,
-            _render_pass: RenderPassId,
-            _steps: &[DrawStepDescriptor],
-            _clear_color: ClearColor,
-        ) -> Result<()> {
-            unavailable()
-        }
-
-        fn draw_steps_to_texture(
-            &mut self,
-            _texture_view: TextureViewId,
-            _render_pass: RenderPassId,
-            _steps: &[DrawStepDescriptor],
-            _color_load_op: LoadOp<ClearColor>,
-        ) -> Result<()> {
+            _frame: &PresentFrameDescriptor<'_>,
+        ) -> Result<Option<gfx_core::PresentedFrame>> {
             unavailable()
         }
     }

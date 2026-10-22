@@ -1,7 +1,7 @@
 use crate::{
     pipelines::{Pipeline, Shader},
     registry::Registry,
-    resources::{Buffer, ResourceSet, Texture, View},
+    resources::{BindGroup, Buffer, Texture, View},
     surface::Swapchain,
 };
 use gfx_core::*;
@@ -31,8 +31,8 @@ pub struct Dx11Device {
     pub(crate) textures: Registry<Texture>,
     pub(crate) views: Registry<View>,
     pub(crate) samplers: Registry<ID3D11SamplerState>,
-    pub(crate) layouts: Registry<ResourceSetLayoutDescriptor>,
-    pub(crate) sets: Registry<ResourceSet>,
+    pub(crate) layouts: Registry<BindGroupLayoutDescriptor>,
+    pub(crate) sets: Registry<BindGroup>,
     pub(crate) pipeline_layouts: Registry<PipelineLayoutDescriptor>,
     pub(crate) shaders: Registry<Shader>,
     pub(crate) passes: Registry<RenderPassDescriptor>,
@@ -359,6 +359,10 @@ pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
 
 impl Backend for Dx11Device {
     const BACKEND_KIND: BackendKind = BackendKind::Dx11;
+
+    fn adapter_name(&self) -> &str {
+        &self.adapter.name
+    }
 }
 impl SubmissionDevice for Dx11Device {
     fn async_capabilities(&self) -> AsyncCapabilities {
@@ -415,8 +419,8 @@ impl DiagnosticsDevice for Dx11Device {
             textures: self.textures.len(),
             texture_views: self.views.len(),
             samplers: self.samplers.len(),
-            resource_set_layouts: self.layouts.len(),
-            resource_sets: self.sets.len(),
+            bind_group_layouts: self.layouts.len(),
+            bind_groups: self.sets.len(),
             pipeline_layouts: self.pipeline_layouts.len(),
             shader_modules: self.shaders.len(),
             render_passes: self.passes.len(),

@@ -49,12 +49,8 @@ fn verify_resize_retirement(device: &mut Dx11Device, alpha: CompositeAlphaMode) 
         .expect("native descriptor");
         assert_eq!(
             native.Scaling,
-            if alpha == CompositeAlphaMode::Premultiplied {
-                windows::Win32::Graphics::Dxgi::DXGI_SCALING_STRETCH
-            } else {
-                windows::Win32::Graphics::Dxgi::DXGI_SCALING_NONE
-            },
-            "HWND resize must not resample the previous backbuffer"
+            windows::Win32::Graphics::Dxgi::DXGI_SCALING_STRETCH,
+            "a grown HWND must be covered by scaling the last presented frame"
         );
     }
     let pass = device
@@ -82,13 +78,13 @@ fn verify_window_retirement(
     pass: gfx_core::RenderPassId,
 ) {
     let first = device
-        .present_steps(chains[0], pass, RenderStepList::Draw(&[]), CLEAR, None)
+        .present_steps(chains[0], pass, &[], LoadOp::Clear(CLEAR), None)
         .expect("first Present");
     device.wait_submission(first).expect("first retirement");
     assert!(device.prepare_swapchain_resize(chains[0]).expect("ready"));
     for _ in 0..8 {
         device
-            .present_steps(chains[1], pass, RenderStepList::Draw(&[]), CLEAR, None)
+            .present_steps(chains[1], pass, &[], LoadOp::Clear(CLEAR), None)
             .expect("other window Present");
         assert!(
             device
@@ -122,7 +118,7 @@ fn verify_new_backbuffer_reader(
                 image_index: 0,
             },
             pass,
-            RenderStepList::Draw(&[]),
+            &[],
             LoadOp::Clear(CLEAR),
             None,
         )
@@ -146,16 +142,22 @@ fn verify_new_backbuffer_reader(
         .expect("marker");
     assert_ne!(next, first);
     device.wait_submission(next).expect("new readers retire");
-    let previous = device.swapchains.get(chain).expect("old chain").native.clone();
-    let composited = device.swapchains.get(chain).expect("old chain").config.alpha_mode
-        == CompositeAlphaMode::Premultiplied;
+    let previous = device
+        .swapchains
+        .get(chain)
+        .expect("old chain")
+        .native
+        .clone();
     device
         .resize_swapchain(chain, 96, 80)
         .expect("native resize");
     let resized = device.swapchains.get(chain).expect("resized chain");
     assert_eq!(resized.generation, 1);
-    assert_eq!(previous != resized.native, composited,
-        "DComp prepares independent native content; HWND retains ResizeBuffers identity");
+    assert_eq!(resized.source_extent, Extent2d::new(96, 80).unwrap());
+    assert_eq!(
+        previous, resized.native,
+        "size-only resize must retain the native presentation stream"
+    );
     assert!(
         resized.resize_retirement.is_none(),
         "old native buffers cannot certify new buffers"
@@ -212,13 +214,14 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             .expect("surface pass");
         for _ in 0..3 {
             device
-                .render_step_list_and_present_compat(
-                    chain,
-                    pass,
-                    RenderStepList::Draw(&[]),
-                    CLEAR,
-                    None,
-                )
+                .render_and_present(&PresentFrameDescriptor {
+                    swapchain: chain,
+                    render_pass: pass,
+                    commands: &[],
+                    color_load_op: LoadOp::Clear(CLEAR),
+                    depth_attachment: None,
+                    present_region: None,
+                })
                 .expect("present");
         }
         device.resize_swapchain(chain, 96, 80).expect("resize");
@@ -232,18 +235,19 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             )
             .expect("same-alpha recreation retains the composition target");
         device
-            .render_step_list_and_present_compat(
-                chain,
-                pass,
-                RenderStepList::Draw(&[]),
-                CLEAR,
-                None,
-            )
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: chain,
+                render_pass: pass,
+                commands: &[],
+                color_load_op: LoadOp::Clear(CLEAR),
+                depth_attachment: None,
+                present_region: None,
+            })
             .expect("resized present");
         let (send, recv) = std::sync::mpsc::channel();
         assert!(
             device
-                .arm_swapchain_frame_ready(
+                .request_frame_ready(
                     chain,
                     Box::new(move || send.send(()).expect("frame notification"))
                 )
@@ -275,13 +279,14 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
                 next_alpha
             );
             device
-                .render_step_list_and_present_compat(
-                    chain,
-                    pass,
-                    RenderStepList::Draw(&[]),
-                    CLEAR,
-                    None,
-                )
+                .render_and_present(&PresentFrameDescriptor {
+                    swapchain: chain,
+                    render_pass: pass,
+                    commands: &[],
+                    color_load_op: LoadOp::Clear(CLEAR),
+                    depth_attachment: None,
+                    present_region: None,
+                })
                 .expect("present after alpha transition");
         }
         device.destroy_swapchain(chain).expect("destroy chain");

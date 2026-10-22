@@ -1,15 +1,15 @@
 use crate::{
     device::OpenGlDevice,
     pipelines::{BufferSlot, Pipeline, TextureSlot},
-    resources::ResourceSet,
+    resources::BindGroup,
 };
 use gfx_core::*;
 use glow::HasContext as _;
 
 impl OpenGlDevice {
-    fn binding(set: &ResourceSet, logical: u32) -> Result<BindingResource> {
+    fn binding(set: &BindGroup, logical: u32) -> Result<BindingResource> {
         set.desc
-            .bindings
+            .entries
             .iter()
             .find(|binding| binding.binding == logical)
             .map(|binding| binding.resource)
@@ -19,14 +19,14 @@ impl OpenGlDevice {
     pub(crate) fn bind_resources(
         &self,
         pipeline: &Pipeline,
-        set: Option<&ResourceSet>,
+        set: Option<&BindGroup>,
     ) -> Result<()> {
         let Some(set) = set else {
             return if pipeline.buffers.is_empty() && pipeline.textures.is_empty() {
                 Ok(())
             } else {
                 Err(Error::InvalidInput(
-                    "OpenGL shader needs a resource set".into(),
+                    "OpenGL shader needs a bind group".into(),
                 ))
             };
         };
@@ -39,14 +39,14 @@ impl OpenGlDevice {
         Ok(())
     }
 
-    fn bind_buffer_range(&self, set: &ResourceSet, binding: &BufferSlot) -> Result<()> {
+    fn bind_buffer_range(&self, set: &BindGroup, binding: &BufferSlot) -> Result<()> {
         let BindingResource::Buffer(range) = Self::binding(set, binding.logical)? else {
             return Err(Error::InvalidInput(
                 "OpenGL shader buffer bound to a non-buffer".into(),
             ));
         };
         let buffer = self.buffers.get(range.buffer)?;
-        let uniform = binding.kind == ResourceBindingType::UniformBuffer;
+        let uniform = binding.kind == BindingType::UniformBuffer;
         let size = if uniform {
             range.size.div_ceil(16) * 16
         } else {
@@ -101,7 +101,7 @@ impl OpenGlDevice {
         Ok(())
     }
 
-    fn bind_sampled_texture(&self, set: &ResourceSet, binding: &TextureSlot) -> Result<()> {
+    fn bind_sampled_texture(&self, set: &BindGroup, binding: &TextureSlot) -> Result<()> {
         let BindingResource::Texture(texture) = Self::binding(set, binding.logical)? else {
             return Err(Error::InvalidInput(
                 "OpenGL shader texture bound to a non-texture".into(),

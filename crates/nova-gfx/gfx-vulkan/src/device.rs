@@ -26,35 +26,34 @@ use crate::registry::ResourceRegistry;
 use ash::{Entry, Instance, khr, vk};
 use gfx_core::{
     AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BeginRenderPassDescriptor,
-    BindingResource, BlendMode, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
-    BufferWrite, ClearColor,
-    ColorAttachmentDescriptor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-    CompareFunction, CompositeAlphaMode, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice,
-    DrawDescriptor, DrawStepDescriptor, DrawTriangleDescriptor, Error, FilterMode, Format,
-    IndexBufferBinding, IndexFormat, LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation,
-    MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference,
-    PresentMode, PresentationDevice, PresentationFrame, PresentationTimings, PrimitiveTopology,
-    RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
-    RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
-    ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, RenderViewport, Result, SamplerDescriptor,
-    SamplerId, ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDescriptor, ShaderModuleId,
-    ShaderStage, ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
-    SurfaceDescriptor, SurfaceDevice, SurfaceId, TextureDataLayout, TextureDescriptor,
-    TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
-    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
-    ThreadingMode, VertexFormat,
+    BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
+    BindingResource, BindingType, BlendMode, BufferDescriptor, BufferId, BufferUploadStats,
+    BufferUsage, BufferWrite, ClearColor, ColorAttachmentDescriptor, CommandDevice,
+    CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
+    DepthAttachment, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice, DrawCommand,
+    DrawDescriptor, Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
+    MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
+    PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentFrameDescriptor,
+    PresentMode, PresentTimings, PresentationDevice, PresentedFrame, PrimitiveTopology,
+    RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPassId,
+    RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice, ResourceStats,
+    Result, SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode,
+    ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice,
+    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureReadback,
+    TextureTransferDevice, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite,
+    TextureWriteDescriptor, ThreadingMode, VertexFormat, Viewport,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
     UploadRingAllocatorDesc, VulkanMemoryAllocatorDesc,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-mod compact;
 mod buffer_upload;
-mod relocation;
-mod presentation;
+mod compact;
 mod descriptors;
+mod presentation;
+mod relocation;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -140,8 +139,8 @@ pub struct VulkanDevice {
     textures: ResourceRegistry<VulkanTexture>,
     texture_views: ResourceRegistry<VulkanTextureView>,
     samplers: ResourceRegistry<VulkanSampler>,
-    resource_set_layouts: ResourceRegistry<VulkanResourceSetLayout>,
-    resource_sets: ResourceRegistry<VulkanResourceSet>,
+    bind_group_layouts: ResourceRegistry<VulkanResourceSetLayout>,
+    bind_groups: ResourceRegistry<VulkanResourceSet>,
     pipeline_layouts: ResourceRegistry<VulkanPipelineLayout>,
     shader_modules: ResourceRegistry<VulkanShaderModule>,
     render_passes: ResourceRegistry<VulkanRenderPass>,
@@ -292,7 +291,7 @@ impl VulkanDevice {
             physical_device,
             queue_families,
             properties2_supported,
-                &entry,
+            &entry,
         )?;
         let swapchain_maintenance = native_pixel_presentation;
         let native_pixel_presentation = native_pixel_presentation
@@ -344,8 +343,8 @@ impl VulkanDevice {
             textures: ResourceRegistry::new("texture"),
             texture_views: ResourceRegistry::new("texture view"),
             samplers: ResourceRegistry::new("sampler"),
-            resource_set_layouts: ResourceRegistry::new("resource set layout"),
-            resource_sets: ResourceRegistry::new("resource set"),
+            bind_group_layouts: ResourceRegistry::new("bind group layout"),
+            bind_groups: ResourceRegistry::new("bind group"),
             pipeline_layouts: ResourceRegistry::new("pipeline layout"),
             shader_modules: ResourceRegistry::new("shader module"),
             render_passes: ResourceRegistry::new("render pass"),
@@ -402,12 +401,14 @@ impl VulkanDevice {
         extent: gfx_core::Extent2d,
     ) -> Result<bool> {
         let swapchain = self.swapchains.get(swapchain)?;
-        Ok(swapchain.scaled_image_extent_range.is_some_and(|(minimum, maximum)| {
-            extent.width() >= minimum.width
-                && extent.height() >= minimum.height
-                && extent.width() <= maximum.width
-                && extent.height() <= maximum.height
-        }))
+        Ok(swapchain
+            .scaled_image_extent_range
+            .is_some_and(|(minimum, maximum)| {
+                extent.width() >= minimum.width
+                    && extent.height() >= minimum.height
+                    && extent.width() <= maximum.width
+                    && extent.height() <= maximum.height
+            }))
     }
 
     /// Creates a native Vulkan surface from raw-window-handle traits.
@@ -563,7 +564,8 @@ impl VulkanDevice {
             choose_extent(&support.capabilities, width, height)
         };
         if desired == previous.extent {
-            self.swapchains.get_mut(swapchain_id)?.config.size = gfx_core::Extent2d::new(width, height)?;
+            self.swapchains.get_mut(swapchain_id)?.config.size =
+                gfx_core::Extent2d::new(width, height)?;
             return Ok(());
         }
         self.retire_swapchain(swapchain_id)?;
@@ -983,15 +985,15 @@ impl VulkanDevice {
         Ok(self.samplers.insert(VulkanSampler { sampler }))
     }
 
-    /// Creates a resource set layout.
+    /// Creates a bind group layout.
     ///
     /// # Errors
     ///
     /// Returns [`Error`] when validation or Vulkan descriptor set layout creation fails.
-    fn create_resource_set_layout(
+    fn create_bind_group_layout(
         &mut self,
-        desc: &ResourceSetLayoutDescriptor,
-    ) -> Result<ResourceSetLayoutId> {
+        desc: &BindGroupLayoutDescriptor,
+    ) -> Result<BindGroupLayoutId> {
         desc.validate()?;
         let bindings = desc
             .entries
@@ -1008,13 +1010,13 @@ impl VulkanDevice {
         // SAFETY: Descriptor set layout create info references local binding metadata only.
         let layout = unsafe { self.device.create_descriptor_set_layout(&create_info, None) }
             .map_err(VulkanError::from)?;
-        Ok(self.resource_set_layouts.insert(VulkanResourceSetLayout {
+        Ok(self.bind_group_layouts.insert(VulkanResourceSetLayout {
             layout,
             desc: desc.clone(),
         }))
     }
 
-    /// Creates a pipeline layout from resource set layouts.
+    /// Creates a pipeline layout from bind group layouts.
     ///
     /// # Errors
     ///
@@ -1025,10 +1027,10 @@ impl VulkanDevice {
     ) -> Result<PipelineLayoutId> {
         desc.validate()?;
         let layouts = desc
-            .resource_set_layouts
+            .bind_group_layouts
             .iter()
             .copied()
-            .map(|layout| Ok(self.resource_set_layouts.get(layout)?.layout))
+            .map(|layout| Ok(self.bind_group_layouts.get(layout)?.layout))
             .collect::<Result<Vec<_>>>()?;
         let create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
         // SAFETY: Descriptor set layouts belong to this device and remain live via registry handles.
@@ -1036,29 +1038,29 @@ impl VulkanDevice {
             .map_err(VulkanError::from)?;
         Ok(self.pipeline_layouts.insert(VulkanPipelineLayout {
             layout,
-            resource_set_layouts: desc.resource_set_layouts.clone(),
+            bind_group_layouts: desc.bind_group_layouts.clone(),
         }))
     }
 
-    /// Creates a resource set and writes descriptor bindings.
+    /// Creates a bind group and writes descriptor bindings.
     ///
     /// # Errors
     ///
     /// Returns [`Error`] when validation, handles, or descriptor writes fail.
     #[expect(
         clippy::too_many_lines,
-        reason = "resource set creation keeps descriptor writes together for backend validation"
+        reason = "bind group creation keeps descriptor writes together for backend validation"
     )]
-    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+    fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         // Reclaim completed descriptor retirements before consuming the shared pool budget.
         self.poll_cleanup();
-        let layout_desc = self.resource_set_layouts.get(desc.layout)?.desc.clone();
+        let layout_desc = self.bind_group_layouts.get(desc.layout)?.desc.clone();
         desc.validate_against(&layout_desc)?;
-        let layout = self.resource_set_layouts.get(desc.layout)?.layout;
+        let layout = self.bind_group_layouts.get(desc.layout)?.layout;
         let mut buffer_infos = Vec::new();
         let mut image_infos = Vec::new();
         let mut pending_writes = Vec::new();
-        for binding in &desc.bindings {
+        for binding in &desc.entries {
             match binding.resource {
                 BindingResource::Buffer(buffer_binding) => {
                     let buffer = self.buffers.get(buffer_binding.buffer)?;
@@ -1070,7 +1072,7 @@ impl VulkanDevice {
                         .map(|entry| resource_binding_type_to_vk(entry.binding_type))
                         .ok_or_else(|| {
                             Error::InvalidInput(format!(
-                                "resource set layout is missing binding {}",
+                                "bind group layout is missing binding {}",
                                 binding.binding
                             ))
                         })?;
@@ -1111,7 +1113,8 @@ impl VulkanDevice {
             }
         }
         // Validate resource handles before consuming pool capacity.
-        let (descriptor_set, descriptor_pool) = self.descriptor_pools.allocate(&self.device, layout)?;
+        let (descriptor_set, descriptor_pool) =
+            self.descriptor_pools.allocate(&self.device, layout)?;
         let writes = pending_writes
             .iter()
             .map(|write| match *write {
@@ -1149,7 +1152,7 @@ impl VulkanDevice {
         unsafe {
             self.device.update_descriptor_sets(&writes, &[]);
         }
-        Ok(self.resource_sets.insert(VulkanResourceSet {
+        Ok(self.bind_groups.insert(VulkanResourceSet {
             descriptor_set,
             descriptor_pool,
             layout: desc.layout,
@@ -1329,7 +1332,9 @@ impl VulkanDevice {
             .iter()
             .position(|encoder| encoder.command_buffers.len() == buffer_count as usize)
         {
-            return Ok(self.command_encoders.insert(self.free_command_encoders.swap_remove(index)));
+            return Ok(self
+                .command_encoders
+                .insert(self.free_command_encoders.swap_remove(index)));
         }
 
         let command_pool = create_command_pool(&self.device, self.graphics_queue_family_index)?;
@@ -1372,7 +1377,7 @@ impl VulkanDevice {
         }))
     }
 
-    /// Records a render pass and draw call with optional resource sets.
+    /// Records a render pass and draw call with optional bind groups.
     ///
     /// # Errors
     ///
@@ -1385,9 +1390,9 @@ impl VulkanDevice {
         self.record_draw_steps_desc(
             encoder_id,
             draw.pass,
-            &[DrawStepDescriptor {
+            &[DrawCommand {
                 pipeline: draw.pipeline,
-                resource_sets: draw.resource_sets.clone(),
+                bind_groups: draw.bind_groups.clone(),
                 vertex_count: draw.vertex_count,
                 first_vertex: draw.first_vertex,
                 instance_count: draw.instance_count,
@@ -1397,7 +1402,7 @@ impl VulkanDevice {
         )
     }
 
-    /// Records a render pass with one or more draw steps.
+    /// Records a render pass with one or more render commands.
     ///
     /// # Errors
     ///
@@ -1406,22 +1411,18 @@ impl VulkanDevice {
         &mut self,
         encoder_id: CommandEncoderId,
         pass: BeginRenderPassDescriptor,
-        steps: &[DrawStepDescriptor],
+        steps: &[DrawCommand],
     ) -> Result<()> {
-        self.record_render_step_list_desc(
-            encoder_id,
-            pass,
-            RenderStepList::from_draw_steps(steps),
-            None,
-        )
+        let commands: Vec<RenderCommand> = steps.iter().cloned().map(RenderCommand::Draw).collect();
+        self.record_render_step_list_desc(encoder_id, pass, &commands, None)
     }
 
     fn record_render_step_list_desc(
         &mut self,
         encoder_id: CommandEncoderId,
         pass: BeginRenderPassDescriptor,
-        steps: RenderStepList<'_>,
-        depth_attachment: Option<RenderPassDepthAttachment>,
+        steps: &[RenderCommand],
+        depth_attachment: Option<DepthAttachment>,
     ) -> Result<()> {
         let command_buffer = self
             .command_encoders
@@ -1447,10 +1448,10 @@ impl VulkanDevice {
         encoder_id: CommandEncoderId,
         command_buffer: vk::CommandBuffer,
         pass: BeginRenderPassDescriptor,
-        steps: RenderStepList<'_>,
-        depth_attachment: Option<RenderPassDepthAttachment>,
+        steps: &[RenderCommand],
+        depth_attachment: Option<DepthAttachment>,
         clear_region: Option<ScissorRect>,
-        viewport: Option<RenderViewport>,
+        viewport: Option<Viewport>,
         graph_write_hazard: bool,
     ) -> Result<()> {
         let mut transient_framebuffer = None;
@@ -1472,11 +1473,45 @@ impl VulkanDevice {
         let render_pass_record = *self.render_passes.get(pass.render_pass)?;
         let depth_view =
             self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
-        let color_load = matches!(&pass.color_load_op, LoadOp::Load);
-        let depth_load = depth_view
+        let target_extent = match pass.target {
+            RenderTarget::Swapchain { swapchain, .. } => {
+                let extent = self.swapchains.get(swapchain)?.extent;
+                gfx_core::Extent2d::new(extent.width, extent.height)?
+            }
+            RenderTarget::TextureView(texture_view_id) => {
+                let texture_view = self.texture_views.get(texture_view_id)?;
+                self.textures.get(texture_view.texture)?.desc.size
+            }
+        };
+        let clear_region = match (viewport, clear_region) {
+            (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, target_extent)?),
+            (_, clear_region) => clear_region,
+        };
+        let empty_clear_region = clear_region.is_some_and(ScissorRect::is_empty);
+        let color_load_op = if empty_clear_region {
+            LoadOp::Load
+        } else {
+            pass.color_load_op
+        };
+        let depth_load_op = depth_view.map(|(_, load_op)| {
+            if empty_clear_region {
+                LoadOp::Load
+            } else {
+                load_op
+            }
+        });
+        let color_load = matches!(&color_load_op, LoadOp::Load);
+        let depth_load = depth_load_op
             .as_ref()
-            .is_some_and(|(_, load_op)| matches!(load_op, LoadOp::Load));
-        let (framebuffer, extent, viewport_extent, native_render_pass) = match pass.target {
+            .is_some_and(|load_op| matches!(load_op, LoadOp::Load));
+        let (
+            framebuffer,
+            extent,
+            viewport_extent,
+            viewport_origin,
+            scissor_extent,
+            native_render_pass,
+        ) = match pass.target {
             RenderTarget::Swapchain {
                 swapchain,
                 image_index,
@@ -1516,6 +1551,8 @@ impl VulkanDevice {
                     framebuffer,
                     swapchain_record.extent,
                     swapchain_record.source_extent,
+                    gfx_core::SignedOrigin2d::ZERO,
+                    swapchain_record.source_extent,
                     native_render_pass,
                 )
             }
@@ -1546,68 +1583,90 @@ impl VulkanDevice {
                 };
                 let viewport_extent = viewport
                     .map(|viewport| {
-                        viewport.for_target(texture.desc.size).map(|extent| vk::Extent2D {
-                            width: extent.width(),
-                            height: extent.height(),
-                        })
+                        viewport
+                            .for_target(texture.desc.size)
+                            .map(|extent| vk::Extent2D {
+                                width: extent.width(),
+                                height: extent.height(),
+                            })
                     })
                     .transpose()?
                     .unwrap_or(extent);
+                let viewport_origin = viewport
+                    .map(|viewport| viewport.mapped_origin(texture.desc.size))
+                    .transpose()?
+                    .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
+                let scissor_extent = viewport
+                    .map(|viewport| viewport.mapped_scissor_extent(texture.desc.size))
+                    .transpose()?
+                    .unwrap_or(texture.desc.size);
                 (
                     framebuffer,
                     extent,
                     viewport_extent,
+                    viewport_origin,
+                    vk::Extent2D {
+                        width: scissor_extent.width(),
+                        height: scissor_extent.height(),
+                    },
                     native_render_pass,
                 )
             }
         };
-        let draw_steps = steps
-            .iter()
-            .map(|step| {
-                let pipeline_record = self.render_pipelines.get(step.pipeline())?;
-                let descriptor_sets = step
-                    .resource_sets()
-                    .iter()
-                    .copied()
-                    .map(|resource_set| Ok(self.resource_sets.get(resource_set)?.descriptor_set))
-                    .collect::<Result<Vec<_>>>()?;
-                let draw = match step {
-                    RenderStepRef::Draw(step) => CommandDrawStepKind::NonIndexed {
-                        vertex_count: step.vertex_count,
-                        first_vertex: step.first_vertex,
+        let mut draw_steps = Vec::new();
+        for step in steps.iter() {
+            let scissor = match (viewport, step.scissor()) {
+                (Some(viewport), Some(scissor)) => {
+                    Some(viewport.map_scissor(scissor, target_extent)?)
+                }
+                (_, scissor) => scissor,
+            };
+            if scissor.is_some_and(ScissorRect::is_empty) {
+                continue;
+            }
+            let pipeline_record = self.render_pipelines.get(step.pipeline())?;
+            let descriptor_sets = step
+                .bind_groups()
+                .iter()
+                .copied()
+                .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.descriptor_set))
+                .collect::<Result<Vec<_>>>()?;
+            let draw = match step {
+                RenderCommand::Draw(step) => CommandDrawStepKind::NonIndexed {
+                    vertex_count: step.vertex_count,
+                    first_vertex: step.first_vertex,
+                    instance_count: step.instance_count,
+                    first_instance: step.first_instance,
+                },
+                RenderCommand::DrawIndexed(step) => {
+                    let index_buffer = self.buffers.get(step.index_buffer.buffer)?;
+                    validate_index_buffer_range(
+                        index_buffer.desc.usage,
+                        index_buffer.desc.size,
+                        step.index_buffer,
+                        step.first_index,
+                        step.index_count,
+                    )?;
+                    CommandDrawStepKind::Indexed {
+                        buffer: index_buffer.buffer,
+                        offset: step.index_buffer.offset,
+                        index_type: index_format_to_vk(step.index_buffer.format),
+                        index_count: step.index_count,
+                        first_index: step.first_index,
+                        base_vertex: step.base_vertex,
                         instance_count: step.instance_count,
                         first_instance: step.first_instance,
-                    },
-                    RenderStepRef::DrawIndexed(step) => {
-                        let index_buffer = self.buffers.get(step.index_buffer.buffer)?;
-                        validate_index_buffer_range(
-                            index_buffer.desc.usage,
-                            index_buffer.desc.size,
-                            step.index_buffer,
-                            step.first_index,
-                            step.index_count,
-                        )?;
-                        CommandDrawStepKind::Indexed {
-                            buffer: index_buffer.buffer,
-                            offset: step.index_buffer.offset,
-                            index_type: index_format_to_vk(step.index_buffer.format),
-                            index_count: step.index_count,
-                            first_index: step.first_index,
-                            base_vertex: step.base_vertex,
-                            instance_count: step.instance_count,
-                            first_instance: step.first_instance,
-                        }
                     }
-                };
-                Ok(CommandDrawStepInfo {
-                    pipeline: pipeline_record.pipeline,
-                    pipeline_layout: pipeline_record.pipeline_layout,
-                    descriptor_sets,
-                    draw,
-                    scissor: step.scissor(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                }
+            };
+            draw_steps.push(CommandDrawStepInfo {
+                pipeline: pipeline_record.pipeline,
+                pipeline_layout: pipeline_record.pipeline_layout,
+                descriptor_sets,
+                draw,
+                scissor,
+            });
+        }
         let result = record_command_buffer(&CommandRecordInfo {
             device: &self.device,
             command_buffer,
@@ -1616,8 +1675,10 @@ impl VulkanDevice {
             steps: &draw_steps,
             extent,
             viewport_extent,
-            color_load_op: pass.color_load_op,
-            depth_load_op: depth_view.map(|(_, load_op)| load_op),
+            viewport_origin,
+            scissor_extent,
+            color_load_op,
+            depth_load_op,
             render_target_transition,
             clear_region,
             gpu_trace,
@@ -1649,7 +1710,7 @@ impl VulkanDevice {
     fn depth_attachment_view_for_render_pass(
         &self,
         render_pass: &VulkanRenderPass,
-        depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<DepthAttachment>,
     ) -> Result<Option<(vk::ImageView, LoadOp<f32>)>> {
         let Some(depth_attachment) = depth_attachment else {
             if render_pass.depth_format.is_some() {
@@ -1692,127 +1753,22 @@ impl VulkanDevice {
         Ok(())
     }
 
-    /// Acquires, submits, and presents a swapchain image with multiple draw steps.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error`] when acquire, record, submit, or present fails.
-    fn draw_steps_and_present(
+    fn render_and_present_tracked(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
         render_pass_id: RenderPassId,
-        steps: &[DrawStepDescriptor],
+        steps: &[RenderCommand],
         clear_color: ClearColor,
-    ) -> Result<()> {
-        self.render_step_list_and_present(
-            swapchain_id,
-            render_pass_id,
-            RenderStepList::from_draw_steps(steps),
-            clear_color,
-            None,
-        )
-    }
-
-    fn render_step_list_and_present(
-        &mut self,
-        swapchain_id: gfx_core::SwapchainId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_step_list_and_present_with_damage(
-            swapchain_id,
-            render_pass_id,
-            steps,
-            clear_color,
-            depth_attachment,
-            None,
-        )
-    }
-
-    fn render_step_list_and_present_with_damage(
-        &mut self,
-        swapchain_id: gfx_core::SwapchainId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<DepthAttachment>,
         damage: Option<ScissorRect>,
-    ) -> Result<()> {
-        let Some(frame) = self.render_step_list_and_present_tracked(
-            swapchain_id,
-            render_pass_id,
-            steps,
-            clear_color,
-            depth_attachment,
-            damage,
-        )?
-        else {
-            return Ok(());
-        };
-        if let Some(submission) = frame.submission {
-            self.wait_submission(submission)?;
-        }
-        Ok(())
-    }
-
-    fn render_step_list_and_present_deferred(
-        &mut self,
-        swapchain_id: gfx_core::SwapchainId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.render_step_list_and_present_deferred_with_damage(
-            swapchain_id,
-            render_pass_id,
-            steps,
-            clear_color,
-            depth_attachment,
-            None,
-        )
-    }
-
-    fn render_step_list_and_present_deferred_with_damage(
-        &mut self,
-        swapchain_id: gfx_core::SwapchainId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-        damage: Option<ScissorRect>,
-    ) -> Result<SubmissionId> {
-        Ok(self
-            .render_step_list_and_present_tracked(
-                swapchain_id,
-                render_pass_id,
-                steps,
-                clear_color,
-                depth_attachment,
-                damage,
-            )?
-            .and_then(|frame| frame.submission)
-            .unwrap_or_else(|| SubmissionId::from_parts(0, 0)))
-    }
-
-    fn render_step_list_and_present_tracked(
-        &mut self,
-        swapchain_id: gfx_core::SwapchainId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-        damage: Option<ScissorRect>,
-    ) -> Result<Option<PresentationFrame>> {
+    ) -> Result<Option<PresentedFrame>> {
         let Some(present_frame) = self.acquire_present_frame(swapchain_id)? else {
             return Ok(None);
         };
-        let mut timings = PresentationTimings {
+        let mut timings = PresentTimings {
             acquire_fence_wait: present_frame.acquire_fence_wait,
             image_acquire: present_frame.image_acquire,
-            ..PresentationTimings::default()
+            ..PresentTimings::default()
         };
         let encoder_create_started = Instant::now();
         let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
@@ -1881,56 +1837,13 @@ impl VulkanDevice {
         });
         self.poll_cleanup();
         timings.post_present_cleanup = post_present_cleanup_started.elapsed();
-        Ok(Some(PresentationFrame {
+        Ok(Some(PresentedFrame {
             submission: Some(submission),
             timings: Some(timings),
         }))
     }
 
-    /// Records and submits draw steps into a regular texture view.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error`] when command recording, submission, or handle lookup fails.
-    fn draw_steps_to_texture(
-        &mut self,
-        texture_view: TextureViewId,
-        render_pass_id: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        color_load_op: LoadOp<ClearColor>,
-    ) -> Result<()> {
-        self.render_step_list_to_texture(
-            texture_view,
-            render_pass_id,
-            RenderStepList::from_draw_steps(steps),
-            color_load_op,
-            None,
-        )
-    }
-
-    fn render_step_list_to_texture(
-        &mut self,
-        texture_view: TextureViewId,
-        render_pass_id: RenderPassId,
-        steps: RenderStepList<'_>,
-        color_load_op: LoadOp<ClearColor>,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_step_lists_to_textures(&[TextureRenderStepList {
-            texture_view,
-            render_pass: render_pass_id,
-            steps,
-            color_load_op,
-            clear_region: None,
-            depth_attachment,
-            viewport: None,
-        }])
-    }
-
-    fn render_step_lists_to_textures(
-        &mut self,
-        passes: &[TextureRenderStepList<'_>],
-    ) -> Result<()> {
+    fn record_texture_passes(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<()> {
         if passes.is_empty() {
             return Ok(());
         }
@@ -1966,7 +1879,7 @@ impl VulkanDevice {
                     target: RenderTarget::TextureView(pass.texture_view),
                     color_load_op: pass.color_load_op,
                 },
-                pass.steps,
+                pass.commands,
                 pass.depth_attachment,
                 pass.clear_region,
                 pass.viewport,
@@ -2057,7 +1970,7 @@ impl VulkanDevice {
     }
 
     // Offscreen blur/path passes may already have been submitted before WSI acquisition.
-    // A skipped present has no swapchain fence in GPUI's in-flight slot table, so let
+    // A skipped present has no swapchain fence in the caller's in-flight slot table, so let
     // those submissions finish before the caller may reuse or overwrite their buffers.
     // This slow path is only used after bounded acquisition timeouts.
     fn drain_unpresented_graphics_work(&mut self) -> Result<()> {
@@ -2082,17 +1995,12 @@ impl VulkanDevice {
                 let config = swapchain.config;
                 // SAFETY: This surface belongs to our live Vulkan instance and device.
                 let capabilities = unsafe {
-                    self.surface_loader.get_physical_device_surface_capabilities(
-                        self.physical_device,
-                        surface,
-                    )
+                    self.surface_loader
+                        .get_physical_device_surface_capabilities(self.physical_device, surface)
                 }
                 .map_err(VulkanError::from)?;
-                let extent = choose_extent(
-                    &capabilities,
-                    config.size.width(),
-                    config.size.height(),
-                );
+                let extent =
+                    choose_extent(&capabilities, config.size.width(), config.size.height());
                 if extent.width != 0 && extent.height != 0 {
                     self.reconfigure_swapchain(swapchain_id, config)?;
                 }
@@ -2148,7 +2056,7 @@ impl VulkanDevice {
                 // No present fence will guard the already-queued offscreen draws.
                 self.drain_unpresented_graphics_work()?;
                 return Ok(None);
-            },
+            }
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 return Err(Error::SurfaceOutdated);
@@ -2226,7 +2134,12 @@ impl VulkanDevice {
             present_info = present_info.push_next(present_regions);
         }
         let present_fence = if self.swapchain_maintenance {
-            Some(self.swapchains.get_mut(swapchain_id)?.presentation.acquire(&self.device)?)
+            Some(
+                self.swapchains
+                    .get_mut(swapchain_id)?
+                    .presentation
+                    .acquire(&self.device)?,
+            )
         } else {
             None
         };
@@ -2241,14 +2154,18 @@ impl VulkanDevice {
                 .queue_present(self.present_queue, &present_info)
         };
         if let Some(fence) = present_fence {
-            self.swapchains.get_mut(swapchain_id)?.presentation.record(fence, present_result);
+            self.swapchains
+                .get_mut(swapchain_id)?
+                .presentation
+                .record(fence, present_result);
         }
         match present_result {
             Ok(false) => Ok(()),
             Ok(true) | Err(vk::Result::SUBOPTIMAL_KHR)
-                if self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
-                    Ok(())
-                }
+                if self.swapchains.get(swapchain_id)?.native_pixel_scaling =>
+            {
+                Ok(())
+            }
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 Err(Error::SurfaceOutdated)
@@ -2340,19 +2257,19 @@ impl VulkanDevice {
         Ok(())
     }
 
-    /// Destroys a resource set layout.
+    /// Destroys a bind group layout.
     ///
     /// # Errors
     ///
     /// Returns [`Error`] when the handle is invalid.
-    fn destroy_resource_set_layout(&mut self, layout_id: ResourceSetLayoutId) -> Result<()> {
+    fn destroy_bind_group_layout(&mut self, layout_id: BindGroupLayoutId) -> Result<()> {
         self.wait_for_pending_work()?;
-        let layout = self.resource_set_layouts.take(layout_id)?;
+        let layout = self.bind_group_layouts.take(layout_id)?;
         self.destroy_resource_set_layout_now(&layout);
         Ok(())
     }
 
-    /// Destroys a resource set.
+    /// Destroys a bind group.
     ///
     /// Invalidates the handle immediately and frees its native descriptor set only after prior
     /// graphics submissions complete. The shared descriptor pool remains owned by this device.
@@ -2361,12 +2278,12 @@ impl VulkanDevice {
     /// # Errors
     ///
     /// Returns [`Error`] when the handle is invalid or the cleanup fence cannot be queued.
-    fn destroy_resource_set(&mut self, set_id: ResourceSetId) -> Result<()> {
-        self.resource_sets.get(set_id)?;
+    fn destroy_bind_group(&mut self, set_id: BindGroupId) -> Result<()> {
+        self.bind_groups.get(set_id)?;
         let fence = self.signal_cleanup_fence()?;
-        let set = self.resource_sets.take(set_id)?;
+        let set = self.bind_groups.take(set_id)?;
         self.deferred_destroys
-            .retire(0, DeferredResource::ResourceSet { fence, set });
+            .retire(0, DeferredResource::BindGroup { fence, set });
         self.poll_cleanup();
         Ok(())
     }
@@ -2477,8 +2394,8 @@ impl VulkanDevice {
             textures: self.textures.live_len(),
             texture_views: self.texture_views.live_len(),
             samplers: self.samplers.live_len(),
-            resource_set_layouts: self.resource_set_layouts.live_len(),
-            resource_sets: self.resource_sets.live_len(),
+            bind_group_layouts: self.bind_group_layouts.live_len(),
+            bind_groups: self.bind_groups.live_len(),
             pipeline_layouts: self.pipeline_layouts.live_len(),
             shader_modules: self.shader_modules.live_len(),
             render_passes: self.render_passes.live_len(),
@@ -2515,15 +2432,32 @@ impl VulkanDevice {
             width: config.size.width(),
             height: config.size.height(),
         };
-        let mut scaling = self.native_pixel_presentation.as_ref().map(|loader| {
-            presentation::scaling(loader, self.physical_device, surface, present_mode, requested_extent)
-        }).transpose()?.flatten();
+        let mut scaling = self
+            .native_pixel_presentation
+            .as_ref()
+            .map(|loader| {
+                presentation::scaling(
+                    loader,
+                    self.physical_device,
+                    surface,
+                    present_mode,
+                    requested_extent,
+                )
+            })
+            .transpose()?
+            .flatten();
         let native_pixel_scaling = scaling.is_some();
-        let scaled_image_extent_range = scaling.as_ref().map(|scaling| (scaling.minimum, scaling.maximum));
+        let scaled_image_extent_range = scaling
+            .as_ref()
+            .map(|scaling| (scaling.minimum, scaling.maximum));
         let extent = if native_pixel_scaling {
             requested_extent
         } else {
-            choose_extent(&support.capabilities, config.size.width(), config.size.height())
+            choose_extent(
+                &support.capabilities,
+                config.size.width(),
+                config.size.height(),
+            )
         };
         let mut image_count = support.capabilities.min_image_count.saturating_add(1);
         if support.capabilities.max_image_count > 0 {
@@ -3148,7 +3082,7 @@ impl VulkanDevice {
                 self.destroy_texture_view_now(&view);
                 Ok(())
             }
-            DeferredResource::ResourceSet { fence, set } => {
+            DeferredResource::BindGroup { fence, set } => {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_resource_set_now(&set);
                 Ok(())
@@ -3189,9 +3123,7 @@ impl VulkanDevice {
                 let retained_page_count = self.upload_ring.trim_idle_pages();
                 self.trim_upload_pages(retained_page_count)
             }
-            DeferredResource::CommandEncoder(encoder) => {
-                self.recycle_command_encoder(encoder)
-            }
+            DeferredResource::CommandEncoder(encoder) => self.recycle_command_encoder(encoder),
         }
     }
 
@@ -3246,7 +3178,7 @@ impl VulkanDevice {
     }
 
     fn destroy_pipeline_layout_now(&self, layout: &VulkanPipelineLayout) {
-        let _ = layout.resource_set_layouts.len();
+        let _ = layout.bind_group_layouts.len();
         // SAFETY: Pipeline layout was created by this device and is destroyed once here.
         unsafe {
             self.device.destroy_pipeline_layout(layout.layout, None);
@@ -3346,10 +3278,8 @@ impl VulkanDevice {
         }
         // SAFETY: no pending GPU work references the command pool or any of its buffers.
         if let Err(error) = unsafe {
-            self.device.reset_command_pool(
-                encoder.command_pool,
-                vk::CommandPoolResetFlags::empty(),
-            )
+            self.device
+                .reset_command_pool(encoder.command_pool, vk::CommandPoolResetFlags::empty())
         } {
             // Do not cache a pool that could not be reset to the initial state.
             if let Some(query_pool) = encoder.gpu_trace_query_pool {
@@ -3414,6 +3344,10 @@ impl VulkanDevice {
 
 impl Backend for VulkanDevice {
     const BACKEND_KIND: BackendKind = BackendKind::Vulkan;
+
+    fn adapter_name(&self) -> &str {
+        &self.adapter_name
+    }
 }
 
 impl SurfaceDevice for VulkanDevice {
@@ -3471,6 +3405,35 @@ impl SurfaceDevice for VulkanDevice {
         Ok(())
     }
 
+    fn resize_swapchain(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        size: gfx_core::Extent2d,
+    ) -> Result<()> {
+        Self::resize_swapchain(self, swapchain, size.width(), size.height())
+    }
+
+    fn recreate_swapchain(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        config: SurfaceConfig,
+    ) -> Result<gfx_core::SwapchainId> {
+        Self::reconfigure_swapchain(self, swapchain, config)?;
+        Ok(swapchain)
+    }
+
+    fn swapchain_extent(&self, swapchain: gfx_core::SwapchainId) -> Result<gfx_core::Extent2d> {
+        self.swapchain_size(swapchain)
+    }
+
+    fn resolve_composite_alpha(
+        &self,
+        surface: SurfaceId,
+        requested: CompositeAlphaMode,
+    ) -> Result<CompositeAlphaMode> {
+        self.resolve_surface_alpha_mode(surface, requested)
+    }
+
     fn destroy_swapchain(&mut self, swapchain: gfx_core::SwapchainId) -> Result<()> {
         Self::destroy_swapchain(self, swapchain)
     }
@@ -3522,15 +3485,15 @@ impl ResourceDevice for VulkanDevice {
         Self::create_sampler(self, desc)
     }
 
-    fn create_resource_set_layout(
+    fn create_bind_group_layout(
         &mut self,
-        desc: &ResourceSetLayoutDescriptor,
-    ) -> Result<ResourceSetLayoutId> {
-        Self::create_resource_set_layout(self, desc)
+        desc: &BindGroupLayoutDescriptor,
+    ) -> Result<BindGroupLayoutId> {
+        Self::create_bind_group_layout(self, desc)
     }
 
-    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
-        Self::create_resource_set(self, desc)
+    fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
+        Self::create_bind_group(self, desc)
     }
 
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
@@ -3549,12 +3512,12 @@ impl ResourceDevice for VulkanDevice {
         Self::destroy_sampler(self, sampler)
     }
 
-    fn destroy_resource_set_layout(&mut self, layout: ResourceSetLayoutId) -> Result<()> {
-        Self::destroy_resource_set_layout(self, layout)
+    fn destroy_bind_group_layout(&mut self, layout: BindGroupLayoutId) -> Result<()> {
+        Self::destroy_bind_group_layout(self, layout)
     }
 
-    fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-        Self::destroy_resource_set(self, resource_set)
+    fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
+        Self::destroy_bind_group(self, bind_group)
     }
 }
 
@@ -3644,242 +3607,46 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
-    fn presentation_capabilities(
+    fn surface_capabilities(
         &self,
         _swapchain: gfx_core::SwapchainId,
-    ) -> gfx_core::PresentationCapabilities {
+    ) -> gfx_core::SurfaceCapabilities {
         // The renderer submits a complete frame, but Vulkan swapchain images rotate between
         // presents. Without per-image damage accumulation, VK_KHR_incremental_present can leave
         // unchanged pixels sourced from an uninitialized image, which appears as intermittent
         // black corners or rectangular stale regions on Linux/X11 and Wayland.
-        gfx_core::PresentationCapabilities::default()
+        gfx_core::SurfaceCapabilities::default()
     }
 
-    fn draw_steps_and_present(
+    fn render_and_present(
         &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        clear_color: ClearColor,
-    ) -> Result<()> {
-        Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
-    }
-
-    fn draw_steps_to_texture(
-        &mut self,
-        texture_view: TextureViewId,
-        render_pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        color_load_op: LoadOp<ClearColor>,
-    ) -> Result<()> {
-        Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
-    }
-
-    fn draw_steps_and_present_deferred(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        clear_color: ClearColor,
-    ) -> Result<SubmissionId>
-    where
-        Self: SubmissionDevice,
-    {
-        Self::render_step_list_and_present_deferred(
-            self,
-            swapchain,
-            render_pass,
-            RenderStepList::from_draw_steps(steps),
+        frame: &PresentFrameDescriptor<'_>,
+    ) -> Result<Option<PresentedFrame>> {
+        let LoadOp::Clear(clear_color) = frame.color_load_op else {
+            return Err(Error::Unavailable(
+                "Vulkan swapchain LoadOp::Load is not implemented".to_string(),
+            ));
+        };
+        self.render_and_present_tracked(
+            frame.swapchain,
+            frame.render_pass,
+            frame.commands,
             clear_color,
-            None,
+            frame.depth_attachment,
+            frame.present_region,
         )
     }
 
-    fn render_steps_and_present_compat(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        Self::render_step_list_and_present(
-            self,
-            swapchain,
-            render_pass,
-            RenderStepList::from_render_steps(steps),
-            clear_color,
-            depth_attachment,
-        )
+    fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+        self.record_texture_passes(std::slice::from_ref(pass))
     }
 
-    fn render_step_list_and_present_compat(
+    fn render_to_textures(
         &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        Self::render_step_list_and_present(
-            self,
-            swapchain,
-            render_pass,
-            steps,
-            clear_color,
-            depth_attachment,
-        )
-    }
-
-    fn render_step_list_and_present_with_damage_compat(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-        damage: Option<ScissorRect>,
-    ) -> Result<()> {
-        Self::render_step_list_and_present_with_damage(
-            self,
-            swapchain,
-            render_pass,
-            steps,
-            clear_color,
-            depth_attachment,
-            damage,
-        )
-    }
-
-    fn render_steps_to_texture_compat(
-        &mut self,
-        texture_view: TextureViewId,
-        render_pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        color_load_op: LoadOp<ClearColor>,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        Self::render_step_list_to_texture(
-            self,
-            texture_view,
-            render_pass,
-            RenderStepList::from_render_steps(steps),
-            color_load_op,
-            depth_attachment,
-        )
-    }
-
-    fn render_step_list_to_texture_compat(
-        &mut self,
-        texture_view: TextureViewId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color_load_op: LoadOp<ClearColor>,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        Self::render_step_list_to_texture(
-            self,
-            texture_view,
-            render_pass,
-            steps,
-            color_load_op,
-            depth_attachment,
-        )
-    }
-
-    fn render_step_lists_to_textures_compat(
-        &mut self,
-        passes: &[TextureRenderStepList<'_>],
-    ) -> Result<()> {
-        Self::render_step_lists_to_textures(self, passes)
-    }
-
-    fn render_steps_and_present_deferred_compat(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId>
-    where
-        Self: SubmissionDevice,
-    {
-        Self::render_step_list_and_present_deferred(
-            self,
-            swapchain,
-            render_pass,
-            RenderStepList::from_render_steps(steps),
-            clear_color,
-            depth_attachment,
-        )
-    }
-
-    fn render_step_list_and_present_deferred_compat(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId>
-    where
-        Self: SubmissionDevice,
-    {
-        Self::render_step_list_and_present_deferred(
-            self,
-            swapchain,
-            render_pass,
-            steps,
-            clear_color,
-            depth_attachment,
-        )
-    }
-
-    fn render_step_list_and_present_deferred_with_damage_compat(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-        damage: Option<ScissorRect>,
-    ) -> Result<SubmissionId>
-    where
-        Self: SubmissionDevice,
-    {
-        Self::render_step_list_and_present_deferred_with_damage(
-            self,
-            swapchain,
-            render_pass,
-            steps,
-            clear_color,
-            depth_attachment,
-            damage,
-        )
-    }
-
-    fn render_step_list_and_present_deferred_with_damage_measured(
-        &mut self,
-        swapchain: gfx_core::SwapchainId,
-        render_pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
-        damage: Option<ScissorRect>,
-    ) -> Result<Option<PresentationFrame>>
-    where
-        Self: SubmissionDevice,
-    {
-        Self::render_step_list_and_present_tracked(
-            self,
-            swapchain,
-            render_pass,
-            steps,
-            clear_color,
-            depth_attachment,
-            damage,
-        )
+        passes: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        self.record_texture_passes(passes)?;
+        Ok(None)
     }
 }
 
@@ -3961,7 +3728,7 @@ impl Drop for VulkanDevice {
         for commands in std::mem::take(&mut self.upload_command_pool) {
             destroy_upload_commands(&self.device, &commands);
         }
-        for (_, set) in self.resource_sets.drain_live() {
+        for (_, set) in self.bind_groups.drain_live() {
             self.destroy_resource_set_now(&set);
         }
         for (_, shader) in self.shader_modules.drain_live() {
@@ -3976,7 +3743,7 @@ impl Drop for VulkanDevice {
         for (_, render_pass) in self.render_passes.drain_live() {
             self.destroy_render_pass_now(&render_pass);
         }
-        for (_, layout) in self.resource_set_layouts.drain_live() {
+        for (_, layout) in self.bind_group_layouts.drain_live() {
             self.destroy_resource_set_layout_now(&layout);
         }
         for (_, sampler) in self.samplers.drain_live() {
@@ -4136,13 +3903,25 @@ impl VulkanTriangle {
     /// # Errors
     ///
     /// Returns [`Error`] when acquire, submit, or present fails.
-    pub fn draw_triangle(&mut self, draw: DrawTriangleDescriptor) -> Result<()> {
-        self.device.draw_and_present(
-            self.swapchain,
-            self.render_pass,
-            self.pipeline,
-            draw.clear_color,
-        )?;
+    pub fn draw_triangle(&mut self, clear_color: ClearColor) -> Result<()> {
+        let command = RenderCommand::Draw(DrawCommand {
+            pipeline: self.pipeline,
+            bind_groups: gfx_core::bind_group_list_empty(),
+            vertex_count: 3,
+            first_vertex: 0,
+            instance_count: 1,
+            first_instance: 0,
+            scissor: None,
+        });
+        let frame = PresentFrameDescriptor {
+            swapchain: self.swapchain,
+            render_pass: self.render_pass,
+            commands: std::slice::from_ref(&command),
+            color_load_op: LoadOp::Clear(clear_color),
+            depth_attachment: None,
+            present_region: None,
+        };
+        self.device.render_and_present(&frame)?;
         self.metrics.submitted_frames = self.metrics.submitted_frames.saturating_add(1);
         if self.metrics.first_frame_time.is_none() {
             self.metrics.first_frame_time = Some(self.metrics_started_at.elapsed());
@@ -4308,21 +4087,21 @@ struct VulkanSampler {
 #[derive(Clone)]
 struct VulkanResourceSetLayout {
     layout: vk::DescriptorSetLayout,
-    desc: ResourceSetLayoutDescriptor,
+    desc: BindGroupLayoutDescriptor,
 }
 
 #[derive(Clone)]
 struct VulkanResourceSet {
     descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
-    layout: ResourceSetLayoutId,
-    desc: ResourceSetDescriptor,
+    layout: BindGroupLayoutId,
+    desc: BindGroupDescriptor,
 }
 
 #[derive(Clone)]
 struct VulkanPipelineLayout {
     layout: vk::PipelineLayout,
-    resource_set_layouts: Vec<ResourceSetLayoutId>,
+    bind_group_layouts: Vec<BindGroupLayoutId>,
 }
 
 #[derive(Clone)]
@@ -4593,7 +4372,7 @@ enum DeferredResource {
         fence: vk::Fence,
         view: VulkanTextureView,
     },
-    ResourceSet {
+    BindGroup {
         fence: vk::Fence,
         set: VulkanResourceSet,
     },
@@ -4611,7 +4390,7 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
         | DeferredResource::Buffer { fence, .. }
         | DeferredResource::Texture { fence, .. }
         | DeferredResource::TextureView { fence, .. }
-        | DeferredResource::ResourceSet { fence, .. }
+        | DeferredResource::BindGroup { fence, .. }
         | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
     };
@@ -4883,7 +4662,9 @@ fn create_device(
     let native_pixel_presentation = maintenance_features.swapchain_maintenance1 == vk::TRUE;
     if native_pixel_presentation {
         device_extensions.push(
-            maintenance.expect("queried maintenance feature has an extension").as_ptr(),
+            maintenance
+                .expect("queried maintenance feature has an extension")
+                .as_ptr(),
         );
     }
     let mut create_info = vk::DeviceCreateInfo::default()
@@ -5495,6 +5276,8 @@ struct CommandRecordInfo<'a> {
     steps: &'a [CommandDrawStepInfo],
     extent: vk::Extent2D,
     viewport_extent: vk::Extent2D,
+    viewport_origin: gfx_core::SignedOrigin2d,
+    scissor_extent: vk::Extent2D,
     color_load_op: LoadOp<ClearColor>,
     depth_load_op: Option<LoadOp<f32>>,
     render_target_transition: Option<CommandRenderTargetTransition>,
@@ -5598,7 +5381,7 @@ fn full_render_area(extent: vk::Extent2D) -> vk::Rect2D {
 }
 
 /// Restrict Vulkan attachment LOAD/STORE traffic to the actual dirty drawing
-/// footprint, not the full backing texture. GPUI's retained blur targets can
+/// footprint, not the full backing texture. Offscreen targets can
 /// be much larger than the scissored portion being updated. A draw scissor
 /// alone does not limit the render pass attachment renderArea.
 ///
@@ -5692,8 +5475,12 @@ fn scoped_offscreen_clear_area(
     if target.extent.width == 0 || target.extent.height == 0 {
         return None;
     }
-    let end_x = u32::try_from(target.offset.x).ok()?.checked_add(target.extent.width)?;
-    let end_y = u32::try_from(target.offset.y).ok()?.checked_add(target.extent.height)?;
+    let end_x = u32::try_from(target.offset.x)
+        .ok()?
+        .checked_add(target.extent.width)?;
+    let end_y = u32::try_from(target.offset.y)
+        .ok()?
+        .checked_add(target.extent.height)?;
     for scissor in scissors {
         let scissor = scissor?;
         let clipped = vk_rect_for_scissor(scissor, extent).ok()?;
@@ -5745,8 +5532,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_READ
-                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             );
         // SAFETY: Command buffer recording is active; the target image and
         // previous writer belong to this same ordered queue submission.
@@ -5802,7 +5588,8 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         info.depth_load_op,
         info.clear_region,
         info.steps.iter().map(|step| step.scissor),
-    ).unwrap_or_else(|| {
+    )
+    .unwrap_or_else(|| {
         retained_offscreen_render_area(
             info.extent,
             info.render_target_transition.is_some(),
@@ -5818,17 +5605,17 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         .clear_values(&clear_values);
     #[expect(
         clippy::cast_precision_loss,
-        reason = "Vulkan viewport dimensions are f32 by API contract"
+        reason = "Vulkan viewport coordinates and dimensions are f32 by API contract"
     )]
     let viewport = vk::Viewport {
-        x: 0.0,
-        y: 0.0,
+        x: info.viewport_origin.x as f32,
+        y: info.viewport_origin.y as f32,
         width: info.viewport_extent.width as f32,
         height: info.viewport_extent.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
     };
-    let full_scissor = full_render_area(info.viewport_extent);
+    let full_scissor = full_render_area(info.scissor_extent);
     // SAFETY: Render pass, framebuffer, pipeline, and command buffer belong to this device.
     unsafe {
         info.device.cmd_begin_render_pass(
@@ -5841,7 +5628,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         for step in info.steps {
             let scissor = step
                 .scissor
-                .and_then(|scissor| vk_rect_for_scissor(scissor, info.viewport_extent).ok())
+                .and_then(|scissor| vk_rect_for_scissor(scissor, info.scissor_extent).ok())
                 .unwrap_or(full_scissor);
             info.device
                 .cmd_set_scissor(info.command_buffer, 0, &[scissor]);
@@ -6226,12 +6013,12 @@ fn address_mode_to_vk(mode: AddressMode) -> vk::SamplerAddressMode {
     }
 }
 
-fn resource_binding_type_to_vk(binding_type: ResourceBindingType) -> vk::DescriptorType {
+fn resource_binding_type_to_vk(binding_type: BindingType) -> vk::DescriptorType {
     match binding_type {
-        ResourceBindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-        ResourceBindingType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
-        ResourceBindingType::SampledTexture => vk::DescriptorType::SAMPLED_IMAGE,
-        ResourceBindingType::Sampler => vk::DescriptorType::SAMPLER,
+        BindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+        BindingType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+        BindingType::SampledTexture => vk::DescriptorType::SAMPLED_IMAGE,
+        BindingType::Sampler => vk::DescriptorType::SAMPLER,
     }
 }
 
@@ -6364,8 +6151,16 @@ mod tests {
 
     #[test]
     fn clear_only_offscreen_pass_limits_color_and_depth_clear_to_source_halo() {
-        let extent = vk::Extent2D { width: 1500, height: 900 };
-        let region = ScissorRect { x: 4, y: 20, width: 900, height: 65 };
+        let extent = vk::Extent2D {
+            width: 1500,
+            height: 900,
+        };
+        let region = ScissorRect {
+            x: 4,
+            y: 20,
+            width: 900,
+            height: 65,
+        };
         let area = scoped_offscreen_clear_area(
             extent,
             true,
@@ -6373,9 +6168,16 @@ mod tests {
             None,
             Some(region),
             [Some(region)],
-        ).expect("known filter halo must limit attachment clear");
+        )
+        .expect("known filter halo must limit attachment clear");
         assert_eq!(area.offset, vk::Offset2D { x: 4, y: 20 });
-        assert_eq!(area.extent, vk::Extent2D { width: 900, height: 65 });
+        assert_eq!(
+            area.extent,
+            vk::Extent2D {
+                width: 900,
+                height: 65
+            }
+        );
         assert_eq!(
             scoped_offscreen_clear_area(
                 extent,
@@ -6392,44 +6194,128 @@ mod tests {
 
     #[test]
     fn retained_color_pass_scopes_depth_clear_without_clearing_color() {
-        let extent = vk::Extent2D { width: 1500, height: 900 };
-        let region = ScissorRect { x: 40, y: 20, width: 80, height: 65 };
+        let extent = vk::Extent2D {
+            width: 1500,
+            height: 900,
+        };
+        let region = ScissorRect {
+            x: 40,
+            y: 20,
+            width: 80,
+            height: 65,
+        };
         let area = scoped_offscreen_clear_area(
-            extent, true, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region),
+            extent,
+            true,
+            LoadOp::Load,
+            Some(LoadOp::Clear(1.)),
+            Some(region),
             [Some(region)],
-        ).expect("preserved color source must clear only the dirty depth region");
+        )
+        .expect("preserved color source must clear only the dirty depth region");
         assert_eq!(area.offset, vk::Offset2D { x: 40, y: 20 });
-        assert_eq!(area.extent, vk::Extent2D { width: 80, height: 65 });
-        for scissors in [[None], [Some(ScissorRect { x: 0, y: 0, width: 1500, height: 900 })]] {
-            assert!(scoped_offscreen_clear_area(
-                extent, true, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region),
-                scissors,
-            ).is_none());
+        assert_eq!(
+            area.extent,
+            vk::Extent2D {
+                width: 80,
+                height: 65
+            }
+        );
+        for scissors in [
+            [None],
+            [Some(ScissorRect {
+                x: 0,
+                y: 0,
+                width: 1500,
+                height: 900,
+            })],
+        ] {
+            assert!(
+                scoped_offscreen_clear_area(
+                    extent,
+                    true,
+                    LoadOp::Load,
+                    Some(LoadOp::Clear(1.)),
+                    Some(region),
+                    scissors,
+                )
+                .is_none()
+            );
         }
-        assert!(scoped_offscreen_clear_area(
-            extent, true, LoadOp::Load, Some(LoadOp::Load), Some(region), [Some(region)],
-        ).is_none());
-        assert!(scoped_offscreen_clear_area(
-            extent, false, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region), [Some(region)],
-        ).is_none());
+        assert!(
+            scoped_offscreen_clear_area(
+                extent,
+                true,
+                LoadOp::Load,
+                Some(LoadOp::Load),
+                Some(region),
+                [Some(region)],
+            )
+            .is_none()
+        );
+        assert!(
+            scoped_offscreen_clear_area(
+                extent,
+                false,
+                LoadOp::Load,
+                Some(LoadOp::Clear(1.)),
+                Some(region),
+                [Some(region)],
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn unknown_or_outside_draw_does_not_shrink_vulkan_clear() {
-        let extent = vk::Extent2D { width: 1500, height: 900 };
-        let region = ScissorRect { x: 4, y: 20, width: 900, height: 65 };
-        assert!(scoped_offscreen_clear_area(
-            extent, true, LoadOp::Clear(ClearColor::default()), None, Some(region),
-            [None],
-        ).is_none());
-        assert!(scoped_offscreen_clear_area(
-            extent, true, LoadOp::Clear(ClearColor::default()), None, Some(region),
-            [Some(ScissorRect { x: 0, y: 0, width: 1500, height: 900 })],
-        ).is_none());
-        assert!(scoped_offscreen_clear_area(
-            extent, false, LoadOp::Clear(ClearColor::default()), None, Some(region),
-            [Some(region)],
-        ).is_none());
+        let extent = vk::Extent2D {
+            width: 1500,
+            height: 900,
+        };
+        let region = ScissorRect {
+            x: 4,
+            y: 20,
+            width: 900,
+            height: 65,
+        };
+        assert!(
+            scoped_offscreen_clear_area(
+                extent,
+                true,
+                LoadOp::Clear(ClearColor::default()),
+                None,
+                Some(region),
+                [None],
+            )
+            .is_none()
+        );
+        assert!(
+            scoped_offscreen_clear_area(
+                extent,
+                true,
+                LoadOp::Clear(ClearColor::default()),
+                None,
+                Some(region),
+                [Some(ScissorRect {
+                    x: 0,
+                    y: 0,
+                    width: 1500,
+                    height: 900
+                })],
+            )
+            .is_none()
+        );
+        assert!(
+            scoped_offscreen_clear_area(
+                extent,
+                false,
+                LoadOp::Clear(ClearColor::default()),
+                None,
+                Some(region),
+                [Some(region)],
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -6459,7 +6345,13 @@ mod tests {
             ],
         );
         assert_eq!(rect.offset, vk::Offset2D { x: 10, y: 20 });
-        assert_eq!(rect.extent, vk::Extent2D { width: 80, height: 50 });
+        assert_eq!(
+            rect.extent,
+            vk::Extent2D {
+                width: 80,
+                height: 50
+            }
+        );
     }
 
     #[test]
@@ -6500,13 +6392,7 @@ mod tests {
             full,
         );
         assert_eq!(
-            retained_offscreen_render_area(
-                extent,
-                true,
-                LoadOp::Load,
-                None,
-                [scissor, None],
-            ),
+            retained_offscreen_render_area(extent, true, LoadOp::Load, None, [scissor, None],),
             full,
         );
     }
@@ -6523,12 +6409,28 @@ mod tests {
             LoadOp::Load,
             None,
             [
-                Some(ScissorRect { x: 90, y: 70, width: 40, height: 40 }),
-                Some(ScissorRect { x: 200, y: 200, width: 10, height: 10 }),
+                Some(ScissorRect {
+                    x: 90,
+                    y: 70,
+                    width: 40,
+                    height: 40,
+                }),
+                Some(ScissorRect {
+                    x: 200,
+                    y: 200,
+                    width: 10,
+                    height: 10,
+                }),
             ],
         );
         assert_eq!(rect.offset, vk::Offset2D { x: 90, y: 70 });
-        assert_eq!(rect.extent, vk::Extent2D { width: 10, height: 10 });
+        assert_eq!(
+            rect.extent,
+            vk::Extent2D {
+                width: 10,
+                height: 10
+            }
+        );
     }
 
     #[test]

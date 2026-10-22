@@ -2,16 +2,16 @@
 
 use crate::OpenGlDevice;
 use gfx_core::{
-    BindingResource, BufferBinding, BufferDescriptor, BufferUsage, ClearColor,
+    BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+    BindingResource, BindingType, BufferBinding, BufferDescriptor, BufferUsage, ClearColor,
     ColorAttachmentDescriptor, CommandEncoderDescriptor, CompareFunction, CompositeAlphaMode,
-    DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawIndexedStepDescriptor,
-    DrawStepDescriptor, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    Origin2d, PipelineLayoutDescriptor, PresentMode, PrimitiveTopology, RenderPassDepthAttachment,
-    RenderPassDescriptor, RenderPipelineDescriptor, RenderStepDescriptor, RenderStepList,
-    ResourceBinding, ResourceBindingType, ResourceSetDescriptor, ResourceSetLayoutDescriptor,
-    ResourceSetLayoutEntry, SamplerBinding, SamplerDescriptor, ShaderModuleDescriptor, ShaderStage,
-    ShaderStages, TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension,
-    TextureUsage, TextureViewDescriptor, TextureWriteDescriptor, resource_set_list,
+    DepthAttachment, DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawCommand,
+    DrawIndexedCommand, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+    Origin2d, PipelineLayoutDescriptor, PresentFrameDescriptor, PresentMode, PrimitiveTopology,
+    RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPipelineDescriptor,
+    SamplerBinding, SamplerDescriptor, ShaderModuleDescriptor, ShaderStage, ShaderStages,
+    TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureUsage,
+    TextureViewDescriptor, TextureWriteDescriptor, bind_group_list,
 };
 use gfx_core::{
     PipelineDevice as _, PresentationDevice as _, ResourceDevice as _, SubmissionDevice as _,

@@ -323,7 +323,7 @@ impl ShaderSet {
 
                 let constant = format!("{prefix_upper}_{}", entry_point.to_uppercase());
                 if let Some(glsl) = glsl {
-                    let buffers = glsl.buffers.iter().map(|buffer| format!("::gfx_core::GlslBufferBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, kind: ::gfx_core::ResourceBindingType::{:?} }}", buffer.name, buffer.binding, buffer.kind)).collect::<Vec<_>>().join(",");
+                    let buffers = glsl.buffers.iter().map(|buffer| format!("::gfx_core::GlslBufferBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, kind: ::gfx_core::BindingType::{:?} }}", buffer.name, buffer.binding, buffer.kind)).collect::<Vec<_>>().join(",");
                     let textures = glsl.textures.iter().map(|texture| format!("::gfx_core::GlslTextureBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), texture: {}, sampler: {:?} }}", texture.name, texture.texture, texture.sampler)).collect::<Vec<_>>().join(",");
                     generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}] }};\n"));
                 } else {
@@ -612,7 +612,7 @@ fn translate_metal(
     shader: &Shader,
 ) -> Result<String, Error> {
     let binary = module
-        .compile_msl_with_version(stage, entry_point, shader.msl_version)
+        .compile_msl_versioned(stage, entry_point, shader.msl_version)
         .map_err(|error| Error::Translate {
             shader: shader.name.clone(),
             entry_point: entry_point.to_string(),
@@ -740,10 +740,13 @@ fn translate_vulkan(
 /// Direct3D compiler.
 ///
 /// This helper intentionally lives in the build crate instead of depending on the
-/// complete DX12 runtime backend. GPUI build scripts therefore do not pull device,
+/// complete DX12 runtime backend. Consumer build scripts therefore do not pull device,
 /// swapchain, allocator, and presentation code into the host graph merely to call FXC.
 #[cfg(target_os = "windows")]
-#[expect(unsafe_code, reason = "FXC D3DCompile and returned ID3DBlob byte buffer require Windows FFI")]
+#[expect(
+    unsafe_code,
+    reason = "FXC D3DCompile and returned ID3DBlob byte buffer require Windows FFI"
+)]
 fn compile_hlsl_to_dxbc(
     hlsl: &str,
     entry_point: &str,
@@ -807,7 +810,10 @@ fn compile_hlsl_to_dxbc(
 }
 
 #[cfg(target_os = "windows")]
-#[expect(unsafe_code, reason = "Reading a live ID3DBlob pointer requires Windows FFI")]
+#[expect(
+    unsafe_code,
+    reason = "Reading a live ID3DBlob pointer requires Windows FFI"
+)]
 fn d3d_blob_message(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
     // SAFETY: the blob owns a byte range valid for its lifetime.
     let bytes = unsafe {

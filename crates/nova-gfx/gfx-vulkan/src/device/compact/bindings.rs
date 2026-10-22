@@ -3,13 +3,13 @@ use super::*;
 impl VulkanDevice {
     pub(super) fn validate_compact_bindings(&self) -> Result<()> {
         for id in {
-            let ids: Vec<ResourceSetId> = self.resource_sets.live_ids();
+            let ids: Vec<BindGroupId> = self.bind_groups.live_ids();
             ids
         } {
-            let set = self.resource_sets.get(id)?;
-            let layout = self.resource_set_layouts.get(set.layout)?;
+            let set = self.bind_groups.get(id)?;
+            let layout = self.bind_group_layouts.get(set.layout)?;
             set.desc.validate_against(&layout.desc)?;
-            for binding in &set.desc.bindings {
+            for binding in &set.desc.entries {
                 match binding.resource {
                     BindingResource::Buffer(binding) => {
                         binding.validate_against(self.buffers.get(binding.buffer)?.desc.size)?;
@@ -26,10 +26,10 @@ impl VulkanDevice {
         Ok(())
     }
 
-    pub(super) fn rewrite_compact_set(&self, id: ResourceSetId) -> Result<()> {
-        let set = self.resource_sets.get(id)?;
-        let layout = self.resource_set_layouts.get(set.layout)?;
-        for binding in &set.desc.bindings {
+    pub(super) fn rewrite_compact_set(&self, id: BindGroupId) -> Result<()> {
+        let set = self.bind_groups.get(id)?;
+        let layout = self.bind_group_layouts.get(set.layout)?;
+        for binding in &set.desc.entries {
             let mut write = vk::WriteDescriptorSet::default()
                 .dst_set(set.descriptor_set)
                 .dst_binding(binding.binding);

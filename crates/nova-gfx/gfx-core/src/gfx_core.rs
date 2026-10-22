@@ -1,10 +1,10 @@
 //! Backend-neutral graphics API types for nova-gfx.
 //!
-//! `gfx-core` intentionally contains no GPUI, Vulkan, DX12, Metal, or windowing
-//! code. It provides shared descriptors, errors, and typed generational handles
-//! used by backend implementations.
+//! `gfx-core` intentionally contains no UI framework, Vulkan, DX12, Metal, or
+//! windowing code. It provides shared descriptors, errors, and typed generational
+//! handles used by backend implementations.
 //!
-//! The canonical device contract is exposed through the `Gfx*Device` traits.
+//! The canonical device contract is exposed through the device capability traits.
 //! Backend crates implement those traits; callers should import only the narrow
 //! traits they need.
 //!
@@ -38,12 +38,10 @@ pub use memory::{
 use std::{
     borrow::Cow,
     fmt,
-    future::Future,
     hash::{Hash, Hasher},
     marker::PhantomData,
     num::NonZeroU32,
     path::PathBuf,
-    pin::Pin,
 };
 
 use bitflags::bitflags;
@@ -51,19 +49,13 @@ use smallvec::SmallVec;
 use thiserror::Error as ThisError;
 
 pub use backend::{
-    AsyncCommandDevice, AsyncDevice, AsyncDiagnosticsDevice, AsyncPipelineDevice,
-    AsyncPresentationDevice, AsyncResourceDevice, AsyncSurfaceDevice, Backend, BackendDiagnostics,
-    BackendPipelines, BackendPresentationCompat, BackendQueue, BackendResources, BackendSurface,
-    CommandDevice, Device, DiagnosticsDevice, ExtensionDevice, PipelineDevice, PresentationDevice,
-    PresentationFrame, PresentationTimings, ResourceDevice, SharedDevice, SubmissionDevice,
-    SurfaceDevice, TextureTransferDevice,
+    Backend, CommandDevice, Device, DiagnosticsDevice, PipelineDevice, PresentTimings,
+    PresentationDevice, PresentedFrame, ResourceDevice, SubmissionDevice, SurfaceDevice,
+    TextureTransferDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Runtime-neutral boxed future returned by nova-gfx async interfaces.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 /// Error type for backend-neutral validation and backend-provided failures.
 #[derive(Debug, ThisError)]
@@ -188,12 +180,12 @@ pub enum TextureViewResource {}
 /// Sampler handle.
 #[derive(Debug)]
 pub enum SamplerResource {}
-/// Resource set layout handle.
+/// Bind group layout handle.
 #[derive(Debug)]
-pub enum ResourceSetLayoutResource {}
-/// Resource set handle.
+pub enum BindGroupLayoutResource {}
+/// Bind group handle.
 #[derive(Debug)]
-pub enum ResourceSetResource {}
+pub enum BindGroupResource {}
 /// Pipeline layout handle.
 #[derive(Debug)]
 pub enum PipelineLayoutResource {}
@@ -235,10 +227,10 @@ pub type TextureId = ResourceId<TextureResource>;
 pub type TextureViewId = ResourceId<TextureViewResource>;
 /// Sampler resource identifier.
 pub type SamplerId = ResourceId<SamplerResource>;
-/// Resource set layout identifier.
-pub type ResourceSetLayoutId = ResourceId<ResourceSetLayoutResource>;
-/// Resource set identifier.
-pub type ResourceSetId = ResourceId<ResourceSetResource>;
+/// Bind group layout identifier.
+pub type BindGroupLayoutId = ResourceId<BindGroupLayoutResource>;
+/// Bind group identifier.
+pub type BindGroupId = ResourceId<BindGroupResource>;
 /// Pipeline layout identifier.
 pub type PipelineLayoutId = ResourceId<PipelineLayoutResource>;
 /// Shader module resource identifier.
@@ -310,8 +302,8 @@ pub struct AsyncCapabilities {
 /// adapter [`BackendCapabilities`], device [`AsyncCapabilities`] and requested [`SurfaceConfig`]
 /// policy. Default capabilities select portable full presentation without a native ready wake.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PresentationCapabilities {
-    /// Native presentation consumes damage while keeping every rotating backbuffer coherent.
+pub struct SurfaceCapabilities {
+    /// Native presentation consumes a present region while keeping every rotating backbuffer coherent.
     pub partial_presentation: bool,
     /// A one-shot ready callback can wake the owner when this swapchain accepts another frame.
     pub frame_ready_notification: bool,
@@ -689,7 +681,7 @@ pub struct SamplerBinding {
 
 /// A resource binding entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ResourceBinding {
+pub struct BindGroupEntry {
     /// Binding slot.
     pub binding: u32,
     /// Resource payload.
@@ -709,7 +701,7 @@ pub enum BindingResource {
 
 /// Resource binding kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResourceBindingType {
+pub enum BindingType {
     /// Uniform buffer.
     UniformBuffer,
     /// Read-only storage buffer.
@@ -720,7 +712,7 @@ pub enum ResourceBindingType {
     Sampler,
 }
 
-impl ResourceBindingType {
+impl BindingType {
     /// Returns the expected payload type for this binding.
     #[must_use]
     pub const fn matches(self, binding: &BindingResource) -> bool {
@@ -737,25 +729,25 @@ impl ResourceBindingType {
 
 /// Resource layout entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceSetLayoutEntry {
+pub struct BindGroupLayoutEntry {
     /// Binding slot.
     pub binding: u32,
     /// Resource kind.
-    pub binding_type: ResourceBindingType,
+    pub binding_type: BindingType,
     /// Shader visibility.
     pub stages: ShaderStages,
 }
 
-/// Resource set layout descriptor.
+/// Bind group layout descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceSetLayoutDescriptor {
+pub struct BindGroupLayoutDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Layout entries.
-    pub entries: Vec<ResourceSetLayoutEntry>,
+    pub entries: Vec<BindGroupLayoutEntry>,
 }
 
-impl ResourceSetLayoutDescriptor {
+impl BindGroupLayoutDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
@@ -765,14 +757,14 @@ impl ResourceSetLayoutDescriptor {
     pub fn validate(&self) -> Result<()> {
         if self.entries.is_empty() {
             return Err(Error::InvalidInput(
-                "resource set layout must contain at least one entry".to_string(),
+                "bind group layout must contain at least one entry".to_string(),
             ));
         }
         let mut bindings = std::collections::BTreeSet::new();
         for entry in &self.entries {
             if entry.stages.is_empty() {
                 return Err(Error::InvalidInput(
-                    "resource set layout entry must be visible to at least one shader stage"
+                    "bind group layout entry must be visible to at least one shader stage"
                         .to_string(),
                 ));
             }
@@ -787,34 +779,34 @@ impl ResourceSetLayoutDescriptor {
     }
 }
 
-/// Resource set descriptor.
+/// Bind group descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceSetDescriptor {
+pub struct BindGroupDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
-    /// Layout this resource set conforms to.
-    pub layout: ResourceSetLayoutId,
-    /// Concrete bindings.
-    pub bindings: Vec<ResourceBinding>,
+    /// Layout this bind group conforms to.
+    pub layout: BindGroupLayoutId,
+    /// Concrete bind group entries.
+    pub entries: Vec<BindGroupEntry>,
 }
 
-impl ResourceSetDescriptor {
+impl BindGroupDescriptor {
     /// Validates the descriptor against a layout.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] when a binding is missing or invalid.
-    pub fn validate_against(&self, layout: &ResourceSetLayoutDescriptor) -> Result<()> {
+    pub fn validate_against(&self, layout: &BindGroupLayoutDescriptor) -> Result<()> {
         layout.validate()?;
-        if self.bindings.len() != layout.entries.len() {
+        if self.entries.len() != layout.entries.len() {
             return Err(Error::InvalidInput(format!(
-                "resource set binding count {} does not match layout entry count {}",
-                self.bindings.len(),
+                "bind group binding count {} does not match layout entry count {}",
+                self.entries.len(),
                 layout.entries.len()
             )));
         }
         let mut bindings_by_slot = std::collections::BTreeMap::new();
-        for binding in &self.bindings {
+        for binding in &self.entries {
             if bindings_by_slot
                 .insert(binding.binding, binding.resource)
                 .is_some()
@@ -848,8 +840,8 @@ impl ResourceSetDescriptor {
 pub struct PipelineLayoutDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
-    /// Resource set layouts used by this pipeline.
-    pub resource_set_layouts: Vec<ResourceSetLayoutId>,
+    /// Bind group layouts used by this pipeline.
+    pub bind_group_layouts: Vec<BindGroupLayoutId>,
 }
 
 impl PipelineLayoutDescriptor {
@@ -859,9 +851,9 @@ impl PipelineLayoutDescriptor {
     ///
     /// Returns [`Error::InvalidInput`] when the layout is empty.
     pub fn validate(&self) -> Result<()> {
-        if self.resource_set_layouts.is_empty() {
+        if self.bind_group_layouts.is_empty() {
             return Err(Error::InvalidInput(
-                "pipeline layout must contain at least one resource set layout".to_string(),
+                "pipeline layout must contain at least one bind group layout".to_string(),
             ));
         }
         Ok(())
@@ -1372,7 +1364,7 @@ pub struct GlslBufferBinding {
     /// WGSL group-zero binding number.
     pub binding: u32,
     /// Whether this block is uniform or read-only storage.
-    pub kind: ResourceBindingType,
+    pub kind: BindingType,
 }
 
 /// Original resources combined into one desktop GLSL sampler uniform.
@@ -1520,7 +1512,7 @@ pub struct ColorAttachmentDescriptor {
     pub format: Format,
 }
 
-/// Depth attachment format for a render pass compatibility descriptor.
+/// Depth attachment format for a render pass layout descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthAttachmentDescriptor {
     /// Attachment format.
@@ -1661,13 +1653,6 @@ impl Default for ClearColor {
     }
 }
 
-/// Per-frame render instructions for the compatibility triangle path.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DrawTriangleDescriptor {
-    /// Clear color.
-    pub clear_color: ClearColor,
-}
-
 /// Command encoder descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandEncoderDescriptor {
@@ -1700,15 +1685,15 @@ pub enum RenderTarget {
     TextureView(TextureViewId),
 }
 
-/// Draw call descriptor.
+/// Draw call descriptor used by the explicit command-encoder path.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawDescriptor {
     /// Render pass begin parameters.
     pub pass: BeginRenderPassDescriptor,
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
-    /// Resource sets bound before drawing.
-    pub resource_sets: ResourceSetList,
+    /// Bind groups bound before drawing.
+    pub bind_groups: BindGroupList,
     /// Vertex count.
     pub vertex_count: u32,
     /// First vertex.
@@ -1721,34 +1706,31 @@ pub struct DrawDescriptor {
     pub scissor: Option<ScissorRect>,
 }
 
-/// Resource sets bound by one draw step.
+/// Bind groups bound by one render command.
 ///
-/// Most GPUI nova draw steps bind zero or one resource set. Keeping four inline
-/// slots avoids heap allocation on the hot path while still supporting larger
-/// binding groups.
-pub type ResourceSetList = SmallVec<[ResourceSetId; 4]>;
+/// Four inline slots cover the common case without a heap allocation on the
+/// draw path while still supporting larger binding groups.
+pub type BindGroupList = SmallVec<[BindGroupId; 4]>;
 
-/// Builds a resource-set list without heap allocation for up to four entries.
+/// Builds a bind-group list without heap allocation for up to four entries.
 #[must_use]
-pub fn resource_set_list(
-    resource_sets: impl IntoIterator<Item = ResourceSetId>,
-) -> ResourceSetList {
-    resource_sets.into_iter().collect()
+pub fn bind_group_list(bind_groups: impl IntoIterator<Item = BindGroupId>) -> BindGroupList {
+    bind_groups.into_iter().collect()
 }
 
-/// Builds an empty resource-set list.
+/// Builds an empty bind-group list.
 #[must_use]
-pub fn resource_set_list_empty() -> ResourceSetList {
-    ResourceSetList::new()
+pub fn bind_group_list_empty() -> BindGroupList {
+    BindGroupList::new()
 }
 
-/// One draw step inside a render pass.
+/// One non-indexed draw command recorded inside a render pass.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DrawStepDescriptor {
+pub struct DrawCommand {
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
-    /// Resource sets bound before drawing.
-    pub resource_sets: ResourceSetList,
+    /// Bind groups bound before drawing.
+    pub bind_groups: BindGroupList,
     /// Vertex count.
     pub vertex_count: u32,
     /// First vertex.
@@ -1770,7 +1752,7 @@ pub enum IndexFormat {
     Uint32,
 }
 
-/// Index buffer binding for indexed render steps.
+/// Index buffer binding for an indexed draw command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndexBufferBinding {
     /// Index buffer resource.
@@ -1781,13 +1763,13 @@ pub struct IndexBufferBinding {
     pub offset: u64,
 }
 
-/// One indexed draw step inside a render pass.
+/// One indexed draw command recorded inside a render pass.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DrawIndexedStepDescriptor {
+pub struct DrawIndexedCommand {
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
-    /// Resource sets bound before drawing.
-    pub resource_sets: ResourceSetList,
+    /// Bind groups bound before drawing.
+    pub bind_groups: BindGroupList,
     /// Index buffer binding.
     pub index_buffer: IndexBufferBinding,
     /// Index count.
@@ -1804,146 +1786,62 @@ pub struct DrawIndexedStepDescriptor {
     pub scissor: Option<ScissorRect>,
 }
 
-/// Render step accepted by the GPUI nova compatibility layer.
+/// One recorded render command.
+///
+/// Commands execute in recording order inside their render pass.
 #[derive(Clone, Debug, PartialEq)]
-pub enum RenderStepDescriptor {
+pub enum RenderCommand {
     /// Non-indexed draw.
-    Draw(DrawStepDescriptor),
+    Draw(DrawCommand),
     /// Indexed draw.
-    DrawIndexed(DrawIndexedStepDescriptor),
+    DrawIndexed(DrawIndexedCommand),
 }
 
-/// Borrowed render step accepted by backend hot paths.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RenderStepRef<'a> {
-    /// Non-indexed draw.
-    Draw(&'a DrawStepDescriptor),
-    /// Indexed draw.
-    DrawIndexed(&'a DrawIndexedStepDescriptor),
-}
-
-impl<'a> RenderStepRef<'a> {
-    /// Returns the pipeline used by this step.
+impl RenderCommand {
+    /// Returns the pipeline used by this command.
     #[must_use]
-    pub fn pipeline(self) -> RenderPipelineId {
+    pub fn pipeline(&self) -> RenderPipelineId {
         match self {
-            Self::Draw(step) => step.pipeline,
-            Self::DrawIndexed(step) => step.pipeline,
+            Self::Draw(command) => command.pipeline,
+            Self::DrawIndexed(command) => command.pipeline,
         }
     }
 
-    /// Returns the resource sets bound by this step.
+    /// Returns the bind groups bound before this command.
     #[must_use]
-    pub fn resource_sets(self) -> &'a [ResourceSetId] {
+    pub fn bind_groups(&self) -> &[BindGroupId] {
         match self {
-            Self::Draw(step) => step.resource_sets.as_slice(),
-            Self::DrawIndexed(step) => step.resource_sets.as_slice(),
+            Self::Draw(command) => command.bind_groups.as_slice(),
+            Self::DrawIndexed(command) => command.bind_groups.as_slice(),
         }
     }
 
-    /// Returns the optional scissor rectangle.
+    /// Returns the optional scissor rectangle for this command.
     #[must_use]
-    pub fn scissor(self) -> Option<ScissorRect> {
+    pub fn scissor(&self) -> Option<ScissorRect> {
         match self {
-            Self::Draw(step) => step.scissor,
-            Self::DrawIndexed(step) => step.scissor,
+            Self::Draw(command) => command.scissor,
+            Self::DrawIndexed(command) => command.scissor,
+        }
+    }
+
+    /// Replaces the scissor rectangle for this command.
+    pub fn set_scissor(&mut self, scissor: Option<ScissorRect>) {
+        match self {
+            Self::Draw(command) => command.scissor = scissor,
+            Self::DrawIndexed(command) => command.scissor = scissor,
+        }
+    }
+
+    /// Returns the instance count for this command.
+    #[must_use]
+    pub fn instance_count(&self) -> u32 {
+        match self {
+            Self::Draw(command) => command.instance_count,
+            Self::DrawIndexed(command) => command.instance_count,
         }
     }
 }
-
-impl<'a> From<&'a DrawStepDescriptor> for RenderStepRef<'a> {
-    fn from(step: &'a DrawStepDescriptor) -> Self {
-        Self::Draw(step)
-    }
-}
-
-impl<'a> From<&'a RenderStepDescriptor> for RenderStepRef<'a> {
-    fn from(step: &'a RenderStepDescriptor) -> Self {
-        match step {
-            RenderStepDescriptor::Draw(step) => Self::Draw(step),
-            RenderStepDescriptor::DrawIndexed(step) => Self::DrawIndexed(step),
-        }
-    }
-}
-
-/// Borrowed list of render steps used to avoid compatibility allocations.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RenderStepList<'a> {
-    /// Non-indexed draw descriptors.
-    Draw(&'a [DrawStepDescriptor]),
-    /// Full render-step descriptors.
-    Render(&'a [RenderStepDescriptor]),
-}
-
-impl<'a> RenderStepList<'a> {
-    /// Creates a borrowed list from legacy draw steps.
-    #[must_use]
-    pub const fn from_draw_steps(steps: &'a [DrawStepDescriptor]) -> Self {
-        Self::Draw(steps)
-    }
-
-    /// Creates a borrowed list from render steps.
-    #[must_use]
-    pub const fn from_render_steps(steps: &'a [RenderStepDescriptor]) -> Self {
-        Self::Render(steps)
-    }
-
-    /// Returns true when the list is empty.
-    #[must_use]
-    pub fn is_empty(self) -> bool {
-        match self {
-            Self::Draw(steps) => steps.is_empty(),
-            Self::Render(steps) => steps.is_empty(),
-        }
-    }
-
-    /// Returns the first step.
-    #[must_use]
-    pub fn first(self) -> Option<RenderStepRef<'a>> {
-        match self {
-            Self::Draw(steps) => steps.first().map(RenderStepRef::from),
-            Self::Render(steps) => steps.first().map(RenderStepRef::from),
-        }
-    }
-
-    /// Iterates over borrowed render steps.
-    #[must_use]
-    pub fn iter(self) -> RenderStepListIter<'a> {
-        match self {
-            Self::Draw(steps) => RenderStepListIter::Draw(steps.iter()),
-            Self::Render(steps) => RenderStepListIter::Render(steps.iter()),
-        }
-    }
-}
-
-/// Iterator over a borrowed render-step list.
-#[derive(Clone, Debug)]
-pub enum RenderStepListIter<'a> {
-    /// Non-indexed draw descriptor iterator.
-    Draw(std::slice::Iter<'a, DrawStepDescriptor>),
-    /// Full render-step descriptor iterator.
-    Render(std::slice::Iter<'a, RenderStepDescriptor>),
-}
-
-impl<'a> Iterator for RenderStepListIter<'a> {
-    type Item = RenderStepRef<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Draw(steps) => steps.next().map(RenderStepRef::from),
-            Self::Render(steps) => steps.next().map(RenderStepRef::from),
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            Self::Draw(steps) => steps.size_hint(),
-            Self::Render(steps) => steps.size_hint(),
-        }
-    }
-}
-
-impl ExactSizeIterator for RenderStepListIter<'_> {}
 
 /// Integer scissor rectangle in render target coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2118,30 +2016,59 @@ pub enum MemoryTrimLevel {
     Aggressive,
 }
 
-/// Depth attachment used for render submission compatibility methods.
+/// Depth attachment for a render pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RenderPassDepthAttachment {
+pub struct DepthAttachment {
     /// Depth texture view target.
     pub target: TextureViewId,
     /// Depth load operation.
     pub depth_load_op: LoadOp<f32>,
 }
 
-/// One ordered render-step list targeting an offscreen texture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RenderViewport {
-    /// Active client extent in full-resolution drawable pixels.
-    pub extent: Extent2d,
-    /// Full-resolution drawable allocation that `extent` is relative to.
-    pub reference_extent: Extent2d,
+/// Signed viewport origin used when a render region starts outside its attachment.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SignedOrigin2d {
+    /// Horizontal viewport origin in pixels.
+    pub x: i32,
+    /// Vertical viewport origin in pixels.
+    pub y: i32,
 }
 
-impl RenderViewport {
-    /// Maps the active client area onto a full-resolution or downsampled render target.
+impl SignedOrigin2d {
+    /// Zero origin.
+    pub const ZERO: Self = Self { x: 0, y: 0 };
+}
+
+/// Controls how a viewport maps to its target allocation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ViewportMapping {
+    /// Scale the viewport proportionally to the target allocation.
+    #[default]
+    Scaled,
+    /// Keep source-pixel dimensions and origin, allowing the viewport to extend beyond a tile.
+    PixelExact,
+}
+
+/// A viewport mapped onto a render target allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Viewport {
+    /// Viewport origin in source-pixel coordinates. A pixel-exact mapping may use a negative
+    /// origin to render one content-space tile of a larger target.
+    pub origin: SignedOrigin2d,
+    /// Source extent in full-resolution pixels.
+    pub extent: Extent2d,
+    /// Reference allocation that `extent` is relative to.
+    pub reference_extent: Extent2d,
+    /// Mapping policy for the render-target viewport.
+    pub mapping: ViewportMapping,
+}
+
+impl Viewport {
+    /// Maps the source extent onto a full-resolution or downsampled render target.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] if the active extent exceeds its reference allocation.
+    /// Returns [`Error::InvalidInput`] if the source extent exceeds its reference allocation.
     pub fn for_target(self, target_extent: Extent2d) -> Result<Extent2d> {
         if self.extent.width() > self.reference_extent.width()
             || self.extent.height() > self.reference_extent.height()
@@ -2149,6 +2076,9 @@ impl RenderViewport {
             return Err(Error::InvalidInput(
                 "render viewport exceeds its reference extent".into(),
             ));
+        }
+        if self.mapping == ViewportMapping::PixelExact {
+            return Ok(self.extent);
         }
         let map_axis = |active: u32, reference: u32, target: u32| -> Result<u32> {
             let numerator = u64::from(active) * u64::from(target);
@@ -2169,17 +2099,114 @@ impl RenderViewport {
             )?,
         )
     }
+
+    /// Maps the viewport origin to the target's pixel coordinate system.
+    ///
+    /// Pixel-exact mappings preserve signed offsets so a tile can rasterize a stable region of a
+    /// larger content-space target without changing primitive coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] if the mapped origin overflows `i32`.
+    pub fn mapped_origin(self, target_extent: Extent2d) -> Result<SignedOrigin2d> {
+        if self.mapping == ViewportMapping::PixelExact {
+            return Ok(self.origin);
+        }
+        let map_axis = |origin: i32, target: u32, reference: u32| -> Result<i32> {
+            let scaled = i64::from(origin) * i64::from(target) / i64::from(reference);
+            i32::try_from(scaled).map_err(|error| {
+                Error::InvalidInput(format!("render viewport origin overflow: {error}"))
+            })
+        };
+        Ok(SignedOrigin2d {
+            x: map_axis(
+                self.origin.x,
+                target_extent.width(),
+                self.reference_extent.width(),
+            )?,
+            y: map_axis(
+                self.origin.y,
+                target_extent.height(),
+                self.reference_extent.height(),
+            )?,
+        })
+    }
+
+    /// Translates a source-space scissor into this pixel-exact viewport's target coordinates.
+    ///
+    /// Scaled viewports retain the existing scissor coordinates. Pixel-exact viewports translate
+    /// them by the viewport origin and clip the result to the physical attachment, which lets a
+    /// tile render the matching part of a larger target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] if this viewport is invalid for `target_extent`.
+    pub fn map_scissor(self, scissor: ScissorRect, target_extent: Extent2d) -> Result<ScissorRect> {
+        if self.mapping != ViewportMapping::PixelExact {
+            return Ok(scissor);
+        }
+
+        self.for_target(target_extent)?;
+
+        fn clip_axis(start: u32, length: u32, origin: i32, limit: u32) -> (u32, u32) {
+            let start = i64::from(start) + i64::from(origin);
+            let end = start + i64::from(length);
+            let clipped_start = start.clamp(0, i64::from(limit));
+            let clipped_end = end.clamp(clipped_start, i64::from(limit));
+            (
+                u32::try_from(clipped_start)
+                    .expect("clipped scissor origin is within the target extent"),
+                u32::try_from(clipped_end - clipped_start)
+                    .expect("clipped scissor length is within the target extent"),
+            )
+        }
+
+        let (x, width) = clip_axis(
+            scissor.x,
+            scissor.width,
+            self.origin.x,
+            target_extent.width(),
+        );
+        let (y, height) = clip_axis(
+            scissor.y,
+            scissor.height,
+            self.origin.y,
+            target_extent.height(),
+        );
+        Ok(ScissorRect {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    /// Returns the target-local scissor extent for this mapping.
+    ///
+    /// Scaled viewports keep the source extent's scissor behavior. Pixel-exact viewports may
+    /// span beyond a tile, so their scissor is clipped to the physical attachment.
+    pub fn mapped_scissor_extent(self, target_extent: Extent2d) -> Result<Extent2d> {
+        let viewport_extent = self.for_target(target_extent)?;
+        if self.mapping == ViewportMapping::PixelExact {
+            Extent2d::new(
+                viewport_extent.width().min(target_extent.width()),
+                viewport_extent.height().min(target_extent.height()),
+            )
+        } else {
+            Ok(viewport_extent)
+        }
+    }
 }
 
-/// One ordered render-step list targeting an offscreen texture.
+/// One ordered render command list targeting an offscreen texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextureRenderStepList<'a> {
+pub struct RenderPassCommands<'a> {
     /// Color texture view receiving this pass.
     pub texture_view: TextureViewId,
     /// Render pass used by this operation.
     pub render_pass: RenderPassId,
-    /// Borrowed draw steps recorded into the pass.
-    pub steps: RenderStepList<'a>,
+    /// Borrowed commands recorded into the pass.
+    pub commands: &'a [RenderCommand],
     /// Color target load behavior.
     pub color_load_op: LoadOp<ClearColor>,
     /// Optional rectangle limiting attachment Clear operations. A backend may
@@ -2188,11 +2215,26 @@ pub struct TextureRenderStepList<'a> {
     /// from the cleared attachment before being initialized.
     pub clear_region: Option<ScissorRect>,
     /// Optional depth target and load behavior.
-    pub depth_attachment: Option<RenderPassDepthAttachment>,
-    /// Active client viewport mapped proportionally to this target. `None` renders across the
-    /// entire target. Scene capture passes should use this during retained-capacity resize so
-    /// coordinates and clipping match the current client area even when textures are larger.
-    pub viewport: Option<RenderViewport>,
+    pub depth_attachment: Option<DepthAttachment>,
+    /// Optional viewport mapped onto the target. `None` renders across the entire target.
+    pub viewport: Option<Viewport>,
+}
+
+/// One swapchain frame to record and present.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresentFrameDescriptor<'a> {
+    /// Swapchain receiving the frame.
+    pub swapchain: SwapchainId,
+    /// Render pass layout used to record the frame.
+    pub render_pass: RenderPassId,
+    /// Commands recorded into the swapchain image.
+    pub commands: &'a [RenderCommand],
+    /// Color load operation for the swapchain image.
+    pub color_load_op: LoadOp<ClearColor>,
+    /// Optional depth target and load behavior.
+    pub depth_attachment: Option<DepthAttachment>,
+    /// Changed region passed to native incremental presentation when supported.
+    pub present_region: Option<ScissorRect>,
 }
 
 /// Backend resource statistics.
@@ -2217,10 +2259,10 @@ pub struct ResourceStats {
     pub texture_views: usize,
     /// Live samplers.
     pub samplers: usize,
-    /// Live resource set layouts.
-    pub resource_set_layouts: usize,
-    /// Live resource sets.
-    pub resource_sets: usize,
+    /// Live bind group layouts.
+    pub bind_group_layouts: usize,
+    /// Live bind groups.
+    pub bind_groups: usize,
     /// Live pipeline layouts.
     pub pipeline_layouts: usize,
     /// Live shader modules.
@@ -2270,11 +2312,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renderer_extension_device_is_object_safe() {
-        let _: Option<&mut dyn ExtensionDevice> = None;
-    }
-
-    #[test]
     fn depth_state_defaults_to_less_equal_with_depth_writes() {
         assert_eq!(
             DepthState::default(),
@@ -2293,10 +2330,12 @@ mod tests {
     }
 
     #[test]
-    fn render_viewport_scales_to_retained_target_capacity() {
-        let viewport = RenderViewport {
+    fn viewport_scales_to_target_capacity() {
+        let viewport = Viewport {
+            origin: SignedOrigin2d::ZERO,
             extent: Extent2d::new(520, 522).expect("client extent"),
             reference_extent: Extent2d::new(768, 768).expect("allocation extent"),
+            mapping: ViewportMapping::Scaled,
         };
 
         assert_eq!(
@@ -2314,16 +2353,70 @@ mod tests {
     }
 
     #[test]
-    fn render_viewport_rejects_extent_outside_reference() {
-        let viewport = RenderViewport {
+    fn viewport_rejects_extent_outside_reference() {
+        let viewport = Viewport {
+            origin: SignedOrigin2d::ZERO,
             extent: Extent2d::new(769, 768).expect("client extent"),
             reference_extent: Extent2d::new(768, 768).expect("allocation extent"),
+            mapping: ViewportMapping::Scaled,
         };
 
         assert!(
             viewport
                 .for_target(Extent2d::new(768, 768).expect("target extent"))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn pixel_exact_viewport_translates_and_clips_scissors_to_tile() {
+        let viewport = Viewport {
+            origin: SignedOrigin2d { x: -12, y: 8 },
+            extent: Extent2d::new(64, 48).expect("client extent"),
+            reference_extent: Extent2d::new(64, 48).expect("allocation extent"),
+            mapping: ViewportMapping::PixelExact,
+        };
+        let target_extent = Extent2d::new(64, 48).expect("target extent");
+        let scissor = ScissorRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        };
+
+        assert_eq!(
+            viewport
+                .map_scissor(scissor, target_extent)
+                .expect("clipped scissor"),
+            ScissorRect {
+                x: 0,
+                y: 8,
+                width: 20,
+                height: 32,
+            },
+        );
+    }
+
+    #[test]
+    fn scaled_viewport_keeps_existing_scissor_coordinates() {
+        let viewport = Viewport {
+            origin: SignedOrigin2d { x: 10, y: 20 },
+            extent: Extent2d::new(100, 100).expect("client extent"),
+            reference_extent: Extent2d::new(100, 100).expect("allocation extent"),
+            mapping: ViewportMapping::Scaled,
+        };
+        let scissor = ScissorRect {
+            x: 5,
+            y: 6,
+            width: 30,
+            height: 40,
+        };
+
+        assert_eq!(
+            viewport
+                .map_scissor(scissor, Extent2d::new(50, 50).expect("target extent"))
+                .expect("scaled scissor"),
+            scissor,
         );
     }
 
@@ -2547,17 +2640,17 @@ mod tests {
 
     #[test]
     fn resource_set_layout_rejects_duplicate_bindings() {
-        let descriptor = ResourceSetLayoutDescriptor {
+        let descriptor = BindGroupLayoutDescriptor {
             label: None,
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
             ],
@@ -2568,18 +2661,18 @@ mod tests {
 
     #[test]
     fn resource_set_rejects_mismatched_binding_type() {
-        let layout = ResourceSetLayoutDescriptor {
+        let layout = BindGroupLayoutDescriptor {
             label: None,
-            entries: vec![ResourceSetLayoutEntry {
+            entries: vec![BindGroupLayoutEntry {
                 binding: 0,
-                binding_type: ResourceBindingType::SampledTexture,
+                binding_type: BindingType::SampledTexture,
                 stages: ShaderStages::FRAGMENT,
             }],
         };
-        let descriptor = ResourceSetDescriptor {
+        let descriptor = BindGroupDescriptor {
             label: None,
-            layout: ResourceSetLayoutId::from_parts(1, 1),
-            bindings: vec![ResourceBinding {
+            layout: BindGroupLayoutId::from_parts(1, 1),
+            entries: vec![BindGroupEntry {
                 binding: 0,
                 resource: BindingResource::Sampler(SamplerBinding {
                     sampler: SamplerId::from_parts(2, 1),
@@ -2592,32 +2685,32 @@ mod tests {
 
     #[test]
     fn resource_set_accepts_unordered_bindings() {
-        let layout = ResourceSetLayoutDescriptor {
+        let layout = BindGroupLayoutDescriptor {
             label: None,
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 2,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
             ],
         };
-        let descriptor = ResourceSetDescriptor {
+        let descriptor = BindGroupDescriptor {
             label: None,
-            layout: ResourceSetLayoutId::from_parts(1, 1),
-            bindings: vec![
-                ResourceBinding {
+            layout: BindGroupLayoutId::from_parts(1, 1),
+            entries: vec![
+                BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::Sampler(SamplerBinding {
                         sampler: SamplerId::from_parts(2, 1),
                     }),
                 },
-                ResourceBinding {
+                BindGroupEntry {
                     binding: 0,
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: BufferId::from_parts(3, 1),

@@ -21,15 +21,15 @@ mod windows_example {
     use std::{num::NonZeroIsize, time::Instant};
 
     use gfx_core::{
-        BlendMode, BufferBinding, BufferDescriptor, BufferUsage, ClearColor, ColorAttachmentDescriptor,
-        DeviceDescriptor, Format, PipelineDevice, PresentationDevice, ResourceDevice,
-        SurfaceDevice, MemoryLocation, Origin2d, PipelineLayoutDescriptor, PresentMode,
-        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceBinding,
-        BindingResource, ResourceBindingType, ResourceSetDescriptor, ResourceSetId,
-        ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, SamplerBinding, SamplerDescriptor,
-        ShaderModuleDescriptor, ShaderStage, ShaderStages, SurfaceConfig, SurfaceDescriptor, SurfaceId,
-        TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureUsage,
-        TextureViewDescriptor, TextureWriteDescriptor,
+        BindGroupDescriptor, BindGroupEntry, BindGroupId, BindGroupLayoutDescriptor,
+        BindGroupLayoutEntry, BindingResource, BindingType, BlendMode, BufferBinding,
+        BufferDescriptor, BufferUsage, ClearColor, ColorAttachmentDescriptor, DeviceDescriptor,
+        Format, MemoryLocation, Origin2d, PipelineDevice, PipelineLayoutDescriptor, PresentMode,
+        PresentationDevice, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+        RenderPipelineId, ResourceDevice, SamplerBinding, SamplerDescriptor,
+        ShaderModuleDescriptor, ShaderStage, ShaderStages, SurfaceConfig, SurfaceDescriptor,
+        SurfaceDevice, SurfaceId, TextureBinding, TextureDataLayout, TextureDescriptor,
+        TextureDimension, TextureUsage, TextureViewDescriptor, TextureWriteDescriptor,
     };
     use gfx_dx12::Dx12Device;
     use gfx_shader::compile_wgsl_to_hlsl;
@@ -221,7 +221,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         swapchain: gfx_core::SwapchainId,
         render_pass: RenderPassId,
         pipeline: RenderPipelineId,
-        resource_set: ResourceSetId,
+        bind_group: BindGroupId,
         current_size: WindowSize,
         metrics_started_at: Instant,
         metrics: Metrics,
@@ -264,10 +264,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 },
                 depth_attachment: None,
             })?;
-            let layout = device.create_resource_set_layout(&atlas_layout_desc())?;
+            let layout = device.create_bind_group_layout(&atlas_layout_desc())?;
             let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("atlas dx12 pipeline layout".to_string()),
-                resource_set_layouts: vec![layout],
+                bind_group_layouts: vec![layout],
             })?;
             let uniform = device.create_buffer(&BufferDescriptor {
                 label: Some("atlas dx12 uniform".to_string()),
@@ -304,11 +304,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 format: Format::Rgba8Unorm,
             })?;
             let sampler = device.create_sampler(&SamplerDescriptor::default())?;
-            let resource_set = device.create_resource_set(&ResourceSetDescriptor {
-                label: Some("atlas dx12 resource set".to_string()),
+            let bind_group = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("atlas dx12 bind group".to_string()),
                 layout,
-                bindings: vec![
-                    ResourceBinding {
+                entries: vec![
+                    BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::Buffer(BufferBinding {
                             buffer: uniform,
@@ -317,11 +317,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                             stride: None,
                         }),
                     },
-                    ResourceBinding {
+                    BindGroupEntry {
                         binding: 1,
                         resource: BindingResource::Texture(TextureBinding { texture_view }),
                     },
-                    ResourceBinding {
+                    BindGroupEntry {
                         binding: 2,
                         resource: BindingResource::Sampler(SamplerBinding { sampler }),
                     },
@@ -350,7 +350,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 swapchain,
                 render_pass,
                 pipeline,
-                resource_set,
+                bind_group,
                 current_size,
                 metrics_started_at,
                 metrics: Metrics {
@@ -373,14 +373,24 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
 
         fn draw_atlas(&mut self) -> gfx_core::Result<()> {
-            self.device.draw_resources_and_present(
-                self.swapchain,
-                self.render_pass,
-                self.pipeline,
-                &[self.resource_set],
-                clear_color(),
-                6,
-            )?;
+            let command = gfx_core::RenderCommand::Draw(gfx_core::DrawCommand {
+                pipeline: self.pipeline,
+                bind_groups: gfx_core::bind_group_list([self.bind_group]),
+                vertex_count: 6,
+                first_vertex: 0,
+                instance_count: 1,
+                first_instance: 0,
+                scissor: None,
+            });
+            let frame = gfx_core::PresentFrameDescriptor {
+                swapchain: self.swapchain,
+                render_pass: self.render_pass,
+                commands: std::slice::from_ref(&command),
+                color_load_op: gfx_core::LoadOp::Clear(clear_color()),
+                depth_attachment: None,
+                present_region: None,
+            };
+            self.device.render_and_present(&frame)?;
             self.metrics.submitted_frames = self.metrics.submitted_frames.saturating_add(1);
             if self.metrics.first_frame_time.is_none() {
                 self.metrics.first_frame_time = Some(self.metrics_started_at.elapsed());
@@ -390,23 +400,23 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
     }
 
-    fn atlas_layout_desc() -> ResourceSetLayoutDescriptor {
-        ResourceSetLayoutDescriptor {
-            label: Some("atlas dx12 resource set layout".to_string()),
+    fn atlas_layout_desc() -> BindGroupLayoutDescriptor {
+        BindGroupLayoutDescriptor {
+            label: Some("atlas dx12 bind group layout".to_string()),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 1,
-                    binding_type: ResourceBindingType::SampledTexture,
+                    binding_type: BindingType::SampledTexture,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 2,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
             ],

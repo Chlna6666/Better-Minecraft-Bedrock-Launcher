@@ -26,12 +26,12 @@ impl PipelineDevice for Dx11Device {
         &mut self,
         desc: &PipelineLayoutDescriptor,
     ) -> Result<PipelineLayoutId> {
-        if desc.resource_set_layouts.len() > 1 {
+        if desc.bind_group_layouts.len() > 1 {
             return Err(Error::Unavailable(
                 "D3D11 currently supports resource group zero".into(),
             ));
         }
-        for layout in &desc.resource_set_layouts {
+        for layout in &desc.bind_group_layouts {
             self.layouts.get(*layout)?;
         }
         Ok(self.pipeline_layouts.insert(desc.clone()))

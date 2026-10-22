@@ -321,7 +321,7 @@ impl VulkanDevice {
         }
         // All descriptor references were checked before changing any native object.
         for id in {
-            let ids: Vec<ResourceSetId> = self.resource_sets.live_ids();
+            let ids: Vec<BindGroupId> = self.bind_groups.live_ids();
             ids
         } {
             self.rewrite_compact_set(id)?;

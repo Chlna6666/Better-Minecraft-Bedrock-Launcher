@@ -24,7 +24,7 @@ fn live_resize_capacity_blit_presents_only_the_native_client_region() {
     let layout = device
         .create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            resource_set_layouts: vec![],
+            bind_group_layouts: vec![],
         })
         .expect("layout");
     let source = "@vertex fn vs(@builtin(vertex_index) v:u32)->@builtin(position) vec4<f32>{ let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[v],0.0,1.0); } @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{if p.x<32.0{return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,1.0,1.0);}";
@@ -36,9 +36,9 @@ fn live_resize_capacity_blit_presents_only_the_native_client_region() {
         gfx_core::BlendMode::Replace,
         false,
     );
-    let draw = DrawStepDescriptor {
+    let draw = DrawCommand {
         pipeline,
-        resource_sets: resource_set_list([]),
+        bind_groups: bind_group_list([]),
         vertex_count: 3,
         first_vertex: 0,
         instance_count: 1,
@@ -62,13 +62,14 @@ fn live_resize_capacity_blit_presents_only_the_native_client_region() {
         .set_swapchain_source_extent(chain, Extent2d::new(32, 32).expect("client extent"))
         .expect("client source extent");
     device
-        .render_step_list_and_present_compat(
-            chain,
-            pass,
-            RenderStepList::Draw(&[draw]),
-            CLEAR,
-            None,
-        )
+        .render_and_present(&PresentFrameDescriptor {
+            swapchain: chain,
+            render_pass: pass,
+            commands: &[RenderCommand::Draw(draw)],
+            color_load_op: LoadOp::Clear(CLEAR),
+            depth_attachment: None,
+            present_region: None,
+        })
         .expect("native-pixel presentation");
     let swapchain = device.swapchains.get(chain).expect("live swapchain");
     device
@@ -166,24 +167,26 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             .expect("surface pass");
         for _ in 0..3 {
             device
-                .render_step_list_and_present_compat(
-                    chain,
-                    pass,
-                    RenderStepList::Draw(&[]),
-                    CLEAR,
-                    None,
-                )
+                .render_and_present(&PresentFrameDescriptor {
+                    swapchain: chain,
+                    render_pass: pass,
+                    commands: &[],
+                    color_load_op: LoadOp::Clear(CLEAR),
+                    depth_attachment: None,
+                    present_region: None,
+                })
                 .expect("present");
         }
         device.resize_swapchain(chain, 96, 80).expect("resize");
         device
-            .render_step_list_and_present_compat(
-                chain,
-                pass,
-                RenderStepList::Draw(&[]),
-                CLEAR,
-                None,
-            )
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: chain,
+                render_pass: pass,
+                commands: &[],
+                color_load_op: LoadOp::Clear(CLEAR),
+                depth_attachment: None,
+                present_region: None,
+            })
             .expect("resized present");
         let config = gfx_core::SurfaceConfig {
             size: Extent2d::new(80, 72).expect("size"),
@@ -193,13 +196,14 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             .recreate_swapchain(chain, config)
             .expect("reconfigure native window");
         device
-            .render_step_list_and_present_compat(
-                chain,
-                pass,
-                RenderStepList::Draw(&[]),
-                CLEAR,
-                None,
-            )
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: chain,
+                render_pass: pass,
+                commands: &[],
+                color_load_op: LoadOp::Clear(CLEAR),
+                depth_attachment: None,
+                present_region: None,
+            })
             .expect("reconfigured present");
         device.destroy_swapchain(chain).expect("destroy chain");
         device.destroy_surface(surface).expect("destroy surface");

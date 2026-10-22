@@ -90,13 +90,12 @@ impl SurfaceDevice for Dx11Device {
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             // An HWND can grow before the matching Scene/ResizeBuffers is ready.
-            // Preserve native glyph pixels in that interval instead of letting DXGI
-            // stretch the last backbuffer. Composition requires STRETCH by contract.
-            Scaling: if composited {
-                DXGI_SCALING_STRETCH
-            } else {
-                DXGI_SCALING_NONE
-            },
+            // Let DWM scale the last presented frame across that exposed client
+            // strip instead of showing undefined black pixels. The swapchain is
+            // resized to the exact client extent before the matching Scene is
+            // presented, so the settled frame is still presented one-to-one.
+            // Composition requires STRETCH by contract as well.
+            Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: if composited {
                 DXGI_ALPHA_MODE_PREMULTIPLIED
@@ -171,6 +170,18 @@ impl SurfaceDevice for Dx11Device {
         chain.source_extent = extent;
         Ok(())
     }
+    fn resize_swapchain(&mut self, id: SwapchainId, size: Extent2d) -> Result<()> {
+        Self::resize_swapchain(self, id, size.width(), size.height())
+    }
+
+    fn recreate_swapchain(
+        &mut self,
+        id: SwapchainId,
+        config: SurfaceConfig,
+    ) -> Result<SwapchainId> {
+        Self::recreate_swapchain(self, id, config)
+    }
+
     fn destroy_swapchain(&mut self, id: SwapchainId) -> Result<()> {
         if let Some(composition) = &self.swapchains.get(id)?.composition {
             composition.detach()?;
@@ -211,18 +222,17 @@ impl Dx11Device {
     /// Call [`SurfaceDevice::prepare_swapchain_resize`] first to poll this window's prior
     /// rendering/Present work. DXGI still synchronizes the native replacement. Successful
     /// HWND ResizeBuffers advances the buffer generation and consumes its retirement marker,
-    /// including when subsequent view acquisition fails. Composition prepares an unattached
-    /// candidate and keeps the last published native content until a successful first Present.
+    /// including when subsequent view acquisition fails. Retain the native swapchain attached
+    /// to the composition visual; bitmap presentation and visual-tree commits are independent.
     /// # Errors
     /// Returns a native resize error; existing buffers are reacquired on failure.
     pub fn resize_swapchain(&mut self, id: SwapchainId, width: u32, height: u32) -> Result<()> {
         let size = Extent2d::new(width, height)?;
-        if self.swapchains.get(id)?.composition.is_some() {
-            return composition::prepare_resize(self, id, size);
-        }
         let resize_started = std::time::Instant::now();
         let chain = self.swapchains.get_mut(id)?;
         chain.pacing.cancel();
+        let previous_size = chain.config.size;
+        let previous_source = chain.source_extent;
         let cancel_elapsed = resize_started.elapsed();
         // SAFETY: clear indirect references before DXGI ResizeBuffers; immediate commands
         // retain native resources until execution retires, and DXGI synchronizes the resize.
@@ -242,17 +252,22 @@ impl Dx11Device {
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
             )
         };
-        let dxgi_elapsed = resize_started.elapsed()
+        let dxgi_elapsed = resize_started
+            .elapsed()
             .saturating_sub(cancel_elapsed + flush_elapsed);
         if result.is_ok() {
             chain.generation = chain.generation.wrapping_add(1);
             chain.resize_retirement = None;
+            chain.config.size = size;
+            chain.source_extent = size;
+            rebuild_backbuffer_view(&self.native, chain, previous_size, previous_source)?;
+        } else {
+            chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
         }
-        chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
-        let view_elapsed = resize_started.elapsed()
+        let view_elapsed = resize_started
+            .elapsed()
             .saturating_sub(cancel_elapsed + flush_elapsed + dxgi_elapsed);
         result.map_err(backend)?;
-        chain.config.size = size;
         // Preserve DXGI frame-ready credit acquired from the auto-reset waitable
         // object before ResizeBuffers. cancel() above already drains callbacks
         // without dropping an acquired signal. reset() here would clear the
@@ -262,15 +277,14 @@ impl Dx11Device {
         // present_steps() consumes the credit only after successful Present.
         // A replacement swapchain uses a new FrameLatencyWait; old credit cannot
         // leak across a swapchain-identity change.
-        let stretch_started = std::time::Instant::now();
-        let stretch_result = self.stretch(id, None);
-        let stretch_elapsed = stretch_started.elapsed();
+        // Keep the last frame's coverage until present_steps publishes the new-size
+        // pixels. Resetting the visual here races the first replacement-buffer Present.
         let total = resize_started.elapsed();
         // Emit outliers only: tracing every WM_SIZE would itself disrupt high-refresh resize.
         if total >= std::time::Duration::from_millis(16) {
             log::warn!(
-                target: "gpui_gpu_resize",
-                "slow_dx11_resize_phases physical_px={}x{} total_us={} pacing_cancel_us={} context_flush_us={} dxgi_resize_buffers_us={} backbuffer_view_us={} dcomp_reset_us={}",
+                target: "nova_dx11_surface",
+                "slow_dx11_resize_phases physical_px={}x{} total_us={} pacing_cancel_us={} context_flush_us={} dxgi_resize_buffers_us={} backbuffer_view_us={}",
                 width,
                 height,
                 total.as_micros(),
@@ -278,10 +292,9 @@ impl Dx11Device {
                 flush_elapsed.as_micros(),
                 dxgi_elapsed.as_micros(),
                 view_elapsed.as_micros(),
-                stretch_elapsed.as_micros(),
             );
         }
-        stretch_result
+        Ok(())
     }
     /// Replaces alpha/presentation configuration at a swapchain lifecycle boundary.
     /// # Errors
@@ -333,9 +346,12 @@ impl Dx11Device {
         Ok(id)
     }
     pub(crate) fn stretch(&mut self, id: SwapchainId, scale: Option<[f32; 2]>) -> Result<()> {
-        let chain = self.swapchains.get(id)?;
-        if let Some(composition) = &chain.composition {
+        let chain = self.swapchains.get_mut(id)?;
+        if let Some(composition) = &mut chain.composition {
             let scale = scale.unwrap_or([1.0, 1.0]);
+            if composition.scale == scale {
+                return Ok(());
+            }
             // SAFETY: matrix has finite scale supplied by the renderer; COM references stay live.
             unsafe {
                 composition
@@ -348,6 +364,7 @@ impl Dx11Device {
                     .map_err(backend)?;
                 composition.device.Commit().map_err(backend)?;
             }
+            composition.scale = scale;
         }
         Ok(())
     }
@@ -355,9 +372,9 @@ impl Dx11Device {
         &mut self,
         id: SwapchainId,
         pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
+        commands: &[RenderCommand],
+        load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>,
     ) -> Result<SubmissionId> {
         // D3D11 rotates the identity of buffer zero at Present. Its retained view always
         // targets the next writable image; D3D12's physical image indexing does not apply.
@@ -367,8 +384,8 @@ impl Dx11Device {
                 image_index: 0,
             },
             pass,
-            steps,
-            LoadOp::Clear(color),
+            commands,
+            load,
             depth,
         )?;
         let chain = self.swapchains.get_mut(id)?;
@@ -414,4 +431,42 @@ fn backbuffer_view(
     let mut view = None;
     unsafe { device.CreateRenderTargetView(&buffer, None, Some(&mut view)) }.map_err(backend)?;
     required(view)
+}
+
+fn rebuild_backbuffer_view(
+    device: &ID3D11Device,
+    chain: &mut Swapchain,
+    previous_size: Extent2d,
+    previous_source: Extent2d,
+) -> Result<()> {
+    let error = match backbuffer_view(device, &chain.native) {
+        Ok(view) => {
+            chain.view = Some(view);
+            return Ok(());
+        }
+        Err(error) => error,
+    };
+    // SAFETY: failed view construction left no outstanding backbuffer view;
+    // the immediate context was unbound before the original ResizeBuffers.
+    unsafe {
+        chain.native.ResizeBuffers(
+            0,
+            previous_size.width(),
+            previous_size.height(),
+            DXGI_FORMAT_UNKNOWN,
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+        )
+    }
+    .map_err(|rollback| {
+        Error::Backend(format!("{error}; backbuffer rollback failed: {rollback}"))
+    })?;
+    chain.generation = chain.generation.wrapping_add(1);
+    chain.config.size = previous_size;
+    chain.source_extent = previous_source;
+    chain.view = Some(backbuffer_view(device, &chain.native).map_err(|rollback| {
+        Error::Backend(format!(
+            "{error}; restored backbuffer view failed: {rollback}"
+        ))
+    })?);
+    Err(error)
 }

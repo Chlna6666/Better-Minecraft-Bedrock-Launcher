@@ -1,7 +1,7 @@
 use crate::{
     pipelines::{Pipeline, Shader},
     registry::Registry,
-    resources::{Buffer, ResourceSet, Texture, View},
+    resources::{BindGroup, Buffer, Texture, View},
     surface::Swapchain,
 };
 use gfx_core::*;
@@ -59,8 +59,8 @@ pub struct OpenGlDevice {
     pub(crate) textures: Registry<Texture>,
     pub(crate) views: Registry<View>,
     pub(crate) samplers: Registry<glow::NativeSampler>,
-    pub(crate) layouts: Registry<ResourceSetLayoutDescriptor>,
-    pub(crate) sets: Registry<ResourceSet>,
+    pub(crate) layouts: Registry<BindGroupLayoutDescriptor>,
+    pub(crate) sets: Registry<BindGroup>,
     pub(crate) pipeline_layouts: Registry<PipelineLayoutDescriptor>,
     pub(crate) shaders: Registry<Shader>,
     pub(crate) passes: Registry<RenderPassDescriptor>,
@@ -350,6 +350,10 @@ impl OpenGlDevice {
 }
 impl Backend for OpenGlDevice {
     const BACKEND_KIND: BackendKind = BackendKind::OpenGl;
+
+    fn adapter_name(&self) -> &str {
+        self.adapter_name()
+    }
 }
 impl SubmissionDevice for OpenGlDevice {
     fn async_capabilities(&self) -> AsyncCapabilities {
@@ -388,9 +392,10 @@ impl SubmissionDevice for OpenGlDevice {
             if id.index() <= self.completed {
                 return Ok(());
             }
-            let (_, fence) = self.pending.front().ok_or_else(|| {
-                Error::Backend("OpenGL pending submission fence missing".into())
-            })?;
+            let (_, fence) = self
+                .pending
+                .front()
+                .ok_or_else(|| Error::Backend("OpenGL pending submission fence missing".into()))?;
             // Block in the driver for at most 1 ms instead of busy-polling with yield_now.
             // signal() already flushed the commands that produce this fence.
             let status = unsafe { self.gl.client_wait_sync(*fence, 0, 1_000_000) };
@@ -422,8 +427,8 @@ impl DiagnosticsDevice for OpenGlDevice {
             textures: self.textures.len(),
             texture_views: self.views.len(),
             samplers: self.samplers.len(),
-            resource_set_layouts: self.layouts.len(),
-            resource_sets: self.sets.len(),
+            bind_group_layouts: self.layouts.len(),
+            bind_groups: self.sets.len(),
             pipeline_layouts: self.pipeline_layouts.len(),
             shader_modules: self.shaders.len(),
             render_passes: self.passes.len(),

@@ -17,7 +17,7 @@ impl Dx12Device {
         Ok(self.completed_fence_value("DX12 swapchain retirement")? >= fence)
     }
 
-    pub(super) fn retire_swapchain_for_resize(&mut self, id: SwapchainId) -> Result<()> {
+    pub(super) fn retire_swapchain(&mut self, id: SwapchainId) -> Result<()> {
         self.poll_swapchain_resize(id)?;
         let fence = self
             .swapchains
@@ -110,8 +110,8 @@ impl Dx12Device {
     /// Replaces buffers and presentation configuration, retaining the device registry handle.
     ///
     /// Uses the same retirement and buffer-generation contract as [`Self::resize_swapchain`].
-    /// HWND buffers keep native identity. Composition uses an unattached candidate and
-    /// publishes it after its first successful Present. HWND alpha changes require recreation.
+    /// Size-only changes preserve native identity and the composition attachment.
+    /// Composition alpha changes use a replacement; HWND alpha changes require recreation.
     ///
     /// # Errors
     ///
@@ -148,7 +148,7 @@ impl Dx12Device {
         config: SurfaceConfig,
     ) -> Result<()> {
         if self.swapchains.get(swapchain)?.composition.is_some() {
-            self.retire_swapchain_for_resize(swapchain)?;
+            self.retire_swapchain(swapchain)?;
         } else {
             self.wait_for_pending_work()?;
         }
@@ -179,13 +179,15 @@ impl Dx12Device {
         swapchain: SwapchainId,
         config: SurfaceConfig,
     ) -> Result<()> {
-        if self.swapchains.get(swapchain)?.composition.is_some() {
+        if self.swapchains.get(swapchain)?.composition.is_some()
+            && self.swapchains.get(swapchain)?.config.alpha_mode != config.alpha_mode
+        {
             return self.recreate_swapchain_in_place(swapchain, config);
         }
         // ResizeBuffers retains this waitable object. Preserve any consumed
         // readiness credit while cancelling notifications for the old size.
         self.swapchains.get_mut(swapchain)?.frame_pacing.cancel();
-        self.retire_swapchain_for_resize(swapchain)?;
+        self.retire_swapchain(swapchain)?;
         let device = self.device.clone();
         let previous_config = self.swapchains.get(swapchain)?.config;
         if previous_config.alpha_mode != config.alpha_mode {
@@ -250,6 +252,7 @@ impl Dx12Device {
             return Err(error);
         }
 
+        swapchain.source_extent = config.size;
         Ok(())
     }
 
@@ -257,37 +260,54 @@ impl Dx12Device {
         let Some(composition) = &mut swapchain.composition else {
             return Ok(());
         };
-        if composition.active_content.as_ref() == Some(&swapchain.swapchain) {
+        if composition.active_content.as_ref() == Some(&swapchain.swapchain)
+            && composition.scale == [1.0, 1.0]
+        {
             return Ok(());
         }
         // SAFETY: Present succeeded for this candidate. Both generations remain owned
         // until the tree commit succeeds, including a failed commit/rollback attempt.
-        let result = unsafe {
-            composition
-                .visual
-                .SetContent(&swapchain.swapchain)
-                .and_then(|()| composition._target.SetRoot(&composition.visual))
-                .and_then(|()| composition._device.Commit())
-        };
+        let result =
+            Self::commit_composition_content(composition, Some(&swapchain.swapchain), [1.0, 1.0]);
         if let Err(error) = result {
-            let rollback = unsafe {
-                match &composition.active_content {
-                    Some(active) => composition
-                        .visual
-                        .SetContent(active)
-                        .and_then(|()| composition._target.SetRoot(&composition.visual)),
-                    None => composition._target.SetRoot(None),
-                }
-                .and_then(|()| composition._device.Commit())
-            };
+            let rollback = Self::commit_composition_content(
+                composition,
+                composition.active_content.as_ref(),
+                composition.scale,
+            );
             if let Err(rollback_error) = rollback {
                 log::warn!("DX12 composition content rollback failed: {rollback_error}");
             }
             return Err(Error::Backend(error.to_string()));
         }
         composition.active_content = Some(swapchain.swapchain.clone());
+        composition.scale = [1.0, 1.0];
         composition.fallback_hwnd = None;
         Ok(())
+    }
+
+    fn commit_composition_content(
+        composition: &Dx12Composition,
+        content: Option<&IDXGISwapChain3>,
+        scale: [f32; 2],
+    ) -> windows::core::Result<()> {
+        let matrix = Matrix3x2 {
+            M11: scale[0],
+            M22: scale[1],
+            ..Default::default()
+        };
+        // SAFETY: all COM objects and content belong to the live swapchain owner.
+        // New content and identity mapping must become visible in one transaction.
+        unsafe {
+            composition.transform.SetMatrix(&raw const matrix)?;
+            if let Some(content) = content {
+                composition.visual.SetContent(content)?;
+                composition._target.SetRoot(&composition.visual)?;
+            } else {
+                composition._target.SetRoot(None)?;
+            }
+            composition._device.Commit()
+        }
     }
 }
 

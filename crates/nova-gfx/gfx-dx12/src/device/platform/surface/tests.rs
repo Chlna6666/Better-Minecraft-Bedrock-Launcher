@@ -137,13 +137,8 @@ fn verify_native_scaling(device: &Dx12Device, chain: SwapchainId) {
     // SAFETY: the native swapchain and its HWND stay live while its descriptor is read.
     let descriptor = unsafe { record.swapchain.GetDesc1() }.expect("native descriptor");
     assert_eq!(
-        descriptor.Scaling,
-        if record.composition.is_some() {
-            DXGI_SCALING_STRETCH
-        } else {
-            DXGI_SCALING_NONE
-        },
-        "HWND resize must not resample the previous backbuffer"
+        descriptor.Scaling, DXGI_SCALING_STRETCH,
+        "a grown HWND must be covered by scaling the last presented frame"
     );
 }
 
@@ -180,12 +175,6 @@ fn verify_resize_generation(
         .expect("old chain")
         .swapchain
         .clone();
-    let composited = device
-        .swapchains
-        .get(chain)
-        .expect("old chain")
-        .composition
-        .is_some();
     let before_resize = device.next_fence_value;
     device
         .resize_swapchain(chain, 96, 80)
@@ -196,12 +185,19 @@ fn verify_resize_generation(
     );
     let resized = device.swapchains.get(chain).expect("resized chain");
     assert_eq!(resized.generation, 1);
-    assert_eq!(previous != resized.swapchain, composited);
+    assert_eq!(
+        resized.source_extent,
+        gfx_core::Extent2d::new(96, 80).unwrap()
+    );
+    assert_eq!(
+        previous, resized.swapchain,
+        "size-only resize must retain the native presentation stream"
+    );
     if let Some(composition) = &resized.composition {
         assert_eq!(
             composition.active_content.as_ref(),
             Some(&previous),
-            "unpresented resize candidate must not replace active native color"
+            "resize must retain the visual's native content binding"
         );
     }
     assert!(resized.resize_retirement.is_none());
@@ -222,7 +218,7 @@ fn seed_published_composition(device: &mut Dx12Device, chain: SwapchainId) {
             "new native content starts unpublished"
         );
         // This ownership test needs no shaders. Seed the state established by first Present;
-        // GPUI's native Scene test separately exercises real rendering and publication.
+        // The consumer renderer separately exercises real rendering and publication.
         composition.active_content = Some(record.swapchain.clone());
     }
 }

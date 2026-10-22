@@ -29,19 +29,19 @@ impl OpenGlDevice {
         let mut draws = std::mem::take(self.encoders.get_mut(id)?);
         let result = (|| {
             for draw in draws.drain(..) {
-                let step = DrawStepDescriptor {
+                let command = RenderCommand::Draw(DrawCommand {
                     pipeline: draw.pipeline,
-                    resource_sets: draw.resource_sets,
+                    bind_groups: draw.bind_groups,
                     vertex_count: draw.vertex_count,
                     first_vertex: draw.first_vertex,
                     instance_count: draw.instance_count,
                     first_instance: draw.first_instance,
                     scissor: draw.scissor,
-                };
+                });
                 self.render_target(
                     draw.pass.target,
                     draw.pass.render_pass,
-                    RenderStepList::Draw(&[step]),
+                    std::slice::from_ref(&command),
                     draw.pass.color_load_op,
                     None,
                 )?;
@@ -55,120 +55,46 @@ impl OpenGlDevice {
 }
 
 impl PresentationDevice for OpenGlDevice {
-    fn render_step_lists_to_textures_compat(
+    fn render_and_present(
         &mut self,
-        passes: &[TextureRenderStepList<'_>],
-    ) -> Result<()> {
-        for pass in passes {
-            self.render_target_with_clear_region(
-                RenderTarget::TextureView(pass.texture_view),
-                pass.render_pass,
-                pass.steps,
-                pass.color_load_op,
-                pass.depth_attachment,
-                pass.clear_region,
-                pass.viewport,
-            )?;
-        }
-        Ok(())
+        frame: &PresentFrameDescriptor<'_>,
+    ) -> Result<Option<PresentedFrame>> {
+        let submission = self.present(
+            frame.swapchain,
+            frame.render_pass,
+            frame.commands,
+            frame.color_load_op,
+            frame.depth_attachment,
+        )?;
+        Ok(Some(PresentedFrame {
+            submission: Some(submission),
+            timings: None,
+        }))
     }
 
-    fn draw_steps_to_texture(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        load: LoadOp<ClearColor>,
-    ) -> Result<()> {
-        self.render_target(
-            RenderTarget::TextureView(view),
-            pass,
-            RenderStepList::Draw(steps),
-            load,
-            None,
+    fn present_retained_frame(&mut self, swapchain: SwapchainId, target: Extent2d) -> Result<()> {
+        OpenGlDevice::present_retained_frame(self, swapchain, target)
+    }
+
+    fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+        self.render_target_clipped(
+            RenderTarget::TextureView(pass.texture_view),
+            pass.render_pass,
+            pass.commands,
+            pass.color_load_op,
+            pass.depth_attachment,
+            pass.clear_region,
+            pass.viewport,
         )
     }
-    fn draw_steps_and_present(
+
+    fn render_to_textures(
         &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: &[DrawStepDescriptor],
-        color: ClearColor,
-    ) -> Result<()> {
-        let submission = self.present(id, pass, RenderStepList::Draw(steps), color, None)?;
-        SubmissionDevice::wait_submission(self, submission)
-    }
-    fn render_steps_to_texture_compat(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_target(
-            RenderTarget::TextureView(view),
-            pass,
-            RenderStepList::Render(steps),
-            load,
-            depth,
-        )
-    }
-    fn render_steps_and_present_compat(
-        &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_step_list_and_present_compat(
-            id,
-            pass,
-            RenderStepList::Render(steps),
-            color,
-            depth,
-        )
-    }
-    fn render_steps_and_present_deferred_compat(
-        &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.present(id, pass, RenderStepList::Render(steps), color, depth)
-    }
-    fn render_step_list_to_texture_compat(
-        &mut self,
-        view: TextureViewId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        load: LoadOp<ClearColor>,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        self.render_target(RenderTarget::TextureView(view), pass, steps, load, depth)
-    }
-    fn render_step_list_and_present_compat(
-        &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<()> {
-        let submission = self.present(id, pass, steps, color, depth)?;
-        SubmissionDevice::wait_submission(self, submission)
-    }
-    fn render_step_list_and_present_deferred_compat(
-        &mut self,
-        id: SwapchainId,
-        pass: RenderPassId,
-        steps: RenderStepList<'_>,
-        color: ClearColor,
-        depth: Option<RenderPassDepthAttachment>,
-    ) -> Result<SubmissionId> {
-        self.present(id, pass, steps, color, depth)
+        passes: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        for pass in passes {
+            self.render_to_texture(pass)?;
+        }
+        Ok(None)
     }
 }
