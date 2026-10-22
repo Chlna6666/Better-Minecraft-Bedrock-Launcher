@@ -219,6 +219,30 @@ fn native_resize_needs_matching_scene(
     pending_resize || pending_native_size_retry || native_epoch != committed_epoch
 }
 
+/// A native drag gesture is not sufficient reason to synchronously rebuild a
+/// whole GPUI page in the Win32 modal frame handler. Reserve the inline UI
+/// owner path for a genuinely uncommitted client geometry generation; unrelated
+/// StateNotify/layout animation work uses the coalesced foreground sender.
+fn needs_inline_resize_commit(
+    needs_ui_commit: bool,
+    live_resizing: bool,
+    pending_renderer_resize: bool,
+    pending_native_resize: bool,
+    pending_native_size_retry: bool,
+    native_epoch: u64,
+    committed_epoch: u64,
+) -> bool {
+    needs_ui_commit
+        && (pending_renderer_resize
+            || (live_resizing
+                && native_resize_needs_matching_scene(
+                    pending_native_resize,
+                    pending_native_size_retry,
+                    native_epoch,
+                    committed_epoch,
+                )))
+}
+
 /// Do not present a previous-size Scene while a newer geometry generation
 /// is in flight. Unlike the modal gesture flag, this gate opens again as
 /// soon as the matching Scene has been committed.
@@ -1012,9 +1036,18 @@ impl WindowsWindow {
     }
 
     pub(crate) fn invoke_request_frame(&self, options: PlatformFrameRequest) {
-        if (self.is_live_resizing() || self.0.pending_renderer_size.get().is_some())
-            && options.needs_ui_commit()
-        {
+        // An already-committed native size must not pull an unrelated
+        // ManageTabBody/Download StateNotify through a synchronous full UI draw
+        // merely because the mouse button remains held on a resize border.
+        if needs_inline_resize_commit(
+            options.needs_ui_commit(),
+            self.is_live_resizing(),
+            self.0.pending_renderer_size.get().is_some(),
+            self.0.pending_resize.get().is_some(),
+            self.0.pending_native_size_retry.get(),
+            self.0.size_epoch.get(),
+            self.0.committed_epoch.get(),
+        ) {
             let callback = self.0.state.borrow_mut().callbacks.live_resize_frame.take();
             if let Some(mut callback) = callback {
                 let handled = callback(options);
@@ -3533,6 +3566,29 @@ mod tests {
             None,
             Some(now)
         ));
+    }
+
+    #[test]
+    fn inline_resize_commit_requires_an_uncommitted_geometry_generation() {
+        use super::needs_inline_resize_commit;
+
+        // A held WM_ENTERSIZEMOVE gesture with already-matched Scene geometry
+        // must NOT synchronously invoke unrelated UI StateNotify work.
+        assert!(!needs_inline_resize_commit(true, true, false, false, false, 12, 12));
+        assert!(!needs_inline_resize_commit(true, false, false, false, false, 12, 12));
+
+        // A newly queued Win32 size or a size newer than the committed Scene
+        // must still use the prompt geometry path while live resizing.
+        assert!(needs_inline_resize_commit(true, true, false, true, false, 13, 12));
+        assert!(needs_inline_resize_commit(true, true, false, false, true, 13, 12));
+        assert!(needs_inline_resize_commit(true, true, false, false, false, 13, 12));
+
+        // The renderer may still have to consume the resize even if the native
+        // gesture ended before the corresponding UI Scene was published.
+        assert!(needs_inline_resize_commit(true, false, true, false, false, 13, 13));
+
+        // Presentation-only animation frames must never invoke the UI callback.
+        assert!(!needs_inline_resize_commit(false, true, true, true, true, 13, 12));
     }
 
     #[test]
