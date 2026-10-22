@@ -57,6 +57,7 @@ pub(super) struct VSyncScheduler {
     refresh_interval_ns: AtomicU64,
     active: AtomicBool,
     frame_pending: AtomicBool,
+    unpaced: AtomicBool,
     shutdown: AtomicBool,
     thread: Mutex<Option<Thread>>,
     modal_frame: Mutex<Option<ModalFrameTarget>>,
@@ -80,11 +81,17 @@ impl VSyncScheduler {
             refresh_interval_ns: AtomicU64::new(DEFAULT_VSYNC_INTERVAL.as_nanos() as u64),
             active: AtomicBool::new(false),
             frame_pending: AtomicBool::new(false),
+            unpaced: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             thread: Mutex::new(None),
             modal_frame: Mutex::new(None),
             modal_task_wake_pending: AtomicBool::new(false),
         }
+    }
+
+    pub(super) fn set_unpaced(&self, enabled: bool) {
+        self.unpaced.store(enabled, Ordering::Release);
+        self.unpark();
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -230,6 +237,7 @@ pub(super) fn spawn_vsync_thread(
                 "GPUI Windows DWM frame pacing enabled: refresh_rate_hz={refresh_rate_hz:.3} interval={interval:?} background_interval={BACKGROUND_FRAME_INTERVAL:?}"
             );
             let mut last_foreground_tick = None;
+            let mut last_unpaced_tick = None;
             let mut last_background_tick = None;
             while !thread_scheduler.shutdown.load(Ordering::Acquire) {
                 if !thread_scheduler.frame_pending.load(Ordering::Acquire) {
@@ -243,8 +251,15 @@ pub(super) fn spawn_vsync_thread(
 
                 let pacing = if process_owns_foreground_window() {
                     last_background_tick = None;
-                    wait_for_vsync(interval, &mut last_foreground_tick)
+                    if thread_scheduler.unpaced.load(Ordering::Acquire) {
+                        last_foreground_tick = None;
+                        wait_for_unpaced_tick(&thread_scheduler, &mut last_unpaced_tick)
+                    } else {
+                        last_unpaced_tick = None;
+                        wait_for_vsync(interval, &mut last_foreground_tick)
+                    }
                 } else {
+                    last_unpaced_tick = None;
                     last_foreground_tick = None;
                     VSyncPacing {
                         elapsed: wait_for_background_tick(
@@ -288,6 +303,41 @@ pub(super) fn spawn_vsync_thread(
         join_handle.thread().unpark();
     }
     Ok(())
+}
+
+// Explicit Immediate mode is clocked independently from DWM. The per-window
+// FrameClock still coalesces work and enforces the requested frame cap.
+// System clock in Immediate mode uses a 1ms ceiling (not a busy spin).
+fn wait_for_unpaced_tick(
+    scheduler: &VSyncScheduler,
+    last_tick: &mut Option<Instant>,
+) -> VSyncPacing {
+    let started = Instant::now();
+    let interval = crate::window::default_frame_clock()
+        .interval()
+        .unwrap_or(Duration::from_millis(1));
+    if let Some(previous) = *last_tick {
+        let deadline = previous + interval;
+        loop {
+            if scheduler.shutdown.load(Ordering::Acquire)
+                || !scheduler.unpaced.load(Ordering::Acquire)
+                || !process_owns_foreground_window()
+            {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            std::thread::park_timeout(deadline - now);
+        }
+    }
+    *last_tick = Some(Instant::now());
+    VSyncPacing {
+        elapsed: started.elapsed(),
+        reported_refresh_period: None,
+        reported_composition_period: None,
+    }
 }
 
 fn wait_for_background_tick(

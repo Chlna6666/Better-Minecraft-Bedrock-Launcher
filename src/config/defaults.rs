@@ -2,6 +2,7 @@ use super::config::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
     DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
     DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig, Launcher,
+    default_frame_rate_limit, default_frame_rate_mode,
     LoginConfig, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
 };
 
@@ -115,6 +116,8 @@ pub fn get_default_config() -> Config {
         launcher: Launcher {
             debug: false,
             gpui_trace: false,
+            frame_rate_mode: default_frame_rate_mode(),
+            frame_rate_limit: default_frame_rate_limit(),
             debug_port: 0,
             language: "auto".to_string(),
             renderer_backend: default_renderer_backend(),

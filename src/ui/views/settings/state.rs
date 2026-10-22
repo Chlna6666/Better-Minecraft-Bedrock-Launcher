@@ -87,6 +87,9 @@ pub struct SettingsPageState {
     pub gpu_adapter_options: Vec<SharedString>,
     pub debug: bool,
     pub gpui_trace: bool,
+    pub frame_rate_mode: SharedString,
+    pub frame_rate_limit: u32,
+    pub frame_rate_limit_input: Option<Entity<InputState>>,
     pub stats_upload: bool,
     pub error_report_sentry_enabled: bool,
     pub error_report_sentry_auto: bool,
@@ -236,6 +239,9 @@ impl SettingsPageState {
             gpu_adapter_options: Vec::new(),
             debug: false,
             gpui_trace: false,
+            frame_rate_mode: SharedString::from("auto"),
+            frame_rate_limit: 120,
+            frame_rate_limit_input: None,
             stats_upload: false,
             error_report_sentry_enabled: false,
             error_report_sentry_auto: false,
@@ -363,6 +369,10 @@ impl SettingsPageState {
     fn apply_config_values(&mut self, config: &crate::config::config::Config) {
         self.debug = config.launcher.debug;
         self.gpui_trace = config.launcher.gpui_trace;
+        self.frame_rate_mode = SharedString::from(crate::frame_rate::normalized_mode(
+            &config.launcher.frame_rate_mode,
+        ));
+        self.frame_rate_limit = config.launcher.frame_rate_limit.clamp(1, 1000);
         self.stats_upload = config.launcher.stats_upload;
         self.error_report_sentry_enabled = config.launcher.error_report_sentry_enabled;
         self.error_report_sentry_auto = config.launcher.error_report_sentry_auto;
@@ -513,6 +523,7 @@ impl SettingsPageState {
     pub fn has_releasable_route_state(&self) -> bool {
         let blur = crate::config::config::clamp_background_blur(self.background_blur_preview);
         (self.background_blur - blur).abs() > f32::EPSILON
+            || self.frame_rate_limit_input.is_some()
             || self.download_curseforge_api_base_input.is_some()
             || self.download_http_proxy_url_input.is_some()
             || self.download_socks_proxy_url_input.is_some()
@@ -556,6 +567,7 @@ impl SettingsPageState {
         if let Some(cancel_tx) = self.launcher_connectivity_cancel_tx.take() {
             let _ = cancel_tx.send(true);
         }
+        self.frame_rate_limit_input = None;
         self.download_curseforge_api_base_input = None;
         self.download_http_proxy_url_input = None;
         self.download_socks_proxy_url_input = None;

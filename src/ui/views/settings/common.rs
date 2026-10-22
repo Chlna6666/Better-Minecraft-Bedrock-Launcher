@@ -17,6 +17,8 @@ pub(super) struct SettingsSnapshot {
     pub(super) modify_appx_manifest: bool,
     pub(super) debug: bool,
     pub(super) gpui_trace: bool,
+    pub(super) frame_rate_mode: String,
+    pub(super) frame_rate_limit: u32,
     pub(super) renderer_backend: String,
     pub(super) gpu_adapter_name: String,
     pub(super) stats_upload: bool,
@@ -54,6 +56,8 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
         modify_appx_manifest: state.modify_appx_manifest,
         debug: state.debug,
         gpui_trace: state.gpui_trace,
+        frame_rate_mode: state.frame_rate_mode.to_string(),
+        frame_rate_limit: state.frame_rate_limit,
         renderer_backend: state.renderer_backend.to_string(),
         gpu_adapter_name: state.gpu_adapter_name.to_string(),
         stats_upload: state.stats_upload,
@@ -102,6 +106,8 @@ pub(super) fn spawn_persist_settings_with_success(
     }
 
     let toast_id = toast::pending(cx, t!("Settings.saving"));
+    let selected_frame_mode = snapshot.frame_rate_mode.clone();
+    let selected_frame_limit = snapshot.frame_rate_limit;
 
     cx.spawn(async move |cx| {
         let res = crate::tasks::runtime::run_io_blocking(move || {
@@ -117,6 +123,8 @@ pub(super) fn spawn_persist_settings_with_success(
                 cfg.game.modify_appx_manifest = snapshot.modify_appx_manifest;
                 cfg.launcher.debug = snapshot.debug;
                 cfg.launcher.gpui_trace = snapshot.gpui_trace;
+                cfg.launcher.frame_rate_mode = crate::frame_rate::normalized_mode(&snapshot.frame_rate_mode).to_string();
+                cfg.launcher.frame_rate_limit = snapshot.frame_rate_limit.clamp(1, 1000);
                 cfg.launcher.renderer_backend =
                     crate::config::config::normalize_renderer_backend(&snapshot.renderer_backend);
                 cfg.launcher.gpu_adapter_name =
@@ -199,6 +207,17 @@ pub(super) fn spawn_persist_settings_with_success(
                 t!("Settings.save_failed_with_error", error = &error_text),
             );
         } else {
+            if crate::startup_args::frame_rate_override().is_none() {
+                if let Err(error) = cx.update(|cx| {
+                    crate::frame_rate::apply_window_clock(
+                        &selected_frame_mode,
+                        selected_frame_limit,
+                        cx,
+                    );
+                }) {
+                    warn!("apply frame rate after save failed: {error:?}");
+                }
+            }
             if curseforge_source_changed {
                 if let Err(error) = cx.update(crate::ui::views::download::curseforge::on_api_source_changed) {
                     warn!("invalidate CurseForge source state failed: {error:?}");

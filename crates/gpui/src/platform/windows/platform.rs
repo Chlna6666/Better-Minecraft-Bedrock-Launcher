@@ -430,6 +430,10 @@ impl WindowsPlatform {
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
         let vsync_scheduler = Arc::new(super::vsync::VSyncScheduler::new());
+        vsync_scheduler.set_unpaced(matches!(
+            renderer_options.present_mode,
+            crate::PresentModePreference::Immediate
+        ));
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
             Self::new_common_parts(vsync_scheduler.clone());
         Ok(Self {

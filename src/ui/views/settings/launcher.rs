@@ -34,6 +34,7 @@ pub(super) fn render_launcher_tab(
         .child(launcher_language_row(colors, i18n, state))
         .child(launcher_render_engine_row(colors, i18n, state))
         .child(launcher_gpu_adapter_row(colors, i18n, state))
+        .child(launcher_frame_rate_row(colors, state))
         .child(setting_toggle_row(
             colors,
             section.clone(),
@@ -98,6 +99,74 @@ pub(super) fn render_connectivity_modal(
     state: &SettingsPageState,
 ) -> Option<AnyElement> {
     connectivity::render_connectivity_modal(colors, i18n, state, window_width, window_height)
+}
+
+fn launcher_frame_rate_row(
+    colors: &ThemeColors,
+    state: &SettingsPageState,
+) -> impl IntoElement {
+    let values = vec![
+        SharedString::from("auto"),
+        SharedString::from("custom"),
+        SharedString::from("unlimited"),
+    ];
+    let labels = vec![
+        t!("LauncherSettings.fps.auto"),
+        t!("LauncherSettings.fps.custom"),
+        t!("LauncherSettings.fps.unlimited"),
+    ];
+    let selected_index = values
+        .iter()
+        .position(|v| v.as_ref() == state.frame_rate_mode.as_ref())
+        .unwrap_or(0);
+    let options = labels.iter().cloned().map(
+        crate::ui::components::dropdown::DropdownOption::from
+    ).collect::<Vec<_>>();
+    let dropdown = crate::ui::components::dropdown::Dropdown::new(
+        SharedString::from("settings-launcher-fps-mode-dropdown"),
+        colors,
+        px(180.),
+        labels[selected_index].clone(),
+        options,
+        selected_index,
+        true,
+        move |index, _window, cx| {
+            let new_mode = values.get(index).cloned()
+                .unwrap_or_else(|| SharedString::from("auto"));
+            let snapshot = cx.update_global(
+                |settings: &mut SettingsPageState, _cx| {
+                    settings.frame_rate_mode = new_mode;
+                    super::common::snapshot_from_state(settings)
+                },
+            );
+            super::common::spawn_persist_settings(snapshot, cx);
+        },
+    );
+    super::common::settings_card(colors, "settings-launcher-fps")
+        .child(
+            super::common::settings_card_header(
+                colors,
+                t!("LauncherSettings.fps.title"),
+                t!("LauncherSettings.fps.description"),
+            )
+            .child(dropdown),
+        )
+        .when(state.frame_rate_mode.as_ref() == "custom", |this| {
+            this.child(super::common::settings_sub_input_row(
+                colors,
+                t!("LauncherSettings.fps.limit"),
+                state.frame_rate_limit_input.as_ref(),
+                "120",
+            ))
+        })
+        .child(
+            div()
+                .px(px(14.))
+                .pb(px(10.))
+                .text_size(px(11.))
+                .text_color(colors.text_secondary)
+                .child(t!("LauncherSettings.fps.restart_hint")),
+        )
 }
 
 fn launcher_sentry_test_row(

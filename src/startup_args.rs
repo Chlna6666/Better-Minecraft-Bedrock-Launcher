@@ -2,6 +2,17 @@ use crate::launch::{DEFAULT_UPDATER_TIMEOUT_SECS, LaunchOptions, LaunchUiMode, i
 use clap::{ArgGroup, Parser};
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+const FPS_OVERRIDE_UNSET: u32 = u32::MAX;
+static FPS_OVERRIDE: AtomicU32 = AtomicU32::new(FPS_OVERRIDE_UNSET);
+
+/// Returns the launch-only UI frame-rate override, with zero meaning unlimited.
+pub(crate) fn frame_rate_override() -> Option<u32> {
+    let value = FPS_OVERRIDE.load(Ordering::Acquire);
+    (value != FPS_OVERRIDE_UNSET).then_some(value)
+}
+
 
 const STARTUP_MODES: [&str; 8] = [
     "launch",
@@ -93,6 +104,14 @@ struct StartupCli {
     /// 覆盖传给游戏的启动参数。
     #[arg(long = "game-args", value_name = "ARGS", allow_hyphen_values = true)]
     game_args: Option<String>,
+
+    /// 启动器 UI 帧率（1–1000），可超过显示器 VSync 刷新率；0 表示不限帧。
+    #[arg(long = "fps-limit", value_name = "FPS", conflicts_with = "uncapped_fps")]
+    fps_limit: Option<u32>,
+
+    /// 取消 UI 的 120 FPS 限制与 VSync 同步（仅本次启动）。
+    #[arg(long = "uncapped-fps", conflicts_with = "fps_limit")]
+    uncapped_fps: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +145,14 @@ where
 }
 
 fn action_from_cli(cli: StartupCli) -> Result<StartupAction, clap::Error> {
+    if let Some(limit) = cli.fps_limit {
+        if limit > 1000 {
+            return Err(usage_error("--fps-limit 必须在 0–1000 之间"));
+        }
+    }
+    if let Some(limit) = cli.fps_limit.or(cli.uncapped_fps.then_some(0)) {
+        FPS_OVERRIDE.store(limit, Ordering::Release);
+    }
     let launch_version = cli.launch.or(cli.legacy_launch_version);
     if cli.silent || cli.gui || cli.game_args.is_some() {
         if launch_version.is_none() {
@@ -248,6 +275,15 @@ mod tests {
     fn action(args: &[&str]) -> StartupAction {
         parse(std::iter::once("BMCBL").chain(args.iter().copied()))
             .expect("startup arguments should parse")
+    }
+
+    #[test]
+    fn fps_limit_accepts_custom_and_unlimited_values() {
+        assert!(matches!(action(&["--fps-limit", "240"]), StartupAction::Gui));
+        assert!(matches!(action(&["--fps-limit", "0"]), StartupAction::Gui));
+        assert!(matches!(action(&["--uncapped-fps"]), StartupAction::Gui));
+        assert!(parse(["BMCBL", "--fps-limit", "1001"]).is_err());
+        assert!(parse(["BMCBL", "--uncapped-fps", "--fps-limit", "120"]).is_err());
     }
 
     #[test]

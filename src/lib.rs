@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod core;
 mod downloads;
+mod frame_rate;
 mod github;
 mod http;
 #[macro_use]

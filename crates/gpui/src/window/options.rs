@@ -1,8 +1,24 @@
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 
 use anyhow::Result;
 
 use super::FrameClock;
+
+// Zero selects native VSync. Other GPUI applications keep System by default.
+static DEFAULT_WINDOW_FPS: AtomicU32 = AtomicU32::new(0);
+
+/// Sets the process default for subsequently created windows.
+/// Existing windows must be updated via `Window::set_frame_clock`.
+pub fn set_default_frame_clock(clock: FrameClock) {
+    DEFAULT_WINDOW_FPS.store(clock.fps().map_or(0, |fps| fps.get()), Ordering::Release);
+}
+
+/// Returns the default frame clock for new windows.
+pub fn default_frame_clock() -> FrameClock {
+    FrameClock::fixed_fps(DEFAULT_WINDOW_FPS.load(Ordering::Acquire))
+        .unwrap_or(FrameClock::System)
+}
+
 use crate::{App, Bounds, DisplayId, Pixels, Point, Rgba, SharedString, Size};
 
 /// Which part of the window to resize
@@ -324,7 +340,7 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
-            frame_clock: FrameClock::System,
+            frame_clock: default_frame_clock(),
         }
     }
 }

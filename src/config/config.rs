@@ -364,6 +364,12 @@ pub struct AppStateConfig {
     pub(super) legacy_onboarding_linux_completed_version: u32,
 }
 
+/// Default UI pacing uses VSync with a 120 FPS ceiling.
+pub fn default_frame_rate_mode() -> String { "auto".to_owned() }
+
+/// Default manual FPS ceiling.
+pub const fn default_frame_rate_limit() -> u32 { 120 }
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Launcher {
     pub debug: bool,
@@ -371,6 +377,12 @@ pub struct Launcher {
     /// Applied at startup; older settings files default to disabled.
     #[serde(default)]
     pub gpui_trace: bool,
+    /// UI frame pacing: auto (min of VSync and 120), custom, or unlimited.
+    #[serde(default = "default_frame_rate_mode")]
+    pub frame_rate_mode: String,
+    /// Custom limit (1..=1000 FPS); used only in custom mode.
+    #[serde(default = "default_frame_rate_limit")]
+    pub frame_rate_limit: u32,
     /// When non-zero, enables "port debug" mode (opens a debug window and binds a local TCP port).
     #[serde(default)]
     pub debug_port: u16,

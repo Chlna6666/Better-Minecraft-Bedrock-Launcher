@@ -205,6 +205,37 @@ impl MainWindowView {
         }
     }
 
+    pub(super) fn persist_frame_rate_limit(
+        &mut self,
+        limit: u32,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |_this, cx| {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
+                crate::config::config::update_config(|cfg| {
+                    cfg.launcher.frame_rate_limit = limit;
+                })?;
+                Ok::<(), std::io::Error>(())
+            }).await;
+            match result {
+                Ok(Ok(())) => {
+                    if crate::startup_args::frame_rate_override().is_none() {
+                        let _ = cx.update(|cx| {
+                            let mode = cx.read_global(
+                                |state: &crate::ui::views::settings::state::SettingsPageState, _| {
+                                    state.frame_rate_mode.to_string()
+                                },
+                            );
+                            crate::frame_rate::apply_window_clock(&mode, limit, cx);
+                        });
+                    }
+                }
+                Ok(Err(error)) => tracing::warn!("保存自定义 UI 帧率失败：{error}"),
+                Err(error) => tracing::warn!("保存 UI 帧率任务失败：{error}"),
+            }
+        }).detach();
+    }
+
     pub(super) fn persist_settings_launcher_download_texts(
         &mut self,
         curseforge_api_base: String,
@@ -297,9 +328,19 @@ impl MainWindowView {
         self.settings_controls_initialized = true;
         self.ensure_settings_github_control(window, cx);
 
-        let (base_input, http_input, socks_input, theme_input, local_input, network_input) = cx
+        let (frame_input, base_input, http_input, socks_input, theme_input, local_input, network_input) = cx
             .update_global(
                 |s: &mut crate::ui::views::settings::state::SettingsPageState, cx| {
+                    if s.frame_rate_limit_input.is_none() {
+                        let initial = s.frame_rate_limit.to_string();
+                        let input = cx.new(|cx| {
+                            let mut st = InputState::new(window, cx);
+                            st.set_placeholder(SharedString::from("120"), window, cx);
+                            st.set_value(SharedString::from(initial), window, cx);
+                            st
+                        });
+                        s.frame_rate_limit_input = Some(input);
+                    }
                     if s.download_curseforge_api_base_input.is_none() {
                         let initial = s.download_curseforge_api_base.to_string();
                         let input = cx.new(|cx| {
@@ -399,6 +440,7 @@ impl MainWindowView {
                     }
 
                     (
+                        s.frame_rate_limit_input.clone(),
                         s.download_curseforge_api_base_input.clone(),
                         s.download_http_proxy_url_input.clone(),
                         s.download_socks_proxy_url_input.clone(),
@@ -408,6 +450,44 @@ impl MainWindowView {
                     )
                 },
             );
+
+        if let Some(input) = frame_input {
+            let sub = cx.subscribe(
+                &input,
+                |this, input: Entity<InputState>, ev: &InputEvent, cx| {
+                    let parsed = input.read(cx).value().trim().parse::<u32>().ok()
+                        .filter(|value| (1..=1000).contains(value));
+                    match ev {
+                        InputEvent::Change => {
+                            if let Some(limit) = parsed {
+                                cx.update_global(
+                                    |state: &mut crate::ui::views::settings::state::SettingsPageState, _| {
+                                        state.frame_rate_limit = limit;
+                                    },
+                                );
+                            }
+                        }
+                        InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                            if let Some(limit) = parsed {
+                                cx.update_global(
+                                    |state: &mut crate::ui::views::settings::state::SettingsPageState, _| {
+                                        state.frame_rate_limit = limit;
+                                    },
+                                );
+                                this.persist_frame_rate_limit(limit, cx);
+                            } else {
+                                crate::ui::components::toast::error(
+                                    cx,
+                                    t!("LauncherSettings.fps.invalid"),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                },
+            );
+            self.settings_controls_subscriptions.push(sub);
+        }
 
         if let Some(input) = base_input {
             let sub = cx.subscribe(
