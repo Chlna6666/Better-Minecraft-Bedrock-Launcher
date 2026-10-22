@@ -16,7 +16,7 @@ impl Window {
             self.current_view_or_root(),
         ) {
             self.on_next_progressive_frame(move |window, _cx| {
-                let _ = window.invalidator.invalidate_retained_path_with_scope(
+                let _ = window.invalidator.invalidate_retained_path_scoped(
                     view_id,
                     Some(&retained_id),
                     RetainedInvalidationScope::InvalidateSubtree,

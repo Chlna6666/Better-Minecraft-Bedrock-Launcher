@@ -18,7 +18,7 @@ pub(in crate::platform::nova) enum FilterSource {
     },
 }
 
-pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
+pub(in crate::platform::nova) struct PackedQuadChunk {
     pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
     pub(in crate::platform::nova) byte_hash: u64,
     pub(in crate::platform::nova) quad_count: u32,
@@ -30,16 +30,73 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) last_used_epoch: u64,
 }
 
-/// GPU-owner lifetime cache for unchanged CachedView Quad payloads.
+pub(in crate::platform::nova) struct PackedRetainedMonochromeSpriteChunk {
+    pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
+    pub(in crate::platform::nova) byte_hash: u64,
+    pub(in crate::platform::nova) atlas_tiles: Arc<Vec<AtlasTile>>,
+    pub(in crate::platform::nova) sprite_count: u32,
+    pub(in crate::platform::nova) texture_id: AtlasTextureId,
+    pub(in crate::platform::nova) sampling: crate::MonochromeSpriteSampling,
+    pub(in crate::platform::nova) visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    pub(in crate::platform::nova) atlas_placement_generation: u64,
+    pub(in crate::platform::nova) last_used_epoch: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::platform::nova) enum CachedLayerBatch {
+    SolidQuads {
+        relative_first: u32,
+        count: u32,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    },
+    Quads {
+        relative_first: u32,
+        count: u32,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    },
+    MonoSprites {
+        texture_id: AtlasTextureId,
+        relative_first: u32,
+        count: u32,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    },
+}
+
+pub(in crate::platform::nova) struct CachedLayerSceneEncoding {
+    pub(in crate::platform::nova) source: Arc<crate::Scene>,
+    pub(in crate::platform::nova) scene_revision: u64,
+    pub(in crate::platform::nova) atlas_placement_generation: u64,
+    pub(in crate::platform::nova) quads: Option<Arc<Vec<u8>>>,
+    pub(in crate::platform::nova) quad_hash: u64,
+    pub(in crate::platform::nova) mono_sprites: Option<Arc<Vec<u8>>>,
+    pub(in crate::platform::nova) mono_sprite_hash: u64,
+    pub(in crate::platform::nova) mono_atlas_tiles: Arc<Vec<AtlasTile>>,
+    pub(in crate::platform::nova) batches: Vec<CachedLayerBatch>,
+    pub(in crate::platform::nova) quad_count: u32,
+    pub(in crate::platform::nova) mono_sprite_count: u32,
+    pub(in crate::platform::nova) last_used_epoch: u64,
+}
+
+/// GPU-owner lifetime cache for unchanged retained Quad payloads.
 /// The FrameUpload is only an encoding scratch frame: it borrows this single
 /// cache instead of retaining an independent cross-frame ownership map.
 #[derive(Default)]
-pub(in crate::platform::nova) struct RetainedQuadChunkCache {
-    pub(in crate::platform::nova) retained_quad_chunks:
-        FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
+pub(in crate::platform::nova) struct RetainedChunkCache {
+    pub(in crate::platform::nova) quad_payloads: FxHashMap<RetainedChunkId, PackedQuadChunk>,
+    pub(in crate::platform::nova) retained_monochrome_sprite_chunks:
+        FxHashMap<RetainedChunkId, PackedRetainedMonochromeSpriteChunk>,
+    pub(in crate::platform::nova) layer_scene_encodings:
+        FxHashMap<crate::GlobalElementId, CachedLayerSceneEncoding>,
     /// Monotonic successful encode epoch; replaces a second HashSet of copied
     /// GlobalElementIds just to track liveness across one recursive encode.
     pub(in crate::platform::nova) frame_epoch: u64,
+    pub(in crate::platform::nova) atlas_placement_generation: u64,
+}
+
+impl RetainedChunkCache {
+    pub(in crate::platform::nova) fn set_atlas_placement_generation(&mut self, generation: u64) {
+        self.atlas_placement_generation = generation;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -126,7 +183,7 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) atlas_placements: FxHashMap<crate::TileId, AtlasTile>,
     pub(in crate::platform::nova) globals: Vec<u8>,
     pub(in crate::platform::nova) text_raster_params: Vec<u8>,
-    pub(in crate::platform::nova) quads: PackedQuadStream,
+    pub(in crate::platform::nova) quads: PackedByteStream,
     pub(in crate::platform::nova) shadows: Vec<u8>,
     /// Weak immutable-source identity for the sole packed Shadow buffer.
     /// It owns no Paint payload or GPU residency; nested sources rebuild conservatively.
@@ -135,7 +192,7 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) reused_shadow_bytes: usize,
     pub(in crate::platform::nova) path_rasterization_vertices: Vec<u8>,
     pub(in crate::platform::nova) path_sprites: Vec<u8>,
-    pub(in crate::platform::nova) mono_sprites: Vec<u8>,
+    pub(in crate::platform::nova) mono_sprites: PackedByteStream,
     pub(in crate::platform::nova) poly_sprites: Vec<u8>,
     /// Atlas placements in packed sprite order; tracked separately from GPU byte streams
     /// so filter invalidation does not deserialize every sprite on each frame.
@@ -195,9 +252,9 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) animated_visual_bounds_scratch:
         Vec<crate::Bounds<crate::ScaledPixels>>,
     pub(in crate::platform::nova) renderer_extensions: Vec<PaintRendererExtension>,
-    pub(in crate::platform::nova) renderer_extension_steps: Vec<Vec<RenderStepDescriptor>>,
+    pub(in crate::platform::nova) renderer_extension_steps: Vec<Vec<RenderCommand>>,
     /// Incremented only when the flattened Scene is fully re-encoded. GPU-only
-    /// animation sampling leaves this stable so its DrawSteps remain reusable.
+    /// animation sampling leaves this stable so its render commands remain reusable.
     pub(in crate::platform::nova) encode_generation: u64,
     pub(in crate::platform::nova) batches: Vec<UploadedBatch>,
     /// Conservative device-pixel bounds of static uploaded quad batches.
@@ -213,4 +270,5 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// independent Arc<[u8]>; this buffer only removes the short-lived per-path Vec allocation.
     pub(in crate::platform::nova) path_rasterization_encode_scratch: Vec<u8>,
     pub(in crate::platform::nova) resident_quad_spans: Vec<RetainedResidentSpan>,
+    pub(in crate::platform::nova) resident_monochrome_sprite_spans: Vec<RetainedResidentSpan>,
 }

@@ -79,20 +79,14 @@ mod tests {
     fn normal_fast_frames_do_not_emit_slow_frame_warnings() {
         let mut diagnostics = diagnostics(false);
         assert!(!diagnostics.should_warn_slow_frame(0));
-        assert!(!diagnostics.should_warn_slow_frame(
-            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS - 1,
-        ));
+        assert!(!diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS - 1,));
     }
 
     #[test]
     fn slow_frame_warnings_are_rate_limited() {
         let mut diagnostics = diagnostics(false);
-        assert!(diagnostics.should_warn_slow_frame(
-            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS,
-        ));
-        assert!(!diagnostics.should_warn_slow_frame(
-            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
-        ));
+        assert!(diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS,));
+        assert!(!diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,));
 
         diagnostics.last_slow_frame_warning_at =
             Some(Instant::now() - DEFAULT_SLOW_FRAME_WARN_INTERVAL);

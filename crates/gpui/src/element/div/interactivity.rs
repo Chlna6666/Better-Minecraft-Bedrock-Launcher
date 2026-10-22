@@ -251,7 +251,7 @@ impl Interactivity {
     /// The resolver sees the final hitbox-aware style. Regardless of whether it returns retained
     /// scene ranges, hitboxes, cursor requests, listeners, dispatch nodes, tab stops, group state,
     /// and inspector metadata are rebuilt from the current element instance.
-    pub(crate) fn paint_with_self_scene_reuse(
+    pub(crate) fn paint_self_scene_reuse(
         &mut self,
         global_id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,

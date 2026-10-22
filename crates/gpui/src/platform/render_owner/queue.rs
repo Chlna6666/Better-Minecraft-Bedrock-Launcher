@@ -26,6 +26,13 @@ pub(super) enum Command {
         /// Native client-geometry generation, or `None` for an unversioned resize.
         epoch: Option<u64>,
     },
+    /// Present the retained frame over a native client area that grew ahead of the
+    /// matching Scene. Latest native extent wins; backends without a retained-frame
+    /// path ignore it.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    Cover {
+        size: Size<DevicePixels>,
+    },
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -65,6 +72,7 @@ impl Command {
         !matches!(
             self,
             Self::Resize { .. }
+                | Self::Cover { .. }
                 | Self::Draw { reply: None, .. }
                 | Self::Tick(..)
                 | Self::Continue(..)
@@ -166,14 +174,16 @@ impl Queue {
                 .iter()
                 .rposition(|queued| queued.command.is_live_resize_compaction_barrier())
                 .map_or(0, |index| index + 1);
+            // Keep the newest cover: it stretches the last published visual before the
+            // new frame lands, so dropping it reopens the ResizeBuffers black gap.
+            let mut newest_cover = None;
             for obsolete in state.commands.drain(start..) {
                 first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
                 coalesced_count =
                     coalesced_count.saturating_add(obsolete.coalesced_count.saturating_add(1));
                 match obsolete.command {
-                    Command::Resize { .. }
-                    | Command::Tick(..)
-                    | Command::Continue(..) => {}
+                    Command::Cover { size } => newest_cover = Some(size),
+                    Command::Resize { .. } | Command::Tick(..) | Command::Continue(..) => {}
                     Command::Draw {
                         packet: previous,
                         reply: None,
@@ -181,6 +191,14 @@ impl Queue {
                     } => packet.merge_pending_damage_from(&previous),
                     _ => unreachable!("live resize compaction must not cross a control barrier"),
                 }
+            }
+            if let Some(size) = newest_cover {
+                state.commands.push_back(QueuedCommand {
+                    command: Command::Cover { size },
+                    enqueued_at,
+                    first_enqueued_at,
+                    coalesced_count: 0,
+                });
             }
         }
         // Several WM_SIZE generations can arrive while the shared GPU owner
@@ -209,6 +227,7 @@ impl Queue {
                 .count();
             if resize_count >= 2 {
                 let mut newest_resize = None;
+                let mut newest_cover = None;
                 for obsolete in state.commands.drain(start..) {
                     first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
                     coalesced_count =
@@ -220,8 +239,8 @@ impl Queue {
                         } => {
                             packet.merge_pending_damage_from(&previous);
                         }
-                        Command::Tick(..)
-                        | Command::Continue(..) => {}
+                        Command::Cover { size } => newest_cover = Some(size),
+                        Command::Tick(..) | Command::Continue(..) => {}
                         _ => unreachable!("resize compaction must not cross a control barrier"),
                     }
                 }
@@ -232,6 +251,14 @@ impl Queue {
                     first_enqueued_at,
                     coalesced_count: 0,
                 });
+                if let Some(size) = newest_cover {
+                    state.commands.push_back(QueuedCommand {
+                        command: Command::Cover { size },
+                        enqueued_at,
+                        first_enqueued_at,
+                        coalesced_count: 0,
+                    });
+                }
             }
         }
         let barrier = state
@@ -317,6 +344,22 @@ impl Queue {
                         .expect("index was obtained from the queue");
                     first_enqueued_at = previous.first_enqueued_at;
                     coalesced_count = previous.coalesced_count.saturating_add(1);
+                }
+            }
+            Command::Cover { .. } => {
+                // Only the newest native extent is worth covering; an older queued
+                // cover would blit an already obsolete strip.
+                if let Some(index) = (barrier..state.commands.len())
+                    .rev()
+                    .find(|index| matches!(state.commands[*index].command, Command::Cover { .. }))
+                {
+                    let previous = state
+                        .commands
+                        .remove(index)
+                        .expect("index was obtained from the queue");
+                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
+                    coalesced_count =
+                        coalesced_count.saturating_add(previous.coalesced_count.saturating_add(1));
                 }
             }
             _ => {}

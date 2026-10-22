@@ -367,23 +367,10 @@ impl DirectWriteState {
             Some(font_id)
         };
 
-        let mut font_id = select_font(self, font);
-        if font_id.is_none() {
-            // try updating system fonts and reselect
-            let mut collection = None;
-            let font_collection_updated = unsafe {
-                components
-                    .factory
-                    .GetSystemFontCollection(false, &mut collection, true)
-            }
-            .log_err()
-            .is_some();
-            if font_collection_updated && let Some(collection) = collection {
-                self.system_font_collection = collection;
-            }
-            font_id = select_font(self, font);
-        }
-        let font_id = font_id?;
+        // Selection runs during UI text measurement. Checking for system font updates on an
+        // absent family can block for tens of milliseconds before the configured fallback is tried.
+        // Use the collections published by initialization and explicit font registration here.
+        let font_id = select_font(self, font)?;
         self.font_to_font_id.insert(font.clone(), font_id);
         Some(font_id)
     }
@@ -398,6 +385,11 @@ impl DirectWriteState {
         if let Some(font_id) = self.font_info_cache.get(&font_face_key) {
             return Some(*font_id);
         }
+
+        let _work = crate::window::element_work::begin_named(
+            "text_dwrite_face_cache_miss",
+            crate::window::element_work::ElementWorkPhase::Layout,
+        );
 
         // DirectWrite may shape a fallback or variable face that was never selected through
         // `font_id()`. The face returned by DrawGlyphRun is authoritative: converting it back to
@@ -606,7 +598,7 @@ impl DirectWriteState {
         let family = if family == SYSTEM_UI_FONT_NAME {
             system_ui_font_name
         } else {
-            font_name_with_fallbacks(family.as_str(), system_ui_font_name.as_str())
+            fallback_font_name(family.as_str(), system_ui_font_name.as_str())
         };
         let fontset = unsafe { collection.GetFontSet().log_err()? };
         let font_family_h = HSTRING::from(family);
@@ -2101,6 +2093,21 @@ mod tests {
         assert!(utf16_cluster_contains_cjk("カ", 0, 1));
         assert!(utf16_cluster_contains_cjk("한", 0, 1));
         assert!(utf16_cluster_contains_cjk("𠀀", 0, 2));
+    }
+
+    #[test]
+    fn missing_family_keeps_available_fonts_usable() -> anyhow::Result<()> {
+        let text_system = DirectWriteTextSystem::new(RendererCapabilities::default())?;
+        assert!(
+            text_system
+                .font_id(&font("GPUI Missing Resize Font Test 9672"))
+                .is_err()
+        );
+        let font_id = text_system.font_id(&font("Segoe UI"))?;
+        let layout = text_system.layout_line("Fallback", px(13.), &[FontRun { len: 8, font_id }]);
+        assert!(layout.width > px(0.));
+        assert!(!layout.runs.is_empty());
+        Ok(())
     }
 
     #[test]

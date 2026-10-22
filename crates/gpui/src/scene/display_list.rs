@@ -77,6 +77,41 @@ impl Scene {
                 .any(|blur| blur.content.has_backdrop_blurs())
     }
 
+    /// Returns the prior captured source for a uniquely identified compositor layer.
+    ///
+    /// Duplicate retained identities are ambiguous and deliberately do not provide a reuse
+    /// candidate. The current frame can still capture and render the layer normally.
+    pub(crate) fn blur_content_for(
+        &self,
+        layer_id: &crate::GlobalElementId,
+    ) -> Option<std::sync::Arc<Scene>> {
+        fn visit(
+            scene: &Scene,
+            layer_id: &crate::GlobalElementId,
+            found: &mut Option<std::sync::Arc<Scene>>,
+            ambiguous: &mut bool,
+        ) {
+            for blur in &scene.blurs {
+                if blur.layer_id.as_ref() == Some(layer_id) {
+                    if found.is_some() {
+                        *ambiguous = true;
+                        return;
+                    }
+                    *found = Some(std::sync::Arc::clone(&blur.content));
+                }
+                visit(&blur.content, layer_id, found, ambiguous);
+                if *ambiguous {
+                    return;
+                }
+            }
+        }
+
+        let mut found = None;
+        let mut ambiguous = false;
+        visit(self, layer_id, &mut found, &mut ambiguous);
+        (!ambiguous).then_some(found).flatten()
+    }
+
     pub(crate) fn animation_value(
         &self,
         animation_id: SceneAnimationId,
@@ -236,6 +271,6 @@ impl Scene {
             + self.blurs.capacity()
             + self.renderer_extensions.capacity()
             + self.animation_values.capacity()
-            + self.prepared_batches.batches.capacity()
+            + self.prepared_batches.capacity()
     }
 }

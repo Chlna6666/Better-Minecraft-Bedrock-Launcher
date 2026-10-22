@@ -1,4 +1,4 @@
-use super::chunk_upload::{QuadResidentLayout, QuadUploadPlan};
+use super::chunk_upload::{ChunkUploadPlan, RetainedChunkLayout, RetainedChunkLayouts};
 
 mod auto_static;
 mod color;
@@ -123,7 +123,7 @@ impl BufferContentToken {
         }
     }
 
-    fn from_segmented_bytes(stream: &PackedQuadStream) -> (Self, usize) {
+    fn from_segmented_bytes(stream: &PackedByteStream) -> (Self, usize) {
         let mut aggregate = collections::FxHasher::default();
         let mut hashed_bytes = 0usize;
         for (_, bytes, cached_hash) in stream.segments() {
@@ -198,13 +198,15 @@ impl StaticUploadSignature {
             AnimationTopologyTokens::from_frame_upload(upload);
         let (quad_content, quad_hashed_bytes) =
             BufferContentToken::from_segmented_bytes(&upload.quads);
+        let (mono_sprite_content, mono_sprite_hashed_bytes) =
+            BufferContentToken::from_segmented_bytes(&upload.mono_sprites);
         let hashed_bytes = [
             upload.globals.len(),
             upload.text_raster_params.len(),
             upload.shadows.len(),
             upload.path_rasterization_vertices.len(),
             upload.path_sprites.len(),
-            upload.mono_sprites.len(),
+            mono_sprite_hashed_bytes,
             upload.poly_sprites.len(),
             upload.underlines.len(),
             upload.backdrop_blur_passes.len(),
@@ -230,8 +232,8 @@ impl StaticUploadSignature {
                     &upload.path_rasterization_vertices,
                 ),
                 path_sprite: StaticStreamToken::from_bytes(&upload.path_sprites),
-                mono_sprite: StaticStreamToken::with_animation_topology(
-                    &upload.mono_sprites,
+                mono_sprite: StaticStreamToken::with_content_and_animation_topology(
+                    mono_sprite_content,
                     animation_topology.mono_sprite,
                 ),
                 poly_sprite: StaticStreamToken::with_animation_topology(
@@ -466,7 +468,7 @@ impl StaticUploadMask {
 #[derive(Default)]
 pub(super) struct RetainedUpload {
     /// Sole owner of packed retained Quad payloads across Scene revisions.
-    pub(super) quad_chunks: RetainedQuadChunkCache,
+    pub(super) retained_chunks: RetainedChunkCache,
     key: Option<UploadKey>,
     /// Do not rescan a Scene that already failed AutoStatic safety admission
     /// on a prior animation sample at the same native client extent.
@@ -474,8 +476,9 @@ pub(super) struct RetainedUpload {
     summary: FrameUploadSummary,
     static_signature: Option<StaticUploadSignature>,
     uploaded_slots: Vec<Option<StaticUploadSignature>>,
-    current_quad_layout: QuadResidentLayout,
-    uploaded_quad_layouts: Vec<Option<QuadResidentLayout>>,
+    current_chunk_layouts: RetainedChunkLayouts,
+    uploaded_quad_layouts: Vec<Option<RetainedChunkLayout>>,
+    uploaded_monochrome_sprite_layouts: Vec<Option<RetainedChunkLayout>>,
     current_shareable: [bool; 10],
     uploaded_shareable: Vec<[bool; 10]>,
 }
@@ -489,32 +492,53 @@ mod capacity_tests {
         let mut upload = RetainedUpload::default();
         let key = AutoStaticRejectionKey {
             scene_revision: 42,
-            size: DrawableSize { width: 640, height: 480 },
+            size: DrawableSize {
+                width: 640,
+                height: 480,
+            },
         };
         assert!(upload.auto_static_candidate(key, || None).is_none());
         // The same immutable scene and extent may retry a GPU encode after an
         // animation-value change. A failed static prefix is still ineligible.
-        assert!(upload.auto_static_candidate(key, || panic!("rescan")).is_none());
+        assert!(
+            upload
+                .auto_static_candidate(key, || panic!("rescan"))
+                .is_none()
+        );
         // New geometry/Scene must re-evaluate because the static prefix may
         // become safe and useful after relayout or the capture topology changes.
         let resized = AutoStaticRejectionKey {
-            size: DrawableSize { width: 800, height: 480 },
+            size: DrawableSize {
+                width: 800,
+                height: 480,
+            },
             ..key
         };
         let mut examined_resize = false;
-        assert!(upload.auto_static_candidate(resized, || {
-            examined_resize = true;
-            None
-        }).is_none());
+        assert!(
+            upload
+                .auto_static_candidate(resized, || {
+                    examined_resize = true;
+                    None
+                })
+                .is_none()
+        );
         assert!(examined_resize);
         let mut examined_revision = false;
-        assert!(upload.auto_static_candidate(AutoStaticRejectionKey {
-            scene_revision: 43,
-            ..resized
-        }, || {
-            examined_revision = true;
-            None
-        }).is_none());
+        assert!(
+            upload
+                .auto_static_candidate(
+                    AutoStaticRejectionKey {
+                        scene_revision: 43,
+                        ..resized
+                    },
+                    || {
+                        examined_revision = true;
+                        None
+                    }
+                )
+                .is_none()
+        );
         assert!(examined_revision);
     }
 
@@ -612,6 +636,9 @@ impl RetainedUpload {
         if let Some(layout) = self.uploaded_quad_layouts.get_mut(slot) {
             *layout = None;
         }
+        if let Some(layout) = self.uploaded_monochrome_sprite_layouts.get_mut(slot) {
+            *layout = None;
+        }
         if let Some(shareable) = self.uploaded_shareable.get_mut(slot) {
             *shareable = [false; 10];
         }
@@ -662,13 +689,29 @@ impl RetainedUpload {
         !self.static_upload_mask(slot).is_empty()
     }
 
-    pub(super) fn quad_upload_plan(&self, slot: usize, byte_len: usize) -> QuadUploadPlan {
+    pub(super) fn quad_upload_plan(&self, slot: usize, byte_len: usize) -> ChunkUploadPlan {
         let stream_dirty = self.static_upload_mask(slot).quad;
         let previous = self
             .uploaded_quad_layouts
             .get(slot)
             .and_then(Option::as_ref);
-        self.current_quad_layout
+        self.current_chunk_layouts
+            .quads
+            .upload_plan(previous, byte_len, stream_dirty)
+    }
+
+    pub(super) fn monochrome_sprite_upload_plan(
+        &self,
+        slot: usize,
+        byte_len: usize,
+    ) -> ChunkUploadPlan {
+        let stream_dirty = self.static_upload_mask(slot).mono_sprite;
+        let previous = self
+            .uploaded_monochrome_sprite_layouts
+            .get(slot)
+            .and_then(Option::as_ref);
+        self.current_chunk_layouts
+            .monochrome_sprites
             .upload_plan(previous, byte_len, stream_dirty)
     }
 
@@ -706,7 +749,10 @@ impl RetainedUpload {
             *uploaded = Some(signature);
         }
         if let Some(uploaded) = self.uploaded_quad_layouts.get_mut(slot) {
-            *uploaded = Some(self.current_quad_layout.clone());
+            *uploaded = Some(self.current_chunk_layouts.quads.clone());
+        }
+        if let Some(uploaded) = self.uploaded_monochrome_sprite_layouts.get_mut(slot) {
+            *uploaded = Some(self.current_chunk_layouts.monochrome_sprites.clone());
         }
         if let Some(uploaded) = self.uploaded_shareable.get_mut(slot) {
             *uploaded = shareable;
@@ -719,17 +765,18 @@ impl RetainedUpload {
         summary: FrameUploadSummary,
         slots: usize,
         static_signature: StaticUploadSignature,
-        quad_layout: QuadResidentLayout,
+        chunk_layouts: RetainedChunkLayouts,
     ) {
         self.key = Some(key);
         self.summary = summary;
         self.static_signature = Some(static_signature);
-        self.current_quad_layout = quad_layout;
+        self.current_chunk_layouts = chunk_layouts;
         // Preserve per-slot resident generations. A new scene revision no longer poisons every
         // static stream in every frame resource; `static_upload_mask` diffs the new packed streams
         // against what each slot actually contains.
         self.uploaded_slots.resize(slots, None);
         self.uploaded_quad_layouts.resize(slots, None);
+        self.uploaded_monochrome_sprite_layouts.resize(slots, None);
         self.uploaded_shareable.resize(slots, [false; 10]);
     }
 }
@@ -746,8 +793,8 @@ impl NovaRenderer {
         crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
         let started_at = Instant::now();
         #[cfg(target_os = "windows")]
-        if self.draw_step_scratch.backdrop_blur_damage_region.is_full()
-            && self.rendering_parameters.refresh_for_current_monitor()
+        if self.command_scratch.backdrop_blur_damage_region.is_full()
+            && self.rendering_parameters.refresh_monitor_parameters()
         {
             // A monitor transition already forces a full high-level redraw and glyph-atlas refresh.
             // Drop only the CPU encode key here: per-slot static signatures remain resident, so the
@@ -776,18 +823,21 @@ impl NovaRenderer {
         let reconsider_color = self.frame_upload.root_color.is_none()
             && presentation_animation_values.iter().any(|current| {
                 current.progress == 1.
-                    && self.frame_upload.sampled_animation_values.iter().any(|previous| {
-                        previous.animation_id == current.animation_id
-                            && previous.property == current.property
-                            && (previous.progress != 1.
-                                || (current.property == crate::TransitionProperty::VisualState
-                                    && current.to == [0., 0., 1., 1.]
-                                    && previous.to != current.to))
-                    })
+                    && self
+                        .frame_upload
+                        .sampled_animation_values
+                        .iter()
+                        .any(|previous| {
+                            previous.animation_id == current.animation_id
+                                && previous.property == current.property
+                                && (previous.progress != 1.
+                                    || (current.property == crate::TransitionProperty::VisualState
+                                        && current.to == [0., 0., 1., 1.]
+                                        && previous.to != current.to))
+                        })
             });
-        let reusable = scene.revision != 0
-            && self.retained_upload.key == Some(key)
-            && !reconsider_color;
+        let reusable =
+            scene.revision != 0 && self.retained_upload.key == Some(key) && !reconsider_color;
         // Once useful static window color is resident, finishing/removing a
         // small animation does not make those cached pixels disposable.
         let keep_retained_root = self.frame_upload.root_color.is_some()
@@ -811,11 +861,13 @@ impl NovaRenderer {
                         scene_revision: scene.revision,
                         size: render_size,
                     },
-                    || auto_capture_static_background(
-                        scene,
-                        retained_paint.chunks_for(scene),
-                        render_size,
-                    ),
+                    || {
+                        auto_capture_static_background(
+                            scene,
+                            retained_paint.chunks_for(scene),
+                            render_size,
+                        )
+                    },
                 )
             })
             .flatten();
@@ -835,10 +887,13 @@ impl NovaRenderer {
             );
         } else {
             let encode_started_at = Instant::now();
+            self.retained_upload
+                .retained_chunks
+                .set_atlas_placement_generation(self.atlas.placement_generation());
             self.atlas
                 .copy_placements_into(&mut self.frame_upload.atlas_placements);
-            summary = self.frame_upload.encode_for_target_size(
-                &mut self.retained_upload.quad_chunks,
+            summary = self.frame_upload.encode_frame(
+                &mut self.retained_upload.retained_chunks,
                 scene,
                 retained_paint,
                 presentation_animation_values,
@@ -855,11 +910,8 @@ impl NovaRenderer {
             // Capture the encoded static prefix in place. No separate foreground
             // Scene, second Painter::finish, or second primitive encoding pass.
             let captured_static_prefix = auto_background.as_ref().is_some_and(|candidate| {
-                self.frame_upload.capture_encoded_static_prefix_for_target_size(
-                    candidate,
-                    self.current_size,
-                    &mut summary,
-                )
+                self.frame_upload
+                    .capture_static_prefix(candidate, self.current_size, &mut summary)
             });
             encode_time = encode_started_at.elapsed();
             // Only CPU/GPU-native ordinary primitives can be replayed inside
@@ -882,12 +934,11 @@ impl NovaRenderer {
                     )
                     || should_retain_complex_scene_color(scene, &summary))
             {
-                self.frame_upload
-                    .append_root_color_for_target_size(
-                        render_size,
-                        self.current_size,
-                        &mut summary,
-                    );
+                self.frame_upload.append_root_color_sized(
+                    render_size,
+                    self.current_size,
+                    &mut summary,
+                );
             }
             log::trace!(
                 target: "gpui::diagnostics",
@@ -919,8 +970,8 @@ impl NovaRenderer {
             hashed_bytes = signature_hashed_bytes;
             // Prepare the immutable layout before mutably replacing its owner.
             // Equal span sets share the previous Arc without rebuilding descriptors.
-            let quad_layout = QuadResidentLayout::from_upload_reusing(
-                &self.retained_upload.current_quad_layout,
+            let chunk_layouts = RetainedChunkLayouts::from_upload_reusing(
+                &self.retained_upload.current_chunk_layouts,
                 &self.frame_upload,
             );
             self.retained_upload.replace(
@@ -928,7 +979,7 @@ impl NovaRenderer {
                 summary,
                 self.frame_resources.len(),
                 static_signature,
-                quad_layout,
+                chunk_layouts,
             );
         }
         // GPU-indexed source animations are intentionally absent from `animated_primitives`.
@@ -938,7 +989,7 @@ impl NovaRenderer {
         self.frame_upload.retained_static_reused =
             reusable && !gpu_indexed_animation_blocks_blur_reuse;
         self.frame_upload
-            .sample_animated_primitives_for_target_size(self.current_size);
+            .sample_animated_primitives(self.current_size);
         self.retained_upload.update_shareability(&self.frame_upload);
 
         let static_stream_misses = self
@@ -1008,7 +1059,8 @@ mod tests {
         original.finish();
         original.revision = 1;
         let captured = auto_capture_static_background(
-            &original, &[],
+            &original,
+            &[],
             DrawableSize {
                 width: 640,
                 height: 480,
@@ -1032,9 +1084,9 @@ mod tests {
         );
         let mut nested = crate::scene::Painter::default();
         nested.push_layer(viewport);
-        nested.replay(0..100, &original, &[]);
+        nested.replay(0..100, &original, []);
         nested.pop_layer();
-        nested.replay(100..101, &original, &[]);
+        nested.replay(100..101, &original, []);
         nested.finish();
         nested.revision = 2;
         let size = DrawableSize {
@@ -1047,7 +1099,7 @@ mod tests {
         assert_eq!(nested_capture.content_mask.bounds, viewport);
         let mut split = crate::scene::Painter::default();
         split.push_layer(viewport);
-        split.replay(0..101, &original, &[]);
+        split.replay(0..101, &original, []);
         split.pop_layer();
         split.finish();
         split.revision = 3;
@@ -1089,7 +1141,8 @@ mod tests {
         next.finish();
         next.revision = 4;
         let changed = auto_capture_static_background(
-            &next, &[],
+            &next,
+            &[],
             DrawableSize {
                 width: 640,
                 height: 480,
@@ -1104,7 +1157,10 @@ mod tests {
 
     #[test]
     fn static_prefix_keeps_zero_filter_popup_outside_root_capture() {
-        let size = DrawableSize { width: 640, height: 480 };
+        let size = DrawableSize {
+            width: 640,
+            height: 480,
+        };
         let viewport = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
@@ -1142,7 +1198,7 @@ mod tests {
             .expect("static background can be retained below an isolated popup");
         assert_eq!(captured.quads, 24);
         let mut upload = FrameUpload::default();
-        let mut cache = RetainedQuadChunkCache::default();
+        let mut cache = RetainedChunkCache::default();
         let mut summary = upload.encode(
             &mut cache,
             &scene,
@@ -1222,8 +1278,10 @@ mod tests {
         }
         interleaved.end_blur();
         interleaved.finish();
-        assert!(auto_capture_static_background(&interleaved, &[], size).is_none(),
-            "a prefix inside an open Capture is never independently replayable");
+        assert!(
+            auto_capture_static_background(&interleaved, &[], size).is_none(),
+            "a prefix inside an open Capture is never independently replayable"
+        );
     }
 
     #[test]
@@ -1291,6 +1349,10 @@ mod tests {
             premultiplied_alpha: false,
             blur_quality: BackdropBlurQuality::Full,
         }
+    }
+
+    fn layouts(upload: &FrameUpload) -> RetainedChunkLayouts {
+        RetainedChunkLayouts::from_upload_reusing(&RetainedChunkLayouts::default(), upload)
     }
 
     fn resident_span(
@@ -1384,7 +1446,7 @@ mod tests {
             FrameUploadSummary::default(),
             3,
             first,
-            QuadResidentLayout::default(),
+            RetainedChunkLayouts::default(),
         );
         retained.mark_uploaded(0);
         assert!(!retained.needs_static_upload(0));
@@ -1407,7 +1469,7 @@ mod tests {
             FrameUploadSummary::default(),
             3,
             second,
-            QuadResidentLayout::default(),
+            RetainedChunkLayouts::default(),
         );
 
         let slot_zero = retained.static_upload_mask(0);
@@ -1432,7 +1494,7 @@ mod tests {
             FrameUploadSummary::default(),
             3,
             second,
-            QuadResidentLayout::default(),
+            RetainedChunkLayouts::default(),
         );
         assert!(!retained.needs_static_upload(0));
     }
@@ -1454,7 +1516,7 @@ mod tests {
             FrameUploadSummary::default(),
             2,
             signature,
-            QuadResidentLayout::from_upload(&upload),
+            layouts(&upload),
         );
         retained.mark_uploaded(0);
         retained.invalidate_quad_slot(0);
@@ -1462,7 +1524,7 @@ mod tests {
         assert!(retained.static_upload_mask(0).quad);
         assert_eq!(
             retained.quad_upload_plan(0, upload.quads.len()),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
         );
     }
 
@@ -1480,7 +1542,7 @@ mod tests {
             FrameUploadSummary::default(),
             2,
             signature,
-            QuadResidentLayout::from_upload(&upload),
+            layouts(&upload),
         );
         retained.mark_uploaded(0);
         retained.invalidate_path_rasterization_slot(0);
@@ -1528,7 +1590,7 @@ mod tests {
             FrameUploadSummary::default(),
             2,
             first_signature,
-            QuadResidentLayout::from_upload(&upload),
+            layouts(&upload),
         );
         retained.mark_uploaded(0);
 
@@ -1540,16 +1602,67 @@ mod tests {
             FrameUploadSummary::default(),
             2,
             second_signature,
-            QuadResidentLayout::from_upload(&upload),
+            layouts(&upload),
         );
 
         assert_eq!(
             retained.quad_upload_plan(0, upload.quads.len()),
-            QuadUploadPlan::Ranges(smallvec::smallvec![0..32])
+            ChunkUploadPlan::Ranges(smallvec::smallvec![0..32])
         );
         assert_eq!(
             retained.quad_upload_plan(1, upload.quads.len()),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
+        );
+    }
+
+    #[test]
+    fn slot_residency_uploads_dirty_monochrome_chunk_but_not_clean_sibling() {
+        let mut retained = RetainedUpload::default();
+        let mut upload = FrameUpload::default();
+        upload
+            .mono_sprites
+            .write(|bytes| bytes.extend_from_slice(&[1; 64]));
+        upload.resident_monochrome_sprite_spans = vec![
+            resident_span("left-mono", 1, 0..32),
+            resident_span("right-mono", 1, 32..64),
+        ];
+        let first_layouts = layouts(&upload);
+        let (first_signature, _) = StaticUploadSignature::from_frame_upload(&upload);
+        retained.replace(
+            key(1),
+            FrameUploadSummary::default(),
+            2,
+            first_signature,
+            first_layouts,
+        );
+        retained.mark_uploaded(0);
+
+        upload.mono_sprites.slice_mut(0..32).fill(2);
+        upload.resident_monochrome_sprite_spans[0] = resident_span("left-mono", 2, 0..32);
+        let second_layouts =
+            RetainedChunkLayouts::from_upload_reusing(&retained.current_chunk_layouts, &upload);
+        let (second_signature, _) = StaticUploadSignature::from_frame_upload(&upload);
+        retained.replace(
+            key(2),
+            FrameUploadSummary::default(),
+            2,
+            second_signature,
+            second_layouts,
+        );
+
+        assert_eq!(
+            retained.monochrome_sprite_upload_plan(0, upload.mono_sprites.len()),
+            ChunkUploadPlan::Ranges(smallvec::smallvec![0..32])
+        );
+        assert_eq!(
+            retained.monochrome_sprite_upload_plan(1, upload.mono_sprites.len()),
+            ChunkUploadPlan::Full
+        );
+
+        retained.invalidate_stream(0, BufferStream::MonoSprites);
+        assert_eq!(
+            retained.monochrome_sprite_upload_plan(0, upload.mono_sprites.len()),
+            ChunkUploadPlan::Full
         );
     }
 }

@@ -136,7 +136,9 @@ pub fn record_direct_present() {
     // This is a last-present diagnostic, not a startup allocation bit.
     // Vulkan/DX backbuffers rotate; a direct frame has no retained root
     // color attachment even if other windows cache their own layers.
-    metrics.has_retained_frame_target.store(0, Ordering::Relaxed);
+    metrics
+        .has_retained_frame_target
+        .store(0, Ordering::Relaxed);
     metrics.retained_copy_pixels.store(0, Ordering::Relaxed);
     metrics
         .retained_copy_estimated_bytes
@@ -147,7 +149,7 @@ pub(crate) fn record_presentation_animation_sample(
     window_id: u64,
     samples: &[SceneAnimationValue],
     presentation_timing: Option<crate::ActivePresentationTiming>,
-    backend_timings: Option<gfx_core::PresentationTimings>,
+    backend_timings: Option<gfx_core::PresentTimings>,
 ) {
     if samples.is_empty() {
         return;
@@ -192,7 +194,9 @@ pub fn record_retained_present(pixels: usize, estimated_bytes: usize) {
     // target chain, not in an older dedicated retained-target allocation.
     // Report the actual current render path rather than the permanently
     // false legacy resource flag.
-    metrics.has_retained_frame_target.store(1, Ordering::Relaxed);
+    metrics
+        .has_retained_frame_target
+        .store(1, Ordering::Relaxed);
     metrics
         .retained_copy_pixels
         .store(pixels as u64, Ordering::Relaxed);

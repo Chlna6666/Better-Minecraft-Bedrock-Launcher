@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DrawStepMode {
+pub(super) enum DrawMode {
     Present,
     /// Draw only batches in `[batch_start, batch_end)`. Backdrop groups use this mode to advance
     /// one shared scene-color target between draw-order barriers without rebuilding old prefixes.
@@ -17,7 +17,7 @@ pub(super) enum DrawStepMode {
     },
 }
 
-impl DrawStepMode {
+impl DrawMode {
     fn is_past_end(self, batch_index: usize) -> bool {
         match self {
             Self::Present => false,
@@ -43,20 +43,20 @@ impl DrawStepMode {
 }
 
 #[cfg(test)]
-pub(super) fn draw_steps_for_upload(
+pub(super) fn encode_draw_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: ResourceSetId,
-    shadow_resource_set: ResourceSetId,
-    path_resource_set: ResourceSetId,
-    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    underline_resource_set: ResourceSetId,
-    backdrop_blur_resource_set: ResourceSetId,
-    mode: DrawStepMode,
-) -> Vec<RenderStepDescriptor> {
+    quad_resource_set: BindGroupId,
+    shadow_resource_set: BindGroupId,
+    path_resource_set: BindGroupId,
+    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_resource_set: BindGroupId,
+    backdrop_blur_resource_set: BindGroupId,
+    mode: DrawMode,
+) -> Vec<RenderCommand> {
     let mut steps = Vec::new();
-    draw_steps_for_upload_into(
+    encode_draw_commands_into(
         upload,
         pipelines,
         blend_pipelines,
@@ -72,47 +72,56 @@ pub(super) fn draw_steps_for_upload(
     steps
 }
 
-pub(super) fn draw_steps_for_upload_into(
+pub(super) fn encode_draw_commands_into(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: ResourceSetId,
-    shadow_resource_set: ResourceSetId,
-    path_resource_set: ResourceSetId,
-    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    underline_resource_set: ResourceSetId,
-    backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
-    mode: DrawStepMode,
-    steps: &mut Vec<RenderStepDescriptor>,
+    quad_resource_set: BindGroupId,
+    shadow_resource_set: BindGroupId,
+    path_resource_set: BindGroupId,
+    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_resource_set: BindGroupId,
+    backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
+    mode: DrawMode,
+    steps: &mut Vec<RenderCommand>,
 ) {
-    draw_steps_for_upload_into_clipped(
-        upload, pipelines, blend_pipelines, quad_resource_set,
-        shadow_resource_set, path_resource_set, sprite_resource_set,
-        underline_resource_set, backdrop_blur_resource_set, mode, None, steps,
+    encode_clipped_draw_commands(
+        upload,
+        pipelines,
+        blend_pipelines,
+        quad_resource_set,
+        shadow_resource_set,
+        path_resource_set,
+        sprite_resource_set,
+        underline_resource_set,
+        backdrop_blur_resource_set,
+        mode,
+        None,
+        steps,
     );
 }
 
 /// For a retained offscreen region, skip wholly disjoint STATIC draw batches
 /// before GPU submission. Animated/unknown batches remain conservative.
-pub(super) fn draw_steps_for_upload_into_clipped(
+pub(super) fn encode_clipped_draw_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: ResourceSetId,
-    shadow_resource_set: ResourceSetId,
-    path_resource_set: ResourceSetId,
-    mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    underline_resource_set: ResourceSetId,
-    mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
-    mode: DrawStepMode,
+    quad_resource_set: BindGroupId,
+    shadow_resource_set: BindGroupId,
+    path_resource_set: BindGroupId,
+    mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_resource_set: BindGroupId,
+    mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
+    mode: DrawMode,
     source_scissor: Option<ScissorRect>,
-    steps: &mut Vec<RenderStepDescriptor>,
+    steps: &mut Vec<RenderCommand>,
 ) {
     steps.clear();
     // Root source batches execute in the independent offscreen pass. Final
     // presentation samples only its compositor descriptor, with no Filter scope markers.
     let mode = match (mode, upload.root_color) {
-        (DrawStepMode::Present, Some(root)) => DrawStepMode::BackdropSegment {
+        (DrawMode::Present, Some(root)) => DrawMode::BackdropSegment {
             batch_start: root.content_end,
             batch_end: root.content_end + 1,
         },
@@ -128,7 +137,9 @@ pub(super) fn draw_steps_for_upload_into_clipped(
             continue;
         }
         if source_scissor.is_some_and(|scissor| {
-            upload.batch_visual_bounds.get(batch_index)
+            upload
+                .batch_visual_bounds
+                .get(batch_index)
                 .copied()
                 .flatten()
                 .is_some_and(|bounds| static_batch_misses_scissor(bounds, scissor))
@@ -160,11 +171,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
             _ => {}
         }
         match *batch {
-            UploadedBatch::SolidQuads { first, count } => push_draw_step(
+            UploadedBatch::SolidQuads { first, count } => push_draw_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: blend_pipelines.solid_quads,
-                    resource_sets: resource_set_list([quad_resource_set]),
+                    bind_groups: bind_group_list([quad_resource_set]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -172,11 +183,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                     scissor: None,
                 },
             ),
-            UploadedBatch::Quads { first, count } => push_draw_step(
+            UploadedBatch::Quads { first, count } => push_draw_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: blend_pipelines.quads,
-                    resource_sets: resource_set_list([quad_resource_set]),
+                    bind_groups: bind_group_list([quad_resource_set]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -184,11 +195,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                     scissor: None,
                 },
             ),
-            UploadedBatch::Shadows { first, count } => push_draw_step(
+            UploadedBatch::Shadows { first, count } => push_draw_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: blend_pipelines.shadows,
-                    resource_sets: resource_set_list([shadow_resource_set]),
+                    bind_groups: bind_group_list([shadow_resource_set]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -197,11 +208,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                 },
             ),
             UploadedBatch::PathRasterization { .. } => {}
-            UploadedBatch::Paths { first, count } => push_draw_step(
+            UploadedBatch::Paths { first, count } => push_draw_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: pipelines.paths,
-                    resource_sets: resource_set_list([path_resource_set]),
+                    bind_groups: bind_group_list([path_resource_set]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -214,7 +225,7 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                 first,
                 count,
             } => {
-                if let Some(resource_set) = sprite_resource_set(texture_id) {
+                if let Some(bind_group) = sprite_resource_set(texture_id) {
                     #[cfg(target_os = "windows")]
                     let pipeline = if texture_id.kind == AtlasTextureKind::Subpixel {
                         blend_pipelines.subpixel_sprites
@@ -223,11 +234,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                     };
                     #[cfg(not(target_os = "windows"))]
                     let pipeline = blend_pipelines.mono_sprites;
-                    push_draw_step(
+                    push_draw_command(
                         steps,
-                        DrawStepDescriptor {
+                        DrawCommand {
                             pipeline,
-                            resource_sets: resource_set_list([resource_set]),
+                            bind_groups: bind_group_list([bind_group]),
                             vertex_count: 4,
                             first_vertex: 0,
                             instance_count: count,
@@ -242,12 +253,12 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                 first,
                 count,
             } => {
-                if let Some(resource_set) = sprite_resource_set(texture_id) {
-                    push_draw_step(
+                if let Some(bind_group) = sprite_resource_set(texture_id) {
+                    push_draw_command(
                         steps,
-                        DrawStepDescriptor {
+                        DrawCommand {
                             pipeline: blend_pipelines.poly_sprites,
-                            resource_sets: resource_set_list([resource_set]),
+                            bind_groups: bind_group_list([bind_group]),
                             vertex_count: 4,
                             first_vertex: 0,
                             instance_count: count,
@@ -257,11 +268,11 @@ pub(super) fn draw_steps_for_upload_into_clipped(
                     );
                 }
             }
-            UploadedBatch::Underlines { first, count } => push_draw_step(
+            UploadedBatch::Underlines { first, count } => push_draw_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: blend_pipelines.underlines,
-                    resource_sets: resource_set_list([underline_resource_set]),
+                    bind_groups: bind_group_list([underline_resource_set]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -271,14 +282,14 @@ pub(super) fn draw_steps_for_upload_into_clipped(
             ),
             UploadedBatch::BackdropBlurs { first, count } => {
                 upload.for_each_backdrop_blur_run(first, count, |run| {
-                    let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
+                    let Some(bind_group) = backdrop_blur_resource_set(run.config) else {
                         return;
                     };
-                    push_draw_step(
+                    push_draw_command(
                         steps,
-                        DrawStepDescriptor {
+                        DrawCommand {
                             pipeline: blend_pipelines.backdrop_blurs,
-                            resource_sets: resource_set_list([resource_set]),
+                            bind_groups: bind_group_list([bind_group]),
                             vertex_count: 4,
                             first_vertex: 0,
                             instance_count: run.count,
@@ -303,9 +314,9 @@ pub(super) fn draw_steps_for_upload_into_clipped(
         }
     }
     if steps.is_empty() && source_scissor.is_none() {
-        steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
+        steps.push(RenderCommand::Draw(DrawCommand {
             pipeline: blend_pipelines.solid_quads,
-            resource_sets: resource_set_list([quad_resource_set]),
+            bind_groups: bind_group_list([quad_resource_set]),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: 0,
@@ -336,21 +347,21 @@ fn static_batch_misses_scissor(
 fn push_blur_composite_step(
     upload: &FrameUpload,
     pipeline: RenderPipelineId,
-    backdrop_blur_resource_set: &mut impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
+    backdrop_blur_resource_set: &mut impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
     index: u32,
-    steps: &mut Vec<RenderStepDescriptor>,
+    steps: &mut Vec<RenderCommand>,
 ) {
-    let Some(config) = upload.backdrop_blur_config_for_index(index) else {
+    let Some(config) = upload.blur_config_at(index) else {
         return;
     };
-    let Some(resource_set) = backdrop_blur_resource_set(config) else {
+    let Some(bind_group) = backdrop_blur_resource_set(config) else {
         return;
     };
-    push_draw_step(
+    push_draw_command(
         steps,
-        DrawStepDescriptor {
+        DrawCommand {
             pipeline,
-            resource_sets: resource_set_list([resource_set]),
+            bind_groups: bind_group_list([bind_group]),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: 1,
@@ -360,30 +371,30 @@ fn push_blur_composite_step(
     );
 }
 
-fn push_draw_step(steps: &mut Vec<RenderStepDescriptor>, step: DrawStepDescriptor) {
+fn push_draw_command(steps: &mut Vec<RenderCommand>, step: DrawCommand) {
     if step.vertex_count == 0 || step.instance_count == 0 {
         return;
     }
-    if let Some(RenderStepDescriptor::Draw(previous)) = steps.last_mut()
-        && draw_steps_can_merge(previous, &step)
+    if let Some(RenderCommand::Draw(previous)) = steps.last_mut()
+        && draw_commands_can_merge(previous, &step)
         && let Some(instance_count) = previous.instance_count.checked_add(step.instance_count)
     {
         previous.instance_count = instance_count;
         return;
     }
-    steps.push(RenderStepDescriptor::Draw(step));
+    steps.push(RenderCommand::Draw(step));
 }
 
-fn draw_steps_can_merge(previous: &DrawStepDescriptor, next: &DrawStepDescriptor) -> bool {
+fn draw_commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {
     previous.pipeline == next.pipeline
-        && previous.resource_sets == next.resource_sets
+        && previous.bind_groups == next.bind_groups
         && previous.vertex_count == next.vertex_count
         && previous.first_vertex == next.first_vertex
         && previous.scissor == next.scissor
         && previous.first_instance.checked_add(previous.instance_count) == Some(next.first_instance)
 }
 
-pub(super) fn partial_scissor_for_packet(
+pub(super) fn packet_scissor(
     packet: &PresentationPacket,
     target_size: DrawableSize,
 ) -> Option<ScissorRect> {
@@ -439,11 +450,11 @@ pub(super) fn scaled_pixels_ceil_u32(value: crate::ScaledPixels) -> u32 {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct BackdropBlurRenderPass {
     pub(super) target_texture_view: TextureViewId,
-    pub(super) step: DrawStepDescriptor,
+    pub(super) step: RenderCommand,
 }
 
 #[cfg(test)]
-pub(super) fn backdrop_blur_render_passes_for_targets_into(
+pub(super) fn encode_blur_target_passes(
     pipelines: &Pipelines,
     targets: &BackdropBlurTargets,
     frame_resource_index: usize,
@@ -455,16 +466,10 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
         .take(targets.active_variant_count)
         .map(|variant| variant.config)
         .collect();
-    backdrop_blur_render_passes_for_configs_into(
-        pipelines,
-        targets,
-        frame_resource_index,
-        &configs,
-        passes,
-    );
+    encode_blur_config_passes(pipelines, targets, frame_resource_index, &configs, passes);
 }
 
-pub(super) fn backdrop_blur_render_passes_for_configs_into(
+pub(super) fn encode_blur_config_passes(
     pipelines: &Pipelines,
     targets: &BackdropBlurTargets,
     frame_resource_index: usize,
@@ -479,7 +484,7 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
         passes.clear();
         return;
     };
-    backdrop_blur_render_passes_for_configs_with_source_into(
+    encode_blur_source_passes(
         pipelines,
         targets,
         frame_resource_index,
@@ -489,12 +494,12 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
     );
 }
 
-pub(super) fn backdrop_blur_render_passes_for_configs_with_source_into(
+pub(super) fn encode_blur_source_passes(
     pipelines: &Pipelines,
     targets: &BackdropBlurTargets,
     frame_resource_index: usize,
     configs: &[BackdropBlurConfig],
-    source_resource_set: ResourceSetId,
+    source_resource_set: BindGroupId,
     passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
     passes.clear();
@@ -526,39 +531,39 @@ pub(super) fn backdrop_blur_render_passes_for_configs_with_source_into(
 
         passes.push(BackdropBlurRenderPass {
             target_texture_view: horizontal.texture_view,
-            step: DrawStepDescriptor {
+            step: RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.backdrop_blur_downsample,
-                resource_sets: resource_set_list([source_resource_set]),
+                bind_groups: bind_group_list([source_resource_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
                 first_instance: pass_base,
                 scissor: None,
-            },
+            }),
         });
         passes.push(BackdropBlurRenderPass {
             target_texture_view: vertical.texture_view,
-            step: DrawStepDescriptor {
+            step: RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.backdrop_blur_upsample,
-                resource_sets: resource_set_list([horizontal_resource_set]),
+                bind_groups: bind_group_list([horizontal_resource_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
                 first_instance: pass_base.saturating_add(1),
                 scissor: None,
-            },
+            }),
         });
     }
 }
 
 #[cfg(test)]
-pub(super) fn path_mask_draw_steps_for_upload(
+pub(super) fn encoded_path_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
-    path_rasterization_resource_set: ResourceSetId,
-) -> Vec<DrawStepDescriptor> {
+    path_rasterization_resource_set: BindGroupId,
+) -> Vec<RenderCommand> {
     let mut steps = Vec::new();
-    path_mask_draw_steps_for_upload_into(
+    encode_path_commands(
         upload,
         pipelines,
         path_rasterization_resource_set,
@@ -567,11 +572,11 @@ pub(super) fn path_mask_draw_steps_for_upload(
     steps
 }
 
-pub(super) fn path_mask_draw_steps_for_upload_into(
+pub(super) fn encode_path_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
-    path_rasterization_resource_set: ResourceSetId,
-    steps: &mut Vec<DrawStepDescriptor>,
+    path_rasterization_resource_set: BindGroupId,
+    steps: &mut Vec<RenderCommand>,
 ) {
     steps.clear();
     steps.reserve(upload.batches.len());
@@ -580,11 +585,11 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
             UploadedBatch::PathRasterization {
                 first_vertex,
                 vertex_count,
-            } => push_path_mask_draw_step(
+            } => push_path_command(
                 steps,
-                DrawStepDescriptor {
+                DrawCommand {
                     pipeline: pipelines.path_rasterization,
-                    resource_sets: resource_set_list([path_rasterization_resource_set]),
+                    bind_groups: bind_group_list([path_rasterization_resource_set]),
                     vertex_count,
                     first_vertex,
                     instance_count: 1,
@@ -608,26 +613,23 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
     }
 }
 
-fn push_path_mask_draw_step(steps: &mut Vec<DrawStepDescriptor>, step: DrawStepDescriptor) {
+fn push_path_command(steps: &mut Vec<RenderCommand>, step: DrawCommand) {
     if step.vertex_count == 0 || step.instance_count == 0 {
         return;
     }
-    if let Some(previous) = steps.last_mut()
-        && path_mask_draw_steps_can_merge(previous, &step)
+    if let Some(RenderCommand::Draw(previous)) = steps.last_mut()
+        && path_commands_can_merge(previous, &step)
         && let Some(vertex_count) = previous.vertex_count.checked_add(step.vertex_count)
     {
         previous.vertex_count = vertex_count;
         return;
     }
-    steps.push(step);
+    steps.push(RenderCommand::Draw(step));
 }
 
-fn path_mask_draw_steps_can_merge(
-    previous: &DrawStepDescriptor,
-    next: &DrawStepDescriptor,
-) -> bool {
+fn path_commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {
     previous.pipeline == next.pipeline
-        && previous.resource_sets == next.resource_sets
+        && previous.bind_groups == next.bind_groups
         && previous.instance_count == next.instance_count
         && previous.first_instance == next.first_instance
         && previous.scissor == next.scissor
@@ -644,11 +646,23 @@ mod static_batch_culling_tests {
             crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
             crate::size(crate::ScaledPixels(40.0), crate::ScaledPixels(30.0)),
         );
-        assert!(static_batch_misses_scissor(bounds, ScissorRect {
-            x: 600, y: 400, width: 20, height: 20,
-        }));
-        assert!(!static_batch_misses_scissor(bounds, ScissorRect {
-            x: 20, y: 25, width: 20, height: 20,
-        }));
+        assert!(static_batch_misses_scissor(
+            bounds,
+            ScissorRect {
+                x: 600,
+                y: 400,
+                width: 20,
+                height: 20,
+            }
+        ));
+        assert!(!static_batch_misses_scissor(
+            bounds,
+            ScissorRect {
+                x: 20,
+                y: 25,
+                width: 20,
+                height: 20,
+            }
+        ));
     }
 }

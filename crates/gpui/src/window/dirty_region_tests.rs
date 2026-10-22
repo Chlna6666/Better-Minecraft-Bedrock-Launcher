@@ -371,7 +371,11 @@ fn explicit_present_survives_coalesced_clean_animation_tick(cx: &mut TestAppCont
         window.invalidator.set_dirty(false);
         let view = view.downcast::<AnimationTickView>().expect("test view");
         let renders = view.read(cx).renders;
-        let test_window = window.platform_window.as_test().expect("test backend").clone();
+        let test_window = window
+            .platform_window
+            .as_test()
+            .expect("test backend")
+            .clone();
         let presents = test_window.present_framebuffer_only_count();
 
         window.run_platform_frame(

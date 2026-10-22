@@ -39,14 +39,15 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::*,
+            HiDpi::GetDpiForWindow,
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsWindowVisible,
-                GetClientRect, IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, PostQuitMessage,
-                SW_RESTORE, SendMessageW, SetForegroundWindow, SetTimer, ShowWindow,
-                USER_TIMER_MINIMUM, WM_ENDSESSION, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
-                WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_SETICON,
-                WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
+                GetClientRect, HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic,
+                IsWindowVisible, IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW,
+                PostQuitMessage, SW_RESTORE, SendMessageW, SetForegroundWindow, SetTimer,
+                ShowWindow, USER_TIMER_MINIMUM, WM_CAPTURECHANGED, WM_ENDSESSION, WM_ENTERSIZEMOVE,
+                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST,
+                WM_QUERYENDSESSION, WM_SETICON, WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
             },
         },
     },
@@ -55,8 +56,8 @@ use windows::{
 
 use super::platform::WindowsUserEvent;
 use crate::diagnostics::performance_metrics::{
-    record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
-    record_window_active_presentation_attempt, record_window_active_presentation_retry,
+    record_frame_request, record_gpu_adapter_diagnostics, record_present_attempt,
+    record_renderer_backend, record_window_active_presentation_retry,
     record_window_backend_ready_wake, record_window_native_vsync_wake,
     record_window_request_redraw,
 };
@@ -76,7 +77,6 @@ use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::Window as WinitWindow;
 
 mod startup;
-mod resize;
 use startup::StartupBackground;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
@@ -90,6 +90,48 @@ pub(crate) struct QueuedScene {
 /// A resize packet is valid only for its layout generation. A zero-sized
 /// minimized client does not accept a replacement Present; synthetic packets
 /// (no layout extent) retain their existing backend-test behavior.
+/// Win32 reports the window DPI authoritatively; a queued winit
+/// ScaleFactorChanged can still carry the previous monitor's value while a drag
+/// moves the client rect. Dividing the new physical extent by that stale value
+/// produces a wrong logical layout (elements sized for the old DPI).
+fn resolved_scale_factor(native_dpi: u32, reported: f32) -> f32 {
+    let native = f64::from(native_dpi) / 96.0;
+    if native.is_finite() && native > 0.0 {
+        native as f32
+    } else if reported.is_finite() && reported > 0.0 {
+        reported
+    } else {
+        1.0
+    }
+}
+
+/// A native resize that could not be matched to a Scene generation must not
+/// block presentation forever. When the committed Scene already covers the
+/// current native client extent and no UI commit is queued, the pending request
+/// is stale (typically an epoch overtaken by a deferred resize callback): retarget
+/// the renderer to the committed generation so animation-only frames can resume.
+/// A caller that needs a genuinely new layout keeps the pending request.
+fn stale_pending_resize_recovery(
+    pending: Option<(u64, (u32, u32))>,
+    committed_epoch: u64,
+    committed_extent: Option<(u32, u32)>,
+    native_extent: Option<(u32, u32)>,
+    ui_commit_pending: bool,
+) -> Option<(u32, u32, u64)> {
+    let (pending_epoch, pending_extent) = pending?;
+    if ui_commit_pending {
+        return None;
+    }
+    let committed = committed_extent?;
+    if Some(committed) != native_extent {
+        return None;
+    }
+    if pending_epoch == committed_epoch && pending_extent == committed {
+        return None;
+    }
+    Some((committed.0, committed.1, committed_epoch))
+}
+
 fn native_extent_matches_layout(
     layout: Option<(u32, u32)>,
     client: winit::dpi::PhysicalSize<u32>,
@@ -124,7 +166,9 @@ impl GpuReportMailbox {
             if previous.ready_enqueued_at.is_none() {
                 previous.ready_enqueued_at = incoming.ready_enqueued_at;
             }
-            previous.completed_animations.extend(incoming.completed_animations);
+            previous
+                .completed_animations
+                .extend(incoming.completed_animations);
             false
         } else {
             self.latest = Some(incoming);
@@ -156,12 +200,10 @@ fn allow_unpaced_native_frame(
     if !scheduler_active {
         return true;
     }
-    let stalled = last_vsync.is_none_or(|last| {
-        now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL
-    });
-    let fallback_available = last_fallback.is_none_or(|last| {
-        now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL
-    });
+    let stalled = last_vsync
+        .is_none_or(|last| now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL);
+    let fallback_available = last_fallback
+        .is_none_or(|last| now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL);
     stalled && fallback_available
 }
 
@@ -320,10 +362,7 @@ fn rotate_modal_window_dispatch<T>(windows: &mut [T], cursor: usize, resizing: O
 /// Snapshot registered windows without holding the HWND registry across GPUI callbacks.
 /// The winit event loop cannot dispatch user events while Windows is in its nested drag loop;
 /// active companion windows must still receive their own pending presentation requests.
-fn dispatch_modal_window_updates(
-    hwnd: HWND,
-    timing: Option<super::vsync::VSyncEventTiming>,
-) {
+fn dispatch_modal_window_updates(hwnd: HWND, timing: Option<super::vsync::VSyncEventTiming>) {
     let mut windows = WINDOWS_BY_HWND.with(|registry| {
         registry
             .borrow()
@@ -410,6 +449,13 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
     _subclass_id: usize,
     _reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    if message == WM_CAPTURECHANGED && lparam.0 != hwnd.0 as isize {
+        if let Some(window) = native_window(hwnd) {
+            // Capture can leave this window without a subsequent MouseInput release.
+            // Keep this independent of the callback RefCell for native reentrancy.
+            window.0.pressed_button.set(None);
+        }
+    }
     if message == WM_QUERYENDSESSION {
         return windows::Win32::Foundation::LRESULT(1);
     }
@@ -449,9 +495,6 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // Do not force full-GPU redraw for a pure window move.
                 window.0.size_move_active.set(true);
                 window.0.size_move_has_resized.set(false);
-                let mut cadence = window.0.resize_cadence.get();
-                cadence.reset();
-                window.0.resize_cadence.set(cadence);
                 window.0.vsync_scheduler.wake_modal_ui_tasks();
             }
             // Always keep one LOW-RATE fallback while nested in the OS message
@@ -468,11 +511,6 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
                 window.0.size_move_active.set(false);
-                // The final exact-size UI commit must not inherit the last
-                // in-gesture frame deadline.
-                let mut cadence = window.0.resize_cadence.get();
-                cadence.reset();
-                window.0.resize_cadence.set(cadence);
                 let resized = window.0.size_move_has_resized.replace(false);
                 if resized {
                     window.set_live_resize_active(false);
@@ -843,12 +881,14 @@ impl WindowsWindow {
     }
 
     fn queue_native_drag(&self, resize_edge: Option<ResizeEdge>) {
-        if let Err(error) = self.0.event_loop_proxy.send_event(
-            WindowsUserEvent::BeginNativeDrag {
+        if let Err(error) = self
+            .0
+            .event_loop_proxy
+            .send_event(WindowsUserEvent::BeginNativeDrag {
                 window_id: self.window_id(),
                 resize_edge,
-            },
-        ) {
+            })
+        {
             log::warn!("failed to queue native drag: {error:?}");
         }
     }
@@ -1099,17 +1139,18 @@ fn create_windows_renderer(initialization: WindowsRendererInitialization) -> Res
     let mut last_error = None;
 
     for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
-        configure_renderer_window_style(
-            &window,
-            should_use_no_redirection_bitmap(disable_direct_composition, transparent, candidate),
-        )?;
+        // DX11/DX12 windows are composed: the previous visual survives ResizeBuffers, so
+        // a live resize never exposes an undefined client area.
+        let candidate_composed =
+            should_use_no_redirection_bitmap(disable_direct_composition, true, candidate);
+        configure_renderer_window_style(&window, candidate_composed)?;
         match NovaRenderer::with_atlas(
             &window,
             candidate,
             &renderer_options,
             GpuSubmissionMode::Deferred,
             drawable_size,
-            transparent,
+            transparent || candidate_composed,
             atlas.clone(),
         ) {
             Ok(renderer) => {
@@ -1347,6 +1388,7 @@ impl rwh::HasDisplayHandle for WindowsRendererWindowHandle {
 pub(crate) struct WindowsWindowInner {
     pub(crate) use_native_decorations: bool,
     pub(crate) state: RefCell<WindowsWindowState>,
+    pub(crate) pressed_button: Cell<Option<MouseButton>>,
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) handle: AnyWindowHandle,
     pub(crate) executor: ForegroundExecutor,
@@ -1373,7 +1415,7 @@ pub(crate) struct WindowsWindowInner {
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
-    resize_cadence: Cell<resize::Cadence>,
+
     // Native and watchdog frame starts are separate clocks. OS WM_PAINT and modal
     // UI-task callbacks must not consume the queued scene ahead of DWM.
     last_native_vsync_frame_at: Cell<Option<Instant>>,
@@ -1384,6 +1426,9 @@ pub(crate) struct WindowsWindowInner {
     pending_live_resize_active: Cell<Option<bool>>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<PendingWindowsResize>>,
+    /// DirectComposition-backed presentation: the previous visual stays published and is
+    /// stretched across a native resize, so the client area never shows undefined black.
+    composed: bool,
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
     pending_scene: RefCell<Option<QueuedScene>>,
@@ -1487,9 +1532,6 @@ pub(crate) struct Callbacks {
 
 impl WindowsWindow {
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
-        let mut cadence = self.0.resize_cadence.get();
-        cadence.configured_interval = interval;
-        self.0.resize_cadence.set(cadence);
         let mut renderer_state = self.0.renderer.borrow_mut();
         if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
             renderer.set_frame_interval(interval);
@@ -1549,9 +1591,9 @@ impl WindowsWindow {
             // visible background must not turn initialization into a VSync UI rebuild loop.
             return PlatformFrameResult::Deferred;
         }
-        // Native resize frames submit before returning to Win32. If a nested
-        // native message changed the extent, rebuild for that extent rather
-        // than restoring an obsolete smaller drawable on the GPU owner.
+        // A native event may overtake layout. Schedule its next generation, but
+        // let this immutable Scene submit with its own drawable size. Requiring
+        // equality with the moving HWND here can reject every frame in a drag.
         if let Some(native) = self.native_client_extent()
             && !native_extent_matches_layout(packet.paint.geometry.layout_extent, native)
         {
@@ -1568,7 +1610,6 @@ impl WindowsWindow {
             }
             self.sync_current_native_size();
             self.request_frame(PlatformFrameRequest::ui_commit());
-            return PlatformFrameResult::Deferred;
         }
         if !self.try_apply_queued_renderer_resize(
             packet.paint.geometry.layout_extent,
@@ -1586,7 +1627,11 @@ impl WindowsWindow {
             } else {
                 renderer.draw(packet)
             };
-            (result, renderer.has_submitted_frame(), renderer.has_pending_gpu_work())
+            (
+                result,
+                renderer.has_submitted_frame(),
+                renderer.has_pending_gpu_work(),
+            )
         };
         match result {
             Ok(true) => {
@@ -1637,6 +1682,8 @@ impl WindowsWindow {
                 .log_err()
         });
         let transparent_background = should_use_transparent_background(&params);
+        let composed =
+            should_use_no_redirection_bitmap(disable_direct_composition, true, renderer_backend);
         let use_native_decorations = should_use_native_decorations(&params);
         let client_corner_preference =
             window_corner_preference_to_windows(params.window_corner_preference);
@@ -1661,11 +1708,14 @@ impl WindowsWindow {
             ))
             .with_active(false)
             .with_transparent(transparent_background)
-            .with_no_redirection_bitmap(should_use_no_redirection_bitmap(
-                disable_direct_composition,
-                transparent_background,
-                renderer_backend,
-            ));
+            .with_no_redirection_bitmap(
+                composed
+                    || should_use_no_redirection_bitmap(
+                        disable_direct_composition,
+                        transparent_background,
+                        renderer_backend,
+                    ),
+            );
         if !use_native_decorations {
             // Do not enable winit's undecorated-shadow workaround here. On Windows it shifts the
             // client rectangle by one physical pixel in WM_NCCALCSIZE; the resulting DWM/client
@@ -1744,6 +1794,7 @@ impl WindowsWindow {
             .map_err(|_| anyhow::anyhow!("Windows winit window was initialized twice"))?;
         let window = Self(Rc::new(WindowsWindowInner {
             use_native_decorations,
+            pressed_button: Cell::new(None),
             state: RefCell::new(WindowsWindowState {
                 callbacks: Callbacks::default(),
                 mouse_position: Cell::new(Point::default()),
@@ -1776,7 +1827,7 @@ impl WindowsWindow {
             committed_scale_factor: Cell::new(scale_factor),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
-            resize_cadence: Cell::new(resize::Cadence::default()),
+
             last_native_vsync_frame_at: Cell::new(None),
             last_unpaced_frame_at: Cell::new(None),
             visibility_report_scheduled: Cell::new(false),
@@ -1785,6 +1836,7 @@ impl WindowsWindow {
             pending_live_resize_active: Cell::new(None),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
+            composed,
             fallback_corner_radius,
             winit_window: cell,
             pending_scene: RefCell::new(None),
@@ -1873,11 +1925,14 @@ impl WindowsWindow {
             Ok(mut renderer) => {
                 let transparent = self.0.state.borrow().background_appearance.get()
                     != WindowBackgroundAppearance::Opaque;
-                if let Err(error) = self.configure_renderer_transparency_style(transparent) {
+                // A composed opaque window still uses the premultiplied composition
+                // surface; its fully opaque root makes the output visually identical.
+                let composition = transparent || self.0.composed;
+                if let Err(error) = self.configure_renderer_transparency_style(composition) {
                     self.finish_renderer_initialization(Err(error));
                     return;
                 }
-                renderer.update_transparency(transparent);
+                renderer.update_transparency(composition);
                 renderer.set_live_resize_active(
                     self.0.pending_live_resize_active.take().unwrap_or(
                         self.0.size_move_active.get() && self.0.size_move_has_resized.get(),
@@ -1994,6 +2049,10 @@ impl WindowsWindow {
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
+        // Cover the strip the native client just exposed before the matching Scene
+        // exists. The GPU owner coalesces it latest-wins; composition-backed windows
+        // keep their old pixels instead. The UI thread never waits on this GPU job.
+        self.request_native_resize_cover(resize.drawable_size);
         if let (Some(hwnd), Some(radius)) = (self.native_hwnd(), self.0.fallback_corner_radius) {
             apply_fallback_corner_region(
                 hwnd,
@@ -2003,10 +2062,10 @@ impl WindowsWindow {
                 self.native_is_maximized().unwrap_or(false),
             );
         }
-        // Never scale the preceding swapchain image to the new client extent.
-        // Stretching rasterized glyphs and blur passes causes interpolated,
-        // visibly breathing text during live drag. Only the correctly sized
-        // Scene may cover the new client pixels once GPU/WSI is ready.
+        // Never present the previous Scene at the new client extent: only a Scene
+        // laid out for that extent may cover it, and the GPU owner decides when the
+        // swapchain may be replaced. Composited windows leave the exposed margin
+        // transparent until matching pixels arrive, without rescaling old controls.
         // Keep the previous scene paired with its own geometry until the matching
         // new layout arrives; a native size event alone does not update scene layout.
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
@@ -2014,6 +2073,34 @@ impl WindowsWindow {
         if self.is_live_resizing() {
             self.0.vsync_scheduler.wake_modal_ui_tasks();
         }
+    }
+
+    /// Asks the GPU owner to re-present the retained frame over a client area that grew
+    /// ahead of its next Scene. Never mutates the renderer on this stack.
+    fn request_native_resize_cover(&self, size: Size<DevicePixels>) {
+        // Composition keeps the old pixels at 1:1 while the exposed margin waits
+        // for its matching Scene. Do not queue whole-window stretch/reset work.
+        if self.0.composed
+            && self
+                .0
+                .no_redirection_bitmap_for_transparency
+                .load(Ordering::Acquire)
+        {
+            return;
+        }
+        if let Ok(renderer_state) = self.0.renderer.try_borrow()
+            && let WindowsRendererState::Ready(renderer) = &*renderer_state
+        {
+            renderer.cover_native_resize(size);
+        }
+    }
+
+    /// Current per-window DPI resolved from the native HWND.
+    fn native_scale_factor(&self) -> Option<f32> {
+        let hwnd = self.native_hwnd()?;
+        // SAFETY: hwnd belongs to this live top-level window and is valid for the call.
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        (dpi > 0).then(|| resolved_scale_factor(dpi, self.window().scale_factor() as f32))
     }
 
     /// Read the *current* Win32 client extent. Winit Resized events can be
@@ -2036,11 +2123,16 @@ impl WindowsWindow {
     ) {
         // WM_SIZE (subclass) and delayed winit Resized/ScaleFactorChanged must
         // converge to the same HWND generation. Never let an older event replace
-        // the latest pending renderer size with stale geometry.
+        // the latest pending renderer size with stale geometry. The DPI must be
+        // read from Win32 for the same reason: a resize can overtake the
+        // ScaleFactorChanged notification while the window crosses monitors.
         let physical_size = self.native_client_extent().unwrap_or(reported_size);
         if physical_size.width == 0 || physical_size.height == 0 {
             return;
         }
+        let scale_factor = self
+            .native_scale_factor()
+            .unwrap_or_else(|| resolved_scale_factor(0, scale_factor));
 
         let logical_size = Size {
             width: Pixels(physical_size.width as f32 / scale_factor),
@@ -2070,12 +2162,14 @@ impl WindowsWindow {
             // an out-of-date WM_SIZE is otherwise indistinguishable from a lost GPUI commit.
             let mut native_rect = RECT::default();
             let actual_client = self.native_hwnd().and_then(|hwnd| {
-                unsafe { GetClientRect(hwnd, &mut native_rect) }.ok().map(|_| {
-                    (
-                        (native_rect.right - native_rect.left).max(0) as u32,
-                        (native_rect.bottom - native_rect.top).max(0) as u32,
-                    )
-                })
+                unsafe { GetClientRect(hwnd, &mut native_rect) }
+                    .ok()
+                    .map(|_| {
+                        (
+                            (native_rect.right - native_rect.left).max(0) as u32,
+                            (native_rect.bottom - native_rect.top).max(0) as u32,
+                        )
+                    })
             });
             let (native_width, native_height) =
                 actual_client.unwrap_or((physical_size.width, physical_size.height));
@@ -2114,7 +2208,10 @@ impl WindowsWindow {
     pub(crate) fn sync_current_native_size(&self) {
         // sync_size() always resolves the latest HWND client rectangle, even if
         // winit's cached inner_size still belongs to a previous modal resize.
-        self.sync_size(self.window().inner_size(), self.window().scale_factor() as f32);
+        self.sync_size(
+            self.window().inner_size(),
+            self.window().scale_factor() as f32,
+        );
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
@@ -2156,7 +2253,9 @@ impl WindowsWindow {
             timing.reported_composition_period,
             event_received_at,
         );
-        self.0.last_native_vsync_frame_at.set(Some(event_received_at));
+        self.0
+            .last_native_vsync_frame_at
+            .set(Some(event_received_at));
         self.dispatch_pending_update_with_vsync(Some((timing, event_received_at)));
     }
 
@@ -2179,21 +2278,12 @@ impl WindowsWindow {
             // swapchain change ahead of its matching Scene.
             self.sync_current_native_size();
         }
-        if self.is_live_resizing() {
-            let mut cadence = self.0.resize_cadence.get();
-            if !cadence.accept(
-                Instant::now(),
-                self.0.vsync_scheduler.refresh_interval(),
-            ) {
-                self.0.frame_dispatch_in_progress.set(false);
-                self.0.vsync_scheduler.request_frame();
-                return;
-            }
-            self.0.resize_cadence.set(cadence);
-        }
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
+            if !options.needs_ui_commit() {
+                self.recover_stale_pending_renderer_resize();
+            }
             let had_active_presentation = self.has_active_presentation_animations();
             // Keep presenting the committed scene while a resize commit is being built. The
             // native client can expose its new extent before the matching GPUI Scene reaches the
@@ -2208,7 +2298,7 @@ impl WindowsWindow {
             );
             let presented = if try_animation_present {
                 let window_id = self.0.handle.window_id().data().as_ffi();
-                record_window_active_presentation_attempt(window_id);
+                record_present_attempt(window_id);
                 let frame_started_at = Instant::now();
                 // Ready/redraw wakes also need renderer/backend timings. Their
                 // VSync-specific durations are zero, not an absent timing sample.
@@ -2232,7 +2322,7 @@ impl WindowsWindow {
                     submission_prepare: Duration::ZERO,
                     retained_resource_prepare: Duration::ZERO,
                     frame_prepare_upload: Duration::ZERO,
-                    draw_step_prepare: Duration::ZERO,
+                    command_prepare: Duration::ZERO,
                     buffer_upload: Duration::ZERO,
                     atlas_upload: Duration::ZERO,
                     offscreen_render: Duration::ZERO,
@@ -2325,6 +2415,75 @@ impl WindowsWindow {
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
+    /// Retarget a stale pending native resize to the committed Scene when no
+    /// Scene generation is in flight. Returns true when the request was resolved.
+    fn recover_stale_pending_renderer_resize(&self) -> bool {
+        let Some(pending) = self.0.pending_renderer_size.get() else {
+            return false;
+        };
+        let committed_epoch = self.0.committed_epoch.get();
+        let committed_scale = self.0.committed_scale_factor.get();
+        let committed_size = self.0.committed_logical_size.get();
+        let committed_extent = (committed_scale > 0.0).then(|| {
+            (
+                (committed_size.width.0 * committed_scale).round().max(0.0) as u32,
+                (committed_size.height.0 * committed_scale).round().max(0.0) as u32,
+            )
+        });
+        let native_extent = self
+            .native_client_extent()
+            .map(|extent| (extent.width, extent.height));
+        let pending_request = (
+            pending.epoch,
+            (
+                pending.drawable_size.width.0.max(0) as u32,
+                pending.drawable_size.height.0.max(0) as u32,
+            ),
+        );
+        // If a Scene generation is queued in the window state, let it produce its
+        // own matching geometry. Reentrant borrows are treated as "queued" so a
+        // presentation callback never steals a generation that is being built.
+        let ui_commit_pending = match self.0.state.try_borrow() {
+            Ok(state) => state.pending_frame_request.get().needs_ui_commit(),
+            Err(_) => true,
+        };
+        let Some((width, height, epoch)) = stale_pending_resize_recovery(
+            Some(pending_request),
+            committed_epoch,
+            committed_extent,
+            native_extent,
+            ui_commit_pending,
+        ) else {
+            return false;
+        };
+
+        let Ok(mut renderer_state) = self.0.renderer.try_borrow_mut() else {
+            return false;
+        };
+        let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
+            return false;
+        };
+        renderer.update_drawable_size(
+            crate::size(DevicePixels(width as i32), DevicePixels(height as i32)),
+            epoch,
+        );
+        self.0.pending_renderer_size.set(None);
+        if crate::diagnostics::gpu_owner::resize_trace_enabled() {
+            log::info!(
+                target: "gpui_resize_trace",
+                "gpui_resize stage=stale_pending_recovered window_id={} pending_epoch={} committed_epoch={} pending_px={}x{} committed_px={}x{}",
+                self.0.handle.window_id().data().as_ffi(),
+                pending.epoch,
+                epoch,
+                pending.drawable_size.width.0,
+                pending.drawable_size.height.0,
+                width,
+                height,
+            );
+        }
+        true
+    }
+
     fn try_apply_queued_renderer_resize(
         &self,
         scene_extent: Option<(u32, u32)>,
@@ -2345,11 +2504,15 @@ impl WindowsWindow {
             if resize.epoch != scene_epoch
                 || scene_extent.is_some_and(|layout| layout != pending_extent)
             {
-                // WM_SIZE is already ahead of this Scene. Do not enqueue a
-                // future-size Resize before an old-size Draw (which would
-                // immediately have to reverse it on the GPU owner).
-                // Keep the latest extent for the subsequent UI commit.
+                // Keep the future native request for its own UI commit. The
+                // current packet still needs a drawable in its coordinate space.
                 self.0.pending_renderer_size.set(Some(resize));
+                if let Some((width, height)) = scene_extent {
+                    renderer.update_drawable_size(
+                        crate::size(DevicePixels(width as i32), DevicePixels(height as i32)),
+                        scene_epoch,
+                    );
+                }
             } else {
                 renderer.update_drawable_size(resize.drawable_size, resize.epoch);
             }
@@ -2692,9 +2855,14 @@ impl PlatformWindow for WindowsWindow {
         }
         // Programmatic GPUI close bypasses winit CloseRequested. Dispatch
         // native deregistration after the current UI callback unwinds.
-        if self.0.event_loop_proxy.send_event(WindowsUserEvent::RemoveNativeWindow {
-            window_id: self.window().id(),
-        }).is_err() {
+        if self
+            .0
+            .event_loop_proxy
+            .send_event(WindowsUserEvent::RemoveNativeWindow {
+                window_id: self.window().id(),
+            })
+            .is_err()
+        {
             log::trace!("native event loop already exited while closing GPUI window");
         }
     }
@@ -2791,7 +2959,9 @@ impl PlatformWindow for WindowsWindow {
             return Ok(None);
         }
 
-        if self.0.pending_renderer_size.get().is_some() {
+        if self.0.pending_renderer_size.get().is_some()
+            && !self.recover_stale_pending_renderer_resize()
+        {
             return Ok(None);
         }
 
@@ -2978,6 +3148,67 @@ mod tests {
     use super::rotate_modal_window_dispatch;
 
     #[test]
+    fn stale_pending_resize_retargets_only_to_a_committed_native_size() {
+        use super::stale_pending_resize_recovery;
+
+        assert_eq!(
+            stale_pending_resize_recovery(
+                Some((9, (100, 100))),
+                8,
+                Some((100, 100)),
+                Some((100, 100)),
+                false,
+            ),
+            Some((100, 100, 8))
+        );
+        // Matching generation/extent is not stale; the normal apply path owns it.
+        assert_eq!(
+            stale_pending_resize_recovery(
+                Some((8, (100, 100))),
+                8,
+                Some((100, 100)),
+                Some((100, 100)),
+                false,
+            ),
+            None
+        );
+        // A committed Scene that does not cover the native client needs a new UI draw.
+        assert_eq!(
+            stale_pending_resize_recovery(
+                Some((8, (120, 120))),
+                8,
+                Some((120, 120)),
+                Some((100, 100)),
+                false,
+            ),
+            None
+        );
+        // Never retarget while a UI commit can still produce the matching Scene.
+        assert_eq!(
+            stale_pending_resize_recovery(
+                Some((9, (100, 100))),
+                8,
+                Some((100, 100)),
+                Some((100, 100)),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            stale_pending_resize_recovery(None, 8, Some((100, 100)), Some((100, 100)), false),
+            None
+        );
+    }
+
+    #[test]
+    fn native_dpi_is_authoritative_over_queued_event_scale() {
+        assert_eq!(super::resolved_scale_factor(120, 1.0), 1.25);
+        assert_eq!(super::resolved_scale_factor(96, 1.5), 1.0);
+        assert_eq!(super::resolved_scale_factor(0, 1.25), 1.25);
+        assert_eq!(super::resolved_scale_factor(0, f32::NAN), 1.0);
+    }
+
+    #[test]
     fn modal_dispatch_rotates_main_and_child_windows_without_starvation() {
         let mut windows = [10, 20, 30];
         rotate_modal_window_dispatch(&mut windows, 0, None);
@@ -3087,7 +3318,10 @@ mod tests {
         let report = mailbox.take().expect("coalesced GPU report");
         assert!(report.submitted, "first-frame visibility must be preserved");
         assert!(!report.pending, "latest continuation state wins");
-        assert!(!report.waiting_for_frame_ready, "latest readiness state wins");
+        assert!(
+            !report.waiting_for_frame_ready,
+            "latest readiness state wins"
+        );
         assert!(report.failed, "a GPU error must not disappear");
         assert_eq!(report.ready_enqueued_at, Some(ready_at));
         assert!(mailbox.take().is_none());

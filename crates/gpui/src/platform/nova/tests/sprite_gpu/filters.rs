@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn verify_pixels<D>(device: &mut D, resources: &RendererResources)
 where
-    D: BackendResources + BackendPipelines + BackendPresentationCompat + TextureTransferDevice,
+    D: ResourceDevice + PipelineDevice + PresentationDevice + TextureTransferDevice,
 {
     let extent = Extent2d::new(16, 16).expect("extent");
     let (source, source_view) = color_target(device, extent);
@@ -56,10 +56,10 @@ where
         ),
     ] {
         let set = device
-            .create_resource_set(&ResourceSetDescriptor {
+            .create_bind_group(&BindGroupDescriptor {
                 label: None,
                 layout: resources.backdrop_blur_pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
+                entries: backdrop_blur_pass_resource_bindings(
                     &buffers,
                     input,
                     resources.atlas_sampler,
@@ -67,26 +67,28 @@ where
             })
             .expect("blur pass bindings");
         device
-            .render_steps_to_texture_compat(
-                output,
-                resources.pipelines.filter_render_pass,
-                &[RenderStepDescriptor::Draw(DrawStepDescriptor {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: output,
+                render_pass: resources.pipelines.filter_render_pass,
+                commands: &[RenderCommand::Draw(DrawCommand {
                     pipeline,
-                    resource_sets: resource_set_list([set]),
+                    bind_groups: bind_group_list([set]),
                     vertex_count: 4,
                     instance_count: 1,
                     first_vertex: 0,
                     first_instance: index,
                     scissor: None,
                 })],
-                LoadOp::Clear(ClearColor {
+                color_load_op: LoadOp::Clear(ClearColor {
                     red: 0.0,
                     green: 0.0,
                     blue: 0.0,
                     alpha: 1.0,
                 }),
-                None,
-            )
+                clear_region: None,
+                depth_attachment: None,
+                viewport: None,
+            }])
             .expect("Gaussian pass");
     }
     let pixels = device.read_texture(target).expect("blur readback");

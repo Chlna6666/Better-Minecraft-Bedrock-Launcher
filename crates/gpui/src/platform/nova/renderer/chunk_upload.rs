@@ -1,9 +1,9 @@
 use super::*;
-use std::{ops::Range, sync::Arc};
 use smallvec::SmallVec;
+use std::{ops::Range, sync::Arc};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum QuadUploadPlan {
+pub(super) enum ChunkUploadPlan {
     None,
     Full,
     // Common one-to-four dirty gaps stay inline; many disjoint chunks may
@@ -11,7 +11,7 @@ pub(super) enum QuadUploadPlan {
     Ranges(SmallVec<[Range<usize>; 4]>),
 }
 
-impl QuadUploadPlan {
+impl ChunkUploadPlan {
     pub(super) fn uploaded_bytes(&self, full_len: usize) -> usize {
         match self {
             Self::None => 0,
@@ -22,24 +22,24 @@ impl QuadUploadPlan {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct QuadResidentLayout(Arc<[RetainedResidentSpan]>);
+pub(super) struct RetainedChunkLayout(Arc<[RetainedResidentSpan]>);
 
-impl QuadResidentLayout {
-    pub(super) fn from_upload(upload: &FrameUpload) -> Self {
+impl RetainedChunkLayout {
+    pub(super) fn from_spans(spans: &[RetainedResidentSpan]) -> Self {
         // Construct the immutable resident descriptor directly from the slice. The
         // old Vec::clone() -> Arc conversion allocated a temporary Vec and
         // cloned every chunk identity a second time on layout changes.
-        Self(Arc::from(upload.resident_quad_spans.as_slice()))
+        Self(Arc::from(spans))
     }
 
-    /// A new Scene revision does not imply a new resident quad layout. Reuse
+    /// A new Scene revision does not imply a new resident chunk layout. Reuse
     /// the immutable descriptor allocation whenever its exact ordered spans
     /// are unchanged, including their chunk generation and content hash.
-    pub(super) fn from_upload_reusing(previous: &Self, upload: &FrameUpload) -> Self {
-        if previous.0.as_ref() == upload.resident_quad_spans.as_slice() {
+    pub(super) fn from_spans_reusing(previous: &Self, spans: &[RetainedResidentSpan]) -> Self {
+        if previous.0.as_ref() == spans {
             return previous.clone();
         }
-        Self::from_upload(upload)
+        Self::from_spans(spans)
     }
 
     pub(super) fn upload_plan(
@@ -47,12 +47,12 @@ impl QuadResidentLayout {
         previous: Option<&Self>,
         byte_len: usize,
         stream_dirty: bool,
-    ) -> QuadUploadPlan {
+    ) -> ChunkUploadPlan {
         if !stream_dirty || byte_len == 0 {
-            return QuadUploadPlan::None;
+            return ChunkUploadPlan::None;
         }
         let Some(previous) = previous else {
-            return QuadUploadPlan::Full;
+            return ChunkUploadPlan::Full;
         };
         // The GPU owner intentionally shares one Arc when the ordered resident
         // layout has not changed. In that common case the old and new layout
@@ -60,8 +60,7 @@ impl QuadResidentLayout {
         // ordering/bounds validation and finds gaps in one pass. Do not scan
         // and compare both copies of identical metadata on every slot update.
         if Arc::ptr_eq(&self.0, &previous.0) {
-            return dirty_complement(self.0.iter(), byte_len)
-                .unwrap_or(QuadUploadPlan::Full);
+            return dirty_complement(self.0.iter(), byte_len).unwrap_or(ChunkUploadPlan::Full);
         }
         // Retained ranges are sorted by GPU byte offset, never by Chunk ID.
         // Validate BOTH generations before omitting any resident bytes:
@@ -72,7 +71,7 @@ impl QuadResidentLayout {
         if !resident_spans_are_ordered(&previous.0, None)
             || !resident_spans_are_ordered(&self.0, Some(byte_len))
         {
-            return QuadUploadPlan::Full;
+            return ChunkUploadPlan::Full;
         }
         let mut old = previous.0.iter().peekable();
         let clean = self.0.iter().filter(|span| {
@@ -84,16 +83,34 @@ impl QuadResidentLayout {
             }
             old.peek().is_some_and(|candidate| *candidate == *span)
         });
-        dirty_complement(clean, byte_len).unwrap_or(QuadUploadPlan::Full)
+        dirty_complement(clean, byte_len).unwrap_or(ChunkUploadPlan::Full)
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct RetainedChunkLayouts {
+    pub(super) quads: RetainedChunkLayout,
+    pub(super) monochrome_sprites: RetainedChunkLayout,
+}
+
+impl RetainedChunkLayouts {
+    pub(super) fn from_upload_reusing(previous: &Self, upload: &FrameUpload) -> Self {
+        Self {
+            quads: RetainedChunkLayout::from_spans_reusing(
+                &previous.quads,
+                &upload.resident_quad_spans,
+            ),
+            monochrome_sprites: RetainedChunkLayout::from_spans_reusing(
+                &previous.monochrome_sprites,
+                &upload.resident_monochrome_sprite_spans,
+            ),
+        }
     }
 }
 
 /// Reject malformed retained metadata before a partial GPU buffer update.
 /// Validation stays allocation-free; full upload is the conservative fallback.
-fn resident_spans_are_ordered(
-    spans: &[RetainedResidentSpan],
-    byte_len: Option<usize>,
-) -> bool {
+fn resident_spans_are_ordered(spans: &[RetainedResidentSpan], byte_len: Option<usize>) -> bool {
     let mut end = 0usize;
     for span in spans {
         if span.range.is_empty()
@@ -110,7 +127,7 @@ fn resident_spans_are_ordered(
 fn dirty_complement<'a>(
     clean: impl Iterator<Item = &'a RetainedResidentSpan>,
     byte_len: usize,
-) -> Option<QuadUploadPlan> {
+) -> Option<ChunkUploadPlan> {
     let mut ranges = SmallVec::<[Range<usize>; 4]>::new();
     let mut cursor = 0usize;
     let mut retained_any = false;
@@ -133,9 +150,9 @@ fn dirty_complement<'a>(
     if ranges.is_empty() {
         // A changed upload token may describe only animation topology while
         // every physical Quad byte remains resident. Avoid a zero-write plan.
-        Some(QuadUploadPlan::None)
+        Some(ChunkUploadPlan::None)
     } else {
-        Some(QuadUploadPlan::Ranges(ranges))
+        Some(ChunkUploadPlan::Ranges(ranges))
     }
 }
 
@@ -156,18 +173,18 @@ mod tests {
 
     #[test]
     fn unchanged_chunk_skips_its_resident_range() {
-        let current = QuadResidentLayout(Arc::from([span("chunk", 1, 16..48)]));
+        let current = RetainedChunkLayout(Arc::from([span("chunk", 1, 16..48)]));
         let previous = current.clone();
 
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(smallvec::smallvec![0..16, 48..64])
+            ChunkUploadPlan::Ranges(smallvec::smallvec![0..16, 48..64])
         );
     }
 
     #[test]
     fn identical_arc_layout_uses_single_validated_gap_walk() {
-        let original = QuadResidentLayout(Arc::from([
+        let original = RetainedChunkLayout(Arc::from([
             span("left", 1, 16..32),
             span("right", 1, 48..64),
         ]));
@@ -175,10 +192,10 @@ mod tests {
         assert!(Arc::ptr_eq(&original.0, &reused.0));
         assert_eq!(
             reused.upload_plan(Some(&original), 80, true),
-            QuadUploadPlan::Ranges(smallvec::smallvec![0..16, 32..48, 64..80])
+            ChunkUploadPlan::Ranges(smallvec::smallvec![0..16, 32..48, 64..80])
         );
         // A deep-copied but equivalent descriptor must have the same plan.
-        let independent = QuadResidentLayout(Arc::from(original.0.as_ref()));
+        let independent = RetainedChunkLayout(Arc::from(original.0.as_ref()));
         assert!(!Arc::ptr_eq(&original.0, &independent.0));
         assert_eq!(
             independent.upload_plan(Some(&original), 80, true),
@@ -188,34 +205,37 @@ mod tests {
 
     #[test]
     fn identical_arc_with_complete_residency_needs_no_quad_upload() {
-        let layout = QuadResidentLayout(Arc::from([span("whole", 2, 0..64)]));
+        let layout = RetainedChunkLayout(Arc::from([span("whole", 2, 0..64)]));
         assert_eq!(
             layout.upload_plan(Some(&layout), 64, true),
-            QuadUploadPlan::None
+            ChunkUploadPlan::None
         );
-        assert_eq!(layout.upload_plan(Some(&layout), 64, false), QuadUploadPlan::None);
+        assert_eq!(
+            layout.upload_plan(Some(&layout), 64, false),
+            ChunkUploadPlan::None
+        );
     }
 
     #[test]
     fn malformed_shared_layout_still_forces_full_upload() {
         let invalid_layouts = [
-            QuadResidentLayout(Arc::from([
+            RetainedChunkLayout(Arc::from([
                 span("right", 1, 32..64),
                 span("left", 1, 0..32),
             ])),
-            QuadResidentLayout(Arc::from([
+            RetainedChunkLayout(Arc::from([
                 span("left", 1, 0..32),
                 span("overlap", 1, 16..48),
             ])),
-            QuadResidentLayout(Arc::from([span("overflow", 1, 32..96)])),
-            QuadResidentLayout(Arc::from([span("empty", 1, 16..16)])),
+            RetainedChunkLayout(Arc::from([span("overflow", 1, 32..96)])),
+            RetainedChunkLayout(Arc::from([span("empty", 1, 16..16)])),
         ];
         for layout in &invalid_layouts {
             let shared = layout.clone();
             assert!(Arc::ptr_eq(&layout.0, &shared.0));
             assert_eq!(
                 shared.upload_plan(Some(layout), 64, true),
-                QuadUploadPlan::Full,
+                ChunkUploadPlan::Full,
                 "same-Arc reuse must not bypass range validation"
             );
         }
@@ -223,109 +243,117 @@ mod tests {
 
     #[test]
     fn generation_or_position_change_falls_back_to_full_upload() {
-        let previous = QuadResidentLayout(Arc::from([span("chunk", 1, 16..48)]));
-        let changed_generation = QuadResidentLayout(Arc::from([span("chunk", 2, 16..48)]));
-        let changed_position = QuadResidentLayout(Arc::from([span("chunk", 1, 8..40)]));
+        let previous = RetainedChunkLayout(Arc::from([span("chunk", 1, 16..48)]));
+        let changed_generation = RetainedChunkLayout(Arc::from([span("chunk", 2, 16..48)]));
+        let changed_position = RetainedChunkLayout(Arc::from([span("chunk", 1, 8..40)]));
         let mut changed_bytes = span("chunk", 1, 16..48);
         changed_bytes.byte_hash = 99;
-        let changed_bytes = QuadResidentLayout(Arc::from([changed_bytes]));
+        let changed_bytes = RetainedChunkLayout(Arc::from([changed_bytes]));
 
         assert_eq!(
             changed_generation.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
         );
         assert_eq!(
             changed_position.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
         );
         assert_eq!(
             changed_bytes.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
         );
     }
 
     #[test]
     fn uninitialized_slot_requires_full_upload() {
-        let current = QuadResidentLayout(Arc::from([span("chunk", 1, 16..48)]));
+        let current = RetainedChunkLayout(Arc::from([span("chunk", 1, 16..48)]));
 
-        assert_eq!(current.upload_plan(None, 64, true), QuadUploadPlan::Full);
+        assert_eq!(current.upload_plan(None, 64, true), ChunkUploadPlan::Full);
     }
 
     #[test]
     fn identical_layout_reuses_arc_and_changed_generation_creates_new_storage() {
         let mut upload = FrameUpload::default();
         upload.resident_quad_spans.push(span("chunk", 1, 0..32));
-        let original = QuadResidentLayout::from_upload(&upload);
-        let reused = QuadResidentLayout::from_upload_reusing(&original, &upload);
+        let original = RetainedChunkLayout::from_spans(&upload.resident_quad_spans);
+        let reused =
+            RetainedChunkLayout::from_spans_reusing(&original, &upload.resident_quad_spans);
         assert!(Arc::ptr_eq(&original.0, &reused.0));
 
         upload.resident_quad_spans[0].byte_hash = 2;
-        let changed = QuadResidentLayout::from_upload_reusing(&original, &upload);
+        let changed =
+            RetainedChunkLayout::from_spans_reusing(&original, &upload.resident_quad_spans);
         assert!(!Arc::ptr_eq(&original.0, &changed.0));
-        assert_eq!(changed.upload_plan(Some(&original), 32, true), QuadUploadPlan::Full);
+        assert_eq!(
+            changed.upload_plan(Some(&original), 32, true),
+            ChunkUploadPlan::Full
+        );
     }
 
     #[test]
     fn unordered_previous_spans_fall_back_to_safe_full_upload() {
-        let previous = QuadResidentLayout(Arc::from([
+        let previous = RetainedChunkLayout(Arc::from([
             span("right", 1, 32..64),
             span("left", 1, 0..32),
         ]));
-        let current = QuadResidentLayout(Arc::from([
+        let current = RetainedChunkLayout(Arc::from([
             span("left", 1, 0..32),
             span("right", 2, 32..64),
         ]));
-        assert_eq!(current.upload_plan(Some(&previous), 64, true), QuadUploadPlan::Full);
+        assert_eq!(
+            current.upload_plan(Some(&previous), 64, true),
+            ChunkUploadPlan::Full
+        );
     }
 
     #[test]
     fn malformed_current_ranges_never_skip_upload_using_matching_previous_span() {
-        let previous = QuadResidentLayout(Arc::from([
+        let previous = RetainedChunkLayout(Arc::from([
             span("first", 1, 0..32),
             span("second", 1, 32..64),
         ]));
-        let current_reordered = QuadResidentLayout(Arc::from([
+        let current_reordered = RetainedChunkLayout(Arc::from([
             span("second", 1, 32..64),
             span("first", 1, 0..32),
         ]));
-        let current_overlap = QuadResidentLayout(Arc::from([
+        let current_overlap = RetainedChunkLayout(Arc::from([
             span("first", 1, 0..32),
             span("overlap", 1, 16..48),
         ]));
-        let current_out_of_bounds = QuadResidentLayout(Arc::from([
+        let current_out_of_bounds = RetainedChunkLayout(Arc::from([
             span("first", 1, 0..32),
             span("overflow", 1, 64..96),
         ]));
         for current in [&current_reordered, &current_overlap, &current_out_of_bounds] {
             assert_eq!(
                 current.upload_plan(Some(&previous), 64, true),
-                QuadUploadPlan::Full
+                ChunkUploadPlan::Full
             );
         }
     }
 
     #[test]
     fn valid_previous_layout_can_exceed_shrinking_current_buffer_size() {
-        let previous = QuadResidentLayout(Arc::from([
+        let previous = RetainedChunkLayout(Arc::from([
             span("first", 1, 0..32),
             span("second", 1, 32..96),
         ]));
-        let current = QuadResidentLayout(Arc::from([span("first", 1, 0..32)]));
+        let current = RetainedChunkLayout(Arc::from([span("first", 1, 0..32)]));
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(smallvec::smallvec![32..64])
+            ChunkUploadPlan::Ranges(smallvec::smallvec![32..64])
         );
     }
 
     #[test]
     fn common_dirty_ranges_do_not_allocate_a_heap_vector() {
-        let current = QuadResidentLayout(Arc::from([
+        let current = RetainedChunkLayout(Arc::from([
             span("left", 1, 16..32),
             span("right", 1, 48..64),
         ]));
         let plan = current.upload_plan(Some(&current), 80, true);
         match plan {
-            QuadUploadPlan::Ranges(ranges) => {
+            ChunkUploadPlan::Ranges(ranges) => {
                 assert!(!ranges.spilled(), "three dirty gaps fit the inline storage");
                 assert_eq!(ranges.as_slice(), &[0..16, 32..48, 64..80]);
                 assert_eq!(ranges.iter().map(Range::len).sum::<usize>(), 48);
@@ -336,7 +364,7 @@ mod tests {
 
     #[test]
     fn more_than_four_dirty_ranges_preserve_order_and_uploaded_bytes() {
-        let current = QuadResidentLayout(Arc::from([
+        let current = RetainedChunkLayout(Arc::from([
             span("a", 1, 4..8),
             span("b", 1, 20..24),
             span("c", 1, 36..40),
@@ -347,7 +375,7 @@ mod tests {
         let plan = current.upload_plan(Some(&current), 96, true);
         assert_eq!(plan.uploaded_bytes(96), 72);
         match plan {
-            QuadUploadPlan::Ranges(ranges) => {
+            ChunkUploadPlan::Ranges(ranges) => {
                 assert!(ranges.spilled(), "uncommon fragmented layout may grow");
                 assert_eq!(
                     ranges.as_slice(),
@@ -360,18 +388,18 @@ mod tests {
 
     #[test]
     fn dirty_chunk_does_not_upload_clean_sibling() {
-        let previous = QuadResidentLayout(Arc::from([
+        let previous = RetainedChunkLayout(Arc::from([
             span("left", 1, 0..32),
             span("right", 1, 32..64),
         ]));
-        let current = QuadResidentLayout(Arc::from([
+        let current = RetainedChunkLayout(Arc::from([
             span("left", 2, 0..32),
             span("right", 1, 32..64),
         ]));
 
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(smallvec::smallvec![0..32])
+            ChunkUploadPlan::Ranges(smallvec::smallvec![0..32])
         );
     }
 }

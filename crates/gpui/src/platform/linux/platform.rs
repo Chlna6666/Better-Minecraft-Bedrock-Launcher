@@ -382,7 +382,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         done_rx
     }
 
-    fn prompt_for_new_path(
+    fn prompt_new_path(
         &self,
         directory: &Path,
         suggested_name: Option<&str>,
@@ -444,7 +444,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         done_rx
     }
 
-    fn can_select_mixed_files_and_dirs(&self) -> bool {
+    fn can_select_mixed_paths(&self) -> bool {
         // org.freedesktop.portal.FileChooser only supports "pick files" and "pick directories".
         false
     }

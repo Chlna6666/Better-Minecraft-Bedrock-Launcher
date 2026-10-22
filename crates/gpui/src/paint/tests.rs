@@ -105,7 +105,7 @@ fn translated_geometry_entering_a_fixed_clip_marks_visible_pixels() {
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     );
     let mut replayed = crate::scene::Painter::default();
-    replayed.replay(0..scene.len(), &scene, &[]);
+    replayed.replay(0..scene.len(), &scene, []);
     for retained in [&scene, &replayed] {
         for property in [
             TransitionProperty::Translation,
@@ -397,4 +397,53 @@ fn scale_damage_uses_unclipped_primitive_center() {
             crate::size(ScaledPixels(100.0), ScaledPixels(200.0)),
         )
     );
+}
+
+#[test]
+fn horizontal_edges_damage_covers_interrupted_long_distance_motion() {
+    let bounds = Bounds::new(
+        crate::point(ScaledPixels(260.), ScaledPixels(10.)),
+        crate::size(ScaledPixels(40.), ScaledPixels(34.)),
+    );
+    let mask = Bounds::new(
+        crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+        crate::size(ScaledPixels(360.), ScaledPixels(60.)),
+    );
+    let animation_id = SceneAnimationId(123);
+    let sample = |first, second| SceneAnimationValue {
+        animation_id,
+        property: TransitionProperty::HorizontalEdges,
+        from: [first, second, 0., 0.],
+        to: [first, second, 0., 0.],
+        progress: 1.,
+    };
+    let mut scene = crate::scene::Painter::default();
+    scene.insert_animated_primitive(
+        Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(mask),
+            ..Default::default()
+        },
+        animation_id,
+    );
+    // Independent springs can stretch, cross, overshoot, and reverse before settling.
+    for (before, after, left, right) in [
+        ((-240., -200.), (0., 0.), 20., 300.),
+        ((0., 0.), (-120., -180.), 80., 300.),
+        ((-120., -180.), (-260., -220.), 0., 180.),
+        ((40., 80.), (0., 0.), 260., 360.),
+    ] {
+        let dirty = crate::paint::gpu_sample_damage(
+            &scene,
+            &[sample(before.0, before.1)],
+            &[sample(after.0, after.1)],
+        );
+        assert_eq!(
+            dirty.as_slice(),
+            &[Bounds::new(
+                crate::point(ScaledPixels(left), ScaledPixels(10.)),
+                crate::size(ScaledPixels(right - left), ScaledPixels(34.)),
+            )]
+        );
+    }
 }

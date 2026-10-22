@@ -40,7 +40,9 @@ impl Resource {
     /// pixels; transient alias allocation is deliberately NOT enabled.
     const fn lifetime(self) -> Residency {
         match self {
-            Self::PathMask | Self::ElementColor | Self::BackdropColor | Self::RootColor => Residency::Persistent,
+            Self::PathMask | Self::ElementColor | Self::BackdropColor | Self::RootColor => {
+                Residency::Persistent
+            }
             Self::Swapchain => Residency::ExternallyOwned,
         }
     }
@@ -263,7 +265,10 @@ impl FrameGraphPlan {
 
     #[cfg(test)]
     fn lifetime(&self, resource: Resource) -> Option<ResourceLifetime> {
-        self.lifetimes.iter().copied().find(|life| life.resource == resource)
+        self.lifetimes
+            .iter()
+            .copied()
+            .find(|life| life.resource == resource)
     }
 }
 
@@ -286,14 +291,20 @@ mod tests {
         assert!(!graph.requires(Pass::RootColor));
         assert!(!graph.requires(Pass::ElementLayers));
         assert_eq!(graph.hazard_count(), 0);
-        assert_eq!(graph.lifetime(Resource::RootColor).unwrap().residency, Residency::Persistent);
+        assert_eq!(
+            graph.lifetime(Resource::RootColor).unwrap().residency,
+            Residency::Persistent
+        );
     }
 
     #[test]
     fn root_refresh_reads_cached_element_color_without_repainting_it() {
         let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Refresh, true);
         assert!(!graph.requires(Pass::ElementLayers));
-        assert_eq!(graph.ordered.as_slice(), &[Pass::RootColor, Pass::MainPresent]);
+        assert_eq!(
+            graph.ordered.as_slice(),
+            &[Pass::RootColor, Pass::MainPresent]
+        );
         let lifetime = graph.lifetime(Resource::ElementColor).unwrap();
         assert_eq!((lifetime.first, lifetime.last), (0, 0));
         assert_eq!(lifetime.residency, Residency::Persistent);
@@ -302,9 +313,15 @@ mod tests {
     #[test]
     fn root_raster_samples_element_outputs_before_final_composite() {
         let graph = FrameGraphPlan::compile(true, 2, 0, RootColorAccess::Refresh, false);
-        assert_eq!(graph.ordered.as_slice(), &[
-            Pass::PathMask, Pass::ElementLayers, Pass::RootColor, Pass::MainPresent,
-        ]);
+        assert_eq!(
+            graph.ordered.as_slice(),
+            &[
+                Pass::PathMask,
+                Pass::ElementLayers,
+                Pass::RootColor,
+                Pass::MainPresent,
+            ]
+        );
         assert!(graph.hazards.iter().any(|hazard| {
             hazard.resource == Resource::ElementColor
                 && hazard.producer == Pass::ElementLayers
@@ -377,7 +394,9 @@ mod tests {
     #[test]
     fn read_after_read_does_not_add_extra_mask_barriers() {
         let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent, false);
-        let mask_hazards: Vec<_> = graph.hazards.iter()
+        let mask_hazards: Vec<_> = graph
+            .hazards
+            .iter()
             .filter(|intent| intent.resource == Resource::PathMask)
             .collect();
         assert_eq!(mask_hazards.len(), 1);
@@ -390,7 +409,10 @@ mod tests {
     #[test]
     fn independent_layer_capture_is_not_forced_by_a_clean_backdrop() {
         let graph = FrameGraphPlan::compile(false, 1, 0, RootColorAccess::Absent, false);
-        assert_eq!(graph.ordered.as_slice(), &[Pass::ElementLayers, Pass::MainPresent]);
+        assert_eq!(
+            graph.ordered.as_slice(),
+            &[Pass::ElementLayers, Pass::MainPresent]
+        );
         assert!(!graph.requires(Pass::BackdropBlur));
         assert_eq!(graph.hazard_count(), 1);
     }
@@ -400,7 +422,12 @@ mod tests {
         let graph = FrameGraphPlan::compile(true, 3, 2, RootColorAccess::Absent, false);
         assert_eq!(
             graph.ordered.as_slice(),
-            &[Pass::PathMask, Pass::ElementLayers, Pass::BackdropBlur, Pass::MainPresent],
+            &[
+                Pass::PathMask,
+                Pass::ElementLayers,
+                Pass::BackdropBlur,
+                Pass::MainPresent
+            ],
         );
         assert!(graph.hazards.iter().any(|hazard| {
             hazard.resource == Resource::ElementColor
@@ -416,7 +443,10 @@ mod tests {
     #[test]
     fn no_read_after_read_hazard_or_duplicate_filter_passes() {
         let graph = FrameGraphPlan::compile(false, 0, 2, RootColorAccess::Absent, false);
-        assert_eq!(graph.ordered.as_slice(), &[Pass::BackdropBlur, Pass::MainPresent]);
+        assert_eq!(
+            graph.ordered.as_slice(),
+            &[Pass::BackdropBlur, Pass::MainPresent]
+        );
         assert_eq!(graph.hazard_count(), 1);
     }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::StyleRefinement;
+use crate::div;
 
 fn record_draw_phase_metrics(metrics: FramePhaseMetrics) {
     record_first_frame_build_time(metrics.build);
@@ -233,12 +233,13 @@ impl Window {
         record_scene_frame_metrics(scene_metrics);
         self.rendered_frame
             .rollback_replayed_input_handlers(&mut self.next_frame);
-        self.rendered_frame.rollback_element_states(&mut self.next_frame);
+        self.rendered_frame
+            .rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
         let targeted_retry = self.invalidator.retry_aborted_frame();
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
-        // The committed CachedViewState and dispatch listeners remain intact
+        // The committed retained ranges and dispatch listeners remain intact
         // after the speculative rollback. A targeted generation can retry
         // with its original dirty dependency scope, leaving unrelated
         // committed cache ranges replayable. Unknown/global invalidation or
@@ -272,7 +273,7 @@ impl Window {
             self.rendered_frame.scene(),
             &scene_animation_values,
             self.presentation_state
-                .animation_values_for_scene(self.rendered_frame.scene()),
+                .animation_values_snapshot(self.rendered_frame.scene()),
         );
         if accumulate_unpresented_damage {
             backdrop_blur_damage_plan.merge_from(&self.backdrop_blur_damage_plan);
@@ -389,21 +390,11 @@ impl Window {
         // GPU/CPU retained fragments may skip the layout traversal entirely,
         // so native Taffy liveness follows the committed retained identities.
         if let Some(layout_engine) = self.layout_engine.as_mut() {
-            layout_engine.retain_committed_elements(|id| {
-                self.rendered_frame.retained_element_ranges.contains_key(id)
-            }, true);
+            layout_engine.retain_committed_elements(
+                |id| self.rendered_frame.retained_element_ranges.contains_key(id),
+                true,
+            );
         }
-        // Cached-view notify targets are valid only while their exact retained identity exists in
-        // the committed frame. This keeps persistent targets safe across parent subtree replay,
-        // while structural moves/removals automatically fall back to generic invalidation.
-        self.invalidator
-            .retain_cached_view_retained_targets(|_, retained_id| {
-                self.rendered_frame
-                    .retained_element_ranges
-                    .contains_key(retained_id)
-            });
-        self.invalidator
-            .rebuild_cached_view_fallback_boundaries(&self.rendered_frame.dispatch_tree);
         // Keep UI generations plus active/pending presentation snapshots live before the previous
         // frame becomes scratch. A still-active older publication keeps its payload while this frame starts a new builder.
         self.prune_static_image_atlas_residency();
@@ -421,7 +412,7 @@ impl Window {
         if self
             .animation_engine
             .borrow_mut()
-            .retain_scene_animations_for_scene(self.rendered_frame.scene())
+            .retain_scene_animation_cache(self.rendered_frame.scene())
         {
             self.scene_animation_needs_commit.set(true);
         }
@@ -901,13 +892,12 @@ impl Window {
         };
 
         let root_prepaint_started_at = Instant::now();
-        let mut root_element = self
-            .root
-            .as_ref()
-            .unwrap()
-            .clone()
-            .cached(StyleRefinement::default().size_full())
-            .critical()
+        // Render the root view as an ordinary element subtree. Unchanged children reconcile
+        // through the regular element retained replay proofs; there is no separate view cache
+        // boundary wrapping the whole window.
+        let mut root_element = div()
+            .size_full()
+            .child(self.root.as_ref().unwrap().clone())
             .into_any_element();
         let root_layout_elapsed = self.with_critical_draw(|window| {
             let layout_started_at = Instant::now(); // Profiling; visual sampling keeps the frame clock.
@@ -1041,24 +1031,27 @@ impl Window {
         if super::element_work::enabled() {
             let element_work = super::element_work::take();
             self.last_generation_stats.element_prepaint = format!(
-                "elements={} self_total_us={} top={:?}",
+                "elements={} self_total_us={} top={:?} view_render={:?} root_layout={:?}",
                 element_work.prepaint_elements,
                 element_work
                     .prepaint
                     .iter()
                     .map(|(_, elapsed)| elapsed.as_micros())
                     .sum::<u128>(),
-                element_work.prepaint
+                element_work.prepaint,
+                element_work.render,
+                element_work.layout,
             );
             self.last_generation_stats.element_paint = format!(
-                "elements={} self_total_us={} top={:?}",
+                "elements={} self_total_us={} top={:?} range_replay={:?}",
                 element_work.paint_elements,
                 element_work
                     .paint
                     .iter()
                     .map(|(_, elapsed)| elapsed.as_micros())
                     .sum::<u128>(),
-                element_work.paint
+                element_work.paint,
+                element_work.replay,
             );
         } else {
             // Avoid per-frame heap allocations and sorting when the invasive

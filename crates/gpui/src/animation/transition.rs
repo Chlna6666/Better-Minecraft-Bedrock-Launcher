@@ -186,7 +186,7 @@ impl Transition {
     /// Convert this runtime transition to serializable style metadata.
     pub fn into_style(self) -> TransitionStyle {
         let mut spec = self.spec.to_style_spec();
-        spec.driver = resolve_driver_with_cpu_policy(
+        spec.driver = resolve_driver(
             spec.driver,
             self.properties.iter().copied(),
             spec.easing.requires_cpu_driver(),
@@ -200,7 +200,7 @@ impl Transition {
 
     /// Returns the driver required by this transition after property classification.
     pub fn resolved_driver(&self) -> AnimationDriver {
-        resolve_driver_with_cpu_policy(
+        resolve_driver(
             self.spec.driver,
             self.properties.iter().copied(),
             self.spec.easing.requires_cpu_driver(),
@@ -220,7 +220,7 @@ pub struct TransitionStyle {
 impl TransitionStyle {
     /// Returns the driver required by this transition after property classification.
     pub fn resolved_driver(&self) -> AnimationDriver {
-        resolve_driver_with_cpu_policy(
+        resolve_driver(
             self.spec.driver,
             self.properties.iter().copied(),
             self.spec.easing.requires_cpu_driver(),
@@ -233,17 +233,13 @@ impl From<TransitionStyle> for Transition {
         let requires_cpu_driver = style.spec.easing.requires_cpu_driver();
         let properties = style.properties.into_iter().collect::<SmallVec<[_; 4]>>();
         let mut spec = AnimationSpec::from(style.spec);
-        spec.driver = resolve_driver_with_cpu_policy(
-            spec.driver,
-            properties.iter().copied(),
-            requires_cpu_driver,
-        );
+        spec.driver = resolve_driver(spec.driver, properties.iter().copied(), requires_cpu_driver);
 
         Self { spec, properties }
     }
 }
 
-pub(crate) fn resolve_driver_with_cpu_policy(
+pub(crate) fn resolve_driver(
     requested: AnimationDriver,
     properties: impl IntoIterator<Item = TransitionProperty>,
     requires_cpu_driver: bool,

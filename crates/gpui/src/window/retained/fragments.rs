@@ -82,7 +82,7 @@ impl Window {
     /// exact shadow/background/border key matching the previous retained range, and its bounds must
     /// be unchanged. The child split is recorded directly during paint, so child insertion/removal
     /// cannot move a retained border to the wrong side of the current child scene.
-    pub(crate) fn retained_self_scene_ranges_for_current(
+    pub(crate) fn retained_self_scene_ranges(
         &self,
         bounds: Bounds<Pixels>,
         current_style: &RetainedDivSelfSceneStyle,
@@ -96,11 +96,11 @@ impl Window {
             .rendered_frame
             .retained_element_ranges
             .get(&retained_id)?;
-        if parent.paint_context != self.current_retained_paint_context() {
-            return None;
-        }
         let self_scene = parent.div_self_scene.as_ref()?;
         if parent.bounds != bounds || &self_scene.style != current_style {
+            return None;
+        }
+        if parent.paint_context != self.current_retained_paint_context() {
             return None;
         }
 
@@ -143,7 +143,7 @@ impl Window {
         if self
             .next_frame
             .painter
-            .replay(range.clone(), self.rendered_frame.scene(), &spans)
+            .replay(range.clone(), self.rendered_frame.scene(), spans)
         {
             Arc::get_mut(&mut self.next_frame.retained_paint)
                 .expect("unpublished paint retention")

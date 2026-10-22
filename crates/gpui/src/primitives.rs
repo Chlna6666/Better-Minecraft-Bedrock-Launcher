@@ -9,7 +9,9 @@ use crate::{
     TransitionProperty,
 };
 
+mod extension_device;
 mod transform;
+pub use extension_device::ExtensionDevice;
 pub use transform::TransformationMatrix;
 mod path;
 mod path_builder;

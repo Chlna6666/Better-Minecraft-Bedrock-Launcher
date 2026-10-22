@@ -24,7 +24,7 @@ fn shadow_paint() -> crate::scene::Painter {
 
 fn encode_paint(upload: &mut FrameUpload, painter: &crate::scene::Painter) -> FrameUploadSummary {
     upload.encode(
-        &mut RetainedQuadChunkCache::default(),
+        &mut RetainedChunkCache::default(),
         painter,
         &crate::window::retained::RetainedPaint::default(),
         &[],
@@ -58,7 +58,7 @@ fn persistent_shadow_payload_reuses_the_only_packed_buffer_across_paint_commits(
     };
     let batches = ranges(&upload);
     let mut current = crate::scene::Painter::default();
-    assert!(current.replay(0..previous.len(), &previous, &[]));
+    assert!(current.replay(0..previous.len(), &previous, []));
     current.finish();
     assert_ne!(current.revision, previous.revision);
     assert_eq!(encode_paint(&mut upload, &current).shadow_count, 64);
@@ -73,7 +73,7 @@ fn persistent_shadow_payload_reuses_the_only_packed_buffer_across_paint_commits(
         content_mask: crate::ContentMask::new(area(4.)),
         ..Default::default()
     });
-    assert!(!rebound.replay(0..current.len(), &current, &[]));
+    assert!(!rebound.replay(0..current.len(), &current, []));
     rebound.finish();
     encode_paint(&mut upload, &rebound);
     assert_eq!(
@@ -190,7 +190,7 @@ fn encode(sprites: &[crate::MonochromeSprite]) -> FrameUpload {
     assert_eq!(painter.prepared_batches().len(), sprites.len());
     let mut upload = FrameUpload::default();
     upload.encode(
-        &mut RetainedQuadChunkCache::default(),
+        &mut RetainedChunkCache::default(),
         &painter,
         &crate::window::retained::RetainedPaint::default(),
         &[],

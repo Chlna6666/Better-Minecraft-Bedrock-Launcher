@@ -5,33 +5,33 @@ use super::buffers::FrameResourceBuffers;
 
 #[derive(Clone, Copy)]
 pub(in crate::platform::nova) struct FrameResourceSets {
-    pub(in crate::platform::nova) quad_resource_set: ResourceSetId,
-    pub(in crate::platform::nova) shadow_resource_set: ResourceSetId,
-    pub(in crate::platform::nova) path_rasterization_resource_set: ResourceSetId,
-    pub(in crate::platform::nova) underline_resource_set: ResourceSetId,
+    pub(in crate::platform::nova) quad_resource_set: BindGroupId,
+    pub(in crate::platform::nova) shadow_resource_set: BindGroupId,
+    pub(in crate::platform::nova) path_rasterization_resource_set: BindGroupId,
+    pub(in crate::platform::nova) underline_resource_set: BindGroupId,
 }
 
 pub(in crate::platform::nova) fn create_path_rasterization_resource_set<D>(
     device: &mut D,
     label: &str,
-    layout: ResourceSetLayoutId,
+    layout: BindGroupLayoutId,
     buffers: &FrameResourceBuffers,
-) -> Result<ResourceSetId>
+) -> Result<BindGroupId>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
+    Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!("{label} path rasterization resource set")),
         layout,
-        bindings: path_rasterization_resource_bindings(buffers),
+        entries: path_rasterization_resource_bindings(buffers),
     })?)
 }
 
 pub(in crate::platform::nova) fn path_rasterization_resource_bindings(
     buffers: &FrameResourceBuffers,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -40,7 +40,7 @@ pub(in crate::platform::nova) fn path_rasterization_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 3,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.path_rasterization_vertex_buffer,
@@ -53,8 +53,8 @@ pub(in crate::platform::nova) fn path_rasterization_resource_bindings(
     ]
 }
 
-fn animation_value_binding(buffers: &FrameResourceBuffers) -> ResourceBinding {
-    ResourceBinding {
+fn animation_value_binding(buffers: &FrameResourceBuffers) -> BindGroupEntry {
+    BindGroupEntry {
         binding: 17,
         resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
@@ -68,16 +68,16 @@ fn animation_value_binding(buffers: &FrameResourceBuffers) -> ResourceBinding {
 pub(in crate::platform::nova) fn create_quad_resource_set<D>(
     device: &mut D,
     label: &str,
-    layout: ResourceSetLayoutId,
+    layout: BindGroupLayoutId,
     buffers: &FrameResourceBuffers,
-) -> Result<ResourceSetId>
+) -> Result<BindGroupId>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
+    Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!("{label} quad resource set")),
         layout,
-        bindings: quad_resource_bindings(buffers),
+        entries: quad_resource_bindings(buffers),
     })?)
 }
 
@@ -88,14 +88,14 @@ pub(super) fn create_renderer_resource_sets<D>(
     buffers: &FrameResourceBuffers,
 ) -> Result<FrameResourceSets>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let quad_resource_set =
         create_quad_resource_set(device, label, layouts.quad_resource_set_layout, buffers)?;
-    let shadow_resource_set = device.create_resource_set(&ResourceSetDescriptor {
+    let shadow_resource_set = device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!("{label} shadow resource set")),
         layout: layouts.shadow_resource_set_layout,
-        bindings: shadow_resource_bindings(buffers),
+        entries: shadow_resource_bindings(buffers),
     })?;
     let path_rasterization_resource_set = create_path_rasterization_resource_set(
         device,
@@ -103,10 +103,10 @@ where
         layouts.path_rasterization_resource_set_layout,
         buffers,
     )?;
-    let underline_resource_set = device.create_resource_set(&ResourceSetDescriptor {
+    let underline_resource_set = device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!("{label} underline resource set")),
         layout: layouts.underline_resource_set_layout,
-        bindings: underline_resource_bindings(buffers),
+        entries: underline_resource_bindings(buffers),
     })?;
     Ok(FrameResourceSets {
         quad_resource_set,
@@ -118,9 +118,9 @@ where
 
 pub(in crate::platform::nova) fn quad_resource_bindings(
     buffers: &FrameResourceBuffers,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -129,7 +129,7 @@ pub(in crate::platform::nova) fn quad_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 1,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.quad_buffer,
@@ -144,9 +144,9 @@ pub(in crate::platform::nova) fn quad_resource_bindings(
 
 pub(in crate::platform::nova) fn shadow_resource_bindings(
     buffers: &FrameResourceBuffers,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -155,7 +155,7 @@ pub(in crate::platform::nova) fn shadow_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 2,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.shadow_buffer,
@@ -170,9 +170,9 @@ pub(in crate::platform::nova) fn shadow_resource_bindings(
 
 pub(in crate::platform::nova) fn underline_resource_bindings(
     buffers: &FrameResourceBuffers,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -181,7 +181,7 @@ pub(in crate::platform::nova) fn underline_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 7,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.underline_buffer,

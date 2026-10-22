@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) struct AtlasResourceDescriptor {
-    pub(super) mono_sprite_resource_set_layout: ResourceSetLayoutId,
-    pub(super) poly_sprite_resource_set_layout: ResourceSetLayoutId,
+    pub(super) mono_sprite_resource_set_layout: BindGroupLayoutId,
+    pub(super) poly_sprite_resource_set_layout: BindGroupLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
@@ -11,9 +11,9 @@ pub(super) fn path_resource_bindings(
     buffers: &FrameResourceBuffers,
     path_texture_view: TextureViewId,
     sampler: SamplerId,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -22,17 +22,17 @@ pub(super) fn path_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 4,
             resource: BindingResource::Texture(TextureBinding {
                 texture_view: path_texture_view,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 6,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.path_sprite_buffer,
@@ -48,19 +48,19 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
     buffers: &FrameResourceBuffers,
     source_texture_view: TextureViewId,
     sampler: SamplerId,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 4,
             resource: BindingResource::Texture(TextureBinding {
                 texture_view: source_texture_view,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 15,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.backdrop_blur_pass_buffer,
@@ -69,7 +69,7 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
                 stride: Some(BACKDROP_BLUR_PASS_BYTES as u32),
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 17,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.animation_value_buffer,
@@ -85,9 +85,9 @@ pub(super) fn backdrop_blur_resource_bindings(
     buffers: &FrameResourceBuffers,
     source_texture_view: TextureViewId,
     sampler: SamplerId,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -96,17 +96,17 @@ pub(super) fn backdrop_blur_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 4,
             resource: BindingResource::Texture(TextureBinding {
                 texture_view: source_texture_view,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 16,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.backdrop_blur_buffer,
@@ -115,7 +115,7 @@ pub(super) fn backdrop_blur_resource_bindings(
                 stride: Some(PACKED_BACKDROP_BLUR_BYTES as u32),
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 17,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.animation_value_buffer,

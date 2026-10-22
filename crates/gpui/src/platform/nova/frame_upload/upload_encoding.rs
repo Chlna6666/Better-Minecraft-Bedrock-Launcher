@@ -60,7 +60,7 @@ impl AtlasPixelEncodingBenchmarkCore {
     }
 
     pub(crate) fn encode(&mut self) -> usize {
-        self.encode_with(encode_atlas_upload_with_padding)
+        self.encode_with(encode_padded_atlas_upload)
     }
 
     #[cfg(feature = "bench-support")]
@@ -96,7 +96,7 @@ pub(in crate::platform::nova) fn encode_atlas_upload(
     bytes: &[u8],
     texture_kind: AtlasTextureKind,
 ) -> Option<()> {
-    encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, 0)
+    encode_padded_atlas_upload(pixels, size, bytes, texture_kind, 0)
 }
 
 pub(in crate::platform::nova) fn atlas_kind_index(texture_kind: AtlasTextureKind) -> usize {
@@ -129,7 +129,7 @@ pub(in crate::platform::nova) fn atlas_source_byte_len(
     width.checked_mul(height)?.checked_mul(bytes_per_pixel)
 }
 
-pub(in crate::platform::nova) fn encode_atlas_upload_with_padding(
+pub(in crate::platform::nova) fn encode_padded_atlas_upload(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
     bytes: &[u8],
@@ -198,7 +198,7 @@ fn encode_atlas_upload_with_padding_scalar(
     padding: u32,
 ) -> Option<()> {
     if texture_kind != AtlasTextureKind::Rgba {
-        return encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+        return encode_padded_atlas_upload(pixels, size, bytes, texture_kind, padding);
     }
 
     let width = size.width.0.max(1) as usize;
@@ -234,7 +234,7 @@ fn encode_atlas_upload_with_padding_simd(
     padding: u32,
 ) -> Option<()> {
     if texture_kind != AtlasTextureKind::Rgba {
-        return encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+        return encode_padded_atlas_upload(pixels, size, bytes, texture_kind, padding);
     }
 
     let width = size.width.0.max(1) as usize;

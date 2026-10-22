@@ -106,7 +106,7 @@ pub(crate) fn record_window_native_vsync_wake(
     }
 }
 
-pub(crate) fn record_window_active_presentation_attempt(window_id: u64) {
+pub(crate) fn record_present_attempt(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.active_presentation_attempt_count =
@@ -115,7 +115,7 @@ pub(crate) fn record_window_active_presentation_attempt(window_id: u64) {
 }
 
 /// Records an active frame rejected by `can_present_without_wait`, not every deferred draw cause.
-pub(crate) fn record_window_active_presentation_preflight_not_ready(window_id: u64) {
+pub(crate) fn record_present_preflight_deferred(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.active_presentation_preflight_not_ready_count = metrics
@@ -135,8 +135,7 @@ pub(crate) fn record_window_active_presentation_retry(window_id: u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        record_window_active_presentation_attempt,
-        record_window_active_presentation_preflight_not_ready,
+        record_present_attempt, record_present_preflight_deferred,
         record_window_active_presentation_retry, record_window_native_vsync_wake,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -160,8 +159,8 @@ mod tests {
             None,
             first_wake_at + Duration::from_micros(8_333),
         );
-        record_window_active_presentation_attempt(window_id);
-        record_window_active_presentation_preflight_not_ready(window_id);
+        record_present_attempt(window_id);
+        record_present_preflight_deferred(window_id);
         record_window_active_presentation_retry(window_id);
 
         let metrics = super::super::window_metrics_snapshot()

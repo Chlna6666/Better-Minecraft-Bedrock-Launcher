@@ -40,7 +40,7 @@ pub(super) fn create_renderer_shaders<D>(
     shader_binaries: ShaderBinaries,
 ) -> Result<RendererShaders>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let solid_vertex = device
         .create_shader_module(&ShaderModuleDescriptor {

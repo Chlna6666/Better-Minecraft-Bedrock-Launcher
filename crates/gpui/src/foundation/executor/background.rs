@@ -85,7 +85,7 @@ impl BackgroundExecutor {
     }
 
     /// Block the current thread until the given future resolves.
-    /// Consider using `block_with_timeout` instead.
+    /// Consider using `block_timeout` instead.
     pub fn block<R>(&self, future: impl Future<Output = R>) -> R {
         if let Ok(value) = self.block_internal(true, future, None) {
             value
@@ -218,7 +218,7 @@ impl BackgroundExecutor {
 
     /// Block the current thread until the given future resolves
     /// or `duration` has elapsed.
-    pub fn block_with_timeout<Fut: Future>(
+    pub fn block_timeout<Fut: Future>(
         &self,
         duration: Duration,
         future: Fut,
@@ -350,7 +350,7 @@ impl BackgroundExecutor {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    /// in tests, control the number of ticks that `block_with_timeout` will run before timing out.
+    /// in tests, control the number of ticks that `block_timeout` will run before timing out.
     pub fn set_block_on_ticks(&self, range: std::ops::RangeInclusive<usize>) {
         self.dispatcher.as_test().unwrap().set_block_on_ticks(range);
     }

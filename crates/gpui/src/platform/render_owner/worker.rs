@@ -5,8 +5,8 @@ use super::{
 };
 
 use crate::diagnostics::gpu_owner::{self, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample};
-use crate::{PresentationPacket, platform::NovaRenderer};
 use crate::platform::nova::PresentReadiness;
+use crate::{PresentationPacket, platform::NovaRenderer};
 use anyhow::Result;
 use std::{
     collections::HashMap,
@@ -16,6 +16,18 @@ use std::{
     },
     time::Instant,
 };
+
+#[cfg(all(
+    test,
+    target_os = "windows",
+    any(
+        feature = "nova-gfx-dx11",
+        feature = "nova-gfx-dx12",
+        feature = "nova-gfx-vulkan",
+        feature = "nova-gfx-opengl"
+    )
+))]
+mod native_tests;
 
 /// Whether a queued native resize may be applied while drawing this Scene.
 ///
@@ -211,9 +223,11 @@ impl Entry {
             _ => GpuOwnerJobKind::Control,
         };
         let started_at = Instant::now(); // Command service time, not visual animation time.
+        gpu_owner::phases::start(started_at);
         let previous_wait = gpu_owner::blocking_wait();
         self.job_outcome = GpuOwnerJobOutcome::Control;
         self.execute(command);
+        let diagnostics_scope = gpu_owner::phases::enter(gpu_owner::phases::Phase::LogOutput);
         #[cfg(target_os = "windows")]
         if gpu_owner::resize_trace_enabled() {
             // Actual committed swapchain size (never merely the queued drawable size).
@@ -239,7 +253,21 @@ impl Entry {
                 self.last_logged_swapchain_extent = Some(committed);
             }
         }
+        drop(diagnostics_scope);
         let completed_at = Instant::now();
+        if let Some(phases) = gpu_owner::phases::finish(completed_at) {
+            if completed_at.duration_since(started_at) >= std::time::Duration::from_millis(16) {
+                // This summary's own sink cost is excluded; existing in-job logs are timed.
+                log::warn!(
+                    target: "gpui_gpu_owner",
+                    "slow_owner_job owner_id={} kind={:?} queue_wait_us={:?} total_us={} phases={:?}",
+                    self.id, kind,
+                    queued.map(|(time, _, _)| gpu_owner::micros(started_at.saturating_duration_since(time))),
+                    gpu_owner::micros(completed_at.duration_since(started_at)), phases,
+                );
+            }
+        }
+        let completed_at = Instant::now(); // Include the outlier summary's sink in job metrics.
         gpu_owner::record_job(
             GpuOwnerJobSample {
                 owner_id: self.id,
@@ -412,6 +440,13 @@ impl Entry {
                 self.ready_registration.store(0, Ordering::Release);
                 self.renderer.update_drawable_size(size, epoch);
             }
+            Command::Cover { size } => {
+                // A compositor-covered backend returns Ok(false); the retained-frame
+                // path only exists where the window system cannot scale the last frame.
+                if let Err(error) = self.renderer.cover_native_resize(size) {
+                    log::debug!("native resize cover failed: {error:#}");
+                }
+            }
             Command::Call(operation) => operation(&mut self.renderer),
             Command::Transparency(transparent) => {
                 self.ready_registration.store(0, Ordering::Release);
@@ -495,6 +530,7 @@ impl Entry {
                     timing.frame_started_at = frame_time;
                     timing
                 });
+                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::RenderPrepare);
                 if let Some(frame) = self.renderer.present_active_frame(frame_time, timing)? {
                     completions = frame.completed_animations;
                     Ok(true)
@@ -519,10 +555,9 @@ impl Entry {
     }
 
     fn present_scene(&mut self) -> Result<bool> {
-        #[cfg(target_os = "windows")]
-        if self.queue.has_pending_draw() || self.queue.has_pending_resize_draw() {
-            return Ok(false);
-        }
+        // Queue compaction already selects the newest unstarted Scene. Once a Draw
+        // reaches the owner, let it make progress: continuous native resize commits
+        // can otherwise cancel every ready frame without ever presenting one.
         let scene_epoch = self
             .scene
             .as_ref()
@@ -532,15 +567,6 @@ impl Entry {
             .as_ref()
             .and_then(|(packet, _)| packet.paint.geometry.layout_extent);
         if !self.ready(scene_epoch, scene_extent)? {
-            return Ok(false);
-        }
-        // Readiness may have replaced the native buffers while a newer Scene arrived.
-        // Complete the matching first present before yielding: cancellation here would
-        // leave the new buffers without valid color content throughout a resize burst.
-        #[cfg(target_os = "windows")]
-        if (self.queue.has_pending_draw() || self.queue.has_pending_resize_draw())
-            && !self.renderer.needs_initial_present(scene_extent)
-        {
             return Ok(false);
         }
         let Some((mut packet, framebuffer_only)) = self.scene.take() else {
@@ -553,6 +579,7 @@ impl Entry {
         // This is the GPU frame's single visual sample, after waiting in the producer queue.
         // UI layout stays immutable; retained timelines are sampled by Nova using this timestamp.
         packet.frame_time = Instant::now();
+        let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::RenderPrepare);
         if framebuffer_only {
             self.renderer.present_framebuffer_only(packet)
         } else {
@@ -565,14 +592,20 @@ impl Entry {
         scene_epoch: Option<u64>,
         scene_extent: Option<(u32, u32)>,
     ) -> Result<bool> {
-        let readiness =
-            match self.renderer.presentation_readiness(scene_epoch, scene_extent) {
+        let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::Readiness);
+        let readiness = match self
+            .renderer
+            .presentation_readiness(scene_epoch, scene_extent)
+        {
             Ok(ready) => ready,
             Err(error) if self.renderer.has_pending_drawable_size() => {
                 // ResizeBuffers / swapchain recreation can transiently fail while
                 // the previous extent is still in use. Keep the newest request
                 // and retry from the GPU owner, not an unrelated DXGI callback.
-                log::debug!("deferring pending drawable resize: {error:#}");
+                gpu_owner::phases::timed_log!(
+                    debug,
+                    "deferring pending drawable resize: {error:#}"
+                );
                 PresentReadiness::Resources
             }
             Err(error) => return Err(error),
@@ -591,7 +624,7 @@ impl Entry {
         }
         if !self
             .renderer
-            .presentation_capabilities()
+            .surface_capabilities()
             .frame_ready_notification
         {
             self.ready_poll_required = true;
@@ -640,7 +673,7 @@ impl Entry {
                     completed_animations: smallvec::SmallVec::new(),
                 });
             });
-            match self.renderer.arm_swapchain_frame_ready(callback) {
+            match self.renderer.request_frame_ready(callback) {
                 Ok(true) => {}
                 Ok(false) => {
                     self.ready_registration.store(0, Ordering::Release);
@@ -662,6 +695,7 @@ impl Entry {
         result: &Result<bool>,
         mut completed_animations: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>,
     ) {
+        let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::Report);
         self.job_outcome = match result {
             Ok(true) => GpuOwnerJobOutcome::Submitted,
             Ok(false) => GpuOwnerJobOutcome::Deferred,
@@ -702,7 +736,7 @@ impl Entry {
         #[cfg(any(test, not(target_os = "windows")))]
         self.update_schedule(result.is_ok(), submitted);
         if let Err(error) = result {
-            log::error!("GPU owner presentation failed: {error:#}");
+            gpu_owner::phases::timed_log!(error, "GPU owner presentation failed: {error:#}");
         }
         if submitted {
             completed_animations.extend(self.renderer.take_animation_completions());

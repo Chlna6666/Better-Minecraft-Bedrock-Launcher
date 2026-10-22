@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 
 use super::super::*;
+use super::bind_groups::create_renderer_resource_sets;
 use super::buffers::create_resource_buffers;
 use super::depth::create_depth_texture;
 use super::pipelines::create_renderer_pipelines;
-use super::resource_sets::create_renderer_resource_sets;
 use super::shaders::create_renderer_shaders;
 use super::{FrameResources, RendererCore, RendererResources};
 
@@ -21,7 +21,7 @@ pub(in crate::platform::nova) fn create_renderer_core<D>(
     shader_binaries: ShaderBinaries,
 ) -> Result<RendererCore>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let started_at = std::time::Instant::now();
     let layouts = create_resource_layouts(device, label)?;
@@ -71,7 +71,7 @@ pub(in crate::platform::nova) fn create_renderer_resources<D>(
     core: &RendererCore,
 ) -> Result<RendererResources>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let started_at = std::time::Instant::now();
     let layouts = core.layouts;
@@ -87,7 +87,7 @@ where
         PathMaskTargetDescriptor {
             size: startup_path_mask_size,
             format: surface_config.format,
-            resource_set_layout: layouts.path_resource_set_layout,
+            bind_group_layout: layouts.path_resource_set_layout,
             frame_buffers: frame_buffers.clone(),
             sampler: shared_buffers.atlas_sampler,
         },
@@ -115,7 +115,7 @@ where
     let bindings_started_at = std::time::Instant::now();
     let mut frame_resources = Vec::with_capacity(frame_buffers.len());
     for (index, frame_buffers) in frame_buffers.iter().copied().enumerate() {
-        let resource_sets = create_renderer_resource_sets(
+        let bind_groups = create_renderer_resource_sets(
             device,
             &format!("{label} frame {index}"),
             &layouts,
@@ -123,9 +123,9 @@ where
         )?;
         frame_resources.push(FrameResources {
             buffers: frame_buffers,
-            resource_sets,
+            bind_groups,
             path_resource_set: path_mask_target
-                .resource_sets
+                .bind_groups
                 .get(index)
                 .copied()
                 .context("missing path mask frame resource set")?,

@@ -31,10 +31,200 @@ fn retained_chunks_overlapping(
     &chunks[start..end]
 }
 
+fn retained_monochrome_sprite_chunks_overlapping(
+    chunks: &[crate::window::retained::PreparedRetainedMonochromeSpriteChunk],
+    range: Range<usize>,
+) -> &[crate::window::retained::PreparedRetainedMonochromeSpriteChunk] {
+    if range.is_empty() {
+        return &chunks[..0];
+    }
+    let start = chunks.partition_point(|chunk| chunk.sprite_range.end <= range.start);
+    let end = start + chunks[start..].partition_point(|chunk| chunk.sprite_range.start < range.end);
+    &chunks[start..end]
+}
+
+fn retained_monochrome_sprite_bounds(
+    sprites: &[crate::MonochromeSprite],
+    atlas_placements: &collections::FxHashMap<crate::TileId, crate::AtlasTile>,
+) -> Option<crate::Bounds<crate::ScaledPixels>> {
+    let mut visual_bounds = None;
+    let mut has_visible_sprite = false;
+    for source in sprites {
+        if clip_is_degenerate(&source.content_mask) {
+            continue;
+        }
+        let mut sprite = *source;
+        if let Some(tile) = atlas_placements.get(&sprite.tile.tile_id) {
+            sprite.tile = *tile;
+        }
+        let next = static_raster_visual_bounds(
+            sprite.bounds,
+            sprite.content_mask.bounds,
+            sprite.animation_id,
+            sprite.transformation != crate::TransformationMatrix::unit(),
+        );
+        if has_visible_sprite {
+            merge_batch_bounds(&mut visual_bounds, next);
+        } else {
+            visual_bounds = next;
+            has_visible_sprite = true;
+        }
+    }
+    visual_bounds
+}
+
 impl FrameUpload {
+    pub(super) fn encode_retained_monochrome_sprites(
+        &mut self,
+        cache: &mut RetainedChunkCache,
+        scene: &crate::Scene,
+        retained_chunks: &[crate::window::retained::PreparedRetainedMonochromeSpriteChunk],
+        range: Range<usize>,
+        texture_id: crate::AtlasTextureId,
+        sampling: crate::MonochromeSpriteSampling,
+        summary: &mut FrameUploadSummary,
+    ) {
+        let mut cursor = range.start;
+        for chunk in retained_monochrome_sprite_chunks_overlapping(retained_chunks, range.clone()) {
+            if chunk.sprite_range.start < cursor
+                || chunk.sprite_range.end > range.end
+                || chunk.texture_id != texture_id
+                || chunk.sampling != sampling
+            {
+                continue;
+            }
+            self.encode_monochrome_sprites(
+                &scene.monochrome_sprites[cursor..chunk.sprite_range.start],
+                summary,
+            );
+            if !self.reuse_retained_monochrome_sprite_chunk(cache, chunk, summary) {
+                summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
+                self.encode_retained_monochrome_sprite_chunk(cache, scene, chunk, summary);
+            }
+            cursor = chunk.sprite_range.end;
+        }
+        self.encode_monochrome_sprites(&scene.monochrome_sprites[cursor..range.end], summary);
+    }
+
+    fn encode_retained_monochrome_sprite_chunk(
+        &mut self,
+        cache: &mut RetainedChunkCache,
+        scene: &crate::Scene,
+        chunk: &crate::window::retained::PreparedRetainedMonochromeSpriteChunk,
+        summary: &mut FrameUploadSummary,
+    ) {
+        let sprites = &scene.monochrome_sprites[chunk.sprite_range.clone()];
+        let visible_count = sprites
+            .iter()
+            .filter(|sprite| !clip_is_degenerate(&sprite.content_mask))
+            .count();
+        let available =
+            MAX_MONO_SPRITES.saturating_sub(self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES);
+        if visible_count > available {
+            self.encode_monochrome_sprites(sprites, summary);
+            return;
+        }
+        let byte_start = self.mono_sprites.len();
+        let atlas_start = self.mono_atlas_tiles.len();
+        let visual_bounds = retained_monochrome_sprite_bounds(sprites, &self.atlas_placements);
+        let mut packed_bytes = Vec::with_capacity(visible_count * PACKED_MONO_SPRITE_BYTES);
+        let first_sprite = (byte_start / PACKED_MONO_SPRITE_BYTES) as u32;
+        let mut sprite_count = 0_u32;
+        for source in sprites {
+            let Some((sprite, sprite_bounds)) = self.prepare_monochrome_sprite(source) else {
+                continue;
+            };
+            let primitive_index = first_sprite + sprite_count;
+            write_monochrome_sprite(&mut packed_bytes, &sprite);
+            self.record_monochrome_sprite(&sprite, primitive_index, sprite_bounds, summary);
+            sprite_count = sprite_count.saturating_add(1);
+        }
+        debug_assert_eq!(sprite_count as usize, visible_count);
+        if sprite_count == 0 {
+            return;
+        }
+        let bytes = Arc::new(packed_bytes);
+        let atlas_tiles = Arc::new(self.mono_atlas_tiles[atlas_start..].to_vec());
+        let mut hasher = collections::FxHasher::default();
+        hasher.write(&bytes);
+        let byte_hash = hasher.finish();
+        self.mono_sprites
+            .append_shared(Arc::clone(&bytes), byte_hash);
+        self.resident_monochrome_sprite_spans
+            .push(RetainedResidentSpan {
+                id: chunk.id.clone(),
+                range: byte_start..byte_start + bytes.len(),
+                byte_hash,
+            });
+        cache.retained_monochrome_sprite_chunks.insert(
+            chunk.id.clone(),
+            PackedRetainedMonochromeSpriteChunk {
+                bytes: Arc::clone(&bytes),
+                byte_hash,
+                atlas_tiles,
+                sprite_count,
+                texture_id: chunk.texture_id,
+                sampling: chunk.sampling,
+                visual_bounds,
+                atlas_placement_generation: cache.atlas_placement_generation,
+                last_used_epoch: cache.frame_epoch,
+            },
+        );
+    }
+
+    fn reuse_retained_monochrome_sprite_chunk(
+        &mut self,
+        cache: &mut RetainedChunkCache,
+        chunk: &crate::window::retained::PreparedRetainedMonochromeSpriteChunk,
+        summary: &mut FrameUploadSummary,
+    ) -> bool {
+        if !chunk.replayed {
+            return false;
+        }
+        let Some(cached) = cache.retained_monochrome_sprite_chunks.get_mut(&chunk.id) else {
+            return false;
+        };
+        if cached.texture_id != chunk.texture_id
+            || cached.sampling != chunk.sampling
+            || cached.atlas_placement_generation != cache.atlas_placement_generation
+            || cached.atlas_tiles.len() != cached.sprite_count as usize
+            || cached.bytes.len() != cached.sprite_count as usize * PACKED_MONO_SPRITE_BYTES
+            || self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES + cached.sprite_count as usize
+                > MAX_MONO_SPRITES
+        {
+            return false;
+        }
+        cached.last_used_epoch = cache.frame_epoch;
+        let first = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
+        let byte_start = self.mono_sprites.len();
+        self.mono_sprites
+            .append_shared(Arc::clone(&cached.bytes), cached.byte_hash);
+        self.resident_monochrome_sprite_spans
+            .push(RetainedResidentSpan {
+                id: chunk.id.clone(),
+                range: byte_start..self.mono_sprites.len(),
+                byte_hash: cached.byte_hash,
+            });
+        self.mono_atlas_tiles.extend_from_slice(&cached.atlas_tiles);
+        self.append_monochrome_sprite_batch(
+            chunk.texture_id,
+            first,
+            cached.sprite_count,
+            cached.visual_bounds,
+        );
+        summary.mono_sprite_count = summary
+            .mono_sprite_count
+            .saturating_add(cached.sprite_count);
+        summary.retained_chunk_hits = summary.retained_chunk_hits.saturating_add(1);
+        summary.retained_chunk_reused_bytes = summary
+            .retained_chunk_reused_bytes
+            .saturating_add(cached.bytes.len());
+        true
+    }
+
     pub(super) fn encode_retained_quads(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         retained_chunks: &[crate::PreparedRetainedQuadChunk],
         range: Range<usize>,
@@ -42,10 +232,7 @@ impl FrameUpload {
         summary: &mut FrameUploadSummary,
     ) {
         let mut cursor = range.start;
-        for chunk in retained_chunks_overlapping(
-            retained_chunks,
-            range.clone(),
-        ) {
+        for chunk in retained_chunks_overlapping(retained_chunks, range.clone()) {
             if chunk.quad_range.start < cursor
                 || chunk.quad_range.end > range.end
                 || chunk.is_solid != is_solid
@@ -63,12 +250,16 @@ impl FrameUpload {
             }
             cursor = chunk.quad_range.end;
         }
-        self.encode_quad_range(scene.quads.slices(cursor..range.end).flatten(), is_solid, summary);
+        self.encode_quad_range(
+            scene.quads.slices(cursor..range.end).flatten(),
+            is_solid,
+            summary,
+        );
     }
 
     fn encode_retained_quad_chunk(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
@@ -96,9 +287,9 @@ impl FrameUpload {
                 range: start..self.quads.len(),
                 byte_hash,
             });
-            cache.retained_quad_chunks.insert(
+            cache.quad_payloads.insert(
                 chunk.id.clone(),
-                PackedRetainedQuadChunk {
+                PackedQuadChunk {
                     bytes,
                     byte_hash,
                     quad_count: count,
@@ -112,14 +303,14 @@ impl FrameUpload {
 
     fn encode_chunk_bytes(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
     ) -> (Vec<u8>, u32, Option<crate::Bounds<crate::ScaledPixels>>) {
         // Reset cleared the previous frame's segment references. Reuse a uniquely-owned backing
         // for dirty content, but never copy an Arc still held by another occurrence.
         let mut bytes = cache
-            .retained_quad_chunks
+            .quad_payloads
             .remove(&chunk.id)
             .and_then(|cached| Arc::try_unwrap(cached.bytes).ok())
             .unwrap_or_default();
@@ -156,14 +347,14 @@ impl FrameUpload {
 
     fn reuse_retained_quad_chunk(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
     ) -> bool {
         if !chunk.replayed {
             return false;
         }
-        let Some(cached) = cache.retained_quad_chunks.get_mut(&chunk.id) else {
+        let Some(cached) = cache.quad_payloads.get_mut(&chunk.id) else {
             return false;
         };
         // Generation identity is a retained semantic proof, but the encoded
@@ -243,12 +434,7 @@ impl FrameUpload {
             if previous_animated.is_some_and(|old| old != animated) {
                 transitions = transitions.saturating_add(1);
                 if transitions <= MAX_QUAD_ANIMATION_TRANSITIONS {
-                    self.append_quad_batch(
-                        batch_first,
-                        batch_count,
-                        is_solid,
-                        batch_visual_bounds,
-                    );
+                    self.append_quad_batch(batch_first, batch_count, is_solid, batch_visual_bounds);
                     batch_first = primitive_index;
                     batch_count = 0;
                     batch_visual_bounds = None;
@@ -315,21 +501,27 @@ impl FrameUpload {
     }
 }
 
-impl RetainedQuadChunkCache {
+impl RetainedChunkCache {
     pub(super) fn begin_frame(&mut self) {
         // Zero is reserved as the never-used marker. On wrap, retire all
         // map entries rather than accidentally validating an ancient epoch.
         self.frame_epoch = self.frame_epoch.wrapping_add(1);
         if self.frame_epoch == 0 {
-            self.retained_quad_chunks.clear();
+            self.quad_payloads.clear();
+            self.retained_monochrome_sprite_chunks.clear();
+            self.layer_scene_encodings.clear();
             self.frame_epoch = 1;
         }
     }
 
-    pub(super) fn prune_retained_quads(&mut self) {
+    pub(super) fn prune_retained_chunks(&mut self) {
         let epoch = self.frame_epoch;
-        self.retained_quad_chunks
+        self.quad_payloads
             .retain(|_, chunk| chunk.last_used_epoch == epoch);
+        self.retained_monochrome_sprite_chunks
+            .retain(|_, chunk| chunk.last_used_epoch == epoch);
+        self.layer_scene_encodings
+            .retain(|_, layer| layer.last_used_epoch == epoch);
     }
 }
 
@@ -362,9 +554,18 @@ mod static_dynamic_batch_tests {
         assert_eq!(summary.quad_count, 21);
         assert_eq!(upload.quads.len(), 21 * PACKED_QUAD_BYTES);
         assert_eq!(upload.batches.len(), 3);
-        assert!(matches!(upload.batches[0], UploadedBatch::Quads { count: 10, .. }));
-        assert!(matches!(upload.batches[1], UploadedBatch::Quads { count: 1, .. }));
-        assert!(matches!(upload.batches[2], UploadedBatch::Quads { count: 10, .. }));
+        assert!(matches!(
+            upload.batches[0],
+            UploadedBatch::Quads { count: 10, .. }
+        ));
+        assert!(matches!(
+            upload.batches[1],
+            UploadedBatch::Quads { count: 1, .. }
+        ));
+        assert!(matches!(
+            upload.batches[2],
+            UploadedBatch::Quads { count: 10, .. }
+        ));
     }
 
     #[test]
@@ -448,7 +649,10 @@ mod static_dynamic_batch_tests {
         assert_eq!(upload.quads.len(), 5 * PACKED_QUAD_BYTES);
         assert_eq!(upload.batches.len(), 1);
         assert_eq!(upload.batch_visual_bounds, vec![None]);
-        assert!(matches!(upload.batches[0], UploadedBatch::Quads { first: 0, count: 5 }));
+        assert!(matches!(
+            upload.batches[0],
+            UploadedBatch::Quads { first: 0, count: 5 }
+        ));
     }
 
     #[test]
@@ -505,7 +709,10 @@ mod static_dynamic_batch_tests {
             if should_split {
                 for quad in &visible {
                     let animated = quad.animation_id.is_some();
-                    if expected_counts.last().is_none_or(|(state, _)| *state != animated) {
+                    if expected_counts
+                        .last()
+                        .is_none_or(|(state, _)| *state != animated)
+                    {
                         expected_counts.push((animated, 0u32));
                     }
                     expected_counts.last_mut().unwrap().1 += 1;
@@ -539,3 +746,148 @@ mod static_dynamic_batch_tests {
     }
 }
 
+#[cfg(test)]
+mod retained_monochrome_sprite_tests {
+    use super::*;
+
+    fn sprite(x: f32) -> crate::MonochromeSprite {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(x), crate::ScaledPixels(4.)),
+            crate::size(crate::ScaledPixels(8.), crate::ScaledPixels(8.)),
+        );
+        crate::MonochromeSprite {
+            order: 0,
+            pad: crate::MonochromeSpriteSampling::Glyph as u32,
+            animation_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            color: crate::rgb(0xffffff),
+            tile: crate::AtlasTile {
+                texture_id: crate::AtlasTextureId {
+                    index: 0,
+                    kind: crate::AtlasTextureKind::Monochrome,
+                },
+                tile_id: crate::TileId(0),
+                padding: 1,
+                bounds: crate::bounds(
+                    crate::point(crate::DevicePixels(1), crate::DevicePixels(1)),
+                    crate::size(crate::DevicePixels(8), crate::DevicePixels(8)),
+                ),
+            },
+            transformation: crate::TransformationMatrix::unit(),
+        }
+    }
+
+    fn retained_fixture() -> crate::window::retained::PaintFixture {
+        let mut fixture = crate::window::retained::PaintFixture::default();
+        let start = fixture.len();
+        for index in 0..16 {
+            fixture.insert_primitive(sprite(index as f32 * 8.));
+        }
+        let end = fixture.len();
+        fixture.record(
+            crate::GlobalElementId::from_path(&["retained-glyphs".into()]),
+            3,
+            start..end,
+        );
+        fixture.finish();
+        fixture
+    }
+
+    fn encode_fixture(
+        upload: &mut FrameUpload,
+        cache: &mut RetainedChunkCache,
+        fixture: &crate::window::retained::PaintFixture,
+    ) -> FrameUploadSummary {
+        upload.encode(
+            cache,
+            &fixture.paint,
+            &fixture.retention,
+            &[],
+            DrawableSize {
+                width: 128,
+                height: 64,
+            },
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
+        )
+    }
+
+    #[test]
+    fn replayed_static_glyph_chunk_reuses_packed_bytes_and_rejects_relocated_atlas() {
+        let previous = retained_fixture();
+        assert_eq!(
+            previous
+                .retention
+                .monochrome_sprite_chunks_for(&previous.paint.scene)
+                .len(),
+            1
+        );
+        let mut cache = RetainedChunkCache::default();
+        cache.set_atlas_placement_generation(4);
+        let mut upload = FrameUpload::default();
+        let first = encode_fixture(&mut upload, &mut cache, &previous);
+        assert_eq!(first.mono_sprite_count, 16);
+        assert_eq!(first.retained_chunk_hits, 0);
+        assert_eq!(first.retained_chunk_misses, 1);
+        let first_bytes = upload.mono_sprites.to_vec();
+        assert_eq!(upload.resident_monochrome_sprite_spans.len(), 1);
+        assert_eq!(
+            upload.resident_monochrome_sprite_spans[0].range,
+            0..first_bytes.len()
+        );
+        assert_eq!(upload.mono_sprites.owned_len(), 0);
+        assert!(
+            upload
+                .mono_sprites
+                .segments()
+                .all(|(_, _, cached_hash)| cached_hash.is_some())
+        );
+        let first_batch_count = upload.batches.len();
+
+        let mut current = crate::window::retained::PaintFixture::default();
+        current.replay(0..previous.len(), &previous);
+        current.finish();
+        let replayed_chunks = current
+            .retention
+            .monochrome_sprite_chunks_for(&current.paint.scene);
+        assert_eq!(replayed_chunks.len(), 1);
+        assert!(replayed_chunks[0].replayed);
+
+        let second = encode_fixture(&mut upload, &mut cache, &current);
+        assert_eq!(second.mono_sprite_count, 16);
+        assert_eq!(second.retained_chunk_hits, 1);
+        assert_eq!(second.retained_chunk_misses, 0);
+        assert_eq!(second.retained_chunk_reused_bytes, first_bytes.len());
+        assert_eq!(upload.mono_sprites.to_vec(), first_bytes);
+        assert_eq!(upload.resident_monochrome_sprite_spans.len(), 1);
+        assert_eq!(upload.mono_sprites.owned_len(), 0);
+        assert!(
+            upload
+                .mono_sprites
+                .segments()
+                .all(|(_, _, cached_hash)| cached_hash.is_some())
+        );
+        let cached_chunk = cache
+            .retained_monochrome_sprite_chunks
+            .get(&replayed_chunks[0].id)
+            .expect("replayed glyph chunk is cached");
+        assert_eq!(
+            upload.mono_sprites.shared_bytes().next().unwrap().as_ptr(),
+            cached_chunk.bytes.as_ptr()
+        );
+        assert_eq!(upload.batches.len(), first_batch_count);
+        assert!(matches!(
+            upload.batches.as_slice(),
+            [UploadedBatch::MonoSprites { texture_id, first: 0, count: 16 }]
+                if *texture_id == previous.paint.scene.monochrome_sprites[0].tile.texture_id
+        ));
+
+        cache.set_atlas_placement_generation(5);
+        let relocated = encode_fixture(&mut upload, &mut cache, &current);
+        assert_eq!(relocated.mono_sprite_count, 16);
+        assert_eq!(relocated.retained_chunk_hits, 0);
+        assert_eq!(relocated.retained_chunk_misses, 1);
+    }
+}

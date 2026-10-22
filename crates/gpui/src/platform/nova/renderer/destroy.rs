@@ -73,7 +73,7 @@ impl NovaRenderer {
     }
 }
 
-fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
+fn destroy_resources<D: ResourceDevice + SurfaceDevice + PipelineDevice>(
     device: &mut D,
     resources: WindowResources,
     backend: &str,
@@ -128,28 +128,25 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     release(device.destroy_sampler(resources.sampler), "atlas sampler");
     log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=swapchain");
     release(
-        BackendSurface::destroy_swapchain(device, resources.swapchain),
+        SurfaceDevice::destroy_swapchain(device, resources.swapchain),
         "swapchain",
     );
     log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=surface");
     release(
-        BackendSurface::destroy_surface(device, resources.surface),
+        SurfaceDevice::destroy_surface(device, resources.surface),
         "surface",
     );
 }
 
-fn destroy_frame<D: BackendResources>(device: &mut D, frame: FrameResources) {
-    let sets = frame.resource_sets;
-    for resource_set in [
+fn destroy_frame<D: ResourceDevice>(device: &mut D, frame: FrameResources) {
+    let sets = frame.bind_groups;
+    for bind_group in [
         sets.quad_resource_set,
         sets.shadow_resource_set,
         sets.path_rasterization_resource_set,
         sets.underline_resource_set,
     ] {
-        release(
-            device.destroy_resource_set(resource_set),
-            "frame resource set",
-        );
+        release(device.destroy_bind_group(bind_group), "frame resource set");
     }
     // Path and sprite sets are owned by the path/atlas targets, not duplicated here.
 }

@@ -196,16 +196,20 @@ impl Window {
         let blur_bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
         let layer_id = self.current_retained_element_id();
-        self.next_frame
-            .painter
-            .begin_blur(crate::scene::BlurCapture {
+        let previous_content = layer_id
+            .as_ref()
+            .and_then(|layer_id| self.rendered_frame.scene().blur_content_for(layer_id));
+        self.next_frame.painter.begin_previous_blur(
+            crate::scene::BlurCapture {
                 animation_id: composite_animation.map(|(animation_id, _)| animation_id),
                 layer_id,
                 bounds: blur_bounds,
                 content_mask,
                 radius: ScaledPixels(sigma * scale_factor * visual_scale),
                 opacity: previous_opacity,
-            });
+            },
+            previous_content,
+        );
         self.element_opacity = 1.0;
         let previous_animation = if composite_animation.is_some() {
             self.scene_animation.take()
@@ -269,10 +273,10 @@ impl Window {
     /// where the circular arcs meet. This will not display well when combined with dashed borders.
     /// Use `Corners::clamp_radii_for_quad_size` if the radii should fit within the bounds.
     pub fn paint_quad(&mut self, quad: PaintQuad) {
-        self.paint_quad_with_animation(quad, None);
+        self.paint_animated_quad(quad, None);
     }
 
-    pub(crate) fn paint_quad_with_animation(
+    pub(crate) fn paint_animated_quad(
         &mut self,
         quad: PaintQuad,
         animation_id: Option<SceneAnimationId>,
@@ -394,8 +398,7 @@ impl Window {
         path.color = color.opacity(opacity);
         let transform = self.element_visual_transform;
         let translation = transform.translation.map(|value| value.scale(scale_factor));
-        let mut path =
-            path.scale_and_transform_for_paint(scale_factor, transform.scale, translation);
+        let mut path = path.paint_scale_transform(scale_factor, transform.scale, translation);
         path.content_mask = content_mask.scale(scale_factor);
         self.next_frame.painter.insert_primitive(path);
     }
@@ -541,6 +544,26 @@ impl Window {
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
         if !raster_bounds.is_zero() {
+            let (baseline_origin, _) =
+                glyph_device_origin(visual_origin, Point::default(), scale_factor);
+            let content_mask = self.visual_content_mask().scale(scale_factor);
+            let animation_id = self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]);
+            let raster_visual_bounds = glyph_clip_bounds(
+                baseline_origin
+                    + raster_bounds
+                        .origin
+                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
+                raster_bounds.size,
+                scene_text_raster_scale,
+            );
+            if glyph_is_clipped(raster_visual_bounds, content_mask.bounds, animation_id) {
+                return Ok(());
+            }
             let Some(tile) = self
                 .sprite_atlas
                 .ensure_glyph_with(&params, &mut || self.text_system().rasterize_glyph(&params))?
@@ -555,8 +578,6 @@ impl Window {
                 );
                 return Ok(());
             };
-            let (baseline_origin, _) =
-                glyph_device_origin(visual_origin, Point::default(), scale_factor);
             // The atlas tile was rasterized at the complete visual scale and its baseline is
             // already transformed. Renderer-owned scene scaling reserves extra atlas resolution,
             // but keeps the stable scene bounds so the GPU transform applies exactly once.
@@ -570,13 +591,6 @@ impl Window {
                     .size
                     .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
-            let content_mask = self.visual_content_mask().scale(scale_factor);
-            let animation_id = self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]);
             self.next_frame.painter.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: MonochromeSpriteSampling::Glyph as u32,
@@ -631,6 +645,24 @@ impl Window {
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
         if !raster_bounds.is_zero() {
+            let raster_origin = glyph_origin.map(|px| px.floor())
+                + raster_bounds
+                    .origin
+                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale));
+            let content_mask = self.visual_content_mask().scale(scale_factor);
+            let animation_id = self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]);
+            if glyph_is_clipped(
+                glyph_clip_bounds(raster_origin, raster_bounds.size, scene_text_raster_scale),
+                content_mask.bounds,
+                animation_id,
+            ) {
+                return Ok(());
+            }
             let Some(tile) = self
                 .sprite_atlas
                 .ensure_glyph_with(&params, &mut || self.text_system().rasterize_glyph(&params))?
@@ -645,23 +677,13 @@ impl Window {
             };
 
             let bounds = Bounds {
-                origin: glyph_origin.map(|px| px.floor())
-                    + raster_bounds
-                        .origin
-                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
+                origin: raster_origin,
                 size: tile
                     .bounds
                     .size
                     .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
-            let content_mask = self.visual_content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
-            let animation_id = self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]);
 
             self.next_frame.painter.insert_primitive(PolychromeSprite {
                 order: 0,
@@ -686,6 +708,35 @@ impl Window {
             properties.contains(&property).then_some(animation_id)
         })
     }
+}
+
+// CoreText can append one raster pixel to each axis for subpixel coverage. Include that
+// conservative guard on every platform, in raster rather than scene pixels, before atlas lookup.
+fn glyph_clip_bounds(
+    origin: Point<ScaledPixels>,
+    raster_size: Size<DevicePixels>,
+    scene_text_raster_scale: f32,
+) -> Bounds<ScaledPixels> {
+    Bounds {
+        origin,
+        size: raster_size.map(|value| {
+            downsample_raster_pixel(
+                DevicePixels(value.0.saturating_add(1)),
+                scene_text_raster_scale,
+            )
+        }),
+    }
+}
+
+// Match Painter's static primitive rejection before touching the atlas. Conservative raster
+// bounds include glyph overhang and platform padding in the eventual sprite's coordinate space.
+// Animated primitives reserve their entire clip: presentation can move them into view later.
+fn glyph_is_clipped(
+    bounds: Bounds<ScaledPixels>,
+    clip: Bounds<ScaledPixels>,
+    animation_id: Option<SceneAnimationId>,
+) -> bool {
+    animation_id.is_none() && bounds.intersect(&clip).is_empty()
 }
 
 fn glyphs_require_grayscale_antialiasing(
@@ -721,6 +772,79 @@ fn downsample_raster_pixel(pixel: DevicePixels, scene_text_raster_scale: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph_clip_keeps_subpixel_guard_pixels_at_any_raster_scale() {
+        let clip = Bounds::new(
+            point(ScaledPixels(10.0), ScaledPixels(10.0)),
+            size(ScaledPixels(20.0), ScaledPixels(20.0)),
+        );
+        for scale in [0.5, 1.0, 1.25, 2.0] {
+            for origin in [(10.0 - 8.5 / scale, 12.0), (12.0, 10.0 - 8.5 / scale)] {
+                let bounds = glyph_clip_bounds(
+                    point(ScaledPixels(origin.0), ScaledPixels(origin.1)),
+                    size(DevicePixels(8), DevicePixels(8)),
+                    scale,
+                );
+                assert!(!glyph_is_clipped(bounds, clip, None));
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_clip_rejects_only_static_fully_excluded_raster_bounds() {
+        let clip = Bounds::new(
+            point(ScaledPixels(10.0), ScaledPixels(10.0)),
+            size(ScaledPixels(20.0), ScaledPixels(20.0)),
+        );
+        for origin in [(-2.0, 12.0), (30.0, 12.0), (12.0, -2.0), (12.0, 30.0)] {
+            let raster = Bounds::new(
+                point(ScaledPixels(origin.0), ScaledPixels(origin.1)),
+                size(ScaledPixels(8.0), ScaledPixels(8.0)),
+            );
+            assert!(glyph_is_clipped(raster, clip, None));
+            assert!(!glyph_is_clipped(raster, clip, Some(SceneAnimationId(1))));
+        }
+        // Glyph overhang and fractional DPI placement may enter the clip even when its
+        // logical origin is outside. Use raster geometry rather than line/element bounds.
+        for origin in [(2.5, 12.0), (29.5, 12.0), (12.0, 2.5), (12.0, 29.5)] {
+            let raster = Bounds::new(
+                point(ScaledPixels(origin.0), ScaledPixels(origin.1)),
+                size(ScaledPixels(8.0), ScaledPixels(8.0)),
+            );
+            assert!(!glyph_is_clipped(raster, clip, None));
+        }
+    }
+
+    #[test]
+    fn glyph_clip_agrees_with_scene_admission_for_static_and_animated_geometry() {
+        let clip = Bounds::new(
+            point(ScaledPixels(10.0), ScaledPixels(10.0)),
+            size(ScaledPixels(20.0), ScaledPixels(20.0)),
+        );
+        for animation_id in [None, Some(SceneAnimationId(7))] {
+            for x in [-12.0, 2.5, 10.0, 29.5, 30.0, 100.0] {
+                for y in [-12.0, 2.5, 10.0, 29.5, 30.0, 100.0] {
+                    let bounds = Bounds::new(
+                        point(ScaledPixels(x), ScaledPixels(y)),
+                        size(ScaledPixels(8.0), ScaledPixels(8.0)),
+                    );
+                    let mut painter = crate::scene::Painter::default();
+                    painter.insert_primitive(Quad {
+                        bounds,
+                        content_mask: crate::ContentMask::new(clip),
+                        animation_id,
+                        ..Default::default()
+                    });
+                    assert_eq!(
+                        glyph_is_clipped(bounds, clip, animation_id),
+                        painter.quads.len() == 0,
+                        "x={x} y={y} animation={animation_id:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn opaque_window_blur_capture_uses_grayscale_glyphs() {

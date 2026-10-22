@@ -36,9 +36,7 @@ use windows::{
             },
             SystemInformation::*,
             SystemServices::POWER_REQUEST_CONTEXT_VERSION,
-            Threading::{
-                POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0,
-            },
+            Threading::{POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0},
         },
         UI::{
             HiDpi::{
@@ -92,9 +90,8 @@ pub(super) fn poll_modal_foreground_tasks() -> bool {
         if draining.replace(true) {
             return false;
         }
-        let owner = MODAL_FOREGROUND_OWNER.with(|slot| {
-            slot.borrow().as_ref().and_then(Weak::upgrade)
-        });
+        let owner =
+            MODAL_FOREGROUND_OWNER.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade));
         // At most 64 tasks or 2 ms of work per native message.
         let needs_more = owner.is_some_and(|owner| owner.run_foreground_tasks());
         draining.set(false);
@@ -299,7 +296,9 @@ fn set_process_dpi_awareness(awareness: PROCESS_DPI_AWARENESS) -> windows::core:
 }
 
 impl WindowsPlatform {
-    fn new_common_parts(vsync_scheduler: Arc<super::vsync::VSyncScheduler>) -> (
+    fn new_common_parts(
+        vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
+    ) -> (
         Rc<WindowsPlatformInner>,
         BackgroundExecutor,
         ForegroundExecutor,
@@ -413,7 +412,10 @@ impl WindowsPlatform {
                 | RendererBackend::NovaDx12
                 | RendererBackend::NovaMetal
         ) {
-            log::info!("GPUI Windows resolved renderer backend: {}", renderer_backend);
+            log::info!(
+                "GPUI Windows resolved renderer backend: {}",
+                renderer_backend
+            );
         }
         if renderer_backend != RendererBackend::HeadlessTest {
             let options = RendererOptions {
@@ -652,7 +654,6 @@ impl Platform for WindowsPlatform {
             windows: FxHashMap::default(),
             focused_window_id: None,
             current_modifiers: Modifiers::default(),
-            pressed_button: None,
             hovered_window_id: None,
             pending_file_drops: FxHashMap::default(),
             vsync_scheduler: self.vsync_scheduler.clone(),
@@ -835,7 +836,7 @@ impl Platform for WindowsPlatform {
         })
     }
 
-    fn prompt_for_new_path(
+    fn prompt_new_path(
         &self,
         directory: &Path,
         suggested_name: Option<&str>,
@@ -851,7 +852,7 @@ impl Platform for WindowsPlatform {
         })
     }
 
-    fn can_select_mixed_files_and_dirs(&self) -> bool {
+    fn can_select_mixed_paths(&self) -> bool {
         // The FOS_PICKFOLDERS flag toggles between "only files" and "only folders".
         false
     }
@@ -941,7 +942,9 @@ impl Platform for WindowsPlatform {
             for window in app.windows.values() {
                 apply_cursor_style_to_window(window.window(), style);
             }
-        }).is_none() {
+        })
+        .is_none()
+        {
             if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
                 let _ = proxy.send_event(WindowsUserEvent::SetCursorStyle(style));
             }
@@ -1157,7 +1160,6 @@ struct WindowsApplication {
     windows: FxHashMap<winit::window::WindowId, WindowsWindow>,
     focused_window_id: Option<winit::window::WindowId>,
     current_modifiers: Modifiers,
-    pressed_button: Option<MouseButton>,
     hovered_window_id: Option<winit::window::WindowId>,
     pending_file_drops: FxHashMap<winit::window::WindowId, PendingFileDrop>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
@@ -1399,7 +1401,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 self.inner.handle_dock_action_event(action_index);
             }
             WindowsUserEvent::ActivateApp => self.activate_window(),
-            WindowsUserEvent::BeginNativeDrag { window_id, resize_edge } => {
+            WindowsUserEvent::BeginNativeDrag {
+                window_id,
+                resize_edge,
+            } => {
                 // The caller's input callback has returned. Keep App callbacks outside
                 // the native modal loop; HWND resize events schedule bounded task slices.
                 ACTIVE_CONTEXT.with(|storage| *storage.borrow_mut() = None);
@@ -1475,6 +1480,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::Focused(active) => {
+                if !active {
+                    window.0.pressed_button.set(None);
+                }
                 if active {
                     self.focused_window_id = Some(window_id);
                     window.request_frame(PlatformFrameRequest::ui_commit());
@@ -1556,7 +1564,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 if let Some(mut callback) = input_callback {
                     let _ = callback(PlatformInput::MouseMove(MouseMoveEvent {
                         position,
-                        pressed_button: self.pressed_button,
+                        pressed_button: window.0.pressed_button.get(),
                         modifiers: self.current_modifiers,
                     }));
                     window.0.state.borrow_mut().callbacks.input = Some(callback);
@@ -1569,7 +1577,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 let mut state = window.0.state.borrow_mut();
                 state.hovered.set(false);
                 let position = state.mouse_position.get();
-                let pressed_button = self.pressed_button;
+                let pressed_button = window.0.pressed_button.get();
                 let modifiers = self.current_modifiers;
                 let hovered_callback = state.callbacks.hovered_status_change.take();
                 let input_callback = state.callbacks.input.take();
@@ -1648,7 +1656,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                     let input_callback = window_state.callbacks.input.take();
                     match state {
                         winit::event::ElementState::Pressed => {
-                            self.pressed_button = Some(button);
+                            window.0.pressed_button.set(Some(button));
                             let click_count = window_state.click_state.borrow_mut().update(
                                 button,
                                 point(
@@ -1669,7 +1677,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                             }
                         }
                         winit::event::ElementState::Released => {
-                            self.pressed_button = None;
+                            window.0.pressed_button.set(None);
                             let click_count = window_state.click_state.borrow().current_count;
                             drop(window_state);
                             if let Some(mut callback) = input_callback {
@@ -2056,7 +2064,11 @@ fn should_auto_hide_scrollbars() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::{Arc, atomic::Ordering}};
+    use std::{
+        cell::Cell,
+        rc::Rc,
+        sync::{Arc, atomic::Ordering},
+    };
 
     use super::{WINDOWS_AUTO_RENDERER_BACKEND_ORDER, username_and_password};
     use crate::{ClipboardItem, RendererBackend, read_from_clipboard, write_to_clipboard};
@@ -2180,9 +2192,9 @@ mod tests {
     #[test]
     fn windows_foreground_task_drain_clears_coalesced_wakeup() {
         let (inner, _background_executor, foreground_executor, _event_loop_proxy) =
-            super::WindowsPlatform::new_common_parts(
-                Arc::new(super::super::vsync::VSyncScheduler::new()),
-            );
+            super::WindowsPlatform::new_common_parts(Arc::new(
+                super::super::vsync::VSyncScheduler::new(),
+            ));
         let task_ran = Rc::new(Cell::new(false));
 
         foreground_executor

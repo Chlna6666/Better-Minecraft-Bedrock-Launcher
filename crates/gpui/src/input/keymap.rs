@@ -123,7 +123,7 @@ impl Keymap {
 
     /// Returns all bindings that might match the input without checking context. The bindings
     /// returned in precedence order (reverse of the order they were added to the keymap).
-    pub fn all_bindings_for_input(&self, input: &[Keystroke]) -> Vec<KeyBinding> {
+    pub fn all_input_bindings(&self, input: &[Keystroke]) -> Vec<KeyBinding> {
         self.bindings()
             .rev()
             .filter_map(|binding| {
@@ -147,7 +147,7 @@ impl Keymap {
     /// If a user has disabled a binding with `"x": null` it will not be returned. Disabled bindings
     /// are evaluated with the same precedence rules so you can disable a rule in a given context
     /// only.
-    pub fn bindings_for_input(
+    pub fn input_bindings(
         &self,
         input: &[impl AsKeystroke],
         context_stack: &[KeyContext],

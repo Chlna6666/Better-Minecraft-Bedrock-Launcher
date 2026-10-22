@@ -34,7 +34,7 @@ pub(super) fn create_blend_pipelines<D>(
     descriptor: BlendPipelineDescriptor<'_>,
 ) -> Result<BlendPipelines>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let solid_quads = device
         .create_render_pipeline(

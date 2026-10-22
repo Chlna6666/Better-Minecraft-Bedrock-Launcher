@@ -58,7 +58,6 @@ impl MouseListener {
     pub(super) fn listener_mut(&mut self) -> Option<RefMut<'_, AnyMouseListener>> {
         RefMut::filter_map(self.listener.borrow_mut(), |listener| listener.as_mut()).ok()
     }
-
 }
 
 #[derive(Clone)]

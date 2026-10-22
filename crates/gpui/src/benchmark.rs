@@ -143,7 +143,7 @@ impl PathTransformBenchmark {
 
     /// Transforms the path and returns the requested workload size.
     pub fn transform(&self) -> usize {
-        let transformed = self.path.scale_and_transform_for_paint(
+        let transformed = self.path.paint_scale_transform(
             1.25,
             0.875,
             point(ScaledPixels(4.0), ScaledPixels(-3.0)),
@@ -154,7 +154,7 @@ impl PathTransformBenchmark {
 
     /// Transforms the same path with the scalar baseline.
     pub fn transform_scalar(&self) -> usize {
-        let transformed = self.path.scale_and_transform_for_paint_scalar(
+        let transformed = self.path.paint_scale_transform_scalar(
             1.25,
             0.875,
             point(ScaledPixels(4.0), ScaledPixels(-3.0)),
@@ -165,7 +165,7 @@ impl PathTransformBenchmark {
 
     /// Transforms the same path with the runtime-selected Fearless SIMD path.
     pub fn transform_simd(&self) -> usize {
-        let transformed = self.path.scale_and_transform_for_paint_simd(
+        let transformed = self.path.paint_scale_transform_simd(
             1.25,
             0.875,
             point(ScaledPixels(4.0), ScaledPixels(-3.0)),

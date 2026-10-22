@@ -60,15 +60,19 @@ impl Div {
         if !self.children.is_empty()
             || self.prepaint_listener.is_some()
             || !self.interactivity_is_reconciliation_transparent()
-            || style.box_shadow.as_ref().is_some_and(|shadows| !shadows.is_empty())
+            || style
+                .box_shadow
+                .as_ref()
+                .is_some_and(|shadows| !shadows.is_empty())
             || style.background_blur.is_some()
             || style.filter_blur.is_some()
         {
             return Err(crate::VisualAnimationError::InvalidQuadGeometryTarget);
         }
-        self.with_visual_animation(id, animation.with_property(
-            crate::AnimationProperty::vertical_edges(from, to),
-        ))
+        self.with_visual_animation(
+            id,
+            animation.with_property(crate::AnimationProperty::vertical_edges(from, to)),
+        )
     }
 
     /// Add a listener to be called when the children of this `Div` are prepainted.
@@ -493,7 +497,7 @@ impl Element for Div {
         let mut child_scene_range = None;
 
         let final_style = window.with_image_cache(image_cache, |window| {
-            self.interactivity.paint_with_self_scene_reuse(
+            self.interactivity.paint_self_scene_reuse(
                 global_id,
                 inspector_id,
                 bounds,
@@ -509,8 +513,7 @@ impl Element for Div {
                         return None;
                     }
 
-                    let ranges =
-                        window.retained_self_scene_ranges_for_current(bounds, &self_scene_style)?;
+                    let ranges = window.retained_self_scene_ranges(bounds, &self_scene_style)?;
                     if ranges.prefix.is_empty() && ranges.suffix.is_empty() {
                         return None;
                     }

@@ -12,7 +12,12 @@ pub(in crate::platform::nova) struct RootColorPass {
 
 impl RootColorPass {
     pub(in crate::platform::nova) fn content_range(self) -> ColorContentRange {
-        ColorContentRange { index: self.index, depth: 0, content_start: 0, content_end: self.content_end }
+        ColorContentRange {
+            index: self.index,
+            depth: 0,
+            content_start: 0,
+            content_end: self.content_end,
+        }
     }
 }
 
@@ -36,7 +41,11 @@ impl FrameUpload {
         // its packed Blur index; recursive child indices and the synthetic
         // AutoStatic index are strictly increasing. Prove this once when the
         // flattened Scene changes, not on every presentation frame.
-        debug_assert!(self.element_blur_inputs.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        debug_assert!(
+            self.element_blur_inputs
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0)
+        );
         {
             let ranges = &mut self.blur_content_ranges_cache;
             ranges.clear();
@@ -94,7 +103,7 @@ impl FrameUpload {
 
         // Atlas dependency membership is also a pure function of the static flattened batch stream.
         // Refresh it beside the marker topology so retained frames never rescan the batch prefix.
-        self.refresh_backdrop_source_atlas_texture_ids();
+        self.refresh_backdrop_textures();
     }
 
     #[inline]
@@ -111,7 +120,7 @@ impl FrameUpload {
     /// are ordered deepest-first for compositing. Look up the original source
     /// without rescanning every preceding filter for each retained layer.
     #[inline]
-    pub(in crate::platform::nova) fn element_blur_source_for_index(
+    pub(in crate::platform::nova) fn element_blur_source(
         &self,
         index: u32,
     ) -> Option<&FilterSource> {
@@ -152,19 +161,19 @@ mod source_lookup_tests {
         }
         for index in [21u32, 1, 13, 7, 4] {
             assert!(matches!(
-                upload.element_blur_source_for_index(index),
+                upload.element_blur_source(index),
                 Some(FilterSource::AutoStatic { content_hash, .. })
                     if *content_hash == u64::from(index)
             ));
         }
         for missing in [0, 2, 5, 8, 14, 22, u32::MAX] {
-            assert!(upload.element_blur_source_for_index(missing).is_none());
+            assert!(upload.element_blur_source(missing).is_none());
         }
     }
 
     #[test]
     fn empty_packed_blur_source_lookup_returns_none() {
         let upload = FrameUpload::default();
-        assert!(upload.element_blur_source_for_index(0).is_none());
+        assert!(upload.element_blur_source(0).is_none());
     }
 }

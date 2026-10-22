@@ -1,8 +1,9 @@
 use super::buffer_upload::{FrameBufferUpload, upload_frame_buffers};
-use super::draw_steps::{PreparedBackdropBlurGroup, PreparedColorLayer};
+use super::commands::{PreparedBackdropBlurGroup, PreparedColorLayer};
 use super::filters::FilterRegistry;
 use super::frame_graph::{FrameGraphPlan, Pass as GraphPass};
 use super::*;
+use crate::diagnostics::gpu_owner::phases::{self, Phase};
 use std::time::Duration;
 
 struct MainPresentDescriptor<'a> {
@@ -12,17 +13,17 @@ struct MainPresentDescriptor<'a> {
     frame_resource_index: usize,
     swapchain: SwapchainId,
     render_pass: RenderPassId,
-    depth_attachment: RenderPassDepthAttachment,
+    depth_attachment: DepthAttachment,
     damage: Option<ScissorRect>,
 }
 
-fn render_main_and_present<D>(
+fn present_main_frame<D>(
     device: &mut D,
     descriptor: MainPresentDescriptor<'_>,
-    draw_steps: &[RenderStepDescriptor],
-) -> Result<Option<gfx_core::PresentationFrame>>
+    commands: &[RenderCommand],
+) -> Result<Option<gfx_core::PresentedFrame>>
 where
-    D: BackendPresentationCompat + BackendQueue + BackendResources,
+    D: PresentationDevice + CommandDevice + SubmissionDevice + ResourceDevice,
 {
     NovaRenderer::submit_present_frame(
         descriptor.submission_mode,
@@ -31,7 +32,7 @@ where
         device,
         descriptor.swapchain,
         descriptor.render_pass,
-        draw_steps,
+        commands,
         clear_color(),
         Some(descriptor.depth_attachment),
         descriptor.frame_resource_index,
@@ -44,18 +45,19 @@ fn render_backdrop_blur_groups<D>(
     source_texture_view: TextureViewId,
     render_pass: RenderPassId,
     filter_render_pass: RenderPassId,
-    depth_attachment: RenderPassDepthAttachment,
+    depth_attachment: DepthAttachment,
     groups: &[PreparedBackdropBlurGroup],
-    viewport: gfx_core::RenderViewport,
+    viewport: gfx_core::Viewport,
 ) -> Result<()>
 where
-    D: BackendPresentationCompat,
+    D: PresentationDevice,
 {
     let pass_count = groups
         .iter()
         .enumerate()
-        .map(|(index, group)| usize::from(index == 0 || !group.source_steps.is_empty())
-            + group.filter_passes.len())
+        .map(|(index, group)| {
+            usize::from(index == 0 || !group.source_steps.is_empty()) + group.filter_passes.len()
+        })
         .sum();
     let mut passes = Vec::with_capacity(pass_count);
     for (group_index, group) in groups.iter().enumerate() {
@@ -65,7 +67,7 @@ where
         } else {
             LoadOp::Load
         };
-        let source_depth_attachment = RenderPassDepthAttachment {
+        let source_depth_attachment = DepthAttachment {
             target: depth_attachment.target,
             depth_load_op: if first_group {
                 LoadOp::Clear(1.0)
@@ -78,12 +80,16 @@ where
         // just to preserve the existing source. The first pass must still
         // clear the source even if it contains no geometry.
         if first_group || !group.source_steps.is_empty() {
-            passes.push(gfx_core::TextureRenderStepList {
+            passes.push(gfx_core::RenderPassCommands {
                 texture_view: source_texture_view,
                 render_pass,
-                steps: RenderStepList::from_render_steps(&group.source_steps),
+                commands: &group.source_steps,
                 color_load_op: source_load_op,
-                clear_region: if first_group { group.source_clear_region } else { None },
+                clear_region: if first_group {
+                    group.source_clear_region
+                } else {
+                    None
+                },
                 depth_attachment: Some(source_depth_attachment),
                 viewport: Some(viewport),
             });
@@ -94,10 +100,10 @@ where
             LoadOp::Clear(clear_color())
         };
         for pass in &group.filter_passes {
-            passes.push(gfx_core::TextureRenderStepList {
+            passes.push(gfx_core::RenderPassCommands {
                 texture_view: pass.target_texture_view,
                 render_pass: filter_render_pass,
-                steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                commands: std::slice::from_ref(&pass.step),
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
@@ -105,7 +111,8 @@ where
             });
         }
     }
-    Ok(device.render_step_lists_to_textures_compat(&passes)?)
+    device.render_to_textures(&passes)?;
+    Ok(())
 }
 
 /// A preserved source with no draw steps has no render attachment work.
@@ -119,10 +126,10 @@ fn source_pass_required(first: bool, preserved: bool, has_steps: bool) -> bool {
 pub(super) fn color_layer_passes(
     render_pass: RenderPassId,
     filter_render_pass: RenderPassId,
-    depth_attachment: RenderPassDepthAttachment,
+    depth_attachment: DepthAttachment,
     layers: &[PreparedColorLayer],
-    viewport: gfx_core::RenderViewport,
-) -> Vec<gfx_core::TextureRenderStepList<'_>> {
+    viewport: gfx_core::Viewport,
+) -> Vec<gfx_core::RenderPassCommands<'_>> {
     let pass_count = layers
         .iter()
         .map(|layer| {
@@ -144,7 +151,7 @@ pub(super) fn color_layer_passes(
     let mut passes = Vec::with_capacity(pass_count);
     for layer in layers {
         for (group_index, group) in layer.source_groups.iter().enumerate() {
-            let source_depth_attachment = RenderPassDepthAttachment {
+            let source_depth_attachment = DepthAttachment {
                 target: depth_attachment.target,
                 depth_load_op: if group_index == 0 {
                     LoadOp::Clear(1.0)
@@ -157,18 +164,25 @@ pub(super) fn color_layer_passes(
                 layer.preserve_retained_source,
                 !group.source_steps.is_empty(),
             ) {
-                passes.push(gfx_core::TextureRenderStepList {
+                passes.push(gfx_core::RenderPassCommands {
                     texture_view: layer.source_texture_view,
                     render_pass,
-                    steps: RenderStepList::from_render_steps(&group.source_steps),
+                    commands: &group.source_steps,
                     color_load_op: if group_index == 0 && !layer.preserve_retained_source {
                         LoadOp::Clear(clear_color())
                     } else {
                         LoadOp::Load
                     },
-                    // Preserved color loads, but depth still clears. Restrict
-                    // that clear to the same footprint as every source draw.
-                    clear_region: if group_index == 0 {
+                    // A preserved color load keeps the previous texels outside damage, so its
+                    // attachment clear (depth, plus the explicit retained-clear quad) is scoped to
+                    // the same footprint as every source draw.
+                    //
+                    // A fresh source pass, however, must not inherit ANY previous texel: this frame
+                    // only writes the damage footprint, while later frames composite the whole
+                    // target again. Restricting the clear to the damage footprint leaves stale
+                    // pixels outside it, which translucent layers then reveal as ghosts of the
+                    // previous content. Clear the entire attachment instead.
+                    clear_region: if group_index == 0 && layer.preserve_retained_source {
                         group.source_clear_region
                     } else {
                         None
@@ -183,10 +197,10 @@ pub(super) fn color_layer_passes(
                 LoadOp::Clear(clear_color())
             };
             for pass in &group.filter_passes {
-                passes.push(gfx_core::TextureRenderStepList {
+                passes.push(gfx_core::RenderPassCommands {
                     texture_view: pass.target_texture_view,
                     render_pass: filter_render_pass,
-                    steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                    commands: std::slice::from_ref(&pass.step),
                     color_load_op: filter_load_op,
                     clear_region: None,
                     depth_attachment: None,
@@ -200,10 +214,10 @@ pub(super) fn color_layer_passes(
             LoadOp::Clear(clear_color())
         };
         for pass in &layer.filter_passes {
-            passes.push(gfx_core::TextureRenderStepList {
+            passes.push(gfx_core::RenderPassCommands {
                 texture_view: pass.target_texture_view,
                 render_pass: filter_render_pass,
-                steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                commands: std::slice::from_ref(&pass.step),
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
@@ -214,20 +228,20 @@ pub(super) fn color_layer_passes(
     passes
 }
 
-fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
+fn execute_frame_graph_offscreen<D: PresentationDevice>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
     filter_render_pass: RenderPassId,
-    depth_attachment: RenderPassDepthAttachment,
+    depth_attachment: DepthAttachment,
     path_texture_view: TextureViewId,
-    path_steps: &[DrawStepDescriptor],
+    path_steps: &[RenderCommand],
     path_mask_cpu_elapsed: &mut Duration,
     element_layers: &[PreparedColorLayer],
     root_layers: &[PreparedColorLayer],
     backdrop_source: Option<TextureViewId>,
     backdrop_groups: &[PreparedBackdropBlurGroup],
-    viewport: gfx_core::RenderViewport,
+    viewport: gfx_core::Viewport,
 ) -> Result<()> {
     let mut color_passes = Vec::new();
     for pass in graph.offscreen_passes() {
@@ -244,14 +258,22 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
                 path_mask_cpu_elapsed,
             )?,
             GraphPass::ElementLayers => color_passes.extend(color_layer_passes(
-                render_pass, filter_render_pass, depth_attachment, element_layers, viewport,
+                render_pass,
+                filter_render_pass,
+                depth_attachment,
+                element_layers,
+                viewport,
             )),
             GraphPass::RootColor => color_passes.extend(color_layer_passes(
-                render_pass, filter_render_pass, depth_attachment, root_layers, viewport,
+                render_pass,
+                filter_render_pass,
+                depth_attachment,
+                root_layers,
+                viewport,
             )),
             GraphPass::BackdropBlur => {
                 if !color_passes.is_empty() {
-                    device.render_step_lists_to_textures_compat(&color_passes)?;
+                    device.render_to_textures(&color_passes)?;
                     color_passes.clear();
                 }
                 if let Some(source_texture_view) = backdrop_source {
@@ -270,7 +292,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
         }
     }
     if !color_passes.is_empty() {
-        device.render_step_lists_to_textures_compat(&color_passes)?;
+        device.render_to_textures(&color_passes)?;
     }
     Ok(())
 }
@@ -327,7 +349,7 @@ fn dirty_element_blur_indices(
         // different stable identity, content revision, clip, radius or animated
         // pixel values even when the outer window reports no spatial damage.
         // A composite-only transform leaves the captured source unchanged.
-        if let Some(source) = frame_upload.element_blur_source_for_index(range.index) {
+        if let Some(source) = frame_upload.element_blur_source(range.index) {
             if !filters.source_unchanged(range.index, source, animation_values) {
                 dirty.push(range.index);
             }
@@ -342,7 +364,7 @@ fn dirty_element_blur_indices(
             dirty.push(range.index);
             continue;
         }
-        let Some(config) = frame_upload.backdrop_blur_config_for_index(range.index) else {
+        let Some(config) = frame_upload.blur_config_at(range.index) else {
             dirty.push(range.index);
             continue;
         };
@@ -376,10 +398,10 @@ fn scissor_pixel_area(scissor: ScissorRect) -> usize {
     (scissor.width as usize).saturating_mul(scissor.height as usize)
 }
 
-fn render_step_scissor(step: &RenderStepDescriptor) -> Option<ScissorRect> {
+fn render_step_scissor(step: &RenderCommand) -> Option<ScissorRect> {
     match step {
-        RenderStepDescriptor::Draw(step) => step.scissor,
-        RenderStepDescriptor::DrawIndexed(step) => step.scissor,
+        RenderCommand::Draw(step) => step.scissor,
+        RenderCommand::DrawIndexed(step) => step.scissor,
     }
 }
 
@@ -423,7 +445,7 @@ impl NovaRenderer {
             for (pass_index, pass) in group.filter_passes.iter().enumerate() {
                 let pixels = pass
                     .step
-                    .scissor
+                    .scissor()
                     .map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
                 level_pixels[level] = level_pixels[level].saturating_add(pixels);
@@ -443,7 +465,7 @@ impl NovaRenderer {
             for (pass_index, pass) in layer.filter_passes.iter().enumerate() {
                 let pixels = pass
                     .step
-                    .scissor
+                    .scissor()
                     .map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
                 level_pixels[level] = level_pixels[level].saturating_add(pixels);
@@ -488,7 +510,10 @@ impl NovaRenderer {
             // or a compositor-only Present cannot evict untouched root pixels.
         } else if let Err(error) = self.coalesce_idle_static_buffers() {
             // This frame is already submitted; a failed rebind retains the old idle version.
-            log::debug!("failed to coalesce idle nova static buffers: {error}");
+            phases::timed_log!(
+                debug,
+                "failed to coalesce idle nova static buffers: {error}"
+            );
         }
         result
     }
@@ -507,7 +532,7 @@ impl NovaRenderer {
                 Instant::now().saturating_duration_since(timing.frame_started_at);
         }
         let submission_prepare_started = Instant::now();
-        self.prepare_for_frame_submission(packet.frame_time)?;
+        self.prepare_frame_submission(packet.frame_time)?;
         if let Some(timing) = presentation_timing.as_mut() {
             timing.submission_prepare = submission_prepare_started.elapsed();
         }
@@ -522,7 +547,7 @@ impl NovaRenderer {
                 .scene
                 .collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self.atlas.has_retirable_pending_removals(&live_scene_tiles) {
-                self.wait_for_pending_submissions()?;
+                self.wait_pending_submissions()?;
                 self.atlas.apply_pending_removals_except(&live_scene_tiles);
             }
         }
@@ -550,16 +575,15 @@ impl NovaRenderer {
             self.swapchain,
             Extent2d::new(source_extent.width, source_extent.height)?,
         )?;
-        let render_viewport = gfx_core::RenderViewport {
+        let render_viewport = gfx_core::Viewport {
+            origin: gfx_core::SignedOrigin2d::ZERO,
             extent: Extent2d::new(source_extent.width, source_extent.height)?,
-            reference_extent: Extent2d::new(
-                self.current_size.width,
-                self.current_size.height,
-            )?,
+            reference_extent: Extent2d::new(self.current_size.width, self.current_size.height)?,
+            mapping: gfx_core::ViewportMapping::Scaled,
         };
         let async_capabilities = lock_backend(&self.backend).async_capabilities();
         let native_partial_presentation = lock_backend(&self.backend)
-            .presentation_capabilities(self.swapchain)
+            .surface_capabilities(self.swapchain)
             .partial_presentation;
         let submission_mode = self.presentation_submission_mode();
         let has_compositor_descriptors = self.has_compositor_descriptors();
@@ -587,7 +611,7 @@ impl NovaRenderer {
             // Shader context can change cached glyph pixels even when the
             // Scene and atlas are identical, including in-place buffer writes.
             self.invalidate_backdrop_blur_cache();
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            self.command_scratch.force_full_backdrop_blur_refresh = true;
             // Glyphs outside local UI damage can change as well. Native
             // presentation metadata must cover the newly rasterized context.
             packet.partial_present_mode = PartialPresentMode::FullRedraw;
@@ -609,7 +633,7 @@ impl NovaRenderer {
         // Atlas coordinates are independent of window damage. Repaint the
         // selected sources in full, including ancestors and later backdrops,
         // without invalidating unrelated retained filter textures.
-        self.draw_step_scratch.force_full_backdrop_blur_refresh |= atlas_source_dirty;
+        self.command_scratch.force_full_backdrop_blur_refresh |= atlas_source_dirty;
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
             && (packet.force_full_backdrop_blur_refresh
                 || packet.backdrop_blur_damage_plan.refresh_required()
@@ -631,11 +655,11 @@ impl NovaRenderer {
         }
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
         let root_force_full = self.root_color.content_version().is_none()
-            || packet.force_full_backdrop_blur_refresh || atlas_source_dirty || text_raster_changed;
+            || packet.force_full_backdrop_blur_refresh
+            || atlas_source_dirty
+            || text_raster_changed;
         if let Some(root) = self.frame_upload.root_color
-            && (root_force_full
-                || !packet.dirty_region.is_empty()
-                || shared_blur_cache_invalid)
+            && (root_force_full || !packet.dirty_region.is_empty() || shared_blur_cache_invalid)
         {
             dirty_element_indices.push(root.index);
         }
@@ -644,7 +668,7 @@ impl NovaRenderer {
         }
         let present_damage = (native_partial_presentation
             && upload.unsupported_batches.total() == 0)
-            .then(|| partial_scissor_for_packet(packet, self.active_size))
+            .then(|| packet_scissor(packet, self.active_size))
             .flatten();
         let present_damage = present_damage.filter(|damage| {
             let drawable_pixels = self.drawable_pixels();
@@ -666,25 +690,30 @@ impl NovaRenderer {
             crate::diagnostics::performance_metrics::record_full_redraw_fallback();
         }
 
-        self.prepare_draw_steps(packet.paint.scene.revision);
+        self.prepare_commands(packet.paint.scene.revision);
         self.prepare_path_mask_draw_steps(packet.paint.scene.revision);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {
             Vec::new()
         };
-        let element_blur_layers = self.prepare_color_layers(&dirty_element_indices, root_force_full);
+        let element_blur_layers =
+            self.prepare_color_layers(&dirty_element_indices, root_force_full);
         let root_scene_color_cached = self.frame_upload.root_color.is_some();
         let root_scene_color_refreshes = element_blur_layers
             .iter()
-            .filter(|layer| Some(layer.index) == self.frame_upload.root_color.map(|root| root.index))
+            .filter(|layer| {
+                Some(layer.index) == self.frame_upload.root_color.map(|root| root.index)
+            })
             .count();
         // Unlike the main swapchain pass count, this measures actual root
         // source geometry replay after batch-level culling. Useful for
         // verifying that a small animation no longer replays static chrome.
         let retained_root_draw_steps: usize = element_blur_layers
             .iter()
-            .filter(|layer| Some(layer.index) == self.frame_upload.root_color.map(|root| root.index))
+            .filter(|layer| {
+                Some(layer.index) == self.frame_upload.root_color.map(|root| root.index)
+            })
             .flat_map(|layer| &layer.source_groups)
             .map(|group| group.source_steps.len())
             .sum();
@@ -695,7 +724,9 @@ impl NovaRenderer {
             .saturating_add(
                 element_blur_layers
                     .iter()
-                    .filter(|layer| Some(layer.index) != self.frame_upload.root_color.map(|root| root.index))
+                    .filter(|layer| {
+                        Some(layer.index) != self.frame_upload.root_color.map(|root| root.index)
+                    })
                     .flat_map(|layer| &layer.source_groups)
                     .map(|group| group.source_steps.len())
                     .sum::<usize>(),
@@ -704,12 +735,12 @@ impl NovaRenderer {
             self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
         let blur_full_target_pixels = self.backdrop_blur_full_target_pixels();
-        let draw_step_count = self.draw_step_scratch.steps().len();
-        let draw_step_cache_hit = self.draw_step_scratch.draw_step_cache_hit;
-        let path_mask_step_count = self.draw_step_scratch.path_steps().len();
-        let path_mask_cache_hit = self.draw_step_scratch.path_mask_cache_hit;
+        let command_count = self.command_scratch.commands().len();
+        let command_cache_hit = self.command_scratch.command_cache_hit;
+        let path_command_count = self.command_scratch.path_commands().len();
+        let path_mask_cache_hit = self.command_scratch.path_mask_cache_hit;
         let path_draw_plan = path_mask::ordered_draw_plan_token(
-            self.draw_step_scratch.path_steps(),
+            self.command_scratch.path_commands(),
             self.pipelines.path_rasterization,
             self.path_rasterization_resource_set,
             upload.path_vertex_count,
@@ -728,7 +759,7 @@ impl NovaRenderer {
             pipeline: self.pipelines.path_rasterization,
         };
         let render_path_mask =
-            path_mask_step_count != 0 && self.path_mask_residency.begin(path_mask_key);
+            path_command_count != 0 && self.path_mask_residency.begin(path_mask_key);
         let mut path_mask_cpu_elapsed = Duration::ZERO;
         let (root_color_layers, element_blur_layers): (Vec<_>, Vec<_>) =
             element_blur_layers.into_iter().partition(|layer| {
@@ -751,10 +782,12 @@ impl NovaRenderer {
         let mask_pass_count = usize::from(graph.requires(GraphPass::PathMask));
         let main_pass_count = usize::from(graph.requires(GraphPass::MainPresent));
         if self.diagnostics.enabled {
-            let versioned_layers = dirty_element_indices.iter().filter(|index| {
-                self.filters.layer_content_version(**index).is_some()
-            }).count();
-            log::debug!(
+            let versioned_layers = dirty_element_indices
+                .iter()
+                .filter(|index| self.filters.layer_content_version(**index).is_some())
+                .count();
+            phases::timed_log!(
+                debug,
                 "nova render graph: nodes={} logical_resources={} inferred_hazards={} refreshed_layer_targets={} previously_versioned_layers={} path_mask={} element_layers={} backdrop={} main_present={}",
                 graph.node_count(),
                 graph.resource_count(),
@@ -769,33 +802,38 @@ impl NovaRenderer {
         }
         let backdrop_blur_refreshed: bool;
         let element_blur_refreshed: bool;
-        let blur_group_pass_count = backdrop_blur_groups.iter().enumerate().fold(
-            0usize,
-            |total, (index, group)| {
-                total.saturating_add(
-                    usize::from(index == 0 || !group.source_steps.is_empty())
-                        .saturating_add(group.filter_passes.len()),
-                )
-            },
-        );
-        let element_blur_pass_count = element_blur_layers.iter().chain(&root_color_layers).fold(0usize, |total, layer| {
-            let source_passes = layer.source_groups.iter().enumerate().fold(
-                0usize,
-                |total, (index, group)| {
+        let blur_group_pass_count =
+            backdrop_blur_groups
+                .iter()
+                .enumerate()
+                .fold(0usize, |total, (index, group)| {
                     total.saturating_add(
-                        usize::from(source_pass_required(
-                            index == 0,
-                            layer.preserve_retained_source,
-                            !group.source_steps.is_empty(),
-                        ))
-                        .saturating_add(group.filter_passes.len()),
+                        usize::from(index == 0 || !group.source_steps.is_empty())
+                            .saturating_add(group.filter_passes.len()),
                     )
-                },
-            );
-            total
-                .saturating_add(source_passes)
-                .saturating_add(layer.filter_passes.len())
-        });
+                });
+        let element_blur_pass_count =
+            element_blur_layers
+                .iter()
+                .chain(&root_color_layers)
+                .fold(0usize, |total, layer| {
+                    let source_passes = layer.source_groups.iter().enumerate().fold(
+                        0usize,
+                        |total, (index, group)| {
+                            total.saturating_add(
+                                usize::from(source_pass_required(
+                                    index == 0,
+                                    layer.preserve_retained_source,
+                                    !group.source_steps.is_empty(),
+                                ))
+                                .saturating_add(group.filter_passes.len()),
+                            )
+                        },
+                    );
+                    total
+                        .saturating_add(source_passes)
+                        .saturating_add(layer.filter_passes.len())
+                });
         let composite_pass_count = blur_group_pass_count.saturating_add(element_blur_pass_count);
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(
             mask_pass_count,
@@ -811,6 +849,10 @@ impl NovaRenderer {
             self.current_frame_resource_index,
             self.frame_upload.quads.len(),
         );
+        let mono_sprite_upload_plan = self.retained_upload.monochrome_sprite_upload_plan(
+            self.current_frame_resource_index,
+            self.frame_upload.mono_sprites.len(),
+        );
         let upload_static = !static_uploads.is_empty();
         let animated_upload_bytes = self.frame_upload.animated_upload_bytes();
         let mut mapped_upload_bytes = if upload_static {
@@ -823,10 +865,19 @@ impl NovaRenderer {
                 .saturating_sub(self.frame_upload.quads.len())
                 .saturating_add(quad_upload_plan.uploaded_bytes(self.frame_upload.quads.len()));
         }
+        if static_uploads.mono_sprite {
+            mapped_upload_bytes = mapped_upload_bytes
+                .saturating_sub(self.frame_upload.mono_sprites.len())
+                .saturating_add(
+                    mono_sprite_upload_plan.uploaded_bytes(self.frame_upload.mono_sprites.len()),
+                );
+        }
         let uploaded_bytes = mapped_upload_bytes;
         let breakdown = if upload_static {
             let mut breakdown = self.frame_upload.upload_breakdown();
             breakdown.quad_bytes = quad_upload_plan.uploaded_bytes(self.frame_upload.quads.len());
+            breakdown.mono_sprite_bytes =
+                mono_sprite_upload_plan.uploaded_bytes(self.frame_upload.mono_sprites.len());
             breakdown.animation_bytes = 0;
             breakdown
         } else {
@@ -840,7 +891,8 @@ impl NovaRenderer {
             upload.backdrop_blur_count as usize,
         );
         if self.diagnostics.should_warn_unsupported(unsupported) {
-            log::warn!(
+            phases::timed_log!(
+                warn,
                 concat!(
                     "nova-gfx unsupported or fallback batches: backend={} ",
                     "paths={} surfaces={} backdrop_blurs={} backdrop_blur_tint_fallbacks={} ",
@@ -854,16 +906,17 @@ impl NovaRenderer {
             );
         }
         if self.diagnostics.enabled {
-            log::debug!(
+            phases::timed_log!(
+                debug,
                 concat!(
                     "nova-gfx frame diagnostics: backend={} alpha_swapchain={:?} ",
                     "alpha_output={:?} premultiplied={} quads={} shadows={} paths={} ",
                     "path_vertices={} mono_sprites={} poly_sprites={} underlines={} ",
-                    "draw_steps={} draw_step_cache_hit={} path_mask_steps={} path_mask_cache_hit={} gpu_passes={} upload_bytes={} ",
+                    "commands={} command_cache_hit={} path_commands={} path_mask_cache_hit={} gpu_passes={} upload_bytes={} ",
                     "async_submission={} async_wait={} async_presentation={} ",
                     "native_partial_presentation={} retained_root={} ",
                     "retained_root_refreshes={} main_swapchain_steps={} ",
-                    "retained_root_draw_steps={} filter_source_draw_steps={} ",
+                    "retained_root_commands={} filter_source_commands={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
@@ -883,9 +936,9 @@ impl NovaRenderer {
                 upload.mono_sprite_count,
                 upload.poly_sprite_count,
                 upload.underline_count,
-                draw_step_count,
-                draw_step_cache_hit,
-                path_mask_step_count,
+                command_count,
+                command_cache_hit,
+                path_command_count,
                 path_mask_cache_hit,
                 mask_pass_count
                     .saturating_add(main_pass_count)
@@ -897,7 +950,7 @@ impl NovaRenderer {
                 native_partial_presentation,
                 root_scene_color_cached,
                 root_scene_color_refreshes,
-                draw_step_count,
+                command_count,
                 retained_root_draw_steps,
                 filter_source_draw_steps,
                 present_damage,
@@ -922,11 +975,12 @@ impl NovaRenderer {
                 async_capabilities.threading_mode,
             );
         } else {
-            log::trace!(
+            phases::timed_log!(
+                trace,
                 concat!(
                     "nova-gfx frame upload: alpha_swapchain={:?} alpha_output={:?} ",
                     "quads={} shadows={} paths={} mono_sprites={} poly_sprites={} ",
-                    "underlines={} draw_steps={} path_mask_steps={} gpu_passes={}"
+                    "underlines={} commands={} path_commands={} gpu_passes={}"
                 ),
                 self.surface_alpha.swapchain_mode,
                 self.surface_alpha.output_mode,
@@ -936,8 +990,8 @@ impl NovaRenderer {
                 upload.mono_sprite_count,
                 upload.poly_sprite_count,
                 upload.underline_count,
-                draw_step_count,
-                path_mask_step_count,
+                command_count,
+                path_command_count,
                 mask_pass_count
                     .saturating_add(main_pass_count)
                     .saturating_add(composite_pass_count),
@@ -970,9 +1024,8 @@ impl NovaRenderer {
         // write targets before issuing any GPU command; their new versions
         // are published below only after successful native submission.
         // All retained targets skipped by the graph remain safely resident.
-        self.filters.invalidate_inflight_layer_writes(
-            element_blur_layers.iter().map(|layer| layer.index)
-        );
+        self.filters
+            .invalidate_inflight_layer_writes(element_blur_layers.iter().map(|layer| layer.index));
         if !root_color_layers.is_empty() {
             self.root_color.invalidate();
         }
@@ -982,7 +1035,8 @@ impl NovaRenderer {
         let pending_submission_count_before = self.pending_submissions.len();
         #[cfg(target_os = "windows")]
         let backend_submit_started_at = Instant::now(); // Includes encoding/offscreen/Present.
-        let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
+        let backend_scope = phases::enter(Phase::BackendSubmit);
+        let render_result: Result<(bool, Option<gfx_core::PresentTimings>)> =
             match &mut *lock_backend(&self.backend) {
                 #[cfg(all(
                     feature = "nova-gfx-opengl",
@@ -990,7 +1044,7 @@ impl NovaRenderer {
                 ))]
                 NovaBackend::OpenGl(device) => {
                     if let Some(timing) = presentation_timing.as_mut() {
-                        timing.draw_step_prepare =
+                        timing.command_prepare =
                             backend_work_started.saturating_duration_since(frame_started);
                     }
                     let upload_started = Instant::now();
@@ -1002,6 +1056,7 @@ impl NovaRenderer {
                             has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
+                            mono_sprite_upload_plan: &mono_sprite_upload_plan,
                         },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
@@ -1033,7 +1088,7 @@ impl NovaRenderer {
                         self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
-                        self.draw_step_scratch.path_steps(),
+                        self.command_scratch.path_commands(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
                         &root_color_layers,
@@ -1053,7 +1108,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = render_main_and_present(
+                    let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
                             submission_mode,
@@ -1065,7 +1120,7 @@ impl NovaRenderer {
                             depth_attachment,
                             damage: present_damage,
                         },
-                        self.draw_step_scratch.steps(),
+                        self.command_scratch.commands(),
                     )?;
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
@@ -1076,7 +1131,8 @@ impl NovaRenderer {
                     let present_elapsed_ms = present_started.elapsed().as_millis();
                     let total_elapsed_ms = frame_started.elapsed().as_millis();
                     if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                        log::warn!(
+                        phases::timed_log!(
+                            warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
@@ -1101,7 +1157,7 @@ impl NovaRenderer {
                 #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
                 NovaBackend::Dx11(device) => {
                     if let Some(timing) = presentation_timing.as_mut() {
-                        timing.draw_step_prepare =
+                        timing.command_prepare =
                             backend_work_started.saturating_duration_since(frame_started);
                     }
                     let upload_started = Instant::now();
@@ -1113,6 +1169,7 @@ impl NovaRenderer {
                             has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
+                            mono_sprite_upload_plan: &mono_sprite_upload_plan,
                         },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
@@ -1144,7 +1201,7 @@ impl NovaRenderer {
                         self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
-                        self.draw_step_scratch.path_steps(),
+                        self.command_scratch.path_commands(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
                         &root_color_layers,
@@ -1164,7 +1221,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = render_main_and_present(
+                    let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
                             submission_mode,
@@ -1176,7 +1233,7 @@ impl NovaRenderer {
                             depth_attachment,
                             damage: present_damage,
                         },
-                        self.draw_step_scratch.steps(),
+                        self.command_scratch.commands(),
                     )?;
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
@@ -1187,7 +1244,8 @@ impl NovaRenderer {
                     let present_elapsed_ms = present_started.elapsed().as_millis();
                     let total_elapsed_ms = frame_started.elapsed().as_millis();
                     if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                        log::warn!(
+                        phases::timed_log!(
+                            warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
@@ -1212,7 +1270,7 @@ impl NovaRenderer {
                 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
                 NovaBackend::Dx12(device) => {
                     if let Some(timing) = presentation_timing.as_mut() {
-                        timing.draw_step_prepare =
+                        timing.command_prepare =
                             backend_work_started.saturating_duration_since(frame_started);
                     }
                     let upload_started = Instant::now();
@@ -1224,6 +1282,7 @@ impl NovaRenderer {
                             has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
+                            mono_sprite_upload_plan: &mono_sprite_upload_plan,
                         },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
@@ -1255,7 +1314,7 @@ impl NovaRenderer {
                         self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
-                        self.draw_step_scratch.path_steps(),
+                        self.command_scratch.path_commands(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
                         &root_color_layers,
@@ -1275,7 +1334,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = render_main_and_present(
+                    let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
                             submission_mode,
@@ -1287,7 +1346,7 @@ impl NovaRenderer {
                             depth_attachment,
                             damage: present_damage,
                         },
-                        self.draw_step_scratch.steps(),
+                        self.command_scratch.commands(),
                     )?;
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
@@ -1298,7 +1357,8 @@ impl NovaRenderer {
                     let present_elapsed_ms = present_started.elapsed().as_millis();
                     let total_elapsed_ms = frame_started.elapsed().as_millis();
                     if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                        log::warn!(
+                        phases::timed_log!(
+                            warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
@@ -1323,7 +1383,7 @@ impl NovaRenderer {
                 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
                 NovaBackend::Metal(device) => {
                     if let Some(timing) = presentation_timing.as_mut() {
-                        timing.draw_step_prepare =
+                        timing.command_prepare =
                             backend_work_started.saturating_duration_since(frame_started);
                     }
                     upload_frame_buffers(
@@ -1334,6 +1394,7 @@ impl NovaRenderer {
                             has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
+                            mono_sprite_upload_plan: &mono_sprite_upload_plan,
                         },
                     )?;
                     let atlas_stats = upload_pending_atlas(
@@ -1353,7 +1414,7 @@ impl NovaRenderer {
                         self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
-                        self.draw_step_scratch.path_steps(),
+                        self.command_scratch.path_commands(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
                         &root_color_layers,
@@ -1368,7 +1429,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = render_main_and_present(
+                    let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
                             submission_mode,
@@ -1380,7 +1441,7 @@ impl NovaRenderer {
                             depth_attachment,
                             damage: present_damage,
                         },
-                        self.draw_step_scratch.steps(),
+                        self.command_scratch.commands(),
                     )?;
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
@@ -1396,7 +1457,7 @@ impl NovaRenderer {
                 ))]
                 NovaBackend::Vulkan(device) => {
                     if let Some(timing) = presentation_timing.as_mut() {
-                        timing.draw_step_prepare =
+                        timing.command_prepare =
                             backend_work_started.saturating_duration_since(frame_started);
                     }
                     let upload_started = Instant::now();
@@ -1408,6 +1469,7 @@ impl NovaRenderer {
                             has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
+                            mono_sprite_upload_plan: &mono_sprite_upload_plan,
                         },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
@@ -1439,7 +1501,7 @@ impl NovaRenderer {
                         self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
-                        self.draw_step_scratch.path_steps(),
+                        self.command_scratch.path_commands(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
                         &root_color_layers,
@@ -1459,7 +1521,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = render_main_and_present(
+                    let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
                             submission_mode,
@@ -1471,7 +1533,7 @@ impl NovaRenderer {
                             depth_attachment,
                             damage: present_damage,
                         },
-                        self.draw_step_scratch.steps(),
+                        self.command_scratch.commands(),
                     )?;
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
@@ -1482,7 +1544,8 @@ impl NovaRenderer {
                     let present_elapsed_ms = present_started.elapsed().as_millis();
                     let total_elapsed_ms = frame_started.elapsed().as_millis();
                     if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                        log::warn!(
+                        phases::timed_log!(
+                            warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
@@ -1522,6 +1585,7 @@ impl NovaRenderer {
                 }
             };
 
+        drop(backend_scope);
         let frame_elapsed_ms = frame_started.elapsed().as_millis();
         // OUT_OF_DATE is a normal swapchain transition, not a failed render.
         // The backend already rebuilds its native swapchain on this path.
@@ -1539,11 +1603,12 @@ impl NovaRenderer {
         // fails or presentation is skipped. The backend guard is released here.
         if let Err(error) = &render_result {
             self.path_mask_residency.invalidate();
-            log::error!(
+            phases::timed_log!(
+                error,
                 concat!(
                     "nova-gfx frame render failed: backend={} alpha_swapchain={:?} ",
                     "alpha_output={:?} quads={} shadows={} paths={} mono_sprites={} ",
-                    "poly_sprites={} underlines={} draw_steps={} path_mask_steps={} ",
+                    "poly_sprites={} underlines={} commands={} path_commands={} ",
                     "upload_bytes={} elapsed_ms={} error={:#}"
                 ),
                 backend_label,
@@ -1555,8 +1620,8 @@ impl NovaRenderer {
                 upload.mono_sprite_count,
                 upload.poly_sprite_count,
                 upload.underline_count,
-                draw_step_count,
-                path_mask_step_count,
+                command_count,
+                path_command_count,
                 uploaded_bytes,
                 frame_elapsed_ms,
                 error,
@@ -1567,10 +1632,15 @@ impl NovaRenderer {
             self.path_mask_residency.invalidate();
             return Ok(false);
         }
+        // The backend's retained scene target now holds this frame: a later native
+        // client growth can re-present it without rendering the Scene again.
+        self.retained_frame_valid = true;
         self.submitted_text_raster = text_raster;
         #[cfg(test)]
-        { self.draw_step_scratch.submitted_present_damage = present_damage; }
-        if path_mask_step_count != 0 {
+        {
+            self.command_scratch.submitted_present_damage = present_damage;
+        }
+        if path_command_count != 0 {
             self.path_mask_residency.commit(path_mask_key);
             crate::diagnostics::performance_metrics::record_window_path_mask(
                 packet.window_id,
@@ -1581,7 +1651,7 @@ impl NovaRenderer {
         let presentation_finished_at = Instant::now();
         #[cfg(target_os = "windows")]
         if crate::diagnostics::gpu_owner::resize_trace_enabled() {
-            log::info!(
+            phases::timed_log!(info,
                 target: "gpui_resize_trace",
                 "gpui_resize stage=present window_id={} target_capacity_px={}x{} scene_px={}x{} scene_revision={} scene_primitives={} dirty_full={} epoch={} prepare_us={} backend_submit_us={}",
                 packet.window_id,
@@ -1601,10 +1671,7 @@ impl NovaRenderer {
                     .as_micros(),
             );
         }
-        // A composition swapchain may still be stretching the last old-size frame while its
-        // buffers are rebuilt. Only publish the identity transform after the first new-size
-        // frame has been successfully presented; resetting it during ResizeBuffers exposes
-        // undefined backbuffer contents as black client-area margins.
+        let publication_scope = phases::enter(Phase::Publication);
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_filters {
@@ -1618,7 +1685,9 @@ impl NovaRenderer {
         } else {
             self.invalidate_backdrop_blur_cache();
         }
-        let native_root = root_scene_color_cached.then(|| self.root_color.identity()).flatten();
+        let native_root = root_scene_color_cached
+            .then(|| self.root_color.identity())
+            .flatten();
         self.root_color.record_present(
             native_root,
             root_scene_color_refreshes != 0,
@@ -1633,20 +1702,25 @@ impl NovaRenderer {
         // Root/Filter publication and completion ledger. This removes one
         // empty record per no-op version transaction, including diagnostics.
         let refreshed_root = (root_scene_color_refreshes != 0)
-            .then(|| self.root_color.identity().zip(self.root_color.content_version()))
+            .then(|| {
+                self.root_color
+                    .identity()
+                    .zip(self.root_color.content_version())
+            })
             .flatten();
         if refreshed_root.is_some() || !element_blur_layers.is_empty() {
             let publication = SubmittedResourceVersions::new_if_written(
                 packet.paint.geometry.layout_epoch,
                 refreshed_root,
                 element_blur_layers.iter().filter_map(|layer| {
-                    self.filters.layer_content_version(layer.index)
+                    self.filters
+                        .layer_content_version(layer.index)
                         .map(|version| (layer.index, version))
                 }),
             );
             if let Some(publication) = publication {
                 if self.pending_submissions.len() > pending_submission_count_before {
-                    log::trace!(
+                    phases::timed_log!(trace,
                         target: "gpui::diagnostics",
                         "nova resource publication submitted: geometry_epoch={} frame_slot={} root_version={:?} filter_writes={} fence_pending=true",
                         publication.geometry_epoch,
@@ -1654,6 +1728,7 @@ impl NovaRenderer {
                         publication.root.map(|(_, version)| version),
                         publication.filters.len(),
                     );
+
                     if let Some(submission) = self.pending_submissions.last_mut() {
                         submission.publication = Some(publication);
                     }
@@ -1665,7 +1740,9 @@ impl NovaRenderer {
                 }
             }
         }
-        log::trace!(
+        drop(publication_scope);
+        let _post_present_scope = phases::enter(Phase::Diagnostics);
+        phases::timed_log!(trace,
             target: "gpui::diagnostics",
             "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} completed_version={:?} refreshed={} retained_root={}",
             packet.window_id,
@@ -1676,34 +1753,42 @@ impl NovaRenderer {
             root_scene_color_refreshes != 0,
             root_scene_color_cached,
         );
+
         // This event is emitted AFTER a successful native submission, not when
         // a candidate static prefix was merely encoded. On compositor-only
         // frames the same resident content version must survive unchanged.
         // It is intentionally scoped to the existing opt-in frame diagnostics.
         if self.diagnostics.enabled {
-            let auto_static_index = self.frame_upload.element_blur_inputs.iter().find_map(
-                |(index, source)| matches!(source, FilterSource::AutoStatic { .. }).then_some(*index),
-            );
-            let auto_static_dirty = auto_static_index
-                .is_some_and(|index| dirty_element_indices.contains(&index));
-            let auto_static_refreshes = element_blur_layers.iter()
+            let auto_static_index =
+                self.frame_upload
+                    .element_blur_inputs
+                    .iter()
+                    .find_map(|(index, source)| {
+                        matches!(source, FilterSource::AutoStatic { .. }).then_some(*index)
+                    });
+            let auto_static_dirty =
+                auto_static_index.is_some_and(|index| dirty_element_indices.contains(&index));
+            let auto_static_refreshes = element_blur_layers
+                .iter()
                 .filter(|layer| Some(layer.index) == auto_static_index)
                 .count();
-            let auto_static_source_draw_steps = element_blur_layers.iter()
+            let auto_static_source_draw_steps = element_blur_layers
+                .iter()
                 .filter(|layer| Some(layer.index) == auto_static_index)
                 .flat_map(|layer| &layer.source_groups)
                 .map(|group| group.source_steps.len())
                 .sum::<usize>();
             let auto_static_view = auto_static_index.and_then(|index| {
-                self.filters.targets.as_ref().and_then(|targets| {
-                    targets.exclusive_zero_radius_capture_view(index)
-                })
+                self.filters
+                    .targets
+                    .as_ref()
+                    .and_then(|targets| targets.exclusive_zero_radius_capture_view(index))
             });
-            let auto_static_content_version = auto_static_index
-                .and_then(|index| self.filters.layer_content_version(index));
-            log::debug!(
+            let auto_static_content_version =
+                auto_static_index.and_then(|index| self.filters.layer_content_version(index));
+            phases::timed_log!(debug,
                 target: "gpui::diagnostics",
-                "GPUI AutoStatic submitted: window_id={} scene_revision={} source_index={:?} source_dirty={} refreshed_layers={} source_draw_steps={} native_view={:?} content_version={:?} retained_root={} frame_animation_values={}",
+                "GPUI AutoStatic submitted: window_id={} scene_revision={} source_index={:?} source_dirty={} refreshed_layers={} source_commands={} native_view={:?} content_version={:?} retained_root={} frame_animation_values={}",
                 packet.window_id,
                 packet.paint.scene.revision,
                 auto_static_index,
@@ -1743,12 +1828,15 @@ impl NovaRenderer {
                     .chain(&root_color_layers)
                     .map(|layer| {
                         layer.filter_passes.len()
-                            + layer.source_groups.iter()
+                            + layer
+                                .source_groups
+                                .iter()
                                 .map(|group| group.filter_passes.len())
                                 .sum::<usize>()
                     })
                     .sum::<usize>();
-            log::debug!(
+            phases::timed_log!(
+                debug,
                 concat!(
                     "nova-gfx copy attribution: backend={} frame={} window_id={} scene_revision={} ",
                     "explicit_upload_source={} atlas_texture_regions={} ",
@@ -1802,12 +1890,13 @@ impl NovaRenderer {
             );
         }
         if self.diagnostics.should_warn_slow_frame(frame_elapsed_ms) {
-            log::warn!(
+            phases::timed_log!(
+                warn,
                 concat!(
                     "nova-gfx frame completed: backend={} elapsed_ms={} ",
                     "alpha_swapchain={:?} alpha_output={:?} quads={} shadows={} paths={} ",
-                    "mono_sprites={} poly_sprites={} underlines={} draw_steps={} ",
-                    "path_mask_steps={} gpu_passes={} upload_bytes={}"
+                    "mono_sprites={} poly_sprites={} underlines={} commands={} ",
+                    "path_commands={} gpu_passes={} upload_bytes={}"
                 ),
                 backend_label,
                 frame_elapsed_ms,
@@ -1819,8 +1908,8 @@ impl NovaRenderer {
                 upload.mono_sprite_count,
                 upload.poly_sprite_count,
                 upload.underline_count,
-                draw_step_count,
-                path_mask_step_count,
+                command_count,
+                path_command_count,
                 mask_pass_count
                     .saturating_add(main_pass_count)
                     .saturating_add(composite_pass_count),
@@ -1830,7 +1919,8 @@ impl NovaRenderer {
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         if !self.first_frame_reported {
             self.first_frame_reported = true;
-            log::info!(
+            phases::timed_log!(
+                info,
                 "GPUI nova-gfx first frame: renderer_path=nova-gfx phase=path-offscreen first_frame_time_ms={} submitted_frames={} quads={} paths={} mono_sprites={} thread={:?}",
                 self.metrics_started_at.elapsed().as_millis(),
                 self.submitted_frames,
@@ -1860,9 +1950,8 @@ impl NovaRenderer {
 #[cfg(test)]
 mod per_layer_damage_tests {
     use super::{
-        ColorContentRange, FilterRegistry, FilterSource, FrameUpload, TextureViewId,
-        UploadedBatch, dirty_element_blur_indices, has_root_backdrop_blurs,
-        source_pass_required,
+        ColorContentRange, FilterRegistry, FilterSource, FrameUpload, TextureViewId, UploadedBatch,
+        dirty_element_blur_indices, has_root_backdrop_blurs, source_pass_required,
     };
 
     #[test]
@@ -1930,9 +2019,14 @@ mod per_layer_damage_tests {
         let mut filters = FilterRegistry::new(None);
         filters.record_element_blur_inputs(&[(2, source.clone())], &[], [2]);
 
-        assert_eq!(filters.remap_identity_capture_sources(
-            &[(2, view)], &[(5, view)], &frame.element_blur_inputs,
-        ), 1);
+        assert_eq!(
+            filters.remap_identity_capture_sources(
+                &[(2, view)],
+                &[(5, view)],
+                &frame.element_blur_inputs,
+            ),
+            1
+        );
         assert!(
             dirty_element_blur_indices(&frame, &crate::DirtyRegion::empty(), &filters, &[], false)
                 .is_empty(),
@@ -1945,11 +2039,14 @@ mod per_layer_damage_tests {
         );
 
         // Same packed bytes alone cannot inherit a different GPU allocation.
-        assert_eq!(filters.remap_identity_capture_sources(
-            &[(5, view)],
-            &[(3, TextureViewId::new(82))],
-            &[(3, source)],
-        ), 0);
+        assert_eq!(
+            filters.remap_identity_capture_sources(
+                &[(5, view)],
+                &[(3, TextureViewId::new(82))],
+                &[(3, source)],
+            ),
+            0
+        );
         frame.blur_content_ranges_cache[0].index = 3;
         frame.element_blur_inputs[0].0 = 3;
         assert_eq!(
@@ -1977,7 +2074,9 @@ mod per_layer_damage_tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        frame.element_blur_inputs.push((7, FilterSource::Element(source.clone())));
+        frame
+            .element_blur_inputs
+            .push((7, FilterSource::Element(source.clone())));
         let empty = crate::DirtyRegion::empty();
         let mut filters = FilterRegistry::new(None);
         assert_eq!(
@@ -2029,5 +2128,62 @@ mod root_cached_source_pass_tests {
         assert!(!source_pass_required(false, true, false));
         assert!(source_pass_required(true, true, true));
         assert!(source_pass_required(true, false, false));
+    }
+}
+
+#[cfg(test)]
+mod attachment_clear_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_source_pass_clears_the_whole_attachment() {
+        let scissor = ScissorRect {
+            x: 4,
+            y: 4,
+            width: 16,
+            height: 16,
+        };
+        let group = || PreparedBackdropBlurGroup {
+            source_steps: Vec::new(),
+            source_clear_region: Some(scissor),
+            filter_passes: Vec::new(),
+            preserve_filtered_pixels: false,
+        };
+        let layer = |preserve_retained_source| PreparedColorLayer {
+            index: 0,
+            source_texture_view: TextureViewId::new(1),
+            source_groups: vec![group()],
+            filter_passes: Vec::new(),
+            preserve_filtered_pixels: false,
+            preserve_retained_source,
+        };
+        let viewport = gfx_core::Viewport {
+            origin: gfx_core::SignedOrigin2d::ZERO,
+            extent: gfx_core::Extent2d::new(64, 64).expect("viewport extent"),
+            reference_extent: gfx_core::Extent2d::new(64, 64).expect("reference extent"),
+            mapping: gfx_core::ViewportMapping::Scaled,
+        };
+        let depth = DepthAttachment {
+            target: TextureViewId::new(2),
+            depth_load_op: LoadOp::Clear(1.0),
+        };
+        let layers = [layer(false)];
+        let passes = color_layer_passes(
+            RenderPassId::from_parts(1, 1),
+            RenderPassId::from_parts(2, 1),
+            depth,
+            &layers,
+            viewport,
+        );
+        assert_eq!(
+            passes.len(),
+            1,
+            "a fresh source pass must initialize its target"
+        );
+        assert_eq!(passes[0].color_load_op, LoadOp::Clear(clear_color()));
+        assert_eq!(
+            passes[0].clear_region, None,
+            "a non-preserved source must not inherit pixels outside its damage footprint"
+        );
     }
 }

@@ -222,7 +222,10 @@ fn queued_resize_scene_compaction_keeps_latest_extent_as_damage_authority() {
     assert!(packet.dirty_region.is_full());
     assert_eq!(packet.dirty_region.area(), 800.0 * 600.0);
     assert!(packet.force_full_backdrop_blur_refresh);
-    assert!(matches!(packet.partial_present_mode, PartialPresentMode::FullRedraw));
+    assert!(matches!(
+        packet.partial_present_mode,
+        PartialPresentMode::FullRedraw
+    ));
     assert!(queue.take().is_none());
 }
 
@@ -359,16 +362,35 @@ fn shutting_down_dx12_child_queue_does_not_invalidate_main_window_queue() {
     let child = Queue::default();
     let main = Queue::default();
     let scene = Arc::new(crate::window::Paint::default());
-    main.enqueue(resized_draw(size(DevicePixels(900), DevicePixels(600)), 31, packet(scene, 0.0)), || Ok(())).unwrap();
-    child.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
+    main.enqueue(
+        resized_draw(
+            size(DevicePixels(900), DevicePixels(600)),
+            31,
+            packet(scene, 0.0),
+        ),
+        || Ok(()),
+    )
+    .unwrap();
+    child
+        .enqueue(Command::Tick(Instant::now(), None), || Ok(()))
+        .unwrap();
     let (reply, receiver) = std::sync::mpsc::sync_channel(1);
     child.enqueue(Command::Shutdown(reply), || Ok(())).unwrap();
     assert!(matches!(child.take(), Some(Command::Shutdown(_))));
-    assert!(receiver.recv().is_err(), "dropped child receiver must not block");
+    assert!(
+        receiver.recv().is_err(),
+        "dropped child receiver must not block"
+    );
     assert!(child.is_closed());
-    assert!(!main.is_closed(), "child closure must never close the main queue");
-    assert!(matches!(main.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.epoch == Some(31)));
-    main.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
+    assert!(
+        !main.is_closed(),
+        "child closure must never close the main queue"
+    );
+    assert!(
+        matches!(main.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.epoch == Some(31))
+    );
+    main.enqueue(Command::Tick(Instant::now(), None), || Ok(()))
+        .unwrap();
     assert!(matches!(main.take(), Some(Command::Tick(..))));
 }
 
@@ -522,7 +544,7 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
     };
     let (full_refresh, damage) = packet
         .backdrop_blur_damage_plan
-        .source_damage_for_orders(blur_order, blur_order);
+        .order_source_damage(blur_order, blur_order);
     let damage: Vec<_> = damage.collect();
     assert!(!full_refresh);
     assert!(
@@ -799,17 +821,29 @@ fn repeated_live_resize_commands_compact_without_compositor_stretch() {
     for (side, epoch) in [(800, 1), (900, 2), (1100, 3)] {
         queue
             .enqueue(
-                resized_draw(extent(side), epoch, packet(scene.clone(), (epoch * 10) as f32)),
+                resized_draw(
+                    extent(side),
+                    epoch,
+                    packet(scene.clone(), (epoch * 10) as f32),
+                ),
                 || Ok(()),
             )
             .unwrap();
     }
-    let Some(Command::Draw { packet, resize: Some(resize), .. }) = queue.take() else {
+    let Some(Command::Draw {
+        packet,
+        resize: Some(resize),
+        ..
+    }) = queue.take()
+    else {
         panic!("must retain latest matching Resize and Scene");
     };
     assert_eq!(resize.size, extent(1100));
     assert_eq!(resize.epoch, Some(3));
-    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(30.0));
+    assert_eq!(
+        packet.dirty_region.union_bounds().unwrap().size.width,
+        ScaledPixels(30.0)
+    );
     assert!(queue.take().is_none());
 }
 
@@ -818,12 +852,91 @@ fn resize_compaction_keeps_renderer_control_barrier_and_latest_scene() {
     let queue = Queue::default();
     let extent = |side| size(DevicePixels(side), DevicePixels(side));
     let scene = Arc::new(crate::window::Paint::default());
-    queue.enqueue(resized_draw(extent(800), 1, packet(scene.clone(), 0.0)), || Ok(())).unwrap();
-    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
-    queue.enqueue(resized_draw(extent(900), 2, packet(scene.clone(), 10.0)), || Ok(())).unwrap();
-    queue.enqueue(resized_draw(extent(1000), 3, packet(scene, 20.0)), || Ok(())).unwrap();
-    assert!(matches!(queue.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.size == extent(800)));
+    queue
+        .enqueue(
+            resized_draw(extent(800), 1, packet(scene.clone(), 0.0)),
+            || Ok(()),
+        )
+        .unwrap();
+    queue
+        .enqueue(Command::Call(Box::new(|_| {})), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(
+            resized_draw(extent(900), 2, packet(scene.clone(), 10.0)),
+            || Ok(()),
+        )
+        .unwrap();
+    queue
+        .enqueue(
+            resized_draw(extent(1000), 3, packet(scene, 20.0)),
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(
+        matches!(queue.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.size == extent(800))
+    );
     assert!(matches!(queue.take(), Some(Command::Call(_))));
-    assert!(matches!(queue.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.size == extent(1000) && resize.epoch == Some(3)));
+    assert!(
+        matches!(queue.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.size == extent(1000) && resize.epoch == Some(3))
+    );
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn repeated_native_covers_keep_only_the_newest_extent() {
+    use crate::{DevicePixels, size};
+
+    let queue = Queue::default();
+    queue
+        .enqueue(
+            Command::Cover {
+                size: size(DevicePixels(1200), DevicePixels(800)),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    queue
+        .enqueue(Command::Continue(Instant::now()), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(
+            Command::Cover {
+                size: size(DevicePixels(1240), DevicePixels(820)),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(matches!(queue.take(), Some(Command::Continue(..))));
+    let Some(Command::Cover { size: covered }) = queue.take() else {
+        panic!("the newest native cover must survive coalescing");
+    };
+    assert_eq!(covered, size(DevicePixels(1240), DevicePixels(820)));
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn live_resize_compaction_preserves_latest_native_cover() {
+    use crate::{DevicePixels, size};
+
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(crate::window::Paint::default());
+    queue
+        .enqueue(Command::Cover { size: extent(900) }, || Ok(()))
+        .unwrap();
+    // Keep the last-frame cover until its replacement is presented. It must not
+    // become an ordering barrier or discard the matching resize transaction.
+    queue
+        .enqueue(resized_draw(extent(1000), 2, packet(scene, 0.0)), || Ok(()))
+        .unwrap();
+    assert!(matches!(
+        queue.take(),
+        Some(Command::Cover { size }) if size == extent(900)
+    ));
+    assert!(matches!(
+        queue.take(),
+        Some(Command::Draw { resize: Some(resize), .. }) if resize.size == extent(1000)
+    ));
     assert!(queue.take().is_none());
 }

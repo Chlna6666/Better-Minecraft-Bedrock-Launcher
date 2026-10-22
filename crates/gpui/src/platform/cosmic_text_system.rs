@@ -1,5 +1,5 @@
 use crate::text_system::script::{
-    text_cluster_properties, text_cluster_properties_for_char, text_font_coverage_probe_character,
+    char_cluster_properties, text_cluster_properties, text_font_coverage_probe_character,
     text_uses_stable_vertical_raster_frame,
 };
 use crate::{
@@ -828,9 +828,8 @@ impl CosmicTextSystemState {
             && user_fallback_chain.is_empty()
             && !self.system_fonts_loaded;
 
-        let name =
-            crate::text_system::font_name_with_fallbacks(name, self.platform_font_family.as_ref())
-                .to_owned();
+        let name = crate::text_system::fallback_font_name(name, self.platform_font_family.as_ref())
+            .to_owned();
 
         let families = self
             .font_system
@@ -1854,7 +1853,7 @@ fn normal_weight_distance(weight: Weight) -> u16 {
 
 fn face_allowed_for_text_fallback(postscript_name: &str, probe_character: Option<char>) -> bool {
     let probe_is_emoji = probe_character
-        .map(|character| text_cluster_properties_for_char(character).contains_emoji)
+        .map(|character| char_cluster_properties(character).contains_emoji)
         .unwrap_or(false);
     if check_is_known_emoji_font(postscript_name) {
         return probe_is_emoji;

@@ -96,9 +96,8 @@ impl NovaRenderer {
         log::info!("renderer_path=nova-gfx backend={backend}");
         let mut surface_config = SurfaceConfig::new(width, height, Format::Bgra8Unorm)
             .context("creating nova-gfx surface config")?;
-        surface_config.present_mode = nova_present_mode_for_backend(backend, renderer_options);
-        let surface_alpha =
-            Self::alpha_state_for_window_transparency_on_backend(backend, transparent);
+        surface_config.present_mode = backend_present_mode(backend, renderer_options);
+        let surface_alpha = Self::alpha_state_on_backend(backend, transparent);
         surface_config.alpha_mode = surface_alpha.swapchain_mode;
         let present_mode = surface_config.present_mode;
         crate::diagnostics::performance_metrics::record_gpu_surface_metrics(
@@ -428,9 +427,12 @@ impl NovaRenderer {
                 let native_surface_elapsed = surface_started_at.elapsed();
                 let swapchain_started_at = Instant::now();
                 let surface_alpha = SurfaceAlphaState::new(
-                    device
-                        .resolve_surface_alpha_mode(surface, surface_alpha.swapchain_mode)
-                        .context("resolving nova Vulkan surface alpha mode")?,
+                    gfx_core::SurfaceDevice::resolve_composite_alpha(
+                        device,
+                        surface,
+                        surface_alpha.swapchain_mode,
+                    )
+                    .context("resolving nova Vulkan surface alpha mode")?,
                 );
                 let alpha_elapsed = swapchain_started_at.elapsed();
                 let surface_config = SurfaceConfig {

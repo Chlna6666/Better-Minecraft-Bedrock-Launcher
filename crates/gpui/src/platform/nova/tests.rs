@@ -3,7 +3,7 @@ use crate::{
     FontId, GlobalElementId, GlyphId, ImageId, ImagePixelFormat, RenderGlyphParams,
     RenderImageParams, TileId, WgslShaderSource, bounds, point, px, size,
 };
-use gfx_core::RenderStepDescriptor;
+use gfx_core::RenderCommand;
 use std::cell::Cell;
 
 #[cfg(all(
@@ -80,9 +80,9 @@ fn glyph_test_bytes(texture_kind: AtlasTextureKind, pixel_count: usize, coverage
 
 fn test_sprite_resource_set(
     texture_id: AtlasTextureId,
-    mono_set: ResourceSetId,
-    poly_set: ResourceSetId,
-) -> Option<ResourceSetId> {
+    mono_set: BindGroupId,
+    poly_set: BindGroupId,
+) -> Option<BindGroupId> {
     Some(match texture_id.kind {
         AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => mono_set,
         AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => poly_set,
@@ -94,7 +94,7 @@ fn auto_vsync_uses_the_platform_pacing_authority() {
     let options = RendererOptions::default();
 
     assert_eq!(
-        nova_present_mode_for_backend(RendererBackend::NovaDx12, &options),
+        backend_present_mode(RendererBackend::NovaDx12, &options),
         if cfg!(target_os = "windows") {
             gfx_core::PresentMode::Mailbox
         } else {
@@ -102,7 +102,7 @@ fn auto_vsync_uses_the_platform_pacing_authority() {
         }
     );
     assert_eq!(
-        nova_present_mode_for_backend(RendererBackend::NovaVulkan, &options),
+        backend_present_mode(RendererBackend::NovaVulkan, &options),
         gfx_core::PresentMode::Fifo
     );
 }
@@ -875,7 +875,7 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
 #[test]
 fn frame_upload_globals_follow_surface_alpha_mode() {
     let scene = crate::scene::Painter::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
@@ -885,7 +885,8 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &rendering_parameters,
@@ -896,7 +897,8 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &rendering_parameters,
@@ -909,7 +911,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 #[test]
 fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let previous = retained_quad_scene(1);
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
@@ -918,20 +920,26 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     };
     let first_summary = upload.encode(
         &mut chunk_cache,
-        &previous, &previous.retention,
+        &previous,
+        &previous.retention,
         &[],
         drawable_size,
         &rendering_parameters,
         false,
         BackdropBlurQuality::Full,
     );
-    assert_eq!(chunk_cache.retained_quad_chunks.len(), 1);
+    assert_eq!(chunk_cache.quad_payloads.len(), 1);
     assert_eq!(first_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
     assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
     assert!(upload.batch_visual_bounds[0].is_some());
     assert_eq!(
-        chunk_cache.retained_quad_chunks.values().next().unwrap().visual_bounds,
+        chunk_cache
+            .quad_payloads
+            .values()
+            .next()
+            .unwrap()
+            .visual_bounds,
         upload.batch_visual_bounds[0]
     );
     assert_eq!(
@@ -940,17 +948,19 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         "chunk miss packs directly into shared storage"
     );
     assert_eq!(
-        upload.retained_quad_memory(&chunk_cache).used_bytes,
+        upload.retained_chunk_memory(&chunk_cache).used_bytes,
         (32 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(chunk_cache.frame_epoch, 1);
-    assert!(chunk_cache
-        .retained_quad_chunks
-        .values()
-        .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch));
+    assert!(
+        chunk_cache
+            .quad_payloads
+            .values()
+            .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch)
+    );
 
     let cached_bytes_ptr = chunk_cache
-        .retained_quad_chunks
+        .quad_payloads
         .values()
         .next()
         .expect("retained chunk cache should contain the encoded chunk")
@@ -963,7 +973,8 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let same_generation = retained_quad_scene(1);
     let same_generation_summary = upload.encode(
         &mut chunk_cache,
-        &same_generation, &same_generation.retention,
+        &same_generation,
+        &same_generation.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -972,7 +983,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     );
     assert_eq!(same_generation_summary.retained_chunk_hits, 0);
     let same_generation_cached = chunk_cache
-        .retained_quad_chunks
+        .quad_payloads
         .values()
         .next()
         .expect("same retained identity should remain cached");
@@ -982,10 +993,12 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         "dirty retained chunks should reuse their byte backing allocation"
     );
     assert_eq!(chunk_cache.frame_epoch, 2);
-    assert!(chunk_cache
-        .retained_quad_chunks
-        .values()
-        .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch));
+    assert!(
+        chunk_cache
+            .quad_payloads
+            .values()
+            .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch)
+    );
 
     let mut partially_dirty = crate::window::retained::PaintFixture::default();
     partially_dirty.replay(0..previous.len(), &previous);
@@ -1000,7 +1013,8 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     partially_dirty.finish();
     let replay_summary = upload.encode(
         &mut chunk_cache,
-        &partially_dirty, &partially_dirty.retention,
+        &partially_dirty,
+        &partially_dirty.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -1012,7 +1026,12 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     assert!(upload.batch_visual_bounds[0].is_some());
     assert_eq!(
         upload.batch_visual_bounds[0],
-        chunk_cache.retained_quad_chunks.values().next().unwrap().visual_bounds,
+        chunk_cache
+            .quad_payloads
+            .values()
+            .next()
+            .unwrap()
+            .visual_bounds,
     );
     assert_eq!(
         upload.quads.owned_len(),
@@ -1024,13 +1043,13 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         cached_bytes_ptr
     );
     let shared = Arc::downgrade(upload.quads.shared_bytes().next().unwrap());
-    chunk_cache.retained_quad_chunks.clear();
+    chunk_cache.quad_payloads.clear();
     assert!(
         shared.upgrade().is_some(),
         "current presentation retains trimmed chunk payloads"
     );
     assert_eq!(
-        upload.retained_quad_memory(&chunk_cache).used_bytes,
+        upload.retained_chunk_memory(&chunk_cache).used_bytes,
         (32 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(
@@ -1042,7 +1061,8 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let changed_generation = retained_quad_scene(2);
     let changed_summary = upload.encode(
         &mut chunk_cache,
-        &changed_generation, &changed_generation.retention,
+        &changed_generation,
+        &changed_generation.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -1051,7 +1071,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     );
     assert_eq!(changed_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
-    assert_eq!(chunk_cache.retained_quad_chunks.len(), 1);
+    assert_eq!(chunk_cache.quad_payloads.len(), 1);
     assert!(
         shared.upgrade().is_none(),
         "reset releases the previous frame's segment references"
@@ -1083,7 +1103,7 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     assert_eq!(replayed.chunks().len(), 1);
     assert!(replayed.chunks()[0].replayed);
 
-    let mut cache = RetainedQuadChunkCache::default();
+    let mut cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let size = DrawableSize {
         width: 640,
@@ -1092,7 +1112,8 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     let params = RenderingParameters::system();
     let initial = upload.encode(
         &mut cache,
-        &previous, &previous.retention,
+        &previous,
+        &previous.retention,
         &[],
         size,
         &params,
@@ -1102,7 +1123,8 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     assert_eq!(initial.quad_count, 32);
     let current = upload.encode(
         &mut cache,
-        &replayed, &replayed.retention,
+        &replayed,
+        &replayed.retention,
         &[],
         size,
         &params,
@@ -1112,17 +1134,14 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     assert_eq!(current.retained_chunk_hits, 0);
     assert_eq!(current.quad_count, 64);
     assert_eq!(upload.quads.len(), 64 * PACKED_QUAD_BYTES);
-    assert_eq!(cache.retained_quad_chunks.len(), 1);
-    assert_eq!(
-        cache.retained_quad_chunks.values().next().unwrap().quad_count,
-        64
-    );
+    assert_eq!(cache.quad_payloads.len(), 1);
+    assert_eq!(cache.quad_payloads.values().next().unwrap().quad_count, 64);
 }
 
 #[test]
 fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let previous = retained_quad_scene(1);
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let size = DrawableSize {
         width: 640,
@@ -1131,7 +1150,8 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let params = RenderingParameters::system();
     upload.encode(
         &mut chunk_cache,
-        &previous, &previous.retention,
+        &previous,
+        &previous.retention,
         &[],
         size,
         &params,
@@ -1139,7 +1159,7 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         BackdropBlurQuality::Full,
     );
     let old_ptr = chunk_cache
-        .retained_quad_chunks
+        .quad_payloads
         .values()
         .next()
         .unwrap()
@@ -1152,7 +1172,8 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &replayed, &replayed.retention,
+        &replayed,
+        &replayed.retention,
         &[],
         size,
         &params,
@@ -1165,7 +1186,6 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         old_ptr
     );
 }
-
 
 #[test]
 fn nested_element_retained_chunks_survive_root_pruning() {
@@ -1192,7 +1212,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     };
     let first = root(child);
     let second = root(replayed_child);
-    let mut cache = RetainedQuadChunkCache::default();
+    let mut cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let params = RenderingParameters::system();
     let size = DrawableSize {
@@ -1201,7 +1221,8 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     };
     let initial = upload.encode(
         &mut cache,
-        &first, &first.retention,
+        &first,
+        &first.retention,
         &[],
         size,
         &params,
@@ -1209,7 +1230,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(initial.retained_chunk_hits, 0);
-    assert_eq!(cache.retained_quad_chunks.len(), 1);
+    assert_eq!(cache.quad_payloads.len(), 1);
     assert_eq!(upload.batches.len(), upload.batch_visual_bounds.len());
     assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { .. }));
     assert!(upload.batch_visual_bounds[0].is_none());
@@ -1217,7 +1238,8 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     assert!(upload.batch_visual_bounds[2..].iter().all(Option::is_none));
     let reused = upload.encode(
         &mut cache,
-        &second, &second.retention,
+        &second,
+        &second.retention,
         &[],
         size,
         &params,
@@ -1225,12 +1247,12 @@ fn nested_element_retained_chunks_survive_root_pruning() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(reused.retained_chunk_hits, 1);
-    assert_eq!(cache.retained_quad_chunks.len(), 1);
+    assert_eq!(cache.quad_payloads.len(), 1);
     assert_eq!(upload.batches.len(), upload.batch_visual_bounds.len());
     assert!(upload.batch_visual_bounds[0].is_none());
     assert_eq!(
         upload.batch_visual_bounds[1],
-        cache.retained_quad_chunks.values().next().unwrap().visual_bounds
+        cache.quad_payloads.values().next().unwrap().visual_bounds
     );
     assert!(upload.batch_visual_bounds[2..].iter().all(Option::is_none));
 }
@@ -1254,11 +1276,12 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
         });
     }
     root.finish();
-    let mut cache = RetainedQuadChunkCache::default();
+    let mut cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     upload.encode(
         &mut cache,
-        &root, &root.retention,
+        &root,
+        &root.retention,
         &[],
         DrawableSize {
             width: 640,
@@ -1271,10 +1294,22 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
     assert_eq!(upload.batches.len(), 8);
     assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
     for index in [0, 4] {
-        assert!(matches!(upload.batches[index], UploadedBatch::BeginBlur { .. }));
-        assert!(matches!(upload.batches[index + 1], UploadedBatch::Quads { .. } | UploadedBatch::SolidQuads { .. }));
-        assert!(matches!(upload.batches[index + 2], UploadedBatch::EndBlur { .. }));
-        assert!(matches!(upload.batches[index + 3], UploadedBatch::CompositeBlur { .. }));
+        assert!(matches!(
+            upload.batches[index],
+            UploadedBatch::BeginBlur { .. }
+        ));
+        assert!(matches!(
+            upload.batches[index + 1],
+            UploadedBatch::Quads { .. } | UploadedBatch::SolidQuads { .. }
+        ));
+        assert!(matches!(
+            upload.batches[index + 2],
+            UploadedBatch::EndBlur { .. }
+        ));
+        assert!(matches!(
+            upload.batches[index + 3],
+            UploadedBatch::CompositeBlur { .. }
+        ));
         assert!(upload.batch_visual_bounds[index].is_none());
         assert!(upload.batch_visual_bounds[index + 1].is_some());
         assert!(upload.batch_visual_bounds[index + 2].is_none());
@@ -1309,11 +1344,12 @@ fn frame_upload_records_scene_animation_bindings() {
     );
     scene.finish();
 
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 64,
@@ -1350,11 +1386,12 @@ fn frame_upload_records_scene_animation_values() {
         to: [1.0, 0.0, 0.0, 0.0],
     });
 
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 64,
@@ -1388,10 +1425,11 @@ fn frame_upload_accepts_presentation_animation_values_outside_scene() {
     };
 
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[presentation_value],
         DrawableSize {
             width: 64,
@@ -1453,7 +1491,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     scene.finish();
 
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     let drawable_size = DrawableSize {
         width: 64,
         height: 64,
@@ -1461,7 +1499,8 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let first = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &RenderingParameters::system(),
@@ -1480,7 +1519,8 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let second = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &RenderingParameters::system(),
@@ -1514,10 +1554,7 @@ fn transparent_window_uses_premultiplied_surface_alpha_like_gpu() {
 #[cfg(target_os = "windows")]
 #[test]
 fn dx12_transparent_window_uses_premultiplied_swapchain_alpha() {
-    let transparent = NovaRenderer::alpha_state_for_window_transparency_on_backend(
-        RendererBackend::NovaDx12,
-        true,
-    );
+    let transparent = NovaRenderer::alpha_state_on_backend(RendererBackend::NovaDx12, true);
     assert_eq!(
         transparent.swapchain_mode,
         CompositeAlphaMode::Premultiplied
@@ -1610,11 +1647,12 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
         0.625,
     );
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
 
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 640,
@@ -1661,11 +1699,12 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
         0.4,
     );
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
 
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene, &crate::window::retained::RetainedPaint::default(),
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 640,
@@ -1688,7 +1727,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 #[test]
 fn draw_steps_preserve_supported_batch_order_and_resources() {
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     append_test_backdrop_blur(&mut upload);
     upload
         .batches
@@ -1738,7 +1777,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
     let underline_set = test_resource_set_id(15);
     let backdrop_blur_set = test_resource_set_id(16);
 
-    let steps = draw_steps_for_upload(
+    let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
@@ -1748,78 +1787,78 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         |texture_id| test_sprite_resource_set(texture_id, mono_set, poly_set),
         underline_set,
         backdrop_blur_set,
-        DrawStepMode::Present,
+        DrawMode::Present,
     );
 
     assert_eq!(
         steps,
         vec![
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.solid_quads,
-                resource_sets: resource_set_list([quad_set]),
+                bind_groups: bind_group_list([quad_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 2,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.quads,
-                resource_sets: resource_set_list([quad_set]),
+                bind_groups: bind_group_list([quad_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 3,
                 first_instance: 2,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.shadows,
-                resource_sets: resource_set_list([shadow_set]),
+                bind_groups: bind_group_list([shadow_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 6,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.paths,
-                resource_sets: resource_set_list([path_set]),
+                bind_groups: bind_group_list([path_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 2,
                 first_instance: 1,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.mono_sprites,
-                resource_sets: resource_set_list([mono_set]),
+                bind_groups: bind_group_list([mono_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 4,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.poly_sprites,
-                resource_sets: resource_set_list([poly_set]),
+                bind_groups: bind_group_list([poly_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 5,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.underlines,
-                resource_sets: resource_set_list([underline_set]),
+                bind_groups: bind_group_list([underline_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 7,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.backdrop_blurs,
-                resource_sets: resource_set_list([backdrop_blur_set]),
+                bind_groups: bind_group_list([backdrop_blur_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
@@ -1829,25 +1868,25 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         ]
     );
 
-    let mask_steps = path_mask_draw_steps_for_upload(&upload, &pipelines, path_set);
+    let mask_steps = encoded_path_commands(&upload, &pipelines, path_set);
     assert_eq!(
         mask_steps,
-        vec![DrawStepDescriptor {
+        vec![RenderCommand::Draw(DrawCommand {
             pipeline: pipelines.path_rasterization,
-            resource_sets: resource_set_list([path_set]),
+            bind_groups: bind_group_list([path_set]),
             vertex_count: 12,
             first_vertex: 9,
             instance_count: 1,
             first_instance: 0,
             scissor: None,
-        }]
+        })]
     );
 }
 
 #[test]
 fn path_mask_draw_steps_merge_adjacent_contiguous_vertices() {
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 0,
         vertex_count: 6,
@@ -1863,29 +1902,29 @@ fn path_mask_draw_steps_merge_adjacent_contiguous_vertices() {
 
     let pipelines = test_pipelines();
     let path_set = test_resource_set_id(12);
-    let steps = path_mask_draw_steps_for_upload(&upload, &pipelines, path_set);
+    let steps = encoded_path_commands(&upload, &pipelines, path_set);
 
     assert_eq!(
         steps,
         vec![
-            DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.path_rasterization,
-                resource_sets: resource_set_list([path_set]),
+                bind_groups: bind_group_list([path_set]),
                 vertex_count: 15,
                 first_vertex: 0,
                 instance_count: 1,
                 first_instance: 0,
                 scissor: None,
-            },
-            DrawStepDescriptor {
+            }),
+            RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.path_rasterization,
-                resource_sets: resource_set_list([path_set]),
+                bind_groups: bind_group_list([path_set]),
                 vertex_count: 3,
                 first_vertex: 18,
                 instance_count: 1,
                 first_instance: 0,
                 scissor: None,
-            },
+            }),
         ]
     );
 }
@@ -1897,7 +1936,7 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         kind: AtlasTextureKind::Monochrome,
     };
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: mono_texture_id,
         first: 0,
@@ -1922,7 +1961,7 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
     let quad_set = test_resource_set_id(10);
     let mono_set = test_resource_set_id(11);
 
-    let steps = draw_steps_for_upload(
+    let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
@@ -1932,33 +1971,33 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         |texture_id| test_sprite_resource_set(texture_id, mono_set, test_resource_set_id(14)),
         test_resource_set_id(15),
         test_resource_set_id(16),
-        DrawStepMode::Present,
+        DrawMode::Present,
     );
 
     assert_eq!(
         steps,
         vec![
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.mono_sprites,
-                resource_sets: resource_set_list([mono_set]),
+                bind_groups: bind_group_list([mono_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 5,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.quads,
-                resource_sets: resource_set_list([quad_set]),
+                bind_groups: bind_group_list([quad_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
                 first_instance: 0,
                 scissor: None,
             }),
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: blend_pipelines.mono_sprites,
-                resource_sets: resource_set_list([mono_set]),
+                bind_groups: bind_group_list([mono_set]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
@@ -1976,7 +2015,7 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
     let blend_pipelines = pipelines.premultiplied;
     let quad_set = test_resource_set_id(10);
 
-    let steps = draw_steps_for_upload(
+    let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
@@ -1992,14 +2031,14 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
         },
         test_resource_set_id(13),
         test_resource_set_id(14),
-        DrawStepMode::Present,
+        DrawMode::Present,
     );
 
     assert_eq!(
         steps,
-        vec![RenderStepDescriptor::Draw(DrawStepDescriptor {
+        vec![RenderCommand::Draw(DrawCommand {
             pipeline: blend_pipelines.solid_quads,
-            resource_sets: resource_set_list([quad_set]),
+            bind_groups: bind_group_list([quad_set]),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: 0,
@@ -2012,7 +2051,7 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
 #[test]
 fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     upload
         .batches
         .push(UploadedBatch::Quads { first: 0, count: 1 });
@@ -2031,7 +2070,7 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
     let blend_pipelines = pipelines.alpha;
     let quad_set = test_resource_set_id(10);
 
-    let steps = draw_steps_for_upload(
+    let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
@@ -2047,7 +2086,7 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
         },
         test_resource_set_id(15),
         test_resource_set_id(16),
-        DrawStepMode::BackdropSegment {
+        DrawMode::BackdropSegment {
             batch_start: 0,
             batch_end: 1,
         },
@@ -2055,9 +2094,9 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
 
     assert_eq!(
         steps,
-        vec![RenderStepDescriptor::Draw(DrawStepDescriptor {
+        vec![RenderCommand::Draw(DrawCommand {
             pipeline: blend_pipelines.quads,
-            resource_sets: resource_set_list([quad_set]),
+            bind_groups: bind_group_list([quad_set]),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: 1,
@@ -2070,7 +2109,7 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
 #[test]
 fn present_draw_steps_continue_after_backdrop_blur_batch() {
     let mut upload = FrameUpload::default();
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+    let mut chunk_cache = RetainedChunkCache::default();
     append_test_backdrop_blur(&mut upload);
     upload
         .batches
@@ -2089,7 +2128,7 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.alpha;
 
-    let steps = draw_steps_for_upload(
+    let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
@@ -2105,7 +2144,7 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
         },
         test_resource_set_id(15),
         test_resource_set_id(16),
-        DrawStepMode::Present,
+        DrawMode::Present,
     );
 
     assert_eq!(
@@ -2184,16 +2223,32 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
     let original_view = targets.exclusive_zero_radius_capture_view(3).unwrap();
     let shorter = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
     assert!(targets.reuse_layout(&shorter, &[], false, Some((3, 1))));
-    assert_eq!(targets.exclusive_zero_radius_capture_view(1), Some(original_view));
+    assert_eq!(
+        targets.exclusive_zero_radius_capture_view(1),
+        Some(original_view)
+    );
 
     let longer = (0..5).map(test_zero_radius_blur_config).collect::<Vec<_>>();
     assert!(targets.reuse_layout(&longer, &[], false, Some((1, 3))));
-    assert_eq!(targets.exclusive_zero_radius_capture_view(3), Some(original_view));
-    let views = targets.variants.iter().map(|variant| variant.levels[0].texture_view)
+    assert_eq!(
+        targets.exclusive_zero_radius_capture_view(3),
+        Some(original_view)
+    );
+    let views = targets
+        .variants
+        .iter()
+        .map(|variant| variant.levels[0].texture_view)
         .collect::<Vec<_>>();
     assert!(!targets.reuse_layout(&shorter, &[], false, Some((99, 1))));
-    assert_eq!(targets.variants.iter().map(|variant| variant.levels[0].texture_view)
-        .collect::<Vec<_>>(), views, "an invalid relocation cannot mutate resources");
+    assert_eq!(
+        targets
+            .variants
+            .iter()
+            .map(|variant| variant.levels[0].texture_view)
+            .collect::<Vec<_>>(),
+        views,
+        "an invalid relocation cannot mutate resources"
+    );
 }
 
 #[test]
@@ -2216,7 +2271,9 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
     };
-    let texture_ids = targets.variants.iter()
+    let texture_ids = targets
+        .variants
+        .iter()
         .map(|variant| variant.levels[0].texture_view)
         .collect::<Vec<_>>();
     for count in [3_u32, 4, 2, 5] {
@@ -2226,7 +2283,9 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         assert!(targets.reuse_layout(&configs, &[], false, None));
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(
-            targets.variants.iter()
+            targets
+                .variants
+                .iter()
                 .map(|variant| variant.levels[0].texture_view)
                 .collect::<Vec<_>>(),
             texture_ids,
@@ -2276,43 +2335,59 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
     };
-    let original_source_views = targets.isolated_sources.iter()
+    let original_source_views = targets
+        .isolated_sources
+        .iter()
         .map(|source| source.target.texture_view)
         .collect::<Vec<_>>();
-    let original_output_views = targets.variants.iter()
+    let original_output_views = targets
+        .variants
+        .iter()
         .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
         .collect::<std::collections::HashSet<_>>();
     let build = |count: u32| {
-        (0..count).map(|index| {
-            if index + 1 == count {
-                test_zero_radius_blur_config(index)
-            } else {
-                test_gaussian_capture_config(index)
-            }
-        }).collect::<Vec<_>>()
+        (0..count)
+            .map(|index| {
+                if index + 1 == count {
+                    test_zero_radius_blur_config(index)
+                } else {
+                    test_gaussian_capture_config(index)
+                }
+            })
+            .collect::<Vec<_>>()
     };
     for count in [3_u32, 4, 6, 3, 6] {
         let next = build(count);
-        let required = (0..count-1).collect::<Vec<_>>();
-        assert!(targets.reuse_layout(&next, &required, false, None), "warmed isolated sources and root output can rebind without allocating");
+        let required = (0..count - 1).collect::<Vec<_>>();
+        assert!(
+            targets.reuse_layout(&next, &required, false, None),
+            "warmed isolated sources and root output can rebind without allocating"
+        );
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.active_isolated_source_count, (count - 1) as usize);
         assert_eq!(
-            targets.isolated_sources.iter().map(|source| source.target.texture_view)
+            targets
+                .isolated_sources
+                .iter()
+                .map(|source| source.target.texture_view)
                 .collect::<Vec<_>>(),
             original_source_views,
             "spare scratch textures and their bindings remain owned",
         );
         assert_eq!(
-            targets.variants.iter()
+            targets
+                .variants
+                .iter()
                 .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
                 .collect::<std::collections::HashSet<_>>(),
             original_output_views,
         );
         assert!(targets.is_layout_compatible(&next, &required, false));
         if count == 3 {
-            assert!(targets.isolated_source_texture_view(2).is_none(),
-                "inactive spare sources must not be addressable by old packed indices");
+            assert!(
+                targets.isolated_source_texture_view(2).is_none(),
+                "inactive spare sources must not be addressable by old packed indices"
+            );
         }
     }
 }
@@ -2322,44 +2397,93 @@ fn filter_reindex_preserves_compatible_source_and_output_allocations() {
     let variant = |index| {
         let gaussian = index < 2;
         BackdropBlurVariantTargets {
-            config: if gaussian { test_gaussian_capture_config(index) } else { test_zero_radius_blur_config(index) },
-            levels: (0..if gaussian { 2 } else { 1 }).map(|axis| BackdropBlurLevelTarget {
-                byte_size: 64 * 32 * 4,
-                texture: test_texture_id(10 + index * 2 + axis),
-                texture_view: test_texture_view_id(10 + index * 2 + axis),
-                pass_resource_sets: vec![test_resource_set_id(10 + index * 2 + axis)],
-            }).collect(),
+            config: if gaussian {
+                test_gaussian_capture_config(index)
+            } else {
+                test_zero_radius_blur_config(index)
+            },
+            levels: (0..if gaussian { 2 } else { 1 })
+                .map(|axis| BackdropBlurLevelTarget {
+                    byte_size: 64 * 32 * 4,
+                    texture: test_texture_id(10 + index * 2 + axis),
+                    texture_view: test_texture_view_id(10 + index * 2 + axis),
+                    pass_resource_sets: vec![test_resource_set_id(10 + index * 2 + axis)],
+                })
+                .collect(),
             target_resource_sets: vec![test_resource_set_id(100 + index)],
         }
     };
     let mut targets = BackdropBlurTargets {
-        source: None, source_pass_resource_sets: Vec::new(),
-        isolated_sources: (0..2).map(|index| IsolatedBlurSource {
-            index,
-            target: RenderTarget {
-                byte_size: 64 * 32 * 4,
-                texture: test_texture_id(200 + index),
-                texture_view: test_texture_view_id(200 + index),
-            },
-            pass_resource_sets: vec![test_resource_set_id(200 + index)],
-        }).collect(),
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: (0..2)
+            .map(|index| IsolatedBlurSource {
+                index,
+                target: RenderTarget {
+                    byte_size: 64 * 32 * 4,
+                    texture: test_texture_id(200 + index),
+                    texture_view: test_texture_view_id(200 + index),
+                },
+                pass_resource_sets: vec![test_resource_set_id(200 + index)],
+            })
+            .collect(),
         active_isolated_source_count: 2,
-        variants: (0..3).map(variant).collect(), active_variant_count: 3,
+        variants: (0..3).map(variant).collect(),
+        active_variant_count: 3,
     };
-    let old_views: Vec<_> = targets.variants.iter().map(|v| v.levels[0].texture_view).collect();
-    let source_views: Vec<_> = targets.isolated_sources.iter().map(|s| s.target.texture_view).collect();
-    let next = [test_gaussian_capture_config(41), test_zero_radius_blur_config(9), test_gaussian_capture_config(0)];
+    let old_views: Vec<_> = targets
+        .variants
+        .iter()
+        .map(|v| v.levels[0].texture_view)
+        .collect();
+    let source_views: Vec<_> = targets
+        .isolated_sources
+        .iter()
+        .map(|s| s.target.texture_view)
+        .collect();
+    let next = [
+        test_gaussian_capture_config(41),
+        test_zero_radius_blur_config(9),
+        test_gaussian_capture_config(0),
+    ];
     assert!(targets.reuse_layout(&next, &[0, 41], false, None));
-    assert_eq!(targets.variants.iter().map(|v| v.levels[0].texture_view).collect::<Vec<_>>(),
-        vec![old_views[1], old_views[2], old_views[0]]);
-    assert_eq!(targets.isolated_sources.iter().map(|s| s.target.texture_view).collect::<Vec<_>>(), source_views);
-    assert_eq!(targets.resource_set_for_config(next[1], 0), Some(test_resource_set_id(102)));
-    let before: Vec<_> = targets.variants.iter().map(|v| (v.config, v.levels[0].texture_view)).collect();
+    assert_eq!(
+        targets
+            .variants
+            .iter()
+            .map(|v| v.levels[0].texture_view)
+            .collect::<Vec<_>>(),
+        vec![old_views[1], old_views[2], old_views[0]]
+    );
+    assert_eq!(
+        targets
+            .isolated_sources
+            .iter()
+            .map(|s| s.target.texture_view)
+            .collect::<Vec<_>>(),
+        source_views
+    );
+    assert_eq!(
+        targets.config_bind_group(next[1], 0),
+        Some(test_resource_set_id(102))
+    );
+    let before: Vec<_> = targets
+        .variants
+        .iter()
+        .map(|v| (v.config, v.levels[0].texture_view))
+        .collect();
     let incompatible = [test_backdrop_blur_config(41, 3), next[1], next[2]];
     assert!(!targets.reuse_layout(&incompatible, &[0, 41], false, None));
-    assert!(targets.variants.iter().zip(before).all(|(now, (config, view))| {
-        now.config.same_target_slot(config) && now.levels[0].texture_view == view
-    }), "failed preflight must not mutate live target ownership");
+    assert!(
+        targets
+            .variants
+            .iter()
+            .zip(before)
+            .all(|(now, (config, view))| {
+                now.config.same_target_slot(config) && now.levels[0].texture_view == view
+            }),
+        "failed preflight must not mutate live target ownership"
+    );
 }
 
 #[test]
@@ -2397,25 +2521,55 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
         variants: (0..3).map(make_variant).collect(),
         active_variant_count: 3,
     };
-    let before_views = targets.variants.iter()
-        .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
+    let before_views = targets
+        .variants
+        .iter()
+        .map(|v| {
+            v.levels
+                .iter()
+                .map(|level| level.texture_view)
+                .collect::<Vec<_>>()
+        })
         .collect::<Vec<_>>();
-    let before_configs = targets.variants.iter().map(|v| v.config).collect::<Vec<_>>();
+    let before_configs = targets
+        .variants
+        .iter()
+        .map(|v| v.config)
+        .collect::<Vec<_>>();
     let requested = [
         test_backdrop_blur_config(0, 2),
         test_zero_radius_blur_config(1),
         test_zero_radius_blur_config(2),
     ];
-    assert!(!targets.reuse_layout(&requested, &[0], false, None),
-        "a two-level Gaussian output cannot serve an unrelated one-level popup");
+    assert!(
+        !targets.reuse_layout(&requested, &[0], false, None),
+        "a two-level Gaussian output cannot serve an unrelated one-level popup"
+    );
     assert_eq!(targets.active_variant_count, 3);
     assert_eq!(targets.active_isolated_source_count, 2);
-    assert!(targets.variants.iter().zip(before_configs).all(|(v, c)| v.config.same_target_slot(c)));
-    assert_eq!(targets.variants.iter()
-        .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
-        .collect::<Vec<_>>(), before_views);
-    assert!(!targets.reuse_layout(&requested, &[0], false, None),
-        "zero-radius capacity fallback requires a pinned native Root");
+    assert!(
+        targets
+            .variants
+            .iter()
+            .zip(before_configs)
+            .all(|(v, c)| v.config.same_target_slot(c))
+    );
+    assert_eq!(
+        targets
+            .variants
+            .iter()
+            .map(|v| v
+                .levels
+                .iter()
+                .map(|level| level.texture_view)
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        before_views
+    );
+    assert!(
+        !targets.reuse_layout(&requested, &[0], false, None),
+        "zero-radius capacity fallback requires a pinned native Root"
+    );
 }
 
 #[test]
@@ -2436,12 +2590,14 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
         active_isolated_source_count: 1,
         variants: vec![BackdropBlurVariantTargets {
             config,
-            levels: (0..2).map(|axis| BackdropBlurLevelTarget {
-                byte_size: 256,
-                texture: test_texture_id(90 + axis),
-                texture_view: test_texture_view_id(90 + axis),
-                pass_resource_sets: vec![test_resource_set_id(90 + axis)],
-            }).collect(),
+            levels: (0..2)
+                .map(|axis| BackdropBlurLevelTarget {
+                    byte_size: 256,
+                    texture: test_texture_id(90 + axis),
+                    texture_view: test_texture_view_id(90 + axis),
+                    pass_resource_sets: vec![test_resource_set_id(90 + axis)],
+                })
+                .collect(),
             target_resource_sets: vec![test_resource_set_id(91)],
         }],
         active_variant_count: 1,
@@ -2479,7 +2635,9 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
     };
-    let original_views: Vec<_> = targets.variants.iter()
+    let original_views: Vec<_> = targets
+        .variants
+        .iter()
         .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
         .collect();
     for count in [2_u32, 3, 4, 1, 4] {
@@ -2493,7 +2651,9 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.variants.len(), 4);
         assert_eq!(
-            targets.variants.iter()
+            targets
+                .variants
+                .iter()
                 .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
                 .collect::<Vec<_>>(),
             original_views,
@@ -2502,10 +2662,11 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
     // Source attachment ownership cannot change through a layout rebind.
     assert!(!targets.reuse_layout(&[test_backdrop_blur_config(0, 2)], &[], false, None));
     assert!(!targets.reuse_layout(&[test_backdrop_blur_config(99, 2)], &[], true, None));
-    assert!(targets.reuse_layout(&[test_backdrop_blur_config(0, 2)], &[], true, None),
-        "same-size allocation reuse does not import any logical content version");
+    assert!(
+        targets.reuse_layout(&[test_backdrop_blur_config(0, 2)], &[], true, None),
+        "same-size allocation reuse does not import any logical content version"
+    );
 }
-
 
 #[test]
 fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
@@ -2540,8 +2701,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         .collect::<Vec<_>>();
     let backing_allocation = targets.variants.as_ptr();
     let requested = [2_u32, 0, 3, 1];
-    let configs = requested
-        .map(|index| test_gaussian_capture_config(index));
+    let configs = requested.map(|index| test_gaussian_capture_config(index));
     assert!(targets.reuse_layout(&configs, &[], true, None));
     assert_eq!(targets.active_variant_count, 4);
     assert_eq!(
@@ -2550,21 +2710,33 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         "reordering must not replace the CPU target descriptor allocation",
     );
     assert_eq!(
-        targets.variants.iter().map(|v| v.levels[0].texture_view).collect::<Vec<_>>(),
-        requested.map(|index| original_views[index as usize]).to_vec(),
+        targets
+            .variants
+            .iter()
+            .map(|v| v.levels[0].texture_view)
+            .collect::<Vec<_>>(),
+        requested
+            .map(|index| original_views[index as usize])
+            .to_vec(),
     );
     // A failed remap must keep the old identities, views and active range intact.
-    let before = targets.variants.iter()
+    let before = targets
+        .variants
+        .iter()
         .map(|v| (v.config, v.levels[0].texture_view))
         .collect::<Vec<_>>();
     assert!(!targets.reuse_layout(&[test_backdrop_blur_config(99, 2)], &[], true, None));
-    assert!(targets.variants.iter().zip(before).all(|(variant, (config, view))| {
-        variant.config.same_target_slot(config)
-            && variant.levels[0].texture_view == view
-    }));
+    assert!(
+        targets
+            .variants
+            .iter()
+            .zip(before)
+            .all(|(variant, (config, view))| {
+                variant.config.same_target_slot(config) && variant.levels[0].texture_view == view
+            })
+    );
     assert_eq!(targets.variants.as_ptr(), backing_allocation);
 }
-
 
 #[test]
 fn backdrop_blur_render_passes_blur_each_axis() {
@@ -2601,7 +2773,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     };
 
     let mut passes = Vec::new();
-    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, &mut passes);
+    encode_blur_target_passes(&pipelines, &targets, 0, &mut passes);
 
     assert_eq!(passes.len(), 2);
     assert_eq!(
@@ -2614,7 +2786,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     assert_eq!(
         passes
             .iter()
-            .map(|pass| pass.step.pipeline)
+            .map(|pass| pass.step.pipeline())
             .collect::<Vec<_>>(),
         vec![
             pipelines.backdrop_blur_downsample,
@@ -2624,7 +2796,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     assert_eq!(
         passes
             .iter()
-            .map(|pass| pass.step.resource_sets.as_slice())
+            .map(|pass| pass.step.bind_groups())
             .collect::<Vec<_>>(),
         vec![
             [test_resource_set_id(11)].as_slice(),
@@ -2650,7 +2822,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     };
 
     let mut passes = Vec::new();
-    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, &mut passes);
+    encode_blur_target_passes(&pipelines, &targets, 0, &mut passes);
     assert!(passes.is_empty());
 }
 
@@ -3554,7 +3726,7 @@ fn nova_vertex_only_storage_buffers_are_not_visible_to_fragment_stage() {
                 let entry_source = &binding_source[..entry_end];
 
                 entry_source
-                    .contains("ResourceBindingType::StorageBuffer")
+                    .contains("BindingType::StorageBuffer")
                     .then_some(entry_source)
             })
             .next()
@@ -3826,7 +3998,7 @@ fn nova_sprite_hlsl_bindings_match_dx12_resource_sets() {
     );
     assert!(
         mono_vertex_hlsl.contains("_NagaConstants.first_instance"),
-        "DX12 sprite vertex shaders must offset instance_index by DrawStepDescriptor.first_instance:\n{mono_vertex_hlsl}"
+        "DX12 sprite vertex shaders must offset instance_index by DrawCommand.first_instance:\n{mono_vertex_hlsl}"
     );
 
     let gfx_core::ShaderCode::Hlsl(poly_vertex_hlsl) = compile_wgsl_to_hlsl(
@@ -3894,18 +4066,18 @@ fn test_pipelines() -> Pipelines {
     }
 }
 
-fn test_resource_set_id(index: u32) -> ResourceSetId {
-    ResourceSetId::from_parts(index, 1)
+fn test_resource_set_id(index: u32) -> BindGroupId {
+    BindGroupId::from_parts(index, 1)
 }
 
 fn test_buffer_id(index: u32) -> BufferId {
     BufferId::from_parts(index, 1)
 }
 
-fn render_step_pipeline(step: &RenderStepDescriptor) -> RenderPipelineId {
+fn render_step_pipeline(step: &RenderCommand) -> RenderPipelineId {
     match step {
-        RenderStepDescriptor::Draw(step) => step.pipeline,
-        RenderStepDescriptor::DrawIndexed(step) => step.pipeline,
+        RenderCommand::Draw(step) => step.pipeline,
+        RenderCommand::DrawIndexed(step) => step.pipeline,
     }
 }
 
@@ -4066,7 +4238,10 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
     scene.end_blur();
     scene.end_blur();
     scene.finish();
-    assert!(!scene.blurs.is_empty(), "the popup must actually contain a nested Capture");
+    assert!(
+        !scene.blurs.is_empty(),
+        "the popup must actually contain a nested Capture"
+    );
 
     let mut local = crate::DirtyRegion::empty();
     local.push(crate::bounds(
@@ -4107,7 +4282,10 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
     assert!(requires_full_drawable_damage(false, true));
     force_full_drawable_damage_after_resize(
         &mut packet,
-        DrawableSize { width: 972, height: 600 },
+        DrawableSize {
+            width: 972,
+            height: 600,
+        },
     );
     assert!(packet.dirty_region.is_full());
     assert!(packet.force_full_backdrop_blur_refresh);

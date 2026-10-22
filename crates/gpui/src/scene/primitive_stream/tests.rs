@@ -170,7 +170,7 @@ fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
     assert!(current.chunks()[0].replayed);
     let mut reference = crate::scene::Painter::default();
-    reference.replay(0..previous.len(), &previous, &[]);
+    reference.replay(0..previous.len(), &previous, []);
     reference.finish();
     assert_ne!(
         &reference.quads[0] as *const Quad, original,
@@ -203,7 +203,7 @@ fn changed_ordering_prefix_rebinds_payload_instead_of_sharing_stale_orders() {
     );
     let mut reference = crate::scene::Painter::default();
     reference.insert_primitive(quad(0));
-    reference.replay(0..previous.len(), &previous, &[]);
+    reference.replay(0..previous.len(), &previous, []);
     reference.finish();
     assert!(
         reference
@@ -259,7 +259,7 @@ fn shadow_replay_shares_operations_and_typed_payload_after_source_release() {
     let payload = &previous.shadows[0] as *const crate::Shadow;
     let operation = &previous.paint_operations[0] as *const _;
     let mut current = crate::scene::Painter::default();
-    assert!(current.replay(0..previous.len(), &previous, &[]));
+    assert!(current.replay(0..previous.len(), &previous, []));
     current.finish();
     assert_eq!(&current.shadows[0] as *const _, payload);
     assert_eq!(&current.paint_operations[0] as *const _, operation);
@@ -284,7 +284,7 @@ fn shadow_replay_rebinds_changed_prefix_and_partial_equal_order_ranges() {
     previous.finish();
     let mut current = crate::scene::Painter::default();
     current.push_layer(layer);
-    assert!(current.replay(1..17, &previous, &[]));
+    assert!(current.replay(1..17, &previous, []));
     current.pop_layer();
     current.finish();
     assert_eq!(current.shadows.len(), 16);
@@ -294,7 +294,7 @@ fn shadow_replay_rebinds_changed_prefix_and_partial_equal_order_ranges() {
     );
     let mut changed = crate::scene::Painter::default();
     changed.insert_primitive(quad(0));
-    assert!(!changed.replay(0..previous.len(), &previous, &[]));
+    assert!(!changed.replay(0..previous.len(), &previous, []));
     changed.finish();
     assert_ne!(
         &changed.shadows[0] as *const _,
@@ -325,7 +325,7 @@ fn shadow_segments_preserve_equal_order_insertion_and_share_no_animation() {
     animated.insert_animated_primitive(shadow(0.), crate::SceneAnimationId(7));
     animated.finish();
     let mut replayed = crate::scene::Painter::default();
-    assert!(replayed.replay(0..animated.len(), &animated, &[]));
+    assert!(replayed.replay(0..animated.len(), &animated, []));
     replayed.finish();
     assert_ne!(
         &replayed.shadows[0] as *const _,

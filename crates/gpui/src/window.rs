@@ -8,19 +8,19 @@ use crate::{
     Capslock, Context, Corners, CursorStyle, DevicePixels, DirtyRegion, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
     FileDropEvent, FontId, FramePhaseMetrics, Global, GlobalElementId, GlyphId, GpuSpecs,
-    GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel, ImagePipelineConfig,
-    ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-    Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId, LineLayoutFrameMetrics,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MonochromeSpriteSampling,
-    MouseButton, MouseDownEvent, MouseEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
-    PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest,
-    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, PresentationPacket, Quad, Render, RenderGlyphParams, RenderImage,
-    RenderImageParams, RenderSvgParams, Replay, RetainedResourceTrimPolicy,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
-    SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
-    Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
-    WindowFrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
+    GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel, ImagePipelineConfig, ImagePixelFormat,
+    InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    KeystrokeEvent, LayoutFrameMetrics, LayoutId, LineLayoutFrameMetrics, LineLayoutIndex,
+    Modifiers, ModifiersChangedEvent, MonochromeSprite, MonochromeSpriteSampling, MouseButton,
+    MouseDownEvent, MouseEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, PartialPresentMode,
+    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest, PlatformFrameResult,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    PresentationPacket, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Replay, RetainedResourceTrimPolicy, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine, Task, TextStyle,
+    TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle, WindowFrameDisposition,
+    WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
     animation::{
         AnimationDriver, AnimationEngine, AnimationGroupId, AnimationGroupSample,
         AnimationParallel, AnimationSequence, AnimationStagger, merge_requested_drivers,
@@ -156,14 +156,14 @@ use state::{
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{
-    CachedViewTraversalContext, DispatchEventResult, DrawPhase, ElementStateBox,
-    SelectiveSpliceMissReason, ViewBoundsFrame, ViewDirtyScope,
+    DispatchEventResult, DrawPhase, ElementStateBox, SelectiveSpliceMissReason, ViewBoundsFrame,
+    ViewDirtyScope,
 };
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGesture;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use titlebar::rasterize_platform_title;
 use titlebar::{
-    glyph_device_origin, resize_edge_cursor_style, resize_edge_hit_test,
-    svg_paint_bounds_for_requested_bounds, svg_raster_size_for_paint_bounds,
+    glyph_device_origin, resize_edge_cursor_style, resize_edge_hit_test, svg_paint_bounds,
+    svg_raster_size,
 };

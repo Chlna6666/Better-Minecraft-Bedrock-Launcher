@@ -406,8 +406,18 @@ impl PlatformAtlas for NovaAtlas {
             self.publish_state_flags(&state);
             return Ok(fallback);
         };
+        let image_key = match &key {
+            AtlasKey::Image(params) => Some((params.image_id, params.frame_slot)),
+            _ => None,
+        };
         state.tiles.insert(key, tile);
         self.publish_state_flags(&state);
+        drop(state);
+        if let Some((image_id, frame_slot)) = image_key {
+            log::trace!(target: "gpui::diagnostics",
+                "image_atlas stage=allocate image_id={image_id:?} frame_slot={frame_slot} size_px={}x{} staged_bytes={}",
+                size.width.0, size.height.0, bytes.len());
+        }
         Ok(Some(tile))
     }
 
@@ -889,7 +899,7 @@ impl NovaAtlasState {
         };
         if should_remove_pending_uploads {
             self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
-            self.remove_pending_uploads_for_texture(texture_id);
+            self.remove_pending_uploads(texture_id);
         }
     }
 

@@ -193,15 +193,13 @@ impl Window {
         platform_window.set_frame_request_sender(frame_request_sender);
         platform_window.on_live_resize_frame(Box::new({
             let mut cx = cx.to_async();
-            move |request| {
-                match handle.update(&mut cx, |_, window, cx| {
-                    window.run_platform_frame(request, cx);
-                }) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        log::trace!("deferring native resize frame to its UI owner: {error:#}");
-                        false
-                    }
+            move |request| match handle.update(&mut cx, |_, window, cx| {
+                window.run_platform_frame(request, cx);
+            }) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::trace!("deferring native resize frame to its UI owner: {error:#}");
+                    false
                 }
             }
         }));
@@ -255,14 +253,18 @@ impl Window {
                                         Err(error)
                                             if error.to_string().contains("already borrowed") =>
                                         {
-                                            log::trace!("GPUI resize callback remains borrowed: {error:#}");
+                                            log::trace!(
+                                                "GPUI resize callback remains borrowed: {error:#}"
+                                            );
                                             cx.background_executor()
                                                 .timer(Duration::from_millis(delay_ms))
                                                 .await;
                                             delay_ms = (delay_ms * 2).min(32);
                                         }
                                         Err(error) => {
-                                            log::warn!("GPUI resize callback failed permanently: {error:#}");
+                                            log::warn!(
+                                                "GPUI resize callback failed permanently: {error:#}"
+                                            );
                                             break;
                                         }
                                     }

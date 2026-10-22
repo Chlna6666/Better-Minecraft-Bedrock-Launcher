@@ -1,4 +1,4 @@
-use super::upload_encoding::encode_atlas_upload_with_padding;
+use super::upload_encoding::encode_padded_atlas_upload;
 use super::*;
 use crate::size;
 
@@ -74,7 +74,7 @@ fn atlas_padding_replicates_converted_edge_pixels() {
                         * (height + padding * 2)
                         * atlas_bytes_per_pixel(texture_kind)
                 ];
-                encode_atlas_upload_with_padding(
+                encode_padded_atlas_upload(
                     &mut destination,
                     size(
                         DevicePixels(i32::try_from(width).expect("test width must fit i32")),

@@ -98,6 +98,118 @@ impl Operations {
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &PaintOperation> + Clone {
         self.all().iter()
     }
+
+    /// Compares ordered Paint operations while skipping ranges that both generations share.
+    ///
+    /// A retained replay can rebuild a Scene from unchanged immutable operation segments plus a
+    /// small set of newly painted segments. Comparing the operation values one by one defeats that
+    /// sharing at Scene commit time, so identical storage ranges are treated as an exact proof and
+    /// only unshared spans are passed to `matches`.
+    pub(crate) fn matches_by(
+        &self,
+        other: &Self,
+        matches: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    ) -> bool {
+        self.for_each_unshared_pair(other, matches)
+    }
+
+    /// Compares Paint values and, after the first visual change, checks whether the remaining
+    /// operations still address the same prepared batch ranges.
+    ///
+    /// Immutable ranges shared by both Scenes prove both comparisons without visiting their
+    /// operations. When batch topology is not needed, the comparison stops at the first visual
+    /// change instead of adding another full Scene walk.
+    pub(crate) fn scene_reuse_matches(
+        &self,
+        other: &Self,
+        compare_batch_topology: bool,
+    ) -> (bool, bool) {
+        if self.len != other.len {
+            return (false, false);
+        }
+
+        let mut paint_matches = true;
+        let mut batch_topology_matches = true;
+        let operations_match = self.for_each_unshared_pair(other, |left, right| {
+            if paint_matches && left.same_paint(right) {
+                return true;
+            }
+
+            paint_matches = false;
+            if compare_batch_topology && left.has_same_batch_topology(right) {
+                true
+            } else {
+                batch_topology_matches = false;
+                false
+            }
+        });
+        (
+            paint_matches && operations_match,
+            operations_match
+                && (paint_matches || (compare_batch_topology && batch_topology_matches)),
+        )
+    }
+
+    /// Visits unshared operation pairs, skipping immutable storage ranges shared by both Scenes.
+    fn for_each_unshared_pair(
+        &self,
+        other: &Self,
+        mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    ) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+
+        // Published Scenes call `finish` before comparison. Keep the general pending-operation
+        // case correct for scratch callers, while avoiding indexed lookup on the normal path.
+        if !self.pending.is_empty() || !other.pending.is_empty() {
+            return self
+                .iter()
+                .zip(other.iter())
+                .all(|(left, right)| compare(left, right));
+        }
+
+        let mut left_segment_index = 0;
+        let mut right_segment_index = 0;
+        let mut left_offset = 0;
+        let mut right_offset = 0;
+
+        while left_segment_index < self.segments.len() && right_segment_index < other.segments.len()
+        {
+            let left = &self.segments[left_segment_index];
+            let right = &other.segments[right_segment_index];
+            let count = (left.range.len() - left_offset).min(right.range.len() - right_offset);
+            let same_storage_range = Arc::ptr_eq(&left.owner, &right.owner)
+                && left.range.start + left_offset == right.range.start + right_offset;
+
+            if !same_storage_range {
+                let left_operations = left.slice();
+                let right_operations = right.slice();
+                for offset in 0..count {
+                    if !compare(
+                        &left_operations[left_offset + offset],
+                        &right_operations[right_offset + offset],
+                    ) {
+                        return false;
+                    }
+                }
+            }
+
+            left_offset += count;
+            right_offset += count;
+            if left_offset == left.range.len() {
+                left_segment_index += 1;
+                left_offset = 0;
+            }
+            if right_offset == right.range.len() {
+                right_segment_index += 1;
+                right_offset = 0;
+            }
+        }
+
+        left_segment_index == self.segments.len() && right_segment_index == other.segments.len()
+    }
+
     /// Freeze newly appended operations without rewriting any existing immutable ranges.
     pub(crate) fn finish(&mut self) {
         if !self.pending.is_empty() {

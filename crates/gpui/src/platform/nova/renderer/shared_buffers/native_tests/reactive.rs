@@ -121,16 +121,18 @@ fn pixels(
     );
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                target.1,
-                renderer.render_pass,
-                RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: target.1,
+                render_pass: renderer.render_pass,
+                commands: renderer.command_scratch.commands(),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("draw real view scene");
         let readback = device.read_texture(target.0).expect("read real view scene");
         readback
@@ -228,7 +230,8 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
     if !backdrop {
         let root = renderer
             .frame_upload
-            .root_color.map(|root| root.index)
+            .root_color
+            .map(|root| root.index)
             .expect("retained root");
         let layers = renderer.prepare_color_layers(&[root], false);
         assert!(!layers.is_empty(), "local root source refresh must execute");
@@ -240,8 +243,8 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
                 .flat_map(|group| &group.source_steps)
             {
                 let scissor = match step {
-                    RenderStepDescriptor::Draw(step) => step.scissor,
-                    RenderStepDescriptor::DrawIndexed(step) => step.scissor,
+                    RenderCommand::Draw(step) => step.scissor,
+                    RenderCommand::DrawIndexed(step) => step.scissor,
                 }
                 .expect("retained root source must be clipped");
                 assert!(scissor.width < 32 && scissor.height < 32);
@@ -259,7 +262,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
     );
     assert_eq!(&before_pixels[..4], &after_pixels[..4]);
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("complete presentation");
     device!(renderer, device, {
         device

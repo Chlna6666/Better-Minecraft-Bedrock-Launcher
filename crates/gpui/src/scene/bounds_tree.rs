@@ -36,12 +36,7 @@ where
         self.nodes.capacity() + self.stack.capacity()
     }
 
-    pub(crate) fn trim_for_reuse_against(
-        &mut self,
-        current: &Self,
-        floor: usize,
-        multiplier: usize,
-    ) {
+    pub(crate) fn trim_for_reuse(&mut self, current: &Self, floor: usize, multiplier: usize) {
         let multiplier = multiplier.max(1);
         let node_target = floor.max(current.nodes.len());
         if self.nodes.capacity() > node_target.saturating_mul(multiplier) {
@@ -57,7 +52,7 @@ where
         self.insert_internal(new_bounds, None)
     }
 
-    pub(crate) fn insert_with_order(&mut self, new_bounds: Bounds<U>, order: u32) -> u32 {
+    pub(crate) fn insert_ordered(&mut self, new_bounds: Bounds<U>, order: u32) -> u32 {
         self.insert_internal(new_bounds, Some(order))
     }
 
@@ -408,7 +403,7 @@ mod tests {
 
         let mut retained = BoundsTree::default();
         for (bounds, order) in bounds.into_iter().zip(orders) {
-            retained.insert_with_order(bounds, order);
+            retained.insert_ordered(bounds, order);
         }
 
         assert_eq!(retained.insert(following), expected_following_order);

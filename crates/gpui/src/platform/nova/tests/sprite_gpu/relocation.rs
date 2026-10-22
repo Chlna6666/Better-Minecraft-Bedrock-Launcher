@@ -6,7 +6,7 @@ pub(super) fn verify_atlas_compaction<D>(
     target: TextureId,
     view: TextureViewId,
 ) where
-    D: BackendResources + BackendPresentationCompat + TextureTransferDevice,
+    D: ResourceDevice + PresentationDevice + TextureTransferDevice,
 {
     for kind in [AtlasTextureKind::Monochrome, AtlasTextureKind::Bgra] {
         let atlas = NovaAtlas::new();
@@ -105,7 +105,7 @@ pub(super) fn verify_atlas_compaction<D>(
             )
             .expect("GPU atlas compact")
         );
-        let mut chunk_cache = RetainedQuadChunkCache::default();
+        let mut chunk_cache = RetainedChunkCache::default();
         let mut upload = FrameUpload::default();
         atlas.copy_placements_into(&mut upload.atlas_placements);
         let relocated = upload.atlas_placements[&old.tile_id];
@@ -141,7 +141,8 @@ pub(super) fn verify_atlas_compaction<D>(
         }
         upload.encode(
             &mut chunk_cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 16,
@@ -151,13 +152,11 @@ pub(super) fn verify_atlas_compaction<D>(
             false,
             BackdropBlurQuality::Full,
         );
+        let mono_bytes = upload.mono_sprites.to_vec();
         let (buffer, bytes, pipeline, set) = if kind == AtlasTextureKind::Monochrome {
+            assert_eq!(read_u32_at(&mono_bytes, 88), relocated.texture_id.index);
             assert_eq!(
-                read_u32_at(&upload.mono_sprites, 88),
-                relocated.texture_id.index
-            );
-            assert_eq!(
-                read_u32_at(&upload.mono_sprites, 104),
+                read_u32_at(&mono_bytes, 104),
                 relocated.bounds.origin.x.0 as u32
             );
             assert!(
@@ -165,7 +164,7 @@ pub(super) fn verify_atlas_compaction<D>(
             );
             (
                 resources.frame_resources[0].buffers.mono_sprite_buffer,
-                &upload.mono_sprites,
+                &mono_bytes,
                 resources.pipelines.alpha.mono_sprites,
                 destination.mono_resource_sets[0],
             )
@@ -183,31 +182,33 @@ pub(super) fn verify_atlas_compaction<D>(
         device
             .write_buffer(buffer, 0, bytes)
             .expect("relocated scene packing");
-        let step = DrawStepDescriptor {
+        let step = RenderCommand::Draw(DrawCommand {
             pipeline,
-            resource_sets: resource_set_list([set]),
+            bind_groups: bind_group_list([set]),
             vertex_count: 4,
             instance_count: 1,
             first_vertex: 0,
             first_instance: 0,
             scissor: None,
-        };
+        });
         device
-            .render_step_list_to_texture_compat(
-                view,
-                resources.render_pass,
-                gfx_core::RenderStepList::Draw(&[step]),
-                LoadOp::Clear(ClearColor {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: view,
+                render_pass: resources.render_pass,
+                commands: std::slice::from_ref(&step),
+                color_load_op: LoadOp::Clear(ClearColor {
                     red: 0.0,
                     green: 0.0,
                     blue: 0.0,
                     alpha: 1.0,
                 }),
-                Some(gfx_core::RenderPassDepthAttachment {
+                clear_region: None,
+                depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("old Scene draws relocated tile");
         let drawn = device.read_texture(target).expect("relocated Scene output");
         let center = 8 * drawn.bytes_per_row as usize + 8 * 4;
@@ -228,7 +229,7 @@ pub(super) fn verify_atlas_compaction<D>(
     }
 }
 
-pub(super) fn verify_texture_copies<D: BackendResources + TextureTransferDevice>(device: &mut D) {
+pub(super) fn verify_texture_copies<D: ResourceDevice + TextureTransferDevice>(device: &mut D) {
     for format in [Format::R8Unorm, Format::Bgra8Unorm] {
         let desc = TextureDescriptor {
             label: Some("GPU relocation fixture".into()),

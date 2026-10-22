@@ -329,6 +329,16 @@ impl RenderOwner {
         }
     }
 
+    /// Covers a native client area that grew ahead of the committed drawable with the
+    /// last presented frame. Coalesced latest-wins on the GPU owner; backends whose
+    /// compositor retains the published content ignore it.
+    #[cfg(target_os = "windows")]
+    pub(super) fn cover_native_resize(&self, size: Size<DevicePixels>) {
+        if let Err(error) = self.enqueue(Command::Cover { size }) {
+            log::trace!("discarding native resize cover after shutdown: {error:#}");
+        }
+    }
+
     pub(super) fn draw(&self, packet: PresentationPacket) -> Result<bool> {
         let resize = self.pending_drawable_size.lock().take();
         self.submit(packet, false, resize)

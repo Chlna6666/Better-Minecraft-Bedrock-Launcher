@@ -7,9 +7,7 @@ pub(super) fn planned_path_mask_size(
     old_drawable: DrawableSize,
     new_drawable: Extent2d,
 ) -> Result<Extent2d> {
-    if existing.width() == old_drawable.width
-        && existing.height() == old_drawable.height
-    {
+    if existing.width() == old_drawable.width && existing.height() == old_drawable.height {
         Ok(new_drawable)
     } else {
         Ok(Extent2d::new(1, 1)?)
@@ -50,15 +48,24 @@ mod resize_plan_tests {
 
     #[test]
     fn resize_reuses_unpromoted_one_pixel_path_mask() {
-        let old = DrawableSize { width: 1000, height: 700 };
+        let old = DrawableSize {
+            width: 1000,
+            height: 700,
+        };
         let placeholder = Extent2d::new(1, 1).unwrap();
         let next = Extent2d::new(1600, 900).unwrap();
-        assert_eq!(planned_path_mask_size(placeholder, old, next).unwrap(), placeholder);
+        assert_eq!(
+            planned_path_mask_size(placeholder, old, next).unwrap(),
+            placeholder
+        );
     }
 
     #[test]
     fn resize_promotes_an_active_path_mask_to_new_client_extent() {
-        let old = DrawableSize { width: 1000, height: 700 };
+        let old = DrawableSize {
+            width: 1000,
+            height: 700,
+        };
         let active = Extent2d::new(1000, 700).unwrap();
         let next = Extent2d::new(1600, 900).unwrap();
         assert_eq!(planned_path_mask_size(active, old, next).unwrap(), next);
@@ -82,7 +89,7 @@ impl NovaRenderer {
             return Ok(());
         }
         let wait_started_at = Instant::now();
-        self.prepare_for_resize()?;
+        self.prepare_resize()?;
         let submission_wait = wait_started_at.elapsed();
         let target_size = Extent2d::new(width, height)?;
         let surface_config = SurfaceConfig {
@@ -109,259 +116,313 @@ impl NovaRenderer {
         let swapchain_resize;
         let (next_path_mask_target, surface_config): (PathMaskTarget, SurfaceConfig) =
             match &mut *lock_backend(&self.backend) {
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => {
-                let attachments = pending_surface::acquire_for_resize(
-                    device,
-                    "OpenGL",
-                    next_size,
-                    next_path_mask_size,
-                    old_path_mask_target.clone(),
-                    !reuse_path_mask_target,
-                    path_mask_target_descriptor,
-                    &mut self.pending_surface_attachments,
-                )?;
-                let next_path_mask_target = attachments.path;
-                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
-                // Keep the last presented swapchain valid while the expensive size-dependent
-                // targets are prepared. Replacing its buffers first exposes an unpresented
-                // surface to DWM for the remainder of this transaction during live resize.
-                let swapchain_started_at = Instant::now();
-                if let Err(error) = resize_opengl_swapchain(device, self.swapchain, surface_config)
-                {
-                    if !reuse_path_mask_target {
-                        destroy_path_mask_target(device, next_path_mask_target, "OpenGL");
-                    }
-                    destroy_depth_target(
-                        device,
-                        next_depth_texture,
-                        next_depth_texture_view,
-                        "OpenGL",
-                    );
-                    return Err(error);
-                }
-                swapchain_resize = swapchain_started_at.elapsed();
-                if !reuse_path_mask_target {
-                    destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
-                }
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
-                }
-                if let Some(root) = self.root_color.take_target() {
-                    root_color::destroy_target(device, root);
-                }
-                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "OpenGL");
-                self.depth_texture = next_depth_texture;
-                self.depth_texture_view = next_depth_texture_view;
-                (next_path_mask_target, surface_config)
-            }
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => {
-                let attachments = pending_surface::acquire_for_resize(
-                    device,
-                    "DX11",
-                    next_size,
-                    next_path_mask_size,
-                    old_path_mask_target.clone(),
-                    !reuse_path_mask_target,
-                    path_mask_target_descriptor,
-                    &mut self.pending_surface_attachments,
-                )?;
-                let next_path_mask_target = attachments.path;
-                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
-                // Keep the last presented swapchain valid while the expensive size-dependent
-                // targets are prepared. Replacing its buffers first exposes an unpresented
-                // surface to DWM for the remainder of this transaction during live resize.
-                let swapchain_started_at = Instant::now();
-                if let Err(error) = resize_dx11_swapchain(device, self.swapchain, surface_config) {
-                    if !reuse_path_mask_target {
-                        destroy_path_mask_target(device, next_path_mask_target, "DX11");
-                    }
-                    destroy_depth_target(
-                        device,
-                        next_depth_texture,
-                        next_depth_texture_view,
-                        "DX11",
-                    );
-                    return Err(error);
-                }
-                swapchain_resize = swapchain_started_at.elapsed();
-                if !reuse_path_mask_target {
-                    destroy_path_mask_target(device, old_path_mask_target, "DX11");
-                }
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
-                }
-                if let Some(root) = self.root_color.take_target() {
-                    root_color::destroy_target(device, root);
-                }
-                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX11");
-                self.depth_texture = next_depth_texture;
-                self.depth_texture_view = next_depth_texture_view;
-                (next_path_mask_target, surface_config)
-            }
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => {
-                let attachments = pending_surface::acquire_for_resize(
-                    device,
-                    "DX12",
-                    next_size,
-                    next_path_mask_size,
-                    old_path_mask_target.clone(),
-                    !reuse_path_mask_target,
-                    path_mask_target_descriptor,
-                    &mut self.pending_surface_attachments,
-                )?;
-                let next_path_mask_target = attachments.path;
-                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
-                // Keep the last presented swapchain valid while the expensive size-dependent
-                // targets are prepared. Replacing its buffers first exposes an unpresented
-                // surface to DWM for the remainder of this transaction during live resize.
-                let swapchain_started_at = Instant::now();
-                if let Err(error) = resize_dx12_swapchain(device, self.swapchain, surface_config) {
-                    if !reuse_path_mask_target {
-                        destroy_path_mask_target(device, next_path_mask_target, "DX12");
-                    }
-                    destroy_depth_target(
-                        device,
-                        next_depth_texture,
-                        next_depth_texture_view,
-                        "DX12",
-                    );
-                    return Err(error);
-                }
-                swapchain_resize = swapchain_started_at.elapsed();
-                if !reuse_path_mask_target {
-                    destroy_path_mask_target(device, old_path_mask_target, "DX12");
-                }
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
-                }
-                if let Some(root) = self.root_color.take_target() {
-                    root_color::destroy_target(device, root);
-                }
-                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX12");
-                self.depth_texture = next_depth_texture;
-                self.depth_texture_view = next_depth_texture_view;
-                (next_path_mask_target, surface_config)
-            }
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => {
-                let swapchain_started_at = Instant::now();
-                device.resize_swapchain(self.swapchain, width, height)?;
-                swapchain_resize = swapchain_started_at.elapsed();
-                let attachments = pending_surface::acquire_for_resize(
-                    device,
-                    "Metal",
-                    next_size,
-                    next_path_mask_size,
-                    old_path_mask_target.clone(),
-                    !reuse_path_mask_target,
-                    path_mask_target_descriptor,
-                    &mut self.pending_surface_attachments,
-                )?;
-                let next_path_mask_target = attachments.path;
-                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
-                if !reuse_path_mask_target {
-                    destroy_path_mask_target(device, old_path_mask_target, "Metal");
-                }
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
-                }
-                if let Some(root) = self.root_color.take_target() {
-                    root_color::destroy_target(device, root);
-                }
-                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Metal");
-                self.depth_texture = next_depth_texture;
-                self.depth_texture_view = next_depth_texture_view;
-                (next_path_mask_target, surface_config)
-            }
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => {
-                // WSI may resolve a different extent from the requested client size.
-                // Build attachments against the allocated image extent, never a stale
-                // native event size; otherwise viewport projection scales the scene
-                // and the depth attachment may be smaller than its framebuffer.
-                let swapchain_started_at = Instant::now();
-                resize_vulkan_swapchain(device, self.swapchain, surface_config)?;
-                swapchain_resize = swapchain_started_at.elapsed();
-                let actual_size = device.swapchain_size(self.swapchain)?;
-                let surface_config = SurfaceConfig { size: actual_size, ..surface_config };
-                let next_path_mask_size =
-                    planned_path_mask_size(self.path_texture_size, self.current_size, actual_size)?;
-                let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
-                let mut path_mask_target_descriptor = path_mask_target_descriptor;
-                path_mask_target_descriptor.size = next_path_mask_size;
-                let attachments = pending_surface::acquire_for_resize(
-                    device,
-                    "Vulkan",
-                    DrawableSize {
-                        width: actual_size.width(),
-                        height: actual_size.height(),
-                    },
-                    next_path_mask_size,
-                    old_path_mask_target.clone(),
-                    !reuse_path_mask_target,
-                    path_mask_target_descriptor,
-                    &mut self.pending_surface_attachments,
-                )?;
-                let next_path_mask_target = attachments.path;
-                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
-                if !reuse_path_mask_target {
-                    destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
-                }
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
-                }
-                if let Some(root) = self.root_color.take_target() {
-                    root_color::destroy_target(device, root);
-                }
-                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Vulkan");
-                self.depth_texture = next_depth_texture;
-                self.depth_texture_view = next_depth_texture_view;
-                (next_path_mask_target, surface_config)
-            }
-            #[cfg(not(any(
-                all(
+                #[cfg(all(
                     feature = "nova-gfx-opengl",
                     any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
+                ))]
+                NovaBackend::OpenGl(device) => {
+                    let attachments = pending_surface::acquire_resize_attachments(
+                        device,
+                        "OpenGL",
+                        next_size,
+                        next_path_mask_size,
+                        old_path_mask_target.clone(),
+                        !reuse_path_mask_target,
+                        path_mask_target_descriptor,
+                        &mut self.pending_surface_attachments,
+                    )?;
+                    let next_path_mask_target = attachments.path;
+                    let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    // Keep the last presented swapchain valid while the expensive size-dependent
+                    // targets are prepared. Replacing its buffers first exposes an unpresented
+                    // surface to DWM for the remainder of this transaction during live resize.
+                    let swapchain_started_at = Instant::now();
+                    if let Err(error) =
+                        resize_opengl_swapchain(device, self.swapchain, surface_config)
+                    {
+                        if !reuse_path_mask_target {
+                            destroy_path_mask_target(device, next_path_mask_target, "OpenGL");
+                        }
+                        destroy_depth_target(
+                            device,
+                            next_depth_texture,
+                            next_depth_texture_view,
+                            "OpenGL",
+                        );
+                        return Err(error);
+                    }
+                    swapchain_resize = swapchain_started_at.elapsed();
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
+                    }
+                    if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(
+                            device,
+                            old_backdrop_blur_targets,
+                            "OpenGL",
+                        );
+                    }
+                    if let Some(root) = self.root_color.take_target() {
+                        root_color::destroy_target(device, root);
+                    }
+                    destroy_depth_target(
+                        device,
+                        old_depth_texture,
+                        old_depth_texture_view,
+                        "OpenGL",
+                    );
+                    self.depth_texture = next_depth_texture;
+                    self.depth_texture_view = next_depth_texture_view;
+                    (next_path_mask_target, surface_config)
+                }
+                #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+                NovaBackend::Dx11(device) => {
+                    let attachments = pending_surface::acquire_resize_attachments(
+                        device,
+                        "DX11",
+                        next_size,
+                        next_path_mask_size,
+                        old_path_mask_target.clone(),
+                        !reuse_path_mask_target,
+                        path_mask_target_descriptor,
+                        &mut self.pending_surface_attachments,
+                    )?;
+                    let next_path_mask_target = attachments.path;
+                    let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    // Keep the last presented swapchain valid while the expensive size-dependent
+                    // targets are prepared. Replacing its buffers first exposes an unpresented
+                    // surface to DWM for the remainder of this transaction during live resize.
+                    let swapchain_started_at = Instant::now();
+                    if let Err(error) =
+                        resize_dx11_swapchain(device, self.swapchain, surface_config)
+                    {
+                        if !reuse_path_mask_target {
+                            destroy_path_mask_target(device, next_path_mask_target, "DX11");
+                        }
+                        destroy_depth_target(
+                            device,
+                            next_depth_texture,
+                            next_depth_texture_view,
+                            "DX11",
+                        );
+                        return Err(error);
+                    }
+                    swapchain_resize = swapchain_started_at.elapsed();
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, old_path_mask_target, "DX11");
+                    }
+                    if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(
+                            device,
+                            old_backdrop_blur_targets,
+                            "DX11",
+                        );
+                    }
+                    if let Some(root) = self.root_color.take_target() {
+                        root_color::destroy_target(device, root);
+                    }
+                    destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX11");
+                    self.depth_texture = next_depth_texture;
+                    self.depth_texture_view = next_depth_texture_view;
+                    (next_path_mask_target, surface_config)
+                }
+                #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+                NovaBackend::Dx12(device) => {
+                    let attachments = pending_surface::acquire_resize_attachments(
+                        device,
+                        "DX12",
+                        next_size,
+                        next_path_mask_size,
+                        old_path_mask_target.clone(),
+                        !reuse_path_mask_target,
+                        path_mask_target_descriptor,
+                        &mut self.pending_surface_attachments,
+                    )?;
+                    let next_path_mask_target = attachments.path;
+                    let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    // Keep the last presented swapchain valid while the expensive size-dependent
+                    // targets are prepared. Replacing its buffers first exposes an unpresented
+                    // surface to DWM for the remainder of this transaction during live resize.
+                    let swapchain_started_at = Instant::now();
+                    if let Err(error) =
+                        resize_dx12_swapchain(device, self.swapchain, surface_config)
+                    {
+                        if !reuse_path_mask_target {
+                            destroy_path_mask_target(device, next_path_mask_target, "DX12");
+                        }
+                        destroy_depth_target(
+                            device,
+                            next_depth_texture,
+                            next_depth_texture_view,
+                            "DX12",
+                        );
+                        return Err(error);
+                    }
+                    swapchain_resize = swapchain_started_at.elapsed();
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, old_path_mask_target, "DX12");
+                    }
+                    if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(
+                            device,
+                            old_backdrop_blur_targets,
+                            "DX12",
+                        );
+                    }
+                    if let Some(root) = self.root_color.take_target() {
+                        root_color::destroy_target(device, root);
+                    }
+                    destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX12");
+                    self.depth_texture = next_depth_texture;
+                    self.depth_texture_view = next_depth_texture_view;
+                    (next_path_mask_target, surface_config)
+                }
+                #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+                NovaBackend::Metal(device) => {
+                    let swapchain_started_at = Instant::now();
+                    gfx_core::SurfaceDevice::resize_swapchain(device, self.swapchain, target_size)?;
+                    swapchain_resize = swapchain_started_at.elapsed();
+                    let attachments = pending_surface::acquire_resize_attachments(
+                        device,
+                        "Metal",
+                        next_size,
+                        next_path_mask_size,
+                        old_path_mask_target.clone(),
+                        !reuse_path_mask_target,
+                        path_mask_target_descriptor,
+                        &mut self.pending_surface_attachments,
+                    )?;
+                    let next_path_mask_target = attachments.path;
+                    let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, old_path_mask_target, "Metal");
+                    }
+                    if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(
+                            device,
+                            old_backdrop_blur_targets,
+                            "Metal",
+                        );
+                    }
+                    if let Some(root) = self.root_color.take_target() {
+                        root_color::destroy_target(device, root);
+                    }
+                    destroy_depth_target(
+                        device,
+                        old_depth_texture,
+                        old_depth_texture_view,
+                        "Metal",
+                    );
+                    self.depth_texture = next_depth_texture;
+                    self.depth_texture_view = next_depth_texture_view;
+                    (next_path_mask_target, surface_config)
+                }
+                #[cfg(all(
                     feature = "nova-gfx-vulkan",
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        };
+                ))]
+                NovaBackend::Vulkan(device) => {
+                    // WSI may resolve a different extent from the requested client size.
+                    // Build attachments against the allocated image extent, never a stale
+                    // native event size; otherwise viewport projection scales the scene
+                    // and the depth attachment may be smaller than its framebuffer.
+                    let swapchain_started_at = Instant::now();
+                    resize_vulkan_swapchain(device, self.swapchain, surface_config)?;
+                    swapchain_resize = swapchain_started_at.elapsed();
+                    let actual_size =
+                        gfx_core::SurfaceDevice::swapchain_extent(device, self.swapchain)?;
+                    let surface_config = SurfaceConfig {
+                        size: actual_size,
+                        ..surface_config
+                    };
+                    let next_path_mask_size = planned_path_mask_size(
+                        self.path_texture_size,
+                        self.current_size,
+                        actual_size,
+                    )?;
+                    let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
+                    let mut path_mask_target_descriptor = path_mask_target_descriptor;
+                    path_mask_target_descriptor.size = next_path_mask_size;
+                    let attachments = pending_surface::acquire_resize_attachments(
+                        device,
+                        "Vulkan",
+                        DrawableSize {
+                            width: actual_size.width(),
+                            height: actual_size.height(),
+                        },
+                        next_path_mask_size,
+                        old_path_mask_target.clone(),
+                        !reuse_path_mask_target,
+                        path_mask_target_descriptor,
+                        &mut self.pending_surface_attachments,
+                    )?;
+                    let next_path_mask_target = attachments.path;
+                    let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
+                    }
+                    if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(
+                            device,
+                            old_backdrop_blur_targets,
+                            "Vulkan",
+                        );
+                    }
+                    if let Some(root) = self.root_color.take_target() {
+                        root_color::destroy_target(device, root);
+                    }
+                    destroy_depth_target(
+                        device,
+                        old_depth_texture,
+                        old_depth_texture_view,
+                        "Vulkan",
+                    );
+                    self.depth_texture = next_depth_texture;
+                    self.depth_texture_view = next_depth_texture_view;
+                    (next_path_mask_target, surface_config)
+                }
+                #[cfg(not(any(
+                    all(
+                        feature = "nova-gfx-opengl",
+                        any(target_os = "windows", target_os = "linux")
+                    ),
+                    all(feature = "nova-gfx-dx11", target_os = "windows"),
+                    all(feature = "nova-gfx-dx12", target_os = "windows"),
+                    all(feature = "nova-gfx-metal", target_os = "macos"),
+                    all(
+                        feature = "nova-gfx-vulkan",
+                        any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                    )
+                )))]
+                NovaBackend::Unavailable => {
+                    anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+                }
+            };
         let next_size = DrawableSize {
             width: surface_config.size.width(),
             height: surface_config.size.height(),
         };
-        let next_path_mask_size =
-            planned_path_mask_size(self.path_texture_size, self.current_size, surface_config.size)?;
+        let next_path_mask_size = planned_path_mask_size(
+            self.path_texture_size,
+            self.current_size,
+            surface_config.size,
+        )?;
         let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
         if !reuse_path_mask_target {
-            self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
+            self.update_path_mask_resource_sets(&next_path_mask_target.bind_groups)?;
         }
         self.filters.targets = None;
         self.invalidate_backdrop_blur_cache();
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
         self.current_size = next_size;
+        self.surface_extent = next_size;
+        // The scene target was reallocated for this resize: no retained frame may be
+        // re-presented until the matching Scene reaches the swapchain.
+        self.retained_frame_valid = false;
         // Native resize and old-reader fence retirement succeeded. Swap the
         // separately prepared physical targets as one transaction. These
         // targets have NO valid retained texels until the subsequent Main
@@ -416,7 +477,7 @@ impl NovaRenderer {
             // Outdated-surface recovery may replace WSI images independently of
             // native event delivery. Reconcile attachments before sampling them.
             if let NovaBackend::Vulkan(device) = &*lock_backend(&self.backend) {
-                let actual = device.swapchain_size(self.swapchain)?;
+                let actual = gfx_core::SurfaceDevice::swapchain_extent(device, self.swapchain)?;
                 if actual.width() != self.current_size.width
                     || actual.height() != self.current_size.height
                 {
@@ -506,7 +567,7 @@ impl NovaRenderer {
         SurfaceAlphaState::for_window_transparency(is_transparent)
     }
 
-    pub(in crate::platform::nova) fn alpha_state_for_window_transparency_on_backend(
+    pub(in crate::platform::nova) fn alpha_state_on_backend(
         _backend: RendererBackend,
         is_transparent: bool,
     ) -> SurfaceAlphaState {
@@ -535,7 +596,11 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             NovaBackend::Vulkan(device) => Ok(SurfaceAlphaState::new(
-                device.resolve_surface_alpha_mode(self.surface, requested.swapchain_mode)?,
+                gfx_core::SurfaceDevice::resolve_composite_alpha(
+                    device,
+                    self.surface,
+                    requested.swapchain_mode,
+                )?,
             )),
             #[cfg(not(any(
                 all(
@@ -577,7 +642,7 @@ impl NovaRenderer {
         // referenced by in-flight GPU work. Output-only policy transitions
         // (same swapchain alpha mode) must never force a cross-window GPU fence
         // wait on the shared device owner.
-        self.wait_for_pending_submissions()?;
+        self.wait_pending_submissions()?;
         // A WSI format/alpha transition invalidates the assumptions used
         // to prepare the speculative Root/Filter descriptors. Their GPU
         // allocations were never submitted and can be discarded independently.
@@ -609,7 +674,7 @@ impl NovaRenderer {
             ))]
             NovaBackend::OpenGl(device) => {
                 self.swapchain =
-                    recreate_opengl_swapchain_for_config(device, self.swapchain, config)?;
+                    gfx_core::SurfaceDevice::recreate_swapchain(device, self.swapchain, config)?;
                 let next_path_mask_target = create_path_mask_target(
                     device,
                     "gpui nova opengl",
@@ -638,7 +703,7 @@ impl NovaRenderer {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => {
                 self.swapchain =
-                    recreate_dx11_swapchain_for_config(device, self.swapchain, config)?;
+                    gfx_core::SurfaceDevice::recreate_swapchain(device, self.swapchain, config)?;
                 let next_path_mask_target =
                     create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?;
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
@@ -664,7 +729,7 @@ impl NovaRenderer {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 self.swapchain =
-                    recreate_dx12_swapchain_for_config(device, self.swapchain, config)?;
+                    gfx_core::SurfaceDevice::recreate_swapchain(device, self.swapchain, config)?;
                 let next_path_mask_target =
                     create_path_mask_target(device, "gpui nova dx12", path_mask_target_descriptor)?;
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
@@ -689,11 +754,7 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => {
-                device.resize_swapchain(
-                    self.swapchain,
-                    config.size.width(),
-                    config.size.height(),
-                )?;
+                gfx_core::SurfaceDevice::resize_swapchain(device, self.swapchain, config.size)?;
                 let next_path_mask_target = create_path_mask_target(
                     device,
                     "gpui nova metal",
@@ -724,7 +785,8 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             NovaBackend::Vulkan(device) => {
-                device.reconfigure_swapchain(self.swapchain, config)?;
+                let _same_swapchain =
+                    gfx_core::SurfaceDevice::recreate_swapchain(device, self.swapchain, config)?;
                 let next_path_mask_target = create_path_mask_target(
                     device,
                     "gpui nova vulkan",
@@ -770,7 +832,7 @@ impl NovaRenderer {
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
-        self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
+        self.update_path_mask_resource_sets(&next_path_mask_target.bind_groups)?;
         self.filters.targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
@@ -783,7 +845,7 @@ impl NovaRenderer {
         PathMaskTarget {
             texture: self.path_texture,
             texture_view: self.path_texture_view,
-            resource_sets: self
+            bind_groups: self
                 .frame_resources
                 .iter()
                 .map(|resources| resources.path_resource_set)
@@ -799,7 +861,7 @@ impl NovaRenderer {
         PathMaskTargetDescriptor {
             size,
             format: self.surface_format,
-            resource_set_layout: self.path_resource_set_layout,
+            bind_group_layout: self.path_resource_set_layout,
             frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }

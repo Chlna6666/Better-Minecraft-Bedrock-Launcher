@@ -28,7 +28,7 @@ impl Render for EmptyTestView {
 
 /// Simulates the recent-input guard expiring *inside* a long-running render.
 /// The started generation must never upgrade to progressive-abortable because
-/// its early CachedView states may already have been moved without snapshots.
+/// its early element states may already have been moved without snapshots.
 struct LateProgressiveAbortView {
     trigger: bool,
     candidate_was_aborted: Rc<Cell<bool>>,
@@ -49,9 +49,7 @@ impl Render for LateProgressiveAbortView {
 }
 
 #[gpui::test]
-fn progressive_abort_never_upgrades_after_recent_input_expires_mid_frame(
-    cx: &mut TestAppContext,
-) {
+fn progressive_abort_never_upgrades_after_recent_input_expires_mid_frame(cx: &mut TestAppContext) {
     let aborted = Rc::new(Cell::new(false));
     let (view, mut context) = cx.add_window_view(|_, _| LateProgressiveAbortView {
         trigger: false,
@@ -1076,9 +1074,7 @@ fn rapid_resize_updates_latest_viewport_without_invalidating_companion_window(
 }
 
 #[gpui::test]
-fn reentrant_native_resize_delivers_latest_viewport_after_window_borrow(
-    cx: &mut TestAppContext,
-) {
+fn reentrant_native_resize_delivers_latest_viewport_after_window_borrow(cx: &mut TestAppContext) {
     let mut visual = cx.add_empty_window();
     let latest = size(px(1216.0), px(752.0));
     visual.update(|window, _| {
@@ -1098,16 +1094,17 @@ fn reentrant_native_resize_delivers_latest_viewport_after_window_borrow(
 }
 
 #[gpui::test]
-fn resize_invalidates_root_layout_boundary_without_forcing_every_cached_view(
-    cx: &mut TestAppContext,
-) {
+fn resize_invalidates_root_layout_boundary_without_forcing_full_refresh(cx: &mut TestAppContext) {
     let (root, window) = cx.add_window_view(|_, _| PaintedTestView);
     let root_id = root.entity_id();
     window.update(|window, cx| {
         assert_eq!(window.root.as_ref().map(AnyView::entity_id), Some(root_id));
         let unrelated_view = EntityId::from(110);
         let dependent_view = EntityId::from(111);
-        window.viewport_dependent_views.borrow_mut().insert(dependent_view);
+        window
+            .viewport_dependent_views
+            .borrow_mut()
+            .insert(dependent_view);
         window.invalidator.set_dirty(false);
         window.invalidator.take_views();
         window.force_view_cache_refresh = false;
@@ -1119,12 +1116,18 @@ fn resize_invalidates_root_layout_boundary_without_forcing_every_cached_view(
         window.content_bounds_changed(cx);
 
         let dirty = window.invalidator.take_views();
-        assert!(dirty.contains(&root_id), "root layout must follow the resized viewport");
-        assert!(dirty.contains(&dependent_view), "explicit viewport dependencies remain dirty");
+        assert!(
+            dirty.contains(&root_id),
+            "root layout must follow the resized viewport"
+        );
+        assert!(
+            dirty.contains(&dependent_view),
+            "explicit viewport dependencies remain dirty"
+        );
         assert!(!dirty.contains(&unrelated_view));
         assert!(
             !window.force_view_cache_refresh,
-            "geometry invalidation must not force a global cached-view refresh"
+            "geometry invalidation must not force a global retained refresh"
         );
     });
 }
@@ -1153,37 +1156,6 @@ fn content_bounds_change_only_invalidates_viewport_dependent_views(cx: &mut Test
         let dirty_views = window.invalidator.take_views();
         assert!(dirty_views.contains(&dependent));
         assert!(!dirty_views.contains(&independent));
-    });
-}
-
-#[gpui::test]
-fn viewport_resize_invalidates_nested_cached_geometry(cx: &mut TestAppContext) {
-    let (root, mut cx) = cx.add_window_view(|_, _| EmptyTestView);
-    cx.update(|window, cx| {
-        let root_id = root.entity_id();
-        let boundary = GlobalElementId::from_path(&[ElementId::InstanceSlot(0)]);
-        let descendant = GlobalElementId::from_path(&[
-            ElementId::InstanceSlot(0),
-            ElementId::InstanceSlot(1),
-        ]);
-        window
-            .invalidator
-            .register_cached_view_retained_target(root_id, &boundary, &boundary);
-        window.invalidator.set_dirty(false);
-
-        {
-            let test_window = window.platform_window.as_test().unwrap();
-            test_window.0.lock().bounds.size.height += px(48.);
-        }
-        window.content_bounds_changed(cx);
-        window.invalidator.set_dirty(false);
-
-        assert!(
-            window
-                .invalidator
-                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == root_id),
-            "a new viewport must not reuse a descendant's stale cached layout"
-        );
     });
 }
 
@@ -1257,9 +1229,7 @@ fn background_pointer_button_does_not_request_frame(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn inert_mouse_click_storm_does_not_invalidate_sibling_window_or_cached_views(
-    cx: &mut TestAppContext,
-) {
+fn inert_mouse_click_storm_does_not_invalidate_sibling_window(cx: &mut TestAppContext) {
     let mut sibling_cx = cx.clone();
     let first = cx.add_empty_window();
     let sibling = sibling_cx.add_empty_window();
@@ -1268,9 +1238,8 @@ fn inert_mouse_click_storm_does_not_invalidate_sibling_window_or_cached_views(
         window.invalidator.set_dirty(false);
         window.force_view_cache_refresh = false;
     });
-    let sibling_platform = sibling.update(|window, _| {
-        window.platform_window.as_test().unwrap().clone()
-    });
+    let sibling_platform =
+        sibling.update(|window, _| window.platform_window.as_test().unwrap().clone());
     let sibling_baseline = sibling_platform.requested_frame_count();
 
     first.update(|window, cx| {
@@ -1346,9 +1315,11 @@ fn mouse_down_with_listener_preserves_modality_refresh(cx: &mut TestAppContext) 
         window
             .rendered_frame
             .mouse_listeners
-            .push(MouseListener::new::<MouseDownEvent>(Box::new(move |_, _, _, _| {
-                count.set(count.get() + 1);
-            })));
+            .push(MouseListener::new::<MouseDownEvent>(Box::new(
+                move |_, _, _, _| {
+                    count.set(count.get() + 1);
+                },
+            )));
         window.dispatch_event(
             PlatformInput::MouseDown(MouseDownEvent {
                 button: MouseButton::Left,
@@ -1363,7 +1334,11 @@ fn mouse_down_with_listener_preserves_modality_refresh(cx: &mut TestAppContext) 
             window.force_view_cache_refresh,
             "interactive input-modality changes must still reconcile hover/tooltip state"
         );
-        assert_eq!(dispatched.get(), 2, "capture and bubble listeners must still execute");
+        assert_eq!(
+            dispatched.get(),
+            2,
+            "capture and bubble listeners must still execute"
+        );
     });
 }
 
@@ -2207,12 +2182,12 @@ fn completed_asset_load_invalidates_its_retained_subtree(cx: &mut TestAppContext
         assert!(
             window
                 .invalidator
-                .retained_path_is_dirty_for_view_route(&target, &|owner| owner == view_id)
+                .retained_route_path_is_dirty(&target, &|owner| owner == view_id)
         );
         assert!(
             !window
                 .invalidator
-                .retained_path_is_dirty_for_view_route(&sibling, &|owner| owner == view_id)
+                .retained_route_path_is_dirty(&sibling, &|owner| owner == view_id)
         );
         assert!(!window.invalidator.active_generic_view_is_dirty(view_id));
     });
@@ -2312,8 +2287,8 @@ fn scene_animation_metadata_changes_require_commit(cx: &mut TestAppContext) {
             [1.0; 4],
         );
         let mut engine = window.animation_engine.borrow_mut();
-        assert!(engine.retain_scene_animations_for_scene(&crate::scene::Painter::default()));
-        assert!(!engine.retain_scene_animations_for_scene(&crate::scene::Painter::default()));
+        assert!(engine.retain_scene_animation_cache(&crate::scene::Painter::default()));
+        assert!(!engine.retain_scene_animation_cache(&crate::scene::Painter::default()));
     });
 }
 

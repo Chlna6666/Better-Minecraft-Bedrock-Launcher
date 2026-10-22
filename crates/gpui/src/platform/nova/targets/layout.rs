@@ -24,7 +24,7 @@ impl BackdropBlurTargets {
         let Some(permutation) = self.plan_layout(next, auto_static_indices) else {
             return false;
         };
-        // The complete Texture/View/ResourceSet owner moves together. This temporary
+        // The complete Texture/View/BindGroup owner moves together. This temporary
         // permutation has no content version or resource-lifetime authority.
         let mut original_at_position: Vec<_> = (0..self.variants.len()).collect();
         for (destination, (config, original)) in next.iter().zip(permutation).enumerate() {

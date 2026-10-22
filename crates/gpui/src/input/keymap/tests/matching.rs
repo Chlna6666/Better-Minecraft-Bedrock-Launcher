@@ -56,7 +56,7 @@ fn test_keymap_disabled() {
     // binding is only enabled in a specific context
     assert!(
         keymap
-            .bindings_for_input(
+            .input_bindings(
                 &[Keystroke::parse("ctrl-a").unwrap()],
                 &[KeyContext::parse("barf").unwrap()],
             )
@@ -65,7 +65,7 @@ fn test_keymap_disabled() {
     );
     assert!(
         !keymap
-            .bindings_for_input(
+            .input_bindings(
                 &[Keystroke::parse("ctrl-a").unwrap()],
                 &[KeyContext::parse("editor").unwrap()],
             )
@@ -76,7 +76,7 @@ fn test_keymap_disabled() {
     // binding is disabled in a more specific context
     assert!(
         keymap
-            .bindings_for_input(
+            .input_bindings(
                 &[Keystroke::parse("ctrl-a").unwrap()],
                 &[KeyContext::parse("editor mode=full").unwrap()],
             )
@@ -87,7 +87,7 @@ fn test_keymap_disabled() {
     // binding is globally disabled
     assert!(
         keymap
-            .bindings_for_input(
+            .input_bindings(
                 &[Keystroke::parse("ctrl-b").unwrap()],
                 &[KeyContext::parse("barf").unwrap()],
             )
@@ -123,29 +123,29 @@ fn test_multiple_keystroke_binding_disabled() {
     };
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let space_workspace = keymap.bindings_for_input(&[space()], &workspace_context());
+    let space_workspace = keymap.input_bindings(&[space()], &workspace_context());
     assert!(space_workspace.0.is_empty());
     assert!(space_workspace.1);
 
-    let space_editor = keymap.bindings_for_input(&[space()], &editor_workspace_context());
+    let space_editor = keymap.input_bindings(&[space()], &editor_workspace_context());
     assert!(space_editor.0.is_empty());
     assert!(!space_editor.1);
 
     // Ensure `space w` results in pending input on the workspace, but not editor
-    let space_w_workspace = keymap.bindings_for_input(&space_w, &workspace_context());
+    let space_w_workspace = keymap.input_bindings(&space_w, &workspace_context());
     assert!(space_w_workspace.0.is_empty());
     assert!(space_w_workspace.1);
 
-    let space_w_editor = keymap.bindings_for_input(&space_w, &editor_workspace_context());
+    let space_w_editor = keymap.input_bindings(&space_w, &editor_workspace_context());
     assert!(space_w_editor.0.is_empty());
     assert!(!space_w_editor.1);
 
     // Ensure `space w w` results in the binding in the workspace, but not in the editor
-    let space_w_w_workspace = keymap.bindings_for_input(&space_w_w, &workspace_context());
+    let space_w_w_workspace = keymap.input_bindings(&space_w_w, &workspace_context());
     assert!(!space_w_w_workspace.0.is_empty());
     assert!(!space_w_w_workspace.1);
 
-    let space_w_w_editor = keymap.bindings_for_input(&space_w_w, &editor_workspace_context());
+    let space_w_w_editor = keymap.input_bindings(&space_w_w, &editor_workspace_context());
     assert!(space_w_w_editor.0.is_empty());
     assert!(!space_w_w_editor.1);
 
@@ -159,7 +159,7 @@ fn test_multiple_keystroke_binding_disabled() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let space_editor = keymap.bindings_for_input(&[space()], &editor_workspace_context());
+    let space_editor = keymap.input_bindings(&[space()], &editor_workspace_context());
     assert!(space_editor.0.is_empty());
     assert!(space_editor.1);
 
@@ -173,7 +173,7 @@ fn test_multiple_keystroke_binding_disabled() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let space_editor = keymap.bindings_for_input(&[space()], &editor_workspace_context());
+    let space_editor = keymap.input_bindings(&[space()], &editor_workspace_context());
     assert!(space_editor.0.is_empty());
     assert!(space_editor.1);
 
@@ -187,7 +187,7 @@ fn test_multiple_keystroke_binding_disabled() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let space_editor = keymap.bindings_for_input(&[space()], &editor_workspace_context());
+    let space_editor = keymap.input_bindings(&[space()], &editor_workspace_context());
     assert!(space_editor.0.is_empty());
     assert!(space_editor.1);
 }
@@ -203,7 +203,7 @@ fn test_override_multikey() {
     keymap.add_bindings(bindings);
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-w").unwrap()],
         &[KeyContext::parse("editor").unwrap()],
     );
@@ -219,7 +219,7 @@ fn test_override_multikey() {
     keymap.add_bindings(bindings);
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-w").unwrap()],
         &[KeyContext::parse("editor").unwrap()],
     );
@@ -238,7 +238,7 @@ fn test_simple_disable() {
     keymap.add_bindings(bindings);
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x").unwrap()],
         &[KeyContext::parse("editor").unwrap()],
     );
@@ -258,7 +258,7 @@ fn test_fail_to_disable() {
     keymap.add_bindings(bindings);
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x").unwrap()],
         &[
             KeyContext::parse("workspace").unwrap(),
@@ -280,7 +280,7 @@ fn test_disable_deeper() {
     keymap.add_bindings(bindings);
 
     // Ensure `space` results in pending input on the workspace, but not editor
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x").unwrap()],
         &[
             KeyContext::parse("workspace").unwrap(),

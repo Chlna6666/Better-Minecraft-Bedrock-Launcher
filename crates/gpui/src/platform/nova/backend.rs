@@ -1,4 +1,5 @@
 use super::*;
+use crate::ExtensionDevice;
 use gfx_core::SurfaceDevice as _;
 
 pub(super) enum NovaBackend {
@@ -119,7 +120,7 @@ impl NovaBackend {
 
     pub(super) fn with_extension_device<T>(
         &mut self,
-        callback: impl FnOnce(&mut dyn gfx_core::ExtensionDevice) -> Result<T>,
+        callback: impl FnOnce(&mut dyn ExtensionDevice) -> Result<T>,
     ) -> Result<T> {
         match self {
             #[cfg(all(
@@ -161,18 +162,18 @@ impl NovaBackend {
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(device) => device.adapter_name(),
+            Self::OpenGl(device) => gfx_core::Backend::adapter_name(device),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => device.adapter_name(),
+            Self::Dx11(device) => gfx_core::Backend::adapter_name(device),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => device.adapter_name(),
+            Self::Dx12(device) => gfx_core::Backend::adapter_name(device),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(_) => "nova-gfx Metal",
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => device.adapter_name(),
+            Self::Vulkan(device) => gfx_core::Backend::adapter_name(device),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",
@@ -199,9 +200,13 @@ impl NovaBackend {
             ))]
             Self::OpenGl(_) => Ok(true),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(device.swapchain_frame_ready(swapchain)?),
+            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::can_present_now(
+                device, swapchain,
+            )?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(device.swapchain_frame_ready(swapchain)?),
+            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::can_present_now(
+                device, swapchain,
+            )?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(_) => Ok(true),
             #[cfg(all(
@@ -226,7 +231,7 @@ impl NovaBackend {
         }
     }
 
-    pub(super) fn arm_swapchain_frame_ready(
+    pub(super) fn request_frame_ready(
         &mut self,
         _swapchain: SwapchainId,
         callback: Box<dyn FnOnce() + Send + 'static>,
@@ -236,18 +241,18 @@ impl NovaBackend {
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            Self::OpenGl(device) => Ok(device.request_frame_ready(_swapchain, callback)?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            Self::Dx11(device) => Ok(device.request_frame_ready(_swapchain, callback)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            Self::Dx12(device) => Ok(device.request_frame_ready(_swapchain, callback)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            Self::Metal(device) => Ok(device.request_frame_ready(_swapchain, callback)?),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            Self::Vulkan(device) => Ok(device.request_frame_ready(_swapchain, callback)?),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",
@@ -268,27 +273,27 @@ impl NovaBackend {
         }
     }
 
-    pub(super) fn presentation_capabilities(
+    pub(super) fn surface_capabilities(
         &self,
         swapchain: SwapchainId,
-    ) -> gfx_core::PresentationCapabilities {
+    ) -> gfx_core::SurfaceCapabilities {
         match self {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(device) => device.presentation_capabilities(swapchain),
+            Self::OpenGl(device) => device.surface_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => device.presentation_capabilities(swapchain),
+            Self::Dx11(device) => device.surface_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => device.presentation_capabilities(swapchain),
+            Self::Dx12(device) => device.surface_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(device) => device.presentation_capabilities(swapchain),
+            Self::Metal(device) => device.surface_capabilities(swapchain),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => device.presentation_capabilities(swapchain),
+            Self::Vulkan(device) => device.surface_capabilities(swapchain),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",
@@ -302,7 +307,7 @@ impl NovaBackend {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            Self::Unavailable => gfx_core::PresentationCapabilities::default(),
+            Self::Unavailable => gfx_core::SurfaceCapabilities::default(),
         }
     }
 
@@ -336,20 +341,60 @@ impl NovaBackend {
         }
     }
 
-    pub(super) fn set_swapchain_content_stretch(
+    /// Presents the retained scene target over a native client area that grew ahead
+    /// of the matching Scene. Backends without a retained-frame path return
+    /// `Unavailable`, which the caller treats as "the compositor already covers it".
+    pub(super) fn present_retained_frame(
         &mut self,
         swapchain: SwapchainId,
-        scale: Option<[f32; 2]>,
+        target: gfx_core::Extent2d,
     ) -> Result<()> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+                device, swapchain, target,
+            )?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
+            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+                device, swapchain, target,
+            )?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
-            #[allow(unreachable_patterns)]
-            _ => {
-                let _ = (swapchain, scale);
-                Ok(())
+            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+                device, swapchain, target,
+            )?),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+                device, swapchain, target,
+            )?),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+                device, swapchain, target,
+            )?),
+            #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => {
+                let _ = (swapchain, target);
+                Err(gfx_core::Error::Unavailable(
+                    "retained-frame presentation is not supported by this backend".into(),
+                )
+                .into())
             }
         }
     }

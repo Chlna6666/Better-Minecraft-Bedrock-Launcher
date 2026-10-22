@@ -27,27 +27,21 @@ impl NovaRenderer {
                 else {
                     return None;
                 };
-                let configs = self
-                    .frame_upload
-                    .backdrop_blur_configs_for_range(first, count);
+                let configs = self.frame_upload.blur_configs_in_range(first, count);
                 // Root uses window coordinates, matching the per-order source plan.
                 // Isolated captures can rebase/transform their inputs, so keep their
                 // existing conservative local damage path.
                 let (source_full, source_damage) = if is_root {
-                    backdrop_damage_for_configs(
-                        &self.draw_step_scratch.backdrop_blur_damage_plan,
+                    backdrop_config_damage(
+                        &self.command_scratch.backdrop_blur_damage_plan,
                         &configs,
                     )
                 } else {
                     (false, damage.clone())
                 };
                 let force_full = force_full || source_full;
-                let refreshed_configs = blur_configs_for_refresh(
-                    &configs,
-                    self.active_size,
-                    &source_damage,
-                    force_full,
-                );
+                let refreshed_configs =
+                    blur_refresh_configs(&configs, self.active_size, &source_damage, force_full);
                 Some(BarrierRefresh {
                     batch_index,
                     configs_known: !configs.is_empty(),
@@ -60,7 +54,7 @@ impl NovaRenderer {
     }
 }
 
-pub(super) fn backdrop_damage_for_configs(
+pub(super) fn backdrop_config_damage(
     plan: &crate::BackdropBlurDamagePlan,
     configs: &[BackdropBlurConfig],
 ) -> (bool, DirtyRegion) {
@@ -76,7 +70,7 @@ pub(super) fn backdrop_damage_for_configs(
         .map(|config| *config.order_range().end())
         .max()
         .unwrap_or(first_order);
-    let (full_refresh, damage) = plan.source_damage_for_orders(first_order, last_order);
+    let (full_refresh, damage) = plan.order_source_damage(first_order, last_order);
     let mut region = DirtyRegion::empty();
     for bounds in damage {
         region.push(bounds);
@@ -84,7 +78,7 @@ pub(super) fn backdrop_damage_for_configs(
     (full_refresh, region)
 }
 
-pub(super) fn blur_configs_for_refresh(
+pub(super) fn blur_refresh_configs(
     configs: &[BackdropBlurConfig],
     drawable_size: DrawableSize,
     dirty_region: &DirtyRegion,

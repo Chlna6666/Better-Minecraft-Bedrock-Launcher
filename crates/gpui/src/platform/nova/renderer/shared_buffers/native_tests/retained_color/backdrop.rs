@@ -98,7 +98,7 @@ fn verify(backend: RendererBackend) {
     verify_samples(&mut renderer, &scene, target);
     verify_repaired_sample(&mut renderer, &scene, target);
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("retire readback");
     device!(renderer, device, {
         device.destroy_texture_view(target.1).expect("destroy view");

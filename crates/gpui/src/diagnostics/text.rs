@@ -128,6 +128,14 @@ pub(crate) fn record(
         .entry((backend, operation))
         .or_default()
         .record(wait, method);
+    // Opt-in outliers only, after releasing both the native font and recorder locks.
+    if crate::window::element_work::enabled()
+        && wait.saturating_add(method) >= Duration::from_millis(4)
+    {
+        log::warn!(target: "gpui::diagnostics::text",
+            "slow_text_operation backend={backend:?} operation={operation:?} lock_wait_us={} method_us={} thread={:?}",
+            wait.as_micros(), method.as_micros(), std::thread::current().id());
+    }
 }
 
 /// Returns only observed backend/operation rows. Percentiles use at most 256 recent calls;

@@ -1217,7 +1217,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             };
             window.on_next_presentation_frame(move |window, cx| {
                 frame_pending.set(false);
-                window.notify_interactive_region_scoped_for_current_frame(
+                window.notify_frame_interactive_region(
                     view_id,
                     Some(&retained_id),
                     dirty_bounds,
@@ -1528,7 +1528,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                                     animation_id,
                                 )
                             } else if let Some(animation_id) = animation_id {
-                                window.start_scene_animation_with_id(
+                                window.start_identified_scene_animation(
                                     global_id,
                                     property.property,
                                     spec.clone(),

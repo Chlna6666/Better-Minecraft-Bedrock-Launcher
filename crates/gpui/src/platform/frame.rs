@@ -461,9 +461,15 @@ mod tests {
         assert!(cadence.needs_ui_commit());
         assert!(cadence.needs_presentation());
         let resolved = cadence.resolve_animation_presentation(false);
-        assert!(resolved.needs_ui_commit(), "the UI tick must still progress");
+        assert!(
+            resolved.needs_ui_commit(),
+            "the UI tick must still progress"
+        );
         assert!(!resolved.needs_presentation(), "no pixels changed");
-        assert!(resolved.requires_frame(), "the UI callback was not discarded");
+        assert!(
+            resolved.requires_frame(),
+            "the UI callback was not discarded"
+        );
     }
 
     #[test]
@@ -471,9 +477,15 @@ mod tests {
         let wsi = PlatformFrameRequest::presentation();
         let merged = PlatformFrameRequest::animation_tick().merge(wsi);
         let resolved = merged.resolve_animation_presentation(false);
-        assert!(resolved.needs_presentation(), "explicit WSI present is mandatory");
+        assert!(
+            resolved.needs_presentation(),
+            "explicit WSI present is mandatory"
+        );
         assert!(resolved.needs_ui_commit(), "the animation tick is not lost");
-        assert!(wsi.resolve_animation_presentation(false).needs_presentation());
+        assert!(
+            wsi.resolve_animation_presentation(false)
+                .needs_presentation()
+        );
         assert!(
             PlatformFrameRequest::ui_commit_and_presentation()
                 .resolve_animation_presentation(false)
@@ -504,20 +516,32 @@ mod tests {
     fn overlapping_cross_damage_does_not_invalidate_bounding_box_corners() {
         let mut region = DirtyRegion::empty();
         region.push(bounds(
-            Point { x: ScaledPixels(0.0), y: ScaledPixels(40.0) },
+            Point {
+                x: ScaledPixels(0.0),
+                y: ScaledPixels(40.0),
+            },
             size(ScaledPixels(100.0), ScaledPixels(20.0)),
         ));
         region.push(bounds(
-            Point { x: ScaledPixels(40.0), y: ScaledPixels(0.0) },
+            Point {
+                x: ScaledPixels(40.0),
+                y: ScaledPixels(0.0),
+            },
             size(ScaledPixels(20.0), ScaledPixels(100.0)),
         ));
 
         assert_eq!(region.area(), 3600.0);
         assert_eq!(region.rect_count(), 3);
-        assert_eq!(region.union_bounds(), Some(bounds(
-            Point { x: ScaledPixels(0.0), y: ScaledPixels(0.0) },
-            size(ScaledPixels(100.0), ScaledPixels(100.0)),
-        )));
+        assert_eq!(
+            region.union_bounds(),
+            Some(bounds(
+                Point {
+                    x: ScaledPixels(0.0),
+                    y: ScaledPixels(0.0)
+                },
+                size(ScaledPixels(100.0), ScaledPixels(100.0)),
+            ))
+        );
     }
 
     #[test]
@@ -641,22 +665,42 @@ mod tests {
         let merged = tick.merge(PlatformFrameRequest::ui_commit());
         assert!(merged.needs_ui_rebuild());
         assert!(merged.needs_presentation());
-        assert!(!merged.resolve_animation_presentation(false).needs_presentation());
+        assert!(
+            !merged
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
         assert_eq!(PlatformFrameRequest::ui_commit().merge(tick), merged);
     }
 
     #[test]
     fn empty_animation_tick_skips_only_implicit_gpu_presentation() {
         let tick = PlatformFrameRequest::animation_tick();
-        assert!(!tick.resolve_animation_presentation(false).needs_presentation());
+        assert!(
+            !tick
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
         assert!(tick.resolve_animation_presentation(false).needs_ui_commit());
-        assert!(tick.resolve_animation_presentation(true).needs_presentation());
-        assert!(PlatformFrameRequest::presentation()
-            .resolve_animation_presentation(false).needs_presentation());
-        assert!(PlatformFrameRequest::ui_commit_and_presentation()
-            .resolve_animation_presentation(false).needs_presentation());
-        assert!(tick.merge(PlatformFrameRequest::presentation())
-            .resolve_animation_presentation(false).needs_presentation());
+        assert!(
+            tick.resolve_animation_presentation(true)
+                .needs_presentation()
+        );
+        assert!(
+            PlatformFrameRequest::presentation()
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
+        assert!(
+            PlatformFrameRequest::ui_commit_and_presentation()
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
+        assert!(
+            tick.merge(PlatformFrameRequest::presentation())
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
     }
 
     #[test]
@@ -807,9 +851,13 @@ mod tests {
                 } else if property == TransitionProperty::VerticalEdges {
                     // First sample also clears the unanimated base. Later samples damage the
                     // old/new shape union, rather than the registered viewport fallback.
-                    if elapsed == 250 { local } else {
-                        bounds(crate::point(ScaledPixels(20.), ScaledPixels(20.25)),
-                            size(ScaledPixels(16.), ScaledPixels(15.75)))
+                    if elapsed == 250 {
+                        local
+                    } else {
+                        bounds(
+                            crate::point(ScaledPixels(20.), ScaledPixels(20.25)),
+                            size(ScaledPixels(16.), ScaledPixels(15.75)),
+                        )
                     }
                 } else {
                     bounds(
@@ -889,7 +937,7 @@ mod tests {
             assert!(packet.backdrop_blur_damage_plan.refresh_required());
             let (full, damage) = packet
                 .backdrop_blur_damage_plan
-                .source_damage_for_orders(0, u32::MAX);
+                .order_source_damage(0, u32::MAX);
             assert!(
                 !full,
                 "successfully submitted damage must not become sticky full refresh"
@@ -906,7 +954,7 @@ mod tests {
         assert!(
             packet
                 .backdrop_blur_damage_plan
-                .source_damage_for_orders(0, u32::MAX)
+                .order_source_damage(0, u32::MAX)
                 .0
         );
         packet.consume_submitted_damage();
@@ -915,7 +963,7 @@ mod tests {
         assert!(
             !packet
                 .backdrop_blur_damage_plan
-                .source_damage_for_orders(0, u32::MAX)
+                .order_source_damage(0, u32::MAX)
                 .0
         );
     }
@@ -1501,13 +1549,18 @@ impl PresentationPacket {
             }
             let (animation_id, property) = timeline.track_key();
             let scene_damage_covers_property = scene_animation_ids.contains(&animation_id)
-                && matches!(property, TransitionProperty::Opacity | TransitionProperty::Translation
-                    | TransitionProperty::Scale | TransitionProperty::Transform
-                    | TransitionProperty::VisualState | TransitionProperty::Rotation
-                    | TransitionProperty::ClipReveal | TransitionProperty::VerticalEdges);
-            if !scene_damage_covers_property
-                && let Some(bounds) = timeline.bounds()
-            {
+                && matches!(
+                    property,
+                    TransitionProperty::Opacity
+                        | TransitionProperty::Translation
+                        | TransitionProperty::Scale
+                        | TransitionProperty::Transform
+                        | TransitionProperty::VisualState
+                        | TransitionProperty::Rotation
+                        | TransitionProperty::ClipReveal
+                        | TransitionProperty::VerticalEdges
+                );
+            if !scene_damage_covers_property && let Some(bounds) = timeline.bounds() {
                 dirty_region.push(bounds.scale(scale_factor));
             }
             !sample.done
@@ -1718,7 +1771,7 @@ pub(crate) struct ActivePresentationTiming {
     pub(crate) submission_prepare: Duration,
     pub(crate) retained_resource_prepare: Duration,
     pub(crate) frame_prepare_upload: Duration,
-    pub(crate) draw_step_prepare: Duration,
+    pub(crate) command_prepare: Duration,
     pub(crate) buffer_upload: Duration,
     pub(crate) atlas_upload: Duration,
     pub(crate) offscreen_render: Duration,

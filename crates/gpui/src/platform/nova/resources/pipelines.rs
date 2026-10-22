@@ -12,7 +12,7 @@ pub(super) fn create_renderer_pipelines<D>(
     shaders: RendererShaders,
 ) -> Result<Pipelines>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     // Gaussian targets can be downsampled independently of the window-sized depth buffer.
     let filter_render_pass = device.create_render_pass(&RenderPassDescriptor {

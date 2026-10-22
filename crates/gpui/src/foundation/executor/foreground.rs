@@ -1,4 +1,4 @@
-use super::{local_task::spawn_local_with_source_location, task::Task};
+use super::{local_task::spawn_local_tracked, task::Task};
 use crate::PlatformDispatcher;
 use async_task::Runnable;
 use std::{future::Future, marker::PhantomData, pin::Pin, rc::Rc, sync::Arc};
@@ -45,7 +45,7 @@ impl ForegroundExecutor {
         R: 'static,
     {
         let schedule = self.schedule();
-        let (runnable, task) = spawn_local_with_source_location(future, schedule);
+        let (runnable, task) = spawn_local_tracked(future, schedule);
         runnable.schedule();
         Task::spawned(task)
     }

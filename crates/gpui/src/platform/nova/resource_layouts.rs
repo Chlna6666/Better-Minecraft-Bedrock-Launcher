@@ -6,15 +6,15 @@ use super::*;
 /// renderer instead of re-creating the layout set per window.
 #[derive(Clone, Copy)]
 pub(super) struct ResourceLayouts {
-    pub(super) quad_resource_set_layout: ResourceSetLayoutId,
-    pub(super) shadow_resource_set_layout: ResourceSetLayoutId,
-    pub(super) path_rasterization_resource_set_layout: ResourceSetLayoutId,
-    pub(super) path_resource_set_layout: ResourceSetLayoutId,
-    pub(super) mono_resource_set_layout: ResourceSetLayoutId,
-    pub(super) poly_resource_set_layout: ResourceSetLayoutId,
-    pub(super) underline_resource_set_layout: ResourceSetLayoutId,
-    pub(super) backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
-    pub(super) backdrop_blur_resource_set_layout: ResourceSetLayoutId,
+    pub(super) quad_resource_set_layout: BindGroupLayoutId,
+    pub(super) shadow_resource_set_layout: BindGroupLayoutId,
+    pub(super) path_rasterization_resource_set_layout: BindGroupLayoutId,
+    pub(super) path_resource_set_layout: BindGroupLayoutId,
+    pub(super) mono_resource_set_layout: BindGroupLayoutId,
+    pub(super) poly_resource_set_layout: BindGroupLayoutId,
+    pub(super) underline_resource_set_layout: BindGroupLayoutId,
+    pub(super) backdrop_blur_pass_resource_set_layout: BindGroupLayoutId,
+    pub(super) backdrop_blur_resource_set_layout: BindGroupLayoutId,
     pub(super) quad_pipeline_layout: PipelineLayoutId,
     pub(super) shadow_pipeline_layout: PipelineLayoutId,
     pub(super) path_rasterization_pipeline_layout: PipelineLayoutId,
@@ -28,275 +28,271 @@ pub(super) struct ResourceLayouts {
 
 pub(super) fn create_resource_layouts<D>(device: &mut D, label: &str) -> Result<ResourceLayouts>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
-    let quad_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
-            label: Some(format!("{label} quad layout")),
-            entries: vec![
-                ResourceSetLayoutEntry {
-                    binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 1,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-            ],
-        })?;
+    let quad_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(format!("{label} quad layout")),
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 17,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+        ],
+    })?;
     let shadow_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} shadow layout")),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 2,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
             ],
         })?;
     let path_rasterization_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} path rasterization layout")),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 3,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
             ],
         })?;
-    let path_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
-            label: Some(format!("{label} path layout")),
-            entries: vec![
-                ResourceSetLayoutEntry {
-                    binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 4,
-                    binding_type: ResourceBindingType::SampledTexture,
-                    stages: ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 5,
-                    binding_type: ResourceBindingType::Sampler,
-                    stages: ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 6,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
-                },
-            ],
-        })?;
-    let mono_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
-            label: Some(format!("{label} mono sprite layout")),
-            entries: vec![
-                ResourceSetLayoutEntry {
-                    binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 1,
-                    binding_type: ResourceBindingType::UniformBuffer,
-                    stages: ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 4,
-                    binding_type: ResourceBindingType::SampledTexture,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 5,
-                    binding_type: ResourceBindingType::Sampler,
-                    stages: ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 8,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
-                },
-            ],
-        })?;
-    let poly_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
-            label: Some(format!("{label} poly sprite layout")),
-            entries: vec![
-                ResourceSetLayoutEntry {
-                    binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 4,
-                    binding_type: ResourceBindingType::SampledTexture,
-                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 5,
-                    binding_type: ResourceBindingType::Sampler,
-                    stages: ShaderStages::FRAGMENT,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 9,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
-                },
-                ResourceSetLayoutEntry {
-                    binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
-                },
-            ],
-        })?;
+    let path_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(format!("{label} path layout")),
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 4,
+                binding_type: BindingType::SampledTexture,
+                stages: ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 5,
+                binding_type: BindingType::Sampler,
+                stages: ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 6,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX,
+            },
+        ],
+    })?;
+    let mono_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(format!("{label} mono sprite layout")),
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 4,
+                binding_type: BindingType::SampledTexture,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 5,
+                binding_type: BindingType::Sampler,
+                stages: ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 8,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX,
+            },
+            BindGroupLayoutEntry {
+                binding: 17,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX,
+            },
+        ],
+    })?;
+    let poly_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(format!("{label} poly sprite layout")),
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 4,
+                binding_type: BindingType::SampledTexture,
+                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 5,
+                binding_type: BindingType::Sampler,
+                stages: ShaderStages::FRAGMENT,
+            },
+            BindGroupLayoutEntry {
+                binding: 9,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX,
+            },
+            BindGroupLayoutEntry {
+                binding: 17,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::VERTEX,
+            },
+        ],
+    })?;
     let underline_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} underline layout")),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 7,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
             ],
         })?;
     let backdrop_blur_pass_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pass layout")),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 4,
-                    binding_type: ResourceBindingType::SampledTexture,
+                    binding_type: BindingType::SampledTexture,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 5,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 15,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
             ],
         })?;
     let backdrop_blur_resource_set_layout =
-        device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} backdrop blur layout")),
             entries: vec![
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    binding_type: ResourceBindingType::UniformBuffer,
+                    binding_type: BindingType::UniformBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 4,
-                    binding_type: ResourceBindingType::SampledTexture,
+                    binding_type: BindingType::SampledTexture,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 5,
-                    binding_type: ResourceBindingType::Sampler,
+                    binding_type: BindingType::Sampler,
                     stages: ShaderStages::FRAGMENT,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 16,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
-                ResourceSetLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 17,
-                    binding_type: ResourceBindingType::StorageBuffer,
+                    binding_type: BindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
             ],
         })?;
     let quad_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} quad pipeline layout")),
-        resource_set_layouts: vec![quad_resource_set_layout],
+        bind_group_layouts: vec![quad_resource_set_layout],
     })?;
     let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} shadow pipeline layout")),
-        resource_set_layouts: vec![shadow_resource_set_layout],
+        bind_group_layouts: vec![shadow_resource_set_layout],
     })?;
     let path_rasterization_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} path rasterization pipeline layout")),
-            resource_set_layouts: vec![path_rasterization_resource_set_layout],
+            bind_group_layouts: vec![path_rasterization_resource_set_layout],
         })?;
     let path_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} path pipeline layout")),
-        resource_set_layouts: vec![path_resource_set_layout],
+        bind_group_layouts: vec![path_resource_set_layout],
     })?;
     let mono_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} mono sprite pipeline layout")),
-        resource_set_layouts: vec![mono_resource_set_layout],
+        bind_group_layouts: vec![mono_resource_set_layout],
     })?;
     let poly_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} poly sprite pipeline layout")),
-        resource_set_layouts: vec![poly_resource_set_layout],
+        bind_group_layouts: vec![poly_resource_set_layout],
     })?;
     let underline_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} underline pipeline layout")),
-        resource_set_layouts: vec![underline_resource_set_layout],
+        bind_group_layouts: vec![underline_resource_set_layout],
     })?;
     let backdrop_blur_pass_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pass pipeline layout")),
-            resource_set_layouts: vec![backdrop_blur_pass_resource_set_layout],
+            bind_group_layouts: vec![backdrop_blur_pass_resource_set_layout],
         })?;
     let backdrop_blur_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pipeline layout")),
-            resource_set_layouts: vec![backdrop_blur_resource_set_layout],
+            bind_group_layouts: vec![backdrop_blur_resource_set_layout],
         })?;
 
     Ok(ResourceLayouts {

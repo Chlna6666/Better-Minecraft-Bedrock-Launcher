@@ -219,7 +219,7 @@ impl Path<Pixels> {
     /// The arithmetic order intentionally matches `scale(device_scale).transform_uniform(...)`:
     /// DPI scaling happens before the renderer-owned visual scale and translation. This preserves
     /// the previous floating-point results while avoiding an intermediate scaled vertex vector.
-    pub(crate) fn scale_and_transform_for_paint(
+    pub(crate) fn paint_scale_transform(
         &self,
         device_scale: f32,
         visual_scale: f32,
@@ -234,7 +234,7 @@ impl Path<Pixels> {
     }
 
     #[cfg(feature = "bench-support")]
-    pub(crate) fn scale_and_transform_for_paint_scalar(
+    pub(crate) fn paint_scale_transform_scalar(
         &self,
         device_scale: f32,
         visual_scale: f32,
@@ -249,7 +249,7 @@ impl Path<Pixels> {
     }
 
     #[cfg(feature = "bench-support")]
-    pub(crate) fn scale_and_transform_for_paint_simd(
+    pub(crate) fn paint_scale_transform_simd(
         &self,
         device_scale: f32,
         visual_scale: f32,
@@ -461,11 +461,8 @@ mod tests {
         );
 
         assert_eq!(selected_vertices, scalar_vertices);
-        let transformed = path.scale_and_transform_for_paint(
-            1.25,
-            0.875,
-            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
-        );
+        let transformed =
+            path.paint_scale_transform(1.25, 0.875, point(ScaledPixels(4.0), ScaledPixels(-3.0)));
         assert_eq!(transformed.vertices, scalar_vertices);
     }
 }

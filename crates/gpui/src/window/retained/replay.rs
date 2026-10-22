@@ -14,7 +14,6 @@ impl RetainedPaint {
             .range_is_replayable(scene, range)
     }
 }
-
 /// A sparse structural prefix state after one Start/End Blur or Layer operation.
 /// Ordinary primitives do not allocate entries; the index is derived from the
 /// authoritative paint_operations, not a second display list or RenderTree.
@@ -164,13 +163,5 @@ mod tests {
             index.range_is_replayable(&scene, 0..135),
             range_is_replayable(&scene, 0..135)
         );
-    }
-}
-
-/// Preserves Paint identity only after proving the entire sorted operation stream unchanged.
-/// Called by Window retention after Paint finish, before the immutable generation is published.
-pub(crate) fn retain_revision(current: &mut Scene, previous: &Scene) {
-    if crate::paint::retention::paints_match(current, previous) {
-        current.revision = previous.revision;
     }
 }

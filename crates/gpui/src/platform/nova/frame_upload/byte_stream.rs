@@ -13,13 +13,13 @@ struct Segment {
 }
 
 #[derive(Default)]
-pub(in crate::platform::nova) struct PackedQuadStream {
+pub(in crate::platform::nova) struct PackedByteStream {
     owned: Vec<u8>,
     segments: Vec<Segment>,
     len: usize,
 }
 
-impl PackedQuadStream {
+impl PackedByteStream {
     pub(in crate::platform::nova) fn len(&self) -> usize {
         self.len
     }
@@ -40,6 +40,50 @@ impl PackedQuadStream {
         self.segments.clear();
         self.owned.clear();
         self.len = 0;
+    }
+
+    #[cfg(test)]
+    pub(in crate::platform::nova) fn resize(&mut self, new_len: usize, value: u8) {
+        if new_len >= self.len {
+            let additional = new_len - self.len;
+            self.write(|bytes| bytes.resize(additional, value));
+        } else {
+            self.truncate(new_len);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::platform::nova) fn truncate(&mut self, new_len: usize) {
+        assert!(new_len <= self.len);
+        if new_len == self.len {
+            return;
+        }
+        while self
+            .segments
+            .last()
+            .is_some_and(|segment| segment.offset >= new_len)
+        {
+            let Some(segment) = self.segments.pop() else {
+                break;
+            };
+            if let Source::Owned(range) = segment.source {
+                self.owned.truncate(range.start);
+            } else {
+                panic!("test truncation must end before a shared stream segment");
+            }
+        }
+        if let Some(Segment {
+            offset,
+            source: Source::Owned(range),
+        }) = self.segments.last_mut()
+        {
+            if *offset < new_len && new_len < *offset + range.len() {
+                let retained_len = new_len - *offset;
+                range.end = range.start + retained_len;
+                self.owned.truncate(range.end);
+            }
+        }
+        self.len = new_len;
     }
 
     pub(in crate::platform::nova) fn write(&mut self, encode: impl FnOnce(&mut Vec<u8>)) {
@@ -74,6 +118,40 @@ impl PackedQuadStream {
             source: Source::Shared { bytes, byte_hash },
         });
         self.len += len;
+    }
+
+    /// Replace a newly encoded tail with its retained immutable backing.
+    pub(in crate::platform::nova) fn share_tail(
+        &mut self,
+        start: usize,
+        bytes: Arc<Vec<u8>>,
+        byte_hash: u64,
+    ) {
+        let tail_len = self.len.saturating_sub(start);
+        debug_assert_eq!(tail_len, bytes.len());
+        if tail_len == 0 {
+            return;
+        }
+        if let Some(Segment {
+            offset,
+            source: Source::Owned(range),
+        }) = self.segments.last_mut()
+        {
+            let retained_len = start.saturating_sub(*offset);
+            debug_assert!(retained_len <= range.len());
+            let retained_end = range.start + retained_len;
+            self.owned.truncate(retained_end);
+            if retained_len == 0 {
+                self.segments.pop();
+            } else {
+                range.end = retained_end;
+            }
+        } else {
+            debug_assert!(false, "a newly encoded tail must have an owned segment");
+            return;
+        }
+        self.len = start;
+        self.append_shared(bytes, byte_hash);
     }
 
     pub(in crate::platform::nova) fn segments(
@@ -171,7 +249,7 @@ impl PackedQuadStream {
 }
 
 #[cfg(test)]
-impl From<Vec<u8>> for PackedQuadStream {
+impl From<Vec<u8>> for PackedByteStream {
     fn from(owned: Vec<u8>) -> Self {
         let len = owned.len();
         let segments = if len == 0 {
@@ -197,7 +275,7 @@ mod tests {
     #[test]
     fn shared_payloads_keep_logical_order_without_owned_copies() {
         let chunk = Arc::new(vec![2; 8]);
-        let mut stream = PackedQuadStream::default();
+        let mut stream = PackedByteStream::default();
         stream.write(|bytes| bytes.extend_from_slice(&[1; 4]));
         stream.append_shared(Arc::clone(&chunk), 9);
         stream.write(|bytes| bytes.extend_from_slice(&[3; 4]));
@@ -247,12 +325,22 @@ mod tests {
         frame.quads.append_shared(Arc::clone(&bytes), 1);
         assert_eq!(frame.quads.len(), 64);
         assert_eq!(frame.quads.owned_len(), 0);
-        assert_eq!(frame.retained_quad_memory(&RetainedQuadChunkCache::default()).used_bytes, 32);
         assert_eq!(
-            frame.retained_quad_memory(&RetainedQuadChunkCache::default()).capacity_bytes,
+            frame
+                .retained_chunk_memory(&RetainedChunkCache::default())
+                .used_bytes,
+            32
+        );
+        assert_eq!(
+            frame
+                .retained_chunk_memory(&RetainedChunkCache::default())
+                .capacity_bytes,
             bytes.capacity() as u64
         );
         frame.quads.clear();
-        assert_eq!(frame.retained_quad_memory(&RetainedQuadChunkCache::default()), crate::MemoryUsage::default());
+        assert_eq!(
+            frame.retained_chunk_memory(&RetainedChunkCache::default()),
+            crate::MemoryUsage::default()
+        );
     }
 }

@@ -30,7 +30,7 @@ fn visit_changed_bounds(
         .iter()
         .zip(previous_operations.iter())
         .take_while(|(current, previous_operation)| {
-            paint_operations_match_for_damage(scene, current, previous, previous_operation)
+            paint_operations_match(scene, current, previous, previous_operation)
         })
         .count();
     let max_suffix_len = current
@@ -43,7 +43,7 @@ fn visit_changed_bounds(
         .zip(previous_operations.iter().rev())
         .take(max_suffix_len)
         .take_while(|(current, previous_operation)| {
-            paint_operations_match_for_damage(scene, current, previous, previous_operation)
+            paint_operations_match(scene, current, previous, previous_operation)
         })
         .count();
 
@@ -321,7 +321,7 @@ pub(crate) fn visit_clipped_damage(
     }
 }
 
-pub(crate) fn paint_operations_match_for_damage(
+pub(crate) fn paint_operations_match(
     current_scene: &Scene,
     current: &PaintOperation,
     previous_scene: &Scene,

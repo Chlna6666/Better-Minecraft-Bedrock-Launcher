@@ -68,6 +68,7 @@ struct FontIdCache {
 struct RasterBoundsEntry {
     bounds: Bounds<DevicePixels>,
     last_used_epoch: AtomicU64,
+    last_used_frame: AtomicU64,
 }
 
 impl RasterBoundsEntry {
@@ -75,12 +76,14 @@ impl RasterBoundsEntry {
         Self {
             bounds,
             last_used_epoch: AtomicU64::new(epoch),
+            last_used_frame: AtomicU64::new(0),
         }
     }
 
     #[inline]
-    fn touch(&self, epoch: u64) -> Bounds<DevicePixels> {
+    fn touch(&self, epoch: u64, frame: u64) -> Bounds<DevicePixels> {
         self.last_used_epoch.store(epoch, Ordering::Relaxed);
+        self.last_used_frame.store(frame, Ordering::Relaxed);
         self.bounds
     }
 
@@ -93,6 +96,7 @@ impl RasterBoundsEntry {
 struct RasterBoundsCache {
     entries: FxHashMap<RenderGlyphParams, RasterBoundsEntry>,
     next_epoch: AtomicU64,
+    frame_epoch: AtomicU64,
     lookups_since_sweep: AtomicUsize,
     hits_since_sweep: AtomicUsize,
     inserts_since_sweep: usize,
@@ -103,6 +107,7 @@ impl Default for RasterBoundsCache {
         Self {
             entries: FxHashMap::default(),
             next_epoch: AtomicU64::new(0),
+            frame_epoch: AtomicU64::new(0),
             lookups_since_sweep: AtomicUsize::new(0),
             hits_since_sweep: AtomicUsize::new(0),
             inserts_since_sweep: 0,
@@ -116,7 +121,7 @@ impl RasterBoundsCache {
         let epoch = self.next_access_epoch();
         let entry = self.entries.get(params)?;
         self.hits_since_sweep.fetch_add(1, Ordering::Relaxed);
-        Some(entry.touch(epoch))
+        Some(entry.touch(epoch, self.frame_epoch.load(Ordering::Relaxed)))
     }
 
     fn insert_if_absent(
@@ -128,12 +133,15 @@ impl RasterBoundsCache {
         if let Some(existing) = self.entries.get(&params) {
             self.lookups_since_sweep.fetch_add(1, Ordering::Relaxed);
             self.hits_since_sweep.fetch_add(1, Ordering::Relaxed);
-            return existing.touch(epoch);
+            return existing.touch(epoch, self.frame_epoch.load(Ordering::Relaxed));
         }
 
         self.lookups_since_sweep.fetch_add(1, Ordering::Relaxed);
-        self.entries
-            .insert(params, RasterBoundsEntry::new(bounds, epoch));
+        let entry = RasterBoundsEntry::new(bounds, epoch);
+        entry
+            .last_used_frame
+            .store(self.frame_epoch.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.entries.insert(params, entry);
         self.inserts_since_sweep = self.inserts_since_sweep.saturating_add(1);
         self.sweep_if_needed();
         bounds
@@ -154,6 +162,10 @@ impl RasterBoundsCache {
     #[cfg(test)]
     fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn finish_frame(&self) {
+        self.frame_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     fn sweep_if_needed(&mut self) {
@@ -188,8 +200,12 @@ impl RasterBoundsCache {
             .saturating_div(divisor)
             .max(TEXT_CACHE_MIN_RETAINED_CAPACITY) as u64;
         let current_epoch = self.current_epoch();
+        let frame = self.frame_epoch.load(Ordering::Relaxed);
         self.entries.retain(|_, entry| {
-            current_epoch.saturating_sub(entry.last_used_epoch()) <= recent_access_window
+            // Repeated text can advance the access epoch many times within one draw.
+            // Resize variants must not evict the working set before the next frame can reuse it.
+            frame.saturating_sub(entry.last_used_frame.load(Ordering::Relaxed)) <= 1
+                || current_epoch.saturating_sub(entry.last_used_epoch()) <= recent_access_window
         });
     }
 
@@ -237,6 +253,7 @@ impl RasterBoundsCache {
     fn clear(&mut self) {
         self.entries.clear();
         self.next_epoch.store(0, Ordering::Relaxed);
+        self.frame_epoch.store(0, Ordering::Relaxed);
         self.lookups_since_sweep.store(0, Ordering::Relaxed);
         self.hits_since_sweep.store(0, Ordering::Relaxed);
         self.inserts_since_sweep = 0;
@@ -1022,6 +1039,7 @@ impl WindowTextSystem {
     }
 
     pub(crate) fn finish_frame(&self) -> LineLayoutFrameMetrics {
+        self.text_system.raster_bounds.read().finish_frame();
         self.line_layout_cache.finish_frame()
     }
 
@@ -1322,6 +1340,7 @@ mod tests {
                 for params in &hot_params {
                     assert_eq!(cache.get(params), Some(bounds));
                 }
+                cache.finish_frame();
             }
         }
         cache.evict_idle_entries();
@@ -1333,6 +1352,33 @@ mod tests {
             cache.len() < 12_000,
             "one-shot scan entries should not remain fully resident"
         );
+    }
+
+    #[test]
+    fn raster_bounds_retains_previous_frame_during_resize_misses() {
+        let mut cache = RasterBoundsCache::default();
+        let bounds = test_raster_bounds();
+        for glyph_id in 0..65 {
+            cache.insert_if_absent(test_glyph_params(glyph_id), bounds);
+        }
+        for _ in 0..10 {
+            for glyph_id in 0..65 {
+                assert_eq!(cache.get(&test_glyph_params(glyph_id)), Some(bounds));
+            }
+        }
+        cache.finish_frame();
+        for glyph_id in 65..321 {
+            cache.insert_if_absent(test_glyph_params(glyph_id), bounds);
+        }
+        for glyph_id in 0..65 {
+            assert_eq!(cache.get(&test_glyph_params(glyph_id)), Some(bounds));
+        }
+        cache.finish_frame();
+        cache.finish_frame();
+        for glyph_id in 321..577 {
+            cache.insert_if_absent(test_glyph_params(glyph_id), bounds);
+        }
+        assert!(cache.get(&test_glyph_params(0)).is_none());
     }
 
     #[test]

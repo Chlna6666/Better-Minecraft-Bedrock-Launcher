@@ -5,6 +5,7 @@ use crate::{
     PolychromeSprite, Quad, ScaledPixels, SceneAnimationId, Shadow, Underline,
 };
 
+use super::geometry::is_solid_quad;
 use super::{PaintRendererExtension, Path, Scene};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
@@ -53,6 +54,30 @@ pub(crate) enum Primitive {
 }
 
 impl Primitive {
+    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
+        if self.order() != other.order() {
+            return false;
+        }
+
+        match (self, other) {
+            (Self::Shadow(_), Self::Shadow(_))
+            | (Self::Path(_), Self::Path(_))
+            | (Self::Underline(_), Self::Underline(_))
+            | (Self::Surface(_), Self::Surface(_))
+            | (Self::BackdropBlur(_), Self::BackdropBlur(_))
+            | (Self::Blur(_), Self::Blur(_))
+            | (Self::RendererExtension(_), Self::RendererExtension(_)) => true,
+            (Self::Quad(left), Self::Quad(right)) => is_solid_quad(left) == is_solid_quad(right),
+            (Self::MonochromeSprite(left), Self::MonochromeSprite(right)) => {
+                left.tile.texture_id == right.tile.texture_id && left.sampling() == right.sampling()
+            }
+            (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => {
+                left.tile.texture_id == right.tile.texture_id
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Shadow(left), Self::Shadow(right)) => left == right,
@@ -186,6 +211,28 @@ impl Primitive {
 }
 
 impl PaintOperation {
+    pub(crate) fn same_paint(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            // Unlike damage comparison, Scene revision equality includes structural layer bounds.
+            (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
+            (Self::EndLayer, Self::EndLayer) | (Self::EndBlur, Self::EndBlur) => true,
+            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.has_same_batch_topology(right),
+            (Self::StartLayer(_), Self::StartLayer(_))
+            | (Self::EndLayer, Self::EndLayer)
+            | (Self::StartBlur(_), Self::StartBlur(_))
+            | (Self::EndBlur, Self::EndBlur) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
@@ -289,13 +336,12 @@ impl PartialEq for PaintBlur {
             && self.radius == other.radius
             && self.opacity == other.opacity
             && (Arc::ptr_eq(&self.content, &other.content)
-                || (self.content.paint_operations.len() == other.content.paint_operations.len()
-                    && self
-                        .content
-                        .paint_operations
-                        .iter()
-                        .zip(other.content.paint_operations.iter())
-                        .all(|(left, right)| left.visually_eq(right))))
+                || self
+                    .content
+                    .paint_operations
+                    .matches_by(&other.content.paint_operations, |left, right| {
+                        left.visually_eq(right)
+                    }))
     }
 }
 

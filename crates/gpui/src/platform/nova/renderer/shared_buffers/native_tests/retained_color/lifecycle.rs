@@ -3,7 +3,8 @@ use super::*;
 fn retained_root_view(renderer: &NovaRenderer) -> TextureViewId {
     renderer
         .frame_upload
-        .root_color.map(|root| root.index)
+        .root_color
+        .map(|root| root.index)
         .expect("a completed popup must leave static window color resident");
     renderer
         .root_color
@@ -88,7 +89,7 @@ pub(super) fn verify(
 
 fn verify_root_without_filters(renderer: &mut NovaRenderer, target: (TextureId, TextureViewId)) {
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("retire Filter readers");
     renderer.destroy_backdrop_blur_targets();
     let viewport = bounds(
@@ -135,7 +136,7 @@ fn verify_root_without_filters(renderer: &mut NovaRenderer, target: (TextureId, 
             .backdrop_blur_source_pixels,
         0,
     );
-    assert_eq!(renderer.draw_step_scratch.steps().len(), 1);
+    assert_eq!(renderer.command_scratch.commands().len(), 1);
     let local = pixels(renderer, &scene, target, 0.8, [sample(0.2)], false);
     let complete = pixels(renderer, &scene, target, 0.2, [sample(0.2)], true);
     assert_eq!(
@@ -154,24 +155,39 @@ fn verify_filter_retirement_keeps_root(
     target: (TextureId, TextureViewId),
 ) {
     let identity = renderer.root_color.identity();
-    let root = renderer.root_color.target.as_ref().expect("window Root owner");
+    let root = renderer
+        .root_color
+        .target
+        .as_ref()
+        .expect("window Root owner");
     let pass_sets = root.pass_resource_sets.clone();
     let composite_sets = root.composite_resource_sets.clone();
     let baseline = pixels(renderer, scene, target, 0.8, [sample(0.8)], false);
     let version = renderer.root_color.content_version();
-    renderer.wait_for_pending_submissions().expect("retire readers before Filter destruction");
+    renderer
+        .wait_pending_submissions()
+        .expect("retire readers before Filter destruction");
     renderer.destroy_backdrop_blur_targets();
     assert!(renderer.filters.targets.is_none());
     assert_eq!(renderer.root_color.identity(), identity);
     assert_eq!(renderer.root_color.content_version(), version);
     let rebuilt = pixels(renderer, scene, target, 0.8, [sample(0.8)], false);
-    assert_eq!(baseline, rebuilt, "recreated Filters must preserve Root pixels");
+    assert_eq!(
+        baseline, rebuilt,
+        "recreated Filters must preserve Root pixels"
+    );
     assert_eq!(renderer.root_color.identity(), identity);
-    let root = renderer.root_color.target.as_ref().expect("same window Root owner");
+    let root = renderer
+        .root_color
+        .target
+        .as_ref()
+        .expect("same window Root owner");
     assert_eq!(root.pass_resource_sets, pass_sets);
     assert_eq!(root.composite_resource_sets, composite_sets);
-    eprintln!("root lifetime gate backend={:?} filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true",
-        renderer.backend_info.label());
+    eprintln!(
+        "root lifetime gate backend={:?} filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true",
+        renderer.backend_info.label()
+    );
 }
 
 fn verify_root_reactivation(

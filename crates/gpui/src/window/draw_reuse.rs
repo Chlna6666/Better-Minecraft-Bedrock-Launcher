@@ -17,28 +17,6 @@ pub(crate) struct PrepaintFragmentReplay {
 }
 
 impl Window {
-    /// Whether retained invalidation on this view's route forbids reusing the boundary.
-    pub(crate) fn retained_view_boundary_is_dirty(
-        &self,
-        view_id: EntityId,
-        retained_id: &GlobalElementId,
-    ) -> bool {
-        if !self.retained_replay_is_targeted() {
-            return false;
-        }
-        let view_path = self.rendered_frame.dispatch_tree.view_path(view_id);
-        self.invalidator
-            .cached_view_path_is_dirty_for_view_route(retained_id, &|owner| {
-                owner == view_id
-                    || view_path.contains(&owner)
-                    || self
-                        .rendered_frame
-                        .dispatch_tree
-                        .view_path(owner)
-                        .contains(&view_id)
-            })
-    }
-
     pub(super) fn prepaint_deferred_draws(&mut self, cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
         assert_eq!(self.retained_element_id_stack.len(), 0);
@@ -267,6 +245,10 @@ impl Window {
     }
 
     pub(crate) fn can_reuse_prepaint(&self, range: &Range<PrepaintStateIndex>) -> bool {
+        let _work = super::element_work::begin_named(
+            "validate_prepaint_range",
+            super::element_work::ElementWorkPhase::Replay,
+        );
         self.prepaint_range_indices_are_valid(range)
             && self.deferred_draw_ranges_are_reusable(
                 range.start.deferred_draws_index..range.end.deferred_draws_index,
@@ -325,6 +307,10 @@ impl Window {
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) -> bool {
+        let _work = super::element_work::begin_named(
+            "reuse_prepaint_range",
+            super::element_work::ElementWorkPhase::Replay,
+        );
         if !self.can_reuse_prepaint(&range) {
             log::debug!(
                 "gpui retained prepaint range invalid: window={}",
@@ -449,7 +435,6 @@ impl Window {
             return false;
         }
 
-
         let dispatch_range = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
         let contains_focus = {
             let next = &mut self.next_frame.dispatch_tree;
@@ -497,7 +482,7 @@ impl Window {
     /// Recreates the plain AnyView dispatch boundary at the hole between two replayed fragments.
     ///
     /// On success the fresh view node remains active so its current prepaint can append descendants.
-    pub(crate) fn begin_fresh_view_dispatch_for_fragment(
+    pub(crate) fn begin_fresh_view_dispatch(
         &mut self,
         source_target: &Range<PrepaintStateIndex>,
         view_id: EntityId,
@@ -538,10 +523,7 @@ impl Window {
     }
 
     /// Restores the cached ancestor's dispatch node after fresh descendant prepaint.
-    pub(crate) fn finish_fresh_view_dispatch_for_fragment(
-        &mut self,
-        replay: &PrepaintFragmentReplay,
-    ) {
+    pub(crate) fn finish_fresh_view_dispatch(&mut self, replay: &PrepaintFragmentReplay) {
         self.next_frame
             .dispatch_tree
             .set_active_node(replay.restore_parent);
@@ -621,13 +603,79 @@ impl Window {
     }
 
     pub(crate) fn can_reuse_paint(&self, range: &Range<PaintIndex>) -> bool {
-        frame_range_is_valid(
+        let _work = super::element_work::begin_named(
+            "validate_paint_range",
+            super::element_work::ElementWorkPhase::Replay,
+        );
+        let scene_valid = frame_range_is_valid(
             range.start.scene_index,
             range.end.scene_index,
             self.rendered_frame.scene().len(),
-        ) && self
+        );
+        let replayable = self
             .rendered_frame
-            .range_is_replayable(range.start.scene_index..range.end.scene_index)
+            .range_is_replayable(range.start.scene_index..range.end.scene_index);
+        let listeners_valid = frame_range_is_valid(
+            range.start.mouse_listeners_index,
+            range.end.mouse_listeners_index,
+            self.rendered_frame.mouse_listeners.len(),
+        );
+        let input_valid = frame_range_is_valid(
+            range.start.input_handlers_index,
+            range.end.input_handlers_index,
+            self.rendered_frame.input_handlers.len(),
+        );
+        let cursor_valid = frame_range_is_valid(
+            range.start.cursor_styles_index,
+            range.end.cursor_styles_index,
+            self.rendered_frame.cursor_styles.len(),
+        );
+        let controls_valid = frame_range_is_valid(
+            range.start.window_control_hitboxes_index,
+            range.end.window_control_hitboxes_index,
+            self.rendered_frame.window_control_hitboxes.len(),
+        );
+        let states_valid = frame_range_is_valid(
+            range.start.accessed_element_states_index,
+            range.end.accessed_element_states_index,
+            self.rendered_frame.accessed_element_states.len(),
+        );
+        let tabs_valid = frame_range_is_valid(
+            range.start.tab_handle_index,
+            range.end.tab_handle_index,
+            self.rendered_frame.tab_stops.insertion_history.len(),
+        );
+        let text_valid = self.text_system.can_reuse_layouts(
+            range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
+        );
+        let valid = scene_valid
+            && replayable
+            && listeners_valid
+            && input_valid
+            && cursor_valid
+            && controls_valid
+            && states_valid
+            && tabs_valid
+            && text_valid;
+        if !valid && log::log_enabled!(target: "gpui::diagnostics", log::Level::Trace) {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "gpui paint range invalid: scene={} replayable={} listeners={} input={} cursor={} controls={} states={} tabs={} text={}",
+                scene_valid,
+                replayable,
+                listeners_valid,
+                input_valid,
+                cursor_valid,
+                controls_valid,
+                states_valid,
+                tabs_valid,
+                text_valid,
+            );
+        }
+        valid
+            && self
+                .rendered_frame
+                .range_is_replayable(range.start.scene_index..range.end.scene_index)
             && {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -678,6 +726,10 @@ impl Window {
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) -> bool {
+        let _work = super::element_work::begin_named(
+            "reuse_paint_range",
+            super::element_work::ElementWorkPhase::Replay,
+        );
         if !self.can_reuse_paint(&range) {
             log::debug!(
                 "gpui retained paint range invalid: window={}",
@@ -750,7 +802,7 @@ impl Window {
         if self.next_frame.painter.replay(
             old_scene_range.clone(),
             self.rendered_frame.scene(),
-            &spans,
+            spans,
         ) {
             Arc::get_mut(&mut self.next_frame.retained_paint)
                 .expect("unpublished paint retention")
@@ -787,7 +839,7 @@ impl Window {
         retained_id: &GlobalElementId,
         retained_segment: &ElementId,
         layout_id: LayoutId,
-        request_layout: &dyn Any,
+        request_layout: &mut dyn Any,
         plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
         identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
     ) {
@@ -798,10 +850,10 @@ impl Window {
                 rem_size,
             }
         } else {
-            let Some(div_layout) = request_layout.downcast_ref::<crate::DivLayout>() else {
+            let Some(div_layout) = request_layout.downcast_mut::<crate::DivLayout>() else {
                 return;
             };
-            let Some(style) = div_layout.retained_semantic_key.clone() else {
+            let Some(style) = div_layout.retained_semantic_key.take() else {
                 return;
             };
             let mut children = SmallVec::with_capacity(div_layout.child_layout_ids.len());
@@ -914,10 +966,9 @@ impl Window {
                 .contains(&current_view)
         };
         if targeted_replay
-            && self.invalidator.retained_path_is_dirty_for_view_route(
-                retained_id,
-                &target_owner_shares_current_view_route,
-            )
+            && self
+                .invalidator
+                .retained_route_path_is_dirty(retained_id, &target_owner_shares_current_view_route)
         {
             return None;
         }
@@ -1032,11 +1083,13 @@ impl Window {
             && subtree_stable
             && let Some(generation) = semantic_generation
         {
-            Arc::get_mut(&mut self.next_frame.retained_paint).expect("unpublished paint retention").record(
-                retained_id.clone(),
-                generation,
-                paint_range.start.scene_index..paint_range.end.scene_index,
-            );
+            Arc::get_mut(&mut self.next_frame.retained_paint)
+                .expect("unpublished paint retention")
+                .record(
+                    retained_id.clone(),
+                    generation,
+                    paint_range.start.scene_index..paint_range.end.scene_index,
+                );
         }
         let key = ReconcileKey::from(retained_id);
         self.next_frame.retained_element_order.push(key.clone());
@@ -1064,65 +1117,6 @@ impl Window {
                 .retained_unstable_identity_count
                 .saturating_add(1);
         }
-    }
-
-    /// Recreates the retained lifecycle boundary for a selectively rebuilt cached AnyView.
-    ///
-    /// The view's inner paint has already emitted fresh descendant metadata. The outer AnyView
-    /// boundary owns no scene primitive or semantic proof itself, but it must stay addressable so a
-    /// later Context::notify can target the same retained path again.
-    pub(crate) fn record_reconciled_cached_view_boundary(
-        &mut self,
-        retained_id: GlobalElementId,
-        source: &RetainedElementRange,
-        bounds: Bounds<Pixels>,
-        prepaint_range: Range<PrepaintStateIndex>,
-        paint_range: Range<PaintIndex>,
-        metadata_start: usize,
-    ) -> bool {
-        if !source.identity_stable
-            || source.div_self_scene.is_some()
-            || source.plain_text_key.is_some()
-            || source.bounds != bounds
-            || source.paint_context != self.current_retained_paint_context()
-            || metadata_start > self.next_frame.retained_element_order.len()
-        {
-            return false;
-        }
-
-        let key = ReconcileKey::from(retained_id);
-        if self.next_frame.retained_element_ranges.contains_key(&key) {
-            return false;
-        }
-
-        self.next_frame.retained_element_order.push(key.clone());
-        let metadata_end = self.next_frame.retained_element_order.len();
-        self.next_frame.retained_element_ranges.insert(
-            key,
-            RetainedElementRange {
-                bounds,
-                layout_fingerprint: source.layout_fingerprint,
-                // The dirty child has produced fresh content, so an old semantic generation must
-                // never be advertised as proof for the new subtree.
-                semantic_descriptor: None,
-                semantic_generation: None,
-                prepaint_range,
-                paint_range,
-                metadata_range: metadata_start..metadata_end,
-                paint_context: self.current_retained_paint_context(),
-                div_self_scene: None,
-                plain_text_key: None,
-                identity_stable: true,
-                // AnyView intentionally owns a frame-local cache boundary; ancestors must not
-                // generic-replay across it.
-                subtree_stable: false,
-            },
-        );
-        self.next_frame.retained_unstable_identity_count = self
-            .next_frame
-            .retained_unstable_identity_count
-            .saturating_add(1);
-        true
     }
 
     /// Carries every descendant reconciliation record of a replayed subtree into the current
@@ -1267,7 +1261,7 @@ impl Window {
     /// Post-order ancestor records whose metadata spans cross the fragment boundary are skipped.
     /// This is the required behavior around a selectively rebuilt child: stable siblings survive,
     /// while ancestors that semantically cover the dirty hole are conservatively retired.
-    pub(crate) fn replay_retained_element_metadata_fragment(
+    pub(crate) fn replay_retained_metadata(
         &mut self,
         source_prepaint: &Range<PrepaintStateIndex>,
         source_paint: &Range<PaintIndex>,
@@ -1312,14 +1306,17 @@ impl Window {
                 .is_none()
                     || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
                         .is_none()
-                    || source_range.div_self_scene.as_ref().is_some_and(|self_scene| {
-                        rebase_scene_range(
-                            &self_scene.child_scene_range,
-                            source_paint,
-                            target_paint,
-                        )
-                        .is_none()
-                    }))
+                    || source_range
+                        .div_self_scene
+                        .as_ref()
+                        .is_some_and(|self_scene| {
+                            rebase_scene_range(
+                                &self_scene.child_scene_range,
+                                source_paint,
+                                target_paint,
+                            )
+                            .is_none()
+                        }))
             {
                 return false;
             }
@@ -1496,6 +1493,47 @@ fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 mod tests {
     use super::retained_metadata_fragment_range_is_valid;
 
+    #[gpui::test]
+    fn registering_div_semantics_moves_key_and_preserves_child_layouts(
+        cx: &mut crate::TestAppContext,
+    ) {
+        use crate::{Element, ParentElement, Styled};
+
+        let (_, visual) = cx.add_window_view(|_, _| crate::EmptyView);
+        visual.update(|window, cx| {
+            window.invalidator.set_phase(super::DrawPhase::Prepaint);
+            let (segment, id, ambiguity) = window.begin_retained_element(
+                super::super::element_context::RetainedElementIdentity::Explicit(
+                    "semantic-root".into(),
+                ),
+            );
+            let mut element = crate::div().bg(crate::white()).child(crate::div());
+            let (layout_id, mut layout) = element.request_layout(None, None, window, cx);
+            let expected_key = layout.retained_semantic_key.clone().expect("eligible div");
+            let child_ids = layout.child_layout_ids.clone();
+            assert_eq!(child_ids.len(), 1);
+            window.register_retained_layout_semantics(
+                &id,
+                &segment,
+                layout_id,
+                &mut layout,
+                None,
+                ambiguity,
+            );
+            window.end_retained_element();
+            window.invalidator.set_phase(super::DrawPhase::None);
+            assert!(layout.retained_semantic_key.is_none());
+            assert_eq!(layout.child_layout_ids, child_ids);
+            let entry = &window.next_frame.retained_layout_semantics[&layout_id];
+            let Some(super::RetainedSemanticDescriptor::Div { style, children }) =
+                entry.descriptor.as_ref()
+            else {
+                panic!("div semantics must be registered");
+            };
+            assert_eq!(style, &expected_key);
+            assert_eq!(children.len(), child_ids.len());
+        });
+    }
     #[test]
     fn compact_inclusion_prefix_preserves_fragment_membership_and_offsets() {
         // Test the same inclusion interpretation used during selective
@@ -1509,7 +1547,10 @@ mod tests {
             }
             for (index, &admit) in included.iter().enumerate() {
                 assert_eq!(prefix[index] != prefix[index + 1], admit);
-                assert_eq!(prefix[index], included[..index].iter().filter(|&&yes| yes).count());
+                assert_eq!(
+                    prefix[index],
+                    included[..index].iter().filter(|&&yes| yes).count()
+                );
                 for end in index + 1..=included.len() {
                     assert_eq!(
                         prefix[end] - prefix[index] == end - index,

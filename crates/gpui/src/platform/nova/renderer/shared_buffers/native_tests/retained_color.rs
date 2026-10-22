@@ -5,8 +5,8 @@ use std::sync::Arc;
 mod atlas_damage;
 mod backdrop;
 mod bindings;
-mod raster;
 mod lifecycle;
+mod raster;
 mod static_background;
 mod vertical_edges;
 
@@ -221,7 +221,11 @@ fn pixels<const N: usize>(
         Instant::now(),
         damage,
         blur_damage,
-        if full { crate::PartialPresentMode::FullRedraw } else { crate::PartialPresentMode::Partial },
+        if full {
+            crate::PartialPresentMode::FullRedraw
+        } else {
+            crate::PartialPresentMode::Partial
+        },
     );
     packet.force_full_backdrop_blur_refresh = full;
     assert!(
@@ -231,16 +235,18 @@ fn pixels<const N: usize>(
     );
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                target.1,
-                renderer.render_pass,
-                RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: target.1,
+                render_pass: renderer.render_pass,
+                commands: renderer.command_scratch.commands(),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("draw final composition");
         let readback = device.read_texture(target.0).expect("read popup pixels");
         readback
@@ -278,14 +284,16 @@ fn verify(backend: RendererBackend) {
             let scene = page(backdrop, renderer.current_size, placement);
             let drawable_size = renderer.current_size;
             renderer.pack_scene(
-                &scene, &crate::window::retained::RetainedPaint::default(),
+                &scene,
+                &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(0.5)],
                 drawable_size,
                 BackdropBlurQuality::default(),
             );
             assert!(renderer.frame_upload.root_color.is_none());
             renderer.pack_scene(
-                &scene, &crate::window::retained::RetainedPaint::default(),
+                &scene,
+                &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(1.)],
                 drawable_size,
                 BackdropBlurQuality::default(),
@@ -360,9 +368,12 @@ fn verify(backend: RendererBackend) {
                     crate::diagnostics::performance_metrics::performance_metrics_snapshot()
                         .backdrop_blur_source_pixels;
                 if backdrop {
-                    let filter_pixels = crate::performance_metrics_snapshot().backdrop_blur_target_pixels;
-                    assert_eq!(filter_pixels, 0,
-                        "foreground popup must reuse backdrop Gaussian output: backend={backend:?} placement={placement:?}");
+                    let filter_pixels =
+                        crate::performance_metrics_snapshot().backdrop_blur_target_pixels;
+                    assert_eq!(
+                        filter_pixels, 0,
+                        "foreground popup must reuse backdrop Gaussian output: backend={backend:?} placement={placement:?}"
+                    );
                 }
                 largest_total_source_pixels = largest_total_source_pixels.max(total_source_pixels);
                 assert!(
@@ -373,13 +384,14 @@ fn verify(backend: RendererBackend) {
                     "all submitted sources must remain local: backend={backend:?} backdrop={backdrop} placement={placement:?} total_source_pixels={total_source_pixels}"
                 );
                 assert_eq!(
-                    renderer.draw_step_scratch.steps().len(),
+                    renderer.command_scratch.commands().len(),
                     1,
                     "final main pass must sample retained color instead of redrawing the page"
                 );
                 let root = renderer
                     .frame_upload
-                    .root_color.map(|root| root.index)
+                    .root_color
+                    .map(|root| root.index)
                     .expect("retained root");
                 let layers = renderer.prepare_color_layers(&[root], false);
                 assert!(
@@ -392,12 +404,13 @@ fn verify(backend: RendererBackend) {
                     let passes = crate::platform::nova::renderer::present::color_layer_passes(
                         renderer.render_pass,
                         renderer.pipelines.filter_render_pass,
-                        RenderPassDepthAttachment {
+                        DepthAttachment {
                             target: renderer.depth_texture_view,
                             depth_load_op: LoadOp::Clear(1.),
                         },
                         std::slice::from_ref(&layer),
-                        gfx_core::RenderViewport {
+                        gfx_core::Viewport {
+                            origin: gfx_core::SignedOrigin2d::ZERO,
                             extent: Extent2d::new(
                                 renderer.active_size.width,
                                 renderer.active_size.height,
@@ -408,6 +421,7 @@ fn verify(backend: RendererBackend) {
                                 renderer.current_size.height,
                             )
                             .expect("retained target extent"),
+                            mapping: gfx_core::ViewportMapping::Scaled,
                         },
                     );
                     let first = passes
@@ -438,8 +452,8 @@ fn verify(backend: RendererBackend) {
                         .flat_map(|group| &group.source_steps)
                     {
                         let scissor = match step {
-                            RenderStepDescriptor::Draw(step) => step.scissor,
-                            RenderStepDescriptor::DrawIndexed(step) => step.scissor,
+                            RenderCommand::Draw(step) => step.scissor,
+                            RenderCommand::DrawIndexed(step) => step.scissor,
                         }
                         .expect("local page capture needs a scissor");
                         source_draws += 1;
@@ -500,7 +514,7 @@ fn verify(backend: RendererBackend) {
                 lifecycle::verify(&mut renderer, &scene, target);
             }
             renderer
-                .wait_for_pending_submissions()
+                .wait_pending_submissions()
                 .expect("complete readback");
             device!(renderer, device, {
                 device

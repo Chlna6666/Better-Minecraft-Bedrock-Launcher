@@ -539,7 +539,7 @@ fn duration_micros(duration: Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
 }
 
-fn backend_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 5] {
+fn backend_timing_ms(timings: Option<gfx_core::PresentTimings>) -> [f64; 5] {
     let Some(timings) = timings else {
         return [0.0; 5];
     };
@@ -553,7 +553,7 @@ fn backend_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 5]
     .map(|duration| micros_to_millis(duration_micros(duration) as usize))
 }
 
-fn backend_command_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 4] {
+fn backend_command_timing_ms(timings: Option<gfx_core::PresentTimings>) -> [f64; 4] {
     let Some(timings) = timings else {
         return [0.0; 4];
     };
@@ -647,13 +647,13 @@ mod tests {
             vsync_event_queue_delay: Duration::from_millis(3),
             window_dispatch_delay: Duration::from_millis(1),
             active_present_duration: Duration::from_millis(4),
-            backend_timings: Some(gfx_core::PresentationTimings {
+            backend_timings: Some(gfx_core::PresentTimings {
                 command_encoder_create: Duration::from_micros(400),
                 command_record: Duration::from_millis(2),
                 fence_reset: Duration::from_micros(100),
                 queue_present: Duration::from_millis(7),
                 post_present_cleanup: Duration::from_micros(200),
-                ..gfx_core::PresentationTimings::default()
+                ..gfx_core::PresentTimings::default()
             }),
             ..Default::default()
         };
@@ -738,7 +738,7 @@ mod tests {
             vsync_event_queue_delay: Duration::from_millis(2),
             window_dispatch_delay: Duration::from_millis(1),
             active_present_duration: Duration::from_millis(4),
-            backend_timings: Some(gfx_core::PresentationTimings {
+            backend_timings: Some(gfx_core::PresentTimings {
                 acquire_fence_wait: Duration::from_millis(5),
                 image_acquire: Duration::from_millis(6),
                 command_encoder_create: Duration::from_micros(400),

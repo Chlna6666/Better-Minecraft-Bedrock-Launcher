@@ -6,7 +6,7 @@ pub(super) fn verify_pixels<D>(
     target: TextureId,
     view: TextureViewId,
 ) where
-    D: BackendResources + BackendPipelines + BackendPresentationCompat + TextureTransferDevice,
+    D: ResourceDevice + PipelineDevice + PresentationDevice + TextureTransferDevice,
 {
     let frame = resources.frame_resources[0];
     let mask = create_path_mask_target(
@@ -15,7 +15,7 @@ pub(super) fn verify_pixels<D>(
         PathMaskTargetDescriptor {
             size: Extent2d::new(16, 16).expect("extent"),
             format: Format::Bgra8Unorm,
-            resource_set_layout: resources.path_resource_set_layout,
+            bind_group_layout: resources.path_resource_set_layout,
             frame_buffers: vec![frame.buffers],
             sampler: resources.atlas_sampler,
         },
@@ -48,9 +48,9 @@ pub(super) fn verify_pixels<D>(
         device,
         resources,
         mask.texture_view,
-        DrawStepDescriptor {
+        DrawCommand {
             pipeline: resources.pipelines.path_rasterization,
-            resource_sets: resource_set_list([frame.resource_sets.path_rasterization_resource_set]),
+            bind_groups: bind_group_list([frame.bind_groups.path_rasterization_resource_set]),
             vertex_count: 3,
             instance_count: 1,
             first_vertex: 0,
@@ -68,9 +68,9 @@ pub(super) fn verify_pixels<D>(
         device,
         resources,
         view,
-        DrawStepDescriptor {
+        DrawCommand {
             pipeline: resources.pipelines.paths,
-            resource_sets: resource_set_list([mask.resource_sets[0]]),
+            bind_groups: bind_group_list([mask.bind_groups[0]]),
             vertex_count: 4,
             instance_count: 1,
             first_vertex: 0,
@@ -93,25 +93,27 @@ pub(super) fn verify_pixels<D>(
     println!("production path rasterization and composition: native pixels verified");
 }
 
-fn draw<D: BackendPresentationCompat>(
+fn draw<D: PresentationDevice>(
     device: &mut D,
     resources: &RendererResources,
     view: TextureViewId,
-    step: DrawStepDescriptor,
+    step: DrawCommand,
     alpha: f32,
 ) {
     device
-        .render_steps_to_texture_compat(
-            view,
-            resources.render_pass,
-            &[RenderStepDescriptor::Draw(step)],
-            LoadOp::Clear(ClearColor {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: resources.render_pass,
+            commands: &[RenderCommand::Draw(step)],
+            color_load_op: LoadOp::Clear(ClearColor {
                 red: 0.0,
                 green: 0.0,
                 blue: 0.0,
                 alpha,
             }),
-            None,
-        )
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+        }])
         .expect("path draw");
 }

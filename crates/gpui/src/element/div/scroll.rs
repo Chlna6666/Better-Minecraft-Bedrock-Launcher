@@ -304,20 +304,20 @@ impl Interactivity {
                 scroll_offset.y.clamp(-scroll_max.height, px(0.))
             };
 
-            let mut viewport_became_measured = false;
+            let mut viewport_size_changed = false;
             if let Some(mut scroll_handle_state) = tracked_scroll_handle {
-                let previous_size = scroll_handle_state.bounds.size;
-                viewport_became_measured = (previous_size.width <= px(0.)
-                    && bounds.size.width > px(0.))
-                    || (previous_size.height <= px(0.) && bounds.size.height > px(0.));
+                viewport_size_changed = scroll_handle_state.bounds.size != bounds.size;
                 scroll_handle_state.max_offset = scroll_max;
                 scroll_handle_state.bounds = bounds;
             }
 
             let resolved_offset = *scroll_offset;
             drop(scroll_offset);
-            if viewport_became_measured {
-                cx.notify(window.current_view());
+            if viewport_size_changed {
+                // Render may have selected virtual rows using the previous viewport. A notify
+                // during prepaint is consumed by this draw, so invalidate after it commits.
+                let view = window.current_view();
+                window.defer(cx, move |_, cx| cx.notify(view));
             }
             resolved_offset
         } else {

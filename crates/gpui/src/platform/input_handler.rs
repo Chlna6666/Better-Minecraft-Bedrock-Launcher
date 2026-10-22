@@ -136,7 +136,7 @@ impl PlatformInputHandler {
     ///
     /// A pending multi-stroke binding always wins temporarily: the next printable key may complete
     /// a chord whose prefix already bypassed the IME.
-    pub fn query_prefers_ime_for_printable_keys(&mut self) -> bool {
+    pub fn prefers_ime_printable_keys(&mut self) -> bool {
         self.cx
             .update(|window, cx| {
                 !window.has_pending_keystrokes()

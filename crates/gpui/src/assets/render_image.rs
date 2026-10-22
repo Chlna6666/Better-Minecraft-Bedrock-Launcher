@@ -414,11 +414,7 @@ impl RenderImage {
         self.processing_duration
     }
 
-    pub(crate) fn gpu_frame_slot_for_frame(
-        &self,
-        frame_index: usize,
-        config: AnimatedImageConfig,
-    ) -> usize {
+    pub(crate) fn gpu_frame_slot(&self, frame_index: usize, config: AnimatedImageConfig) -> usize {
         if !self.is_animated() {
             return frame_index;
         }

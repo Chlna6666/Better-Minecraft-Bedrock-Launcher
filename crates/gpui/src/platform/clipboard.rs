@@ -280,10 +280,10 @@ impl ClipboardImage {
 
     /// Decode the clipboard image into a renderable image.
     pub fn to_render_image(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
-        self.to_render_image_with_config(svg_renderer, AnimatedImageConfig::default())
+        self.config_render_image(svg_renderer, AnimatedImageConfig::default())
     }
 
-    pub(crate) fn to_render_image_with_config(
+    pub(crate) fn config_render_image(
         &self,
         svg_renderer: SvgRenderer,
         config: AnimatedImageConfig,
@@ -317,7 +317,7 @@ impl ClipboardImage {
 
         let processing_duration = processing_started.elapsed();
         image = image.with_processing_metrics(self.bytes.len(), processing_duration);
-        crate::record_image_processing_metrics_with_threshold(
+        crate::record_image_metrics(
             self.bytes.len(),
             image.resident_byte_len(),
             image.frame_count(),

@@ -221,11 +221,9 @@ mod unpaced_tests {
             state.queue_unpaced_request(PlatformFrameRequest::ui_commit()),
             FrameClockRequest::Coalesced
         ));
-        let ReceivedPlatformFrame::Ready(merged) = state.receive_frame(
-            PlatformFrameRequest::animation_tick(),
-            Instant::now(),
-            None,
-        ) else {
+        let ReceivedPlatformFrame::Ready(merged) =
+            state.receive_frame(PlatformFrameRequest::animation_tick(), Instant::now(), None)
+        else {
             panic!("native callback should deliver immediately");
         };
         assert!(merged.needs_ui_commit());

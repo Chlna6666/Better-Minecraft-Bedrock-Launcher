@@ -275,7 +275,7 @@ pub trait InteractiveElement: Sized {
         f: impl FnOnce(StyleRefinement) -> StyleRefinement,
     ) -> Self {
         self.interactivity()
-            .group_drag_over_for_type(std::any::TypeId::of::<S>(), group_name, f);
+            .group_drag_over_type(std::any::TypeId::of::<S>(), group_name, f);
         self
     }
 

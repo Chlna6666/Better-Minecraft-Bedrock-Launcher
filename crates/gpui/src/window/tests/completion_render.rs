@@ -24,11 +24,7 @@ impl Render for Leaf {
         div()
             .size(px(20.))
             .bg(crate::rgb(0xff0000))
-            .child(
-                self.child
-                    .clone()
-                    .cached(crate::StyleRefinement::default().size(px(10.))),
-            )
+            .child(div().size(px(10.)).child(self.child.clone()))
             .with_visual_animation(
                 "motion",
                 Animation::from_spec(
@@ -50,11 +46,9 @@ struct Root {
 impl Render for Root {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
-        div().size_full().child(
-            self.leaf
-                .clone()
-                .cached(crate::StyleRefinement::default().size(px(20.))),
-        )
+        div()
+            .size_full()
+            .child(div().size(px(20.)).child(self.leaf.clone()))
     }
 }
 

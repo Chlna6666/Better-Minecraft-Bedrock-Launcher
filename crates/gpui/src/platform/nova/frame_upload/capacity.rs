@@ -3,21 +3,60 @@ use super::*;
 impl FrameUpload {
     /// Counts cache and frame references by their shared backing, including trimmed cache entries
     /// still needed by the current presentation. Packed bytes never count twice.
-    pub(in crate::platform::nova) fn retained_quad_memory(
+    pub(in crate::platform::nova) fn retained_chunk_memory(
         &self,
-        cache: &RetainedQuadChunkCache,
+        cache: &RetainedChunkCache,
     ) -> crate::MemoryUsage {
         let mut seen = FxHashSet::default();
         let mut usage = crate::MemoryUsage::default();
         for bytes in cache
-            .retained_quad_chunks
+            .quad_payloads
             .values()
             .map(|chunk| &chunk.bytes)
+            .chain(
+                cache
+                    .retained_monochrome_sprite_chunks
+                    .values()
+                    .map(|chunk| &chunk.bytes),
+            )
+            .chain(
+                cache
+                    .layer_scene_encodings
+                    .values()
+                    .filter_map(|layer| layer.quads.as_ref()),
+            )
+            .chain(
+                cache
+                    .layer_scene_encodings
+                    .values()
+                    .filter_map(|layer| layer.mono_sprites.as_ref()),
+            )
             .chain(self.quads.shared_bytes())
+            .chain(self.mono_sprites.shared_bytes())
         {
-            if seen.insert(Arc::as_ptr(bytes)) {
+            if seen.insert(Arc::as_ptr(bytes) as usize) {
                 usage.used_bytes = usage.used_bytes.saturating_add(bytes.len() as u64);
                 usage.capacity_bytes = usage.capacity_bytes.saturating_add(bytes.capacity() as u64);
+            }
+        }
+        for tiles in cache
+            .retained_monochrome_sprite_chunks
+            .values()
+            .map(|chunk| &chunk.atlas_tiles)
+            .chain(
+                cache
+                    .layer_scene_encodings
+                    .values()
+                    .map(|layer| &layer.mono_atlas_tiles),
+            )
+        {
+            if seen.insert(Arc::as_ptr(tiles) as usize) {
+                usage.used_bytes = usage
+                    .used_bytes
+                    .saturating_add((tiles.len() * std::mem::size_of::<AtlasTile>()) as u64);
+                usage.capacity_bytes = usage
+                    .capacity_bytes
+                    .saturating_add((tiles.capacity() * std::mem::size_of::<AtlasTile>()) as u64);
             }
         }
         usage
@@ -25,7 +64,7 @@ impl FrameUpload {
 
     pub(in crate::platform::nova) fn retained_byte_capacity(
         &self,
-        cache: &RetainedQuadChunkCache,
+        cache: &RetainedChunkCache,
     ) -> usize {
         let stream_capacity = [
             self.globals.capacity(),
@@ -36,6 +75,7 @@ impl FrameUpload {
             self.path_rasterization_vertices.capacity(),
             self.path_sprites.capacity(),
             self.mono_sprites.capacity(),
+            self.mono_sprites.metadata_capacity(),
             self.poly_sprites.capacity(),
             self.mono_atlas_tiles.capacity() * std::mem::size_of::<AtlasTile>(),
             self.poly_atlas_tiles.capacity() * std::mem::size_of::<AtlasTile>(),
@@ -63,14 +103,25 @@ impl FrameUpload {
                 * std::mem::size_of::<crate::Bounds<crate::ScaledPixels>>(),
             self.path_paint_key_scratch.capacity(),
             self.path_rasterization_encode_scratch.capacity(),
+            cache.layer_scene_encodings.capacity()
+                * std::mem::size_of::<(crate::GlobalElementId, CachedLayerSceneEncoding)>(),
+            cache
+                .layer_scene_encodings
+                .values()
+                .map(|layer| layer.batches.capacity() * std::mem::size_of::<CachedLayerBatch>())
+                .sum::<usize>(),
         ]
         .into_iter()
         .fold(0, usize::saturating_add);
-        let chunk_capacity = self.retained_quad_memory(cache).capacity_bytes as usize;
+        let chunk_capacity = self.retained_chunk_memory(cache).capacity_bytes as usize;
         stream_capacity
             .saturating_add(chunk_capacity)
             .saturating_add(
                 self.resident_quad_spans.capacity() * std::mem::size_of::<RetainedResidentSpan>(),
+            )
+            .saturating_add(
+                self.resident_monochrome_sprite_spans.capacity()
+                    * std::mem::size_of::<RetainedResidentSpan>(),
             )
     }
 
@@ -98,11 +149,8 @@ impl FrameUpload {
             64 * PACKED_PATH_SPRITE_BYTES,
             multiplier,
         );
-        trim_upload_vec(
-            &mut self.mono_sprites,
-            64 * PACKED_MONO_SPRITE_BYTES,
-            multiplier,
-        );
+        self.mono_sprites
+            .trim(64 * PACKED_MONO_SPRITE_BYTES, multiplier);
         trim_upload_vec(
             &mut self.poly_sprites,
             64 * PACKED_POLY_SPRITE_BYTES,
@@ -224,6 +272,8 @@ impl FrameUpload {
 
         self.resident_quad_spans.clear();
         trim_upload_vec(&mut self.resident_quad_spans, 16, multiplier);
+        self.resident_monochrome_sprite_spans.clear();
+        trim_upload_vec(&mut self.resident_monochrome_sprite_spans, 16, multiplier);
     }
 
     /// Rebuild atlas dependencies of every filter barrier, including sprites
@@ -231,7 +281,7 @@ impl FrameUpload {
     ///
     /// The batch stream is static for a retained upload, so this derived dependency set is computed
     /// once after static encode and shared by all renderer/present consumers in subsequent frames.
-    pub(in crate::platform::nova) fn refresh_backdrop_source_atlas_texture_ids(&mut self) {
+    pub(in crate::platform::nova) fn refresh_backdrop_textures(&mut self) {
         let textures = Arc::make_mut(&mut self.backdrop_source_atlas_texture_ids_cache);
         textures.clear();
         let tile_sources = Arc::make_mut(&mut self.backdrop_source_atlas_tiles_cache);
@@ -248,20 +298,34 @@ impl FrameUpload {
 
         for batch in &self.batches[..last_blur_batch] {
             match *batch {
-                UploadedBatch::MonoSprites { texture_id, first, count } => {
+                UploadedBatch::MonoSprites {
+                    texture_id,
+                    first,
+                    count,
+                } => {
                     textures.insert(texture_id);
                     let start = first as usize;
                     let end = start.saturating_add(count as usize);
                     if let Some(tiles) = self.mono_atlas_tiles.get(start..end) {
-                        tile_sources.entry(texture_id).or_default().extend_from_slice(tiles);
+                        tile_sources
+                            .entry(texture_id)
+                            .or_default()
+                            .extend_from_slice(tiles);
                     }
                 }
-                UploadedBatch::PolySprites { texture_id, first, count } => {
+                UploadedBatch::PolySprites {
+                    texture_id,
+                    first,
+                    count,
+                } => {
                     textures.insert(texture_id);
                     let start = first as usize;
                     let end = start.saturating_add(count as usize);
                     if let Some(tiles) = self.poly_atlas_tiles.get(start..end) {
-                        tile_sources.entry(texture_id).or_default().extend_from_slice(tiles);
+                        tile_sources
+                            .entry(texture_id)
+                            .or_default()
+                            .extend_from_slice(tiles);
                     }
                 }
                 UploadedBatch::SolidQuads { .. }
@@ -341,7 +405,7 @@ impl FrameUpload {
             self.quads.len() / PACKED_QUAD_BYTES,
             packed_item_count(&self.shadows, PACKED_SHADOW_BYTES),
             packed_item_count(&self.path_sprites, PACKED_PATH_SPRITE_BYTES),
-            packed_item_count(&self.mono_sprites, PACKED_MONO_SPRITE_BYTES),
+            self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES,
             packed_item_count(&self.poly_sprites, PACKED_POLY_SPRITE_BYTES),
             packed_item_count(&self.underlines, PACKED_UNDERLINE_BYTES),
             packed_item_count(&self.backdrop_blurs, PACKED_BACKDROP_BLUR_BYTES),
@@ -375,20 +439,32 @@ mod atlas_source_dependency_tests {
         upload.mono_atlas_tiles.push(tile(2, 50));
         upload.mono_atlas_tiles.push(tile(3, 90));
         upload.batches.extend([
-            UploadedBatch::MonoSprites { texture_id: id, first: 0, count: 1 },
+            UploadedBatch::MonoSprites {
+                texture_id: id,
+                first: 0,
+                count: 1,
+            },
             UploadedBatch::BackdropBlurs { first: 0, count: 1 },
-            UploadedBatch::MonoSprites { texture_id: id, first: 1, count: 1 },
+            UploadedBatch::MonoSprites {
+                texture_id: id,
+                first: 1,
+                count: 1,
+            },
             UploadedBatch::BackdropBlurs { first: 1, count: 1 },
-            UploadedBatch::MonoSprites { texture_id: id, first: 2, count: 1 },
+            UploadedBatch::MonoSprites {
+                texture_id: id,
+                first: 2,
+                count: 1,
+            },
         ]);
-        upload.refresh_backdrop_source_atlas_texture_ids();
+        upload.refresh_backdrop_textures();
         let tiles = upload.backdrop_source_atlas_tiles();
         assert_eq!(tiles.get(&id).expect("source texture").len(), 2);
         assert_eq!(tiles[&id][0].tile_id, crate::TileId(1));
         assert_eq!(tiles[&id][1].tile_id, crate::TileId(2));
         assert!(upload.backdrop_source_atlas_texture_ids().contains(&id));
         upload.batches.clear();
-        upload.refresh_backdrop_source_atlas_texture_ids();
+        upload.refresh_backdrop_textures();
         assert!(upload.backdrop_source_atlas_tiles().is_empty());
     }
 }
@@ -404,7 +480,7 @@ fn trim_upload_vec<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     }
 }
 
-impl RetainedQuadChunkCache {
+impl RetainedChunkCache {
     /// Release GPU-owner cache payloads on pressure. Immutable upload segments
     /// already borrowed by an in-flight draw remain alive through their Arc.
     pub(in crate::platform::nova) fn trim(&mut self, level: GpuiMemoryTrimLevel) {
@@ -412,13 +488,17 @@ impl RetainedQuadChunkCache {
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
         ) {
-            self.retained_quad_chunks.clear();
+            self.quad_payloads.clear();
+            self.retained_monochrome_sprite_chunks.clear();
+            self.layer_scene_encodings.clear();
         }
         let floor = match level {
             GpuiMemoryTrimLevel::Light => 64,
             GpuiMemoryTrimLevel::Moderate => 16,
             GpuiMemoryTrimLevel::Aggressive => 0,
         };
-        self.retained_quad_chunks.shrink_to(floor);
+        self.quad_payloads.shrink_to(floor);
+        self.retained_monochrome_sprite_chunks.shrink_to(floor);
+        self.layer_scene_encodings.shrink_to(floor);
     }
 }

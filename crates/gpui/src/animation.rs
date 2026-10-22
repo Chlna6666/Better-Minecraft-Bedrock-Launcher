@@ -230,7 +230,7 @@ mod tests {
             [0.0; 4],
             [1.0, 0.0, 0.0, 0.0],
         );
-        assert!(engine.set_scene_animation_completion_invalidation(
+        assert!(engine.set_animation_completion_check(
             crate::SceneAnimationId(101),
             view_id,
             retained_id.clone(),
@@ -588,11 +588,11 @@ mod tests {
         let elapsed = Duration::from_millis(125);
         let sample = spec.sample_elapsed(elapsed);
         let iteration = spec.active_iteration_at_elapsed(elapsed);
-        let resumed_elapsed = spec.elapsed_for_raw_progress(sample.raw_progress, iteration);
+        let resumed_elapsed = spec.raw_progress_elapsed(sample.raw_progress, iteration);
 
         assert_eq!(iteration, 1);
         assert!((resumed_elapsed.as_secs_f32() - elapsed.as_secs_f32()).abs() < 0.001);
-        assert!((spec.elapsed_for_raw_progress(0.3, 1).as_secs_f32() - 0.17).abs() < 0.001);
+        assert!((spec.raw_progress_elapsed(0.3, 1).as_secs_f32() - 0.17).abs() < 0.001);
 
         let spec = AnimationSpec::new(Duration::from_millis(100))
             .repeat(RepeatMode::Forever)
@@ -600,7 +600,7 @@ mod tests {
         let elapsed = Duration::from_millis(125);
         let sample = spec.sample_elapsed(elapsed);
         let iteration = spec.active_iteration_at_elapsed(elapsed);
-        let resumed_elapsed = spec.elapsed_for_raw_progress(sample.raw_progress, iteration);
+        let resumed_elapsed = spec.raw_progress_elapsed(sample.raw_progress, iteration);
 
         assert_eq!(iteration, 1);
         assert!((resumed_elapsed.as_secs_f32() - elapsed.as_secs_f32()).abs() < 0.001);

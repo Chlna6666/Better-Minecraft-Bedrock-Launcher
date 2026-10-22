@@ -68,7 +68,7 @@ impl TabStopMap {
         self.insertion_history.capacity() + self.by_id.capacity()
     }
 
-    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+    pub(crate) fn trim_for_reuse(&mut self, current: &Self) {
         let history_target = Self::MIN_RETAINED_CAPACITY.max(current.insertion_history.len());
         if self.insertion_history.capacity()
             > history_target.saturating_mul(Self::TRIM_WATERMARK_MULTIPLIER)

@@ -158,8 +158,8 @@ impl TestAppContext {
     }
 
     /// Checks whether there have been any new path prompts received by the platform.
-    pub fn did_prompt_for_new_path(&self) -> bool {
-        self.test_platform.did_prompt_for_new_path()
+    pub fn prompted_new_path(&self) -> bool {
+        self.test_platform.prompted_new_path()
     }
 
     /// returns a new `TestAppContext` re-using the same executors to interleave tasks.

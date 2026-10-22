@@ -1,10 +1,6 @@
 use super::*;
 
-type SlotBinding<'a> = (
-    &'a mut ResourceSetId,
-    ResourceSetLayoutId,
-    Vec<ResourceBinding>,
-);
+type SlotBinding<'a> = (&'a mut BindGroupId, BindGroupLayoutId, Vec<BindGroupEntry>);
 
 fn slot_bindings(
     renderer: &mut NovaRenderer,
@@ -66,32 +62,32 @@ fn frame_bindings<'a>(
     frame: &'a mut FrameResources,
     buffers: &FrameResourceBuffers,
     layouts: (
-        ResourceSetLayoutId,
-        ResourceSetLayoutId,
-        ResourceSetLayoutId,
-        ResourceSetLayoutId,
-        ResourceSetLayoutId,
+        BindGroupLayoutId,
+        BindGroupLayoutId,
+        BindGroupLayoutId,
+        BindGroupLayoutId,
+        BindGroupLayoutId,
     ),
     path: (TextureViewId, SamplerId),
 ) -> Vec<SlotBinding<'a>> {
     vec![
         (
-            &mut frame.resource_sets.path_rasterization_resource_set,
+            &mut frame.bind_groups.path_rasterization_resource_set,
             layouts.4,
             path_rasterization_resource_bindings(buffers),
         ),
         (
-            &mut frame.resource_sets.quad_resource_set,
+            &mut frame.bind_groups.quad_resource_set,
             layouts.0,
             quad_resource_bindings(buffers),
         ),
         (
-            &mut frame.resource_sets.shadow_resource_set,
+            &mut frame.bind_groups.shadow_resource_set,
             layouts.1,
             shadow_resource_bindings(buffers),
         ),
         (
-            &mut frame.resource_sets.underline_resource_set,
+            &mut frame.bind_groups.underline_resource_set,
             layouts.2,
             underline_resource_bindings(buffers),
         ),
@@ -108,20 +104,20 @@ fn append_atlas_bindings<'a>(
     textures: &'a mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     frame: (usize, FrameResourceBuffers),
     sampler: SamplerId,
-    layouts: (ResourceSetLayoutId, ResourceSetLayoutId),
+    layouts: (BindGroupLayoutId, BindGroupLayoutId),
 ) {
     let (slot, buffers) = frame;
     for texture in textures.values_mut() {
-        if let Some(resource_set) = texture.mono_resource_sets.get_mut(slot) {
+        if let Some(bind_group) = texture.mono_resource_sets.get_mut(slot) {
             bindings.push((
-                resource_set,
+                bind_group,
                 layouts.0,
                 mono_atlas_resource_bindings(buffers, texture.texture_view, sampler),
             ));
         }
-        if let Some(resource_set) = texture.poly_resource_sets.get_mut(slot) {
+        if let Some(bind_group) = texture.poly_resource_sets.get_mut(slot) {
             bindings.push((
-                resource_set,
+                bind_group,
                 layouts.1,
                 poly_atlas_resource_bindings(buffers, texture.texture_view, sampler),
             ));
@@ -134,7 +130,7 @@ fn append_blur_bindings<'a>(
     targets: &'a mut BackdropBlurTargets,
     frame: (usize, &FrameResourceBuffers),
     sampler: SamplerId,
-    layouts: (ResourceSetLayoutId, ResourceSetLayoutId),
+    layouts: (BindGroupLayoutId, BindGroupLayoutId),
 ) {
     let (slot, buffers) = frame;
     if let Some(source) = targets.source {
@@ -170,21 +166,17 @@ fn append_blur_bindings<'a>(
             ));
         }
     }
-
 }
 
-fn release_sets<D: BackendResources>(
-    device: &mut D,
-    sets: impl IntoIterator<Item = ResourceSetId>,
-) {
+fn release_sets<D: ResourceDevice>(device: &mut D, sets: impl IntoIterator<Item = BindGroupId>) {
     for set in sets {
-        if let Err(error) = device.destroy_resource_set(set) {
+        if let Err(error) = device.destroy_bind_group(set) {
             log::error!("failed to retire nova grown resource set: {error}");
         }
     }
 }
 
-pub(in crate::platform::nova::renderer) fn rebind_slot<D: BackendResources>(
+pub(in crate::platform::nova::renderer) fn rebind_slot<D: ResourceDevice>(
     renderer: &mut NovaRenderer,
     device: &mut D,
     buffers: FrameResourceBuffers,
@@ -192,10 +184,10 @@ pub(in crate::platform::nova::renderer) fn rebind_slot<D: BackendResources>(
     let bindings = slot_bindings(renderer, buffers);
     let mut created = Vec::with_capacity(bindings.len());
     for (target, layout, resources) in bindings {
-        match device.create_resource_set(&ResourceSetDescriptor {
+        match device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui nova grown frame binding".to_owned()),
             layout,
-            bindings: resources,
+            entries: resources,
         }) {
             Ok(set) => created.push((target, set)),
             Err(error) => {

@@ -11,7 +11,7 @@ pub(super) fn upload_pending_atlas<D>(
     descriptor: &AtlasResourceDescriptor,
 ) -> Result<AtlasUploadStats>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let started_at = Instant::now();
     let missing_pages: Vec<_> = batch
@@ -44,13 +44,20 @@ where
             gpu_textures
                 .get(&atlas_id)
                 .map(|texture| texture.texture)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "missing nova atlas texture {:?}/{} in atomic upload snapshot",
-                    atlas_id.kind,
-                    atlas_id.index,
-                ))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing nova atlas texture {:?}/{} in atomic upload snapshot",
+                        atlas_id.kind,
+                        atlas_id.index,
+                    )
+                })
         },
-        |writes| Ok(gfx_core::ResourceDevice::write_texture_batch(device, writes.iter().copied())?),
+        |writes| {
+            Ok(gfx_core::ResourceDevice::write_texture_batch(
+                device,
+                writes.iter().copied(),
+            )?)
+        },
     )?;
     if stats.upload_count > 0 {
         crate::diagnostics::performance_metrics::record_atlas_upload_metrics(
@@ -62,10 +69,7 @@ where
     Ok(stats)
 }
 
-pub(super) fn record_nova_upload_metrics(
-    frame_upload_bytes: usize,
-    atlas_stats: AtlasUploadStats,
-) {
+pub(super) fn record_nova_upload_metrics(frame_upload_bytes: usize, atlas_stats: AtlasUploadStats) {
     let upload_bytes = frame_upload_bytes;
     crate::diagnostics::performance_metrics::record_upload_bytes(
         upload_bytes.saturating_add(atlas_stats.uploaded_bytes),

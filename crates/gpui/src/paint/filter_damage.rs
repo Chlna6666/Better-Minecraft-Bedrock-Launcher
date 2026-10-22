@@ -22,7 +22,7 @@ impl BackdropBlurDamagePlan {
         !self.is_empty()
     }
 
-    pub(crate) fn source_damage_for_orders(
+    pub(crate) fn order_source_damage(
         &self,
         first: DrawOrder,
         last: DrawOrder,
@@ -272,7 +272,7 @@ pub(crate) fn backdrop_blur_output_damage(
 ) -> impl Iterator<Item = Bounds<ScaledPixels>> {
     let mut output_damage = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
     for (_, blur) in backdrop_blur_operations(scene.paint_operations.all()) {
-        let (full_refresh, source_damage) = plan.source_damage_for_orders(blur.order, blur.order);
+        let (full_refresh, source_damage) = plan.order_source_damage(blur.order, blur.order);
         if full_refresh {
             let bounds = blur.bounds.intersect(&blur.content_mask.bounds);
             if !bounds.is_empty() {

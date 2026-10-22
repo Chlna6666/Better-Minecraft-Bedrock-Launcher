@@ -2,13 +2,13 @@ use super::super::blur_damage::{bounds_to_scissor, intersect_scissor_rects};
 use super::*;
 
 mod backdrop;
-use backdrop::{backdrop_damage_for_configs, blur_configs_for_refresh};
+use backdrop::{backdrop_config_damage, blur_refresh_configs};
 
 pub(super) struct PreparedBackdropBlurGroup {
     /// Scene segment that advances the shared backdrop source from the previous blur barrier to this
     /// group's exact source state. The previous blur batch itself is included in the next segment,
     /// so its filtered result is composited once into the accumulated scene color.
-    pub(super) source_steps: Vec<RenderStepDescriptor>,
+    pub(super) source_steps: Vec<RenderCommand>,
     /// Exact source-capture footprint; empty source geometry still needs
     /// transparent pixels inside the filter sampling halo.
     pub(super) source_clear_region: Option<ScissorRect>,
@@ -33,16 +33,17 @@ pub(super) struct PreparedColorLayer {
 
 /// A renderer extension prepares its GPU commands on every presentation tick;
 /// it must never reuse the previous frame's flattened native descriptors.
-fn draw_step_cache_revision(scene_revision: u64, has_renderer_extensions: bool) -> u64 {
-    if has_renderer_extensions { 0 } else { scene_revision }
+fn command_cache_revision(scene_revision: u64, has_renderer_extensions: bool) -> u64 {
+    if has_renderer_extensions {
+        0
+    } else {
+        scene_revision
+    }
 }
 
 /// Retain each extension's vector allocation while dropping all previous-frame
 /// commands, even when the next prepare exits early due to empty visibility.
-fn prepare_renderer_extension_step_storage<T>(
-    steps: &mut Vec<Vec<T>>,
-    extension_count: usize,
-) {
+fn prepare_renderer_extension_step_storage<T>(steps: &mut Vec<Vec<T>>, extension_count: usize) {
     steps.resize_with(extension_count, Vec::new);
     steps.truncate(extension_count);
     for extension_steps in steps {
@@ -51,15 +52,15 @@ fn prepare_renderer_extension_step_storage<T>(
 }
 
 impl NovaRenderer {
-    pub(super) fn prepare_draw_steps(&mut self, scene_revision: u64) {
+    pub(super) fn prepare_commands(&mut self, scene_revision: u64) {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
-        let cache_key = DrawStepCacheKey {
+        let cache_key = CommandCacheKey {
             // Extensions supply fresh RenderStepDescriptors (and may replace GPU
             // resources) for *every* presentation frame, without re-encoding
             // the producer Scene. Never reuse an old descriptor list for them.
             // The zero-revision lane already builds into uncached scratch.
-            scene_revision: draw_step_cache_revision(
+            scene_revision: command_cache_revision(
                 scene_revision,
                 !self.frame_upload.renderer_extensions.is_empty(),
             ),
@@ -76,9 +77,9 @@ impl NovaRenderer {
         };
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let backdrop_blur_targets = self.filters.targets.as_ref();
-        self.draw_step_scratch
+        self.command_scratch
             .prepare_steps(cache_key, self.frame_resources.len(), |steps| {
-                draw_steps_for_upload_into(
+                encode_draw_commands_into(
                     &self.frame_upload,
                     &self.pipelines,
                     blend_pipelines,
@@ -90,9 +91,15 @@ impl NovaRenderer {
                     },
                     self.underline_resource_set,
                     |config| {
-                        root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), backdrop_blur_targets, config, frame_resource_index)
+                        root_color::composite_resource_set(
+                            &self.root_color,
+                            self.frame_upload.root_color.map(|root| root.index),
+                            backdrop_blur_targets,
+                            config,
+                            frame_resource_index,
+                        )
                     },
-                    DrawStepMode::Present,
+                    DrawMode::Present,
                     steps,
                 );
             });
@@ -147,8 +154,7 @@ impl NovaRenderer {
         let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.active_size) else {
             return Ok(());
         };
-        let Some(mask_scissor) =
-            bounds_to_scissor(extension.content_mask.bounds, self.active_size)
+        let Some(mask_scissor) = bounds_to_scissor(extension.content_mask.bounds, self.active_size)
         else {
             return Ok(());
         };
@@ -224,9 +230,7 @@ impl NovaRenderer {
                     else {
                         return None;
                     };
-                    let configs = self
-                        .frame_upload
-                        .backdrop_blur_configs_for_range(first, count);
+                    let configs = self.frame_upload.blur_configs_in_range(first, count);
                     (!configs.is_empty()).then_some((batch_index, configs))
                 })
                 .collect();
@@ -234,21 +238,18 @@ impl NovaRenderer {
             return Vec::new();
         }
 
-        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
+        let force_full = self.command_scratch.force_full_backdrop_blur_refresh;
         let group_damage: Vec<_> = blur_groups
             .iter()
             .map(|(_, configs)| {
-                backdrop_damage_for_configs(
-                    &self.draw_step_scratch.backdrop_blur_damage_plan,
-                    configs,
-                )
+                backdrop_config_damage(&self.command_scratch.backdrop_blur_damage_plan, configs)
             })
             .collect();
         let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
             .iter()
             .zip(&group_damage)
             .map(|((_, configs), (group_full_refresh, damage))| {
-                blur_configs_for_refresh(
+                blur_refresh_configs(
                     configs,
                     self.active_size,
                     damage,
@@ -293,7 +294,7 @@ impl NovaRenderer {
             .take(last_dirty_group.saturating_add(1))
         {
             let mut source_steps = Vec::new();
-            draw_steps_for_upload_into_clipped(
+            encode_clipped_draw_commands(
                 &self.frame_upload,
                 &self.pipelines,
                 blend_pipelines,
@@ -304,8 +305,16 @@ impl NovaRenderer {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
                 self.underline_resource_set,
-                |config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), Some(targets), config, frame_resource_index),
-                DrawStepMode::BackdropSegment {
+                |config| {
+                    root_color::composite_resource_set(
+                        &self.root_color,
+                        self.frame_upload.root_color.map(|root| root.index),
+                        Some(targets),
+                        config,
+                        frame_resource_index,
+                    )
+                },
+                DrawMode::BackdropSegment {
                     batch_start,
                     batch_end,
                 },
@@ -321,7 +330,7 @@ impl NovaRenderer {
             let group_force_full = force_full || *group_full_refresh;
             let mut filter_passes = Vec::new();
             if !configs.is_empty() {
-                backdrop_blur_render_passes_for_configs_into(
+                encode_blur_config_passes(
                     &self.pipelines,
                     targets,
                     frame_resource_index,
@@ -371,8 +380,8 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let filter_force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
-        let window_damage = &self.draw_step_scratch.backdrop_blur_damage_region;
+        let filter_force_full = self.command_scratch.force_full_backdrop_blur_refresh;
+        let window_damage = &self.command_scratch.backdrop_blur_damage_region;
         let composite_only = if filter_force_full {
             FxHashSet::default()
         } else {
@@ -380,8 +389,16 @@ impl NovaRenderer {
         };
         let mut layers = Vec::new();
 
-        let root_range = self.frame_upload.root_color.map(RootColorPass::content_range);
-        for range in self.frame_upload.blur_content_ranges().iter().chain(root_range.as_ref()) {
+        let root_range = self
+            .frame_upload
+            .root_color
+            .map(RootColorPass::content_range);
+        for range in self
+            .frame_upload
+            .blur_content_ranges()
+            .iter()
+            .chain(root_range.as_ref())
+        {
             // The input-dependency check already selected exactly which filter
             // outputs need rebuilding. Skip clean layers BEFORE creating their
             // source draw steps, resource-set bindings and Gaussian pass lists.
@@ -389,11 +406,13 @@ impl NovaRenderer {
             if !dirty_indices.contains(&range.index) {
                 continue;
             }
-            let is_retained_root = self.frame_upload.root_color.map(|root| root.index) == Some(range.index);
+            let is_retained_root =
+                self.frame_upload.root_color.map(|root| root.index) == Some(range.index);
             // Filter quality/residency has no authority over a Root-only source.
             // With real Filters, rebuilding their output still requires Root recomposition.
             let force_full = if is_retained_root {
-                root_force_full || (filter_force_full && !self.frame_upload.backdrop_blur_configs().is_empty())
+                root_force_full
+                    || (filter_force_full && !self.frame_upload.backdrop_blur_configs().is_empty())
             } else {
                 filter_force_full
             };
@@ -404,29 +423,34 @@ impl NovaRenderer {
             if composite_only.contains(&range.index) {
                 continue;
             }
-            let Some(config) = self
-                .frame_upload
-                .backdrop_blur_config_for_index(range.index)
-            else {
+            let Some(config) = self.frame_upload.blur_config_at(range.index) else {
                 continue;
             };
 
             let direct_composite_target = if is_retained_root {
                 self.root_color.source_target(frame_resource_index)
             } else {
-                targets.and_then(|targets| targets.direct_composite_target(config, frame_resource_index))
+                targets.and_then(|targets| {
+                    targets.direct_composite_target(config, frame_resource_index)
+                })
             };
             let direct_composite = direct_composite_target.is_some();
             // Root color and resident identity compositors can preserve source pixels.
             // Filters and changed source geometry keep the full-layer refresh path.
-            let local_source_damage = if direct_composite && !is_retained_root && !force_full
+            let local_source_damage = if direct_composite
+                && !is_retained_root
+                && !force_full
                 && self.frame_upload.root_color.is_some()
             {
                 self.frame_upload
-                    .element_blur_source_for_index(range.index)
-                    .and_then(|source| self.filters.local_source_damage(
-                        range.index, source, &self.frame_upload.sampled_animation_values,
-                    ))
+                    .element_blur_source(range.index)
+                    .and_then(|source| {
+                        self.filters.local_source_damage(
+                            range.index,
+                            source,
+                            &self.frame_upload.sampled_animation_values,
+                        )
+                    })
             } else {
                 None
             };
@@ -439,22 +463,47 @@ impl NovaRenderer {
             // the whole retained target even if window damage is a tiny rect
             // or empty (the old texture version belongs to different bytes).
             let auto_static_rebuild = matches!(
-                self.frame_upload.element_blur_source_for_index(range.index),
+                self.frame_upload.element_blur_source(range.index),
                 Some(FilterSource::AutoStatic { .. })
             );
+            // A layer whose resident source snapshot no longer matches the current
+            // source must be rebuilt as a whole. Refreshing only this frame's damage
+            // footprint would keep the previous page's pixels in the retained target,
+            // where translucent surfaces expose them as ghosting after a route change.
+            let source_changed = !is_retained_root
+                && self
+                    .frame_upload
+                    .element_blur_source(range.index)
+                    .is_some_and(|source| {
+                        !self.filters.source_unchanged(
+                            range.index,
+                            source,
+                            &self.frame_upload.sampled_animation_values,
+                        )
+                    });
             // A remapped or newly allocated capture has no proven GPU
             // contents. Never use a tiny window damage rect to initialize
             // only a fraction of an uninitialized offscreen texture.
-            let capture_uninitialized = !is_retained_root
-                && self.filters.layer_content_version(range.index).is_none();
+            let capture_uninitialized =
+                !is_retained_root && self.filters.layer_content_version(range.index).is_none();
             let layer_force_full = requires_full_isolated_layer_refresh(
                 is_retained_root,
-                force_full || auto_static_rebuild || capture_uninitialized
+                force_full
+                    || auto_static_rebuild
+                    || source_changed
+                    || capture_uninitialized
                     || (is_retained_root && self.root_color.content_version().is_none()),
                 config,
                 self.active_size,
                 damage,
             );
+            if source_changed && layer_force_full {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI element layer full refresh: index={} reason=source_changed",
+                    range.index,
+                );
+            }
             let barriers = self.color_barrier_refreshes(*range, damage, layer_force_full);
             // Chromium-style paint invalidation: keep spatially disconnected
             // damage disconnected all the way to the retained GPU color target.
@@ -470,7 +519,9 @@ impl NovaRenderer {
                 local_source_damage.is_some(),
                 force_full || layer_force_full,
                 dirty_indices.iter().any(|index| *index != range.index),
-                barriers.iter().all(|barrier| barrier.configs_known && barrier.configs.is_empty()),
+                barriers
+                    .iter()
+                    .all(|barrier| barrier.configs_known && barrier.configs.is_empty()),
                 damage,
             );
             // Unchanged nested element filters are safe: their retained GPU
@@ -478,150 +529,169 @@ impl NovaRenderer {
             // no Gaussian pass or source recapture for either dirty patch.
             let damage_patches = retained_source_damage_patches(damage, can_split_source);
             for damage in &damage_patches {
-            let preserve_source = (is_retained_root || local_source_damage.is_some())
-                && !layer_force_full && !damage.is_full();
-            let outer_source_scissor = if direct_composite && !preserve_source && !is_retained_root {
-                blur_full_source_scissor(config, self.active_size)
-            } else {
-                blur_source_scissor_for_refresh(config, self.active_size, damage, layer_force_full)
-            };
-            let Some(outer_source_scissor) = outer_source_scissor else {
-                // The caller can conservatively select a layer whose effect bounds intersect a
-                // coarse dirty region. If the actual dependency footprint itself is clean, the
-                // retained result is already valid and no offscreen work is needed.
-                continue;
-            };
-
-            let (source_texture_view, source_resource_set) = if let Some(ref target) =
-                direct_composite_target
-            {
-                (target.texture_view, target.source_resource_set)
-            } else {
-                let Some(targets) = targets else { continue };
-                let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
-                else {
+                let preserve_source = (is_retained_root || local_source_damage.is_some())
+                    && !layer_force_full
+                    && !damage.is_full();
+                let outer_source_scissor =
+                    if direct_composite && !preserve_source && !is_retained_root {
+                        blur_full_source_scissor(config, self.active_size)
+                    } else {
+                        blur_source_scissor_for_refresh(
+                            config,
+                            self.active_size,
+                            damage,
+                            layer_force_full,
+                        )
+                    };
+                let Some(outer_source_scissor) = outer_source_scissor else {
+                    // The caller can conservatively select a layer whose effect bounds intersect a
+                    // coarse dirty region. If the actual dependency footprint itself is clean, the
+                    // retained result is already valid and no offscreen work is needed.
                     continue;
                 };
-                let Some(source_resource_set) =
-                    targets.isolated_source_resource_set(range.index, frame_resource_index)
-                else {
-                    continue;
-                };
-                (source_texture_view, source_resource_set)
-            };
 
-            // Every segment contributes to one accumulated scene-color source. For a normal
-            // element filter this is isolated scratch storage; for a zero-filter compositor it is
-            // the retained final target itself. Zero-filter refreshes use the full tight layer
-            // scissor, while nested dirty filters can expand the source halo further if required.
-            let source_scissor = barriers
-                .iter()
-                .flat_map(|barrier| barrier.configs.iter().map(move |config| (barrier, *config)))
-                .filter_map(|(barrier, nested_config)| {
-                    blur_source_scissor_for_refresh(
-                        nested_config,
-                        self.active_size,
+                let (source_texture_view, source_resource_set) =
+                    if let Some(ref target) = direct_composite_target {
+                        (target.texture_view, target.source_resource_set)
+                    } else {
+                        let Some(targets) = targets else { continue };
+                        let Some(source_texture_view) =
+                            targets.isolated_source_texture_view(range.index)
+                        else {
+                            continue;
+                        };
+                        let Some(source_resource_set) =
+                            targets.isolated_source_resource_set(range.index, frame_resource_index)
+                        else {
+                            continue;
+                        };
+                        (source_texture_view, source_resource_set)
+                    };
+
+                // Every segment contributes to one accumulated scene-color source. For a normal
+                // element filter this is isolated scratch storage; for a zero-filter compositor it is
+                // the retained final target itself. Zero-filter refreshes use the full tight layer
+                // scissor, while nested dirty filters can expand the source halo further if required.
+                let source_scissor = barriers
+                    .iter()
+                    .flat_map(|barrier| {
+                        barrier.configs.iter().map(move |config| (barrier, *config))
+                    })
+                    .filter_map(|(barrier, nested_config)| {
+                        blur_source_scissor_for_refresh(
+                            nested_config,
+                            self.active_size,
+                            &barrier.damage,
+                            barrier.force_full,
+                        )
+                    })
+                    .fold(outer_source_scissor, union_scissor_rects);
+
+                let mut source_groups = Vec::with_capacity(barriers.len().saturating_add(1));
+                let mut segment_start = range.content_start;
+                for barrier in barriers.iter().filter(|barrier| barrier.configs_known) {
+                    source_groups.push(self.prepare_element_blur_group(
+                        segment_start,
+                        barrier.batch_index,
+                        &barrier.configs,
+                        source_resource_set,
+                        targets.expect("backdrop barriers require allocated Filter targets"),
+                        source_scissor,
                         &barrier.damage,
                         barrier.force_full,
-                    )
-                })
-                .fold(outer_source_scissor, union_scissor_rects);
+                    ));
+                    segment_start = barrier.batch_index;
+                }
 
-            let mut source_groups = Vec::with_capacity(barriers.len().saturating_add(1));
-            let mut segment_start = range.content_start;
-            for barrier in barriers.iter().filter(|barrier| barrier.configs_known) {
-                source_groups.push(self.prepare_element_blur_group(
-                    segment_start,
-                    barrier.batch_index,
-                    &barrier.configs,
-                    source_resource_set,
-                    targets.expect("backdrop barriers require allocated Filter targets"),
-                    source_scissor,
-                    &barrier.damage,
-                    barrier.force_full,
-                ));
-                segment_start = barrier.batch_index;
-            }
-
-            let mut final_source_steps = Vec::new();
-            draw_steps_for_upload_into_clipped(
-                &self.frame_upload,
-                &self.pipelines,
-                blend_pipelines,
-                self.quad_resource_set,
-                self.shadow_resource_set,
-                self.path_resource_set,
-                |texture_id| {
-                    sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
-                },
-                self.underline_resource_set,
-                |blur_config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), targets, blur_config, frame_resource_index),
-                DrawStepMode::BlurContent {
-                    batch_start: segment_start,
-                    batch_end: range.content_end,
-                },
-                Some(source_scissor),
-                &mut final_source_steps,
-            );
-            apply_scissor_to_steps(&mut final_source_steps, source_scissor);
-
-            let mut filter_passes = Vec::new();
-            if !direct_composite {
-                backdrop_blur_render_passes_for_configs_with_source_into(
+                let mut final_source_steps = Vec::new();
+                encode_clipped_draw_commands(
+                    &self.frame_upload,
                     &self.pipelines,
-                    targets.expect("isolated source lookup proved Filter target allocation"),
-                    frame_resource_index,
-                    std::slice::from_ref(&config),
-                    source_resource_set,
-                    &mut filter_passes,
+                    blend_pipelines,
+                    self.quad_resource_set,
+                    self.shadow_resource_set,
+                    self.path_resource_set,
+                    |texture_id| {
+                        sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                    },
+                    self.underline_resource_set,
+                    |blur_config| {
+                        root_color::composite_resource_set(
+                            &self.root_color,
+                            self.frame_upload.root_color.map(|root| root.index),
+                            targets,
+                            blur_config,
+                            frame_resource_index,
+                        )
+                    },
+                    DrawMode::BlurContent {
+                        batch_start: segment_start,
+                        batch_end: range.content_end,
+                    },
+                    Some(source_scissor),
+                    &mut final_source_steps,
                 );
-                apply_filter_refresh_scissors(
-                    std::slice::from_ref(&config),
-                    self.active_size,
-                    damage,
-                    layer_force_full,
-                    &mut filter_passes,
-                );
-            }
-            source_groups.push(PreparedBackdropBlurGroup {
-                source_steps: final_source_steps,
-                source_clear_region: Some(source_scissor),
-                filter_passes: Vec::new(),
-                preserve_filtered_pixels: !layer_force_full,
-            });
-            if preserve_source {
-                if let Some(clear_index) = self.frame_upload.root_color.map(|root| root.clear_quad) {
-                    // Replace (not alpha blend) with transparent black before
-                    // replaying ALL intersecting primitives in painter order.
-                    // This prevents transparent shadows from accumulating.
-                    source_groups[0].source_steps.insert(
-                        0,
-                        RenderStepDescriptor::Draw(DrawStepDescriptor {
-                            pipeline: self.pipelines.retained_clear,
-                            resource_sets: resource_set_list([self.quad_resource_set]),
-                            vertex_count: 4,
-                            first_vertex: 0,
-                            instance_count: 1,
-                            first_instance: clear_index,
-                            scissor: Some(source_scissor),
-                        }),
+                apply_scissor_to_steps(&mut final_source_steps, source_scissor);
+
+                let mut filter_passes = Vec::new();
+                if !direct_composite {
+                    encode_blur_source_passes(
+                        &self.pipelines,
+                        targets.expect("isolated source lookup proved Filter target allocation"),
+                        frame_resource_index,
+                        std::slice::from_ref(&config),
+                        source_resource_set,
+                        &mut filter_passes,
+                    );
+                    apply_filter_refresh_scissors(
+                        std::slice::from_ref(&config),
+                        self.active_size,
+                        damage,
+                        layer_force_full,
+                        &mut filter_passes,
                     );
                 }
-            }
-            // Multiple nested backdrop barriers may all sample already
-            // retained Gaussian results. Splitting each barrier into a
-            // separate Load/Store render pass is unnecessary (and particularly
-            // expensive on Vulkan). Merge contiguous source-only segments
-            // without crossing a real filter execution barrier.
-            coalesce_source_groups(&mut source_groups);
-            layers.push(PreparedColorLayer {
-                index: range.index,
-                source_texture_view,
-                source_groups,
-                filter_passes,
-                preserve_filtered_pixels: !layer_force_full,
-                preserve_retained_source: preserve_source,
-            });
+                source_groups.push(PreparedBackdropBlurGroup {
+                    source_steps: final_source_steps,
+                    source_clear_region: Some(source_scissor),
+                    filter_passes: Vec::new(),
+                    preserve_filtered_pixels: !layer_force_full,
+                });
+                if preserve_source {
+                    if let Some(clear_index) =
+                        self.frame_upload.root_color.map(|root| root.clear_quad)
+                    {
+                        // Replace (not alpha blend) with transparent black before
+                        // replaying ALL intersecting primitives in painter order.
+                        // This prevents transparent shadows from accumulating.
+                        source_groups[0].source_steps.insert(
+                            0,
+                            RenderCommand::Draw(DrawCommand {
+                                pipeline: self.pipelines.retained_clear,
+                                bind_groups: bind_group_list([self.quad_resource_set]),
+                                vertex_count: 4,
+                                first_vertex: 0,
+                                instance_count: 1,
+                                first_instance: clear_index,
+                                scissor: Some(source_scissor),
+                            }),
+                        );
+                    }
+                }
+                // Multiple nested backdrop barriers may all sample already
+                // retained Gaussian results. Splitting each barrier into a
+                // separate Load/Store render pass is unnecessary (and particularly
+                // expensive on Vulkan). Merge contiguous source-only segments
+                // without crossing a real filter execution barrier.
+                coalesce_source_groups(&mut source_groups);
+                layers.push(PreparedColorLayer {
+                    index: range.index,
+                    source_texture_view,
+                    source_groups,
+                    filter_passes,
+                    preserve_filtered_pixels: !layer_force_full,
+                    preserve_retained_source: preserve_source,
+                });
             } // independent GPU dirty rectangles for this retained color layer
         }
         layers
@@ -632,7 +702,7 @@ impl NovaRenderer {
         batch_start: usize,
         batch_end: usize,
         configs: &[BackdropBlurConfig],
-        source_resource_set: ResourceSetId,
+        source_resource_set: BindGroupId,
         targets: &BackdropBlurTargets,
         source_scissor: ScissorRect,
         dirty_region: &DirtyRegion,
@@ -642,7 +712,7 @@ impl NovaRenderer {
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let mut source_steps = Vec::new();
-        draw_steps_for_upload_into_clipped(
+        encode_clipped_draw_commands(
             &self.frame_upload,
             &self.pipelines,
             blend_pipelines,
@@ -651,8 +721,16 @@ impl NovaRenderer {
             self.path_resource_set,
             |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
             self.underline_resource_set,
-            |blur_config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), Some(targets), blur_config, frame_resource_index),
-            DrawStepMode::BlurContent {
+            |blur_config| {
+                root_color::composite_resource_set(
+                    &self.root_color,
+                    self.frame_upload.root_color.map(|root| root.index),
+                    Some(targets),
+                    blur_config,
+                    frame_resource_index,
+                )
+            },
+            DrawMode::BlurContent {
                 batch_start,
                 batch_end,
             },
@@ -663,7 +741,7 @@ impl NovaRenderer {
 
         let mut filter_passes = Vec::new();
         if !configs.is_empty() {
-            backdrop_blur_render_passes_for_configs_with_source_into(
+            encode_blur_source_passes(
                 &self.pipelines,
                 targets,
                 frame_resource_index,
@@ -705,12 +783,12 @@ impl NovaRenderer {
             encode_generation: self.frame_upload.encode_generation,
             path_rasterization_resource_set: self.path_rasterization_resource_set,
         };
-        self.draw_step_scratch.prepare_path_steps(
+        self.command_scratch.prepare_path_steps(
             cache_key,
             self.current_frame_resource_index,
             self.frame_resources.len(),
             |steps| {
-                path_mask_draw_steps_for_upload_into(
+                encode_path_commands(
                     &self.frame_upload,
                     &self.pipelines,
                     self.path_rasterization_resource_set,
@@ -720,8 +798,8 @@ impl NovaRenderer {
         );
     }
 
-    pub(super) fn invalidate_draw_step_cache(&mut self) {
-        self.draw_step_scratch.invalidate_draw_steps();
+    pub(super) fn invalidate_command_cache(&mut self) {
+        self.command_scratch.invalidate_draw_steps();
     }
 }
 
@@ -729,15 +807,15 @@ fn sprite_resource_set(
     gpu_atlas_textures: &FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     texture_id: AtlasTextureId,
     frame_resource_index: usize,
-) -> Option<ResourceSetId> {
+) -> Option<BindGroupId> {
     gpu_atlas_textures.get(&texture_id).and_then(|texture| {
-        let resource_sets = match texture_id.kind {
+        let bind_groups = match texture_id.kind {
             AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => {
                 &texture.mono_resource_sets
             }
             AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => &texture.poly_resource_sets,
         };
-        resource_sets.get(frame_resource_index).copied()
+        bind_groups.get(frame_resource_index).copied()
     })
 }
 
@@ -774,16 +852,16 @@ fn coalesce_source_groups(groups: &mut Vec<PreparedBackdropBlurGroup>) {
 /// Collapse consecutive instance draws with the same pipeline, resources
 /// and scissor into a single GPU command without changing painter order.
 /// The GPU instance index still refers to the same contiguous packed record.
-fn coalesce_adjacent_instanced_draws(steps: &mut Vec<RenderStepDescriptor>) {
+fn coalesce_adjacent_instanced_draws(steps: &mut Vec<RenderCommand>) {
     let mut written = 0usize;
     for read in 0..steps.len() {
         if written != 0 {
             let (prefix, suffix) = steps.split_at_mut(read);
-            if let (RenderStepDescriptor::Draw(previous), RenderStepDescriptor::Draw(next)) =
+            if let (RenderCommand::Draw(previous), RenderCommand::Draw(next)) =
                 (&mut prefix[written - 1], &suffix[0])
             {
                 if previous.pipeline == next.pipeline
-                    && previous.resource_sets == next.resource_sets
+                    && previous.bind_groups == next.bind_groups
                     && previous.scissor == next.scissor
                     && previous.vertex_count == next.vertex_count
                     && previous.first_vertex == next.first_vertex
@@ -831,10 +909,7 @@ fn can_split_retained_source_damage(
 /// Preserve exact disjoint dirty rectangles instead of submitting the
 /// bounding box as one large GPU raster region. Cap the number of passes:
 /// command overhead can outweigh saved fill when a layer is fragmented.
-fn retained_source_damage_patches(
-    damage: &DirtyRegion,
-    can_split: bool,
-) -> Vec<DirtyRegion> {
+fn retained_source_damage_patches(damage: &DirtyRegion, can_split: bool) -> Vec<DirtyRegion> {
     const MAX_SOURCE_PASSES: usize = 8;
     if !can_split || damage.is_full() || damage.rect_count() < 2 {
         return vec![damage.clone()];
@@ -851,7 +926,11 @@ fn retained_source_damage_patches(
     // more than eight, group nearby rectangles into no more than eight
     // painter-order independent source passes instead of redrawing the entire
     // bounding box. Sorting along the wider axis is bounded and deterministic.
-    let mut rects = damage.rects().iter().map(|rect| rect.bounds).collect::<Vec<_>>();
+    let mut rects = damage
+        .rects()
+        .iter()
+        .map(|rect| rect.bounds)
+        .collect::<Vec<_>>();
     if rects.len() > MAX_SOURCE_PASSES {
         let sort_horizontal = union.size.width >= union.size.height;
         rects.sort_unstable_by(|left, right| {
@@ -944,8 +1023,13 @@ fn apply_filter_pass_scissors(
         let horizontal_scissor =
             downsample_x_scissor(source_scissor, config.downsample(), drawable_size);
         let final_scissor = downsample_scissor(source_scissor, config.downsample(), drawable_size);
-        horizontal.step.scissor = Some(clip_scissor(horizontal.step.scissor, horizontal_scissor));
-        vertical.step.scissor = Some(clip_scissor(vertical.step.scissor, final_scissor));
+        horizontal.step.set_scissor(Some(clip_scissor(
+            horizontal.step.scissor(),
+            horizontal_scissor,
+        )));
+        vertical
+            .step
+            .set_scissor(Some(clip_scissor(vertical.step.scissor(), final_scissor)));
     }
 }
 
@@ -966,8 +1050,13 @@ fn apply_filter_pass_damage_scissors(
             downsample_x_scissor(damage.horizontal_output, config.downsample(), drawable_size);
         let final_scissor =
             downsample_scissor(damage.final_output, config.downsample(), drawable_size);
-        horizontal.step.scissor = Some(clip_scissor(horizontal.step.scissor, horizontal_scissor));
-        vertical.step.scissor = Some(clip_scissor(vertical.step.scissor, final_scissor));
+        horizontal.step.set_scissor(Some(clip_scissor(
+            horizontal.step.scissor(),
+            horizontal_scissor,
+        )));
+        vertical
+            .step
+            .set_scissor(Some(clip_scissor(vertical.step.scissor(), final_scissor)));
     }
 }
 
@@ -1002,13 +1091,13 @@ fn direct_backdrop_barriers(upload: &FrameUpload, start: usize, end: usize) -> V
     barriers
 }
 
-fn apply_scissor_to_steps(steps: &mut Vec<RenderStepDescriptor>, scissor: ScissorRect) {
+fn apply_scissor_to_steps(steps: &mut Vec<RenderCommand>, scissor: ScissorRect) {
     for step in steps.iter_mut() {
         match step {
-            RenderStepDescriptor::Draw(step) => {
+            RenderCommand::Draw(step) => {
                 step.scissor = Some(clip_scissor(step.scissor, scissor));
             }
-            RenderStepDescriptor::DrawIndexed(step) => {
+            RenderCommand::DrawIndexed(step) => {
                 step.scissor = Some(clip_scissor(step.scissor, scissor));
             }
         }
@@ -1018,12 +1107,8 @@ fn apply_scissor_to_steps(steps: &mut Vec<RenderStepDescriptor>, scissor: Scisso
     // fragments. A retained layer with tiny damage should not replay those
     // entirely clipped commands at 240 Hz.
     steps.retain(|step| match step {
-        RenderStepDescriptor::Draw(step) => {
-            step.scissor.is_none_or(|scissor| !scissor.is_empty())
-        }
-        RenderStepDescriptor::DrawIndexed(step) => {
-            step.scissor.is_none_or(|scissor| !scissor.is_empty())
-        }
+        RenderCommand::Draw(step) => step.scissor.is_none_or(|scissor| !scissor.is_empty()),
+        RenderCommand::DrawIndexed(step) => step.scissor.is_none_or(|scissor| !scissor.is_empty()),
     });
 }
 
@@ -1140,10 +1225,10 @@ mod tests {
 
     #[test]
     fn adjacent_instance_draws_merge_without_reordering_primitives() {
-        fn draw(first: u32, count: u32) -> RenderStepDescriptor {
-            RenderStepDescriptor::Draw(DrawStepDescriptor {
+        fn draw(first: u32, count: u32) -> RenderCommand {
+            RenderCommand::Draw(DrawCommand {
                 pipeline: RenderPipelineId::new(1),
-                resource_sets: gfx_core::resource_set_list_empty(),
+                bind_groups: gfx_core::bind_group_list_empty(),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: count,
@@ -1159,7 +1244,7 @@ mod tests {
         let mut steps = vec![draw(0, 2), draw(2, 3), draw(5, 1)];
         coalesce_adjacent_instanced_draws(&mut steps);
         assert_eq!(steps.len(), 1);
-        let RenderStepDescriptor::Draw(merged) = &steps[0] else {
+        let RenderCommand::Draw(merged) = &steps[0] else {
             panic!("non-indexed draw expected");
         };
         assert_eq!(merged.first_instance, 0);
@@ -1180,9 +1265,7 @@ mod tests {
             ));
         }
 
-        let nested = can_split_retained_source_damage(
-            false, true, false, true, true, &damage,
-        );
+        let nested = can_split_retained_source_damage(false, true, false, true, true, &damage);
         assert_eq!(retained_source_damage_patches(&damage, nested).len(), 2);
         assert!(!can_split_retained_source_damage(
             false, false, false, true, true, &damage,
@@ -1260,7 +1343,6 @@ mod tests {
         assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
     }
 
-
     use super::*;
 
     fn dirty_region(x: f32, y: f32, width: f32, height: f32) -> DirtyRegion {
@@ -1330,11 +1412,14 @@ mod renderer_extension_cache_tests {
 
     #[test]
     fn live_extension_disables_retained_draw_step_cache() {
-        let mut scratch = DrawStepScratch::default();
-        let mut key = DrawStepCacheKey {
-            scene_revision: draw_step_cache_revision(7, true),
+        let mut scratch = CommandScratch::default();
+        let mut key = CommandCacheKey {
+            scene_revision: command_cache_revision(7, true),
             encode_generation: 3,
-            size: DrawableSize { width: 64, height: 64 },
+            size: DrawableSize {
+                width: 64,
+                height: 64,
+            },
             frame_resource_index: 0,
             atlas_texture_generation: None,
             atlas_texture_count: 0,
@@ -1342,17 +1427,17 @@ mod renderer_extension_cache_tests {
         };
         assert_eq!(key.scene_revision, 0);
         scratch.prepare_steps(key, 2, |steps| steps.clear());
-        assert!(!scratch.draw_step_cache_hit);
+        assert!(!scratch.command_cache_hit);
         scratch.prepare_steps(key, 2, |_| {});
-        assert!(!scratch.draw_step_cache_hit);
+        assert!(!scratch.command_cache_hit);
 
         // Once the extension is gone, ordinary retained scenes can reuse
         // their static commands in the same GPU frame-resource slot.
-        key.scene_revision = draw_step_cache_revision(7, false);
+        key.scene_revision = command_cache_revision(7, false);
         scratch.prepare_steps(key, 2, |steps| steps.clear());
-        assert!(!scratch.draw_step_cache_hit);
+        assert!(!scratch.command_cache_hit);
         scratch.prepare_steps(key, 2, |_| panic!("static cache was not reused"));
-        assert!(scratch.draw_step_cache_hit);
+        assert!(scratch.command_cache_hit);
     }
 
     #[test]
@@ -1381,27 +1466,39 @@ mod independent_layer_source_damage_tests {
     #[test]
     fn unrelated_window_damage_does_not_clip_changed_isolated_source() {
         let config = test_backdrop_blur_config(1, 2);
-        let size = DrawableSize { width: 640, height: 480 };
+        let size = DrawableSize {
+            width: 640,
+            height: 480,
+        };
         let mut dirty = DirtyRegion::empty();
-        assert!(requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
-        assert!(!requires_full_isolated_layer_refresh(true, false, config, size, &dirty));
+        assert!(requires_full_isolated_layer_refresh(
+            false, false, config, size, &dirty
+        ));
+        assert!(!requires_full_isolated_layer_refresh(
+            true, false, config, size, &dirty
+        ));
 
         dirty.push(crate::bounds(
             crate::point(crate::ScaledPixels(400.0), crate::ScaledPixels(300.0)),
             crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
         ));
-        assert!(requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+        assert!(requires_full_isolated_layer_refresh(
+            false, false, config, size, &dirty
+        ));
 
         dirty.push(crate::bounds(
             crate::point(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
             crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
         ));
-        assert!(!requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+        assert!(!requires_full_isolated_layer_refresh(
+            false, false, config, size, &dirty
+        ));
         assert!(
             requires_full_isolated_layer_refresh(false, true, config, size, &dirty),
             "a newly allocated or remapped Capture must initialize the entire target"
         );
-        assert!(requires_full_isolated_layer_refresh(true, true, config, size, &dirty));
+        assert!(requires_full_isolated_layer_refresh(
+            true, true, config, size, &dirty
+        ));
     }
 }
-

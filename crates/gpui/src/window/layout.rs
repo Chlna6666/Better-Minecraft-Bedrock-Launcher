@@ -98,7 +98,7 @@ impl Window {
             )
     }
 
-    pub(crate) fn request_measured_layout_with_fingerprint<
+    pub(crate) fn request_fingerprinted_layout<
         F: FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
             + 'static,
     >(
@@ -115,7 +115,7 @@ impl Window {
         self.layout_engine
             .as_mut()
             .unwrap()
-            .request_impure_measured_layout_with_fingerprint(
+            .request_impure_measured_layout(
                 owner,
                 style,
                 rem_size,
@@ -141,10 +141,10 @@ impl Window {
         available_space: Size<AvailableSpace>,
         cx: &mut App,
     ) {
-        self.compute_layout_with_diagnostic_id(layout_id, available_space, None, cx);
+        self.compute_diagnostic_layout(layout_id, available_space, None, cx);
     }
 
-    pub(crate) fn compute_layout_with_diagnostic_id(
+    pub(crate) fn compute_diagnostic_layout(
         &mut self,
         layout_id: LayoutId,
         available_space: Size<AvailableSpace>,

@@ -154,6 +154,10 @@ impl LineLayoutSingleflight {
                 if matches!(&*state, LineLayoutFlightState::Cancelled) {
                     break;
                 }
+                let _work = crate::window::element_work::begin_named(
+                    "text_singleflight_wait",
+                    crate::window::element_work::ElementWorkPhase::Layout,
+                );
                 flight.ready.wait(&mut state);
             }
             drop(state);

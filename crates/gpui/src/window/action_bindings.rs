@@ -45,14 +45,14 @@ impl Window {
 
     /// Returns the highest precedence key binding that invokes an action on the currently focused
     /// element. This is more efficient than getting the last result of `bindings_for_action`.
-    pub fn binding_for_action(&self, action: &dyn Action) -> Option<KeyBinding> {
+    pub fn action_binding(&self, action: &dyn Action) -> Option<KeyBinding> {
         self.rendered_frame
             .dispatch_tree
-            .binding_for_action(action, &self.rendered_frame.dispatch_tree.context_stack)
+            .action_binding(action, &self.rendered_frame.dispatch_tree.context_stack)
     }
 
     /// Returns the key bindings for an action in a context.
-    pub fn bindings_for_action_in_context(
+    pub fn context_action_bindings(
         &self,
         action: &dyn Action,
         context: KeyContext,
@@ -62,20 +62,20 @@ impl Window {
     }
 
     /// Returns the highest precedence key binding for an action in a context. This is more
-    /// efficient than getting the last result of `bindings_for_action_in_context`.
-    pub fn binding_for_action_in_context(
+    /// efficient than getting the last result of `context_action_bindings`.
+    pub fn context_action_binding(
         &self,
         action: &dyn Action,
         context: KeyContext,
     ) -> Option<KeyBinding> {
         let dispatch_tree = &self.rendered_frame.dispatch_tree;
-        dispatch_tree.binding_for_action(action, &[context])
+        dispatch_tree.action_binding(action, &[context])
     }
 
     /// Returns any bindings that would invoke an action on the given focus handle if it were
     /// focused. Bindings are returned in the order they were added. For display, the last binding
     /// should take precedence.
-    pub fn bindings_for_action_in(
+    pub fn action_bindings_in(
         &self,
         action: &dyn Action,
         focus_handle: &FocusHandle,
@@ -89,15 +89,15 @@ impl Window {
 
     /// Returns the highest precedence key binding that would invoke an action on the given focus
     /// handle if it were focused. This is more efficient than getting the last result of
-    /// `bindings_for_action_in`.
-    pub fn binding_for_action_in(
+    /// `action_bindings_in`.
+    pub fn action_binding_in(
         &self,
         action: &dyn Action,
         focus_handle: &FocusHandle,
     ) -> Option<KeyBinding> {
         let dispatch_tree = &self.rendered_frame.dispatch_tree;
         let context_stack = self.context_stack_for_focus_handle(focus_handle)?;
-        dispatch_tree.binding_for_action(action, &context_stack)
+        dispatch_tree.action_binding(action, &context_stack)
     }
 
     fn context_stack_for_focus_handle(

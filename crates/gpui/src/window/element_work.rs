@@ -20,6 +20,9 @@ struct ElementWorkSample {
 struct ElementWorkFrame {
     prepaint: Vec<ElementWorkSample>,
     paint: Vec<ElementWorkSample>,
+    render: Vec<ElementWorkSample>,
+    layout: Vec<ElementWorkSample>,
+    replay: Vec<ElementWorkSample>,
     /// One entry per element whose lifecycle callback is currently on the stack.
     stack: Vec<Duration>,
 }
@@ -40,6 +43,9 @@ pub(crate) struct ElementWorkSummary {
     pub(crate) prepaint: Vec<(String, Duration)>,
     /// Heaviest element self-times during paint.
     pub(crate) paint: Vec<(String, Duration)>,
+    pub(crate) render: Vec<(String, Duration)>,
+    pub(crate) layout: Vec<(String, Duration)>,
+    pub(crate) replay: Vec<(String, Duration)>,
 }
 
 impl ElementWorkFrame {
@@ -50,7 +56,7 @@ impl ElementWorkFrame {
         elapsed: Duration,
     ) {
         // Pop exactly this callback. The previous implementation summed a
-        // truncated descendant slice, so outer Div/CachedView samples were
+        // truncated descendant slice, so outer Div/ViewElement samples were
         // inclusive, sometimes totalling >100ms in an actual 19ms frame.
         let descendants = self.stack.pop().expect("element work stack underflow");
         if let Some(parent) = self.stack.last_mut() {
@@ -63,6 +69,9 @@ impl ElementWorkFrame {
         match phase {
             ElementWorkPhase::Prepaint => self.prepaint.push(sample),
             ElementWorkPhase::Paint => self.paint.push(sample),
+            ElementWorkPhase::Render => self.render.push(sample),
+            ElementWorkPhase::Layout => self.layout.push(sample),
+            ElementWorkPhase::Replay => self.replay.push(sample),
         }
     }
 }
@@ -78,6 +87,9 @@ pub(crate) fn reset() {
     FRAME_WORK.with_borrow_mut(|frame| {
         frame.prepaint.clear();
         frame.paint.clear();
+        frame.render.clear();
+        frame.layout.clear();
+        frame.replay.clear();
         frame.stack.clear();
     });
 }
@@ -110,6 +122,9 @@ pub(crate) fn take() -> ElementWorkSummary {
         paint_elements: frame.paint.len(),
         prepaint: summarized(std::mem::take(&mut frame.prepaint)),
         paint: summarized(std::mem::take(&mut frame.paint)),
+        render: summarized(std::mem::take(&mut frame.render)),
+        layout: summarized(std::mem::take(&mut frame.layout)),
+        replay: summarized(std::mem::take(&mut frame.replay)),
     })
 }
 
@@ -118,6 +133,41 @@ pub(crate) fn take() -> ElementWorkSummary {
 pub(crate) enum ElementWorkPhase {
     Prepaint,
     Paint,
+    Render,
+    Layout,
+    Replay,
+}
+
+pub(crate) struct ElementWorkScope {
+    type_name: &'static str,
+    phase: ElementWorkPhase,
+    started_at: Instant,
+}
+
+impl Drop for ElementWorkScope {
+    fn drop(&mut self) {
+        let elapsed = self.started_at.elapsed();
+        FRAME_WORK.with_borrow_mut(|frame| {
+            frame.finish_sample(self.type_name, self.phase, elapsed);
+        });
+    }
+}
+
+/// Shares the lifecycle probe's nesting stack, so render/layout/replay time is
+/// removed from the enclosing wrapper's self-time rather than counted twice.
+pub(crate) fn begin_named(
+    type_name: &'static str,
+    phase: ElementWorkPhase,
+) -> Option<ElementWorkScope> {
+    if !enabled() {
+        return None;
+    }
+    FRAME_WORK.with_borrow_mut(|frame| frame.stack.push(Duration::ZERO));
+    Some(ElementWorkScope {
+        type_name,
+        phase,
+        started_at: Instant::now(),
+    })
 }
 
 /// Runs one element lifecycle callback and records its own wall time under the element's concrete
@@ -130,15 +180,8 @@ pub(crate) fn measure_named<R>(
     cx: &mut App,
     run: impl FnOnce(&mut Window, &mut App) -> R,
 ) -> R {
-    if !enabled() {
-        return run(window, cx);
-    }
-    FRAME_WORK.with_borrow_mut(|frame| frame.stack.push(Duration::ZERO));
-    let started_at = Instant::now();
-    let result = run(window, cx);
-    let elapsed = started_at.elapsed();
-    FRAME_WORK.with_borrow_mut(|frame| frame.finish_sample(type_name, phase, elapsed));
-    result
+    let _scope = begin_named(type_name, phase);
+    run(window, cx)
 }
 
 #[cfg(test)]
@@ -146,14 +189,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn layout_and_render_are_excluded_from_enclosing_prepaint() {
+        let mut frame = ElementWorkFrame::default();
+        frame.stack.push(Duration::ZERO); // ViewElement prepaint
+        frame.stack.push(Duration::ZERO); // root layout
+        frame.stack.push(Duration::ZERO); // reactive child render inside layout
+        frame.finish_sample(
+            "ChildView",
+            ElementWorkPhase::Render,
+            Duration::from_millis(3),
+        );
+        frame.finish_sample("root", ElementWorkPhase::Layout, Duration::from_millis(7));
+        frame.stack.push(Duration::ZERO);
+        frame.finish_sample("proof", ElementWorkPhase::Replay, Duration::from_millis(2));
+        frame.finish_sample(
+            "ViewElement",
+            ElementWorkPhase::Prepaint,
+            Duration::from_millis(12),
+        );
+        assert!(frame.stack.is_empty());
+        assert_eq!(frame.render[0].elapsed, Duration::from_millis(3));
+        assert_eq!(frame.layout[0].elapsed, Duration::from_millis(4));
+        assert_eq!(frame.replay[0].elapsed, Duration::from_millis(2));
+        assert_eq!(frame.prepaint[0].elapsed, Duration::from_millis(3));
+    }
+
+    #[test]
     fn nested_element_work_excludes_descendants_from_parent_self_time() {
         let mut frame = ElementWorkFrame::default();
         frame.stack.push(Duration::ZERO); // parent
         frame.stack.push(Duration::ZERO); // first child
-        frame.finish_sample("child-a", ElementWorkPhase::Prepaint, Duration::from_millis(3));
+        frame.finish_sample(
+            "child-a",
+            ElementWorkPhase::Prepaint,
+            Duration::from_millis(3),
+        );
         frame.stack.push(Duration::ZERO); // second child
-        frame.finish_sample("child-b", ElementWorkPhase::Prepaint, Duration::from_millis(5));
-        frame.finish_sample("parent", ElementWorkPhase::Prepaint, Duration::from_millis(12));
+        frame.finish_sample(
+            "child-b",
+            ElementWorkPhase::Prepaint,
+            Duration::from_millis(5),
+        );
+        frame.finish_sample(
+            "parent",
+            ElementWorkPhase::Prepaint,
+            Duration::from_millis(12),
+        );
         assert!(frame.stack.is_empty());
         assert_eq!(frame.prepaint[0].elapsed, Duration::from_millis(3));
         assert_eq!(frame.prepaint[1].elapsed, Duration::from_millis(5));
@@ -166,11 +247,18 @@ mod tests {
         frame.stack.push(Duration::ZERO);
         frame.stack.push(Duration::ZERO);
         frame.stack.push(Duration::ZERO);
-        frame.finish_sample("grandchild", ElementWorkPhase::Paint, Duration::from_millis(2));
+        frame.finish_sample(
+            "grandchild",
+            ElementWorkPhase::Paint,
+            Duration::from_millis(2),
+        );
         frame.finish_sample("child", ElementWorkPhase::Paint, Duration::from_millis(4));
         frame.finish_sample("parent", ElementWorkPhase::Paint, Duration::from_millis(7));
         let self_total: Duration = frame.paint.iter().map(|s| s.elapsed).sum();
         assert_eq!(self_total, Duration::from_millis(7));
-        assert_eq!(frame.paint.last().unwrap().elapsed, Duration::from_millis(3));
+        assert_eq!(
+            frame.paint.last().unwrap().elapsed,
+            Duration::from_millis(3)
+        );
     }
 }

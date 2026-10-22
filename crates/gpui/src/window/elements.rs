@@ -15,7 +15,7 @@ impl Window {
         let mut any = false;
         for (entity_id, retained_id) in targets {
             any = true;
-            let _ = self.invalidator.invalidate_retained_path_with_scope(
+            let _ = self.invalidator.invalidate_retained_path_scoped(
                 entity_id,
                 retained_id.as_ref(),
                 RetainedInvalidationScope::InvalidateSubtree,
@@ -224,21 +224,11 @@ impl Window {
     ) -> ((GlobalElementId, TypeId), Option<ElementStateBox>) {
         let key = (global_id.clone(), state_type);
         self.next_frame.accessed_element_states.push(key.clone());
-        let state = self.next_frame.element_states.remove(&key).or_else(|| {
-            // Only a background/progressive generation may abandon the
-            // candidate Frame. Preserve the committed CachedViewState before
-            // Prepaint mutates range indices in the speculative copy.
-            if state_type == TypeId::of::<crate::element::CachedViewState>()
-                && self.allows_progressive_frame_degradation()
-            {
-                self.rendered_frame
-                    .element_states
-                    .get(&key)
-                    .and_then(crate::element::snapshot_committed_cached_view_state)
-            } else {
-                self.rendered_frame.element_states.remove(&key)
-            }
-        });
+        let state = self
+            .next_frame
+            .element_states
+            .remove(&key)
+            .or_else(|| self.rendered_frame.element_states.remove(&key));
         (key, state)
     }
 

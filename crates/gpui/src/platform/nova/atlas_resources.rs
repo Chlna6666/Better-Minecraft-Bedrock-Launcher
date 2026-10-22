@@ -5,8 +5,8 @@ pub(super) struct NovaGpuAtlasTexture {
     pub(super) size: Size<DevicePixels>,
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
-    pub(super) mono_resource_sets: Vec<ResourceSetId>,
-    pub(super) poly_resource_sets: Vec<ResourceSetId>,
+    pub(super) mono_resource_sets: Vec<BindGroupId>,
+    pub(super) poly_resource_sets: Vec<BindGroupId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,10 +56,10 @@ pub(super) fn destroy_gpu_atlas_texture<D>(
     backend_name: &str,
     atlas_id: AtlasTextureId,
 ) where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    for resource_set in texture.mono_resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
+    for bind_group in texture.mono_resource_sets {
+        if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!(
                 "failed to destroy {backend_name} atlas {:?}/{} mono resource set: {error}",
                 atlas_id.kind,
@@ -67,8 +67,8 @@ pub(super) fn destroy_gpu_atlas_texture<D>(
             );
         }
     }
-    for resource_set in texture.poly_resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
+    for bind_group in texture.poly_resource_sets {
+        if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!(
                 "failed to destroy {backend_name} atlas {:?}/{} poly resource set: {error}",
                 atlas_id.kind,
@@ -100,7 +100,7 @@ pub(super) fn sync_gpu_atlas_textures<D>(
     descriptor: AtlasResourceDescriptor,
 ) -> Result<()>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let texture_infos = atlas.texture_infos();
     let live_ids = texture_infos
@@ -162,7 +162,7 @@ pub(super) fn create_atlas_texture_resources<D>(
     resource_set_mode: NovaAtlasResourceSetMode,
 ) -> Result<NovaGpuAtlasTexture>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let width =
         u32::try_from(size.width.0.max(1)).context("nova atlas texture width does not fit u32")?;
@@ -208,7 +208,7 @@ where
         uses_mono_sprite_resource_sets(atlas_id.kind, resource_set_mode);
     let create_poly_resource_sets =
         uses_poly_sprite_resource_sets(atlas_id.kind, resource_set_mode);
-    let resource_sets = (|| -> Result<()> {
+    let bind_groups = (|| -> Result<()> {
         for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
             if create_mono_resource_sets {
                 mono_resource_sets.push(create_mono_atlas_resource_set(
@@ -235,7 +235,7 @@ where
         }
         Ok(())
     })();
-    if let Err(error) = resource_sets {
+    if let Err(error) = bind_groups {
         destroy_gpu_atlas_texture(
             device,
             NovaGpuAtlasTexture {
@@ -282,8 +282,8 @@ fn uses_poly_sprite_resource_sets(
         )
 }
 
-fn indexed_animation_binding(buffers: FrameResourceBuffers) -> ResourceBinding {
-    ResourceBinding {
+fn indexed_animation_binding(buffers: FrameResourceBuffers) -> BindGroupEntry {
+    BindGroupEntry {
         binding: 17,
         resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
@@ -302,17 +302,17 @@ fn create_mono_atlas_resource_set<D>(
     buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
     descriptor: &AtlasResourceDescriptor,
-) -> Result<ResourceSetId>
+) -> Result<BindGroupId>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
+    Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!(
             "{label} atlas {:?}/{} frame {frame_index} mono resource set",
             atlas_id.kind, atlas_id.index
         )),
         layout: descriptor.mono_sprite_resource_set_layout,
-        bindings: mono_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
+        entries: mono_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
 
@@ -324,17 +324,17 @@ fn create_poly_atlas_resource_set<D>(
     buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
     descriptor: &AtlasResourceDescriptor,
-) -> Result<ResourceSetId>
+) -> Result<BindGroupId>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
+    Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!(
             "{label} atlas {:?}/{} frame {frame_index} poly resource set",
             atlas_id.kind, atlas_id.index
         )),
         layout: descriptor.poly_sprite_resource_set_layout,
-        bindings: poly_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
+        entries: poly_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
 
@@ -393,9 +393,9 @@ pub(super) fn mono_atlas_resource_bindings(
     buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
     sampler: SamplerId,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -404,7 +404,7 @@ pub(super) fn mono_atlas_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 1,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.text_raster_buffer,
@@ -413,15 +413,15 @@ pub(super) fn mono_atlas_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 4,
             resource: BindingResource::Texture(TextureBinding { texture_view }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding { sampler: sampler }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 8,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.mono_sprite_buffer,
@@ -438,9 +438,9 @@ pub(super) fn poly_atlas_resource_bindings(
     buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
     sampler: SamplerId,
-) -> Vec<ResourceBinding> {
+) -> Vec<BindGroupEntry> {
     vec![
-        ResourceBinding {
+        BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.global_buffer,
@@ -449,15 +449,15 @@ pub(super) fn poly_atlas_resource_bindings(
                 stride: None,
             }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 4,
             resource: BindingResource::Texture(TextureBinding { texture_view }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding { sampler: sampler }),
         },
-        ResourceBinding {
+        BindGroupEntry {
             binding: 9,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: buffers.poly_sprite_buffer,

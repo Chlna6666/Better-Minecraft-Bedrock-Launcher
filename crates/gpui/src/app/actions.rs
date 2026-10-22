@@ -74,8 +74,8 @@ impl App {
     /// Returns key bindings that invoke the given action on the currently focused element, without
     /// checking context. Bindings are returned in the order they were added. For display, the last
     /// binding should take precedence.
-    pub fn all_bindings_for_input(&self, input: &[Keystroke]) -> Vec<KeyBinding> {
-        RefCell::borrow(&self.keymap).all_bindings_for_input(input)
+    pub fn all_input_bindings(&self, input: &[Keystroke]) -> Vec<KeyBinding> {
+        RefCell::borrow(&self.keymap).all_input_bindings(input)
     }
 
     /// Get all non-internal actions that have been registered, along with their schemas.

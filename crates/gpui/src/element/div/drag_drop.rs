@@ -113,7 +113,7 @@ impl Interactivity {
     }
 
     /// Register a group drag-over style that activates when a compatible payload is dragged over the group.
-    pub(crate) fn group_drag_over_for_type(
+    pub(crate) fn group_drag_over_type(
         &mut self,
         state_type: TypeId,
         group_name: impl Into<SharedString>,

@@ -21,8 +21,8 @@ pub(super) struct RootColor {
 pub(super) struct Descriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
-    pub(super) pass_layout: ResourceSetLayoutId,
-    pub(super) composite_layout: ResourceSetLayoutId,
+    pub(super) pass_layout: BindGroupLayoutId,
+    pub(super) composite_layout: BindGroupLayoutId,
     pub(super) frames: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
@@ -110,7 +110,7 @@ pub(super) fn composite_resource_set(
     filters: Option<&BackdropBlurTargets>,
     config: BackdropBlurConfig,
     slot: usize,
-) -> Option<ResourceSetId> {
+) -> Option<BindGroupId> {
     if root_index.is_some_and(|index| config.exclusively_contains_member_index(index)) {
         root.target
             .as_ref()?
@@ -118,11 +118,11 @@ pub(super) fn composite_resource_set(
             .get(slot)
             .copied()
     } else {
-        filters?.resource_set_for_config(config, slot)
+        filters?.config_bind_group(config, slot)
     }
 }
 
-pub(super) fn create_target<D: BackendResources + BackendPipelines>(
+pub(super) fn create_target<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     descriptor: Descriptor,
 ) -> Result<RootColorTarget> {
@@ -136,19 +136,19 @@ pub(super) fn create_target<D: BackendResources + BackendPipelines>(
     let mut composite_resource_sets = Vec::with_capacity(descriptor.frames.len());
     let result = (|| -> Result<()> {
         for buffers in &descriptor.frames {
-            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+            pass_resource_sets.push(device.create_bind_group(&BindGroupDescriptor {
                 label: Some("gpui root color source binding".into()),
                 layout: descriptor.pass_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
+                entries: backdrop_blur_pass_resource_bindings(
                     buffers,
                     target.texture_view,
                     descriptor.sampler,
                 ),
             })?);
-            composite_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+            composite_resource_sets.push(device.create_bind_group(&BindGroupDescriptor {
                 label: Some("gpui root color composite binding".into()),
                 layout: descriptor.composite_layout,
-                bindings: backdrop_blur_resource_bindings(
+                entries: backdrop_blur_resource_bindings(
                     buffers,
                     target.texture_view,
                     descriptor.sampler,
@@ -170,7 +170,7 @@ pub(super) fn create_target<D: BackendResources + BackendPipelines>(
 }
 
 /// Retire descriptors before the allocation, after the window's GPU fences complete.
-pub(super) fn destroy_target<D: BackendResources + BackendPipelines>(
+pub(super) fn destroy_target<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     root: RootColorTarget,
 ) {
@@ -179,7 +179,7 @@ pub(super) fn destroy_target<D: BackendResources + BackendPipelines>(
         .into_iter()
         .chain(root.pass_resource_sets)
     {
-        if let Err(error) = device.destroy_resource_set(set) {
+        if let Err(error) = device.destroy_bind_group(set) {
             log::debug!("failed to retire root color descriptor: {error}");
         }
     }
@@ -255,8 +255,8 @@ mod tests {
                 texture: TextureId::from_parts(texture, 1),
                 texture_view: TextureViewId::from_parts(texture, 1),
             },
-            pass_resource_sets: vec![ResourceSetId::from_parts(20, 1)],
-            composite_resource_sets: vec![ResourceSetId::from_parts(21, 1)],
+            pass_resource_sets: vec![BindGroupId::from_parts(20, 1)],
+            composite_resource_sets: vec![BindGroupId::from_parts(21, 1)],
         }
     }
 
@@ -267,11 +267,11 @@ mod tests {
         let config = test_zero_radius_blur_config(3);
         assert_eq!(
             composite_resource_set(&root, Some(3), None, config, 0),
-            Some(ResourceSetId::from_parts(21, 1))
+            Some(BindGroupId::from_parts(21, 1))
         );
         assert_eq!(
             root.source_target(0).unwrap().source_resource_set,
-            ResourceSetId::from_parts(20, 1)
+            BindGroupId::from_parts(20, 1)
         );
         assert!(composite_resource_set(&root, Some(2), None, config, 0).is_none());
         assert!(composite_resource_set(&root, Some(3), None, config, 1).is_none());

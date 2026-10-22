@@ -169,7 +169,7 @@ impl Application {
     }
 
     /// Sets the application-wide default font family and registers any provided font sources.
-    pub fn try_with_default_font(self, config: DefaultFontConfig) -> Result<Self> {
+    pub fn try_default_font(self, config: DefaultFontConfig) -> Result<Self> {
         let family = config.family.clone();
         self.apply_default_font(config)?;
         self.0
@@ -214,8 +214,8 @@ impl Application {
     }
 
     /// Sets the application-wide default font family without registering font data.
-    pub fn try_with_default_font_family(self, family: impl Into<SharedString>) -> Result<Self> {
-        self.try_with_default_font(DefaultFontConfig::system_family(family))
+    pub fn try_default_font_family(self, family: impl Into<SharedString>) -> Result<Self> {
+        self.try_default_font(DefaultFontConfig::system_family(family))
     }
 
     /// Sets the application-wide image pipeline behavior.

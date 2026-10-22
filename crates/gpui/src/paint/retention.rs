@@ -3,21 +3,35 @@ use crate::scene::geometry::is_solid_quad;
 use crate::{DrawOrder, PaintOperation, Primitive, Scene, SceneAnimationValue};
 use std::ops::Range;
 
+const MIN_RETAINED_QUADS: usize = 32;
+const MIN_RETAINED_MONOCHROME_SPRITES: usize = 8;
+
 /// A static, exclusive Quad run proven against one sorted Paint generation.
 pub(crate) struct QuadChunkProof {
     pub(crate) range: Range<usize>,
     pub(crate) is_solid: bool,
 }
 
+pub(crate) struct MonochromeSpriteChunkProof {
+    pub(crate) range: Range<usize>,
+    pub(crate) texture_id: crate::AtlasTextureId,
+    pub(crate) sampling: crate::MonochromeSpriteSampling,
+}
+
+pub(crate) enum RetainedChunkProof {
+    Quad(QuadChunkProof),
+    MonochromeSprite(MonochromeSpriteChunkProof),
+}
+
 /// Temporary qualification work for one Window Chunk planning pass.
 /// Borrows the only Paint payload and lazily indexes order numbers, never retaining a render tree.
-pub(crate) struct QuadChunkPlanner<'a> {
+pub(crate) struct RetainedChunkPlanner<'a> {
     scene: &'a Scene,
     use_order_index: bool,
     sorted_orders: Option<Vec<DrawOrder>>,
 }
 
-impl<'a> QuadChunkPlanner<'a> {
+impl<'a> RetainedChunkPlanner<'a> {
     pub(crate) fn new(scene: &'a Scene, candidates: usize) -> Self {
         Self {
             scene,
@@ -26,24 +40,65 @@ impl<'a> QuadChunkPlanner<'a> {
         }
     }
 
+    /// Proves one static retained primitive run with one Paint-operation scan.
+    ///
     /// Rejects animated, mixed-state, captured, incomplete or nonexclusive ranges.
-    pub(crate) fn prove(&mut self, range: Range<usize>) -> Option<QuadChunkProof> {
+    pub(crate) fn prove(&mut self, range: Range<usize>) -> Option<RetainedChunkProof> {
         let operations = self.scene.paint_operations.get_range(range.clone())?;
-        if operations.len() < 32 {
+        let first_operation = operations.iter().next()?;
+        let is_quad = matches!(
+            first_operation,
+            PaintOperation::Primitive(Primitive::Quad(_))
+        );
+        let is_monochrome_sprite = matches!(
+            first_operation,
+            PaintOperation::Primitive(Primitive::MonochromeSprite(_))
+        );
+        if !is_quad && !is_monochrome_sprite {
             return None;
         }
-        let (first, last, is_solid) = static_quad_orders(operations)?;
-        let start = self.scene.quads.partition_point(|quad| quad.order < first);
-        let end = self.scene.quads.partition_point(|quad| quad.order <= last);
+        if (is_quad && operations.len() < MIN_RETAINED_QUADS)
+            || (is_monochrome_sprite && operations.len() < MIN_RETAINED_MONOCHROME_SPRITES)
+        {
+            return None;
+        }
+
+        if is_quad {
+            let (first, last, is_solid) = static_quad_orders(operations)?;
+            let start = self.scene.quads.partition_point(|quad| quad.order < first);
+            let end = self.scene.quads.partition_point(|quad| quad.order <= last);
+            if end.saturating_sub(start) != operations.len()
+                || !self.order_is_exclusive(range, first, last, operations.len())
+            {
+                return None;
+            }
+            return Some(RetainedChunkProof::Quad(QuadChunkProof {
+                range: start..end,
+                is_solid,
+            }));
+        }
+
+        let (first, last, texture_id, sampling) = static_monochrome_sprite_orders(operations)?;
+        let start = self
+            .scene
+            .monochrome_sprites
+            .partition_point(|sprite| sprite.order < first);
+        let end = self
+            .scene
+            .monochrome_sprites
+            .partition_point(|sprite| sprite.order <= last);
         if end.saturating_sub(start) != operations.len()
             || !self.order_is_exclusive(range, first, last, operations.len())
         {
             return None;
         }
-        Some(QuadChunkProof {
-            range: start..end,
-            is_solid,
-        })
+        Some(RetainedChunkProof::MonochromeSprite(
+            MonochromeSpriteChunkProof {
+                range: start..end,
+                texture_id,
+                sampling,
+            },
+        ))
     }
 
     fn order_is_exclusive(
@@ -106,6 +161,36 @@ fn static_quad_orders(
     Some((first, last, is_solid?))
 }
 
+fn static_monochrome_sprite_orders(
+    operations: crate::scene::OperationRange<'_>,
+) -> Option<(
+    DrawOrder,
+    DrawOrder,
+    crate::AtlasTextureId,
+    crate::MonochromeSpriteSampling,
+)> {
+    let mut first = DrawOrder::MAX;
+    let mut last = DrawOrder::MIN;
+    let mut texture_id = None;
+    let mut sampling = None;
+    for operation in operations.iter() {
+        let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = operation else {
+            return None;
+        };
+        if sprite.animation_id.is_some()
+            || texture_id.is_some_and(|previous| previous != sprite.tile.texture_id)
+            || sampling.is_some_and(|previous| previous != sprite.sampling())
+        {
+            return None;
+        }
+        first = first.min(sprite.order);
+        last = last.max(sprite.order);
+        texture_id = Some(sprite.tile.texture_id);
+        sampling = Some(sprite.sampling());
+    }
+    Some((first, last, texture_id?, sampling?))
+}
+
 /// Counts all Primitive orders, including captured children and duplicates absent from flat Quads.
 pub(crate) fn retained_order_range_is_exclusive(
     sorted: &[DrawOrder],
@@ -159,30 +244,6 @@ pub(crate) fn range_is_replayable(scene: &Scene, range: Range<usize>) -> bool {
     blur_depth == 0 && layer_depth == 0
 }
 
-/// Compares complete Paint structure, including ordering-layer geometry.
-/// This proof can preserve a Paint revision; damage comparison alone may ignore layer bounds.
-pub(crate) fn paints_match(current: &Scene, previous: &Scene) -> bool {
-    current.paint_operations.len() == previous.paint_operations.len()
-        && current
-            .paint_operations
-            .iter()
-            .zip(previous.paint_operations.iter())
-            .all(|(current, previous)| match (current, previous) {
-                (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
-                    current.visually_eq(previous)
-                }
-                (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
-                    current == previous
-                }
-                (PaintOperation::EndLayer, PaintOperation::EndLayer)
-                | (PaintOperation::EndBlur, PaintOperation::EndBlur) => true,
-                (PaintOperation::StartBlur(current), PaintOperation::StartBlur(previous)) => {
-                    current == previous
-                }
-                _ => false,
-            })
-}
-
 /// Exact source-cache proof for an isolated element filter.
 ///
 /// Window damage is NOT element-filter input damage: an unrelated overlay
@@ -204,6 +265,13 @@ pub(crate) fn filter_source_matches(
     // animation tracks must not wrongly invalidate a retained filter target.
     if std::ptr::eq(scene, previous) && animation_values == previous_animation_values {
         return true;
+    }
+    if animation_values == previous_animation_values {
+        return scene
+            .paint_operations
+            .matches_by(&previous.paint_operations, |current, old| {
+                current.visually_eq(old)
+            });
     }
     if scene.paint_operations.len() != previous.paint_operations.len() {
         return false;

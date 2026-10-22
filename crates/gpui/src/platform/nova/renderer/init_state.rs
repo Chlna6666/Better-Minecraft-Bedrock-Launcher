@@ -70,13 +70,13 @@ impl NovaRenderer {
             backdrop_blur_pass_buffer: current_frame_resources.buffers.backdrop_blur_pass_buffer,
             backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
             animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-            quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+            quad_resource_set: current_frame_resources.bind_groups.quad_resource_set,
             quad_resource_set_layout: resources.quad_resource_set_layout,
             shadow_resource_set_layout: resources.shadow_resource_set_layout,
             underline_resource_set_layout: resources.underline_resource_set_layout,
-            shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
+            shadow_resource_set: current_frame_resources.bind_groups.shadow_resource_set,
             path_rasterization_resource_set: current_frame_resources
-                .resource_sets
+                .bind_groups
                 .path_rasterization_resource_set,
             path_rasterization_resource_set_layout: resources
                 .path_rasterization_resource_set_layout,
@@ -86,7 +86,7 @@ impl NovaRenderer {
             poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
             gpu_atlas_textures,
             synced_atlas_texture_generation: None,
-            underline_resource_set: current_frame_resources.resource_sets.underline_resource_set,
+            underline_resource_set: current_frame_resources.bind_groups.underline_resource_set,
             backdrop_blur_pass_resource_set_layout: resources
                 .backdrop_blur_pass_resource_set_layout,
             backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
@@ -103,10 +103,12 @@ impl NovaRenderer {
             renderer_registry: extensions::RendererRegistry::default(),
             retained_upload: retained_upload::RetainedUpload::default(),
             submitted_text_raster: None,
-            draw_step_scratch: DrawStepScratch::default(),
+            command_scratch: CommandScratch::default(),
             path_mask_residency: path_mask::Residency::default(),
             active_size: current_size,
             current_size,
+            surface_extent: current_size,
+            retained_frame_valid: false,
             pending_drawable_size: None,
             atlas: atlas.0,
             rendering_parameters,

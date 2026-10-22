@@ -346,7 +346,13 @@ impl FrameUpload {
                 }
                 AnimatedPrimitiveKind::Shadow => (&mut self.shadows, PACKED_SHADOW_BYTES),
                 AnimatedPrimitiveKind::MonochromeSprite => {
-                    (&mut self.mono_sprites, PACKED_MONO_SPRITE_BYTES)
+                    let offset = primitive.index as usize * PACKED_MONO_SPRITE_BYTES;
+                    write_u32(
+                        self.mono_sprites.slice_mut(offset..offset + 4),
+                        0,
+                        slot_plus_one,
+                    );
+                    continue;
                 }
                 AnimatedPrimitiveKind::PolychromeSprite => {
                     (&mut self.poly_sprites, PACKED_POLY_SPRITE_BYTES)

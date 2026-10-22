@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::platform::nova) fn compact_atlas<D: BackendResources>(
+pub(in crate::platform::nova) fn compact_atlas<D: ResourceDevice>(
     atlas: &NovaAtlas,
     textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     device: &mut D,

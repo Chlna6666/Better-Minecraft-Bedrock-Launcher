@@ -44,10 +44,18 @@ impl Painter {
     }
 
     pub fn finish(&mut self) {
+        self.finish_with_previous(None);
+    }
+
+    pub(crate) fn finish_against(&mut self, previous: &Scene) -> bool {
+        self.finish_with_previous(Some(previous))
+    }
+
+    fn finish_with_previous(&mut self, previous: Option<&Scene>) -> bool {
         self.scene.paint_operations.finish();
         debug_assert!(
             self.blur_captures.is_empty(),
-            "element blur capture must be closed before finishing a scene"
+            "scene capture must be closed before finishing a scene"
         );
         self.scene.shadows.finish();
         self.scene.shadows.compact();
@@ -72,12 +80,35 @@ impl Painter {
         self.scene
             .renderer_extensions
             .sort_unstable_by_key(|extension| extension.order);
-        self.prepare_batches();
         static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
-        self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+        if let Some(previous) = previous {
+            let (same_paint, same_batch_topology) =
+                self.scene.paint_operations.scene_reuse_matches(
+                    &previous.paint_operations,
+                    self.scene.replayed_primitives > 0,
+                );
+            if same_paint || same_batch_topology {
+                self.scene
+                    .prepared_batches
+                    .share_from(&previous.prepared_batches);
+                self.scene.revision = if same_paint {
+                    previous.revision
+                } else {
+                    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
+                };
+            } else {
+                self.prepare_batches();
+                self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+            }
+            same_paint
+        } else {
+            self.prepare_batches();
+            self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+            false
+        }
     }
 
-    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self, paint: &Scene) {
+    pub(crate) fn trim_for_reuse(&mut self, current: &Self, paint: &Scene) {
         macro_rules! trim_vec_against {
             ($field:ident) => {{
                 let target = SCENE_MIN_RETAINED_CAPACITY.max(paint.$field.len());
@@ -115,15 +146,9 @@ impl Painter {
         );
 
         let batch_target = SCENE_MIN_RETAINED_CAPACITY.max(paint.prepared_batches.batches.len());
-        if self.scene.prepared_batches.batches.capacity()
-            > batch_target.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.scene.prepared_batches.batches.shrink_to(batch_target);
-            self.scene.prepared_batches.retained_capacity =
-                self.scene.prepared_batches.batches.capacity();
-        }
+        self.scene.prepared_batches.trim_scratch(batch_target);
 
-        self.primitive_bounds.trim_for_reuse_against(
+        self.primitive_bounds.trim_for_reuse(
             &current.primitive_bounds,
             SCENE_MIN_RETAINED_CAPACITY,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
@@ -201,20 +226,13 @@ impl Painter {
             primitive_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_vec_capacity(
-            &mut self.scene.prepared_batches.batches,
-            primitive_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
-
-        self.scene.prepared_batches.retained_capacity =
-            self.scene.prepared_batches.batches.capacity();
+        self.scene.prepared_batches.trim_scratch(primitive_floor);
         self.recent_peak_paint_operations = self.scene.paint_operations.len();
         self.recent_peak_primitives = self.primitive_count();
     }
 
     fn prepare_batches(&mut self) {
-        let mut prepared = std::mem::take(&mut self.scene.prepared_batches.batches);
+        let mut prepared = self.scene.prepared_batches.take_scratch();
         prepared.clear();
         for batch in self.batches() {
             if let PrimitiveBatch::Shadows { range, .. } = batch {
@@ -306,10 +324,8 @@ impl Painter {
             });
         }
 
-        self.scene.prepared_batches.batches = prepared;
-        self.scene.prepared_batches.batch_count = self.scene.prepared_batches.batches.len();
-        self.scene.prepared_batches.primitive_count = self.primitive_count();
-        self.scene.prepared_batches.retained_capacity =
-            self.scene.prepared_batches.batches.capacity();
+        self.scene
+            .prepared_batches
+            .finish(prepared, self.primitive_count());
     }
 }

@@ -108,7 +108,7 @@ fn verify_scale(renderer: &mut NovaRenderer, reference_renderer: &mut NovaRender
             renderer.backend_info.label(),
             metrics.encoded_scene_primitives,
             metrics.backdrop_blur_source_pixels,
-            renderer.draw_step_scratch.submitted_present_damage
+            renderer.command_scratch.submitted_present_damage
         );
         if let Some(bytes) = &stable_quads {
             assert_eq!(
@@ -169,7 +169,7 @@ fn verify_scale(renderer: &mut NovaRenderer, reference_renderer: &mut NovaRender
 
 fn release_target(renderer: &mut NovaRenderer, target: (TextureId, TextureViewId)) {
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("complete readback");
     device!(renderer, device, {
         device.destroy_texture_view(target.1).expect("destroy view");
@@ -193,3 +193,114 @@ fn verify(backend: RendererBackend) {
     animated.destroy();
     reference.destroy();
 }
+
+fn horizontal_sample(progress: f32) -> crate::SceneAnimationValue {
+    crate::SceneAnimationValue {
+        animation_id: crate::SceneAnimationId(1),
+        property: crate::TransitionProperty::HorizontalEdges,
+        from: [-46., -36., 0., 0.],
+        to: [8., 0., 0., 0.],
+        progress,
+    }
+}
+
+fn horizontal_page(reference: Option<f32>) -> Arc<crate::window::Paint> {
+    let viewport = bounds(0., 0., 64., 64.);
+    let mut painter = crate::scene::Painter::default();
+    painter.insert_primitive(quad(viewport, crate::rgb(0x204060)));
+    let mut pill = quad(bounds(48., 12., 10., 24.), crate::rgb(0x40e080));
+    pill.content_mask = crate::ContentMask::new(viewport);
+    pill.corner_radii = crate::Corners::all(crate::ScaledPixels(5.));
+    if let Some(progress) = reference {
+        let mut primitive = crate::Primitive::Quad(pill);
+        crate::platform::nova::frame_upload::apply_value(
+            &mut primitive,
+            &horizontal_sample(progress),
+        );
+        let crate::Primitive::Quad(sampled) = primitive else {
+            unreachable!()
+        };
+        pill = sampled;
+    } else {
+        pill.animation_id = Some(crate::SceneAnimationId(1));
+    }
+    painter.insert_primitive(pill);
+    painter.finish();
+    Arc::new(crate::window::Paint::new(
+        painter.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ))
+}
+
+fn verify_horizontal_reversal(backend: RendererBackend) {
+    let window = native_window::Window::renderer_fixture();
+    let reference_window = native_window::Window::renderer_fixture();
+    let mut animated = renderer(&window, backend);
+    let mut reference = renderer(&reference_window, backend);
+    let target = super::super::target(&animated);
+    let reference_target = super::super::target(&reference);
+    let scene = horizontal_page(None);
+    let mut previous = 0.;
+    for (index, progress) in [0., 0.8, 0.2, 1.15, -0.1, 0.7, 0., 1.]
+        .into_iter()
+        .enumerate()
+    {
+        let actual = pixels(
+            &mut animated,
+            &scene,
+            target,
+            previous,
+            [horizontal_sample(progress)],
+            index == 0,
+        );
+        let expected = pixels(
+            &mut reference,
+            &horizontal_page(Some(progress)),
+            reference_target,
+            0.,
+            [],
+            true,
+        );
+        assert_eq!(
+            actual, expected,
+            "horizontal reversal backend={backend:?} sample={progress}"
+        );
+        previous = progress;
+    }
+    release_target(&mut animated, target);
+    release_target(&mut reference, reference_target);
+    animated.destroy();
+    reference.destroy();
+}
+
+macro_rules! horizontal_backend_test {
+    ($name:ident, $feature:literal, $backend:ident) => {
+        #[test]
+        #[cfg(feature = $feature)]
+        #[ignore = "requires Windows native GPU"]
+        fn $name() {
+            verify_horizontal_reversal(RendererBackend::$backend);
+        }
+    };
+}
+horizontal_backend_test!(
+    dx11_horizontal_edges_reversal_pixels,
+    "nova-gfx-dx11",
+    NovaDx11
+);
+horizontal_backend_test!(
+    dx12_horizontal_edges_reversal_pixels,
+    "nova-gfx-dx12",
+    NovaDx12
+);
+horizontal_backend_test!(
+    vulkan_horizontal_edges_reversal_pixels,
+    "nova-gfx-vulkan",
+    NovaVulkan
+);
+horizontal_backend_test!(
+    opengl_horizontal_edges_reversal_pixels,
+    "nova-gfx-opengl",
+    NovaOpenGl
+);

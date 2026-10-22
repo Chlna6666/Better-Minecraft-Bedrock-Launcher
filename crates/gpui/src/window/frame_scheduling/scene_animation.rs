@@ -83,7 +83,7 @@ impl Window {
         let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
         self.next_scene_animation_id
             .set(self.next_scene_animation_id.get().wrapping_add(1));
-        self.start_scene_animation_with_id(
+        self.start_identified_scene_animation(
             element_id,
             property,
             spec,
@@ -112,7 +112,7 @@ impl Window {
                 .set(self.next_scene_animation_id.get().wrapping_add(1));
             animation_id
         });
-        self.start_scene_animation_with_id(
+        self.start_identified_scene_animation(
             element_id,
             property,
             spec,
@@ -125,7 +125,7 @@ impl Window {
         animation_id
     }
 
-    pub(crate) fn start_scene_animation_with_id(
+    pub(crate) fn start_identified_scene_animation(
         &self,
         element_id: &GlobalElementId,
         property: TransitionProperty,

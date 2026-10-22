@@ -6,13 +6,13 @@ mod layout;
 pub(super) struct PathMaskTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
-    pub(super) resource_sets: Vec<ResourceSetId>,
+    pub(super) bind_groups: Vec<BindGroupId>,
 }
 
 pub(super) struct PathMaskTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
-    pub(super) resource_set_layout: ResourceSetLayoutId,
+    pub(super) bind_group_layout: BindGroupLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
@@ -21,7 +21,7 @@ pub(super) struct PathMaskTargetDescriptor {
 pub(super) struct BackdropBlurTargets {
     /// Shared scene color for root backdrop barriers; absent for isolated-only captures.
     pub(super) source: Option<RenderTarget>,
-    pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
+    pub(super) source_pass_resource_sets: Vec<BindGroupId>,
     /// Per-element sources. Each CSS blur group starts from a clean attachment so one group's
     /// content can never become the backdrop source of a sibling group.
     pub(super) isolated_sources: Vec<IsolatedBlurSource>,
@@ -38,14 +38,17 @@ pub(super) struct BackdropBlurTargets {
 /// only this owner retires the allocation and its per-frame ResourceSets.
 pub(super) struct RootColorTarget {
     pub(super) target: RenderTarget,
-    pub(super) pass_resource_sets: Vec<ResourceSetId>,
-    pub(super) composite_resource_sets: Vec<ResourceSetId>,
+    pub(super) pass_resource_sets: Vec<BindGroupId>,
+    pub(super) composite_resource_sets: Vec<BindGroupId>,
 }
 
 impl BackdropBlurTargets {
     /// Only a single-member zero-filter output has an independently initialized texture.
     pub(super) fn exclusive_zero_radius_capture_view(&self, index: u32) -> Option<TextureViewId> {
-        let mut candidates = self.variants.iter().take(self.active_variant_count)
+        let mut candidates = self
+            .variants
+            .iter()
+            .take(self.active_variant_count)
             .filter(|variant| variant.config.contains_member_index(index));
         let variant = candidates.next()?;
         if candidates.next().is_some()
@@ -81,7 +84,7 @@ impl BackdropBlurTargets {
 pub(super) struct IsolatedBlurSource {
     pub(super) index: u32,
     pub(super) target: RenderTarget,
-    pub(super) pass_resource_sets: Vec<ResourceSetId>,
+    pub(super) pass_resource_sets: Vec<BindGroupId>,
 }
 
 #[derive(Clone)]
@@ -93,7 +96,7 @@ pub(super) struct BackdropBlurVariantTargets {
     /// Zero-filter compositor layers own only levels[0], a full-resolution retained final texture;
     /// they execute no Gaussian passes and render their captured subtree directly into that target.
     pub(super) levels: Vec<BackdropBlurLevelTarget>,
-    pub(super) target_resource_sets: Vec<ResourceSetId>,
+    pub(super) target_resource_sets: Vec<BindGroupId>,
 }
 
 #[derive(Clone)]
@@ -101,7 +104,7 @@ pub(super) struct BackdropBlurLevelTarget {
     pub(super) byte_size: u64,
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
-    pub(super) pass_resource_sets: Vec<ResourceSetId>,
+    pub(super) pass_resource_sets: Vec<BindGroupId>,
 }
 
 pub(super) struct BackdropBlurTargetDescriptor {
@@ -111,8 +114,8 @@ pub(super) struct BackdropBlurTargetDescriptor {
     /// Root backdrop barriers need a shared source; isolated captures already own their source.
     pub(super) needs_root_source: bool,
     pub(super) isolated_source_indices: Vec<u32>,
-    pub(super) pass_resource_set_layout: ResourceSetLayoutId,
-    pub(super) blur_resource_set_layout: ResourceSetLayoutId,
+    pub(super) pass_resource_set_layout: BindGroupLayoutId,
+    pub(super) blur_resource_set_layout: BindGroupLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
@@ -137,16 +140,20 @@ fn blur_variant_level_count(config: BackdropBlurConfig) -> usize {
 }
 
 impl BackdropBlurTargets {
-    pub(super) fn resource_set_for_config(
+    pub(super) fn config_bind_group(
         &self,
         config: BackdropBlurConfig,
         frame_resource_index: usize,
-    ) -> Option<ResourceSetId> {
-        let variant = self.variants
+    ) -> Option<BindGroupId> {
+        let variant = self
+            .variants
             .iter()
             .take(self.active_variant_count)
             .find(|variant| variant.config.covers(config))?;
-        variant.target_resource_sets.get(frame_resource_index).copied()
+        variant
+            .target_resource_sets
+            .get(frame_resource_index)
+            .copied()
     }
 
     /// Returns whether the existing GPU texture layout can serve the next frame.
@@ -165,7 +172,7 @@ impl BackdropBlurTargets {
         &self,
         index: u32,
         frame_resource_index: usize,
-    ) -> Option<ResourceSetId> {
+    ) -> Option<BindGroupId> {
         self.isolated_sources
             .iter()
             .take(self.active_isolated_source_count)
@@ -183,18 +190,27 @@ impl BackdropBlurTargets {
     ) -> bool {
         self.source.is_some() == needs_root_source
             && self.active_variant_count == next.len()
-            && self.isolated_sources
+            && self
+                .isolated_sources
                 .get(..self.active_isolated_source_count)
-                .is_some_and(|active| active.iter().map(|source| source.index).eq(
-                    next_isolated_source_indices
+                .is_some_and(|active| {
+                    active
                         .iter()
-                        .copied()
-                        .filter(|index| blur_requires_isolated_source(next, *index)),
-                ))
-            && self.variants.iter().take(self.active_variant_count).zip(next).all(|(variant, config)| {
-                variant.config.same_target_slot(*config)
-                    && variant.levels.len() == blur_variant_level_count(*config)
-            })
+                        .map(|source| source.index)
+                        .eq(next_isolated_source_indices
+                            .iter()
+                            .copied()
+                            .filter(|index| blur_requires_isolated_source(next, *index)))
+                })
+            && self
+                .variants
+                .iter()
+                .take(self.active_variant_count)
+                .zip(next)
+                .all(|(variant, config)| {
+                    variant.config.same_target_slot(*config)
+                        && variant.levels.len() == blur_variant_level_count(*config)
+                })
     }
 }
 
@@ -204,7 +220,7 @@ pub(super) fn create_path_mask_target<D>(
     descriptor: PathMaskTargetDescriptor,
 ) -> Result<PathMaskTarget>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let texture = device.create_texture(&TextureDescriptor {
         label: Some(format!("{label} path mask texture")),
@@ -231,16 +247,16 @@ where
     let mut target = PathMaskTarget {
         texture,
         texture_view,
-        resource_sets: Vec::with_capacity(descriptor.frame_buffers.len()),
+        bind_groups: Vec::with_capacity(descriptor.frame_buffers.len()),
     };
     for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        let result = device.create_resource_set(&ResourceSetDescriptor {
+        let result = device.create_bind_group(&BindGroupDescriptor {
             label: Some(format!("{label} path mask frame {index} resource set")),
-            layout: descriptor.resource_set_layout,
-            bindings: path_resource_bindings(&buffers, texture_view, descriptor.sampler),
+            layout: descriptor.bind_group_layout,
+            entries: path_resource_bindings(&buffers, texture_view, descriptor.sampler),
         });
         match result {
-            Ok(set) => target.resource_sets.push(set),
+            Ok(set) => target.bind_groups.push(set),
             Err(error) => {
                 // A Pending surface can be abandoned at any frame slot.
                 // Never leak earlier descriptor sets or its physical texture.
@@ -257,10 +273,10 @@ pub(super) fn destroy_path_mask_target<D>(
     target: PathMaskTarget,
     backend_name: &str,
 ) where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
-    for resource_set in target.resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
+    for bind_group in target.bind_groups {
+        if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!("failed to destroy {backend_name} old path mask resource set: {error}");
         }
     }
@@ -278,7 +294,7 @@ pub(super) fn create_backdrop_blur_target_chain<D>(
     mut descriptor: BackdropBlurTargetDescriptor,
 ) -> Result<BackdropBlurTargets>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let configs = std::mem::take(&mut descriptor.configs);
     create_backdrop_blur_target_chain_with_configs(device, label, descriptor, &configs)
@@ -291,7 +307,7 @@ fn create_backdrop_blur_target_chain_with_configs<D>(
     configs: &[BackdropBlurConfig],
 ) -> Result<BackdropBlurTargets>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     // This journal is invocation-local: on failure, no partially constructed
     // Filter/Root GPU allocation may escape without a retirement path.
@@ -303,10 +319,10 @@ where
             created_textures.push(target);
             Ok::<RenderTarget, anyhow::Error>(target)
         };
-        let mut allocate_set = |device: &mut D, descriptor: &ResourceSetDescriptor| {
-            let set = device.create_resource_set(descriptor)?;
+        let mut allocate_set = |device: &mut D, descriptor: &BindGroupDescriptor| {
+            let set = device.create_bind_group(descriptor)?;
             created_resource_sets.push(set);
-            Ok::<ResourceSetId, anyhow::Error>(set)
+            Ok::<BindGroupId, anyhow::Error>(set)
         };
         // Element captures (including their nested backdrop barriers) have their own source.
         // Allocate the shared full-window source only for a backdrop outside those captures.
@@ -323,17 +339,20 @@ where
         let mut source_pass_resource_sets = Vec::new();
         if let Some(source) = source {
             for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                source_pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
-                    label: Some(format!(
-                        "{label} backdrop scene color frame {index} resource set"
-                    )),
-                    layout: descriptor.pass_resource_set_layout,
-                    bindings: backdrop_blur_pass_resource_bindings(
-                        &buffers,
-                        source.texture_view,
-                        descriptor.sampler,
-                    ),
-                })?);
+                source_pass_resource_sets.push(allocate_set(
+                    device,
+                    &BindGroupDescriptor {
+                        label: Some(format!(
+                            "{label} backdrop scene color frame {index} resource set"
+                        )),
+                        layout: descriptor.pass_resource_set_layout,
+                        entries: backdrop_blur_pass_resource_bindings(
+                            &buffers,
+                            source.texture_view,
+                            descriptor.sampler,
+                        ),
+                    },
+                )?);
             }
         }
 
@@ -351,12 +370,12 @@ where
             )?;
             let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                pass_resource_sets.push(allocate_set(device, &BindGroupDescriptor {
                     label: Some(format!(
                         "{label} element blur {index} scene color frame {frame_index} resource set"
                     )),
                     layout: descriptor.pass_resource_set_layout,
-                    bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
+                    entries: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
                 })?);
             }
             isolated_sources.push(IsolatedBlurSource {
@@ -399,10 +418,10 @@ where
                 )?;
                 let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
                 for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                    pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    pass_resource_sets.push(allocate_set(device, &BindGroupDescriptor {
                         label: Some(format!("{label} filter target {variant_index}/{pass_index} frame {frame_index}")),
                         layout: descriptor.pass_resource_set_layout,
-                        bindings: backdrop_blur_pass_resource_bindings(
+                        entries: backdrop_blur_pass_resource_bindings(
                             &buffers, target.texture_view, descriptor.sampler,
                         ),
                     })?);
@@ -417,15 +436,24 @@ where
 
             let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                let source_texture_view = levels.last()
-                    .expect("every filter owns at least one target").texture_view;
-                target_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
-                    label: Some(format!("{label} filter composite {variant_index} frame {frame_index}")),
-                    layout: descriptor.blur_resource_set_layout,
-                    bindings: backdrop_blur_resource_bindings(
-                        &buffers, source_texture_view, descriptor.sampler,
-                    ),
-                })?);
+                let source_texture_view = levels
+                    .last()
+                    .expect("every filter owns at least one target")
+                    .texture_view;
+                target_resource_sets.push(allocate_set(
+                    device,
+                    &BindGroupDescriptor {
+                        label: Some(format!(
+                            "{label} filter composite {variant_index} frame {frame_index}"
+                        )),
+                        layout: descriptor.blur_resource_set_layout,
+                        entries: backdrop_blur_resource_bindings(
+                            &buffers,
+                            source_texture_view,
+                            descriptor.sampler,
+                        ),
+                    },
+                )?);
             }
             variants.push(BackdropBlurVariantTargets {
                 config,
@@ -447,7 +475,7 @@ where
         // ResourceSets must be retired before any TextureView they sample.
         // Roll back in reverse creation order, never touching the live chain.
         for set in created_resource_sets.into_iter().rev() {
-            if let Err(error) = device.destroy_resource_set(set) {
+            if let Err(error) = device.destroy_bind_group(set) {
                 log::debug!("failed to roll back {label} filter resource set: {error}");
             }
         }
@@ -463,18 +491,18 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
     targets: BackdropBlurTargets,
     backend_name: &str,
 ) where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
-    for resource_set in targets.source_pass_resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
+    for bind_group in targets.source_pass_resource_sets {
+        if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!(
                 "failed to destroy {backend_name} backdrop blur source resource set: {error}"
             );
         }
     }
     for source in targets.isolated_sources {
-        for resource_set in source.pass_resource_sets {
-            if let Err(error) = device.destroy_resource_set(resource_set) {
+        for bind_group in source.pass_resource_sets {
+            if let Err(error) = device.destroy_bind_group(bind_group) {
                 log::debug!(
                     "failed to destroy {backend_name} element blur source resource set: {error}"
                 );
@@ -486,19 +514,21 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
     let mut gathered_textures = FxHashSet::default();
     for variant in targets.variants {
         for set in variant.target_resource_sets {
-            if let Err(error) = device.destroy_resource_set(set) {
+            if let Err(error) = device.destroy_bind_group(set) {
                 log::debug!("failed to retire {backend_name} filter composite set: {error}");
             }
         }
         for level in variant.levels {
             for set in level.pass_resource_sets {
-                if let Err(error) = device.destroy_resource_set(set) {
+                if let Err(error) = device.destroy_bind_group(set) {
                     log::debug!("failed to retire {backend_name} filter pass set: {error}");
                 }
             }
             if gathered_textures.insert(level.texture) {
                 physical_targets.push(RenderTarget {
-                    byte_size: level.byte_size, texture: level.texture, texture_view: level.texture_view,
+                    byte_size: level.byte_size,
+                    texture: level.texture,
+                    texture_view: level.texture_view,
                 });
             }
         }
@@ -517,7 +547,7 @@ pub(super) fn create_depth_target<D>(
     size: Extent2d,
 ) -> Result<(TextureId, TextureViewId)>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let texture = create_depth_texture(device, label, size)?;
     let texture_view = match device.create_texture_view(&TextureViewDescriptor {
@@ -542,7 +572,7 @@ pub(super) fn destroy_depth_target<D>(
     texture_view: TextureViewId,
     backend_name: &str,
 ) where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     if let Err(error) = device.destroy_texture_view(texture_view) {
         log::debug!("failed to destroy {backend_name} old path mask texture view: {error}");
@@ -559,7 +589,7 @@ pub(super) fn create_render_texture_target<D>(
     format: Format,
 ) -> Result<RenderTarget>
 where
-    D: BackendResources + BackendPipelines,
+    D: ResourceDevice + PipelineDevice,
 {
     let texture = device.create_texture(&TextureDescriptor {
         label: Some(format!("{label} texture")),
@@ -581,7 +611,9 @@ where
         Err(error) => {
             // A failed View allocation still leaves the Texture alive.
             if let Err(rollback_error) = device.destroy_texture(texture) {
-                log::debug!("failed to roll back {label} texture after view failure: {rollback_error}");
+                log::debug!(
+                    "failed to roll back {label} texture after view failure: {rollback_error}"
+                );
             }
             return Err(error.into());
         }
@@ -595,9 +627,12 @@ where
     })
 }
 
-pub(super) fn destroy_render_texture_target<D>(device: &mut D, target: RenderTarget, backend_name: &str)
-where
-    D: BackendResources + BackendPipelines,
+pub(super) fn destroy_render_texture_target<D>(
+    device: &mut D,
+    target: RenderTarget,
+    backend_name: &str,
+) where
+    D: ResourceDevice + PipelineDevice,
 {
     if let Err(error) = device.destroy_texture_view(target.texture_view) {
         log::debug!("failed to destroy {backend_name} texture target view: {error}");

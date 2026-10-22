@@ -34,7 +34,6 @@ impl FrameUpload {
         } else {
             summary.animation_value_count = refreshed_count as u32;
         }
-
     }
 
     fn refresh_values(

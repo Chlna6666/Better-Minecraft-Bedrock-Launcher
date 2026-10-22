@@ -128,7 +128,7 @@ fn verify(backend: RendererBackend) {
     // preserves the static source through a foreground animation sample.
     let prefix_end = unchanged.len() - 1;
     let mut painter = crate::scene::Painter::default();
-    assert!(painter.replay(0..prefix_end, &unchanged, &[]));
+    assert!(painter.replay(0..prefix_end, &unchanged, []));
     painter.insert_animated_primitive(
         quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
         crate::SceneAnimationId(1),
@@ -198,7 +198,7 @@ fn verify(backend: RendererBackend) {
     );
     retained::verify(&mut renderer, target);
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("complete readback");
     device!(renderer, device, {
         device

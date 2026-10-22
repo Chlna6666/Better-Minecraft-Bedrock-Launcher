@@ -45,7 +45,7 @@ pub fn record_image_processing_metrics(
     frames: usize,
     duration: Duration,
 ) {
-    record_image_processing_metrics_with_threshold(
+    record_image_metrics(
         compressed_bytes,
         decoded_bytes,
         frames,
@@ -55,7 +55,7 @@ pub fn record_image_processing_metrics(
 }
 
 /// Records a completed image processing and marks it slow when it exceeds `slow_threshold`.
-pub fn record_image_processing_metrics_with_threshold(
+pub fn record_image_metrics(
     compressed_bytes: usize,
     decoded_bytes: usize,
     frames: usize,

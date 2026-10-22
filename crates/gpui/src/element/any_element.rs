@@ -215,6 +215,10 @@ impl AnyElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Size<Pixels> {
+        let _work = crate::window::element_work::begin_named(
+            "root_request_and_compute",
+            crate::window::element_work::ElementWorkPhase::Layout,
+        );
         self.0.layout_as_root(available_space, window, cx)
     }
 

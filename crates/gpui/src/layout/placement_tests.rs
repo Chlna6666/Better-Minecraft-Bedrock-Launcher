@@ -20,7 +20,7 @@ fn interaction_flags_preserve_native_pure_measure_cache(cx: &mut TestAppContext)
                 let mut style = Style::default();
                 style.allow_concurrent_scroll = allow_scroll;
                 let count = count.clone();
-                engine.request_measured_layout_with_fingerprint(
+                engine.request_fingerprinted_layout(
                     Some(owner.clone()),
                     style,
                     px(16.),

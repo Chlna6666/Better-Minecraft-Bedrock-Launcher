@@ -21,7 +21,7 @@ fn stream_byte_len(upload: &FrameUpload, stream: BufferStream) -> usize {
         BufferStream::Shadow => &upload.shadows,
         BufferStream::PathVertices => &upload.path_rasterization_vertices,
         BufferStream::PathSprites => &upload.path_sprites,
-        BufferStream::MonoSprites => &upload.mono_sprites,
+        BufferStream::MonoSprites => return upload.mono_sprites.len(),
         BufferStream::PolySprites => &upload.poly_sprites,
         BufferStream::Underlines => &upload.underlines,
         BufferStream::BlurPasses => &upload.backdrop_blur_passes,
@@ -190,7 +190,7 @@ impl NovaRenderer {
         }
     }
 
-    fn apply_static_versions<D: BackendResources>(
+    fn apply_static_versions<D: ResourceDevice>(
         &mut self,
         device: &mut D,
         actions: &[(BufferStream, VersionAction)],
@@ -239,7 +239,7 @@ impl NovaRenderer {
             }
             self.frame_resources[slot].buffers = next;
             self.activate_frame_resources(slot)?;
-            self.draw_step_scratch.invalidate_draw_steps();
+            self.command_scratch.invalidate_draw_steps();
             buffer_capacity::release_buffers(
                 device,
                 current

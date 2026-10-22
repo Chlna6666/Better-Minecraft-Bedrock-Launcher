@@ -4,7 +4,7 @@ pub(super) struct DirectCompositeTarget {
     pub(super) texture_view: TextureViewId,
     /// Pass-layout resource set sampling the same retained texture. Nested backdrop filters inside
     /// the captured subtree use this when reconstructing their own source dependency chain.
-    pub(super) source_resource_set: ResourceSetId,
+    pub(super) source_resource_set: BindGroupId,
 }
 
 impl BackdropBlurTargets {

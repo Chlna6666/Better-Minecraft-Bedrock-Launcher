@@ -18,14 +18,14 @@ fn records_aggregate_image_processing_metrics() {
     let _lock = lock_performance_metrics();
     let before = performance_metrics_snapshot();
 
-    record_image_processing_metrics_with_threshold(
+    record_image_metrics(
         10,
         20,
         1,
         Duration::from_millis(2),
         Duration::from_millis(1),
     );
-    record_image_processing_metrics_with_threshold(
+    record_image_metrics(
         30,
         40,
         2,
@@ -671,14 +671,14 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
             submission_prepare: Duration::from_micros(700),
             retained_resource_prepare: Duration::from_micros(800),
             frame_prepare_upload: Duration::from_micros(900),
-            draw_step_prepare: Duration::from_micros(550),
+            command_prepare: Duration::from_micros(550),
             buffer_upload: Duration::from_micros(120),
             atlas_upload: Duration::from_micros(130),
             offscreen_render: Duration::from_micros(140),
             backend_present: Duration::from_millis(5),
             renderer_post_present: Duration::from_micros(1_000),
         }),
-        Some(gfx_core::PresentationTimings {
+        Some(gfx_core::PresentTimings {
             acquire_fence_wait: Duration::from_micros(100),
             image_acquire: Duration::from_micros(200),
             command_encoder_create: Duration::from_micros(300),
@@ -717,7 +717,7 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
     assert_eq!(timing.submission_prepare, Duration::from_micros(700));
     assert_eq!(timing.retained_resource_prepare, Duration::from_micros(800));
     assert_eq!(timing.frame_prepare_upload, Duration::from_micros(900));
-    assert_eq!(timing.draw_step_prepare, Duration::from_micros(550));
+    assert_eq!(timing.command_prepare, Duration::from_micros(550));
     assert_eq!(timing.buffer_upload, Duration::from_micros(120));
     assert_eq!(timing.atlas_upload, Duration::from_micros(130));
     assert_eq!(timing.offscreen_render, Duration::from_micros(140));

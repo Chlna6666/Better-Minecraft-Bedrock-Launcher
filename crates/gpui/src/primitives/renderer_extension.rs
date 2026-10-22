@@ -9,9 +9,8 @@ use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId};
 
 use super::DrawOrder;
 
-pub use gfx_core::{
-    ExtensionDevice, MemoryTrimLevel, RenderPassId, RenderStepDescriptor, ScissorRect,
-};
+pub use super::extension_device::ExtensionDevice;
+pub use gfx_core::{MemoryTrimLevel, RenderCommand, RenderPassId, ScissorRect};
 
 /// Frame-local information passed to a Nova renderer extension.
 #[derive(Clone, Debug)]
@@ -156,7 +155,7 @@ pub trait RendererExtensionRenderer {
         extension: &dyn RendererExtension,
         device: &mut dyn ExtensionDevice,
         context: RendererExtensionContext,
-        steps: &mut Vec<RenderStepDescriptor>,
+        steps: &mut Vec<RenderCommand>,
     ) -> crate::Result<()>;
 
     /// Releases renderer-owned caches after a GPUI memory-trim request.

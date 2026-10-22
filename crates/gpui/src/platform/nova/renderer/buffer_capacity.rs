@@ -73,7 +73,7 @@ fn resized_buffers(
     buffers
 }
 
-pub(super) fn release_buffers<D: BackendResources>(
+pub(super) fn release_buffers<D: ResourceDevice>(
     device: &mut D,
     buffers: impl IntoIterator<Item = BufferId>,
 ) {
@@ -84,7 +84,7 @@ pub(super) fn release_buffers<D: BackendResources>(
     }
 }
 
-fn allocate_buffers<D: BackendResources>(
+fn allocate_buffers<D: ResourceDevice>(
     device: &mut D,
     current: FrameResourceBuffers,
     sizes: [usize; 5],
@@ -130,7 +130,7 @@ fn allocate_buffers<D: BackendResources>(
 }
 
 impl NovaRenderer {
-    /// Called after prepare_for_frame_submission has selected an unoccupied slot.
+    /// Called after prepare_frame_submission has selected an unoccupied slot.
     pub(super) fn ensure_stream_capacity(&mut self) -> Result<()> {
         let current = self.frame_resources[self.current_frame_resource_index].buffers;
         let upload = &self.frame_upload;
@@ -189,7 +189,7 @@ impl NovaRenderer {
         }
     }
 
-    fn grow_stream_buffers<D: BackendResources>(
+    fn grow_stream_buffers<D: ResourceDevice>(
         &mut self,
         device: &mut D,
         current: FrameResourceBuffers,
@@ -238,7 +238,7 @@ impl NovaRenderer {
                 self.retained_upload.invalidate_stream(slot, stream);
             }
         }
-        self.draw_step_scratch.invalidate_draw_steps();
+        self.command_scratch.invalidate_draw_steps();
         // Existing Filter/Root textures survive buffer growth. Their slot
         // descriptors were rebound transactionally above; no pixels changed.
         release_buffers(

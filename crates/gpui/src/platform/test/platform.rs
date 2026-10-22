@@ -178,7 +178,7 @@ impl TestPlatform {
             .detach();
     }
 
-    pub(crate) fn did_prompt_for_new_path(&self) -> bool {
+    pub(crate) fn prompted_new_path(&self) -> bool {
         !self.prompts.borrow().new_path.is_empty()
     }
 }
@@ -280,7 +280,7 @@ impl Platform for TestPlatform {
         unimplemented!()
     }
 
-    fn prompt_for_new_path(
+    fn prompt_new_path(
         &self,
         directory: &std::path::Path,
         _suggested_name: Option<&str>,
@@ -295,7 +295,7 @@ impl Platform for TestPlatform {
         rx
     }
 
-    fn can_select_mixed_files_and_dirs(&self) -> bool {
+    fn can_select_mixed_paths(&self) -> bool {
         true
     }
 

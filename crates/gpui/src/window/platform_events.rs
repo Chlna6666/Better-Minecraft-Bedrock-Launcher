@@ -1,5 +1,5 @@
-use super::*;
 use super::lifecycle::RetainedInvalidationScope;
+use super::*;
 
 /// Actual scene dependencies, not the Win32 modal-loop flag, determine
 /// whether changing native state should schedule another UI generation.
@@ -95,7 +95,7 @@ impl Window {
         }
         // Enter/ExitSizeMove can update the native status without changing a
         // single client pixel. Do not route that flag through a generic root
-        // notify: it would disable every CachedView and rebuild the full UI.
+        // notify: it would discard every retained subtree and rebuild the full UI.
         // Exit remains visible to deferred image owners that must settle.
         if !viewport_change_needs_ui_commit(
             layout_constraints_changed,
@@ -140,7 +140,7 @@ impl Window {
                 // The root must rerender against the new client constraint.
                 // A DPI/display transition changes glyph pixels and is still
                 // a hard subtree barrier. For a pure client-size change,
-                // reconcile descendants instead: each CachedView can replay
+                // reconcile descendants instead: retained ranges can replay
                 // only after proving its absolute bounds, clip, paint context,
                 // fingerprint and frame-local input ranges unchanged. Views
                 // reading Window::viewport_size/bounds are explicitly dirty
@@ -150,7 +150,7 @@ impl Window {
                 } else {
                     RetainedInvalidationScope::ReconcileSubtree
                 };
-                self.invalidator.invalidate_view_with_scope(root_id, cx, scope);
+                self.invalidator.invalidate_scoped_view(root_id, cx, scope);
             } else {
                 self.invalidator.invalidate_view(root_id, cx);
             }

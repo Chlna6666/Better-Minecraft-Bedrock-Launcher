@@ -40,7 +40,7 @@ pub(super) struct ResourceBuffers {
 
 pub(super) fn create_resource_buffers<D>(device: &mut D, label: &str) -> Result<ResourceBuffers>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let mut frame_buffers = Vec::with_capacity(MAX_IN_FLIGHT_SUBMISSIONS);
     for index in 0..MAX_IN_FLIGHT_SUBMISSIONS {
@@ -73,7 +73,7 @@ fn create_frame_resource_buffers<D>(
     shared: Option<FrameResourceBuffers>,
 ) -> Result<FrameResourceBuffers>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let global_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} globals")),

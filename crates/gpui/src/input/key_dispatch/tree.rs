@@ -92,7 +92,7 @@ impl DispatchTree {
             + self.view_node_ids.capacity()
     }
 
-    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+    pub(crate) fn trim_for_reuse(&mut self, current: &Self) {
         const WATERMARK_MULTIPLIER: usize = 4;
         macro_rules! trim_vec {
             ($field:ident) => {{
@@ -238,7 +238,9 @@ impl DispatchTree {
         let target = self.active_node();
         target.key_listeners.clone_from(&source.key_listeners);
         target.action_listeners.clone_from(&source.action_listeners);
-        target.modifiers_changed_listeners.clone_from(&source.modifiers_changed_listeners);
+        target
+            .modifiers_changed_listeners
+            .clone_from(&source.modifiers_changed_listeners);
     }
 
     pub fn reuse_subtree(
@@ -497,56 +499,55 @@ impl DispatchTree {
 mod retained_dispatch_replay_tests {
     use super::*;
 
-#[test]
-fn retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort() {
-    use std::any::TypeId;
-    let keymap = Rc::new(RefCell::new(Keymap::default()));
-    let actions = Rc::new(ActionRegistry::default());
-    let mut committed = DispatchTree::new(keymap.clone(), actions.clone());
-    let mut candidate = DispatchTree::new(keymap, actions);
-    committed.push_node();
-    committed.on_key_event(Rc::new(|_, _, _, _| {}));
-    committed.on_modifiers_changed(Rc::new(|_, _, _| {}));
-    committed.on_action(TypeId::of::<u8>(), Rc::new(|_, _, _, _| {}));
-    committed.pop_node();
+    #[test]
+    fn retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort() {
+        use std::any::TypeId;
+        let keymap = Rc::new(RefCell::new(Keymap::default()));
+        let actions = Rc::new(ActionRegistry::default());
+        let mut committed = DispatchTree::new(keymap.clone(), actions.clone());
+        let mut candidate = DispatchTree::new(keymap, actions);
+        committed.push_node();
+        committed.on_key_event(Rc::new(|_, _, _, _| {}));
+        committed.on_modifiers_changed(Rc::new(|_, _, _| {}));
+        committed.on_action(TypeId::of::<u8>(), Rc::new(|_, _, _, _| {}));
+        committed.pop_node();
 
-    candidate.reuse_subtree(0..1, &mut committed, None);
-    for tree in [&committed, &candidate] {
-        assert_eq!(tree.nodes[0].key_listeners.len(), 1);
-        assert_eq!(tree.nodes[0].modifiers_changed_listeners.len(), 1);
-        assert_eq!(tree.nodes[0].action_listeners.len(), 1);
+        candidate.reuse_subtree(0..1, &mut committed, None);
+        for tree in [&committed, &candidate] {
+            assert_eq!(tree.nodes[0].key_listeners.len(), 1);
+            assert_eq!(tree.nodes[0].modifiers_changed_listeners.len(), 1);
+            assert_eq!(tree.nodes[0].action_listeners.len(), 1);
+        }
+        assert!(Rc::ptr_eq(
+            &committed.nodes[0].key_listeners[0],
+            &candidate.nodes[0].key_listeners[0]
+        ));
+        candidate.clear();
+        assert_eq!(committed.nodes[0].action_listeners.len(), 1);
+        assert_eq!(committed.nodes[0].key_listeners.len(), 1);
     }
-    assert!(Rc::ptr_eq(
-        &committed.nodes[0].key_listeners[0],
-        &candidate.nodes[0].key_listeners[0]
-    ));
-    candidate.clear();
-    assert_eq!(committed.nodes[0].action_listeners.len(), 1);
-    assert_eq!(committed.nodes[0].key_listeners.len(), 1);
-}
 
-#[test]
-fn retained_dispatch_fragment_replay_preserves_source_on_aborted_candidate() {
-    let keymap = Rc::new(RefCell::new(Keymap::default()));
-    let actions = Rc::new(ActionRegistry::default());
-    let mut committed = DispatchTree::new(keymap.clone(), actions.clone());
-    let mut candidate = DispatchTree::new(keymap, actions);
-    committed.push_node();
-    committed.push_node();
-    committed.on_key_event(Rc::new(|_, _, _, _| {}));
-    committed.pop_node();
-    committed.pop_node();
-    candidate.push_node();
-    let mut map = FxHashMap::default();
-    map.insert(DispatchNodeId(0), DispatchNodeId(0));
-    assert_eq!(
-        candidate.reuse_fragment(1..2, &mut committed, None, &mut map, DispatchNodeId(0)),
-        Some(false)
-    );
-    assert_eq!(committed.nodes[1].key_listeners.len(), 1);
-    assert_eq!(candidate.nodes[1].key_listeners.len(), 1);
-    candidate.clear();
-    assert_eq!(committed.nodes[1].key_listeners.len(), 1);
-}
-
+    #[test]
+    fn retained_dispatch_fragment_replay_preserves_source_on_aborted_candidate() {
+        let keymap = Rc::new(RefCell::new(Keymap::default()));
+        let actions = Rc::new(ActionRegistry::default());
+        let mut committed = DispatchTree::new(keymap.clone(), actions.clone());
+        let mut candidate = DispatchTree::new(keymap, actions);
+        committed.push_node();
+        committed.push_node();
+        committed.on_key_event(Rc::new(|_, _, _, _| {}));
+        committed.pop_node();
+        committed.pop_node();
+        candidate.push_node();
+        let mut map = FxHashMap::default();
+        map.insert(DispatchNodeId(0), DispatchNodeId(0));
+        assert_eq!(
+            candidate.reuse_fragment(1..2, &mut committed, None, &mut map, DispatchNodeId(0)),
+            Some(false)
+        );
+        assert_eq!(committed.nodes[1].key_listeners.len(), 1);
+        assert_eq!(candidate.nodes[1].key_listeners.len(), 1);
+        candidate.clear();
+        assert_eq!(committed.nodes[1].key_listeners.len(), 1);
+    }
 }

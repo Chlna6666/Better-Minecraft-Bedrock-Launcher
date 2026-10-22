@@ -32,6 +32,7 @@ pub(crate) struct Painter {
 struct BlurCaptureState {
     config: BlurCapture,
     scene: Box<Painter>,
+    previous_content: Option<std::sync::Arc<Scene>>,
 }
 impl std::ops::Deref for Painter {
     type Target = Scene;
@@ -141,6 +142,14 @@ impl Painter {
     }
 
     pub(crate) fn begin_blur(&mut self, config: BlurCapture) {
+        self.begin_previous_blur(config, None);
+    }
+
+    pub(crate) fn begin_previous_blur(
+        &mut self,
+        config: BlurCapture,
+        previous_content: Option<std::sync::Arc<Scene>>,
+    ) {
         self.scene.revision = 0;
         self.scene
             .paint_operations
@@ -148,6 +157,7 @@ impl Painter {
         self.blur_captures.push(BlurCaptureState {
             config,
             scene: Box::default(),
+            previous_content,
         });
     }
 
@@ -172,7 +182,18 @@ impl Painter {
         };
         let effect_bounds = content_bounds.dilate(blur_influence_radius(capture.config.radius));
         let config = capture.config;
-        content.finish();
+        let content = if let Some(previous) = capture.previous_content {
+            if content.finish_against(&previous)
+                && content.scene.animation_values == previous.animation_values
+            {
+                previous
+            } else {
+                std::sync::Arc::new(content.into_scene())
+            }
+        } else {
+            content.finish();
+            std::sync::Arc::new(content.into_scene())
+        };
         let blur = PaintBlur {
             order: 0,
             animation_id: config.animation_id,
@@ -181,7 +202,7 @@ impl Painter {
             content_mask: config.content_mask,
             radius: config.radius,
             opacity: config.opacity,
-            content: std::sync::Arc::new(content.into_scene()),
+            content,
         };
 
         if let Some(parent) = self.blur_captures.last_mut() {

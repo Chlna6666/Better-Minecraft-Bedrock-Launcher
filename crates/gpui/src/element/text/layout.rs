@@ -78,7 +78,7 @@ impl TextLayout {
             text_style.text_overflow.is_some() || paint_refresh_failed,
         );
 
-        window.request_measured_layout_with_fingerprint(Default::default(), measurement_key, {
+        window.request_fingerprinted_layout(Default::default(), measurement_key, {
             let element_state = self.clone();
 
             move |known_dimensions, available_space, window, cx| {
@@ -118,8 +118,18 @@ impl TextLayout {
                     return text_layout.size.unwrap();
                 }
 
-                let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
+                let mut line_wrapper = {
+                    let _work = crate::window::element_work::begin_named(
+                        "text_wrapper_acquire",
+                        crate::window::element_work::ElementWorkPhase::Layout,
+                    );
+                    cx.text_system().line_wrapper(text_style.font(), font_size)
+                };
                 let text = if let Some(truncate_width) = truncate_width {
+                    let _work = crate::window::element_work::begin_named(
+                        "text_truncate",
+                        crate::window::element_work::ElementWorkPhase::Layout,
+                    );
                     line_wrapper.truncate_line(
                         text.clone(),
                         truncate_width,
@@ -133,17 +143,23 @@ impl TextLayout {
 
                 // Geometry changes and truncation-dependent paint changes reach this path. The
                 // LineLayoutCache still reuses shaped glyph geometry when its font identity matches.
-                let Some(lines) = window
-                    .text_system()
-                    .shape_text(
-                        text,
-                        font_size,
-                        &runs,
-                        wrap_width,            // Wrap if we know the width.
-                        text_style.line_clamp, // Limit the number of lines if line_clamp is set.
-                    )
-                    .log_err()
-                else {
+                let shaped = {
+                    let _work = crate::window::element_work::begin_named(
+                        "text_shape",
+                        crate::window::element_work::ElementWorkPhase::Layout,
+                    );
+                    window
+                        .text_system()
+                        .shape_text(
+                            text,
+                            font_size,
+                            &runs,
+                            wrap_width,            // Wrap if we know the width.
+                            text_style.line_clamp, // Limit the number of lines if line_clamp is set.
+                        )
+                        .log_err()
+                };
+                let Some(lines) = shaped else {
                     element_state.0.borrow_mut().replace(TextLayoutInner {
                         cache_key,
                         paint_key,
@@ -299,7 +315,7 @@ impl TextLayout {
     }
 
     /// Retrieve the layout for the line containing the given byte index.
-    pub fn line_layout_for_index(&self, index: usize) -> Option<Arc<WrappedLineLayout>> {
+    pub fn line_layout_at(&self, index: usize) -> Option<Arc<WrappedLineLayout>> {
         let element_state = self.0.borrow();
         let element_state = element_state
             .as_ref()

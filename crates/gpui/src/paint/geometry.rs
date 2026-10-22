@@ -187,6 +187,15 @@ pub(crate) fn animation_sampled_bounds(
         return primitive.visual_bounds();
     };
     let sampled = sampled_animation_components(value);
+    if value.property == TransitionProperty::HorizontalEdges
+        && matches!(primitive, Primitive::Quad(_) | Primitive::Shadow(_))
+    {
+        // Match the renderer's independent edge springs before applying the fixed mask.
+        let mut bounds = primitive.unclipped_visual_bounds();
+        bounds.origin.x += ScaledPixels(sampled[0].min(sampled[1]));
+        bounds.size.width += ScaledPixels((sampled[0] - sampled[1]).abs());
+        return bounds.intersect(&primitive.content_mask().bounds);
+    }
     if value.property == TransitionProperty::VerticalEdges
         && let Primitive::Quad(quad) = primitive
     {

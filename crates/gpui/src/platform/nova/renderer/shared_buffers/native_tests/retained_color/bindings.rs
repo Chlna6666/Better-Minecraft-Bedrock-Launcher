@@ -127,7 +127,7 @@ fn verify(backend: RendererBackend, animation_growth: bool) {
         "buffer filter gate backend={backend:?} animation_growth={animation_growth} full_filter_pixels={full_filter_pixels} rebound_filter_pixels=0 rebound_source_pixels=0 pixels_equal=true"
     );
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("retire readback");
     device!(renderer, device, {
         device.destroy_texture_view(target.1).expect("destroy view");
@@ -144,7 +144,7 @@ fn verify_rebinding(
 ) {
     let expected = pixels(renderer, scene, target, 0.8, samples(), false);
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("fence-safe slot");
     assert!(renderer.filters.is_valid());
     let root_identity = renderer.root_color.identity();

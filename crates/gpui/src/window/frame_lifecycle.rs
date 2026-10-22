@@ -42,15 +42,23 @@ mod native_geometry_tests {
     fn fast_resize_finishing_before_first_modal_ui_frame_still_reconciles() {
         let old = crate::size(px(700.), px(500.));
         let latest = crate::size(px(1100.), px(730.));
-        assert!(native_geometry_requires_sync(false, false, old, latest, 1., 1.));
+        assert!(native_geometry_requires_sync(
+            false, false, old, latest, 1., 1.
+        ));
     }
 
     #[test]
     fn unchanged_native_geometry_does_not_request_extra_layout() {
         let size = crate::size(px(1100.), px(730.));
-        assert!(!native_geometry_requires_sync(false, false, size, size, 1., 1.));
-        assert!(native_geometry_requires_sync(true, false, size, size, 1., 1.));
-        assert!(native_geometry_requires_sync(false, false, size, size, 1., 1.25));
+        assert!(!native_geometry_requires_sync(
+            false, false, size, size, 1., 1.
+        ));
+        assert!(native_geometry_requires_sync(
+            true, false, size, size, 1., 1.
+        ));
+        assert!(native_geometry_requires_sync(
+            false, false, size, size, 1., 1.25
+        ));
     }
 }
 
@@ -190,16 +198,15 @@ impl Window {
     }
 
     pub(super) fn mark_view_dirty(&mut self, view_id: EntityId) {
-        let dependents = crate::CachedView::render_dependents(self, view_id);
         let has_view_route = self
             .rendered_frame
             .dispatch_tree
             .view_path_reversed(view_id)
             .next()
             .is_some();
-        // A data Entity has no dispatch route of its own. Exact Render readers
-        // provide that route; only unknown readers require a window barrier.
-        if !has_view_route && dependents.is_empty() {
+        // A data Entity has no dispatch route of its own. Only a view that
+        // painted in the committed frame can reuse its retained subtree.
+        if !has_view_route {
             self.force_view_cache_refresh = true;
         }
         // These scopes are rebuilt while consuming invalidations in begin_draw_cycle. Their
@@ -224,22 +231,6 @@ impl Window {
         }
         if has_view_route {
             self.dirty_views.insert(view_id);
-        }
-        // A visible View can also be data for another View's Render. Its retained
-        // target alone cannot cover those readers, including unrelated sibling owners.
-        // Dependency readers are direct dirty owners, not a window-wide cache
-        // barrier. Their own boundaries must rebuild while unrelated owners
-        // and routing ancestors remain eligible for retained replay.
-        for dependent in dependents {
-            if !self.direct_dirty_views.contains(&dependent) {
-                let boundary = self.invalidator.invalidate_render_dependency(dependent);
-                self.mark_view_dirty(dependent);
-                if let Some(boundary) = boundary
-                    && !self.direct_dirty_views.contains(&boundary)
-                {
-                    self.mark_view_dirty(boundary);
-                }
-            }
         }
         self.dirty_frame_diagnostics
             .borrow_mut()
@@ -1246,8 +1237,12 @@ impl Window {
                 decision.skip_frame,
                 decision.defer_inactive_dirty_draw,
                 dirty_frame_diagnostics.frame_request_reasons,
-                dirty_frame_diagnostics.first_frame_request.map(|request| request.reason),
-                dirty_frame_diagnostics.first_frame_request.map(|request| (request.source_file, request.source_line)),
+                dirty_frame_diagnostics
+                    .first_frame_request
+                    .map(|request| request.reason),
+                dirty_frame_diagnostics
+                    .first_frame_request
+                    .map(|request| (request.source_file, request.source_line)),
                 dirty_frame_diagnostics.refreshes,
                 dirty_frame_diagnostics.view_dirty,
                 dirty_frame_diagnostics.direct_dirty_views,
@@ -1343,7 +1338,8 @@ impl Window {
         // resize it must not consume the pending extent or acknowledge a new
         // submission serial as though that old geometry were the matching draw.
         let resize_draw_deferred = self.live_resize_active && self.draw_was_degraded;
-        let presented_frame = if !resize_draw_deferred && (presentation || self.needs_present.get()) {
+        let presented_frame = if !resize_draw_deferred && (presentation || self.needs_present.get())
+        {
             measure("frame presentation", || self.present()).is_accepted()
         } else {
             false
@@ -1439,7 +1435,10 @@ impl Window {
                 stats.prepaint_breakdown.deferred.as_micros(),
                 stats.prepaint_breakdown.overlay.as_micros(),
                 stats.prepaint_breakdown.hit_test.as_micros(),
-                stats.prepaint_breakdown.other(stats.prepaint_elapsed).as_micros(),
+                stats
+                    .prepaint_breakdown
+                    .other(stats.prepaint_elapsed)
+                    .as_micros(),
                 stats.prepaint_breakdown.root_layout.as_micros(),
             );
         }

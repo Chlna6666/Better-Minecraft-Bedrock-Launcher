@@ -4,8 +4,8 @@ use super::source::*;
 use crate::{
     AnimatedFrame, App, Asset, AssetLocation, Bounds, CompressedImageBytes, EncodedImage,
     ImageRenderRecord, ImageRenderSize, ObjectFit, Pixels, RenderImage, SMOOTH_SVG_SCALE_FACTOR,
-    SharedString, Size, SvgSize, Window, hash, record_image_asset_retained,
-    record_image_processing_metrics_with_threshold, swap_rgba_pa_to_bgra_buffer,
+    SharedString, Size, SvgSize, Window, hash, record_image_asset_retained, record_image_metrics,
+    swap_rgba_pa_to_bgra_buffer,
 };
 use anyhow::{Context as _, Result};
 use futures::{AsyncReadExt, Future};
@@ -313,13 +313,17 @@ impl Asset for ImageAssetLoader {
             // retirement can be canceled when the same pixels become visible again.
             data.id =
                 crate::interned_render_image_id(TypeId::of::<ImageAssetLoader>(), hash(&source));
-            record_image_processing_metrics_with_threshold(
+            record_image_metrics(
                 compressed_len,
                 data.resident_byte_len(),
                 data.frame_count(),
                 processing_duration,
                 slow_image_threshold,
             );
+            log::trace!(target: "gpui::diagnostics",
+                "image_processing kind=source resource_key={} image_id={:?} output_bytes={} frames={} processing_us={}",
+                hash(&source), data.id, data.resident_byte_len(), data.frame_count(),
+                processing_duration.as_micros());
             if processing_duration >= slow_image_threshold {
                 log::debug!(
                     "slow image processing: source={source:?} compressed_bytes={} output_bytes={} frames={} processing_ms={:.3}",
@@ -385,7 +389,7 @@ impl Asset for SizedImageAssetLoader {
                 TypeId::of::<SizedImageAssetLoader>(),
                 hash(&source),
             );
-            record_image_processing_metrics_with_threshold(
+            record_image_metrics(
                 compressed_len,
                 data.resident_byte_len(),
                 data.frame_count(),
@@ -393,6 +397,10 @@ impl Asset for SizedImageAssetLoader {
                 slow_image_threshold,
             );
 
+            log::trace!(target: "gpui::diagnostics",
+                "image_processing kind=sized resource_key={} request_key={} image_id={:?} target_px={}x{} output_bytes={} frames={} processing_us={}",
+                hash(&source.resource), hash(&source), data.id, source.size.width, source.size.height,
+                data.resident_byte_len(), data.frame_count(), processing_duration.as_micros());
             let image = Arc::new(data);
             record_image_asset_retained(
                 hash(&source),

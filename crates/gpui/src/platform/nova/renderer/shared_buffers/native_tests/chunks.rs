@@ -50,38 +50,49 @@ fn base_scene(renderer: &NovaRenderer) -> crate::window::retained::PaintFixture 
     scene
 }
 
-fn replay_with_gap(renderer: &NovaRenderer, base: &crate::window::retained::PaintFixture, color: u32) -> crate::window::retained::PaintFixture {
+fn replay_with_gap(
+    renderer: &NovaRenderer,
+    base: &crate::window::retained::PaintFixture,
+    color: u32,
+) -> crate::window::retained::PaintFixture {
     let mut scene = crate::window::retained::PaintFixture::default();
     scene.replay(0..base.len(), base);
     scene.insert_primitive(quad(renderer, false, color));
     scene.finish();
     for index in [1, 35] {
-        assert!(std::ptr::eq(&scene.paint_operations[index], &base.paint_operations[index]),
-            "retained operation payload must survive without a per-frame clone");
+        assert!(
+            std::ptr::eq(
+                &scene.paint_operations[index],
+                &base.paint_operations[index]
+            ),
+            "retained operation payload must survive without a per-frame clone"
+        );
     }
     scene
 }
 
 fn draw_all(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
-    let steps = [DrawStepDescriptor {
+    let steps = [RenderCommand::Draw(DrawCommand {
         instance_count: (renderer.frame_upload.quads.len() / PACKED_QUAD_BYTES) as u32,
-        resource_sets: resource_set_list([renderer.frame_resources[slot]
-            .resource_sets
+        bind_groups: bind_group_list([renderer.frame_resources[slot]
+            .bind_groups
             .quad_resource_set]),
         ..quad_step(renderer)
-    }];
+    })];
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                view,
-                renderer.render_pass,
-                RenderStepList::Draw(&steps),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: view,
+                render_pass: renderer.render_pass,
+                commands: &steps,
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("segmented draw");
     });
 }
@@ -104,20 +115,23 @@ fn assert_halves(renderer: &NovaRenderer, texture: TextureId, left: [u8; 4]) {
 }
 
 fn submit_old_slot(renderer: &mut NovaRenderer) {
-    let steps = vec![RenderStepDescriptor::Draw(quad_step(renderer)); 512];
+    let steps = vec![RenderCommand::Draw(quad_step(renderer)); 512];
     let submission = device!(renderer, device, {
         device
-            .render_steps_and_present_deferred(
-                renderer.swapchain,
-                renderer.render_pass,
-                &steps,
-                clear_color(),
-                Some(RenderPassDepthAttachment {
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: renderer.swapchain,
+                render_pass: renderer.render_pass,
+                commands: &steps,
+                color_load_op: LoadOp::Clear(clear_color()),
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                present_region: None,
+            })
             .expect("old chunk submission")
+            .and_then(|frame: gfx_core::PresentedFrame| frame.submission)
+            .expect("old chunk submission id")
     });
     renderer.pending_submissions.push(PendingSubmission {
         submission,
@@ -126,7 +140,10 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
     });
 }
 
-fn verify_replay(renderer: &mut NovaRenderer, base: &crate::window::retained::PaintFixture) -> (usize, usize) {
+fn verify_replay(
+    renderer: &mut NovaRenderer,
+    base: &crate::window::retained::PaintFixture,
+) -> (usize, usize) {
     let first = upload(renderer, 0, base, &base.retention);
     assert_eq!(renderer.frame_upload.resident_quad_spans.len(), 2);
     assert_eq!(renderer.frame_upload.quads.owned_len(), 0);
@@ -158,7 +175,10 @@ fn verify_replay(renderer: &mut NovaRenderer, base: &crate::window::retained::Pa
         );
     }
     assert_eq!(
-        renderer.frame_upload.retained_quad_memory(&renderer.retained_upload.quad_chunks).used_bytes,
+        renderer
+            .frame_upload
+            .retained_chunk_memory(&renderer.retained_upload.retained_chunks)
+            .used_bytes,
         (64 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(
@@ -191,9 +211,7 @@ fn verify_cow(renderer: &mut NovaRenderer, base: &crate::window::retained::Paint
     draw_all(renderer, old_target.1, 0);
     assert_halves(renderer, new_target.0, [0, 255, 255, 255]);
     assert_halves(renderer, old_target.0, [0, 255, 0, 255]);
-    renderer
-        .wait_for_pending_submissions()
-        .expect("chunk fence");
+    renderer.wait_pending_submissions().expect("chunk fence");
     renderer
         .coalesce_idle_static_buffers()
         .expect("merge chunk versions");

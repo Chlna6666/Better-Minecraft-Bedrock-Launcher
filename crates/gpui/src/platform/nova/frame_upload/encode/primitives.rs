@@ -39,63 +39,103 @@ impl FrameUpload {
         sprites: &[crate::MonochromeSprite],
         summary: &mut FrameUploadSummary,
     ) {
-        let mut count = 0_u32;
         for sprite in sprites {
             if self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES >= MAX_MONO_SPRITES {
                 break;
             }
-            if clip_is_degenerate(&sprite.content_mask) {
+            let Some((sprite, visual_bounds)) = self.prepare_monochrome_sprite(sprite) else {
                 continue;
-            }
-            let mut sprite = *sprite;
-            if let Some(tile) = self.atlas_placements.get(&sprite.tile.tile_id) {
-                sprite.tile = *tile;
-            }
-            let visual_bounds = static_raster_visual_bounds(
-                sprite.bounds,
-                sprite.content_mask.bounds,
-                sprite.animation_id,
-                sprite.transformation != crate::TransformationMatrix::unit(),
-            );
+            };
             let primitive_index = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
-            write_monochrome_sprite(&mut self.mono_sprites, &sprite);
-            self.mono_atlas_tiles.push(sprite.tile);
-            register_scene_animated_primitive(
-                self,
-                summary,
-                sprite
-                    .animation_id
-                    .map(|_| crate::Primitive::MonochromeSprite(sprite)),
-                AnimatedPrimitiveKind::MonochromeSprite,
-                primitive_index,
-            );
-            match self.batches.last_mut() {
-                Some(UploadedBatch::MonoSprites {
-                    texture_id: id,
+            self.mono_sprites
+                .write(|bytes| write_monochrome_sprite(bytes, &sprite));
+            self.record_monochrome_sprite(&sprite, primitive_index, visual_bounds, summary);
+        }
+    }
+
+    pub(super) fn prepare_monochrome_sprite(
+        &self,
+        source: &crate::MonochromeSprite,
+    ) -> Option<(
+        crate::MonochromeSprite,
+        Option<crate::Bounds<crate::ScaledPixels>>,
+    )> {
+        if clip_is_degenerate(&source.content_mask) {
+            return None;
+        }
+        let mut sprite = *source;
+        if let Some(tile) = self.atlas_placements.get(&sprite.tile.tile_id) {
+            sprite.tile = *tile;
+        }
+        let visual_bounds = static_raster_visual_bounds(
+            sprite.bounds,
+            sprite.content_mask.bounds,
+            sprite.animation_id,
+            sprite.transformation != crate::TransformationMatrix::unit(),
+        );
+        Some((sprite, visual_bounds))
+    }
+
+    pub(super) fn record_monochrome_sprite(
+        &mut self,
+        sprite: &crate::MonochromeSprite,
+        primitive_index: u32,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+        summary: &mut FrameUploadSummary,
+    ) {
+        self.mono_atlas_tiles.push(sprite.tile);
+        register_scene_animated_primitive(
+            self,
+            summary,
+            sprite
+                .animation_id
+                .map(|_| crate::Primitive::MonochromeSprite(*sprite)),
+            AnimatedPrimitiveKind::MonochromeSprite,
+            primitive_index,
+        );
+        self.append_monochrome_sprite_batch(
+            sprite.tile.texture_id,
+            primitive_index,
+            1,
+            visual_bounds,
+        );
+        summary.mono_sprite_count = summary.mono_sprite_count.saturating_add(1);
+    }
+
+    pub(super) fn append_monochrome_sprite_batch(
+        &mut self,
+        texture_id: crate::AtlasTextureId,
+        first: u32,
+        count: u32,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    ) {
+        if count == 0 {
+            return;
+        }
+        match self.batches.last_mut() {
+            Some(UploadedBatch::MonoSprites {
+                texture_id: previous_texture_id,
+                first: previous_first,
+                count: previous_count,
+            }) if *previous_texture_id == texture_id
+                && *previous_first + *previous_count == first =>
+            {
+                *previous_count += count;
+                merge_batch_bounds(
+                    self.batch_visual_bounds
+                        .last_mut()
+                        .expect("every encoded sprite draw has bounds"),
+                    visual_bounds,
+                );
+            }
+            _ => {
+                self.batches.push(UploadedBatch::MonoSprites {
+                    texture_id,
                     first,
                     count,
-                }) if *id == sprite.tile.texture_id && *first + *count == primitive_index => {
-                    *count += 1;
-                    merge_batch_bounds(
-                        self.batch_visual_bounds
-                            .last_mut()
-                            .expect("every encoded sprite draw has bounds"),
-                        visual_bounds,
-                    );
-                }
-                _ => {
-                    self.batches.push(UploadedBatch::MonoSprites {
-                        texture_id: sprite.tile.texture_id,
-                        first: primitive_index,
-                        count: 1,
-                    });
-                    self.batch_visual_bounds.push(visual_bounds);
-                }
+                });
+                self.batch_visual_bounds.push(visual_bounds);
             }
-            count = count.saturating_add(1);
-        }
-        if count > 0 {
-            summary.mono_sprite_count = summary.mono_sprite_count.saturating_add(count);
         }
     }
 

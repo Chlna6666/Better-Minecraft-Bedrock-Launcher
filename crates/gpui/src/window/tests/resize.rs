@@ -26,11 +26,7 @@ impl Render for ResizeCachedRoot {
         crate::div()
             .relative()
             .size_full()
-            .child(
-                self.growing
-                    .clone()
-                    .cached(crate::StyleRefinement::default().size_full()),
-            )
+            .child(crate::div().size_full().child(self.growing.clone()))
             .child(
                 crate::div()
                     .absolute()
@@ -39,17 +35,13 @@ impl Render for ResizeCachedRoot {
                     .w(px(80.))
                     .h(px(40.))
                     .overflow_hidden()
-                    .child(
-                        self.fixed
-                            .clone()
-                            .cached(crate::StyleRefinement::default().size_full()),
-                    ),
+                    .child(crate::div().size_full().child(self.fixed.clone())),
             )
     }
 }
 
 #[gpui::test]
-fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut TestAppContext) {
+fn viewport_resize_rebuilds_views_and_preserves_input(cx: &mut TestAppContext) {
     let fixed_renders = Rc::new(Cell::new(0));
     let fixed_clicks = Rc::new(Cell::new(0));
     let growing_renders = Rc::new(Cell::new(0));
@@ -81,8 +73,8 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
         window.live_resize_active = true;
         window.draw(cx).clear();
         assert!(
-            fixed_renders.get() == fixed_before,
-            "fixed cached content with unchanged bounds/context should replay across client resize"
+            fixed_renders.get() > fixed_before,
+            "ordinary views must render even when their bounds stay fixed during resize"
         );
         assert!(
             growing_renders.get() > growing_before,
@@ -287,11 +279,7 @@ impl Render for ViewportDependentFixedRoot {
                 .top(px(0.))
                 .w(px(80.))
                 .h(px(40.))
-                .child(
-                    self.child
-                        .clone()
-                        .cached(crate::StyleRefinement::default().size_full()),
-                ),
+                .child(crate::div().size_full().child(self.child.clone())),
         )
     }
 }
@@ -317,7 +305,14 @@ fn viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed(cx: &mut Tes
             },
             original.height + px(90.),
         );
-        window.platform_window.as_test().unwrap().0.lock().bounds.size = changed;
+        window
+            .platform_window
+            .as_test()
+            .unwrap()
+            .0
+            .lock()
+            .bounds
+            .size = changed;
         window.content_bounds_changed(cx);
         window.draw(cx).clear();
         assert!(
@@ -337,4 +332,156 @@ fn viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed(cx: &mut Tes
             "the fixed child must paint its new viewport-dependent color"
         );
     });
+}
+
+struct ResizeGeometryLeaf;
+
+impl Render for ResizeGeometryLeaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                crate::div()
+                    .w(crate::relative(0.6))
+                    .h(px(37.))
+                    .bg(crate::rgb(0xfa1234))
+                    .child("Resize geometry"),
+            )
+    }
+}
+
+struct ResizeGeometryRoot {
+    child: Entity<ResizeGeometryLeaf>,
+}
+
+impl Render for ResizeGeometryRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                crate::div()
+                    .w(crate::relative(0.7))
+                    .h(crate::relative(0.8))
+                    .p(px(11.))
+                    .child(crate::div().size_full().child(self.child.clone())),
+            )
+    }
+}
+
+#[gpui::test]
+fn repeated_resize_keeps_cached_descendant_geometry_equal_to_fresh_layout(cx: &mut TestAppContext) {
+    let (_, visual) = cx.add_window_view(|_, cx| ResizeGeometryRoot {
+        child: cx.new(|_| ResizeGeometryLeaf),
+    });
+    visual.update(|window, cx| {
+        let initial = window.viewport_size;
+        let marker_bounds = |window: &Window| {
+            window
+                .rendered_frame
+                .scene()
+                .quads
+                .iter()
+                .filter(|quad| quad.background == crate::rgb(0xfa1234).into())
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let mut warmed = Vec::new();
+        // Keep the same retained engine through every turn, including repeated sizes.
+        for step in 0..=48 {
+            let angle = (step % 16) as f32 * std::f32::consts::TAU / 16.;
+            let next = size(
+                initial.width + px((200. + 200. * angle.cos()).round()),
+                initial.height + px((200. + 200. * angle.sin()).round()),
+            );
+            window
+                .platform_window
+                .as_test()
+                .unwrap()
+                .0
+                .lock()
+                .bounds
+                .size = next;
+            window.content_bounds_changed(cx);
+            window.live_resize_active = true;
+            window.draw(cx).clear();
+            let bounds = marker_bounds(window);
+            assert_eq!(bounds.len(), 1);
+            warmed.push((next, bounds));
+        }
+        // The reference pass starts a fresh layout engine for each identical size.
+        for (next, warm) in warmed {
+            window
+                .platform_window
+                .as_test()
+                .unwrap()
+                .0
+                .lock()
+                .bounds
+                .size = next;
+            window.content_bounds_changed(cx);
+            window.force_view_cache_refresh = true;
+            window.layout_engine = Some(crate::layout::TaffyLayoutEngine::new());
+            window.invalidator.set_dirty(true);
+            window.draw(cx).clear();
+            assert_eq!(
+                warm,
+                marker_bounds(window),
+                "cached geometry differs at {next:?}"
+            );
+        }
+    });
+}
+
+struct ScrollViewportView {
+    scroll: crate::ScrollHandle,
+    rendered_height: Rc<Cell<Pixels>>,
+}
+
+impl Render for ScrollViewportView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.rendered_height.set(self.scroll.bounds().size.height);
+        crate::div()
+            .id("tracked-viewport")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(crate::div().h(px(2000.)).flex_none())
+    }
+}
+
+#[gpui::test]
+fn tracked_viewport_resize_notifies_after_grow_and_shrink(cx: &mut TestAppContext) {
+    let scroll = crate::ScrollHandle::new();
+    let rendered_height = Rc::new(Cell::new(px(0.)));
+    let (_, visual) = cx.add_window_view(|_, _| ScrollViewportView {
+        scroll: scroll.clone(),
+        rendered_height: rendered_height.clone(),
+    });
+    for height in [300., 700., 180., 600., 300.] {
+        visual.update(|window, cx| {
+            let new_size = size(px(800.), px(height));
+            window
+                .platform_window
+                .as_test()
+                .unwrap()
+                .0
+                .lock()
+                .bounds
+                .size = new_size;
+            window.content_bounds_changed(cx);
+            window.draw(cx).clear();
+            assert_eq!(scroll.bounds().size.height, px(height));
+        });
+        assert_eq!(
+            rendered_height.get(),
+            px(height),
+            "deferred notification must rebuild the final viewport"
+        );
+    }
 }

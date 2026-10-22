@@ -8,7 +8,7 @@ pub(in crate::platform::nova) fn create_depth_texture<D>(
     size: Extent2d,
 ) -> Result<TextureId>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     device
         .create_texture(&TextureDescriptor {

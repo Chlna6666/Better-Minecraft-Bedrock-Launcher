@@ -27,12 +27,12 @@ impl App {
     }
 
     /// Prompt the user to select a new file path.
-    pub fn prompt_for_new_path(
+    pub fn prompt_new_path(
         &self,
         directory: &Path,
         suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
-        self.platform.prompt_for_new_path(directory, suggested_name)
+        self.platform.prompt_new_path(directory, suggested_name)
     }
 
     /// Reveal a path in the platform file manager.
@@ -46,7 +46,7 @@ impl App {
     }
 
     /// Return whether the file picker can mix files and directories.
-    pub fn can_select_mixed_files_and_dirs(&self) -> bool {
-        self.platform.can_select_mixed_files_and_dirs()
+    pub fn can_select_mixed_paths(&self) -> bool {
+        self.platform.can_select_mixed_paths()
     }
 }

@@ -63,7 +63,7 @@ impl RenderingParameters {
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn refresh_for_current_monitor(&mut self) -> bool {
+    pub(super) fn refresh_monitor_parameters(&mut self) -> bool {
         let rasterization_generation = crate::platform::text_rasterization_generation();
         if self.windows_text_rasterization_generation == rasterization_generation {
             return false;

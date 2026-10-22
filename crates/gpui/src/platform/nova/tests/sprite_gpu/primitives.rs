@@ -6,7 +6,7 @@ pub(super) fn verify_pixels<D>(
     target: TextureId,
     view: TextureViewId,
 ) where
-    D: BackendResources + BackendPresentationCompat + TextureTransferDevice,
+    D: ResourceDevice + PresentationDevice + TextureTransferDevice,
 {
     let bounds = bounds(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0);
     let content_mask = crate::ContentMask {
@@ -35,7 +35,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.quads,
-        frame.resource_sets.quad_resource_set,
+        frame.bind_groups.quad_resource_set,
     );
     let pixels = device.read_texture(target).expect("quad readback");
     assert_eq!(pixel(&pixels, 8, 8), [0, 0, 255, 255], "quad interior");
@@ -61,7 +61,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.shadows,
-        frame.resource_sets.shadow_resource_set,
+        frame.bind_groups.shadow_resource_set,
     );
     let pixels = device.read_texture(target).expect("shadow readback");
     assert!(pixel(&pixels, 8, 8)[2] > 200, "shadow center");
@@ -88,7 +88,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.underlines,
-        frame.resource_sets.underline_resource_set,
+        frame.bind_groups.underline_resource_set,
     );
     let pixels = device.read_texture(target).expect("underline readback");
     assert_eq!(pixel(&pixels, 8, 8), [0, 0, 255, 255], "underline interior");
@@ -96,34 +96,36 @@ pub(super) fn verify_pixels<D>(
     println!("production rounded quad, shadow, underline and clipping: native pixels verified");
 }
 
-fn draw<D: BackendPresentationCompat>(
+fn draw<D: PresentationDevice>(
     device: &mut D,
     resources: &RendererResources,
     view: TextureViewId,
     pipeline: RenderPipelineId,
-    set: ResourceSetId,
+    set: BindGroupId,
 ) {
     device
-        .render_steps_to_texture_compat(
-            view,
-            resources.render_pass,
-            &[RenderStepDescriptor::Draw(DrawStepDescriptor {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: view,
+            render_pass: resources.render_pass,
+            commands: &[RenderCommand::Draw(DrawCommand {
                 pipeline,
-                resource_sets: resource_set_list([set]),
+                bind_groups: bind_group_list([set]),
                 vertex_count: 4,
                 instance_count: 1,
                 first_vertex: 0,
                 first_instance: 0,
                 scissor: None,
             })],
-            LoadOp::Clear(ClearColor {
+            color_load_op: LoadOp::Clear(ClearColor {
                 red: 0.0,
                 green: 0.0,
                 blue: 0.0,
                 alpha: 1.0,
             }),
-            None,
-        )
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+        }])
         .expect("production primitive draw");
 }
 

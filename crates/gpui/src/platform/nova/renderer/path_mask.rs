@@ -11,9 +11,9 @@ use std::{hash::Hasher, time::Duration};
 /// set. Slot resource IDs are deliberately not part of the key: the persistent
 /// mask contains pixels, not a pointer to its old source buffer.
 pub(super) fn ordered_draw_plan_token(
-    steps: &[DrawStepDescriptor],
+    steps: &[RenderCommand],
     pipeline: RenderPipelineId,
-    resource_set: ResourceSetId,
+    bind_group: BindGroupId,
     total_vertices: u32,
     packed_vertex_bytes: usize,
 ) -> Option<u64> {
@@ -27,9 +27,12 @@ pub(super) fn ordered_draw_plan_token(
     }
     let mut hasher = collections::FxHasher::default();
     hasher.write_usize(steps.len());
-    for step in steps {
+    for command in steps {
+        let RenderCommand::Draw(step) = command else {
+            return None;
+        };
         if step.pipeline != pipeline
-            || step.resource_sets.as_slice() != [resource_set]
+            || step.bind_groups.as_slice() != [bind_group]
             || step.scissor.is_some()
             || step.instance_count != 1
             || step.first_instance != 0
@@ -43,7 +46,6 @@ pub(super) fn ordered_draw_plan_token(
     }
     Some(hasher.finish())
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Key {
@@ -84,28 +86,28 @@ impl Residency {
 pub(super) struct Pass<'a> {
     pub(super) texture_view: TextureViewId,
     pub(super) render_pass: RenderPassId,
-    pub(super) steps: &'a [DrawStepDescriptor],
-    pub(super) depth_attachment: RenderPassDepthAttachment,
-    pub(super) viewport: gfx_core::RenderViewport,
+    pub(super) steps: &'a [RenderCommand],
+    pub(super) depth_attachment: DepthAttachment,
+    pub(super) viewport: gfx_core::Viewport,
 }
 
-pub(super) fn render<D: BackendPresentationCompat>(
+pub(super) fn render<D: PresentationDevice>(
     device: &mut D,
     pass: Pass<'_>,
     cpu_elapsed: &mut Duration,
 ) -> Result<()> {
     let started = Instant::now();
-    let result = device.render_step_lists_to_textures_compat(&[gfx_core::TextureRenderStepList {
+    let result = device.render_to_textures(&[gfx_core::RenderPassCommands {
         texture_view: pass.texture_view,
         render_pass: pass.render_pass,
-        steps: RenderStepList::from_draw_steps(pass.steps),
+        commands: pass.steps,
         color_load_op: LoadOp::Clear(clear_color()),
         clear_region: None,
         depth_attachment: Some(pass.depth_attachment),
         viewport: Some(pass.viewport),
     }]);
     *cpu_elapsed = started.elapsed();
-    result.map_err(Into::into)
+    result.map(|_| ()).map_err(Into::into)
 }
 
 #[cfg(test)]

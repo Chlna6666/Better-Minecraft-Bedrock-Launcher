@@ -114,7 +114,7 @@ impl NovaRenderer {
         self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS
             || self.next_available_frame_resource_index().is_err()
             || atlas_retirement
-            // Filter topology changes use fresh Texture/View/ResourceSet IDs
+            // Filter topology changes use fresh Texture/View/BindGroup IDs
             // and fence-tracked physical retirement. Only mutable Path Mask
             // target rebinding still needs the old-reader barrier.
             || (path_rebind && !self.pending_submissions.is_empty());
@@ -144,11 +144,11 @@ impl NovaRenderer {
         Ok(())
     }
 
-    pub(super) fn prepare_for_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
+    pub(super) fn prepare_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
             let had_pending_submissions = !self.pending_submissions.is_empty();
             let wait_started_at = Instant::now();
-            self.wait_for_pending_submissions()?;
+            self.wait_pending_submissions()?;
             if had_pending_submissions {
                 crate::diagnostics::performance_metrics::record_frame_slot_wait(
                     wait_started_at.elapsed(),
@@ -218,7 +218,7 @@ impl NovaRenderer {
         Ok(())
     }
 
-    pub(super) fn wait_for_pending_submissions(&mut self) -> Result<()> {
+    pub(super) fn wait_pending_submissions(&mut self) -> Result<()> {
         while let Some(submission) = self
             .pending_submissions
             .first()
@@ -256,10 +256,7 @@ impl NovaRenderer {
     /// Fence completion only validates content stamped by that exact GPU
     /// submission. If a newer scene changed the version or physical allocation
     /// before this fence signaled, completion cannot certify the new texture.
-    pub(super) fn complete_gpu_submission(
-        &mut self,
-        publication: SubmittedResourceVersions,
-    ) {
+    pub(super) fn complete_gpu_submission(&mut self, publication: SubmittedResourceVersions) {
         let root_version = publication.root.map(|(_, version)| version);
         let filter_count = publication.filters.len();
         if let Some((identity, version)) = publication.root {
@@ -286,19 +283,21 @@ impl NovaRenderer {
         self.root_color.invalidate();
         self.filters.invalidate();
         self.path_mask_residency.invalidate();
-        self.invalidate_draw_step_cache();
+        self.invalidate_command_cache();
         for slot in 0..self.frame_resources.len() {
             self.retained_upload.invalidate_slot(slot);
         }
-        for packet in self.active_presentation_packet.iter_mut()
+        for packet in self
+            .active_presentation_packet
+            .iter_mut()
             .chain(self.pending_presentation_packet.iter_mut())
         {
             mark_failed_submission_for_retry(packet, self.current_size);
         }
     }
 
-    pub(super) fn prepare_for_resize(&mut self) -> Result<()> {
-        self.wait_for_pending_submissions()
+    pub(super) fn prepare_resize(&mut self) -> Result<()> {
+        self.wait_pending_submissions()
     }
 
     /// Attempts to apply the latest drawable size at a frame boundary without blocking the
@@ -371,23 +370,23 @@ impl NovaRenderer {
         device: &mut D,
         swapchain: SwapchainId,
         render_pass: RenderPassId,
-        steps: &[RenderStepDescriptor],
+        steps: &[RenderCommand],
         clear_color: ClearColor,
-        depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<DepthAttachment>,
         frame_resource_index: usize,
         damage: Option<ScissorRect>,
-    ) -> Result<Option<gfx_core::PresentationFrame>>
+    ) -> Result<Option<gfx_core::PresentedFrame>>
     where
-        D: BackendPresentationCompat + BackendQueue,
+        D: PresentationDevice + CommandDevice + SubmissionDevice,
     {
-        let mut frame = device.render_step_list_and_present_deferred_with_damage_measured(
+        let mut frame = device.render_and_present(&PresentFrameDescriptor {
             swapchain,
             render_pass,
-            RenderStepList::from_render_steps(steps),
-            clear_color,
+            commands: steps,
+            color_load_op: LoadOp::Clear(clear_color),
             depth_attachment,
-            damage,
-        )?;
+            present_region: damage,
+        })?;
 
         let use_deferred_submission = submission_mode != GpuSubmissionMode::Synchronous
             && async_capabilities.async_presentation;
@@ -471,7 +470,10 @@ mod presentation_clock_upload_tests {
     #[test]
     fn clock_timestamp_fields_use_the_provided_presentation_instant() {
         let time = Instant::now();
-        assert_eq!(presentation_clock_snapshot(time), presentation_clock_snapshot(time));
+        assert_eq!(
+            presentation_clock_snapshot(time),
+            presentation_clock_snapshot(time)
+        );
         let clock = presentation_clock_snapshot(time);
         assert_eq!(clock.len(), 24);
         assert!(clock[..16].iter().all(|value| *value == 0));
@@ -506,7 +508,10 @@ mod resource_fence_recovery_tests {
         // The native drawable can still be the old committed extent.
         mark_failed_submission_for_retry(
             &mut packet,
-            DrawableSize { width: 400, height: 300 },
+            DrawableSize {
+                width: 400,
+                height: 300,
+            },
         );
         assert!(packet.dirty_region.is_full());
         assert_eq!(packet.dirty_region.area(), 700.0 * 500.0);

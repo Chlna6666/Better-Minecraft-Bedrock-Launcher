@@ -66,9 +66,9 @@ fn opengl_production_glyphs_and_images_reach_native_pixels() {
 fn verify_sprite_pixels<D>(device: &mut D, shaders: ShaderBinaries)
 where
     D: gfx_core::Device
-        + BackendResources
-        + BackendPipelines
-        + BackendPresentationCompat
+        + ResourceDevice
+        + PipelineDevice
+        + PresentationDevice
         + TextureTransferDevice,
 {
     verify_r8_transfers(device);
@@ -111,31 +111,33 @@ where
                 (kind, crate::white().into()),
                 sampling,
             );
-            let step = DrawStepDescriptor {
+            let step = RenderCommand::Draw(DrawCommand {
                 pipeline,
-                resource_sets: resource_set_list([set]),
+                bind_groups: bind_group_list([set]),
                 vertex_count: 4,
                 instance_count: 1,
                 first_vertex: 0,
                 first_instance: 0,
                 scissor: None,
-            };
+            });
             device
-                .render_step_list_to_texture_compat(
-                    view,
-                    resources.render_pass,
-                    gfx_core::RenderStepList::Draw(&[step]),
-                    LoadOp::Clear(ClearColor {
+                .render_to_textures(&[RenderPassCommands {
+                    texture_view: view,
+                    render_pass: resources.render_pass,
+                    commands: std::slice::from_ref(&step),
+                    color_load_op: LoadOp::Clear(ClearColor {
                         red: 0.0,
                         green: 0.0,
                         blue: 0.0,
                         alpha: 1.0,
                     }),
-                    Some(gfx_core::RenderPassDepthAttachment {
+                    clear_region: None,
+                    depth_attachment: Some(gfx_core::DepthAttachment {
                         target: resources.depth_texture_view,
                         depth_load_op: LoadOp::Clear(1.0),
                     }),
-                )
+                    viewport: None,
+                }])
                 .expect("production sprite draw");
             let pixels = device.read_texture(target).expect("GPU sprite readback");
             let expected = if matches!(
@@ -166,7 +168,7 @@ where
     }
 }
 
-fn verify_r8_transfers<D: BackendResources + TextureTransferDevice>(device: &mut D) {
+fn verify_r8_transfers<D: ResourceDevice + TextureTransferDevice>(device: &mut D) {
     let texture = device
         .create_texture(&TextureDescriptor {
             label: Some("odd-pitch R8 coverage".into()),
@@ -194,7 +196,7 @@ fn verify_r8_transfers<D: BackendResources + TextureTransferDevice>(device: &mut
         size: Extent2d::new(3, 3).expect("extent"),
         layout: TextureDataLayout::new(4, 5, 3).expect("odd pitch"),
     };
-    BackendResources::write_texture_batch(
+    ResourceDevice::write_texture_batch(
         device,
         [
             TextureWrite {
@@ -226,7 +228,7 @@ fn verify_r8_transfers<D: BackendResources + TextureTransferDevice>(device: &mut
     device.destroy_texture(texture).expect("R8 cleanup");
 }
 
-fn color_target<D: BackendResources>(device: &mut D, size: Extent2d) -> (TextureId, TextureViewId) {
+fn color_target<D: ResourceDevice>(device: &mut D, size: Extent2d) -> (TextureId, TextureViewId) {
     let texture = device
         .create_texture(&TextureDescriptor {
             label: None,
@@ -253,8 +255,8 @@ fn color_target<D: BackendResources>(device: &mut D, size: Extent2d) -> (Texture
     (texture, view)
 }
 
-fn upload_globals<D: BackendResources>(device: &mut D, buffers: resources::FrameResourceBuffers) {
-    let mut chunk_cache = RetainedQuadChunkCache::default();
+fn upload_globals<D: ResourceDevice>(device: &mut D, buffers: resources::FrameResourceBuffers) {
+    let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     upload.encode(
         &mut chunk_cache,
@@ -277,7 +279,7 @@ fn upload_globals<D: BackendResources>(device: &mut D, buffers: resources::Frame
         .expect("text parameters");
 }
 
-fn atlas_texture<D: BackendResources>(
+fn atlas_texture<D: ResourceDevice>(
     device: &mut D,
     resources: &RendererResources,
     kind: AtlasTextureKind,
@@ -338,13 +340,13 @@ fn atlas_texture<D: BackendResources>(
     atlas
 }
 
-fn upload_sprite<D: BackendResources>(
+fn upload_sprite<D: ResourceDevice>(
     device: &mut D,
     resources: &RendererResources,
     atlas: &NovaGpuAtlasTexture,
     appearance: (AtlasTextureKind, crate::Rgba),
     sampling: u32,
-) -> (RenderPipelineId, ResourceSetId) {
+) -> (RenderPipelineId, BindGroupId) {
     let (kind, color) = appearance;
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(16.0), px(16.0))).scale(1.0);
     let mask = crate::ContentMask {
@@ -417,7 +419,7 @@ fn verify_mono_tint<D>(
     target: TextureId,
     view: TextureViewId,
 ) where
-    D: BackendResources + BackendPresentationCompat + TextureTransferDevice,
+    D: ResourceDevice + PresentationDevice + TextureTransferDevice,
 {
     // Reuse the uploaded R8 coverage. Only sprite color/alpha buffers change.
     for (color, expected) in [
@@ -432,31 +434,33 @@ fn verify_mono_tint<D>(
             (AtlasTextureKind::Monochrome, crate::rgba(color).into()),
             0,
         );
-        let step = DrawStepDescriptor {
+        let step = RenderCommand::Draw(DrawCommand {
             pipeline,
-            resource_sets: resource_set_list([set]),
+            bind_groups: bind_group_list([set]),
             vertex_count: 4,
             instance_count: 1,
             first_vertex: 0,
             first_instance: 0,
             scissor: None,
-        };
+        });
         device
-            .render_step_list_to_texture_compat(
-                view,
-                resources.render_pass,
-                gfx_core::RenderStepList::Draw(&[step]),
-                LoadOp::Clear(ClearColor {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: view,
+                render_pass: resources.render_pass,
+                commands: std::slice::from_ref(&step),
+                color_load_op: LoadOp::Clear(ClearColor {
                     red: 0.0,
                     green: 0.0,
                     blue: 0.0,
                     alpha: 1.0,
                 }),
-                Some(gfx_core::RenderPassDepthAttachment {
+                clear_region: None,
+                depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("same R8 atlas with changed text color/alpha");
         let pixels = device.read_texture(target).expect("tint readback");
         let offset = 8 * pixels.bytes_per_row as usize + 8 * 4;
@@ -481,7 +485,7 @@ mod paths;
 mod primitives;
 mod relocation;
 
-pub(in crate::platform::nova) mod native_window {
+pub(in crate::platform) mod native_window {
     use windows::{
         Win32::{
             Foundation::{HINSTANCE, HWND},
@@ -494,15 +498,15 @@ pub(in crate::platform::nova) mod native_window {
         RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
     };
 
-    pub(in crate::platform::nova) struct Window(HWND);
+    pub(in crate::platform) struct Window(HWND);
     impl Window {
         pub(in crate::platform::nova) fn new() -> Self {
             Self::create(WS_OVERLAPPEDWINDOW, 32)
         }
-        pub(in crate::platform::nova) fn renderer_fixture() -> Self {
+        pub(in crate::platform) fn renderer_fixture() -> Self {
             Self::create(WS_POPUP, 512)
         }
-        pub(in crate::platform::nova) fn resize(&self, width: u32, height: u32) {
+        pub(in crate::platform) fn resize(&self, width: u32, height: u32) {
             // SAFETY: the fixture owns this HWND on the test thread; only its size changes.
             unsafe {
                 SetWindowPos(

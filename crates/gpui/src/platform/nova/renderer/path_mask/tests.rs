@@ -69,26 +69,26 @@ fn missing_content_identity_always_rasterizes() {
 #[test]
 fn ordered_multi_batch_path_mask_reuses_identical_geometry_and_draw_plan() {
     let pipeline = RenderPipelineId::new(2);
-    let set = ResourceSetId::new(5);
+    let set = BindGroupId::new(5);
     let steps = [
-        DrawStepDescriptor {
+        RenderCommand::Draw(DrawCommand {
             pipeline,
-            resource_sets: gfx_core::resource_set_list([set]),
+            bind_groups: gfx_core::bind_group_list([set]),
             first_vertex: 0,
             vertex_count: 3,
             instance_count: 1,
             first_instance: 0,
             scissor: None,
-        },
-        DrawStepDescriptor {
+        }),
+        RenderCommand::Draw(DrawCommand {
             pipeline,
-            resource_sets: gfx_core::resource_set_list([set]),
+            bind_groups: gfx_core::bind_group_list([set]),
             first_vertex: 6,
             vertex_count: 3,
             instance_count: 1,
             first_instance: 0,
             scissor: None,
-        },
+        }),
     ];
     let packed_bytes = 9 * PACKED_PATH_RASTERIZATION_VERTEX_BYTES;
     let token = ordered_draw_plan_token(&steps, pipeline, set, 9, packed_bytes)
@@ -98,7 +98,10 @@ fn ordered_multi_batch_path_mask_reuses_identical_geometry_and_draw_plan() {
     let mut residency = Residency::default();
     assert!(residency.begin(key));
     residency.commit(key);
-    assert!(!residency.begin(key), "identical multi-step mask should be resident");
+    assert!(
+        !residency.begin(key),
+        "identical multi-step mask should be resident"
+    );
 
     let mut reordered = steps.clone();
     reordered.swap(0, 1);
@@ -106,16 +109,19 @@ fn ordered_multi_batch_path_mask_reuses_identical_geometry_and_draw_plan() {
         .expect("reordered plan is valid but different");
     assert_ne!(token, reordered_token);
     key.draw_plan = Some(reordered_token);
-    assert!(residency.begin(key), "changed painter order must refresh mask");
+    assert!(
+        residency.begin(key),
+        "changed painter order must refresh mask"
+    );
 }
 
 #[test]
 fn path_draw_plan_rejects_unsupported_state_and_malformed_vertex_ranges() {
     let pipeline = RenderPipelineId::new(2);
-    let set = ResourceSetId::new(5);
-    let step = DrawStepDescriptor {
+    let set = BindGroupId::new(5);
+    let step = DrawCommand {
         pipeline,
-        resource_sets: gfx_core::resource_set_list([set]),
+        bind_groups: gfx_core::bind_group_list([set]),
         first_vertex: 3,
         vertex_count: 3,
         instance_count: 1,
@@ -123,16 +129,54 @@ fn path_draw_plan_rejects_unsupported_state_and_malformed_vertex_ranges() {
         scissor: None,
     };
     let bytes = 9 * PACKED_PATH_RASTERIZATION_VERTEX_BYTES;
-    assert!(ordered_draw_plan_token(&[step.clone()], pipeline, set, 9, bytes).is_some());
-    assert!(ordered_draw_plan_token(&[step.clone()], pipeline, set, 9, bytes - 1).is_none());
-    assert!(ordered_draw_plan_token(&[step.clone()], pipeline, ResourceSetId::new(6), 9, bytes).is_none());
+    assert!(
+        ordered_draw_plan_token(
+            &[RenderCommand::Draw(step.clone())],
+            pipeline,
+            set,
+            9,
+            bytes
+        )
+        .is_some()
+    );
+    assert!(
+        ordered_draw_plan_token(
+            &[RenderCommand::Draw(step.clone())],
+            pipeline,
+            set,
+            9,
+            bytes - 1
+        )
+        .is_none()
+    );
+    assert!(
+        ordered_draw_plan_token(
+            &[RenderCommand::Draw(step.clone())],
+            pipeline,
+            BindGroupId::new(6),
+            9,
+            bytes
+        )
+        .is_none()
+    );
     let mut invalid = step.clone();
     invalid.first_vertex = 8;
-    assert!(ordered_draw_plan_token(&[invalid], pipeline, set, 9, bytes).is_none());
+    assert!(
+        ordered_draw_plan_token(&[RenderCommand::Draw(invalid)], pipeline, set, 9, bytes).is_none()
+    );
     let mut invalid = step.clone();
-    invalid.scissor = Some(ScissorRect { x: 0, y: 0, width: 4, height: 4 });
-    assert!(ordered_draw_plan_token(&[invalid], pipeline, set, 9, bytes).is_none());
+    invalid.scissor = Some(ScissorRect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    });
+    assert!(
+        ordered_draw_plan_token(&[RenderCommand::Draw(invalid)], pipeline, set, 9, bytes).is_none()
+    );
     let mut invalid = step;
     invalid.instance_count = 2;
-    assert!(ordered_draw_plan_token(&[invalid], pipeline, set, 9, bytes).is_none());
+    assert!(
+        ordered_draw_plan_token(&[RenderCommand::Draw(invalid)], pipeline, set, 9, bytes).is_none()
+    );
 }

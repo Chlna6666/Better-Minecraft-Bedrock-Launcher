@@ -12,7 +12,7 @@ struct Target {
     texture: TextureId,
     view: TextureViewId,
     pass: RenderPassId,
-    steps: Vec<DrawStepDescriptor>,
+    steps: Vec<DrawCommand>,
 }
 
 pub(super) fn run<D: Device + TextureTransferDevice>(
@@ -213,9 +213,9 @@ fn target<D: Device>(
     })?;
     let pipeline = pipeline(device, bytes, pass, layout)?;
     let steps = vec![
-        DrawStepDescriptor {
+        DrawCommand {
             pipeline,
-            resource_sets: resource_set_list([set]),
+            bind_groups: bind_group_list([set]),
             vertex_count: 3,
             first_vertex: 0,
             instance_count: 1,
@@ -237,19 +237,19 @@ fn storage_binding<D: Device>(
     device: &mut D,
     buffer: BufferId,
     bytes: usize,
-) -> Result<(ResourceSetId, PipelineLayoutId)> {
-    let layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+) -> Result<(BindGroupId, PipelineLayoutId)> {
+    let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: None,
-        entries: vec![ResourceSetLayoutEntry {
+        entries: vec![BindGroupLayoutEntry {
             binding: 0,
-            binding_type: ResourceBindingType::StorageBuffer,
+            binding_type: BindingType::StorageBuffer,
             stages: ShaderStages::FRAGMENT,
         }],
     })?;
-    let set = device.create_resource_set(&ResourceSetDescriptor {
+    let set = device.create_bind_group(&BindGroupDescriptor {
         label: None,
         layout,
-        bindings: vec![ResourceBinding {
+        bindings: vec![BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer,
@@ -262,7 +262,7 @@ fn storage_binding<D: Device>(
     })?;
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
-        resource_set_layouts: vec![layout],
+        bind_group_layouts: vec![layout],
     })?;
     Ok((set, pipeline_layout))
 }
@@ -382,7 +382,7 @@ mod tests {
             for bytes in [65536, 1048576, 8388608] {
                 let source = shader_source(bytes);
                 for (stage, entry) in [(ShaderStage::Vertex, "vs"), (ShaderStage::Fragment, "fs")] {
-                    gfx_shader::compile_wgsl_for_backend(&source, backend, stage, entry)
+                    gfx_shader::compile_wgsl_to_backend(&source, backend, stage, entry)
                         .expect("checksum shader translation");
                 }
             }

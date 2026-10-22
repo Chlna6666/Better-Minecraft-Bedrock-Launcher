@@ -23,7 +23,7 @@ impl Painter {
                 layer_order
             } else {
                 self.primitive_bounds
-                    .insert_with_order(clipped_bounds, primitive.order())
+                    .insert_ordered(clipped_bounds, primitive.order())
             }
         } else if let Some(order) = self.order_for_primitive(primitive) {
             order
@@ -152,7 +152,7 @@ impl Painter {
         &mut self,
         range: Range<usize>,
         prev_scene: &Scene,
-        quad_spans: &[super::QuadReplay],
+        quad_spans: impl IntoIterator<Item = super::QuadReplay>,
     ) -> bool {
         self.replay_animation_values(range.clone(), prev_scene);
         self.scene.revision = 0;
@@ -165,7 +165,7 @@ impl Painter {
         }
         let mut index = range.start;
         let mut shadow_scan_end = index;
-        let mut spans = quad_spans.iter().peekable();
+        let mut spans = quad_spans.into_iter().peekable();
         while index < range.end {
             let operation = &prev_scene.paint_operations[index];
             if index >= shadow_scan_end
@@ -290,7 +290,7 @@ impl Painter {
             };
             if self.layer_stack.is_empty() {
                 self.primitive_bounds
-                    .insert_with_order(Self::ordering_bounds(primitive), primitive.order());
+                    .insert_ordered(Self::ordering_bounds(primitive), primitive.order());
             }
         }
         self.scene
@@ -350,7 +350,7 @@ impl Painter {
                     unreachable!()
                 };
                 self.primitive_bounds
-                    .insert_with_order(Self::ordering_bounds(primitive), primitive.order());
+                    .insert_ordered(Self::ordering_bounds(primitive), primitive.order());
             }
         }
         self.scene

@@ -72,10 +72,13 @@ fn packet(renderer: &NovaRenderer, blur: bool) -> crate::PresentationPacket {
 
 fn present(renderer: &mut NovaRenderer, blur: bool) {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    while renderer.presentation_readiness(None, None).expect("native readiness") != PresentReadiness::Ready
+    while renderer
+        .presentation_readiness(None, None)
+        .expect("native readiness")
+        != PresentReadiness::Ready
         || !renderer
-        .draw(packet(renderer, blur))
-        .expect("native resize draw")
+            .draw(packet(renderer, blur))
+            .expect("native resize draw")
     {
         assert!(
             Instant::now() < deadline,
@@ -84,13 +87,16 @@ fn present(renderer: &mut NovaRenderer, blur: bool) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("frame retirement");
 }
 
 fn verify(backend: RendererBackend) {
     verify_alpha(backend, false);
-    if matches!(backend, RendererBackend::NovaDx11 | RendererBackend::NovaDx12) {
+    if matches!(
+        backend,
+        RendererBackend::NovaDx11 | RendererBackend::NovaDx12
+    ) {
         verify_alpha(backend, true);
     }
 }
@@ -110,11 +116,36 @@ fn verify_alpha(backend: RendererBackend, transparent: bool) {
     .expect("native resize renderer");
     present(&mut renderer, true);
     assert!(renderer.filters.targets.is_some());
+    if matches!(
+        backend,
+        RendererBackend::NovaDx11 | RendererBackend::NovaDx12
+    ) {
+        verify_native_cover(&mut renderer);
+    }
     for (width, height, blur) in [(640, 480, false), (400, 360, true), (512, 512, true)] {
         verify_extent(&window, &mut renderer, (width, height), blur);
     }
     verify_live_resize(&window, &mut renderer);
     renderer.destroy();
+}
+
+fn verify_native_cover(renderer: &mut NovaRenderer) {
+    let grown = crate::size(DevicePixels(700), DevicePixels(620));
+    let previous_extent = renderer.surface_extent;
+    let previous_frames = renderer.submitted_frames;
+    assert!(!renderer.cover_native_resize(grown).expect("cover growth"));
+    assert!(
+        !renderer
+            .cover_native_resize(crate::size(DevicePixels(512), DevicePixels(512)))
+            .expect("reverse native resize")
+    );
+    assert!(
+        !renderer
+            .cover_native_resize(grown)
+            .expect("cover next growth")
+    );
+    assert_eq!(renderer.surface_extent, previous_extent);
+    assert_eq!(renderer.submitted_frames, previous_frames);
 }
 
 fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
@@ -163,10 +194,13 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
 
 fn present_geometry(renderer: &mut NovaRenderer, extent: (u32, u32)) {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    while renderer.presentation_readiness(None, Some(extent)).expect("geometry readiness") != PresentReadiness::Ready
+    while renderer
+        .presentation_readiness(None, Some(extent))
+        .expect("geometry readiness")
+        != PresentReadiness::Ready
         || !renderer
-        .draw(geometry_packet(extent))
-        .expect("live geometry draw")
+            .draw(geometry_packet(extent))
+            .expect("live geometry draw")
     {
         assert!(
             Instant::now() < deadline,
@@ -175,7 +209,7 @@ fn present_geometry(renderer: &mut NovaRenderer, extent: (u32, u32)) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("live frame retirement");
     verify_marker(renderer, extent);
 }
@@ -184,23 +218,25 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
     let output = super::target(renderer);
     device!(renderer, device, {
         device
-            .render_step_lists_to_textures_compat(&[gfx_core::TextureRenderStepList {
+            .render_to_textures(&[gfx_core::RenderPassCommands {
                 texture_view: output.1,
                 render_pass: renderer.render_pass,
-                steps: RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
+                commands: renderer.command_scratch.commands(),
                 color_load_op: LoadOp::Clear(clear_color()),
                 clear_region: None,
-                depth_attachment: Some(RenderPassDepthAttachment {
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-                viewport: Some(gfx_core::RenderViewport {
+                viewport: Some(gfx_core::Viewport {
+                    origin: gfx_core::SignedOrigin2d::ZERO,
                     extent: Extent2d::new(extent.0, extent.1).expect("client viewport"),
                     reference_extent: Extent2d::new(
                         renderer.current_size.width,
                         renderer.current_size.height,
                     )
                     .expect("retained target extent"),
+                    mapping: gfx_core::ViewportMapping::Scaled,
                 }),
             }])
             .expect("live geometry pixel draw");
@@ -347,16 +383,18 @@ fn verify_pixels(renderer: &NovaRenderer) {
     let output = super::target(renderer);
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                output.1,
-                renderer.render_pass,
-                RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: output.1,
+                render_pass: renderer.render_pass,
+                commands: renderer.command_scratch.commands(),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("resize pixel reference");
     });
     super::pixels(renderer, output.0, [0, 255, 0, 255]);

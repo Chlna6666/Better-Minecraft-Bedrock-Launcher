@@ -14,7 +14,7 @@ fn page(
         let spans = previous
             .retained_paint
             .replay_quads(&previous.scene, 0..128);
-        assert!(paint.replay(0..128, &previous.scene, &spans));
+        assert!(paint.replay(0..128, &previous.scene, spans));
         retention.replay(0..128, &previous.retained_paint, 0);
     } else {
         for index in 0..128 {

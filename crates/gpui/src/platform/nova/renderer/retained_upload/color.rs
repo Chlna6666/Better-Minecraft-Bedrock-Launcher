@@ -386,7 +386,8 @@ mod tests {
         assert!(!should_retain_local_animation(&scene, SIZE, &[running(1)]));
         scene.insert_primitive(quad(8., 8., true));
         scene.paint_operations.edit(0..1, |operation| {
-            let crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(first)) = operation else {
+            let crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(first)) = operation
+            else {
                 panic!("first quad");
             };
             first.content_mask.bounds.size.width = crate::ScaledPixels(1.);

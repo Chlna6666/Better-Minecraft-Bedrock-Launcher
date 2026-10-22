@@ -1309,7 +1309,8 @@ impl PlatformWindow for MacWindow {
         let background_appearance = crate::WindowBackgroundCapabilities {
             blurred: true,
             ..crate::WindowBackgroundCapabilities::default()
-        }.resolve(background_appearance);
+        }
+        .resolve(background_appearance);
 
         let opaque = background_appearance == WindowBackgroundAppearance::Opaque;
         this.renderer.update_transparency(!opaque);
@@ -1817,7 +1818,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                 && !key_down_event.keystroke.modifiers.platform
                 && unsafe { is_ime_input_source_active() }
                 && with_input_handler(this, |input_handler| {
-                    input_handler.query_prefers_ime_for_printable_keys()
+                    input_handler.prefers_ime_printable_keys()
                 })
                 .unwrap_or(false);
 

@@ -1,7 +1,7 @@
 use super::*;
-use std::ops::Range;
 
 mod backdrop;
+mod layer;
 mod paths;
 mod primitives;
 mod retained;
@@ -149,7 +149,12 @@ fn static_packed_quad_batch_bounds(
             _ => continue,
         };
         *bounds = static_raster_run_visual_bounds(encoded.by_ref().take(count).map(|quad| {
-            (quad.bounds, quad.content_mask.bounds, quad.animation_id, false)
+            (
+                quad.bounds,
+                quad.content_mask.bounds,
+                quad.animation_id,
+                false,
+            )
         }));
     }
 }
@@ -162,7 +167,7 @@ fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
 impl FrameUpload {
     pub(in crate::platform::nova) fn encode(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
@@ -171,7 +176,7 @@ impl FrameUpload {
         premultiplied_alpha: bool,
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
-        self.encode_for_target_size(
+        self.encode_frame(
             cache,
             scene,
             retained_paint,
@@ -184,9 +189,9 @@ impl FrameUpload {
         )
     }
 
-    pub(in crate::platform::nova) fn encode_for_target_size(
+    pub(in crate::platform::nova) fn encode_frame(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
@@ -245,10 +250,10 @@ impl FrameUpload {
         drawable_size: DrawableSize,
         summary: &mut FrameUploadSummary,
     ) -> bool {
-        self.append_root_color_for_target_size(drawable_size, drawable_size, summary)
+        self.append_root_color_sized(drawable_size, drawable_size, summary)
     }
 
-    pub(in crate::platform::nova) fn append_root_color_for_target_size(
+    pub(in crate::platform::nova) fn append_root_color_sized(
         &mut self,
         drawable_size: DrawableSize,
         target_size: DrawableSize,
@@ -284,7 +289,7 @@ impl FrameUpload {
         // Root color is already GPU-resident; constructing an empty Scene
         // solely to encode its compositor descriptor wastes a separate Arc
         // allocation and confuses capture ownership with presentation data.
-        write_paint_blur_fields_for_target_size(
+        write_paint_blur_fields(
             &mut self.backdrop_blurs,
             0,
             bounds,
@@ -294,9 +299,14 @@ impl FrameUpload {
             target_size,
         );
         let content_end = self.batches.len();
-        self.batches.push(UploadedBatch::CompositeBlur { index: root_index });
+        self.batches
+            .push(UploadedBatch::CompositeBlur { index: root_index });
         self.batch_visual_bounds.push(None);
-        self.root_color = Some(RootColorPass { index: root_index, clear_quad: clear_index, content_end });
+        self.root_color = Some(RootColorPass {
+            index: root_index,
+            clear_quad: clear_index,
+            content_end,
+        });
         summary.quad_count = summary.quad_count.saturating_add(1);
         summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
         // The original encode already built the filter configs. Add this
@@ -308,7 +318,7 @@ impl FrameUpload {
 
     fn encode_scene(
         &mut self,
-        cache: &mut RetainedQuadChunkCache,
+        cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
         retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
@@ -355,6 +365,7 @@ impl FrameUpload {
             self.batches.clear();
             self.batch_visual_bounds.clear();
             self.resident_quad_spans.clear();
+            self.resident_monochrome_sprite_spans.clear();
             self.globals.reserve(GLOBAL_UPLOAD_BYTES);
             self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
             self.path_rasterization_vertices
@@ -429,9 +440,18 @@ impl FrameUpload {
                         );
                     }
                 }
-                PreparedSceneBatch::MonochromeSprites { range, .. } => {
-                    self.encode_monochrome_sprites(
-                        &scene.monochrome_sprites[range.clone()],
+                PreparedSceneBatch::MonochromeSprites {
+                    texture_id,
+                    sampling,
+                    range,
+                } => {
+                    self.encode_retained_monochrome_sprites(
+                        cache,
+                        scene,
+                        retained_paint.monochrome_sprite_chunks_for(scene),
+                        range.clone(),
+                        *texture_id,
+                        *sampling,
                         &mut summary,
                     );
                 }
@@ -471,29 +491,129 @@ impl FrameUpload {
                             continue;
                         }
 
-                        self.element_blur_inputs.push((blur_index, FilterSource::Element(blur.clone())));
-                        write_paint_blur_for_target_size(
-                            &mut self.backdrop_blurs,
-                            blur,
-                            target_size,
-                        );
+                        self.element_blur_inputs
+                            .push((blur_index, FilterSource::Element(blur.clone())));
+                        write_paint_blur(&mut self.backdrop_blurs, blur, target_size);
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
                         // Recursive Quad encoding appends bounds in global batch order.
                         // Fill all preceding structural slots (including End/Composite
                         // from a sibling blur) before entering the next child.
                         self.batch_visual_bounds.resize(self.batches.len(), None);
-                        let child_summary = self.encode_scene(
-                            cache,
-                            &blur.content, retained_paint,
-                            &[],
-                            drawable_size,
-                            target_size,
-                            rendering_parameters,
-                            premultiplied_alpha,
-                            backdrop_blur_quality,
-                            false,
-                        );
+                        let can_reuse_layer = blur.layer_id.as_ref().is_some_and(|layer_id| {
+                            cache
+                                .layer_scene_encodings
+                                .get(layer_id)
+                                .is_some_and(|cached| {
+                                    Arc::ptr_eq(&cached.source, &blur.content)
+                                        && cached.scene_revision == blur.content.revision
+                                        && cached.atlas_placement_generation
+                                            == cache.atlas_placement_generation
+                                        && self.cached_layer_scene_fits(cached)
+                                })
+                        });
+                        let cached_summary = if can_reuse_layer {
+                            blur.layer_id.as_ref().and_then(|layer_id| {
+                                let epoch = cache.frame_epoch;
+                                if let Some(cached) = cache.layer_scene_encodings.get_mut(layer_id)
+                                {
+                                    cached.last_used_epoch = epoch;
+                                }
+                                cache.layer_scene_encodings.get(layer_id).map(|cached| {
+                                    self.append_cached_layer_scene(layer_id, cached, &mut summary);
+                                    FrameUploadSummary {
+                                        quad_count: cached.quad_count,
+                                        mono_sprite_count: cached.mono_sprite_count,
+                                        ..Default::default()
+                                    }
+                                })
+                            })
+                        } else {
+                            None
+                        };
+                        let child_summary = if let Some(child_summary) = cached_summary {
+                            child_summary
+                        } else {
+                            let child_batch_start = self.batches.len();
+                            let quad_byte_start = self.quads.len();
+                            let mono_sprite_byte_start = self.mono_sprites.len();
+                            let mono_atlas_start = self.mono_atlas_tiles.len();
+                            let child_quad_span_start = self.resident_quad_spans.len();
+                            let child_mono_sprite_span_start =
+                                self.resident_monochrome_sprite_spans.len();
+                            let child_scene_reusable = blur.layer_id.is_some()
+                                && Self::layer_scene_encoding_is_reusable(&blur.content);
+                            let child_summary = self.encode_scene(
+                                cache,
+                                &blur.content,
+                                retained_paint,
+                                &[],
+                                drawable_size,
+                                target_size,
+                                rendering_parameters,
+                                premultiplied_alpha,
+                                backdrop_blur_quality,
+                                false,
+                            );
+                            if child_scene_reusable
+                                && Self::layer_scene_encoding_is_complete(
+                                    &blur.content,
+                                    child_summary,
+                                )
+                            {
+                                if let Some(layer_id) = blur.layer_id.as_ref() {
+                                    Self::retain_layer_scene_encoding(
+                                        cache,
+                                        layer_id,
+                                        &blur.content,
+                                        quad_byte_start..self.quads.len(),
+                                        mono_sprite_byte_start..self.mono_sprites.len(),
+                                        mono_atlas_start..self.mono_atlas_tiles.len(),
+                                        child_batch_start..self.batches.len(),
+                                        self,
+                                        child_summary,
+                                    );
+                                    for span in
+                                        self.resident_quad_spans.drain(child_quad_span_start..)
+                                    {
+                                        cache.quad_payloads.remove(&span.id);
+                                    }
+                                    for span in self
+                                        .resident_monochrome_sprite_spans
+                                        .drain(child_mono_sprite_span_start..)
+                                    {
+                                        cache.retained_monochrome_sprite_chunks.remove(&span.id);
+                                    }
+                                    if let Some(cached) = cache.layer_scene_encodings.get(layer_id)
+                                    {
+                                        if cached.quads.is_some() {
+                                            self.resident_quad_spans.push(RetainedResidentSpan {
+                                                id: RetainedChunkId::new(
+                                                    layer_id.clone(),
+                                                    cached.scene_revision,
+                                                ),
+                                                range: quad_byte_start..self.quads.len(),
+                                                byte_hash: cached.quad_hash,
+                                            });
+                                        }
+                                        if cached.mono_sprites.is_some() {
+                                            self.resident_monochrome_sprite_spans.push(
+                                                RetainedResidentSpan {
+                                                    id: RetainedChunkId::new(
+                                                        layer_id.clone(),
+                                                        cached.scene_revision,
+                                                    ),
+                                                    range: mono_sprite_byte_start
+                                                        ..self.mono_sprites.len(),
+                                                    byte_hash: cached.mono_sprite_hash,
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            child_summary
+                        };
                         summary.accumulate(child_summary);
                         self.batches
                             .push(UploadedBatch::EndBlur { index: blur_index });
@@ -520,11 +640,11 @@ impl FrameUpload {
             debug_assert_eq!(
                 self.batch_visual_bounds.len(),
                 self.batches.len(),
-                "encoded batch bounds must match the global DrawStep batch order",
+                "encoded batch bounds must match the global render command batch order",
             );
         }
         if reset {
-            cache.prune_retained_quads();
+            cache.prune_retained_chunks();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes();
         }
@@ -596,14 +716,15 @@ mod retained_root_tests {
     fn scene_encode_generation_advances_only_when_repacking_the_scene() {
         let scene = crate::scene::Painter::default();
         let mut upload = FrameUpload::default();
-        let mut cache = RetainedQuadChunkCache::default();
+        let mut cache = RetainedChunkCache::default();
         let drawable = DrawableSize {
             width: 320,
             height: 240,
         };
         let mut summary = upload.encode(
             &mut cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             drawable,
             &RenderingParameters::system(),
@@ -611,12 +732,13 @@ mod retained_root_tests {
             BackdropBlurQuality::Full,
         );
         assert_eq!(upload.encode_generation, 1);
-        // Animation-only refresh must not invalidate the DrawStep descriptors.
+        // Animation-only refresh must not invalidate the render command descriptors.
         upload.refresh_retained_animation_values(&scene, &[], &mut summary);
         assert_eq!(upload.encode_generation, 1);
         upload.encode(
             &mut cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             drawable,
             &RenderingParameters::system(),
@@ -646,7 +768,10 @@ mod retained_root_tests {
             }
             let animated_bounds = crate::bounds(
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
-                crate::size(crate::ScaledPixels(foreground_width), crate::ScaledPixels(12.0)),
+                crate::size(
+                    crate::ScaledPixels(foreground_width),
+                    crate::ScaledPixels(12.0),
+                ),
             );
             scene.insert_primitive(crate::Quad {
                 bounds: animated_bounds,
@@ -663,7 +788,7 @@ mod retained_root_tests {
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
                 crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
             );
-            let mut chunk_cache = RetainedQuadChunkCache::default();
+            let mut chunk_cache = RetainedChunkCache::default();
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
                 &mut chunk_cache,
@@ -737,11 +862,12 @@ mod retained_root_tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        let mut chunk_cache = RetainedQuadChunkCache::default();
+        let mut chunk_cache = RetainedChunkCache::default();
         let mut upload = FrameUpload::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -828,10 +954,11 @@ mod retained_root_tests {
             content: std::sync::Arc::new(crate::Scene::default()),
         };
         let mut upload = FrameUpload::default();
-        let mut chunk_cache = RetainedQuadChunkCache::default();
+        let mut chunk_cache = RetainedChunkCache::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -899,10 +1026,11 @@ mod retained_root_tests {
             content: std::sync::Arc::new(crate::Scene::default()),
         };
         let mut upload = FrameUpload::default();
-        let mut chunk_cache = RetainedQuadChunkCache::default();
+        let mut chunk_cache = RetainedChunkCache::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -959,24 +1087,35 @@ mod retained_root_tests {
         let bounds = static_raster_run_visual_bounds([
             (bounds_a, bounds_a, None, false),
             (bounds_b, bounds_b, None, false),
-        ]).expect("static sprite coverage");
+        ])
+        .expect("static sprite coverage");
         assert!(bounds.origin.x <= bounds_a.origin.x);
         assert!(bounds.right() >= bounds_b.right());
         assert!(bounds.bottom() >= bounds_b.bottom());
-        assert!(static_raster_run_visual_bounds([
-            (bounds_a, bounds_a, Some(crate::SceneAnimationId(1)), false),
-            (bounds_b, bounds_b, None, false),
-        ]).is_none());
-        assert!(static_raster_run_visual_bounds([
-            (bounds_a, bounds_a, None, false),
-            (bounds_b, bounds_b, None, true),
-        ]).is_none(), "transformed glyph batches must not be culled using untransformed AABBs");
+        assert!(
+            static_raster_run_visual_bounds([
+                (bounds_a, bounds_a, Some(crate::SceneAnimationId(1)), false),
+                (bounds_b, bounds_b, None, false),
+            ])
+            .is_none()
+        );
+        assert!(
+            static_raster_run_visual_bounds([
+                (bounds_a, bounds_a, None, false),
+                (bounds_b, bounds_b, None, true),
+            ])
+            .is_none(),
+            "transformed glyph batches must not be culled using untransformed AABBs"
+        );
     }
 
     #[test]
     fn root_color_records_composite_without_filter_scope_or_gaussian_work() {
         let mut upload = FrameUpload::default();
-        let size = DrawableSize { width: 640, height: 480 };
+        let size = DrawableSize {
+            width: 640,
+            height: 480,
+        };
         let mut summary = FrameUploadSummary::default();
         assert!(upload.append_root_color(size, &mut summary));
         assert_eq!(upload.root_color.map(|root| root.index), Some(0));
@@ -986,7 +1125,10 @@ mod retained_root_tests {
         assert_eq!(summary.quad_count, 1);
         assert_eq!(summary.backdrop_blur_count, 1);
         assert_eq!(upload.batches.len(), 1);
-        assert!(matches!(upload.batches[0], UploadedBatch::CompositeBlur { index: 0 }));
+        assert!(matches!(
+            upload.batches[0],
+            UploadedBatch::CompositeBlur { index: 0 }
+        ));
         assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
         assert!(upload.batch_visual_bounds.iter().all(Option::is_none));
         upload.refresh_blur_content_ranges();
@@ -1065,11 +1207,12 @@ mod retained_root_tests {
         scene.finish();
         assert_eq!(scene.chunks().len(), 2);
 
-        let mut cache = RetainedQuadChunkCache::default();
+        let mut cache = RetainedChunkCache::default();
         let mut upload = FrameUpload::default();
         upload.encode(
             &mut cache,
-            &scene, &scene.retention,
+            &scene,
+            &scene.retention,
             &[],
             DrawableSize {
                 width: 640,
@@ -1116,10 +1259,11 @@ mod retained_root_tests {
         }
         scene.finish();
         let mut upload = FrameUpload::default();
-        let mut cache = RetainedQuadChunkCache::default();
+        let mut cache = RetainedChunkCache::default();
         upload.encode(
             &mut cache,
-            &scene, &crate::window::retained::RetainedPaint::default(),
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 640,
@@ -1139,10 +1283,18 @@ mod retained_root_tests {
     #[test]
     fn retained_root_never_overruns_filter_or_quad_buffers() {
         let mut upload = FrameUpload::default();
-        let mut chunk_cache = RetainedQuadChunkCache::default();
-        upload.backdrop_blurs.resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
+        let mut chunk_cache = RetainedChunkCache::default();
+        upload
+            .backdrop_blurs
+            .resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
         let mut summary = FrameUploadSummary::default();
-        assert!(!upload.append_root_color(DrawableSize { width: 8, height: 8 }, &mut summary));
+        assert!(!upload.append_root_color(
+            DrawableSize {
+                width: 8,
+                height: 8
+            },
+            &mut summary
+        ));
         assert_eq!(summary.backdrop_blur_count, 0);
         assert!(upload.root_color.is_none());
     }

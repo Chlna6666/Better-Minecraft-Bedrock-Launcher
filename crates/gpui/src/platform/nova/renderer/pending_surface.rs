@@ -17,13 +17,11 @@ impl PendingSurfaceAttachments {
         path_size: Extent2d,
         needs_new_path: bool,
     ) -> bool {
-        self.size == size
-            && self.path_size == path_size
-            && self.path.is_some() == needs_new_path
+        self.size == size && self.path_size == path_size && self.path.is_some() == needs_new_path
     }
 }
 
-fn create<D: BackendResources + BackendPipelines>(
+fn create<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     label: &str,
     size: DrawableSize,
@@ -46,10 +44,15 @@ fn create<D: BackendResources + BackendPipelines>(
             return Err(error);
         }
     };
-    Ok(PendingSurfaceAttachments { size, path_size, path, depth })
+    Ok(PendingSurfaceAttachments {
+        size,
+        path_size,
+        path,
+        depth,
+    })
 }
 
-pub(super) fn destroy<D: BackendResources + BackendPipelines>(
+pub(super) fn destroy<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     backend: &str,
     pending: PendingSurfaceAttachments,
@@ -68,7 +71,7 @@ pub(super) struct SurfaceAttachments {
 /// WSI Resize is the transaction boundary. A prepared bundle has no readers,
 /// but it can only be used when BOTH the native drawable and the path-mask
 /// extent match. Vulkan may resolve a different physical image size.
-pub(super) fn acquire_for_resize<D: BackendResources + BackendPipelines>(
+pub(super) fn acquire_resize_attachments<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     backend: &str,
     size: DrawableSize,
@@ -116,41 +119,81 @@ impl NovaRenderer {
             return Ok(());
         }
         let extent = Extent2d::new(requested.width, requested.height)?;
-        let path_size =
-            super::surface_lifecycle::planned_path_mask_size(
-                self.path_texture_size,
-                self.current_size,
-                extent,
-            )?;
+        let path_size = super::surface_lifecycle::planned_path_mask_size(
+            self.path_texture_size,
+            self.current_size,
+            extent,
+        )?;
         let needs_new_path = path_size != self.path_texture_size;
         let descriptor = self.path_mask_target_descriptor(path_size);
         let pending: PendingSurfaceAttachments = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) =>
-                create(device, "DX11", requested, path_size, needs_new_path, descriptor)?,
+            NovaBackend::Dx11(device) => create(
+                device,
+                "DX11",
+                requested,
+                path_size,
+                needs_new_path,
+                descriptor,
+            )?,
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) =>
-                create(device, "DX12", requested, path_size, needs_new_path, descriptor)?,
-            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
-            NovaBackend::OpenGl(device) =>
-                create(device, "OpenGL", requested, path_size, needs_new_path, descriptor)?,
-            #[cfg(all(feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
-            NovaBackend::Vulkan(device) =>
-                create(device, "Vulkan", requested, path_size, needs_new_path, descriptor)?,
+            NovaBackend::Dx12(device) => create(
+                device,
+                "DX12",
+                requested,
+                path_size,
+                needs_new_path,
+                descriptor,
+            )?,
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => create(
+                device,
+                "OpenGL",
+                requested,
+                path_size,
+                needs_new_path,
+                descriptor,
+            )?,
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => create(
+                device,
+                "Vulkan",
+                requested,
+                path_size,
+                needs_new_path,
+                descriptor,
+            )?,
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) =>
-                create(device, "Metal", requested, path_size, needs_new_path, descriptor)?,
+            NovaBackend::Metal(device) => create(
+                device,
+                "Metal",
+                requested,
+                path_size,
+                needs_new_path,
+                descriptor,
+            )?,
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")),
-                all(feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")),
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                ),
                 all(feature = "nova-gfx-metal", target_os = "macos")
             )))]
-            NovaBackend::Unavailable =>
-                anyhow::bail!("pending surface attachments require a Nova backend"),
+            NovaBackend::Unavailable => {
+                anyhow::bail!("pending surface attachments require a Nova backend")
+            }
         };
         log::trace!(
             target: "gpui::diagnostics",
@@ -172,19 +215,29 @@ impl NovaRenderer {
             NovaBackend::Dx11(device) => destroy(device, "DX11", pending),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => destroy(device, "DX12", pending),
-            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
             NovaBackend::OpenGl(device) => destroy(device, "OpenGL", pending),
-            #[cfg(all(feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
             NovaBackend::Vulkan(device) => destroy(device, "Vulkan", pending),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => destroy(device, "Metal", pending),
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")),
-                all(feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")),
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                ),
                 all(feature = "nova-gfx-metal", target_os = "macos")
             )))]
             NovaBackend::Unavailable => {}
@@ -198,16 +251,30 @@ mod tests {
 
     #[test]
     fn pending_surface_requires_exact_native_and_path_extents() {
-        let size = DrawableSize { width: 900, height: 600 };
+        let size = DrawableSize {
+            width: 900,
+            height: 600,
+        };
         let path_size = Extent2d::new(900, 600).unwrap();
         let pending = PendingSurfaceAttachments {
-            size, path_size, path: None,
+            size,
+            path_size,
+            path: None,
             depth: (TextureId::from_parts(1, 1), TextureViewId::from_parts(2, 1)),
         };
         assert!(pending.matches(size, path_size, false));
-        assert!(!pending.matches(DrawableSize { width: 901, height: 600 }, path_size, false));
+        assert!(!pending.matches(
+            DrawableSize {
+                width: 901,
+                height: 600
+            },
+            path_size,
+            false
+        ));
         assert!(!pending.matches(size, Extent2d::new(901, 600).unwrap(), false));
-        assert!(!pending.matches(size, path_size, true),
-            "a missing path allocation must not be published when resize needs a new mask");
+        assert!(
+            !pending.matches(size, path_size, true),
+            "a missing path allocation must not be published when resize needs a new mask"
+        );
     }
 }

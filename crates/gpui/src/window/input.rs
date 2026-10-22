@@ -210,7 +210,7 @@ impl Window {
     /// Return a key binding string for an action, to display in the UI. Uses the highest precedence
     /// binding for the action (last binding added to the keymap).
     pub fn keystroke_text_for(&self, action: &dyn Action) -> String {
-        self.binding_for_action(action)
+        self.action_binding(action)
             .map(|binding| {
                 binding
                     .keystrokes()
@@ -232,7 +232,7 @@ impl Window {
             event_name,
             self.handle.window_id().as_u64(),
         );
-        if event.unconditionally_extends_recent_input_present() {
+        if event.unconditionally_extends_recent_input() {
             self.last_input_timestamp.set(Instant::now());
             self.record_frame_request_reason(FrameRequestReason::Input);
         }

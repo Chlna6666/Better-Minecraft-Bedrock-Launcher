@@ -117,15 +117,6 @@ impl AnimatedUpload {
     pub(super) fn sample_resolved(
         &self,
         values: &ResolvedAnimationValues,
-        size: DrawableSize,
-        bytes: &mut Vec<u8>,
-    ) -> AnimatedPrimitiveSample {
-        self.sample_resolved_for_target_size(values, size, bytes)
-    }
-
-    pub(super) fn sample_resolved_for_target_size(
-        &self,
-        values: &ResolvedAnimationValues,
         target_size: DrawableSize,
         bytes: &mut Vec<u8>,
     ) -> AnimatedPrimitiveSample {
@@ -179,10 +170,10 @@ impl AnimatedUpload {
             Primitive::MonochromeSprite(sprite) => write_monochrome_sprite(bytes, &sprite),
             Primitive::PolychromeSprite(sprite) => write_polychrome_sprite(bytes, &sprite),
             Primitive::BackdropBlur(blur) => {
-                write_backdrop_blur_for_target_size(bytes, &blur, target_size);
+                write_backdrop_blur(bytes, &blur, target_size);
             }
             Primitive::Blur(blur) => {
-                write_paint_blur_for_target_size(bytes, &blur, target_size);
+                write_paint_blur(bytes, &blur, target_size);
                 if let Primitive::Blur(base) = &self.primitive {
                     write_packed_bounds_at(bytes, BLUR_SOURCE_BOUNDS_OFFSET, base.bounds);
                 }

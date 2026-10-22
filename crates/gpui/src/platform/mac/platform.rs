@@ -756,7 +756,7 @@ impl Platform for MacPlatform {
         done_rx
     }
 
-    fn prompt_for_new_path(
+    fn prompt_new_path(
         &self,
         directory: &Path,
         suggested_name: Option<&str>,
@@ -828,7 +828,7 @@ impl Platform for MacPlatform {
         done_rx
     }
 
-    fn can_select_mixed_files_and_dirs(&self) -> bool {
+    fn can_select_mixed_paths(&self) -> bool {
         true
     }
 

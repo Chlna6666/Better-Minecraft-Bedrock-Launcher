@@ -27,11 +27,7 @@ struct BackdropFilterSamples {
 }
 
 impl FrameUpload {
-    pub(in crate::platform::nova) fn sample_animated_primitives(&mut self, size: DrawableSize) {
-        self.sample_animated_primitives_for_target_size(size);
-    }
-
-    pub(in crate::platform::nova) fn sample_animated_primitives_for_target_size(
+    pub(in crate::platform::nova) fn sample_animated_primitives(
         &mut self,
         target_size: DrawableSize,
     ) {
@@ -149,7 +145,7 @@ impl FrameUpload {
         staging.reserve(PACKED_BACKDROP_BLUR_BYTES);
 
         for primitive in &self.animated_primitives {
-            let sample = primitive.sample_resolved_for_target_size(values, target_size, &mut staging);
+            let sample = primitive.sample_resolved(values, target_size, &mut staging);
             samples.filter_parameters_changed |= sample.filter_parameters_changed;
             samples.visual_bounds.push(sample.visual_bounds);
             let byte_len = primitive.bytes.len();
@@ -159,7 +155,7 @@ impl FrameUpload {
             let bytes = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => self.quads.slice_mut(range),
                 AnimatedPrimitiveKind::Shadow => &mut self.shadows[range],
-                AnimatedPrimitiveKind::MonochromeSprite => &mut self.mono_sprites[range],
+                AnimatedPrimitiveKind::MonochromeSprite => self.mono_sprites.slice_mut(range),
                 AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites[range],
                 AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs[range],
             };

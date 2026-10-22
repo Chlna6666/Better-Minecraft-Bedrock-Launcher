@@ -203,6 +203,10 @@ impl LineWrapper {
     }
 
     fn compute_width_for_char(&self, c: char) -> Pixels {
+        let _work = crate::window::element_work::begin_named(
+            "text_character_shape",
+            crate::window::element_work::ElementWorkPhase::Layout,
+        );
         let mut buffer = [0; 4];
         let buffer = c.encode_utf8(&mut buffer);
         self.platform_text_system

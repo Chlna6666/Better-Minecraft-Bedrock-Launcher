@@ -191,16 +191,18 @@ fn pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> Vec<u8
         panic!("DX12 fixture");
     };
     device
-        .render_step_list_to_texture_compat(
-            target.1,
-            renderer.render_pass,
-            RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-            LoadOp::Clear(clear_color()),
-            Some(RenderPassDepthAttachment {
+        .render_to_textures(&[RenderPassCommands {
+            texture_view: target.1,
+            render_pass: renderer.render_pass,
+            commands: renderer.command_scratch.commands(),
+            color_load_op: LoadOp::Clear(clear_color()),
+            clear_region: None,
+            depth_attachment: Some(DepthAttachment {
                 target: renderer.depth_texture_view,
                 depth_load_op: LoadOp::Clear(1.0),
             }),
-        )
+            viewport: None,
+        }])
         .expect("sample cached mask");
     let readback = device.read_texture(target.0).expect("scratch readback");
     let mut pixels = Vec::with_capacity(16 * 16 * 4);

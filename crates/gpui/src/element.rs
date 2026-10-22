@@ -36,7 +36,6 @@ mod animation;
 mod any_element;
 mod any_view;
 mod bounds_observer;
-mod cached_view;
 mod canvas;
 mod composite_layer;
 mod context;
@@ -66,7 +65,6 @@ pub use animation::*;
 pub use any_element::*;
 pub use any_view::*;
 pub use bounds_observer::*;
-pub use cached_view::*;
 pub use canvas::*;
 pub use composite_layer::*;
 pub use context::*;
@@ -88,7 +86,6 @@ pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
 
-pub(crate) use cached_view::{CachedViewState, snapshot_committed_cached_view_state};
 pub(crate) use div::{
     DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle, RetainedDivSemanticKey,
 };

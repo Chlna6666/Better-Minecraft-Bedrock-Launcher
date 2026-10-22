@@ -1,12 +1,12 @@
-use super::upload_encoding::{atlas_source_byte_len, encode_atlas_upload_with_padding};
+use super::upload_encoding::{atlas_source_byte_len, encode_padded_atlas_upload};
 use super::*;
 mod batch;
 mod damage;
+#[cfg(feature = "bench-support")]
+use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
 pub(in crate::platform::nova) use batch::AtlasUpload;
 #[cfg(test)]
 use damage::atlas_upload_touches_tile;
-#[cfg(feature = "bench-support")]
-use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
 #[cfg(feature = "bench-support")]
 use std::borrow::Cow;
 
@@ -237,10 +237,7 @@ impl NovaAtlas {
 }
 
 impl NovaAtlasState {
-    pub(in crate::platform::nova) fn remove_pending_uploads_for_texture(
-        &mut self,
-        texture_id: AtlasTextureId,
-    ) {
+    pub(in crate::platform::nova) fn remove_pending_uploads(&mut self, texture_id: AtlasTextureId) {
         self.pending_uploads
             .retain(|upload| upload.texture_id != texture_id);
     }
@@ -316,8 +313,7 @@ impl NovaAtlasState {
                 return false;
             };
             let encoded =
-                encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding)
-                    .is_some();
+                encode_padded_atlas_upload(pixels, size, bytes, texture_kind, padding).is_some();
             if encoded {
                 self.content_generation = self.content_generation.wrapping_add(1);
             }
@@ -331,7 +327,7 @@ impl NovaAtlasState {
             self.upload_bytes = crate::assets::acquire_bitmap_buffer_capacity(len);
         }
         self.upload_bytes.resize(end, 0);
-        if encode_atlas_upload_with_padding(
+        if encode_padded_atlas_upload(
             &mut self.upload_bytes[offset..end],
             size,
             bytes,
@@ -362,7 +358,10 @@ mod upload_texture_snapshot_tests {
 
     #[test]
     fn atlas_source_dependencies_distinguish_tiles_on_same_page() {
-        let id = AtlasTextureId { index: 3, kind: AtlasTextureKind::Rgba };
+        let id = AtlasTextureId {
+            index: 3,
+            kind: AtlasTextureKind::Rgba,
+        };
         let source_tile = AtlasTile {
             texture_id: id,
             tile_id: crate::TileId(1),
@@ -380,20 +379,29 @@ mod upload_texture_snapshot_tests {
             offset: 0,
             len: 256,
         };
-        assert!(!atlas_upload_touches_tile(&upload, &source_tile),
-            "unrelated uploads on the same page must not invalidate blur");
+        assert!(
+            !atlas_upload_touches_tile(&upload, &source_tile),
+            "unrelated uploads on the same page must not invalidate blur"
+        );
         upload.origin = Origin2d { x: 22, y: 22 };
-        assert!(atlas_upload_touches_tile(&upload, &source_tile),
-            "tile padding may be sampled with bilinear filtering");
+        assert!(
+            atlas_upload_touches_tile(&upload, &source_tile),
+            "tile padding may be sampled with bilinear filtering"
+        );
         upload.origin = Origin2d { x: 23, y: 22 };
-        assert!(!atlas_upload_touches_tile(&upload, &source_tile),
-            "adjacent upload beyond the padded source is independent");
+        assert!(
+            !atlas_upload_touches_tile(&upload, &source_tile),
+            "adjacent upload beyond the padded source is independent"
+        );
     }
 
     #[test]
     fn queued_source_uploads_check_exact_tiles_and_fail_closed() {
         let atlas = NovaAtlas::new();
-        let id = AtlasTextureId { index: 900_001, kind: AtlasTextureKind::Rgba };
+        let id = AtlasTextureId {
+            index: 900_001,
+            kind: AtlasTextureKind::Rgba,
+        };
         let tile = AtlasTile {
             texture_id: id,
             tile_id: crate::TileId(7),
@@ -421,13 +429,18 @@ mod upload_texture_snapshot_tests {
         assert!(!AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles));
         {
             let mut state = atlas.state.lock().expect("test atlas mutex");
-            state.pending_uploads.last_mut().expect("test upload").origin =
-                Origin2d { x: 21, y: 22 };
+            state
+                .pending_uploads
+                .last_mut()
+                .expect("test upload")
+                .origin = Origin2d { x: 21, y: 22 };
         }
         assert!(AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles));
         tiles.clear();
-        assert!(AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles),
-            "missing packed-sprite dependency data must preserve correctness");
+        assert!(
+            AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles),
+            "missing packed-sprite dependency data must preserve correctness"
+        );
     }
 
     #[test]
@@ -438,7 +451,12 @@ mod upload_texture_snapshot_tests {
         // pending texture must have an allocation snapshot from the same lock.
         assert!(!batch.uploads.is_empty());
         for upload in &batch.uploads {
-            assert!(batch.texture_infos().iter().any(|info| info.id == upload.texture_id));
+            assert!(
+                batch
+                    .texture_infos()
+                    .iter()
+                    .any(|info| info.id == upload.texture_id)
+            );
         }
         atlas.restore_upload_batch(batch);
         assert!(atlas.pending_upload_count_for_test() > 0);

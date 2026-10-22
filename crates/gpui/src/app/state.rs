@@ -307,7 +307,7 @@ impl App {
         let futures = futures::future::join_all(futures);
         if self
             .background_executor
-            .block_with_timeout(SHUTDOWN_TIMEOUT, futures)
+            .block_timeout(SHUTDOWN_TIMEOUT, futures)
             .is_err()
         {
             log::error!("timed out waiting on app_will_quit");
@@ -588,18 +588,16 @@ impl App {
     /// Register a callback to be invoked when a window closes.
     /// The window is no longer accessible when this callback runs.
     pub fn on_window_closed(&self, mut on_closed: impl FnMut(&mut App) + 'static) -> Subscription {
-        self.on_window_closed_with_id(move |_, cx| on_closed(cx))
+        self.on_window_closed_id(move |_, cx| on_closed(cx))
     }
 
     /// Register a close observer with the exact identity of the closed window.
     /// Never infer it from the remaining windows during a nested update.
-    pub fn on_window_closed_with_id(
+    pub fn on_window_closed_id(
         &self,
         on_closed: impl FnMut(WindowId, &mut App) + 'static,
     ) -> Subscription {
-        let (subscription, activate) = self
-            .window_closed_observers
-            .insert((), Box::new(on_closed));
+        let (subscription, activate) = self.window_closed_observers.insert((), Box::new(on_closed));
         activate();
         subscription
     }

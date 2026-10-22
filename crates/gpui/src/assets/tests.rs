@@ -51,10 +51,10 @@ fn animated_frame_slots_are_bounded() {
         ..AnimatedImageConfig::default()
     };
 
-    assert_eq!(image.gpu_frame_slot_for_frame(0, config), 0);
-    assert_eq!(image.gpu_frame_slot_for_frame(1, config), 1);
-    assert_eq!(image.gpu_frame_slot_for_frame(2, config), 2);
-    assert_eq!(image.gpu_frame_slot_for_frame(3, config), 0);
+    assert_eq!(image.gpu_frame_slot(0, config), 0);
+    assert_eq!(image.gpu_frame_slot(1, config), 1);
+    assert_eq!(image.gpu_frame_slot(2, config), 2);
+    assert_eq!(image.gpu_frame_slot(3, config), 0);
 }
 
 #[test]

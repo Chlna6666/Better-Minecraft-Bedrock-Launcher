@@ -4,7 +4,7 @@ use super::{
         AnimationParallel, AnimationSequence, AnimationSpec, AnimationStagger,
         ParallelTimelineSample, SequencedTimelineSample, StaggerTimelineSample, TimelineSample,
     },
-    transition::{TransitionProperty, resolve_driver_with_cpu_policy},
+    transition::{TransitionProperty, resolve_driver},
 };
 use crate::{Bounds, GlobalElementId, Pixels, SceneAnimationId, SceneAnimationValue};
 use collections::{FxHashMap, FxHashSet};
@@ -329,11 +329,7 @@ impl AnimationEngine {
         spec: AnimationSpec,
         now: Instant,
     ) {
-        let driver = resolve_driver_with_cpu_policy(
-            spec.driver,
-            [property],
-            spec.easing.requires_cpu_driver(),
-        );
+        let driver = resolve_driver(spec.driver, [property], spec.easing.requires_cpu_driver());
         let element_id = self.shared_element_id(element_id);
         let key = AnimationTimelineKey {
             element_id: element_id.clone(),
@@ -348,9 +344,7 @@ impl AnimationEngine {
                 let elapsed = now.saturating_duration_since(timeline.started_at);
                 let sample = timeline.sample(now);
                 let reference_iteration = timeline.spec.active_iteration_at_elapsed(elapsed);
-                now.checked_sub(
-                    spec.elapsed_for_raw_progress(sample.raw_progress, reference_iteration),
-                )
+                now.checked_sub(spec.raw_progress_elapsed(sample.raw_progress, reference_iteration))
             })
             .unwrap_or(now);
         let bounds = self
@@ -445,11 +439,7 @@ impl AnimationEngine {
         } else {
             0.0
         };
-        let driver = resolve_driver_with_cpu_policy(
-            spec.driver,
-            [property],
-            spec.easing.requires_cpu_driver(),
-        );
+        let driver = resolve_driver(spec.driver, [property], spec.easing.requires_cpu_driver());
 
         self.completed_scene_values.remove(&key);
         self.remove_driver_index(&key);
@@ -731,10 +721,7 @@ impl AnimationEngine {
         true
     }
 
-    pub(crate) fn scene_animation_needs_completion_invalidation(
-        &self,
-        animation_id: SceneAnimationId,
-    ) -> bool {
+    pub(crate) fn animation_needs_completion_check(&self, animation_id: SceneAnimationId) -> bool {
         self.timelines.values().any(|timeline| {
             timeline
                 .scene_animation
@@ -743,7 +730,7 @@ impl AnimationEngine {
         })
     }
 
-    pub(crate) fn set_scene_animation_completion_invalidation(
+    pub(crate) fn set_animation_completion_check(
         &mut self,
         animation_id: SceneAnimationId,
         view_id: crate::EntityId,
@@ -929,10 +916,7 @@ impl AnimationEngine {
     }
 
     /// Returns whether pruning removed timeline or endpoint metadata from the presentation packet.
-    pub(crate) fn retain_scene_animations_for_scene(
-        &mut self,
-        scene: &crate::scene::Scene,
-    ) -> bool {
+    pub(crate) fn retain_scene_animation_cache(&mut self, scene: &crate::scene::Scene) -> bool {
         let previous_counts = (self.timelines.len(), self.completed_scene_values.len());
         let mut live_ids = std::mem::take(&mut self.live_scene_animation_ids_scratch);
         live_ids.clear();

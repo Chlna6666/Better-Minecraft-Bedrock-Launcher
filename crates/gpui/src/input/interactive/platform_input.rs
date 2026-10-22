@@ -56,7 +56,7 @@ impl PlatformInput {
         }
     }
 
-    pub(crate) fn unconditionally_extends_recent_input_present(&self) -> bool {
+    pub(crate) fn unconditionally_extends_recent_input(&self) -> bool {
         self.dispatch_class().extends_recent_input_present()
     }
 
@@ -119,10 +119,7 @@ impl PlatformInputDispatchClass {
             // A button event alone does not prove that interactive content was
             // hit. Real handlers schedule their own invalidation after hit testing.
             Self::PassivePointerMove | Self::PointerButton => false,
-            Self::InteractivePointerMove
-            | Self::Scroll
-            | Self::Keyboard
-            | Self::DragDrop => true,
+            Self::InteractivePointerMove | Self::Scroll | Self::Keyboard | Self::DragDrop => true,
         }
     }
 }

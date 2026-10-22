@@ -24,8 +24,9 @@ macro_rules! device {
 
 mod chunks;
 mod reactive;
-mod retained_color;
 mod resize;
+mod retained_color;
+mod root_resize;
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
@@ -76,7 +77,12 @@ fn scene(renderer: &NovaRenderer, color: u32) -> crate::scene::Painter {
     scene
 }
 
-fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retention: &crate::window::retained::RetainedPaint) -> usize {
+fn upload(
+    renderer: &mut NovaRenderer,
+    slot: usize,
+    scene: &crate::Scene,
+    retention: &crate::window::retained::RetainedPaint,
+) -> usize {
     renderer
         .activate_frame_resources(slot)
         .expect("activate slot");
@@ -98,13 +104,22 @@ fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retent
     let plan = renderer
         .retained_upload
         .quad_upload_plan(slot, renderer.frame_upload.quads.len());
+    let mono_sprite_plan = renderer
+        .retained_upload
+        .monochrome_sprite_upload_plan(slot, renderer.frame_upload.mono_sprites.len());
     let full_quad_bytes = if dirty.quad {
         renderer.frame_upload.quads.len()
     } else {
         0
     };
     let bytes = dirty.mapped_upload_bytes(&renderer.frame_upload, false) - full_quad_bytes
-        + plan.uploaded_bytes(renderer.frame_upload.quads.len());
+        + plan.uploaded_bytes(renderer.frame_upload.quads.len())
+        - if dirty.mono_sprite {
+            renderer.frame_upload.mono_sprites.len()
+        } else {
+            0
+        }
+        + mono_sprite_plan.uploaded_bytes(renderer.frame_upload.mono_sprites.len());
     let buffers = renderer.frame_buffer_targets();
     device!(renderer, device, {
         super::super::buffer_upload::upload_frame_buffers(
@@ -115,6 +130,7 @@ fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retent
                 has_compositor_descriptors: false,
                 static_uploads: dirty,
                 quad_upload_plan: &plan,
+                mono_sprite_upload_plan: &mono_sprite_plan,
             },
         )
         .expect("static upload");
@@ -149,10 +165,10 @@ fn target(renderer: &NovaRenderer) -> (TextureId, TextureViewId) {
     })
 }
 
-fn quad_step(renderer: &NovaRenderer) -> DrawStepDescriptor {
-    DrawStepDescriptor {
+fn quad_step(renderer: &NovaRenderer) -> DrawCommand {
+    DrawCommand {
         pipeline: renderer.pipelines.alpha.quads,
-        resource_sets: resource_set_list([renderer.quad_resource_set]),
+        bind_groups: bind_group_list([renderer.quad_resource_set]),
         vertex_count: 4,
         instance_count: 1,
         first_vertex: 0,
@@ -162,24 +178,26 @@ fn quad_step(renderer: &NovaRenderer) -> DrawStepDescriptor {
 }
 
 fn draw(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
-    let step = DrawStepDescriptor {
-        resource_sets: resource_set_list([renderer.frame_resources[slot]
-            .resource_sets
+    let step = RenderCommand::Draw(DrawCommand {
+        bind_groups: bind_group_list([renderer.frame_resources[slot]
+            .bind_groups
             .quad_resource_set]),
         ..quad_step(renderer)
-    };
+    });
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                view,
-                renderer.render_pass,
-                RenderStepList::Draw(&[step]),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: view,
+                render_pass: renderer.render_pass,
+                commands: std::slice::from_ref(&step),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("slot draw");
     });
 }
@@ -219,8 +237,18 @@ fn verify(backend: RendererBackend) {
     assert_eq!(initial_bytes, 1_445_456);
     let red = scene(&renderer, 0xff0000);
     let green = scene(&renderer, 0x00ff00);
-    let first_bytes = upload(&mut renderer, 0, &red, &crate::window::retained::RetainedPaint::default());
-    let second_bytes = upload(&mut renderer, 1, &red, &crate::window::retained::RetainedPaint::default());
+    let first_bytes = upload(
+        &mut renderer,
+        0,
+        &red,
+        &crate::window::retained::RetainedPaint::default(),
+    );
+    let second_bytes = upload(
+        &mut renderer,
+        1,
+        &red,
+        &crate::window::retained::RetainedPaint::default(),
+    );
     assert_eq!(second_bytes, GLOBAL_UPLOAD_BYTES);
     assert!(first_bytes > second_bytes);
     for stream in BufferStream::ALL {
@@ -235,20 +263,23 @@ fn verify(backend: RendererBackend) {
     draw(&renderer, old_target.1, 1);
     // A tracked queue marker follows the old draw. Keep its real SubmissionId attached to slot 1
     // until explicitly waiting, even on a GPU that completes before the following CPU inspection.
-    let steps = vec![RenderStepDescriptor::Draw(quad_step(&renderer)); 512];
+    let steps = vec![RenderCommand::Draw(quad_step(&renderer)); 512];
     let submission = device!(renderer, device, {
         device
-            .render_steps_and_present_deferred(
-                renderer.swapchain,
-                renderer.render_pass,
-                &steps,
-                clear_color(),
-                Some(RenderPassDepthAttachment {
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: renderer.swapchain,
+                render_pass: renderer.render_pass,
+                commands: &steps,
+                color_load_op: LoadOp::Clear(clear_color()),
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
                 }),
-            )
+                present_region: None,
+            })
             .expect("old slot submission")
+            .and_then(|frame: gfx_core::PresentedFrame| frame.submission)
+            .expect("old slot submission id")
     });
     renderer.pending_submissions.push(PendingSubmission {
         submission,
@@ -281,7 +312,7 @@ fn verify(backend: RendererBackend) {
     let old_ids = renderer.frame_resources[0].buffers.ids();
     let count = device!(renderer, device, { device.resource_stats().buffers });
     let layout = renderer.quad_resource_set_layout;
-    renderer.quad_resource_set_layout = ResourceSetLayoutId::from_parts(u32::MAX, u32::MAX);
+    renderer.quad_resource_set_layout = BindGroupLayoutId::from_parts(u32::MAX, u32::MAX);
     assert!(
         renderer.prepare_static_buffers().is_err(),
         "rebind failure is reported"
@@ -293,7 +324,12 @@ fn verify(backend: RendererBackend) {
         count,
         "failed transaction retires all new buffers"
     );
-    let changed_bytes = upload(&mut renderer, 0, &green, &crate::window::retained::RetainedPaint::default());
+    let changed_bytes = upload(
+        &mut renderer,
+        0,
+        &green,
+        &crate::window::retained::RetainedPaint::default(),
+    );
     assert_eq!(changed_bytes, PACKED_QUAD_BYTES);
     assert_ne!(renderer.quad_buffer, old);
     assert_eq!(renderer.frame_resources[1].buffers.quad_buffer, old);
@@ -306,14 +342,19 @@ fn verify(backend: RendererBackend) {
     pixels(&renderer, old_target.0, [0, 0, 255, 255]);
     pixels(&renderer, new_target.0, [0, 255, 0, 255]);
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("old fence completion");
     renderer
         .coalesce_idle_static_buffers()
         .expect("coalesce idle version without another frame");
     assert_eq!(renderer.current_frame_resource_index, 0);
     assert_eq!(
-        upload(&mut renderer, 1, &green, &crate::window::retained::RetainedPaint::default()),
+        upload(
+            &mut renderer,
+            1,
+            &green,
+            &crate::window::retained::RetainedPaint::default()
+        ),
         0,
         "converged content inherits without uploads"
     );
@@ -334,7 +375,15 @@ fn verify(backend: RendererBackend) {
         initial_bytes
     );
     let shared = renderer.quad_buffer;
-    assert_eq!(upload(&mut renderer, 0, &red, &crate::window::retained::RetainedPaint::default()), PACKED_QUAD_BYTES);
+    assert_eq!(
+        upload(
+            &mut renderer,
+            0,
+            &red,
+            &crate::window::retained::RetainedPaint::default()
+        ),
+        PACKED_QUAD_BYTES
+    );
     assert_eq!(renderer.quad_buffer, shared, "idle aliases update in place");
     assert_eq!(renderer.frame_resources[1].buffers.quad_buffer, shared);
     assert!(
@@ -344,7 +393,15 @@ fn verify(backend: RendererBackend) {
             .2
     );
     // Returning to the other slot's old scene must upload again, never inherit its stale token.
-    assert_eq!(upload(&mut renderer, 1, &green, &crate::window::retained::RetainedPaint::default()), PACKED_QUAD_BYTES);
+    assert_eq!(
+        upload(
+            &mut renderer,
+            1,
+            &green,
+            &crate::window::retained::RetainedPaint::default()
+        ),
+        PACKED_QUAD_BYTES
+    );
     assert_eq!(renderer.quad_buffer, shared);
     draw(&renderer, new_target.1, 1);
     pixels(&renderer, new_target.0, [0, 255, 0, 255]);

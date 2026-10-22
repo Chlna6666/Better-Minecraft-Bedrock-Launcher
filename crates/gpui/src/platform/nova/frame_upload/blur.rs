@@ -273,7 +273,7 @@ impl FrameUpload {
         &self.backdrop_blur_configs
     }
 
-    pub(in crate::platform::nova) fn backdrop_blur_config_for_index(
+    pub(in crate::platform::nova) fn blur_config_at(
         &self,
         index: u32,
     ) -> Option<BackdropBlurConfig> {
@@ -292,7 +292,8 @@ impl FrameUpload {
                     // The packed compositor descriptor keeps its shader index,
                     // but Window Root Color is not a Filter target or Gaussian pass.
                     if self.root_color.map(|root| root.index) != Some(index)
-                        && let Some(config) = self.backdrop_blur_config_for_index(index) {
+                        && let Some(config) = self.blur_config_at(index)
+                    {
                         configs.push(config);
                     }
                 }
@@ -312,7 +313,7 @@ impl FrameUpload {
         self.backdrop_blur_configs = configs;
     }
 
-    pub(in crate::platform::nova) fn backdrop_blur_configs_for_range(
+    pub(in crate::platform::nova) fn blur_configs_in_range(
         &self,
         first: u32,
         count: u32,
@@ -367,7 +368,7 @@ impl FrameUpload {
             }
 
             let start = self.backdrop_blur_passes.len();
-            write_backdrop_blur_pass_with_animation(
+            write_animated_blur_pass(
                 &mut self.backdrop_blur_passes,
                 radius,
                 animation_slot_plus_one,

@@ -56,10 +56,10 @@ pub(super) fn write_animation_value_at(
 /// fragment. These values depend only on the blur radius, so compute them once per pass on the CPU.
 #[cfg(test)]
 pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
-    write_backdrop_blur_pass_with_animation(bytes, radius, 0);
+    write_animated_blur_pass(bytes, radius, 0);
 }
 
-pub(super) fn write_backdrop_blur_pass_with_animation(
+pub(super) fn write_animated_blur_pass(
     bytes: &mut Vec<u8>,
     radius: f32,
     animation_slot_plus_one: u32,
@@ -118,14 +118,6 @@ pub(super) fn write_backdrop_blur_pass_with_animation(
 pub(super) fn write_backdrop_blur(
     bytes: &mut Vec<u8>,
     blur: &crate::PaintBackdropBlur,
-    drawable_size: DrawableSize,
-) {
-    write_backdrop_blur_for_target_size(bytes, blur, drawable_size);
-}
-
-pub(super) fn write_backdrop_blur_for_target_size(
-    bytes: &mut Vec<u8>,
-    blur: &crate::PaintBackdropBlur,
     target_size: DrawableSize,
 ) {
     write_u32_vec(bytes, blur.order);
@@ -157,17 +149,9 @@ pub(super) fn write_backdrop_blur_for_target_size(
 pub(super) fn write_paint_blur(
     bytes: &mut Vec<u8>,
     blur: &crate::PaintBlur,
-    drawable_size: DrawableSize,
-) {
-    write_paint_blur_for_target_size(bytes, blur, drawable_size);
-}
-
-pub(super) fn write_paint_blur_for_target_size(
-    bytes: &mut Vec<u8>,
-    blur: &crate::PaintBlur,
     target_size: DrawableSize,
 ) {
-    write_paint_blur_fields_for_target_size(
+    write_paint_blur_fields(
         bytes,
         blur.order,
         blur.bounds,
@@ -181,26 +165,6 @@ pub(super) fn write_paint_blur_for_target_size(
 /// Encode a compositor/filter record without constructing a synthetic Scene.
 /// Shader ABI is identical for real element filters and GPU-owned root color.
 pub(super) fn write_paint_blur_fields(
-    bytes: &mut Vec<u8>,
-    order: crate::DrawOrder,
-    bounds: crate::Bounds<crate::ScaledPixels>,
-    content_mask: crate::ContentMask<crate::ScaledPixels>,
-    radius: crate::ScaledPixels,
-    opacity: f32,
-    drawable_size: DrawableSize,
-) {
-    write_paint_blur_fields_for_target_size(
-        bytes,
-        order,
-        bounds,
-        content_mask,
-        radius,
-        opacity,
-        drawable_size,
-    );
-}
-
-pub(super) fn write_paint_blur_fields_for_target_size(
     bytes: &mut Vec<u8>,
     order: crate::DrawOrder,
     bounds: crate::Bounds<crate::ScaledPixels>,

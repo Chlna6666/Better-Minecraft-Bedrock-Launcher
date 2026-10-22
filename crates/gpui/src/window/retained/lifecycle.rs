@@ -5,6 +5,7 @@ impl RetainedPaint {
     pub(crate) fn clear(&mut self) {
         self.retained_chunk_candidates.clear();
         self.prepared_retained_quad_chunks.clear();
+        self.prepared_retained_monochrome_sprite_chunks.clear();
         self.replay_quad_indices.clear();
         self.finished = false;
         self.revision = 0;
@@ -15,6 +16,7 @@ impl RetainedPaint {
     pub(crate) fn retained_capacity(&self) -> usize {
         self.retained_chunk_candidates.capacity()
             + self.prepared_retained_quad_chunks.capacity()
+            + self.prepared_retained_monochrome_sprite_chunks.capacity()
             + self.replay_quad_indices.capacity()
             + self.sources.capacity()
             + self
@@ -24,7 +26,7 @@ impl RetainedPaint {
     }
 
     /// Adapts empty scratch allocations to the current frame without touching shared snapshots.
-    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+    pub(crate) fn trim_for_reuse(&mut self, current: &Self) {
         let candidate_floor = current.retained_chunk_candidates.len().max(24);
         let prepared_floor = current.prepared_retained_quad_chunks.len().max(24);
         if self.retained_chunk_candidates.capacity() > candidate_floor.saturating_mul(2) {
@@ -32,6 +34,16 @@ impl RetainedPaint {
         }
         if self.prepared_retained_quad_chunks.capacity() > prepared_floor.saturating_mul(2) {
             self.prepared_retained_quad_chunks.shrink_to(prepared_floor);
+        }
+        let sprite_floor = current
+            .prepared_retained_monochrome_sprite_chunks
+            .len()
+            .max(24);
+        if self.prepared_retained_monochrome_sprite_chunks.capacity()
+            > sprite_floor.saturating_mul(2)
+        {
+            self.prepared_retained_monochrome_sprite_chunks
+                .shrink_to(sprite_floor);
         }
         if self.replay_quad_indices.capacity() > prepared_floor.saturating_mul(2) {
             self.replay_quad_indices.shrink_to(prepared_floor);

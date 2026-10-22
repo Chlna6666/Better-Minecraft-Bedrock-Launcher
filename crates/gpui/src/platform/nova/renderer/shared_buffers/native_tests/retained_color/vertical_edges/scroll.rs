@@ -41,11 +41,7 @@ impl Render for Page {
         crate::div()
             .relative()
             .size_full()
-            .child(
-                self.chrome
-                    .clone()
-                    .cached(crate::StyleRefinement::default().size_full()),
-            )
+            .child(crate::div().size_full().child(self.chrome.clone()))
             .child(
                 crate::div()
                     .id("scroll")
@@ -104,16 +100,18 @@ backend_test!(
 fn read_pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> Vec<u8> {
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                target.1,
-                renderer.render_pass,
-                RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_to_textures(&[RenderPassCommands {
+                texture_view: target.1,
+                render_pass: renderer.render_pass,
+                commands: renderer.command_scratch.commands(),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-            )
+                viewport: None,
+            }])
             .expect("composition readback draw");
         let data = device.read_texture(target.0).expect("native pixels");
         data.bytes
@@ -139,7 +137,7 @@ fn advance_animation(
                 .expect("retained animation sample")
         );
         native
-            .wait_for_pending_submissions()
+            .wait_pending_submissions()
             .expect("sample retirement");
         packet.consume_submitted_damage();
         let metrics = crate::performance_metrics_snapshot();
@@ -160,7 +158,7 @@ fn advance_animation(
             native.backend_info.label(),
             metrics.encoded_scene_primitives,
             metrics.backdrop_blur_source_pixels,
-            native.draw_step_scratch.submitted_present_damage
+            native.command_scratch.submitted_present_damage
         );
     }
     assert_eq!(
@@ -345,7 +343,7 @@ fn verify(cx: &mut TestAppContext, backend: RendererBackend) {
     eprintln!(
         "vertical_edges first_scroll backend={backend:?} root_renders={} native_damage={:?} quad_upload_bytes={} dirty_area={} source_pixels={}",
         renders.get() - baseline_renders,
-        native.draw_step_scratch.submitted_present_damage,
+        native.command_scratch.submitted_present_damage,
         metrics.quad_upload_bytes,
         metrics.dirty_rect_area,
         metrics.backdrop_blur_source_pixels

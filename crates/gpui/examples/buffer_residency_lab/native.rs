@@ -68,7 +68,7 @@ pub(super) fn shader(
     stage: ShaderStage,
     entry: &str,
 ) -> Result<ShaderBinary> {
-    let mut binary = gfx_shader::compile_wgsl_for_backend(source, backend, stage, entry)?;
+    let mut binary = gfx_shader::compile_wgsl_to_backend(source, backend, stage, entry)?;
     #[cfg(windows)]
     if let ShaderCode::Hlsl(source) = &binary.code {
         binary.code = ShaderCode::DxBytecode(compile_fxc(source, stage, entry, backend)?);

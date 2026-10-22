@@ -1,5 +1,5 @@
-use super::{RetainedChunkId, RetainedPaint};
-use crate::paint::retention::QuadChunkPlanner;
+use super::{PreparedRetainedChunks, RetainedChunkId, RetainedPaint};
+use crate::paint::retention::{RetainedChunkPlanner, RetainedChunkProof};
 use crate::{GlobalElementId, Scene};
 use std::ops::Range;
 
@@ -19,6 +19,15 @@ pub(crate) struct PreparedRetainedQuadChunk {
     pub(crate) is_solid: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedRetainedMonochromeSpriteChunk {
+    pub(crate) id: RetainedChunkId,
+    pub(crate) sprite_range: Range<usize>,
+    pub(crate) replayed: bool,
+    pub(crate) texture_id: crate::AtlasTextureId,
+    pub(crate) sampling: crate::MonochromeSpriteSampling,
+}
+
 impl RetainedPaint {
     pub(crate) fn finish(&mut self, scene: &mut Scene) {
         // Preserve one candidate authority and sort it in place. Recording
@@ -32,14 +41,14 @@ impl RetainedPaint {
                     .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
             });
         // Validate the once-per-finish ordering contract here, not on every
-        // CachedView replay. A debug-build full candidate scan per fragment
+        // retained replay. A debug-build full candidate scan per fragment
         // defeats the binary-search fast path with many retained siblings.
         debug_assert!(
             self.retained_chunk_candidates
                 .windows(2)
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
-        self.prepare_retained_quad_chunks(scene);
+        self.prepare_retained_chunks(scene);
         self.replay_quad_indices.clear();
         self.replay_quad_indices
             .extend(0..self.prepared_retained_quad_chunks.len());
@@ -58,10 +67,17 @@ impl RetainedPaint {
     pub(crate) fn include(&mut self, mut source: Self) {
         assert!(source.finished, "source Paint retention must be finalized");
         self.sources.extend(source.sources.drain());
-        if !source.prepared_retained_quad_chunks.is_empty() {
+        if !source.prepared_retained_quad_chunks.is_empty()
+            || !source.prepared_retained_monochrome_sprite_chunks.is_empty()
+        {
             self.sources.insert(
                 source.revision,
-                std::sync::Arc::new(source.prepared_retained_quad_chunks),
+                std::sync::Arc::new(PreparedRetainedChunks {
+                    quads: std::mem::take(&mut source.prepared_retained_quad_chunks),
+                    monochrome_sprites: std::mem::take(
+                        &mut source.prepared_retained_monochrome_sprite_chunks,
+                    ),
+                }),
             );
         }
     }
@@ -74,7 +90,20 @@ impl RetainedPaint {
         } else {
             self.sources
                 .get(&scene.revision)
-                .map_or(&[], |chunks| chunks.as_slice())
+                .map_or(&[], |chunks| chunks.quads.as_slice())
+        }
+    }
+
+    pub(crate) fn monochrome_sprite_chunks_for(
+        &self,
+        scene: &Scene,
+    ) -> &[PreparedRetainedMonochromeSpriteChunk] {
+        if self.finished && self.revision == scene.revision {
+            &self.prepared_retained_monochrome_sprite_chunks
+        } else {
+            self.sources
+                .get(&scene.revision)
+                .map_or(&[], |chunks| chunks.monochrome_sprites.as_slice())
         }
     }
 
@@ -83,26 +112,26 @@ impl RetainedPaint {
         &self,
         scene: &Scene,
         range: Range<usize>,
-    ) -> Vec<crate::scene::QuadReplay> {
-        if !self.finished || self.revision != scene.revision {
-            return Vec::new();
-        }
+    ) -> impl Iterator<Item = crate::scene::QuadReplay> + '_ {
         let chunks = &self.prepared_retained_quad_chunks;
-        let first = self
-            .replay_quad_indices
-            .partition_point(|index| chunks[*index].paint_range.start < range.start);
-        let end = self
-            .replay_quad_indices
-            .partition_point(|index| chunks[*index].paint_range.start < range.end);
+        let (first, end) = if self.finished && self.revision == scene.revision {
+            (
+                self.replay_quad_indices
+                    .partition_point(|index| chunks[*index].paint_range.start < range.start),
+                self.replay_quad_indices
+                    .partition_point(|index| chunks[*index].paint_range.start < range.end),
+            )
+        } else {
+            (0, 0)
+        };
         self.replay_quad_indices[first..end]
             .iter()
-            .map(|index| &chunks[*index])
-            .filter(|chunk| chunk.paint_range.end <= range.end)
+            .map(move |index| &chunks[*index])
+            .filter(move |chunk| chunk.paint_range.end <= range.end)
             .map(|chunk| crate::scene::QuadReplay {
                 paint_range: chunk.paint_range.clone(),
                 quad_range: chunk.quad_range.clone(),
             })
-            .collect()
     }
 
     /// Carries only candidates fully contained in a draw-order-preserving Paint replay.
@@ -115,7 +144,7 @@ impl RetainedPaint {
         );
         let candidates = &previous.retained_chunk_candidates;
         // Completed retention sorts its existing candidate storage by
-        // paint-operation start. CachedView fragment replays only inspect
+        // paint-operation start. Retained fragment replays only inspect
         // candidates starting inside their own source range rather than
         // linearly scanning all siblings for every replay.
         let candidates = if previous.finished {
@@ -160,25 +189,35 @@ impl RetainedPaint {
         });
     }
 
-    fn prepare_retained_quad_chunks(&mut self, scene: &Scene) {
-        let mut prepared = std::mem::take(&mut self.prepared_retained_quad_chunks);
-        prepared.clear();
-
-        let mut planner = QuadChunkPlanner::new(scene, self.retained_chunk_candidates.len());
+    fn prepare_retained_chunks(&mut self, scene: &Scene) {
+        let mut quads = std::mem::take(&mut self.prepared_retained_quad_chunks);
+        quads.clear();
+        let mut sprites = std::mem::take(&mut self.prepared_retained_monochrome_sprite_chunks);
+        sprites.clear();
+        let mut planner = RetainedChunkPlanner::new(scene, self.retained_chunk_candidates.len());
         for candidate in &self.retained_chunk_candidates {
-            let Some(proof) = planner.prove(candidate.scene_range.clone()) else {
-                continue;
-            };
-            prepared.push(PreparedRetainedQuadChunk {
-                id: candidate.id.clone(),
-                quad_range: proof.range,
-                paint_range: candidate.scene_range.clone(),
-                replayed: candidate.replayed,
-                is_solid: proof.is_solid,
-            });
+            match planner.prove(candidate.scene_range.clone()) {
+                Some(RetainedChunkProof::Quad(proof)) => quads.push(PreparedRetainedQuadChunk {
+                    id: candidate.id.clone(),
+                    quad_range: proof.range,
+                    paint_range: candidate.scene_range.clone(),
+                    replayed: candidate.replayed,
+                    is_solid: proof.is_solid,
+                }),
+                Some(RetainedChunkProof::MonochromeSprite(proof)) => {
+                    sprites.push(PreparedRetainedMonochromeSpriteChunk {
+                        id: candidate.id.clone(),
+                        sprite_range: proof.range,
+                        replayed: candidate.replayed,
+                        texture_id: proof.texture_id,
+                        sampling: proof.sampling,
+                    });
+                }
+                None => {}
+            }
         }
 
-        prepared.sort_unstable_by(|left, right| {
+        quads.sort_unstable_by(|left, right| {
             left.quad_range
                 .start
                 .cmp(&right.quad_range.start)
@@ -186,22 +225,37 @@ impl RetainedPaint {
                 .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
         });
         let mut retained_end = 0usize;
-        prepared.retain(|chunk| {
+        quads.retain(|chunk| {
             if chunk.quad_range.start < retained_end {
                 return false;
             }
             retained_end = chunk.quad_range.end;
             true
         });
-        self.prepared_retained_quad_chunks = prepared;
+
+        sprites.sort_unstable_by(|left, right| {
+            left.sprite_range
+                .start
+                .cmp(&right.sprite_range.start)
+                .then_with(|| right.sprite_range.end.cmp(&left.sprite_range.end))
+                .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
+        });
+        retained_end = 0;
+        sprites.retain(|chunk| {
+            if chunk.sprite_range.start < retained_end {
+                return false;
+            }
+            retained_end = chunk.sprite_range.end;
+            true
+        });
+        self.prepared_retained_quad_chunks = quads;
+        self.prepared_retained_monochrome_sprite_chunks = sprites;
     }
 }
 
-/// Every admitted candidate operation is a Quad within [first, last].
-/// Thus the total number of primitive operations in that inclusive order
-/// interval must exactly equal the candidate's Quad count. This detects
-/// external operations (including nested blur and duplicate DrawOrder) without
-/// losing the original painter-order barrier proof.
+/// A retained candidate is reusable only when its inclusive draw-order
+/// interval contains exactly its own primitive count. This rejects external
+/// operations, nested captures and duplicate DrawOrder values.
 
 #[cfg(test)]
 mod retained_order_coverage_tests {
@@ -240,7 +294,7 @@ mod tests {
     use super::*;
     use crate::{Bounds, Quad, ScaledPixels};
     #[test]
-    fn cached_view_fragment_replay_copies_only_contained_sorted_chunks() {
+    fn retained_fragment_replay_copies_only_contained_sorted_chunks() {
         let bounds = Bounds::new(
             crate::point(ScaledPixels(0.0), ScaledPixels(0.0)),
             crate::size(ScaledPixels(32.0), ScaledPixels(32.0)),

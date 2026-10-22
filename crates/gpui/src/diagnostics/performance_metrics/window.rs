@@ -13,13 +13,12 @@ pub(super) mod path_mask;
 pub use backend_ready::WindowBackendReadyMetricsSnapshot;
 pub(crate) use backend_ready::record_window_backend_ready_wake;
 pub use native_vsync::WindowVSyncMetricsSnapshot;
+pub(crate) use native_vsync::{
+    record_present_attempt, record_present_preflight_deferred,
+    record_window_active_presentation_retry, record_window_native_vsync_wake,
+};
 pub use path_mask::WindowPathMaskMetricsSnapshot;
 pub(crate) use path_mask::record_window_path_mask;
-pub(crate) use native_vsync::{
-    record_window_active_presentation_attempt,
-    record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
-    record_window_native_vsync_wake,
-};
 
 /// Metrics for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +141,7 @@ pub struct WindowAnimationPresentationTiming {
     /// Frame construction, uploads, and offscreen passes before main presentation.
     pub frame_prepare_upload: Duration,
     /// Draw-step and render-plan preparation before backend uploads.
-    pub draw_step_prepare: Duration,
+    pub command_prepare: Duration,
     /// Host time spent uploading per-frame geometry and uniforms.
     pub buffer_upload: Duration,
     /// Host time spent uploading retained atlas regions.
@@ -154,7 +153,7 @@ pub struct WindowAnimationPresentationTiming {
     /// Renderer bookkeeping after a successful backend present.
     pub renderer_post_present: Duration,
     /// Backend-specific host-side presentation stages when the backend reported them.
-    pub backend_timings: Option<gfx_core::PresentationTimings>,
+    pub backend_timings: Option<gfx_core::PresentTimings>,
 }
 
 /// Recent successful active-animation samples for one window.
@@ -374,7 +373,7 @@ pub(crate) fn record_window_animation_sample(
     window_id: u64,
     sample_hash: u64,
     presentation_timing: Option<crate::ActivePresentationTiming>,
-    backend_timings: Option<gfx_core::PresentationTimings>,
+    backend_timings: Option<gfx_core::PresentTimings>,
 ) {
     let now = Instant::now();
     let presentation_timing =
@@ -397,7 +396,7 @@ pub(crate) fn record_window_animation_sample(
                     .map_or(Duration::ZERO, |timing| timing.retained_resource_prepare),
                 frame_prepare_upload: timing
                     .map_or(Duration::ZERO, |timing| timing.frame_prepare_upload),
-                draw_step_prepare: timing.map_or(Duration::ZERO, |timing| timing.draw_step_prepare),
+                command_prepare: timing.map_or(Duration::ZERO, |timing| timing.command_prepare),
                 buffer_upload: timing.map_or(Duration::ZERO, |timing| timing.buffer_upload),
                 atlas_upload: timing.map_or(Duration::ZERO, |timing| timing.atlas_upload),
                 offscreen_render: timing.map_or(Duration::ZERO, |timing| timing.offscreen_render),

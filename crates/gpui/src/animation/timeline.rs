@@ -268,11 +268,7 @@ impl AnimationSpec {
             .map_or(iteration, |final_iteration| iteration.min(final_iteration))
     }
 
-    pub(crate) fn elapsed_for_raw_progress(
-        &self,
-        progress: f32,
-        reference_iteration: u64,
-    ) -> Duration {
+    pub(crate) fn raw_progress_elapsed(&self, progress: f32, reference_iteration: u64) -> Duration {
         if self.duration.is_zero() {
             return self.delay;
         }

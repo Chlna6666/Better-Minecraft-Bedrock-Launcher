@@ -28,6 +28,17 @@ static NEXT_RETAINED_AUTO_IDENTITY_TOKEN: AtomicU64 = AtomicU64::new(1);
 struct RetainedIdentityScope {
     auto_occurrences: FxHashMap<RetainedAutoIdentityToken, u32>,
     owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    retained_id: Option<GlobalElementId>,
+}
+
+impl RetainedIdentityScope {
+    fn identity_for_path(&self, path: &[ElementId]) -> GlobalElementId {
+        self.retained_id
+            .as_ref()
+            .filter(|id| id.0.as_ref() == path)
+            .cloned()
+            .unwrap_or_else(|| GlobalElementId::from_path(path))
+    }
 }
 
 #[derive(Default)]
@@ -37,11 +48,16 @@ struct RetainedIdentityScopePool {
 }
 
 impl RetainedIdentityScopePool {
-    fn push_scope(&mut self, owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>) {
+    fn push_scope(
+        &mut self,
+        owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        retained_id: Option<GlobalElementId>,
+    ) {
         let mut scope = self.spare.pop().unwrap_or_default();
         scope.auto_occurrences.clear();
         scope.owner_ambiguity.clear();
         scope.owner_ambiguity.extend(owner_ambiguity);
+        scope.retained_id = retained_id;
         self.active.push(scope);
     }
 
@@ -56,6 +72,7 @@ impl RetainedIdentityScopePool {
         }
         scope.auto_occurrences.clear();
         scope.owner_ambiguity.clear();
+        scope.retained_id = None;
         self.spare.push(scope);
     }
 
@@ -126,7 +143,7 @@ impl Window {
             0
         };
 
-        let (segment, ambiguity) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
+        let (segment, retained_id, ambiguity) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
             let mut scopes = scopes.borrow_mut();
 
             // Lazy containers may add a synthetic retained child scope after their own
@@ -141,7 +158,7 @@ impl Window {
                 for _ in 0..depth {
                     let mut owner_ambiguity = SmallVec::new();
                     owner_ambiguity.push(Rc::new(Cell::new(true)));
-                    scopes.push_scope(owner_ambiguity);
+                    scopes.push_scope(owner_ambiguity, None);
                 }
             } else {
                 while scopes.active.len() < depth {
@@ -156,7 +173,7 @@ impl Window {
                             .map(|scope| scope.owner_ambiguity.clone())
                             .unwrap_or_default()
                     };
-                    scopes.push_scope(owner_ambiguity);
+                    scopes.push_scope(owner_ambiguity, None);
                 }
             }
 
@@ -201,12 +218,12 @@ impl Window {
                 }
             };
 
-            scopes.push_scope(ambiguity.clone());
-            (segment, ambiguity)
+            self.retained_element_id_stack.push(segment.clone());
+            let retained_id = GlobalElementId::from_path(&self.retained_element_id_stack);
+            scopes.push_scope(ambiguity.clone(), Some(retained_id.clone()));
+            (segment, retained_id, ambiguity)
         });
 
-        self.retained_element_id_stack.push(segment.clone());
-        let retained_id = GlobalElementId::from_path(&self.retained_element_id_stack);
         self.retained_child_slot_stack.push(0);
         (segment, retained_id, ambiguity)
     }
@@ -235,8 +252,16 @@ impl Window {
     /// Returns the retained rendering identity of the element currently being laid out,
     /// prepainted, or painted.
     pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
-        (!self.retained_element_id_stack.is_empty())
-            .then(|| GlobalElementId::from_path(&self.retained_element_id_stack))
+        let path = self.retained_element_id_stack.as_slice();
+        if path.is_empty() {
+            return None;
+        }
+        Some(RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            scopes.borrow().active.last().map_or_else(
+                || GlobalElementId::from_path(path),
+                |scope| scope.identity_for_path(path),
+            )
+        }))
     }
 
     /// Only an unambiguous retained mount may own a cross-frame Taffy node.
@@ -245,16 +270,17 @@ impl Window {
     /// and ambiguous ancestors can invalidate an otherwise keyed descendant.
     /// Those layouts must stay frame-local rather than aliasing native caches.
     pub(crate) fn current_stable_layout_element_id(&self) -> Option<GlobalElementId> {
-        let stable = RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            scopes.borrow().active.last().is_some_and(|scope| {
-                scope.owner_ambiguity.iter().all(|flag| !flag.get())
-            })
-        });
-        if stable {
-            self.current_retained_element_id()
-        } else {
-            None
-        }
+        let _work = super::element_work::begin_named(
+            "layout_owner_identity",
+            super::element_work::ElementWorkPhase::Layout,
+        );
+        RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            let scopes = scopes.borrow();
+            let scope = scopes.active.last()?;
+            let path = self.retained_element_id_stack.as_slice();
+            (!path.is_empty() && scope.owner_ambiguity.iter().all(|flag| !flag.get()))
+                .then(|| scope.identity_for_path(path))
+        })
     }
 
     /// Executes the provided function with the specified rem size.
@@ -497,7 +523,7 @@ impl Window {
             && self
                 .animation_engine
                 .borrow()
-                .scene_animation_needs_completion_invalidation(animation_id)
+                .animation_needs_completion_check(animation_id)
             && let (Some(view_id), Some(retained_id)) = (
                 self.current_view_or_root(),
                 self.current_retained_element_id(),
@@ -505,7 +531,7 @@ impl Window {
         {
             self.animation_engine
                 .borrow_mut()
-                .set_scene_animation_completion_invalidation(animation_id, view_id, retained_id);
+                .set_animation_completion_check(animation_id, view_id, retained_id);
         }
 
         let text_raster_scale = match completed_text_raster_scale {
@@ -943,32 +969,98 @@ impl Window {
     }
 }
 
-
 #[cfg(test)]
 mod layout_identity_tests {
     use super::*;
 
     #[test]
+    fn mounted_identity_reuses_the_path_allocation() {
+        let path = [ElementId::from("root"), ElementId::from("child")];
+        let id = GlobalElementId::from_path(&path);
+        let scope = RetainedIdentityScope {
+            retained_id: Some(id.clone()),
+            ..Default::default()
+        };
+        let reused = scope.identity_for_path(&path);
+        assert!(std::sync::Arc::ptr_eq(&id.0, &reused.0));
+    }
+
+    #[test]
+    fn changed_ancestor_path_does_not_reuse_a_mounted_identity() {
+        let path = [ElementId::from("root"), ElementId::from("child")];
+        let id = GlobalElementId::from_path(&path);
+        let scope = RetainedIdentityScope {
+            retained_id: Some(id.clone()),
+            ..Default::default()
+        };
+        let changed = [ElementId::from("other-root"), ElementId::from("child")];
+        let current = scope.identity_for_path(&changed);
+        assert_eq!(current.0.as_ref(), &changed);
+        assert!(!std::sync::Arc::ptr_eq(&id.0, &current.0));
+        let synthetic = RetainedIdentityScope::default().identity_for_path(&changed);
+        assert_eq!(synthetic, current);
+    }
+
+    #[test]
+    fn recycled_scope_releases_its_previous_identity() {
+        let id = GlobalElementId::from_path(&[ElementId::from("root")]);
+        let weak = std::sync::Arc::downgrade(&id.0);
+        let mut pool = RetainedIdentityScopePool::default();
+        pool.push_scope(SmallVec::new(), Some(id));
+        assert!(weak.upgrade().is_some());
+        pool.pop_scope();
+        assert!(weak.upgrade().is_none());
+        pool.push_scope(SmallVec::new(), None);
+        assert!(pool.active.last().unwrap().retained_id.is_none());
+    }
+
+    #[test]
     fn positional_layout_identity_never_reuses_native_taffy_state() {
         let mut pool = RetainedIdentityScopePool::default();
-        assert!(!pool.active.last().is_some_and(|scope| {
-            scope.owner_ambiguity.iter().all(|flag| !flag.get())
-        }));
-        pool.push_scope(SmallVec::new());
+        assert!(
+            !pool
+                .active
+                .last()
+                .is_some_and(|scope| { scope.owner_ambiguity.iter().all(|flag| !flag.get()) })
+        );
+        pool.push_scope(SmallVec::new(), None);
         assert!(pool.active.last().unwrap().owner_ambiguity.is_empty());
 
         let mut positional = SmallVec::new();
         positional.push(Rc::new(Cell::new(true)));
-        pool.push_scope(positional);
-        assert!(!pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
+        pool.push_scope(positional, None);
+        assert!(
+            !pool
+                .active
+                .last()
+                .unwrap()
+                .owner_ambiguity
+                .iter()
+                .all(|flag| !flag.get())
+        );
 
         // A latent ambiguity can be raised after an auto ID has been mounted.
         let changed = Rc::new(Cell::new(false));
         let mut auto = SmallVec::new();
         auto.push(changed.clone());
-        pool.push_scope(auto);
-        assert!(pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
+        pool.push_scope(auto, None);
+        assert!(
+            pool.active
+                .last()
+                .unwrap()
+                .owner_ambiguity
+                .iter()
+                .all(|flag| !flag.get())
+        );
         changed.set(true);
-        assert!(!pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
+        assert!(
+            !pool
+                .active
+                .last()
+                .unwrap()
+                .owner_ambiguity
+                .iter()
+                .all(|flag| !flag.get())
+        );
     }
 }

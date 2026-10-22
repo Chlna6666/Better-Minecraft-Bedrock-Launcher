@@ -175,10 +175,6 @@ name = "gpui_perf_lab"
 path = "examples/gpui_perf_lab.rs"
 
 [[example]]
-name = "nested_dirty"
-path = "examples/nested_dirty.rs"
-
-[[example]]
 name = "buffer_residency_lab"
 path = "examples/buffer_residency.rs"
 
@@ -297,6 +293,10 @@ path = "examples/window.rs"
 [[example]]
 name = "window_positioning"
 path = "examples/window_positioning.rs"
+
+[[example]]
+name = "nova_window_smoke"
+path = "examples/nova_window_smoke.rs"
 
 [[example]]
 name = "window_shadow"
@@ -572,6 +572,9 @@ features = [
 
 [dependencies.waker-fn]
 version = "1.2.0"
+
+[dev-dependencies.sysinfo]
+version = "0.39.0"
 
 [dev-dependencies.gfx-shader]
 path = "../nova-gfx/gfx-shader"

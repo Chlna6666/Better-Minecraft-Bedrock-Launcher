@@ -245,7 +245,7 @@ impl MacTextSystemState {
         features: &FontFeatures,
         fallbacks: Option<&FontFallbacks>,
     ) -> Result<SmallVec<[FontId; 4]>> {
-        let name = crate::text_system::font_name_with_fallbacks(name, ".AppleSystemUIFont");
+        let name = crate::text_system::fallback_font_name(name, ".AppleSystemUIFont");
 
         let mut font_ids = SmallVec::new();
         let family = self

@@ -565,9 +565,11 @@ impl Frame {
                 prev_frame.element_states.remove_entry(element_state_key)
             {
                 // Snapshot-based progressive frames keep the committed
-                // CachedViewState in prev_frame during construction. Fresh
+                // element state in prev_frame during construction. Fresh
                 // candidate state must win on successful publication.
-                self.element_states.entry(element_state_key).or_insert(element_state);
+                self.element_states
+                    .entry(element_state_key)
+                    .or_insert(element_state);
             }
         }
 
@@ -578,8 +580,7 @@ impl Frame {
             .mouse_listeners
             .iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
-        self.painter.finish();
-        crate::window::retained::retain_revision(&mut self.painter.scene, prev_frame.scene());
+        self.painter.finish_against(prev_frame.scene());
         Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention")
             .finish(&mut self.painter.scene);
@@ -590,7 +591,7 @@ impl Frame {
     /// active handler; only nonempty speculative slots are restored.
     /// Keep committed snapshots, but migrate non-cloneable states moved by
     /// older Element implementations back from an aborted candidate.
-    /// Never overwrite an intact committed CachedView snapshot with an
+    /// Never overwrite an intact committed element snapshot with an
     /// uncommitted range generation.
     pub(crate) fn rollback_element_states(&mut self, candidate: &mut Self) {
         for (key, state) in candidate.element_states.drain() {
@@ -730,9 +731,9 @@ impl Frame {
     pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
         self.clear();
         self.painter
-            .trim_for_reuse_against(&current.painter, current.scene());
+            .trim_for_reuse(&current.painter, current.scene());
         if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {
-            retained.trim_for_reuse_against(&current.retained_paint);
+            retained.trim_for_reuse(&current.retained_paint);
         }
 
         macro_rules! trim_vec_against {
@@ -753,8 +754,7 @@ impl Frame {
             self.element_states.shrink_to(state_target);
         }
         trim_vec_against!(accessed_element_states);
-        self.dispatch_tree
-            .trim_for_reuse_against(&current.dispatch_tree);
+        self.dispatch_tree.trim_for_reuse(&current.dispatch_tree);
         trim_vec_against!(mouse_listeners);
         trim_vec_against!(hitboxes);
         trim_vec_against!(window_control_hitboxes);
@@ -785,7 +785,7 @@ impl Frame {
         {
             self.retained_layout_semantics.shrink_to(semantics_target);
         }
-        self.tab_stops.trim_for_reuse_against(&current.tab_stops);
+        self.tab_stops.trim_for_reuse(&current.tab_stops);
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -949,7 +949,9 @@ mod publication_tests {
         let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
         let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
         old.element_states.insert(key.clone(), test_cached_slot(10));
-        candidate.element_states.insert(key.clone(), test_cached_slot(20));
+        candidate
+            .element_states
+            .insert(key.clone(), test_cached_slot(20));
         old.rollback_element_states(&mut candidate);
         assert_eq!(test_cached_value(&old.element_states[&key]), Some(10));
         assert!(candidate.element_states.is_empty());
@@ -961,7 +963,9 @@ mod publication_tests {
         let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
         let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
         old.element_states.insert(key.clone(), test_cached_slot(10));
-        candidate.element_states.insert(key.clone(), test_cached_slot(20));
+        candidate
+            .element_states
+            .insert(key.clone(), test_cached_slot(20));
         candidate.accessed_element_states.push(key.clone());
         candidate.finish(&mut old);
         assert_eq!(test_cached_value(&candidate.element_states[&key]), Some(20));

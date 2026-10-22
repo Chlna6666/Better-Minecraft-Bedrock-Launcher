@@ -17,6 +17,14 @@ pub(super) fn paint_line_background(
     window: &mut Window,
     cx: &mut App,
 ) -> Result<()> {
+    // Most text has no background. Do not walk every glyph or query font metrics for a pass
+    // that cannot emit any primitives, including offscreen lines in a scrolling subtree.
+    if !decoration_runs
+        .iter()
+        .any(|run| run.background_color.is_some())
+    {
+        return Ok(());
+    }
     let line_bounds = Bounds::new(
         origin,
         size(

@@ -207,7 +207,7 @@ fn finalize_cluster_properties(
 
 /// Resolve script, bidi and shaping-relevant Unicode properties for a single scalar value without
 /// encoding it into a temporary UTF-8 span first.
-pub(crate) fn text_cluster_properties_for_char(character: char) -> TextClusterProperties {
+pub(crate) fn char_cluster_properties(character: char) -> TextClusterProperties {
     let mut properties = TextClusterProperties {
         script: TextScript::UNKNOWN,
         ..Default::default()
@@ -220,7 +220,7 @@ pub(crate) fn text_cluster_properties_for_char(character: char) -> TextClusterPr
 /// Returns whether a single scalar value should be checked against the active font face for
 /// coverage before shaping/raster fallback chooses a substitute face.
 pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
-    !character.is_ascii() && text_cluster_properties_for_char(character).needs_font_coverage_probe()
+    !character.is_ascii() && char_cluster_properties(character).needs_font_coverage_probe()
 }
 
 /// Returns the first scalar value that should drive a font coverage probe for this shaping cluster.
@@ -276,17 +276,13 @@ fn strong_direction(bidi: BidiClass) -> TextDirection {
 }
 
 /// Resolve the script of a DirectWrite-style UTF-16 cluster without allocating a UTF-16 copy.
-pub(crate) fn text_script_for_utf16_cluster(
-    text: &str,
-    utf8_start: usize,
-    utf16_len: usize,
-) -> TextScript {
-    text_cluster_properties_for_utf16_cluster(text, utf8_start, utf16_len).script
+pub(crate) fn utf16_cluster_script(text: &str, utf8_start: usize, utf16_len: usize) -> TextScript {
+    utf16_cluster_properties(text, utf8_start, utf16_len).script
 }
 
 /// Resolve Unicode properties for a DirectWrite-style UTF-16 cluster without allocating a UTF-16
 /// copy, splitting a surrogate pair, or scanning the cluster twice.
-pub(crate) fn text_cluster_properties_for_utf16_cluster(
+pub(crate) fn utf16_cluster_properties(
     text: &str,
     utf8_start: usize,
     utf16_len: usize,
@@ -336,11 +332,10 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
 #[cfg(test)]
 mod tests {
     use super::{
-        TextDirection, TextScript, character_needs_font_coverage_probe, text_cluster_properties,
-        text_cluster_properties_for_char, text_cluster_properties_for_utf16_cluster,
-        text_contains_missing_font_coverage, text_font_coverage_probe_character,
-        text_needs_font_coverage_probe, text_script, text_script_for_utf16_cluster,
-        text_uses_stable_vertical_raster_frame,
+        TextDirection, TextScript, char_cluster_properties, character_needs_font_coverage_probe,
+        text_cluster_properties, text_contains_missing_font_coverage,
+        text_font_coverage_probe_character, text_needs_font_coverage_probe, text_script,
+        text_uses_stable_vertical_raster_frame, utf16_cluster_properties, utf16_cluster_script,
     };
 
     #[test]
@@ -374,7 +369,7 @@ mod tests {
         for character in ['A', '中', 'ا', 'ह', '😀', '\u{0301}', '\u{2067}'] {
             let mut buffer = [0; 4];
             assert_eq!(
-                text_cluster_properties_for_char(character),
+                char_cluster_properties(character),
                 text_cluster_properties(character.encode_utf8(&mut buffer)),
                 "character={character:?}",
             );
@@ -473,20 +468,14 @@ mod tests {
         let text = "A😀العربية";
         let emoji = text.find('😀').unwrap();
         let arabic = text.find('ا').unwrap();
-        assert_eq!(text_script_for_utf16_cluster(text, 0, 1).name(), "Latin");
-        assert_eq!(
-            text_script_for_utf16_cluster(text, emoji, 2),
-            TextScript::COMMON
-        );
-        assert_eq!(
-            text_script_for_utf16_cluster(text, arabic, 1).name(),
-            "Arabic"
-        );
+        assert_eq!(utf16_cluster_script(text, 0, 1).name(), "Latin");
+        assert_eq!(utf16_cluster_script(text, emoji, 2), TextScript::COMMON);
+        assert_eq!(utf16_cluster_script(text, arabic, 1).name(), "Arabic");
 
-        let emoji_properties = text_cluster_properties_for_utf16_cluster(text, emoji, 2);
+        let emoji_properties = utf16_cluster_properties(text, emoji, 2);
         assert!(emoji_properties.contains_emoji);
         assert_eq!(emoji_properties.direction, TextDirection::Neutral);
-        let arabic_properties = text_cluster_properties_for_utf16_cluster(text, arabic, 1);
+        let arabic_properties = utf16_cluster_properties(text, arabic, 1);
         assert_eq!(arabic_properties.direction, TextDirection::RightToLeft);
         assert!(arabic_properties.requires_bidi_resolution);
     }
@@ -495,23 +484,23 @@ mod tests {
     fn utf16_cluster_rejects_partial_surrogate_pair() {
         let text = "😀😀";
         assert_eq!(
-            text_cluster_properties_for_utf16_cluster(text, 0, 1).script,
+            utf16_cluster_properties(text, 0, 1).script,
             TextScript::UNKNOWN
         );
         assert_eq!(
-            text_cluster_properties_for_utf16_cluster(text, 0, 3).script,
+            utf16_cluster_properties(text, 0, 3).script,
             TextScript::UNKNOWN
         );
         assert_eq!(
-            text_cluster_properties_for_utf16_cluster(text, 0, 5).script,
+            utf16_cluster_properties(text, 0, 5).script,
             TextScript::UNKNOWN
         );
         assert_eq!(
-            text_cluster_properties_for_utf16_cluster(text, 0, 2),
+            utf16_cluster_properties(text, 0, 2),
             text_cluster_properties("😀")
         );
         assert_eq!(
-            text_cluster_properties_for_utf16_cluster(text, 0, 4),
+            utf16_cluster_properties(text, 0, 4),
             text_cluster_properties(text)
         );
     }

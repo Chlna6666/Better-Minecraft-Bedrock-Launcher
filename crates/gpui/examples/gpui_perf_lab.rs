@@ -9,8 +9,8 @@ use std::{
 
 use gpui::{
     App, Application, AssetSource, Bounds, Context, Entity, PerformanceMetricsSnapshot,
-    PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, SharedString,
-    StyleRefinement, Window, WindowBounds, WindowOptions, div, hsla, img,
+    PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, ScrollHandle,
+    SharedString, StyleRefinement, Window, WindowBounds, WindowOptions, div, hsla, img,
     performance_metrics_snapshot, prelude::*, px, rgb, size,
 };
 use serde::Serialize;
@@ -30,6 +30,7 @@ enum Scenario {
     StaticIdle,
     SingleDirty,
     Scroll10k,
+    ScrollPage,
     CjkCold,
     CjkHot,
     TextureStress,
@@ -46,6 +47,7 @@ impl Scenario {
             "static-idle" => Ok(Self::StaticIdle),
             "single-dirty" => Ok(Self::SingleDirty),
             "scroll-10k" => Ok(Self::Scroll10k),
+            "scroll-page" => Ok(Self::ScrollPage),
             "cjk-cold" => Ok(Self::CjkCold),
             "cjk-hot" => Ok(Self::CjkHot),
             "texture-stress" => Ok(Self::TextureStress),
@@ -157,8 +159,8 @@ struct LabReport {
     refresh_rate: f32,
     warmup_frames: usize,
     sample_frames: usize,
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     adapter_name: String,
     adapter_type: String,
     surface_format: String,
@@ -209,6 +211,9 @@ struct PerfLab {
     rendered_frames: usize,
     traversal_parent: Entity<TraversalParentView>,
     traversal_leaf: Entity<TraversalLeafView>,
+    scroll_content: Entity<Scroll10kContentView>,
+    scroll_page_content: Entity<ScrollPageContentView>,
+    scroll_handle: ScrollHandle,
     traversal: Rc<RefCell<TraversalRun>>,
     samples: Vec<FrameSample>,
     finished: bool,
@@ -243,6 +248,23 @@ impl Render for PerfLab {
             if !self.finished {
                 window.request_animation_frame();
             }
+            if matches!(
+                self.config.scenario,
+                Scenario::Scroll10k | Scenario::ScrollPage
+            ) {
+                let scroll_distance = if matches!(self.config.scenario, Scenario::ScrollPage) {
+                    let frame = self.rendered_frames % 100;
+                    if frame < 50 {
+                        frame * 40
+                    } else {
+                        (100 - frame) * 40
+                    }
+                } else {
+                    self.rendered_frames.saturating_mul(8) % (10_000 * 20)
+                };
+                self.scroll_handle
+                    .set_offset(gpui::point(px(0.0), px(-(scroll_distance as f32))));
+            }
             if self.rendered_frames > self.config.scenario.warmup_frames()
                 && self.samples.len() < self.config.frames
             {
@@ -263,7 +285,36 @@ impl PerfLab {
         match self.config.scenario {
             Scenario::StaticIdle => rows(128, 0),
             Scenario::SingleDirty => single_dirty(self.rendered_frames),
-            Scenario::Scroll10k => rows(10_000, self.rendered_frames % 100),
+            Scenario::Scroll10k => div()
+                .id("scroll-10k")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll_handle)
+                .bg(rgb(0x0f172a))
+                .child(self.scroll_content.clone())
+                .into_any_element(),
+            Scenario::ScrollPage => div()
+                .id("scroll-page-layout")
+                .flex()
+                .size_full()
+                .bg(rgb(0xffffff))
+                .child(
+                    div()
+                        .w(px(240.0))
+                        .h_full()
+                        .bg(rgb(0xf1f5f9))
+                        .child("Navigation"),
+                )
+                .child(
+                    div()
+                        .id("scroll-page")
+                        .flex_1()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll_handle)
+                        .child(self.scroll_page_content.clone()),
+                )
+                .into_any_element(),
             Scenario::CjkCold | Scenario::CjkHot => cjk_rows(),
             Scenario::TextureStress => texture_grid(),
             Scenario::OverdrawModal => overdraw_modal(),
@@ -287,9 +338,10 @@ impl PerfLab {
                 }
                 content
                     .child(
-                        self.traversal_parent
-                            .clone()
-                            .cached(StyleRefinement::default().w(px(180.0)).h(px(40.0))),
+                        div()
+                            .w(px(180.0))
+                            .h(px(40.0))
+                            .child(self.traversal_parent.clone()),
                     )
                     .into_any_element()
             }
@@ -320,6 +372,65 @@ struct TraversalRun {
     leaf_renders: Rc<Cell<usize>>,
     initial_render_counts: Option<TraversalRenderCounts>,
     scheduled: bool,
+}
+
+struct Scroll10kContentView;
+
+impl Render for Scroll10kContentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().children((0..10_000).map(|index| {
+            div()
+                .h_5()
+                .bg(rgb(if index % 2 == 0 { 0x172033 } else { 0x1e293b }))
+                .child(format!("Row {index}"))
+        }))
+    }
+}
+
+struct ScrollPageContentView;
+
+impl Render for ScrollPageContentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_6()
+            .children((0_usize..24).map(|section| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0xe2e8f0))
+                    .bg(rgb(0xf8fafc))
+                    .child(format!("Section {section}"))
+                    .child("Scrollable component gallery")
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .children((0_usize..8).map(|button| {
+                                div()
+                                    .id(("scroll-button", section * 8 + button))
+                                    .h(px(if button == 6 { 24.0 } else { 32.0 }))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(rgb(0xcbd5e1))
+                                    .bg(rgb(match button {
+                                        0 => 0x3b82f6,
+                                        2 => 0xef4444,
+                                        _ => 0xffffff,
+                                    }))
+                                    .child(format!("Button {button}"))
+                            })),
+                    )
+            }))
+    }
 }
 
 fn schedule_traversal_frame(
@@ -394,11 +505,10 @@ struct TraversalParentView {
 impl Render for TraversalParentView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get().saturating_add(1));
-        div().size_full().bg(rgb(0x0f172a)).child(
-            self.leaf
-                .clone()
-                .cached(StyleRefinement::default().w(px(180.0)).h(px(40.0))),
-        )
+        div()
+            .size_full()
+            .bg(rgb(0x0f172a))
+            .child(div().w(px(180.0)).h(px(40.0)).child(self.leaf.clone()))
     }
 }
 
@@ -581,7 +691,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn open_lab_window(config: Config, cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(800.0), px(520.0)), cx);
+    let window_size = if matches!(config.scenario, Scenario::ScrollPage) {
+        size(px(1440.0), px(900.0))
+    } else {
+        size(px(800.0), px(520.0))
+    };
+    let bounds = Bounds::centered(None, window_size, cx);
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -601,12 +716,17 @@ fn open_lab_window(config: Config, cx: &mut App) {
                     leaf: traversal_leaf.clone(),
                     renders: traversal_parent_renders.clone(),
                 });
+                let scroll_content = cx.new(|_| Scroll10kContentView);
+                let scroll_page_content = cx.new(|_| ScrollPageContentView);
                 PerfLab {
                     config: config.clone(),
                     animation_started_at: Instant::now(),
                     rendered_frames: 0,
                     traversal_parent,
                     traversal_leaf,
+                    scroll_content,
+                    scroll_page_content,
+                    scroll_handle: ScrollHandle::new(),
                     traversal,
                     samples: Vec::with_capacity(config.frames),
                     finished: false,
@@ -702,6 +822,11 @@ fn print_report(
     memory: gpui::GpuiMemorySnapshot,
 ) {
     let snapshot = performance_metrics_snapshot();
+    let window_metrics = gpui::window_metrics_snapshot();
+    let (width, height) = window_metrics
+        .first()
+        .map(|window| (window.physical_width_px, window.physical_height_px))
+        .unwrap_or_default();
     let gpu_owner = gpui::gpu_owner_metrics_snapshot();
     let gpu_owner_samples = gpu_owner
         .windows
@@ -718,7 +843,7 @@ fn print_report(
         Err(error) => (None, Some(error.to_string())),
     };
     let report = LabReport {
-        window_metrics: gpui::window_metrics_snapshot(),
+        window_metrics,
         text_metrics: gpui::text_metrics_snapshot(),
         schema_version: 6,
         gpu_owner,
@@ -732,8 +857,8 @@ fn print_report(
         refresh_rate: config.refresh_rate,
         warmup_frames: config.scenario.warmup_frames(),
         sample_frames: samples.len(),
-        width: 800,
-        height: 520,
+        width,
+        height,
         adapter_name: snapshot.gpu_adapter_name,
         adapter_type: snapshot.gpu_adapter_type,
         surface_format: snapshot.gpu_surface_format,
@@ -827,7 +952,7 @@ fn print_help() {
     println!(
         "gpui_perf_lab --backend=auto|nova-dx11|nova-dx12|nova-vulkan|nova-opengl \
          --present-mode=auto-vsync|mailbox|immediate \
-         --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor|buffer-growth \
+         --scenario=static-idle|single-dirty|scroll-10k|scroll-page|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor|buffer-growth \
          --refresh-rate=120 --frames=600"
     );
 }

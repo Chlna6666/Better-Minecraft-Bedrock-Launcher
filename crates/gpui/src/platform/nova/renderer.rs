@@ -1,19 +1,20 @@
 use super::*;
+use crate::diagnostics::gpu_owner;
 use crate::platform::frame::ActivePresentationFrame;
 use smallvec::SmallVec;
 
 mod buffer_capacity;
 mod buffer_upload;
 mod chunk_upload;
+mod command_scratch;
+mod commands;
 pub(super) mod compact;
 mod destroy;
-mod draw_step_scratch;
-mod draw_steps;
 mod drawable;
 mod extensions;
 mod filters;
-mod root_color;
 mod frame_graph;
+mod root_color;
 #[cfg(target_os = "windows")]
 use drawable::native_windows_hwnd;
 use drawable::resolve_initial_drawable_size;
@@ -33,7 +34,7 @@ mod shared_buffers;
 mod submission;
 mod surface_lifecycle;
 
-use draw_step_scratch::{DrawStepCacheKey, DrawStepScratch, PathMaskCacheKey};
+use command_scratch::{CommandCacheKey, CommandScratch, PathMaskCacheKey};
 
 const SWAPCHAIN_WARMUP_FRAME_COUNT: u8 = 1;
 
@@ -73,7 +74,6 @@ fn packet_drawable_size(packet: &PresentationPacket, fallback: DrawableSize) -> 
     }
 }
 
-
 fn scene_matches_committed_drawable(
     geometry: &crate::window::PaintGeometry,
     committed: DrawableSize,
@@ -83,7 +83,7 @@ fn scene_matches_committed_drawable(
     })
 }
 
-pub(super) fn nova_present_mode_for_backend(
+pub(super) fn backend_present_mode(
     backend: RendererBackend,
     renderer_options: &RendererOptions,
 ) -> gfx_core::PresentMode {
@@ -131,10 +131,11 @@ impl DrawableSizeRequest {
         scene_epoch: Option<u64>,
         scene_extent: Option<(u32, u32)>,
     ) -> bool {
-        self.applies_to(scene_epoch) && scene_extent.is_none_or(|(width, height)| {
-            self.size.width.0.max(1) as u32 == width.max(1)
-                && self.size.height.0.max(1) as u32 == height.max(1)
-        })
+        self.applies_to(scene_epoch)
+            && scene_extent.is_none_or(|(width, height)| {
+                self.size.width.0.max(1) as u32 == width.max(1)
+                    && self.size.height.0.max(1) as u32 == height.max(1)
+            })
     }
 }
 
@@ -187,22 +188,22 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
     animation_value_buffer: BufferId,
-    quad_resource_set: ResourceSetId,
-    quad_resource_set_layout: ResourceSetLayoutId,
-    shadow_resource_set_layout: ResourceSetLayoutId,
-    underline_resource_set_layout: ResourceSetLayoutId,
-    shadow_resource_set: ResourceSetId,
-    path_rasterization_resource_set: ResourceSetId,
-    path_rasterization_resource_set_layout: ResourceSetLayoutId,
-    path_resource_set_layout: ResourceSetLayoutId,
-    path_resource_set: ResourceSetId,
-    mono_sprite_resource_set_layout: ResourceSetLayoutId,
-    poly_sprite_resource_set_layout: ResourceSetLayoutId,
+    quad_resource_set: BindGroupId,
+    quad_resource_set_layout: BindGroupLayoutId,
+    shadow_resource_set_layout: BindGroupLayoutId,
+    underline_resource_set_layout: BindGroupLayoutId,
+    shadow_resource_set: BindGroupId,
+    path_rasterization_resource_set: BindGroupId,
+    path_rasterization_resource_set_layout: BindGroupLayoutId,
+    path_resource_set_layout: BindGroupLayoutId,
+    path_resource_set: BindGroupId,
+    mono_sprite_resource_set_layout: BindGroupLayoutId,
+    poly_sprite_resource_set_layout: BindGroupLayoutId,
     gpu_atlas_textures: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     synced_atlas_texture_generation: Option<u64>,
-    underline_resource_set: ResourceSetId,
-    backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
-    backdrop_blur_resource_set_layout: ResourceSetLayoutId,
+    underline_resource_set: BindGroupId,
+    backdrop_blur_pass_resource_set_layout: BindGroupLayoutId,
+    backdrop_blur_resource_set_layout: BindGroupLayoutId,
     filters: filters::FilterRegistry,
     root_color: root_color::RootColor,
     /// At most one unsubmitted independent Root/Filter generation.
@@ -220,10 +221,17 @@ pub(crate) struct NovaRenderer {
     retained_upload: retained_upload::RetainedUpload,
     /// Shader text context represented by successfully submitted retained pixels.
     submitted_text_raster: Option<retained_upload::StaticStreamToken>,
-    draw_step_scratch: DrawStepScratch,
+    command_scratch: CommandScratch,
     path_mask_residency: path_mask::Residency,
     active_size: DrawableSize,
     current_size: DrawableSize,
+    /// Extent of the native window surface the backend currently owns. A transient
+    /// resize cover may carry this ahead of `current_size` while the matching Scene
+    /// is still pending.
+    surface_extent: DrawableSize,
+    /// Whether the retained scene target holds a frame that may be re-presented
+    /// over a grown native client area without rendering.
+    retained_frame_valid: bool,
     pending_drawable_size: Option<DrawableSizeRequest>,
     atlas: Arc<NovaAtlas>,
     rendering_parameters: RenderingParameters,
@@ -323,7 +331,11 @@ impl SubmittedResourceVersions {
         if root.is_none() && filters.is_empty() {
             return None;
         }
-        Some(Self { geometry_epoch, root, filters })
+        Some(Self {
+            geometry_epoch,
+            root,
+            filters,
+        })
     }
 }
 
@@ -336,12 +348,12 @@ struct PendingSubmission {
 fn create_grown_quad_resources<D>(
     device: &mut D,
     label: &str,
-    layout: ResourceSetLayoutId,
+    layout: BindGroupLayoutId,
     current_buffers: FrameResourceBuffers,
     new_capacity: usize,
-) -> Result<(BufferId, ResourceSetId)>
+) -> Result<(BufferId, BindGroupId)>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} quads")),
@@ -353,7 +365,7 @@ where
     next_buffers.quad_buffer = buffer;
     next_buffers.quad_capacity = new_capacity;
     match create_quad_resource_set(device, label, layout, &next_buffers) {
-        Ok(resource_set) => Ok((buffer, resource_set)),
+        Ok(bind_group) => Ok((buffer, bind_group)),
         Err(error) => {
             if let Err(destroy_error) = device.destroy_buffer(buffer) {
                 log::debug!("failed to roll back {label} grown quad buffer: {destroy_error}");
@@ -366,12 +378,12 @@ where
 fn retire_replaced_quad_resources<D>(
     device: &mut D,
     label: &str,
-    resource_set: ResourceSetId,
+    bind_group: BindGroupId,
     buffer: Option<BufferId>,
 ) where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    if let Err(error) = device.destroy_resource_set(resource_set) {
+    if let Err(error) = device.destroy_bind_group(bind_group) {
         log::debug!("failed to retire {label} old quad resource set: {error}");
     }
     if let Some(buffer) = buffer {
@@ -384,12 +396,12 @@ fn retire_replaced_quad_resources<D>(
 fn create_grown_path_rasterization_resources<D>(
     device: &mut D,
     label: &str,
-    layout: ResourceSetLayoutId,
+    layout: BindGroupLayoutId,
     current_buffers: FrameResourceBuffers,
     new_capacity: usize,
-) -> Result<(BufferId, ResourceSetId)>
+) -> Result<(BufferId, BindGroupId)>
 where
-    D: BackendResources,
+    D: ResourceDevice,
 {
     let buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} path rasterization vertices")),
@@ -401,7 +413,7 @@ where
     next_buffers.path_rasterization_vertex_buffer = buffer;
     next_buffers.path_rasterization_vertex_capacity = new_capacity;
     match create_path_rasterization_resource_set(device, label, layout, &next_buffers) {
-        Ok(resource_set) => Ok((buffer, resource_set)),
+        Ok(bind_group) => Ok((buffer, bind_group)),
         Err(error) => {
             if let Err(destroy_error) = device.destroy_buffer(buffer) {
                 log::debug!("failed to roll back {label} grown path buffer: {destroy_error}");
@@ -414,12 +426,12 @@ where
 fn retire_replaced_path_rasterization_resources<D>(
     device: &mut D,
     label: &str,
-    resource_set: ResourceSetId,
+    bind_group: BindGroupId,
     buffer: Option<BufferId>,
 ) where
-    D: BackendResources,
+    D: ResourceDevice,
 {
-    if let Err(error) = device.destroy_resource_set(resource_set) {
+    if let Err(error) = device.destroy_bind_group(bind_group) {
         log::debug!("failed to retire {label} old path resource set: {error}");
     }
     if let Some(buffer) = buffer {
@@ -443,11 +455,11 @@ impl NovaRenderer {
 
     /// A replaced native surface needs one successful full present before its Scene can yield
     /// to newer queued work. Only a Scene in the committed physical coordinate space qualifies.
+    #[cfg(test)]
     pub(crate) fn needs_initial_present(&self, scene_extent: Option<(u32, u32)>) -> bool {
         self.swapchain_warmup_frames != 0
             && scene_extent.is_some_and(|(width, height)| {
-                width.max(1) == self.current_size.width
-                    && height.max(1) == self.current_size.height
+                width.max(1) == self.current_size.width && height.max(1) == self.current_size.height
             })
     }
 
@@ -461,38 +473,51 @@ impl NovaRenderer {
         // Do not retire the displayed buffers while DXGI/WSI cannot accept the first
         // replacement frame. Resource preparation may retry, but native resize must
         // not create an uninitialized surface merely to wait for presentation credit.
-        if !lock_backend(&self.backend).can_present_without_wait(self.swapchain)? {
+        let can_present = {
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::NativePacing);
+            lock_backend(&self.backend).can_present_without_wait(self.swapchain)?
+        };
+        if !can_present {
             return Ok(PresentReadiness::NativeFrame);
         }
-        if !self.apply_pending_drawable_size(scene_epoch, scene_extent)? {
+        let size_ready = {
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::SurfaceResize);
+            self.apply_pending_drawable_size(scene_epoch, scene_extent)?
+        };
+        if !size_ready {
             return Ok(PresentReadiness::Resources);
         }
         if !scene_extent.is_none_or(|(width, height)| {
-            width.max(1) == self.current_size.width
-                && height.max(1) == self.current_size.height
+            width.max(1) == self.current_size.width && height.max(1) == self.current_size.height
         }) {
             return Ok(PresentReadiness::Resources);
         }
-        Ok(if lock_backend(&self.backend).can_present_without_wait(self.swapchain)? {
+        let can_present = {
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::NativePacing);
+            lock_backend(&self.backend).can_present_without_wait(self.swapchain)?
+        };
+        Ok(if can_present {
             PresentReadiness::Ready
         } else {
             PresentReadiness::NativeFrame
         })
     }
 
-    pub(crate) fn arm_swapchain_frame_ready(
+    pub(crate) fn request_frame_ready(
         &mut self,
         callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<bool> {
-        lock_backend(&self.backend).arm_swapchain_frame_ready(self.swapchain, callback)
+        lock_backend(&self.backend).request_frame_ready(self.swapchain, callback)
     }
 
-    pub(crate) fn presentation_capabilities(&self) -> gfx_core::PresentationCapabilities {
-        lock_backend(&self.backend).presentation_capabilities(self.swapchain)
+    pub(crate) fn surface_capabilities(&self) -> gfx_core::SurfaceCapabilities {
+        lock_backend(&self.backend).surface_capabilities(self.swapchain)
     }
 
     pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
-        if let Some(previous) = self.pending_presentation_packet.as_ref()
+        if let Some(previous) = self
+            .pending_presentation_packet
+            .as_ref()
             .or(self.active_presentation_packet.as_ref())
         {
             packet.merge_pending_damage_from(previous);
@@ -565,7 +590,7 @@ impl NovaRenderer {
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && lock_backend(&self.backend)
-                .presentation_capabilities(self.swapchain)
+                .surface_capabilities(self.swapchain)
                 .partial_presentation;
         resolve_surface_packet(packet, !supports_partial);
         if self.swapchain_warmup_frames != 0 {
@@ -601,10 +626,8 @@ impl NovaRenderer {
             packet.dirty_region.area(),
             packet.force_full_backdrop_blur_refresh,
         );
-        if requires_full_drawable_damage(
-            self.live_resize_active,
-            self.swapchain_warmup_frames != 0,
-        ) {
+        if requires_full_drawable_damage(self.live_resize_active, self.swapchain_warmup_frames != 0)
+        {
             force_full_drawable_damage_after_resize(packet, self.active_size);
             self.observe_presentation_packet(packet);
         }
@@ -637,7 +660,7 @@ impl NovaRenderer {
         // image on the GPU even though the owner thread has moved on.
         // Retire tracked submissions before any view/resource-set replacement.
         if !self.pending_submissions.is_empty() {
-            self.wait_for_pending_submissions()?;
+            self.wait_pending_submissions()?;
         }
         let descriptor = self.path_mask_target_descriptor(target_size);
         let old_target = self.current_path_mask_target();
@@ -686,7 +709,7 @@ impl NovaRenderer {
             }
         };
 
-        self.update_path_mask_resource_sets(&next_target.resource_sets)?;
+        self.update_path_mask_resource_sets(&next_target.bind_groups)?;
         self.path_texture = next_target.texture;
         self.path_texture_view = next_target.texture_view;
         self.path_texture_size = target_size;
@@ -738,7 +761,10 @@ impl NovaRenderer {
     fn identity_capture_layout_reuse_eligible(&self) -> bool {
         self.filters.is_valid()
             && !present::has_root_backdrop_blurs(&self.frame_upload)
-            && self.frame_upload.backdrop_blur_configs().iter()
+            && self
+                .frame_upload
+                .backdrop_blur_configs()
+                .iter()
                 .all(|config| config.radius() == 0.0)
     }
 
@@ -749,36 +775,56 @@ impl NovaRenderer {
         self.filters.is_valid()
             && self.frame_upload.root_color.is_none()
             && !present::has_root_backdrop_blurs(&self.frame_upload)
-            && self.frame_upload.backdrop_blur_configs().iter()
+            && self
+                .frame_upload
+                .backdrop_blur_configs()
+                .iter()
                 .all(|config| config.radius() == 0.0)
             && self.filters.targets.as_ref().is_some_and(|targets| {
                 targets.source.is_none()
                     && targets.isolated_sources.is_empty()
-                    && targets.variants.iter().take(targets.active_variant_count)
+                    && targets
+                        .variants
+                        .iter()
+                        .take(targets.active_variant_count)
                         .all(|variant| variant.config.radius() == 0.0)
             })
     }
 
     /// Capture GPU view identities only on layout changes; these are not persistent caches.
     fn identity_capture_views(&self, previous: bool) -> Vec<(u32, TextureViewId)> {
-        let Some(targets) = self.filters.targets.as_ref() else { return Vec::new() };
+        let Some(targets) = self.filters.targets.as_ref() else {
+            return Vec::new();
+        };
         if previous {
-            self.filters.element_blur_inputs.iter().filter_map(|source| {
-                targets.exclusive_zero_radius_capture_view(source.index)
-                    .map(|view| (source.index, view))
-            }).collect()
+            self.filters
+                .element_blur_inputs
+                .iter()
+                .filter_map(|source| {
+                    targets
+                        .exclusive_zero_radius_capture_view(source.index)
+                        .map(|view| (source.index, view))
+                })
+                .collect()
         } else {
-            self.frame_upload.element_blur_inputs.iter().filter_map(|(index, _)| {
-                targets.exclusive_zero_radius_capture_view(*index)
-                    .map(|view| (*index, view))
-            }).collect()
+            self.frame_upload
+                .element_blur_inputs
+                .iter()
+                .filter_map(|(index, _)| {
+                    targets
+                        .exclusive_zero_radius_capture_view(*index)
+                        .map(|view| (*index, view))
+                })
+                .collect()
         }
     }
 
     fn preserve_rebound_element_sources(&mut self, previous: &[(u32, TextureViewId)]) {
         let current = self.identity_capture_views(false);
         let retained = self.filters.remap_identity_capture_sources(
-            previous, &current, &self.frame_upload.element_blur_inputs,
+            previous,
+            &current,
+            &self.frame_upload.element_blur_inputs,
         );
         log::trace!(target: "gpui::diagnostics",
             "GPUI identity Capture target rebind: retained_sources={} prior_views={} current_views={}",
@@ -806,32 +852,37 @@ impl NovaRenderer {
         let has_inflight_readers = !self.pending_submissions.is_empty();
         let capture_reuse_eligible = self.identity_capture_layout_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
-        let auto_static_indices = auto_static_eligible.then(|| {
-            self.filters.matching_auto_static_indices(&self.frame_upload.element_blur_inputs)
-        }).flatten();
+        let auto_static_indices = auto_static_eligible
+            .then(|| {
+                self.filters
+                    .matching_auto_static_indices(&self.frame_upload.element_blur_inputs)
+            })
+            .flatten();
         let previous_capture_views = if capture_reuse_eligible || auto_static_eligible {
             self.identity_capture_views(true)
         } else {
             Vec::new()
         };
-        if !has_inflight_readers && self.filters.targets.as_mut().is_some_and(|targets| {
-            targets.reuse_layout(
-                self.frame_upload.backdrop_blur_configs(),
-                self.frame_upload.isolated_blur_source_indices(),
-                present::has_root_backdrop_blurs(&self.frame_upload),
-                auto_static_indices,
-            )
-        }) {
+        if !has_inflight_readers
+            && self.filters.targets.as_mut().is_some_and(|targets| {
+                targets.reuse_layout(
+                    self.frame_upload.backdrop_blur_configs(),
+                    self.frame_upload.isolated_blur_source_indices(),
+                    present::has_root_backdrop_blurs(&self.frame_upload),
+                    auto_static_indices,
+                )
+            })
+        {
             // Root has its own lifetime. Only Filter sources whose physical
             // views and identities survive this rebind retain content versions.
             let preserve_root_color = self.root_color.resident_on(self.root_color.identity());
             if capture_reuse_eligible || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
-                self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+                self.command_scratch.force_full_backdrop_blur_refresh = true;
                 self.invalidate_backdrop_blur_cache();
             }
-            self.invalidate_draw_step_cache();
+            self.invalidate_command_cache();
             log::debug!(target: "gpui::diagnostics",
                 "GPUI retained target layout reused: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={} allocated_variants={} active_isolated={} allocated_isolated={}",
                 preserve_root_color,
@@ -865,7 +916,7 @@ impl NovaRenderer {
         // allocation leaves the Active registry and its GPU views untouched.
         // New target storage has no retained filtered pixels. The first frame using the new chain
         // must therefore rebuild every root backdrop regardless of the current damage footprint.
-        self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+        self.command_scratch.force_full_backdrop_blur_refresh = true;
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         // Record only actual allocation/retirement work, not frame packing,
@@ -873,75 +924,76 @@ impl NovaRenderer {
         // Resize traces previously reported ~310 recreations without any
         // measure of how much of the owner service time they consumed.
         let target_recreation_started = Instant::now();
-        let next_backdrop_blur_targets: BackdropBlurTargets = match &mut *lock_backend(&self.backend) {
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => {
-                let targets = create_backdrop_blur_target_chain(
-                    device,
-                    "gpui nova opengl",
-                    backdrop_blur_target_descriptor,
-                )?;
-                targets
-            }
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => {
-                let targets = create_backdrop_blur_target_chain(
-                    device,
-                    "gpui nova dx11",
-                    backdrop_blur_target_descriptor,
-                )?;
-                targets
-            }
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => {
-                let targets = create_backdrop_blur_target_chain(
-                    device,
-                    "gpui nova dx12",
-                    backdrop_blur_target_descriptor,
-                )?;
-                targets
-            }
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => {
-                let targets = create_backdrop_blur_target_chain(
-                    device,
-                    "gpui nova metal",
-                    backdrop_blur_target_descriptor,
-                )?;
-                targets
-            }
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => {
-                let targets = create_backdrop_blur_target_chain(
-                    device,
-                    "gpui nova vulkan",
-                    backdrop_blur_target_descriptor,
-                )?;
-                targets
-            }
-            #[cfg(not(any(
-                all(
+        let next_backdrop_blur_targets: BackdropBlurTargets =
+            match &mut *lock_backend(&self.backend) {
+                #[cfg(all(
                     feature = "nova-gfx-opengl",
                     any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
+                ))]
+                NovaBackend::OpenGl(device) => {
+                    let targets = create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova opengl",
+                        backdrop_blur_target_descriptor,
+                    )?;
+                    targets
+                }
+                #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+                NovaBackend::Dx11(device) => {
+                    let targets = create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova dx11",
+                        backdrop_blur_target_descriptor,
+                    )?;
+                    targets
+                }
+                #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+                NovaBackend::Dx12(device) => {
+                    let targets = create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova dx12",
+                        backdrop_blur_target_descriptor,
+                    )?;
+                    targets
+                }
+                #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+                NovaBackend::Metal(device) => {
+                    let targets = create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova metal",
+                        backdrop_blur_target_descriptor,
+                    )?;
+                    targets
+                }
+                #[cfg(all(
                     feature = "nova-gfx-vulkan",
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        };
+                ))]
+                NovaBackend::Vulkan(device) => {
+                    let targets = create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova vulkan",
+                        backdrop_blur_target_descriptor,
+                    )?;
+                    targets
+                }
+                #[cfg(not(any(
+                    all(
+                        feature = "nova-gfx-opengl",
+                        any(target_os = "windows", target_os = "linux")
+                    ),
+                    all(feature = "nova-gfx-dx11", target_os = "windows"),
+                    all(feature = "nova-gfx-dx12", target_os = "windows"),
+                    all(feature = "nova-gfx-metal", target_os = "macos"),
+                    all(
+                        feature = "nova-gfx-vulkan",
+                        any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                    )
+                )))]
+                NovaBackend::Unavailable => {
+                    anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+                }
+            };
         log::debug!(target: "gpui::diagnostics",
             "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={} physical_px={}x{} live_resize={} allocate_retire_us={}",
             next_backdrop_blur_targets.active_variant_count,
@@ -956,16 +1008,53 @@ impl NovaRenderer {
         }
         // Cached steps borrow target resource-set handles. Fence retirement
         // protects submitted work, but these CPU copies also outlive a slot.
-        self.invalidate_draw_step_cache();
+        self.invalidate_command_cache();
         self.invalidate_backdrop_blur_cache();
         Ok(())
+    }
+
+    /// Covers a native client area that grew ahead of the committed drawable with the
+    /// last presented frame.
+    ///
+    /// Backends without retained-frame presentation return `Unavailable`, leaving
+    /// their published content unchanged. A capable backend (OpenGL/WGL) copies its
+    /// retained scene target and extends the edges into the exposed strip, keeping it free of black
+    /// pixels without re-rendering or resampling the Scene.
+    pub(crate) fn cover_native_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
+        if !self.retained_frame_valid {
+            return Ok(false);
+        }
+        let width = size.width.0.max(0) as u32;
+        let height = size.height.0.max(0) as u32;
+        if width == 0 || height == 0 {
+            return Ok(false);
+        }
+        if width <= self.surface_extent.width && height <= self.surface_extent.height {
+            return Ok(false);
+        }
+        let target = Extent2d::new(width, height)?;
+        // Keep compositor content at native pixel scale. Stretching the entire old
+        // scene and resetting it after each Present makes text and controls oscillate.
+        // Retained-frame backends (OpenGL) re-present the last Scene at the new extent.
+        match lock_backend(&self.backend).present_retained_frame(self.swapchain, target) {
+            Ok(()) => {
+                self.surface_extent = DrawableSize { width, height };
+                Ok(true)
+            }
+            Err(error) => match error.downcast_ref::<gfx_core::Error>() {
+                Some(gfx_core::Error::Unavailable(_)) => Ok(false),
+                _ => Err(error),
+            },
+        }
     }
 
     pub(crate) fn present_framebuffer_only(
         &mut self,
         mut packet: PresentationPacket,
     ) -> Result<bool> {
-        if let Some(previous) = self.pending_presentation_packet.as_ref()
+        if let Some(previous) = self
+            .pending_presentation_packet
+            .as_ref()
             .or(self.active_presentation_packet.as_ref())
         {
             packet.merge_pending_damage_from(previous);
@@ -998,7 +1087,7 @@ impl NovaRenderer {
             let supports_partial = self.swapchain_warmup_frames == 0
                 && surface_alpha_allows_partial_presentation(self.surface_alpha)
                 && lock_backend(&self.backend)
-                    .presentation_capabilities(self.swapchain)
+                    .surface_capabilities(self.swapchain)
                     .partial_presentation;
             resolve_surface_packet(&mut packet, !supports_partial);
             if self.swapchain_warmup_frames != 0 {
@@ -1086,7 +1175,9 @@ impl NovaRenderer {
         // Inspect scheduling state by reference first. No packet clone or
         // ownership transfer is needed for idle or not-yet-due ticks.
         let was_pending = self.pending_presentation_packet.is_some();
-        let Some(reference) = self.pending_presentation_packet.as_ref()
+        let Some(reference) = self
+            .pending_presentation_packet
+            .as_ref()
             .or(self.active_presentation_packet.as_ref())
         else {
             return Ok(None);
@@ -1162,17 +1253,18 @@ impl NovaRenderer {
 
     pub(crate) fn has_active_presentation_animations(&self) -> bool {
         self.pending_presentation_packet.is_some()
-            || self.active_presentation_packet
+            || self
+                .active_presentation_packet
                 .as_ref()
                 .is_some_and(PresentationPacket::has_pending_presentation)
     }
 
     pub(crate) fn active_presentation_is_due(&self, now: Instant) -> bool {
-        self.pending_presentation_packet.as_ref()
+        self.pending_presentation_packet
+            .as_ref()
             .or(self.active_presentation_packet.as_ref())
             .is_some_and(|packet| {
-                (self.pending_presentation_packet.is_some()
-                    || packet.has_pending_presentation())
+                (self.pending_presentation_packet.is_some() || packet.has_pending_presentation())
                     && packet.presentation_is_due(now)
             })
     }
@@ -1187,7 +1279,8 @@ impl NovaRenderer {
     }
 
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
-        self.pending_presentation_packet.as_ref()
+        self.pending_presentation_packet
+            .as_ref()
             .or(self.active_presentation_packet.as_ref())
             .and_then(PresentationPacket::presentation_deadline)
     }
@@ -1209,7 +1302,7 @@ impl NovaRenderer {
 
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
         let submissions_drained = if !matches!(level, GpuiMemoryTrimLevel::Light) {
-            match self.wait_for_pending_submissions() {
+            match self.wait_pending_submissions() {
                 Ok(()) => true,
                 Err(error) => {
                     log::debug!("failed to drain nova-gfx submissions before memory trim: {error}");
@@ -1220,7 +1313,10 @@ impl NovaRenderer {
             false
         };
         self.atlas.trim(level);
-        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
+        if matches!(
+            level,
+            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
+        ) {
             // Unsubmitted Pending Root/Filter allocations have no GPU readers:
             // free these first under memory pressure, never the Active versions.
             if let Some(pending) = self.pending_offscreen_targets.take() {
@@ -1234,8 +1330,8 @@ impl NovaRenderer {
             }
         }
         self.frame_upload.trim_retained_capacity(level);
-        self.retained_upload.quad_chunks.trim(level);
-        self.draw_step_scratch.trim_retained_capacity(level);
+        self.retained_upload.retained_chunks.trim(level);
+        self.command_scratch.trim_retained_capacity(level);
         // Filter and Root views are still referenced by pending GPU command buffers.
         // A failed fence drain must NEVER convert a memory-pressure hint into
         // early native destruction of textures or descriptor sets.
@@ -1299,7 +1395,7 @@ impl NovaRenderer {
         self.pending_presentation_packet = None;
         self.deferred_animation_completions.clear();
         let destroy_started_at = Instant::now();
-        if let Err(error) = self.wait_for_pending_submissions() {
+        if let Err(error) = self.wait_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
         let submission_wait = destroy_started_at.elapsed();
@@ -1343,16 +1439,16 @@ impl NovaRenderer {
             &self.frame_upload.sampled_animation_values,
         );
         packet.backdrop_blur_damage_plan.merge_from(&filter_damage);
-        self.draw_step_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
+        self.command_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
         // The same repaired region must control root source clearing, texture
         // draw-step scissors and swapchain partial eligibility.
-        self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
+        self.command_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
     }
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
-        self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
-        self.draw_step_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
-        self.draw_step_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
+        self.command_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
+        self.command_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
+        self.command_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
             self.filters.is_valid(),
             packet.force_full_backdrop_blur_refresh,
         );
@@ -1360,7 +1456,7 @@ impl NovaRenderer {
 
     fn update_backdrop_blur_cache_plan(&mut self, quality: BackdropBlurQuality) {
         if self.filters.quality != Some(quality) {
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            self.command_scratch.force_full_backdrop_blur_refresh = true;
         }
     }
 
@@ -1385,8 +1481,8 @@ impl NovaRenderer {
         self.filters.invalidate();
     }
 
-    fn depth_attachment(&self) -> RenderPassDepthAttachment {
-        RenderPassDepthAttachment {
+    fn depth_attachment(&self) -> DepthAttachment {
+        DepthAttachment {
             target: self.depth_texture_view,
             depth_load_op: LoadOp::Clear(1.0),
         }
@@ -1422,7 +1518,7 @@ impl NovaRenderer {
             .max(current_capacity.saturating_mul(2))
             .min(MAX_QUADS);
         let old_buffer = current.buffers.quad_buffer;
-        let old_resource_set = current.resource_sets.quad_resource_set;
+        let old_resource_set = current.bind_groups.quad_resource_set;
         let layout = self.quad_resource_set_layout;
 
         let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
@@ -1493,7 +1589,7 @@ impl NovaRenderer {
         if let Some(resources) = self.frame_resources.get_mut(index) {
             resources.buffers.quad_buffer = new_buffer;
             resources.buffers.quad_capacity = new_capacity;
-            resources.resource_sets.quad_resource_set = new_resource_set;
+            resources.bind_groups.quad_resource_set = new_resource_set;
         }
         self.quad_buffer = new_buffer;
         self.quad_resource_set = new_resource_set;
@@ -1597,7 +1693,7 @@ impl NovaRenderer {
             .max(current_capacity.saturating_mul(2))
             .min(MAX_PATH_VERTICES);
         let old_buffer = current.buffers.path_rasterization_vertex_buffer;
-        let old_resource_set = current.resource_sets.path_rasterization_resource_set;
+        let old_resource_set = current.bind_groups.path_rasterization_resource_set;
         let layout = self.path_rasterization_resource_set_layout;
 
         let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
@@ -1668,7 +1764,7 @@ impl NovaRenderer {
         if let Some(resources) = self.frame_resources.get_mut(index) {
             resources.buffers.path_rasterization_vertex_buffer = new_buffer;
             resources.buffers.path_rasterization_vertex_capacity = new_capacity;
-            resources.resource_sets.path_rasterization_resource_set = new_resource_set;
+            resources.bind_groups.path_rasterization_resource_set = new_resource_set;
         }
         self.path_rasterization_vertex_buffer = new_buffer;
         self.path_rasterization_resource_set = new_resource_set;
@@ -1760,12 +1856,12 @@ impl NovaRenderer {
         self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
         self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
         self.animation_value_buffer = resources.buffers.animation_value_buffer;
-        self.quad_resource_set = resources.resource_sets.quad_resource_set;
-        self.shadow_resource_set = resources.resource_sets.shadow_resource_set;
+        self.quad_resource_set = resources.bind_groups.quad_resource_set;
+        self.shadow_resource_set = resources.bind_groups.shadow_resource_set;
         self.path_rasterization_resource_set =
-            resources.resource_sets.path_rasterization_resource_set;
+            resources.bind_groups.path_rasterization_resource_set;
         self.path_resource_set = resources.path_resource_set;
-        self.underline_resource_set = resources.resource_sets.underline_resource_set;
+        self.underline_resource_set = resources.bind_groups.underline_resource_set;
         Ok(())
     }
 
@@ -1778,13 +1874,13 @@ impl NovaRenderer {
 
     pub(super) fn update_path_mask_resource_sets(
         &mut self,
-        resource_sets: &[ResourceSetId],
+        bind_groups: &[BindGroupId],
     ) -> Result<()> {
-        if resource_sets.len() != self.frame_resources.len() {
+        if bind_groups.len() != self.frame_resources.len() {
             anyhow::bail!("path mask frame resource set count does not match frame resources");
         }
-        for (resources, resource_set) in self.frame_resources.iter_mut().zip(resource_sets) {
-            resources.path_resource_set = *resource_set;
+        for (resources, bind_group) in self.frame_resources.iter_mut().zip(bind_groups) {
+            resources.path_resource_set = *bind_group;
         }
         Ok(())
     }
@@ -1902,7 +1998,10 @@ mod tests {
 
     #[test]
     fn resize_scene_and_committed_surface_must_have_identical_pixel_geometry() {
-        let current = DrawableSize { width: 972, height: 600 };
+        let current = DrawableSize {
+            width: 972,
+            height: 600,
+        };
         let mut geometry = crate::window::PaintGeometry {
             layout_extent: Some((972, 600)),
             layout_epoch: 7,
@@ -1945,26 +2044,38 @@ mod tests {
         let mut published = SmallVec::new();
         let mut deferred = SmallVec::new();
         record_animation_completion_sample(
-            &mut published, &mut deferred,
-            smallvec::smallvec![completion(1)], false, true,
+            &mut published,
+            &mut deferred,
+            smallvec::smallvec![completion(1)],
+            false,
+            true,
         );
         assert!(published.is_empty());
         assert_eq!(deferred.len(), 1);
         record_animation_completion_sample(
-            &mut published, &mut deferred,
-            SmallVec::new(), false, false,
+            &mut published,
+            &mut deferred,
+            SmallVec::new(),
+            false,
+            false,
         );
         assert_eq!(deferred.len(), 1);
         // Superseding a never-presented Scene drops only its events.
         record_animation_completion_sample(
-            &mut published, &mut deferred,
-            smallvec::smallvec![completion(2)], false, true,
+            &mut published,
+            &mut deferred,
+            smallvec::smallvec![completion(2)],
+            false,
+            true,
         );
         assert!(published.is_empty());
         assert_eq!(deferred[0].generation, 2);
         record_animation_completion_sample(
-            &mut published, &mut deferred,
-            SmallVec::new(), true, false,
+            &mut published,
+            &mut deferred,
+            SmallVec::new(),
+            true,
+            false,
         );
         assert!(deferred.is_empty());
         assert_eq!(published.len(), 1);
@@ -1973,21 +2084,22 @@ mod tests {
 
     #[test]
     fn empty_resource_publication_skips_fence_version_bookkeeping() {
-        assert!(SubmittedResourceVersions::new_if_written(
-            12, None, std::iter::empty(),
-        ).is_none());
+        assert!(SubmittedResourceVersions::new_if_written(12, None, std::iter::empty(),).is_none());
         let root = (
             (TextureId::from_parts(4, 1), TextureViewId::from_parts(4, 1)),
             9u64,
         );
-        let root_only = SubmittedResourceVersions::new_if_written(
-            13, Some(root), std::iter::empty(),
-        ).expect("root refresh");
+        let root_only =
+            SubmittedResourceVersions::new_if_written(13, Some(root), std::iter::empty())
+                .expect("root refresh");
         assert_eq!(root_only.root, Some(root));
         assert!(root_only.filters.is_empty());
         let filter_only = SubmittedResourceVersions::new_if_written(
-            14, None, [(3, filters::TextureContentVersion(9))],
-        ).expect("filter refresh");
+            14,
+            None,
+            [(3, filters::TextureContentVersion(9))],
+        )
+        .expect("filter refresh");
         assert_eq!(filter_only.geometry_epoch, 14);
         assert_eq!(filter_only.filters.len(), 1);
     }
@@ -2001,7 +2113,11 @@ mod tests {
         assert_eq!(pending, Some(11));
         publish_presentation_candidate(&mut active, &mut pending, 12, false);
         assert_eq!(active, Some(10));
-        assert_eq!(pending, Some(12), "latest candidate supersedes stalled geometry");
+        assert_eq!(
+            pending,
+            Some(12),
+            "latest candidate supersedes stalled geometry"
+        );
         publish_presentation_candidate(&mut active, &mut pending, 12, true);
         assert_eq!(active, Some(12));
         assert!(pending.is_none());

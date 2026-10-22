@@ -248,15 +248,13 @@ pub(crate) fn glyph_device_origin(
     )
 }
 
-pub(crate) fn svg_paint_bounds_for_requested_bounds(
-    bounds: Bounds<ScaledPixels>,
-) -> Bounds<ScaledPixels> {
+pub(crate) fn svg_paint_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
     bounds
         .map_origin(|origin| origin.round())
         .map_size(|size| size.ceil())
 }
 
-pub(crate) fn svg_raster_size_for_paint_bounds(bounds: Bounds<ScaledPixels>) -> Size<DevicePixels> {
+pub(crate) fn svg_raster_size(bounds: Bounds<ScaledPixels>) -> Size<DevicePixels> {
     bounds
         .size
         .map(|pixels| DevicePixels((pixels.0 * SMOOTH_SVG_SCALE_FACTOR).round() as i32))
@@ -535,7 +533,7 @@ mod titlebar_gesture_tests {
             size: size(ScaledPixels(15.25), ScaledPixels(21.75)),
         };
 
-        let paint_bounds = svg_paint_bounds_for_requested_bounds(requested);
+        let paint_bounds = svg_paint_bounds(requested);
 
         assert_eq!(
             paint_bounds,
@@ -545,7 +543,7 @@ mod titlebar_gesture_tests {
             }
         );
         assert_eq!(
-            svg_raster_size_for_paint_bounds(paint_bounds),
+            svg_raster_size(paint_bounds),
             size(DevicePixels(32), DevicePixels(44))
         );
     }

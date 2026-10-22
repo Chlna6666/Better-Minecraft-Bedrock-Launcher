@@ -309,7 +309,7 @@ impl Asset for ClipboardImageLoader {
         let renderer = cx.svg_renderer();
         let config = cx.image_pipeline_config().animated;
         async move {
-            let mut image = source.to_render_image_with_config(renderer, config)?;
+            let mut image = source.config_render_image(renderer, config)?;
             // `ClipboardImage::hash` is derived from its content, so processing the same image after
             // an eviction can reuse the previous ImageId and its resident atlas tiles. The
             // decode returns a freshly created Arc, so `get_mut` normally succeeds; if it
@@ -342,7 +342,7 @@ impl Asset for EncodedImageLoader {
             let processing_started = std::time::Instant::now();
             let data = source.render(renderer, config)?;
             let processing_duration = processing_started.elapsed();
-            crate::record_image_processing_metrics_with_threshold(
+            crate::record_image_metrics(
                 source.bytes.len(),
                 data.resident_byte_len(),
                 data.frame_count(),

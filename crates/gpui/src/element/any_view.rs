@@ -10,8 +10,8 @@ type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut 
 
 /// A dynamically typed renderable entity handle.
 ///
-/// `AnyView` is intentionally only a type-erased handle. Cache policy, retained ranges,
-/// progressive rendering and selective-splice state live in `CachedView`, not here.
+/// `AnyView` is intentionally only a type-erased handle. Retained ranges and dirty scopes are
+/// owned by the window; this type only forwards rendering and identity.
 #[derive(Clone, Debug)]
 pub struct AnyView {
     entity: AnyEntity,
@@ -59,6 +59,16 @@ impl AnyView {
 
     #[inline(never)]
     pub(super) fn render_element(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+        let _work = if crate::window::element_work::enabled() {
+            crate::window::element_work::begin_named(
+                cx.entities
+                    .type_name_for_id(self.entity_id())
+                    .unwrap_or("unknown"),
+                crate::window::element_work::ElementWorkPhase::Render,
+            )
+        } else {
+            None
+        };
         let mut weak = Some(self.entity.downgrade());
         let mut element = None;
         let render = self.render;
@@ -85,19 +95,19 @@ impl Eq for AnyView {}
 
 /// Shared non-generic lifecycle proxy for ordinary rendered entities.
 ///
-/// This preserves parent-driven layout while recording the geometry and frame-local ranges
-/// needed to reconcile an unchanged-layout subtree without rendering its ancestors.
+/// The view renders into an ordinary element subtree during its own lifecycle. There is no
+/// separate cache boundary: callers that need to avoid re-rendering a view must rely on the
+/// window's dirty scopes, and unchanged subtrees reconcile through the regular element retained
+/// replay proofs.
 #[doc(hidden)]
 pub struct ViewElement {
-    boundary: super::cached_view::CachedView,
+    view: AnyView,
 }
 
 impl ViewElement {
     #[inline]
     fn new(view: AnyView) -> Self {
-        Self {
-            boundary: super::cached_view::CachedView::reactive(view),
-        }
+        Self { view }
     }
 
     #[inline]
@@ -116,13 +126,16 @@ impl IntoElement for ViewElement {
 }
 
 impl Element for ViewElement {
-    type RequestLayoutState = Option<AnyElement>;
-    type PrepaintState = super::cached_view::CachedViewPrepaintState;
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+    // A view's content changes are reported through entity notifications, not through element
+    // semantics. An ancestor retained replay must therefore never skip this lifecycle: the view
+    // Render has to run so its dirty state and child element tree are rebuilt in the current frame.
     const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
         crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
     fn id(&self) -> Option<ElementId> {
-        self.boundary.id()
+        Some(ElementId::View(self.view.entity_id()))
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -131,39 +144,49 @@ impl Element for ViewElement {
 
     fn request_layout(
         &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.boundary.request_layout(id, inspector_id, window, cx)
+        let entity_id = self.view.entity_id();
+        let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
+        window.with_rendered_view(entity_id, |window| {
+            window.record_rendered_view(entity_id, type_name);
+            let mut element = self.view.render_element(window, cx);
+            // Lay out the rendered tree inside the same view scope. Element request-layout code
+            // queries the current view, exactly as it did when the view cache owned this boundary.
+            let layout_id = element.request_layout(window, cx);
+            (layout_id, element)
+        })
     }
 
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<crate::Pixels>,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) -> Self::PrepaintState {
-        self.boundary
-            .prepaint(id, inspector_id, bounds, element, window, cx)
+    ) {
+        let entity_id = self.view.entity_id();
+        window.set_view_id(entity_id);
+        window.with_rendered_view(entity_id, |window| element.prepaint(window, cx));
     }
 
     fn paint(
         &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<crate::Pixels>,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
+        _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.boundary
-            .paint(id, inspector_id, bounds, element, prepaint, window, cx);
+        let entity_id = self.view.entity_id();
+        window.with_rendered_view(entity_id, |window| element.paint(window, cx));
     }
 }
 
@@ -265,12 +288,16 @@ impl Render for EmptyView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppContext as _;
 
     #[test]
-    fn ordinary_view_element_rebases_its_frame_local_ranges() {
-        assert_eq!(
-            <ViewElement as Element>::RETAINED_REPLAY_CAPABILITY,
-            crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
-        );
+    fn ordinary_view_element_uses_caller_view_identity() {
+        let cx = crate::TestAppContext::single();
+        cx.update(|cx| {
+            let entity = cx.new(|_| EmptyView);
+            let id = entity.entity_id();
+            let element = ViewElement::from_entity(entity);
+            assert_eq!(element.id(), Some(ElementId::View(id)));
+        });
     }
 }

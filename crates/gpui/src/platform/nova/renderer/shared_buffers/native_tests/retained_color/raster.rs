@@ -114,20 +114,13 @@ fn verify_samples(
 ) {
     let before = pixels(renderer, scene, target, 0.8, [sample(0.8)], true);
     assert!(renderer.frame_upload.root_color.is_some());
-    renderer
-        .wait_for_pending_submissions()
-        .expect("idle aliases");
+    renderer.wait_pending_submissions().expect("idle aliases");
     let buffer = renderer.text_raster_buffer;
     renderer.rendering_parameters.grayscale_enhanced_contrast = 0.8;
     renderer.retained_upload.invalidate_encode_key();
     // Tiny popup damage must not restrict presentation of changed glyphs elsewhere.
     let actual = pixels(renderer, scene, target, 0.8, [sample(0.9)], false);
-    assert!(
-        renderer
-            .draw_step_scratch
-            .submitted_present_damage
-            .is_none()
-    );
+    assert!(renderer.command_scratch.submitted_present_damage.is_none());
     assert_eq!(
         renderer.text_raster_buffer, buffer,
         "exercise in-place uniform update"
@@ -179,7 +172,7 @@ fn verify(backend: RendererBackend, isolated: bool) {
         "text raster gate backend={backend:?} isolated={isolated} buffer_unchanged=true pixels_equal=true"
     );
     renderer
-        .wait_for_pending_submissions()
+        .wait_pending_submissions()
         .expect("retire readback");
     device!(renderer, device, {
         device.destroy_texture_view(target.1).expect("destroy view");

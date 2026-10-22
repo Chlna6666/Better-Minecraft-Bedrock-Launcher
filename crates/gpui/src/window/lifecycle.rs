@@ -129,7 +129,7 @@ impl Window {
     /// frame must draw. Scheduling another platform frame from such a callback creates an extra
     /// cadence source and can queue stale animation work. This variant therefore marks the target
     /// dirty for the current frame without issuing a second platform-frame request.
-    pub(crate) fn notify_interactive_region_scoped_for_current_frame(
+    pub(crate) fn notify_frame_interactive_region(
         &mut self,
         view_id: EntityId,
         global_id: Option<&GlobalElementId>,
@@ -161,7 +161,7 @@ impl Window {
         }
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        if self.invalidator.invalidate_retained_path_with_scope(
+        if self.invalidator.invalidate_retained_path_scoped(
             view_id,
             global_id,
             RetainedInvalidationScope::from_descendants_dirty(descendants_dirty),
@@ -184,12 +184,6 @@ impl Window {
     }
 }
 
-#[derive(Clone)]
-struct CachedViewRetainedTarget {
-    retained_id: GlobalElementId,
-    state_global_id: GlobalElementId,
-}
-
 struct WindowInvalidatorInner {
     pub dirty: bool,
     /// First pending dirty edge that has not yet been assigned to a draw cycle.
@@ -209,7 +203,8 @@ struct WindowInvalidatorInner {
     pub pending_generic_dirty_views: FxHashSet<EntityId>,
     /// Layout-animation frame tickets that have already been armed for an exact retained target.
     /// Keeping this per target prevents repeated samples from stacking stale next-frame callbacks.
-    pub pending_layout_animation_frames: FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
+    pub pending_layout_animation_frames:
+        FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
     /// Delayed layout-animation tickets keyed by the exact retained target. The earliest deadline
     /// wins; generation changes make superseded timers exit without touching retained state.
     pub pending_layout_animation_deadlines: FxHashMap<(EntityId, GlobalElementId), (Instant, u64)>,
@@ -218,18 +213,6 @@ struct WindowInvalidatorInner {
     pub active_targeted_replay: bool,
     pub active_targeted_elements: FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
     pub active_generic_dirty_views: FxHashSet<EntityId>,
-    /// Stable retained boundaries for explicitly cached AnyViews in the last committed frame.
-    ///
-    /// Ordinary Context::notify(view) can use these paths as ReconcileSubtree targets instead of
-    /// widening a tiny child update into a generic view invalidation from the root. Targets are
-    /// validated against the committed retained-range table after every successful frame.
-    pub cached_view_retained_targets: FxHashMap<EntityId, Vec<CachedViewRetainedTarget>>,
-    /// Non-cached descendant view -> nearest cached ancestor from the last committed frame.
-    ///
-    /// A generic child notify can be promoted to this boundary instead of poisoning selective
-    /// replay all the way to the window root. The boundary itself is also marked DirectDirty, so
-    /// fresh rendering it preserves ordinary invalidation semantics.
-    pub cached_view_fallback_boundaries: FxHashMap<EntityId, EntityId>,
 }
 
 #[derive(Clone)]
@@ -255,8 +238,6 @@ impl WindowInvalidator {
                 active_targeted_replay: false,
                 active_targeted_elements: FxHashMap::default(),
                 active_generic_dirty_views: FxHashSet::default(),
-                cached_view_retained_targets: FxHashMap::default(),
-                cached_view_fallback_boundaries: FxHashMap::default(),
             })),
         }
     }
@@ -356,15 +337,15 @@ impl WindowInvalidator {
 
     #[track_caller]
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
-        self.invalidate_view_with_scope(entity, cx, RetainedInvalidationScope::ReconcileSubtree)
+        self.invalidate_scoped_view(entity, cx, RetainedInvalidationScope::ReconcileSubtree)
     }
 
     #[track_caller]
-    pub(in crate::window) fn invalidate_view_with_scope(
+    pub(in crate::window) fn invalidate_scoped_view(
         &self,
         entity: EntityId,
         cx: &mut App,
-        scope: RetainedInvalidationScope,
+        _scope: RetainedInvalidationScope,
     ) -> bool {
         let mut inner = self.inner.borrow_mut();
         let location = std::panic::Location::caller();
@@ -388,46 +369,7 @@ impl WindowInvalidator {
             }
 
             if inner.pending_targeted_replay {
-                let target_owner = inner
-                    .cached_view_retained_targets
-                    .get(&entity)
-                    .filter(|targets| !targets.is_empty())
-                    .map(|_| entity)
-                    .or_else(|| inner.cached_view_fallback_boundaries.get(&entity).copied());
-
-                if let Some(target_owner) = target_owner
-                    && let Some(targets) = inner
-                        .cached_view_retained_targets
-                        .get(&target_owner)
-                        .cloned()
-                    && !targets.is_empty()
-                {
-                    // A non-cached dirty child is rebuilt by freshly rendering the nearest cached
-                    // ancestor. Mark the promoted owner direct as well so selective splice treats
-                    // that boundary as the fresh target rather than as a traversal-only ancestor.
-                    if target_owner != entity {
-                        inner.dirty_views.insert(target_owner);
-                        if log::log_enabled!(log::Level::Trace) {
-                            log::trace!(
-                                "gpui retained dirty promoted: dirty_view={} cached_boundary={}",
-                                entity.as_u64(),
-                                target_owner.as_u64()
-                            );
-                        }
-                    }
-
-                    for target in targets {
-                        inner
-                            .pending_targeted_elements
-                            .entry((target_owner, target.retained_id))
-                            .and_modify(|existing_scope| {
-                                *existing_scope = existing_scope.merged(scope);
-                            })
-                            .or_insert(scope);
-                    }
-                } else {
-                    inner.pending_generic_dirty_views.insert(entity);
-                }
+                inner.pending_generic_dirty_views.insert(entity);
             }
             inner.dirty = true;
             // Retained targeting changes only rendering provenance. Context::notify observers keep
@@ -446,7 +388,7 @@ impl WindowInvalidator {
         global_id: Option<&GlobalElementId>,
         descendants_dirty: bool,
     ) -> bool {
-        self.invalidate_retained_path_with_scope(
+        self.invalidate_retained_path_scoped(
             entity,
             global_id,
             RetainedInvalidationScope::from_descendants_dirty(descendants_dirty),
@@ -459,7 +401,7 @@ impl WindowInvalidator {
     /// No application-level `Notify` effect is emitted: the caller already owns the reason for
     /// invalidation (interaction state, animation sampling, focus, window overlay, and so on). The
     /// retained path is carried into the next frame so unrelated siblings remain replayable.
-    pub(in crate::window) fn invalidate_retained_path_with_scope(
+    pub(in crate::window) fn invalidate_retained_path_scoped(
         &self,
         entity: EntityId,
         global_id: Option<&GlobalElementId>,
@@ -500,92 +442,6 @@ impl WindowInvalidator {
         true
     }
 
-    pub(crate) fn register_cached_view_retained_target(
-        &self,
-        entity: EntityId,
-        retained_id: &GlobalElementId,
-        state_global_id: &GlobalElementId,
-    ) {
-        let mut inner = self.inner.borrow_mut();
-        let targets = inner
-            .cached_view_retained_targets
-            .entry(entity)
-            .or_default();
-        if let Some(target) = targets
-            .iter_mut()
-            .find(|target| target.retained_id == *retained_id)
-        {
-            target.state_global_id = state_global_id.clone();
-        } else {
-            targets.push(CachedViewRetainedTarget {
-                retained_id: retained_id.clone(),
-                state_global_id: state_global_id.clone(),
-            });
-        }
-    }
-
-    /// Resolve an element path to the closest registered cache boundary of its owner.
-    /// Returns the boundary's retained id and state id without widening the dirty path.
-    pub(crate) fn cached_view_boundary(
-        &self,
-        entity: EntityId,
-        retained_id: &GlobalElementId,
-    ) -> Option<(GlobalElementId, GlobalElementId)> {
-        self.inner
-            .borrow()
-            .cached_view_retained_targets
-            .get(&entity)?
-            .iter()
-            .filter(|target| global_element_path_is_prefix(&target.retained_id, retained_id))
-            .max_by_key(|target| target.retained_id.0.len())
-            .map(|target| (target.retained_id.clone(), target.state_global_id.clone()))
-    }
-
-    pub(in crate::window) fn retain_cached_view_retained_targets(
-        &self,
-        mut keep: impl FnMut(EntityId, &GlobalElementId) -> bool,
-    ) {
-        self.inner
-            .borrow_mut()
-            .cached_view_retained_targets
-            .retain(|entity, targets| {
-                targets.retain(|target| keep(*entity, &target.retained_id));
-                !targets.is_empty()
-            });
-    }
-
-    /// Rebuilds the conservative fallback map used when a dirty view is not itself a cached
-    /// AnyView. The nearest cached ancestor is a correctness-preserving fresh-render boundary:
-    /// rendering that ancestor necessarily rebuilds the dirty descendant while allowing ancestors
-    /// above the boundary to stay retained.
-    pub(in crate::window) fn rebuild_cached_view_fallback_boundaries(
-        &self,
-        dispatch_tree: &DispatchTree,
-    ) {
-        let mut inner = self.inner.borrow_mut();
-        inner.cached_view_fallback_boundaries.clear();
-        if inner.cached_view_retained_targets.is_empty() {
-            return;
-        }
-
-        let cached_views: FxHashSet<EntityId> =
-            inner.cached_view_retained_targets.keys().copied().collect();
-        for view_id in dispatch_tree.view_ids() {
-            if cached_views.contains(&view_id) {
-                continue;
-            }
-
-            if let Some(boundary) = dispatch_tree
-                .view_path_reversed(view_id)
-                .find(|ancestor| cached_views.contains(ancestor))
-            {
-                inner
-                    .cached_view_fallback_boundaries
-                    .insert(view_id, boundary);
-            }
-        }
-    }
-
     pub(crate) fn active_generic_dirty_view_count(&self) -> usize {
         self.inner.borrow().active_generic_dirty_views.len()
     }
@@ -601,30 +457,8 @@ impl WindowInvalidator {
         if !inner.pending_targeted_replay {
             return None;
         }
-        let owner = inner
-            .cached_view_retained_targets
-            .get(&entity)
-            .filter(|targets| !targets.is_empty())
-            .map(|_| entity)
-            .or_else(|| inner.cached_view_fallback_boundaries.get(&entity).copied());
-        if let Some(owner) = owner
-            && let Some(targets) = inner.cached_view_retained_targets.get(&owner).cloned()
-            && !targets.is_empty()
-        {
-            for target in targets {
-                inner
-                    .pending_targeted_elements
-                    .entry((owner, target.retained_id))
-                    .and_modify(|scope| {
-                        *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
-                    })
-                    .or_insert(RetainedInvalidationScope::ReconcileSubtree);
-            }
-            Some(owner)
-        } else {
-            inner.pending_generic_dirty_views.insert(entity);
-            None
-        }
+        inner.pending_generic_dirty_views.insert(entity);
+        None
     }
 
     /// Returns one reconstructible subtree target strictly below ancestor.
@@ -666,13 +500,7 @@ impl WindowInvalidator {
                 scope,
                 RetainedInvalidationScope::ReconcileSubtree
                     | RetainedInvalidationScope::InvalidateSubtree
-            ) || !merge_reconcile_target(
-                &mut selected,
-                *owner,
-                target,
-                ancestor,
-                inner.cached_view_retained_targets.get(owner).map(Vec::as_slice),
-            )
+            ) || !merge_reconcile_target(&mut selected, *owner, target, ancestor)
             {
                 return None;
             }
@@ -824,31 +652,10 @@ impl WindowInvalidator {
     /// ancestors execute so traversal can reach the target. `ReconcileSubtree` descendants are
     /// intentionally not reported dirty here: they use the separate reconciliation query below so
     /// the renderer can require proof before replay rather than repainting blindly.
-    pub(in crate::window) fn retained_path_is_dirty_for_view_route(
+    pub(in crate::window) fn retained_route_path_is_dirty(
         &self,
         global_id: &GlobalElementId,
         owner_shares_view_route: &impl Fn(EntityId) -> bool,
-    ) -> bool {
-        self.retained_path_is_dirty_for_route(global_id, owner_shares_view_route, false)
-    }
-
-    /// Explicit cached views validate fresh outer bounds, clipping, paint
-    /// context and content identity before replay. A viewport-only reflow does
-    /// not intrinsically dirty their descendants; general elements still need
-    /// fresh traversal because their own bounds cannot prove child geometry.
-    pub(in crate::window) fn cached_view_path_is_dirty_for_view_route(
-        &self,
-        global_id: &GlobalElementId,
-        owner_shares_view_route: &impl Fn(EntityId) -> bool,
-    ) -> bool {
-        self.retained_path_is_dirty_for_route(global_id, owner_shares_view_route, true)
-    }
-
-    fn retained_path_is_dirty_for_route(
-        &self,
-        global_id: &GlobalElementId,
-        owner_shares_view_route: &impl Fn(EntityId) -> bool,
-        cached_view: bool,
     ) -> bool {
         let inner = self.inner.borrow();
         if !inner.active_targeted_replay {
@@ -865,7 +672,7 @@ impl WindowInvalidator {
 
     #[cfg(test)]
     fn retained_path_is_dirty(&self, global_id: &GlobalElementId) -> bool {
-        self.retained_path_is_dirty_for_view_route(global_id, &|_| true)
+        self.retained_route_path_is_dirty(global_id, &|_| true)
     }
 
     /// Returns true when `global_id` lies below a `ReconcileSubtree` target owned by a view that
@@ -970,8 +777,6 @@ impl WindowInvalidator {
         trim_collection!(pending_layout_animation_deadlines);
         trim_collection!(active_targeted_elements);
         trim_collection!(active_generic_dirty_views);
-        trim_collection!(cached_view_retained_targets);
-        trim_collection!(cached_view_fallback_boundaries);
     }
 
     pub fn not_drawing(&self) -> bool {
@@ -1038,8 +843,7 @@ fn merge_reconcile_target(
     selected: &mut Option<(EntityId, GlobalElementId)>,
     owner: EntityId,
     target: &GlobalElementId,
-    ancestor: &GlobalElementId,
-    cache_boundaries: Option<&[CachedViewRetainedTarget]>,
+    _ancestor: &GlobalElementId,
 ) -> bool {
     match selected {
         None => {
@@ -1053,21 +857,7 @@ fn merge_reconcile_target(
                 *selected_target = target.clone();
                 true
             } else {
-                let Some(common) = cache_boundaries
-                    .into_iter()
-                    .flatten()
-                    .map(|entry| &entry.retained_id)
-                    .filter(|boundary| {
-                        global_element_path_is_strict_prefix(ancestor, boundary)
-                            && global_element_path_is_prefix(boundary, selected_target)
-                            && global_element_path_is_prefix(boundary, target)
-                    })
-                    .max_by_key(|boundary| boundary.0.len())
-                else {
-                    return false;
-                };
-                *selected_target = common.clone();
-                true
+                false
             }
         }
         Some(_) => false,
@@ -1102,80 +892,32 @@ mod retained_dirty_scope_tests {
             let mut selected = None;
             let ancestor = path(&[0]);
             assert!(merge_reconcile_target(
-                &mut selected, owner, &first, &ancestor, None,
+                &mut selected,
+                owner,
+                &first,
+                &ancestor,
             ));
             assert!(merge_reconcile_target(
-                &mut selected, owner, &second, &ancestor, None,
+                &mut selected,
+                owner,
+                &second,
+                &ancestor,
             ));
             assert_eq!(selected, Some((owner, parent.clone())));
 
             assert!(!merge_reconcile_target(
-                &mut selected, owner, &sibling, &ancestor, None,
+                &mut selected,
+                owner,
+                &sibling,
+                &ancestor,
             ));
             assert!(!merge_reconcile_target(
-                &mut selected, EntityId::from(2), &child, &ancestor, None,
+                &mut selected,
+                EntityId::from(2),
+                &child,
+                &ancestor,
             ));
         }
-    }
-
-    #[test]
-    fn disjoint_dirty_siblings_merge_only_through_same_instance_cache_boundary() {
-        let owner = EntityId::from(1);
-        let ancestor = path(&[0]);
-        let shared = path(&[0, 1]);
-        let left = path(&[0, 1, 3]);
-        let right = path(&[0, 1, 4]);
-        let other = path(&[0, 2, 3]);
-        let registered = vec![
-            CachedViewRetainedTarget {
-                retained_id: shared.clone(),
-                state_global_id: path(&[10]),
-            },
-            CachedViewRetainedTarget {
-                retained_id: path(&[0, 2]),
-                state_global_id: path(&[20]),
-            },
-        ];
-        let merge = |second: &GlobalElementId, boundaries: Option<&[CachedViewRetainedTarget]>| {
-            let mut selected = None;
-            assert!(merge_reconcile_target(
-                &mut selected, owner, &left, &ancestor, boundaries,
-            ));
-            (merge_reconcile_target(
-                &mut selected, owner, second, &ancestor, boundaries,
-            ), selected)
-        };
-        assert_eq!(merge(&right, Some(&registered)), (true, Some((owner, shared))));
-        assert_eq!(merge(&right, None), (false, Some((owner, left.clone()))));
-        assert_eq!(merge(&other, Some(&registered)), (false, Some((owner, left.clone()))));
-    }
-
-    #[test]
-    fn element_completion_resolves_its_owner_cache_without_crossing_instances() {
-        let invalidator = WindowInvalidator::new();
-        let owner = EntityId::from(1);
-        invalidator.register_cached_view_retained_target(owner, &path(&[0, 1]), &path(&[10]));
-        invalidator.register_cached_view_retained_target(owner, &path(&[0, 2]), &path(&[20]));
-        invalidator.register_cached_view_retained_target(owner, &path(&[0, 1, 3]), &path(&[30]));
-
-        assert_eq!(
-            invalidator.cached_view_boundary(owner, &path(&[0, 1, 3, 4])),
-            Some((path(&[0, 1, 3]), path(&[30]))),
-        );
-        assert_eq!(
-            invalidator.cached_view_boundary(owner, &path(&[0, 2, 4])),
-            Some((path(&[0, 2]), path(&[20]))),
-        );
-        assert!(
-            invalidator
-                .cached_view_boundary(owner, &path(&[0, 3]))
-                .is_none()
-        );
-        assert!(
-            invalidator
-                .cached_view_boundary(EntityId::from(2), &path(&[0, 1, 4]))
-                .is_none()
-        );
     }
 
     #[test]
@@ -1244,7 +986,7 @@ mod retained_dirty_scope_tests {
         let sibling = path(&[0, 3]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::ReconcileSubtree,
@@ -1266,8 +1008,10 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1, 2]);
         let sibling = path(&[0, 3]);
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
-            EntityId::from(1), Some(&dirty), RetainedInvalidationScope::RelayoutSubtree,
+        assert!(invalidator.invalidate_retained_path_scoped(
+            EntityId::from(1),
+            Some(&dirty),
+            RetainedInvalidationScope::RelayoutSubtree,
         ));
         invalidator.set_dirty(false);
         assert!(invalidator.retained_path_is_dirty(&ancestor));
@@ -1284,12 +1028,12 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1, 2]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::ReconcileSubtree,
         ));
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::InvalidateSubtree,
@@ -1309,12 +1053,12 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1, 2]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             first_view,
             Some(&dirty),
             RetainedInvalidationScope::ElementOnly,
         ));
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             second_view,
             Some(&dirty),
             RetainedInvalidationScope::InvalidateSubtree,
@@ -1322,12 +1066,10 @@ mod retained_dirty_scope_tests {
         invalidator.set_dirty(false);
 
         assert!(
-            !invalidator
-                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == first_view,)
+            !invalidator.retained_route_path_is_dirty(&descendant, &|owner| owner == first_view,)
         );
         assert!(
-            invalidator
-                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == second_view,)
+            invalidator.retained_route_path_is_dirty(&descendant, &|owner| owner == second_view,)
         );
     }
 
@@ -1338,15 +1080,14 @@ mod retained_dirty_scope_tests {
         let boundary = path(&[0]);
         let descendant = path(&[0, 1]);
         invalidator.set_dirty(false);
-        invalidator.invalidate_retained_path_with_scope(
+        invalidator.invalidate_retained_path_scoped(
             view,
             Some(&boundary),
             RetainedInvalidationScope::RelayoutSubtree,
         );
         invalidator.set_dirty(false);
         assert!(invalidator.retained_path_is_dirty(&descendant));
-        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&descendant, &|_| true));
-        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&boundary, &|_| true));
+        assert!(invalidator.retained_route_path_is_dirty(&boundary, &|_| true));
     }
 
     #[test]
@@ -1397,12 +1138,12 @@ mod retained_dirty_scope_tests {
         let dirty = path(&[0, 1]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             targeted_view,
             Some(&dirty),
             RetainedInvalidationScope::ReconcileSubtree,
         ));
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             generic_view,
             None,
             RetainedInvalidationScope::InvalidateSubtree,
@@ -1422,12 +1163,12 @@ mod retained_dirty_scope_tests {
         let dirty = path(&[0, 1]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             view,
             Some(&dirty),
             RetainedInvalidationScope::ElementOnly,
         ));
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             view,
             None,
             RetainedInvalidationScope::InvalidateSubtree,
@@ -1444,7 +1185,7 @@ mod retained_dirty_scope_tests {
         let owner = EntityId::from(1);
         let retained = path(&[0, 2]);
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             owner,
             Some(&retained),
             RetainedInvalidationScope::ReconcileSubtree,
@@ -1464,7 +1205,7 @@ mod retained_dirty_scope_tests {
         let owner = EntityId::from(1);
         let retained = path(&[0, 2]);
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
+        assert!(invalidator.invalidate_retained_path_scoped(
             owner,
             Some(&retained),
             RetainedInvalidationScope::ElementOnly,
@@ -1487,8 +1228,10 @@ mod retained_dirty_scope_tests {
         let view = EntityId::from(1);
         let target = path(&[0, 3]);
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
-            view, Some(&target), RetainedInvalidationScope::RelayoutSubtree
+        assert!(invalidator.invalidate_retained_path_scoped(
+            view,
+            Some(&target),
+            RetainedInvalidationScope::RelayoutSubtree
         ));
         invalidator.set_dirty(false);
         for _ in 0..3 {
@@ -1507,11 +1250,15 @@ mod retained_dirty_scope_tests {
         let generic = EntityId::from(2);
         let target = path(&[0, 1]);
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path_with_scope(
-            owner, Some(&target), RetainedInvalidationScope::ReconcileSubtree
+        assert!(invalidator.invalidate_retained_path_scoped(
+            owner,
+            Some(&target),
+            RetainedInvalidationScope::ReconcileSubtree
         ));
-        assert!(invalidator.invalidate_retained_path_with_scope(
-            generic, None, RetainedInvalidationScope::InvalidateSubtree
+        assert!(invalidator.invalidate_retained_path_scoped(
+            generic,
+            None,
+            RetainedInvalidationScope::InvalidateSubtree
         ));
         invalidator.set_dirty(false);
         assert!(invalidator.active_targeted_replay());
@@ -1533,9 +1280,18 @@ mod retained_dirty_scope_tests {
         assert!(invalidator.arm_layout_animation_frame(entity, &first, local));
         assert!(!invalidator.arm_layout_animation_frame(entity, &first, reflow));
         assert!(invalidator.arm_layout_animation_frame(entity, &second, local));
-        assert_eq!(invalidator.take_layout_animation_frame(entity, &first), Some(reflow));
-        assert_eq!(invalidator.take_layout_animation_frame(entity, &first), None);
-        assert_eq!(invalidator.take_layout_animation_frame(entity, &second), Some(local));
+        assert_eq!(
+            invalidator.take_layout_animation_frame(entity, &first),
+            Some(reflow)
+        );
+        assert_eq!(
+            invalidator.take_layout_animation_frame(entity, &first),
+            None
+        );
+        assert_eq!(
+            invalidator.take_layout_animation_frame(entity, &second),
+            Some(local)
+        );
     }
 
     #[test]
@@ -1548,7 +1304,11 @@ mod retained_dirty_scope_tests {
             .arm_layout_animation_deadline(entity, &target, deadline)
             .expect("first delayed ticket");
 
-        assert!(invalidator.arm_layout_animation_frame(entity, &target, RetainedInvalidationScope::RelayoutSubtree));
+        assert!(invalidator.arm_layout_animation_frame(
+            entity,
+            &target,
+            RetainedInvalidationScope::RelayoutSubtree
+        ));
         assert!(
             !invalidator.take_layout_animation_deadline(entity, &target, deadline, generation,)
         );

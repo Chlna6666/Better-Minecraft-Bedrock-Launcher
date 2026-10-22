@@ -124,15 +124,25 @@ impl Window {
     /// not blindly invalidated: a stable relative/flex container must be traversed when an absolute
     /// child moves, while unrelated siblings outside the target remain replayable.
     pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
-        self.request_layout_animation_frame_scoped(retained_id, RetainedInvalidationScope::RelayoutSubtree);
+        self.request_layout_animation_frame_scoped(
+            retained_id,
+            RetainedInvalidationScope::RelayoutSubtree,
+        );
     }
 
     /// Only for absolutely positioned / layout-independent animation targets.
     pub(crate) fn request_local_layout_animation_frame(&self, retained_id: GlobalElementId) {
-        self.request_layout_animation_frame_scoped(retained_id, RetainedInvalidationScope::ReconcileSubtree);
+        self.request_layout_animation_frame_scoped(
+            retained_id,
+            RetainedInvalidationScope::ReconcileSubtree,
+        );
     }
 
-    fn request_layout_animation_frame_scoped(&self, retained_id: GlobalElementId, scope: RetainedInvalidationScope) {
+    fn request_layout_animation_frame_scoped(
+        &self,
+        retained_id: GlobalElementId,
+        scope: RetainedInvalidationScope,
+    ) {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
@@ -170,7 +180,7 @@ impl Window {
                 else {
                     return;
                 };
-                if window.invalidator.invalidate_retained_path_with_scope(
+                if window.invalidator.invalidate_retained_path_scoped(
                     entity,
                     Some(&retained_id),
                     scope,
@@ -219,7 +229,7 @@ impl Window {
                 ) {
                     return;
                 }
-                if window.invalidator.invalidate_retained_path_with_scope(
+                if window.invalidator.invalidate_retained_path_scoped(
                     entity,
                     Some(&retained_id),
                     RetainedInvalidationScope::RelayoutSubtree,

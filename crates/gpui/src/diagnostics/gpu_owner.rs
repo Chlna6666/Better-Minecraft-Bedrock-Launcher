@@ -9,6 +9,7 @@ use std::{
 };
 
 mod cpu;
+pub(crate) mod phases;
 #[cfg(test)]
 mod tests;
 

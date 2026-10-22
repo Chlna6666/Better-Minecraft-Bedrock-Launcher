@@ -253,22 +253,22 @@ fn test_input_handler_pending(cx: &mut TestAppContext) {
         window.activate_window();
     });
 
-    let query_prefers_ime_for_printable_keys = |cx: &mut crate::VisualTestContext| {
+    let prefers_ime_printable_keys = |cx: &mut crate::VisualTestContext| {
         let mut platform_window = cx.test_window(cx.window_handle());
         let mut input_handler = platform_window.take_input_handler()?;
-        let prefers_ime = input_handler.query_prefers_ime_for_printable_keys();
+        let prefers_ime = input_handler.prefers_ime_printable_keys();
         platform_window.set_input_handler(input_handler);
         Some(prefers_ime)
     };
 
-    assert_eq!(query_prefers_ime_for_printable_keys(cx), Some(true));
+    assert_eq!(prefers_ime_printable_keys(cx), Some(true));
     cx.simulate_keystrokes("ctrl-x");
     cx.update(|window, _| assert!(window.has_pending_keystrokes()));
-    assert_eq!(query_prefers_ime_for_printable_keys(cx), Some(false));
+    assert_eq!(prefers_ime_printable_keys(cx), Some(false));
 
     cx.simulate_keystrokes("k");
     cx.update(|window, _| assert!(!window.has_pending_keystrokes()));
-    assert_eq!(query_prefers_ime_for_printable_keys(cx), Some(true));
+    assert_eq!(prefers_ime_printable_keys(cx), Some(true));
     test.update(cx, |test, _| {
         assert_eq!(test.action_count.get(), 1);
         assert_eq!(test.text.borrow().as_str(), "");

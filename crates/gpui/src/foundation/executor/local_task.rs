@@ -18,7 +18,7 @@ use std::{
 /// Copy-modified from:
 /// <https://github.com/smol-rs/async-task/blob/ca9dbe1db9c422fd765847fa91306e30a6bb58a9/src/runnable.rs#L405>
 #[track_caller]
-pub(super) fn spawn_local_with_source_location<Fut, S>(
+pub(super) fn spawn_local_tracked<Fut, S>(
     future: Fut,
     schedule: S,
 ) -> (Runnable<()>, async_task::Task<Fut::Output, ()>)

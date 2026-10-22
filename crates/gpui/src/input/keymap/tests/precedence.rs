@@ -10,7 +10,7 @@ fn test_depth_precedence() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let (result, pending) = keymap.bindings_for_input(
+    let (result, pending) = keymap.input_bindings(
         &[Keystroke::parse("ctrl-a").unwrap()],
         &[
             KeyContext::parse("pane").unwrap(),
@@ -33,7 +33,7 @@ fn test_pending_match_enabled() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let matched = keymap.bindings_for_input(
+    let matched = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x")].map(Result::unwrap),
         &[
             KeyContext::parse("Workspace"),
@@ -56,7 +56,7 @@ fn test_pending_match_enabled_extended() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let matched = keymap.bindings_for_input(
+    let matched = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x")].map(Result::unwrap),
         &[
             KeyContext::parse("Workspace"),
@@ -75,7 +75,7 @@ fn test_pending_match_enabled_extended() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let matched = keymap.bindings_for_input(
+    let matched = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x")].map(Result::unwrap),
         &[
             KeyContext::parse("Workspace"),
@@ -98,7 +98,7 @@ fn test_overriding_prefix() {
     let mut keymap = Keymap::default();
     keymap.add_bindings(bindings);
 
-    let matched = keymap.bindings_for_input(
+    let matched = keymap.input_bindings(
         &[Keystroke::parse("ctrl-x")].map(Result::unwrap),
         &[
             KeyContext::parse("Workspace"),
@@ -125,7 +125,7 @@ fn test_context_precedence_with_same_source() {
     keymap.add_bindings(bindings);
 
     // Test with context stack: [Workspace, Editor] (Editor is deeper)
-    let (result, _) = keymap.bindings_for_input(
+    let (result, _) = keymap.input_bindings(
         &[Keystroke::parse("cmd-r").unwrap()],
         &[
             KeyContext::parse("Workspace").unwrap(),
@@ -183,7 +183,7 @@ fn test_source_precedence_sorting() {
     keymap.add_bindings([user_binding]);
 
     // Test with Editor context stack
-    let (result, _) = keymap.bindings_for_input(
+    let (result, _) = keymap.input_bindings(
         &[Keystroke::parse("cmd-r").unwrap()],
         &[KeyContext::parse("Editor").unwrap()],
     );

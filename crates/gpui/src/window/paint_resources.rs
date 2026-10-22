@@ -222,11 +222,10 @@ impl Window {
         let scale_factor = self.scale_factor();
 
         let bounds = bounds.scale(scale_factor);
-        let svg_bounds =
-            svg_paint_bounds_for_requested_bounds(bounds.map(|value| ScaledPixels(value.0)));
+        let svg_bounds = svg_paint_bounds(bounds.map(|value| ScaledPixels(value.0)));
         let params = RenderSvgParams {
             path,
-            size: svg_raster_size_for_paint_bounds(svg_bounds),
+            size: svg_raster_size(svg_bounds),
         };
 
         let Some(tile) = self
@@ -348,7 +347,7 @@ impl Window {
             let frame_sequence = frame.sequence();
             let frame_slot = request
                 .image
-                .gpu_frame_slot_for_frame(frame_sequence, context.animation_config);
+                .gpu_frame_slot(frame_sequence, context.animation_config);
             let cache_key = ImagePaintTileCacheKey {
                 image_id: request.image.id,
                 frame_slot,
@@ -401,7 +400,7 @@ impl Window {
         let view_id = self.current_view_or_root();
         self.on_next_progressive_frame(move |window, _cx| {
             if let (Some(retained_id), Some(view_id)) = (retained_id, view_id) {
-                let _ = window.invalidator.invalidate_retained_path_with_scope(
+                let _ = window.invalidator.invalidate_retained_path_scoped(
                     view_id,
                     Some(&retained_id),
                     RetainedInvalidationScope::InvalidateSubtree,
@@ -492,7 +491,7 @@ impl Window {
             .transform_bounds(visible_bounds)
             .scale(context.scale_factor);
         let frame_sequence = frame.sequence();
-        let frame_slot = data.gpu_frame_slot_for_frame(frame_sequence, context.animation_config);
+        let frame_slot = data.gpu_frame_slot(frame_sequence, context.animation_config);
         let pixel_format = frame.pixel_format();
         let params = RenderImageParams {
             image_id: data.id,

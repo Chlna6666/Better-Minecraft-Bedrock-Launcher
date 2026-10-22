@@ -37,7 +37,7 @@ impl OffscreenFenceReaders {
 impl NovaRenderer {
     /// New physical allocations may replace Active while previous GPU
     /// readers are still executing. Capture only those old native fences.
-    /// No GPU wait and no early ResourceSet/Texture/View destruction.
+    /// No GPU wait and no early BindGroup/Texture/View destruction.
     pub(super) fn retire_offscreen_targets(
         &mut self,
         root: Option<RootColorTarget>,
@@ -60,7 +60,8 @@ impl NovaRenderer {
                 "nova offscreen retirement deferred: reader_fences={} root={} filter={}",
                 readers.ids.len(), targets.root.is_some(), targets.filters.is_some(),
             );
-            self.retired_offscreen_targets.push(RetiredOffscreenTargets { targets, readers });
+            self.retired_offscreen_targets
+                .push(RetiredOffscreenTargets { targets, readers });
         }
     }
 
@@ -69,8 +70,13 @@ impl NovaRenderer {
     pub(super) fn on_offscreen_submission_complete(&mut self, submission: SubmissionId) {
         let mut index = 0;
         while index < self.retired_offscreen_targets.len() {
-            self.retired_offscreen_targets[index].readers.complete(submission);
-            if self.retired_offscreen_targets[index].readers.safe_to_destroy() {
+            self.retired_offscreen_targets[index]
+                .readers
+                .complete(submission);
+            if self.retired_offscreen_targets[index]
+                .readers
+                .safe_to_destroy()
+            {
                 let completed = self.retired_offscreen_targets.swap_remove(index);
                 self.destroy_obsolete_pending_offscreen(completed.targets);
             } else {
@@ -92,7 +98,7 @@ impl PendingOffscreenTargets {
     }
 }
 
-fn prepare<D: BackendResources + BackendPipelines>(
+fn prepare<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     backend: &str,
     size: DrawableSize,
@@ -114,10 +120,14 @@ fn prepare<D: BackendResources + BackendPipelines>(
             return Err(error);
         }
     };
-    Ok(PendingOffscreenTargets { size, root, filters })
+    Ok(PendingOffscreenTargets {
+        size,
+        root,
+        filters,
+    })
 }
 
-pub(super) fn destroy<D: BackendResources + BackendPipelines>(
+pub(super) fn destroy<D: ResourceDevice + PipelineDevice>(
     device: &mut D,
     backend: &str,
     pending: PendingOffscreenTargets,
@@ -142,8 +152,8 @@ impl NovaRenderer {
             return Ok(());
         }
         let root_needed = self.root_color.target.is_some();
-        let filter_needed = self.filters.targets.is_some()
-            && !self.frame_upload.backdrop_blur_configs().is_empty();
+        let filter_needed =
+            self.filters.targets.is_some() && !self.frame_upload.backdrop_blur_configs().is_empty();
         if !root_needed && !filter_needed {
             return Ok(());
         }
@@ -158,7 +168,10 @@ impl NovaRenderer {
         });
         let filter_descriptor = filter_needed.then(|| self.backdrop_blur_target_descriptor(extent));
         let pending: PendingOffscreenTargets = match &mut *lock_backend(&self.backend) {
-            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
             NovaBackend::OpenGl(device) => {
                 prepare(device, "OpenGL", size, root_descriptor, filter_descriptor)?
             }
@@ -182,7 +195,10 @@ impl NovaRenderer {
                 prepare(device, "Vulkan", size, root_descriptor, filter_descriptor)?
             }
             #[cfg(not(any(
-                all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")),
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
                 all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -191,7 +207,9 @@ impl NovaRenderer {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            NovaBackend::Unavailable => anyhow::bail!("offscreen preparation requires a Nova backend"),
+            NovaBackend::Unavailable => {
+                anyhow::bail!("offscreen preparation requires a Nova backend")
+            }
         };
         log::trace!(
             target: "gpui::diagnostics",
@@ -228,7 +246,10 @@ impl NovaRenderer {
 
     pub(super) fn destroy_obsolete_pending_offscreen(&mut self, pending: PendingOffscreenTargets) {
         match &mut *lock_backend(&self.backend) {
-            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
             NovaBackend::OpenGl(device) => destroy(device, "OpenGL", pending),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => destroy(device, "DX11", pending),
@@ -242,7 +263,10 @@ impl NovaRenderer {
             ))]
             NovaBackend::Vulkan(device) => destroy(device, "Vulkan", pending),
             #[cfg(not(any(
-                all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")),
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
                 all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -265,11 +289,19 @@ mod tests {
         let a = SubmissionId::from_parts(1, 1);
         let b = SubmissionId::from_parts(2, 1);
         let future = SubmissionId::from_parts(3, 1);
-        let mut readers = OffscreenFenceReaders { ids: smallvec::smallvec![a, b] };
+        let mut readers = OffscreenFenceReaders {
+            ids: smallvec::smallvec![a, b],
+        };
         readers.complete(future);
-        assert!(!readers.safe_to_destroy(), "future submissions cannot retire old targets");
+        assert!(
+            !readers.safe_to_destroy(),
+            "future submissions cannot retire old targets"
+        );
         readers.complete(b);
-        assert!(!readers.safe_to_destroy(), "remaining old submission still samples texture");
+        assert!(
+            !readers.safe_to_destroy(),
+            "remaining old submission still samples texture"
+        );
         readers.complete(a);
         assert!(readers.safe_to_destroy());
     }
@@ -281,16 +313,26 @@ mod tests {
         let c = SubmissionId::from_parts(12, 1);
         // Two physical generations were replaced between native fence events.
         // Generation 1 only needs A/B; generation 2 needs B/C.
-        let mut old = OffscreenFenceReaders { ids: smallvec::smallvec![a, b] };
-        let mut newer = OffscreenFenceReaders { ids: smallvec::smallvec![b, c] };
+        let mut old = OffscreenFenceReaders {
+            ids: smallvec::smallvec![a, b],
+        };
+        let mut newer = OffscreenFenceReaders {
+            ids: smallvec::smallvec![b, c],
+        };
         old.complete(a);
         newer.complete(a);
         assert!(!old.safe_to_destroy());
         assert!(!newer.safe_to_destroy());
         old.complete(b);
         newer.complete(b);
-        assert!(old.safe_to_destroy(), "C cannot delay A/B's retired allocation");
-        assert!(!newer.safe_to_destroy(), "C still owns the next retired allocation");
+        assert!(
+            old.safe_to_destroy(),
+            "C cannot delay A/B's retired allocation"
+        );
+        assert!(
+            !newer.safe_to_destroy(),
+            "C still owns the next retired allocation"
+        );
         newer.complete(c);
         assert!(newer.safe_to_destroy());
     }
@@ -298,12 +340,24 @@ mod tests {
     #[test]
     fn pending_offscreen_size_identity_cannot_publish_stale_resize_resources() {
         let prepared = PendingOffscreenTargets {
-            size: DrawableSize { width: 900, height: 600 },
+            size: DrawableSize {
+                width: 900,
+                height: 600,
+            },
             root: None,
             filters: None,
         };
-        assert!(prepared.matches(DrawableSize { width: 900, height: 600 }));
-        assert!(!prepared.matches(DrawableSize { width: 901, height: 600 }));
-        assert!(!prepared.matches(DrawableSize { width: 900, height: 601 }));
+        assert!(prepared.matches(DrawableSize {
+            width: 900,
+            height: 600
+        }));
+        assert!(!prepared.matches(DrawableSize {
+            width: 901,
+            height: 600
+        }));
+        assert!(!prepared.matches(DrawableSize {
+            width: 900,
+            height: 601
+        }));
     }
 }

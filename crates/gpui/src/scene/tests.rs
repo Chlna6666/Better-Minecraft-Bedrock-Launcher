@@ -107,8 +107,7 @@ fn equivalent_static_scene_retains_revision_across_sampled_animation_frames() {
         from: [0.97, 0.0, 0.0, 0.0],
         to: [1.0, 1.0, 0.0, 0.0],
     });
-    current.finish();
-    crate::window::retained::retain_revision(&mut current, &previous);
+    current.finish_against(&previous);
 
     assert_eq!(current.revision, previous.revision);
     assert_eq!(current.animation_values[0].progress, 0.5);
@@ -581,7 +580,12 @@ fn retained_element_filter_source_tracks_sampled_animations() {
         &[sample(0.5)]
     ));
     // An absent GPU sample executes the retained primitive at identity.
-    assert!(crate::paint::retention::filter_source_matches(&new, &old, &[], &[]));
+    assert!(crate::paint::retention::filter_source_matches(
+        &new,
+        &old,
+        &[],
+        &[]
+    ));
     assert!(!crate::paint::retention::filter_source_matches(
         &new,
         &old,
@@ -607,7 +611,11 @@ fn retained_filter_source_compares_all_resolved_child_tracks() {
         size(ScaledPixels(16.), ScaledPixels(16.)),
     );
     scene.insert_animated_primitive(
-        Quad { bounds: area, content_mask: ContentMask::new(area), ..Default::default() },
+        Quad {
+            bounds: area,
+            content_mask: ContentMask::new(area),
+            ..Default::default()
+        },
         animation_id,
     );
     let opacity = SceneAnimationValue {
@@ -727,8 +735,8 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     );
     let first_order = scene.backdrop_blurs[0].order;
     let next_order = scene.backdrop_blurs[1].order;
-    let (first_full, first_damage) = plan.source_damage_for_orders(first_order, first_order);
-    let (next_full, next_damage) = plan.source_damage_for_orders(next_order, next_order);
+    let (first_full, first_damage) = plan.order_source_damage(first_order, first_order);
+    let (next_full, next_damage) = plan.order_source_damage(next_order, next_order);
     assert!(!first_full);
     assert_eq!(first_damage.count(), 0);
     assert!(!next_full);
@@ -818,9 +826,8 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
     let background_order = current.backdrop_blurs[0].order;
     let titlebar_order = current.backdrop_blurs[1].order;
     let (background_full, mut background_damage) =
-        plan.source_damage_for_orders(background_order, background_order);
-    let (titlebar_full, titlebar_damage) =
-        plan.source_damage_for_orders(titlebar_order, titlebar_order);
+        plan.order_source_damage(background_order, background_order);
+    let (titlebar_full, titlebar_damage) = plan.order_source_damage(titlebar_order, titlebar_order);
 
     assert!(!background_full && background_damage.next().is_none());
     assert!(!titlebar_full && titlebar_damage.count() > 0);
@@ -966,10 +973,10 @@ fn element_blur_replay_keeps_one_isolated_content_scene() {
     );
     let first = element_blur_scene(child_bounds);
     let mut second = crate::scene::Painter::default();
-    second.replay(0..first.len(), &first, &[]);
+    second.replay(0..first.len(), &first, []);
     second.finish();
     let mut third = crate::scene::Painter::default();
-    third.replay(0..second.len(), &second, &[]);
+    third.replay(0..second.len(), &second, []);
     third.finish();
 
     let expected_bounds = first.blurs[0].bounds;
@@ -1165,7 +1172,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         .collect::<Vec<_>>();
 
     let mut replayed = crate::scene::Painter::default();
-    replayed.replay(0..replay_end, &previous, &[]);
+    replayed.replay(0..replay_end, &previous, []);
     let actual_replayed_orders = replayed
         .paint_operations
         .iter()
@@ -1222,7 +1229,7 @@ fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
 
     let mut replayed = crate::scene::Painter::default();
     replayed.insert_primitive(first);
-    replayed.replay(1..previous.len(), &previous, &[]);
+    replayed.replay(1..previous.len(), &previous, []);
 
     assert!(!replayed.retained_prefix_invalid);
     assert_eq!(replayed.retained_prefix_verified_len, previous.len());
@@ -1270,7 +1277,7 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
 
     let mut replayed = crate::scene::Painter::default();
     replayed.insert_primitive(changed_first);
-    replayed.replay(1..previous.len(), &previous, &[]);
+    replayed.replay(1..previous.len(), &previous, []);
 
     assert!(replayed.retained_prefix_invalid);
 }
@@ -1364,19 +1371,22 @@ fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
     previous.clear();
     previous.insert_animated_primitive(quad, id);
     let sample = |animation_id, progress| SceneAnimationValue {
-        animation_id, property: crate::TransitionProperty::Opacity, progress,
-        from: [0.; 4], to: [1., 0., 0., 0.],
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.; 4],
+        to: [1., 0., 0., 0.],
     };
     previous.push_animation_value(sample(id, 0.25));
     previous.push_animation_value(sample(SceneAnimationId(id.0 + 1), 0.5));
     let mut replayed = crate::scene::Painter::default();
-    replayed.replay(range.clone(), &previous, &[]);
+    replayed.replay(range.clone(), &previous, []);
     assert_eq!(replayed.animation_values, vec![sample(id, 0.25)]);
-    replayed.replay(range.clone(), &previous, &[]);
+    replayed.replay(range.clone(), &previous, []);
     assert_eq!(replayed.animation_values.len(), 1);
     let mut updated = crate::scene::Painter::default();
     updated.push_animation_value(sample(id, 0.75));
-    updated.replay(range, &previous, &[]);
+    updated.replay(range, &previous, []);
     assert_eq!(updated.animation_values, vec![sample(id, 0.75)]);
 }
 
@@ -1400,10 +1410,7 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
     );
     right.finish();
 
-    assert_ne!(
-        left.chunks()[0].id,
-        right.chunks()[0].id
-    );
+    assert_ne!(left.chunks()[0].id, right.chunks()[0].id);
 }
 
 #[test]
@@ -1546,10 +1553,7 @@ fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
     assert_eq!(pixels[0].origin.y.0, 220.0);
     assert_eq!(pixels[0].size.height.0, 40.0);
     assert_eq!(pixels[0].size.width.0, 200.0);
-    assert!(
-        crate::paint::gpu_sample_damage(&scene, &[sample(220.0)], &[sample(220.0)])
-            .is_empty()
-    );
+    assert!(crate::paint::gpu_sample_damage(&scene, &[sample(220.0)], &[sample(220.0)]).is_empty());
 }
 
 #[test]
@@ -1579,11 +1583,17 @@ fn identical_filter_scene_and_samples_skip_nested_source_revalidation() {
         to: [1.0, 0.0, 0.0, 0.0],
     };
     assert!(crate::paint::retention::filter_source_matches(
-        &scene, &scene, &[value(0.2)], &[value(0.2)]
+        &scene,
+        &scene,
+        &[value(0.2)],
+        &[value(0.2)]
     ));
     assert!(
         !crate::paint::retention::filter_source_matches(
-            &scene, &scene, &[value(0.3)], &[value(0.2)]
+            &scene,
+            &scene,
+            &[value(0.3)],
+            &[value(0.2)]
         ),
         "the same Scene pointer does not allow a changed nested GPU animation sample"
     );

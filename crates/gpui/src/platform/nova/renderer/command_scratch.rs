@@ -1,15 +1,15 @@
 use super::*;
 
 #[derive(Default)]
-pub(super) struct DrawStepScratch {
+pub(super) struct CommandScratch {
     /// Actual native damage passed to the most recent successful test submission.
     #[cfg(test)]
     pub(super) submitted_present_damage: Option<ScissorRect>,
-    draw_steps: Vec<RenderStepDescriptor>,
-    draw_step_cache: Vec<DrawStepCacheEntry>,
+    draw_steps: Vec<RenderCommand>,
+    draw_step_cache: Vec<CommandCacheEntry>,
     prepared_draw_step_slot: Option<usize>,
-    pub(super) draw_step_cache_hit: bool,
-    path_mask_steps: Vec<DrawStepDescriptor>,
+    pub(super) command_cache_hit: bool,
+    path_commands: Vec<RenderCommand>,
     path_mask_cache: Vec<PathMaskCacheEntry>,
     prepared_path_mask_slot: Option<usize>,
     pub(super) path_mask_cache_hit: bool,
@@ -19,7 +19,7 @@ pub(super) struct DrawStepScratch {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct DrawStepCacheKey {
+pub(super) struct CommandCacheKey {
     pub(super) scene_revision: u64,
     /// Version of the packed draw stream, not the producer Scene revision.
     pub(super) encode_generation: u64,
@@ -31,47 +31,47 @@ pub(super) struct DrawStepCacheKey {
 }
 
 #[derive(Default)]
-struct DrawStepCacheEntry {
-    key: Option<DrawStepCacheKey>,
-    steps: Vec<RenderStepDescriptor>,
+struct CommandCacheEntry {
+    key: Option<CommandCacheKey>,
+    steps: Vec<RenderCommand>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct PathMaskCacheKey {
     pub(super) scene_revision: u64,
     pub(super) encode_generation: u64,
-    pub(super) path_rasterization_resource_set: ResourceSetId,
+    pub(super) path_rasterization_resource_set: BindGroupId,
 }
 
 #[derive(Default)]
 struct PathMaskCacheEntry {
     key: Option<PathMaskCacheKey>,
-    steps: Vec<DrawStepDescriptor>,
+    steps: Vec<RenderCommand>,
 }
 
-impl DrawStepScratch {
+impl CommandScratch {
     pub(super) fn invalidate_draw_steps(&mut self) {
         for cache in &mut self.draw_step_cache {
             cache.key = None;
         }
-        self.draw_step_cache_hit = false;
+        self.command_cache_hit = false;
     }
 
     #[cfg(test)]
     fn path_capacity_bytes(&self) -> usize {
-        (self.path_mask_steps.capacity()
+        (self.path_commands.capacity()
             + self
                 .path_mask_cache
                 .iter()
                 .map(|cache| cache.steps.capacity())
                 .sum::<usize>())
-            * std::mem::size_of::<DrawStepDescriptor>()
+            * std::mem::size_of::<RenderCommand>()
     }
 
-    pub(super) fn path_steps(&self) -> &[DrawStepDescriptor] {
+    pub(super) fn path_commands(&self) -> &[RenderCommand] {
         match self.prepared_path_mask_slot {
             Some(slot) => &self.path_mask_cache[slot].steps,
-            None => &self.path_mask_steps,
+            None => &self.path_commands,
         }
     }
 
@@ -80,7 +80,7 @@ impl DrawStepScratch {
         key: PathMaskCacheKey,
         slot: usize,
         slot_count: usize,
-        build: impl FnOnce(&mut Vec<DrawStepDescriptor>),
+        build: impl FnOnce(&mut Vec<RenderCommand>),
     ) {
         self.path_mask_cache_hit = false;
         self.path_mask_cache
@@ -88,7 +88,7 @@ impl DrawStepScratch {
         self.prepared_path_mask_slot =
             (key.scene_revision != 0 && slot < slot_count).then_some(slot);
         if let Some(slot) = self.prepared_path_mask_slot {
-            self.path_mask_steps.clear();
+            self.path_commands.clear();
             let cache = &mut self.path_mask_cache[slot];
             if cache.key == Some(key) {
                 self.path_mask_cache_hit = true;
@@ -100,11 +100,11 @@ impl DrawStepScratch {
             build(&mut cache.steps);
             cache.key = Some(key);
         } else {
-            build(&mut self.path_mask_steps);
+            build(&mut self.path_commands);
         }
     }
 
-    pub(super) fn steps(&self) -> &[RenderStepDescriptor] {
+    pub(super) fn commands(&self) -> &[RenderCommand] {
         match self.prepared_draw_step_slot {
             Some(slot) => &self.draw_step_cache[slot].steps,
             None => &self.draw_steps,
@@ -113,11 +113,11 @@ impl DrawStepScratch {
 
     pub(super) fn prepare_steps(
         &mut self,
-        key: DrawStepCacheKey,
+        key: CommandCacheKey,
         slot_count: usize,
-        build: impl FnOnce(&mut Vec<RenderStepDescriptor>),
+        build: impl FnOnce(&mut Vec<RenderCommand>),
     ) {
-        self.draw_step_cache_hit = false;
+        self.command_cache_hit = false;
         self.draw_step_cache
             .resize_with(slot_count, Default::default);
         self.prepared_draw_step_slot = (key.scene_revision != 0
@@ -127,7 +127,7 @@ impl DrawStepScratch {
             self.draw_steps.clear();
             let cached = &mut self.draw_step_cache[slot];
             if cached.key == Some(key) {
-                self.draw_step_cache_hit = true;
+                self.command_cache_hit = true;
                 return;
             }
             // Build directly into the slot's retained allocation. Present borrows this vector
@@ -149,7 +149,7 @@ impl DrawStepScratch {
             GpuiMemoryTrimLevel::Aggressive => 1,
         };
         trim_vec_capacity(&mut self.draw_steps, 64, multiplier);
-        trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
+        trim_vec_capacity(&mut self.path_commands, 32, multiplier);
         for cache in &mut self.path_mask_cache {
             if cache.steps.capacity() > 32usize.saturating_mul(multiplier.max(1)) {
                 *cache = PathMaskCacheEntry::default();
@@ -157,7 +157,7 @@ impl DrawStepScratch {
         }
         for cache in &mut self.draw_step_cache {
             if cache.steps.capacity() > 64usize.saturating_mul(multiplier.max(1)) {
-                *cache = DrawStepCacheEntry::default();
+                *cache = CommandCacheEntry::default();
             }
         }
     }
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn path_mask_cache_reuses_rotating_slots_without_rebuilding() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         for slot in 0..2 {
             scratch.prepare_path_steps(path_key(slot, 1), slot, 2, |steps| {
                 steps.clear();
@@ -185,21 +185,21 @@ mod tests {
                 scratch.path_mask_cache_hit,
                 "rotating frame slot rebuilt its path mask"
             );
-            assert_eq!(scratch.path_steps()[0].instance_count, slot as u32 + 1);
+            assert_eq!(scratch.path_commands()[0].instance_count(), slot as u32 + 1);
             assert_eq!(
-                scratch.path_steps().as_ptr(),
+                scratch.path_commands().as_ptr(),
                 scratch.path_mask_cache[slot].steps.as_ptr()
             );
         }
-        assert_eq!(scratch.path_mask_steps.capacity(), 0);
+        assert_eq!(scratch.path_commands.capacity(), 0);
     }
 
     #[test]
     fn path_mask_cache_invalidates_resource_sets_and_revisions() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         let mut key = path_key(0, 1);
         scratch.prepare_path_steps(key, 0, 2, |steps| steps.push(path_step(1)));
-        key.path_rasterization_resource_set = ResourceSetId::new(99);
+        key.path_rasterization_resource_set = BindGroupId::new(99);
         for revision in [1, 2, 0] {
             key.scene_revision = revision;
             scratch.prepare_path_steps(key, 0, 2, |steps| {
@@ -207,41 +207,44 @@ mod tests {
                 steps.push(path_step(revision as u32 + 2));
             });
             assert!(!scratch.path_mask_cache_hit);
-            assert_eq!(scratch.path_steps()[0].instance_count, revision as u32 + 2);
+            assert_eq!(
+                scratch.path_commands()[0].instance_count(),
+                revision as u32 + 2
+            );
         }
         key.scene_revision = 2;
         scratch.prepare_path_steps(key, 0, 2, |_| {
             panic!("uncached scene replaced retained cache")
         });
         assert!(scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_steps()[0].instance_count, 4);
+        assert_eq!(scratch.path_commands()[0].instance_count(), 4);
     }
 
     #[test]
     fn path_mask_cache_rebuilds_after_trim_and_slot_resize() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         scratch.prepare_path_steps(path_key(1, 1), 1, 2, |steps| {
             steps.reserve(2048);
             steps.push(path_step(1));
         });
         scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
         assert_eq!(scratch.path_capacity_bytes(), 0);
-        assert!(scratch.path_steps().is_empty());
+        assert!(scratch.path_commands().is_empty());
         for (slot, slots) in [(1, 2), (0, 1), (1, 2)] {
             scratch.prepare_path_steps(path_key(slot, 1), slot, slots, |steps| {
                 steps.push(path_step(2));
             });
             assert!(!scratch.path_mask_cache_hit);
-            assert_eq!(scratch.path_steps()[0].instance_count, 2);
+            assert_eq!(scratch.path_commands()[0].instance_count(), 2);
         }
         scratch.prepare_path_steps(path_key(1, 1), 1, 0, |steps| steps.push(path_step(3)));
         assert!(!scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_steps()[0].instance_count, 3);
+        assert_eq!(scratch.path_commands()[0].instance_count(), 3);
     }
 
     #[test]
     fn cached_steps_release_unused_uncached_scratch_lengths() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         let mut draw_key = draw_step_key(0);
         draw_key.scene_revision = 0;
         scratch.prepare_steps(draw_key, 2, |steps| steps.resize(2048, draw_step(1)));
@@ -252,13 +255,13 @@ mod tests {
         scratch.prepare_steps(draw_key, 2, |steps| steps.push(draw_step(2)));
         scratch.prepare_path_steps(path_key(0, 1), 0, 2, |steps| steps.push(path_step(2)));
         assert!(scratch.draw_steps.is_empty());
-        assert!(scratch.path_mask_steps.is_empty());
+        assert!(scratch.path_commands.is_empty());
         scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
         assert!(scratch.draw_steps.capacity() <= 64);
-        assert!(scratch.path_mask_steps.capacity() <= 32);
+        assert!(scratch.path_commands.capacity() <= 32);
     }
-    fn draw_step_key(slot: usize) -> DrawStepCacheKey {
-        DrawStepCacheKey {
+    fn draw_step_key(slot: usize) -> CommandCacheKey {
+        CommandCacheKey {
             scene_revision: 1,
             encode_generation: 1,
             size: DrawableSize {
@@ -272,10 +275,10 @@ mod tests {
         }
     }
 
-    fn draw_step(instances: u32) -> RenderStepDescriptor {
-        RenderStepDescriptor::Draw(DrawStepDescriptor {
+    fn draw_step(instances: u32) -> RenderCommand {
+        RenderCommand::Draw(DrawCommand {
             pipeline: RenderPipelineId::new(1),
-            resource_sets: gfx_core::resource_set_list_empty(),
+            bind_groups: gfx_core::bind_group_list_empty(),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: instances,
@@ -286,19 +289,19 @@ mod tests {
 
     #[test]
     fn draw_step_cache_borrows_each_frame_slot_without_rebuilding() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         for slot in 0..2 {
             scratch.prepare_steps(draw_step_key(slot), 2, |steps| {
                 steps.push(draw_step(slot as u32 + 1));
             });
-            assert!(!scratch.draw_step_cache_hit);
+            assert!(!scratch.command_cache_hit);
         }
         for slot in [0, 1, 0] {
             scratch.prepare_steps(draw_step_key(slot), 2, |_| panic!("cache hit rebuilt"));
-            assert!(scratch.draw_step_cache_hit);
-            assert_eq!(scratch.steps(), &[draw_step(slot as u32 + 1)]);
+            assert!(scratch.command_cache_hit);
+            assert_eq!(scratch.commands(), &[draw_step(slot as u32 + 1)]);
             assert_eq!(
-                scratch.steps().as_ptr(),
+                scratch.commands().as_ptr(),
                 scratch.draw_step_cache[slot].steps.as_ptr()
             );
         }
@@ -307,7 +310,7 @@ mod tests {
 
     #[test]
     fn draw_step_cache_rebuilds_changed_resources_and_uncached_scenes() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         let mut key = draw_step_key(0);
         scratch.prepare_steps(key, 2, |steps| steps.push(draw_step(1)));
         key.atlas_texture_generation = Some(2);
@@ -315,29 +318,29 @@ mod tests {
             steps.clear();
             steps.push(draw_step(2));
         });
-        assert!(!scratch.draw_step_cache_hit);
-        assert_eq!(scratch.steps(), &[draw_step(2)]);
+        assert!(!scratch.command_cache_hit);
+        assert_eq!(scratch.commands(), &[draw_step(2)]);
         key.scene_revision = 0;
         for instances in [3, 4] {
             scratch.prepare_steps(key, 2, |steps| {
                 steps.clear();
                 steps.push(draw_step(instances));
             });
-            assert!(!scratch.draw_step_cache_hit);
-            assert_eq!(scratch.steps(), &[draw_step(instances)]);
+            assert!(!scratch.command_cache_hit);
+            assert_eq!(scratch.commands(), &[draw_step(instances)]);
         }
         key.scene_revision = 1;
         scratch.prepare_steps(key, 2, |_| panic!("uncached frame replaced retained slot"));
-        assert_eq!(scratch.steps(), &[draw_step(2)]);
+        assert_eq!(scratch.commands(), &[draw_step(2)]);
     }
 
     #[test]
     fn draw_step_cache_rebuilds_same_revision_after_new_scene_encode() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         let original = draw_step_key(0);
         scratch.prepare_steps(original, 2, |steps| steps.push(draw_step(1)));
         scratch.prepare_steps(original, 2, |_| panic!("unchanged encode rebuilt"));
-        assert!(scratch.draw_step_cache_hit);
+        assert!(scratch.command_cache_hit);
 
         let mut reencoded = original;
         reencoded.encode_generation += 1;
@@ -345,16 +348,16 @@ mod tests {
             steps.clear();
             steps.push(draw_step(2));
         });
-        assert!(!scratch.draw_step_cache_hit);
-        assert_eq!(scratch.steps(), &[draw_step(2)]);
+        assert!(!scratch.command_cache_hit);
+        assert_eq!(scratch.commands(), &[draw_step(2)]);
         // A GPU-only animation sample leaves the packed version unchanged.
         scratch.prepare_steps(reencoded, 2, |_| panic!("sample-only rebuilt"));
-        assert!(scratch.draw_step_cache_hit);
+        assert!(scratch.command_cache_hit);
     }
 
     #[test]
     fn path_mask_cache_rebuilds_same_revision_after_new_scene_encode() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         let original = path_key(0, 1);
         scratch.prepare_path_steps(original, 0, 2, |steps| steps.push(path_step(1)));
         scratch.prepare_path_steps(original, 0, 2, |_| panic!("unchanged path rebuilt"));
@@ -367,60 +370,60 @@ mod tests {
             steps.push(path_step(2));
         });
         assert!(!scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_steps()[0].instance_count, 2);
+        assert_eq!(scratch.path_commands()[0].instance_count(), 2);
         scratch.prepare_path_steps(reencoded, 0, 2, |_| panic!("sample-only path rebuilt"));
         assert!(scratch.path_mask_cache_hit);
     }
 
     #[test]
     fn draw_step_cache_rebuilds_after_trim_and_slot_count_change() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         scratch.prepare_steps(draw_step_key(1), 2, |steps| {
             steps.reserve(2048);
             steps.push(draw_step(1));
         });
         scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
-        assert!(scratch.steps().is_empty());
+        assert!(scratch.commands().is_empty());
         scratch.prepare_steps(draw_step_key(1), 2, |steps| steps.push(draw_step(2)));
-        assert!(!scratch.draw_step_cache_hit);
-        assert_eq!(scratch.steps(), &[draw_step(2)]);
+        assert!(!scratch.command_cache_hit);
+        assert_eq!(scratch.commands(), &[draw_step(2)]);
         scratch.prepare_steps(draw_step_key(0), 1, |steps| steps.push(draw_step(3)));
-        assert_eq!(scratch.steps(), &[draw_step(3)]);
+        assert_eq!(scratch.commands(), &[draw_step(3)]);
         scratch.prepare_steps(draw_step_key(1), 2, |steps| steps.push(draw_step(4)));
-        assert!(!scratch.draw_step_cache_hit);
-        assert_eq!(scratch.steps(), &[draw_step(4)]);
+        assert!(!scratch.command_cache_hit);
+        assert_eq!(scratch.commands(), &[draw_step(4)]);
     }
 
     #[test]
     fn draw_step_scratch_aggressive_trim_shrinks_retained_capacity() {
-        let mut scratch = DrawStepScratch::default();
+        let mut scratch = CommandScratch::default();
         scratch.draw_steps.reserve(2048);
-        scratch.path_mask_steps.reserve(1024);
+        scratch.path_commands.reserve(1024);
 
         scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
 
         assert!(scratch.draw_steps.capacity() <= 64);
-        assert!(scratch.path_mask_steps.capacity() <= 32);
+        assert!(scratch.path_commands.capacity() <= 32);
     }
 
     fn path_key(slot: usize, revision: u64) -> PathMaskCacheKey {
         PathMaskCacheKey {
             scene_revision: revision,
             encode_generation: 1,
-            path_rasterization_resource_set: ResourceSetId::new(slot as u64 + 1),
+            path_rasterization_resource_set: BindGroupId::new(slot as u64 + 1),
         }
     }
 
-    fn path_step(instances: u32) -> DrawStepDescriptor {
-        DrawStepDescriptor {
+    fn path_step(instances: u32) -> RenderCommand {
+        RenderCommand::Draw(DrawCommand {
             pipeline: RenderPipelineId::new(1),
-            resource_sets: gfx_core::resource_set_list_empty(),
+            bind_groups: gfx_core::bind_group_list_empty(),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: instances,
             first_instance: 0,
             scissor: None,
-        }
+        })
     }
 
     #[test]
@@ -435,7 +438,7 @@ mod tests {
             ("large_invalidated", 2, 1024, true),
         ] {
             let fixture = vec![path_step(1); count];
-            let mut scratch = DrawStepScratch::default();
+            let mut scratch = CommandScratch::default();
             for slot in 0..slots {
                 scratch.prepare_path_steps(path_key(slot, 1), slot, slots, |steps| {
                     steps.clone_from(&fixture);
@@ -457,8 +460,8 @@ mod tests {
     }
 
     fn measure_path_cache(
-        scratch: &mut DrawStepScratch,
-        fixture: &[DrawStepDescriptor],
+        scratch: &mut CommandScratch,
+        fixture: &[RenderCommand],
         slots: usize,
         invalidates: bool,
     ) -> (Vec<u64>, usize, usize) {
@@ -482,7 +485,7 @@ mod tests {
                     steps.extend_from_slice(std::hint::black_box(fixture));
                 });
                 hits += usize::from(scratch.path_mask_cache_hit);
-                std::hint::black_box(scratch.path_steps());
+                std::hint::black_box(scratch.path_commands());
             }
             batches.push(started.elapsed().as_nanos() as u64);
         }

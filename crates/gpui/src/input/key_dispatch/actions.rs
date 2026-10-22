@@ -69,7 +69,7 @@ impl DispatchTree {
 
     /// Returns the highest precedence binding for the given action and context stack. This is the
     /// same as the last result of `bindings_for_action`, but more efficient than getting all bindings.
-    pub fn binding_for_action(
+    pub fn action_binding(
         &self,
         action: &dyn Action,
         context_stack: &[KeyContext],
@@ -89,7 +89,7 @@ impl DispatchTree {
         binding: &KeyBinding,
         context_stack: &[KeyContext],
     ) -> bool {
-        let (bindings, _) = keymap.bindings_for_input(&binding.keystrokes, context_stack);
+        let (bindings, _) = keymap.input_bindings(&binding.keystrokes, context_stack);
         if let Some(found) = bindings.iter().next() {
             found.action.partial_eq(binding.action.as_ref())
         } else {

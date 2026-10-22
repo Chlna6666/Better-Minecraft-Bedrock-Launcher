@@ -69,7 +69,12 @@ impl FilterRegistry {
     fn same_auto_static_source(current: &FilterSource, previous: &FilterSource) -> bool {
         match (current, previous) {
             (
-                FilterSource::AutoStatic { bounds, content_mask, content_hash, content_bytes },
+                FilterSource::AutoStatic {
+                    bounds,
+                    content_mask,
+                    content_hash,
+                    content_bytes,
+                },
                 FilterSource::AutoStatic {
                     bounds: old_bounds,
                     content_mask: old_mask,
@@ -93,16 +98,17 @@ impl FilterRegistry {
         &self,
         new_sources: &[(u32, FilterSource)],
     ) -> Option<(u32, u32)> {
-        let mut old = self.element_blur_inputs.iter().filter(|entry| {
-            matches!(entry.source, FilterSource::AutoStatic { .. })
-        });
+        let mut old = self
+            .element_blur_inputs
+            .iter()
+            .filter(|entry| matches!(entry.source, FilterSource::AutoStatic { .. }));
         let previous = old.next()?;
         if old.next().is_some() || previous.content_version.0 == 0 {
             return None;
         }
-        let mut next = new_sources.iter().filter(|(_, source)| {
-            matches!(source, FilterSource::AutoStatic { .. })
-        });
+        let mut next = new_sources
+            .iter()
+            .filter(|(_, source)| matches!(source, FilterSource::AutoStatic { .. }));
         let (index, source) = next.next()?;
         if next.next().is_some() || !Self::same_auto_static_source(source, &previous.source) {
             return None;
@@ -125,7 +131,8 @@ impl FilterRegistry {
         let unique_auto_static = new_sources
             .iter()
             .filter(|(_, source)| matches!(source, FilterSource::AutoStatic { .. }))
-            .count() == 1;
+            .count()
+            == 1;
         for (index, incoming) in new_sources {
             let Some((_, target_view)) = new_views.iter().find(|(next, _)| next == index) else {
                 continue;
@@ -137,9 +144,10 @@ impl FilterRegistry {
                 if old.content_version.0 == 0 {
                     return false;
                 }
-                if !old_views.iter().any(|(old_index, old_view)| {
-                    *old_index == old.index && old_view == target_view
-                }) {
+                if !old_views
+                    .iter()
+                    .any(|(old_index, old_view)| *old_index == old.index && old_view == target_view)
+                {
                     return false;
                 }
                 match (incoming, &old.source) {
@@ -155,14 +163,19 @@ impl FilterRegistry {
                     _ => false,
                 }
             });
-            let Some(snapshot) = candidates.next() else { continue };
+            let Some(snapshot) = candidates.next() else {
+                continue;
+            };
             // Multiple old matches cannot prove uniquely initialized texels.
-            if candidates.next().is_some() { continue }
+            if candidates.next().is_some() {
+                continue;
+            }
             let mut resident = snapshot.clone();
             resident.index = *index;
             self.element_blur_inputs.push(resident);
         }
-        self.element_blur_inputs.sort_unstable_by_key(|source| source.index);
+        self.element_blur_inputs
+            .sort_unstable_by_key(|source| source.index);
         self.element_blur_inputs.len()
     }
 
@@ -230,10 +243,14 @@ impl FilterRegistry {
                 // subtree does not invalidate its resident texture.
                 let same_scene = std::sync::Arc::ptr_eq(&current.content, &old.content);
                 let old_coordinates_valid = crate::paint::capture_preserves_source_coordinates(
-                    current.radius, current.animation_id, previous_values.iter(),
+                    current.radius,
+                    current.animation_id,
+                    previous_values.iter(),
                 );
                 let new_coordinates_valid = crate::paint::capture_preserves_source_coordinates(
-                    current.radius, current.animation_id, animation_values.iter(),
+                    current.radius,
+                    current.animation_id,
+                    animation_values.iter(),
                 );
                 if !same_scene || !old_coordinates_valid || !new_coordinates_valid {
                     log::trace!(
@@ -245,7 +262,11 @@ impl FilterRegistry {
                     return false;
                 }
                 let visible_source = current.bounds.intersect(&current.content_mask.bounds);
-                let damage = crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values);
+                let damage = crate::paint::gpu_sample_damage(
+                    &current.content,
+                    previous_values,
+                    animation_values,
+                );
                 let affected = damage.iter().any(|area| area.intersects(&visible_source));
                 if affected {
                     log::trace!(
@@ -265,7 +286,7 @@ impl FilterRegistry {
                     index,
                 );
                 false
-            },
+            }
         }
     }
 
@@ -295,10 +316,14 @@ impl FilterRegistry {
             || current.content_mask != old.content_mask
             || current.radius != old.radius
             || !crate::paint::capture_preserves_source_coordinates(
-                current.radius, current.animation_id, previous_values.iter(),
+                current.radius,
+                current.animation_id,
+                previous_values.iter(),
             )
             || !crate::paint::capture_preserves_source_coordinates(
-                current.radius, current.animation_id, animation_values.iter(),
+                current.radius,
+                current.animation_id,
+                animation_values.iter(),
             )
         {
             return None;
@@ -309,13 +334,20 @@ impl FilterRegistry {
         // intentionally checks structural paint, then gpu_sample_damage below
         // accounts for every actual animation sample difference.
         let same_paint = std::sync::Arc::ptr_eq(&current.content, &old.content)
-            || crate::paint::retention::filter_source_matches(&current.content, &old.content, &[], &[]);
+            || crate::paint::retention::filter_source_matches(
+                &current.content,
+                &old.content,
+                &[],
+                &[],
+            );
         if !same_paint {
             return None;
         }
         let bounds = current.bounds.intersect(&current.content_mask.bounds);
         let mut damage = crate::DirtyRegion::empty();
-        for region in crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values) {
+        for region in
+            crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values)
+        {
             damage.push(region.intersect(&bounds));
         }
         let result = (!damage.is_empty()).then_some(damage);
@@ -353,9 +385,11 @@ impl FilterRegistry {
         // sample here: the retained texture was not refreshed at that time.
         if refreshed_indices.peek().is_none()
             && self.element_blur_inputs.len() == sources.len()
-            && self.element_blur_inputs.iter().zip(sources).all(
-                |(previous, (index, _))| previous.index == *index
-            )
+            && self
+                .element_blur_inputs
+                .iter()
+                .zip(sources)
+                .all(|(previous, (index, _))| previous.index == *index)
         {
             return;
         }
@@ -385,9 +419,9 @@ impl FilterRegistry {
                 {
                     None
                 } else {
-                    Some(std::sync::Arc::clone(shared_samples.get_or_insert_with(|| {
-                        std::sync::Arc::from(animation_values)
-                    })))
+                    Some(std::sync::Arc::clone(shared_samples.get_or_insert_with(
+                        || std::sync::Arc::from(animation_values),
+                    )))
                 },
                 content_version: TextureContentVersion(self.next_content_version),
                 completed_version: TextureContentVersion(0),
@@ -415,7 +449,8 @@ impl FilterRegistry {
         indices: impl IntoIterator<Item = u32>,
     ) {
         for index in indices {
-            if let Ok(position) = self.element_blur_inputs
+            if let Ok(position) = self
+                .element_blur_inputs
                 .binary_search_by_key(&index, |source| source.index)
             {
                 self.element_blur_inputs[position].content_version = TextureContentVersion(0);
@@ -442,12 +477,9 @@ impl FilterRegistry {
             .filter(|version| version.0 != 0)
     }
 
-    pub(super) fn complete_submission(
-        &mut self,
-        index: u32,
-        version: TextureContentVersion,
-    ) {
-        if let Ok(position) = self.element_blur_inputs
+    pub(super) fn complete_submission(&mut self, index: u32, version: TextureContentVersion) {
+        if let Ok(position) = self
+            .element_blur_inputs
             .binary_search_by_key(&index, |source| source.index)
         {
             let source = &mut self.element_blur_inputs[position];
@@ -542,51 +574,70 @@ mod tests {
     #[test]
     fn zero_filter_target_reorder_preserves_only_same_layer_and_texture() {
         let mut registry = FilterRegistry::new(None);
-        let make = |name: &'static str| FilterSource::Element(crate::PaintBlur {
-            order: 0,
-            animation_id: None,
-            layer_id: Some(crate::GlobalElementId::from_path(&[name.into()])),
-            bounds: crate::Bounds::default(),
-            content_mask: crate::ContentMask::default(),
-            radius: crate::ScaledPixels(0.0),
-            opacity: 1.0,
-            content: std::sync::Arc::new(crate::Scene::default()),
-        });
+        let make = |name: &'static str| {
+            FilterSource::Element(crate::PaintBlur {
+                order: 0,
+                animation_id: None,
+                layer_id: Some(crate::GlobalElementId::from_path(&[name.into()])),
+                bounds: crate::Bounds::default(),
+                content_mask: crate::ContentMask::default(),
+                radius: crate::ScaledPixels(0.0),
+                opacity: 1.0,
+                content: std::sync::Arc::new(crate::Scene::default()),
+            })
+        };
         let first = make("first");
         let second = make("second");
-        registry.record_element_blur_inputs(&[(2, first.clone()), (4, second.clone())], &[], [2, 4]);
+        registry.record_element_blur_inputs(
+            &[(2, first.clone()), (4, second.clone())],
+            &[],
+            [2, 4],
+        );
         let version1 = registry.layer_content_version(2);
         let version2 = registry.layer_content_version(4);
         let v1 = TextureViewId::new(101);
         let v2 = TextureViewId::new(102);
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(2, v1), (4, v2)],
-            &[(5, v1), (7, v2)],
-            &[(5, first.clone()), (7, second.clone())],
-        ), 2);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(2, v1), (4, v2)],
+                &[(5, v1), (7, v2)],
+                &[(5, first.clone()), (7, second.clone())],
+            ),
+            2
+        );
         assert_eq!(registry.layer_content_version(5), version1);
         assert_eq!(registry.layer_content_version(7), version2);
         assert!(registry.source_unchanged(5, &first, &[]));
         assert!(registry.source_unchanged(7, &second, &[]));
 
         let replacement = make("replacement");
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(5, v1), (7, v2)],
-            &[(5, v1), (7, TextureViewId::new(103))],
-            &[(5, replacement.clone()), (7, second.clone())],
-        ), 0);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(5, v1), (7, v2)],
+                &[(5, v1), (7, TextureViewId::new(103))],
+                &[(5, replacement.clone()), (7, second.clone())],
+            ),
+            0
+        );
         assert!(registry.layer_content_version(5).is_none());
         assert!(registry.layer_content_version(7).is_none());
         assert!(!registry.source_unchanged(5, &replacement, &[]));
 
         // A Gaussian filter cannot inherit a direct-compositor target.
         registry.record_element_blur_inputs(&[(5, first.clone())], &[], [5]);
-        let mut gaussian = match first { FilterSource::Element(layer) => layer, _ => unreachable!() };
+        let mut gaussian = match first {
+            FilterSource::Element(layer) => layer,
+            _ => unreachable!(),
+        };
         gaussian.radius = crate::ScaledPixels(3.0);
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(5, v1)], &[(9, v1)],
-            &[(9, FilterSource::Element(gaussian))],
-        ), 0);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(5, v1)],
+                &[(9, v1)],
+                &[(9, FilterSource::Element(gaussian))],
+            ),
+            0
+        );
     }
 
     #[test]
@@ -608,9 +659,14 @@ mod tests {
             crate::size(crate::ScaledPixels(16.0), crate::ScaledPixels(16.0)),
         );
         let v = TextureViewId::new(303);
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(1, v)], &[(3, v)], &[(3, FilterSource::Element(blur.clone()))],
-        ), 1);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(1, v)],
+                &[(3, v)],
+                &[(3, FilterSource::Element(blur.clone()))],
+            ),
+            1
+        );
         assert!(!registry.source_unchanged(3, &FilterSource::Element(blur), &[]));
     }
 
@@ -628,21 +684,36 @@ mod tests {
             content_bytes: 4096,
         };
         let view = TextureViewId::new(28);
-        assert_eq!(registry.matching_auto_static_indices(&[(5, source.clone())]), None);
+        assert_eq!(
+            registry.matching_auto_static_indices(&[(5, source.clone())]),
+            None
+        );
         registry.record_element_blur_inputs(&[(2, source.clone())], &[], [2]);
         registry.record_submission(BackdropBlurQuality::Full, 1);
         let resident = registry.layer_content_version(2);
-        assert_eq!(registry.matching_auto_static_indices(&[(5, source.clone())]), Some((2, 5)));
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(2, view)], &[(5, view)], &[(5, source.clone())],
-        ), 1);
+        assert_eq!(
+            registry.matching_auto_static_indices(&[(5, source.clone())]),
+            Some((2, 5))
+        );
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(2, view)],
+                &[(5, view)],
+                &[(5, source.clone())],
+            ),
+            1
+        );
         assert_eq!(registry.layer_content_version(5), resident);
         assert!(registry.source_unchanged(5, &source, &[]));
 
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(5, view)], &[(3, TextureViewId::new(29))],
-            &[(3, source.clone())],
-        ), 0);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(5, view)],
+                &[(3, TextureViewId::new(29))],
+                &[(3, source.clone())],
+            ),
+            0
+        );
         assert!(registry.layer_content_version(3).is_none());
     }
 
@@ -666,11 +737,19 @@ mod tests {
             content_hash: 12346,
             content_bytes: 8192,
         };
-        assert_eq!(registry.matching_auto_static_indices(&[(4, changed.clone())]), None);
+        assert_eq!(
+            registry.matching_auto_static_indices(&[(4, changed.clone())]),
+            None
+        );
         let view = TextureViewId::new(37);
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(1, view)], &[(4, view)], &[(4, changed.clone())],
-        ), 0);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(1, view)],
+                &[(4, view)],
+                &[(4, changed.clone())],
+            ),
+            0
+        );
         assert!(!registry.source_unchanged(4, &changed, &[]));
 
         registry.record_element_blur_inputs(&[(1, old.clone())], &[], [1]);
@@ -684,10 +763,14 @@ mod tests {
             content_hash: 12345,
             content_bytes: 8192,
         };
-        assert_eq!(registry.matching_auto_static_indices(&[(5, moved.clone())]), None);
-        assert_eq!(registry.remap_identity_capture_sources(
-            &[(1, view)], &[(5, view)], &[(5, moved)],
-        ), 0);
+        assert_eq!(
+            registry.matching_auto_static_indices(&[(5, moved.clone())]),
+            None
+        );
+        assert_eq!(
+            registry.remap_identity_capture_sources(&[(1, view)], &[(5, view)], &[(5, moved)],),
+            0
+        );
     }
 
     #[test]
@@ -785,14 +868,34 @@ mod tests {
         registry.record_element_blur_inputs(&sources, &[sample(0.8)], [4]);
         assert!(std::sync::Arc::ptr_eq(
             &first,
-            registry.element_blur_inputs[0].animation_values.as_ref().unwrap(),
+            registry.element_blur_inputs[0]
+                .animation_values
+                .as_ref()
+                .unwrap(),
         ));
         assert!(!std::sync::Arc::ptr_eq(
             &first,
-            registry.element_blur_inputs[1].animation_values.as_ref().unwrap(),
+            registry.element_blur_inputs[1]
+                .animation_values
+                .as_ref()
+                .unwrap(),
         ));
-        assert_eq!(registry.element_blur_inputs[0].animation_values.as_deref().unwrap()[0].progress, 0.2);
-        assert_eq!(registry.element_blur_inputs[1].animation_values.as_deref().unwrap()[0].progress, 0.8);
+        assert_eq!(
+            registry.element_blur_inputs[0]
+                .animation_values
+                .as_deref()
+                .unwrap()[0]
+                .progress,
+            0.2
+        );
+        assert_eq!(
+            registry.element_blur_inputs[1]
+                .animation_values
+                .as_deref()
+                .unwrap()[0]
+                .progress,
+            0.8
+        );
         registry.invalidate();
         assert!(registry.element_blur_inputs.is_empty());
     }
@@ -850,13 +953,19 @@ mod tests {
         let sources = [(3, source.clone())];
         registry.record_element_blur_inputs(&sources, &[sample(0.2)], [3]);
         let version = registry.layer_content_version(3);
-        let snapshot = registry.element_blur_inputs[0].animation_values.clone().unwrap();
+        let snapshot = registry.element_blur_inputs[0]
+            .animation_values
+            .clone()
+            .unwrap();
         for progress in [0.35, 0.55, 0.75] {
             registry.record_element_blur_inputs(&sources, &[sample(progress)], []);
             assert_eq!(registry.layer_content_version(3), version);
             assert!(std::sync::Arc::ptr_eq(
                 &snapshot,
-                registry.element_blur_inputs[0].animation_values.as_ref().unwrap()
+                registry.element_blur_inputs[0]
+                    .animation_values
+                    .as_ref()
+                    .unwrap()
             ));
             assert_eq!(
                 registry.element_blur_inputs[0].animation_values.as_deref(),
@@ -897,7 +1006,14 @@ mod tests {
         });
         // A reversed refresh order must not disturb the sorted resident index.
         registry.record_element_blur_inputs(&[(2, live.clone()), (7, removed)], &[], [7, 2]);
-        assert_eq!(registry.element_blur_inputs.iter().map(|source| source.index).collect::<Vec<_>>(), vec![2, 7]);
+        assert_eq!(
+            registry
+                .element_blur_inputs
+                .iter()
+                .map(|source| source.index)
+                .collect::<Vec<_>>(),
+            vec![2, 7]
+        );
         assert_eq!(std::sync::Arc::strong_count(&scene), 2);
         let live_version = registry.layer_content_version(2);
         registry.record_element_blur_inputs(&[(2, live.clone())], &[], []);
@@ -924,14 +1040,24 @@ mod tests {
         registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], [3]);
         let mut changed_composite = blur.clone();
         changed_composite.opacity = 0.5;
-        assert!(registry.source_unchanged(3, &FilterSource::Element(changed_composite.clone()), &[]));
-        let first_version = registry.layer_content_version(3).expect("first resident texture");
+        assert!(registry.source_unchanged(
+            3,
+            &FilterSource::Element(changed_composite.clone()),
+            &[]
+        ));
+        let first_version = registry
+            .layer_content_version(3)
+            .expect("first resident texture");
         registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], []);
         assert_eq!(registry.layer_content_version(3), Some(first_version));
         registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], [3]);
         assert_ne!(registry.layer_content_version(3), Some(first_version));
         changed_composite.radius = crate::ScaledPixels(12.0);
-        assert!(!registry.source_unchanged(3, &FilterSource::Element(changed_composite.clone()), &[]));
+        assert!(!registry.source_unchanged(
+            3,
+            &FilterSource::Element(changed_composite.clone()),
+            &[]
+        ));
         assert!(!registry.source_unchanged(4, &FilterSource::Element(blur.clone()), &[]));
         registry.invalidate();
         assert!(!registry.source_unchanged(3, &FilterSource::Element(blur.clone()), &[]));
@@ -950,14 +1076,22 @@ mod tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        registry.record_element_blur_inputs(&[(4, FilterSource::Element(source.clone()))], &[], [4]);
+        registry.record_element_blur_inputs(
+            &[(4, FilterSource::Element(source.clone()))],
+            &[],
+            [4],
+        );
         let previous_version = registry.layer_content_version(4).expect("resident source");
         assert!(registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
         source.layer_id = Some(crate::GlobalElementId::from_path(&["page-two".into()]));
         assert!(!registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
         // A reused flattened index must never imply that the old GPU texture
         // already holds the new layer's pixels.
-        registry.record_element_blur_inputs(&[(4, FilterSource::Element(source.clone()))], &[], [4]);
+        registry.record_element_blur_inputs(
+            &[(4, FilterSource::Element(source.clone()))],
+            &[],
+            [4],
+        );
         assert_ne!(registry.layer_content_version(4), Some(previous_version));
         assert!(registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
     }
@@ -1022,7 +1156,7 @@ mod tests {
         );
         source.radius = crate::ScaledPixels(0.);
         let mut replacement = crate::scene::Painter::default();
-        replacement.replay(0..source.content.len(), &source.content, &[]);
+        replacement.replay(0..source.content.len(), &source.content, []);
         source.content = std::sync::Arc::new(replacement.into_scene());
         assert_eq!(
             registry
@@ -1080,7 +1214,7 @@ mod tests {
             [],
         );
         let mut equivalent = crate::scene::Painter::default();
-        equivalent.replay(0..old_scene.len(), &old_scene, &[]);
+        equivalent.replay(0..old_scene.len(), &old_scene, []);
         let mut rebuilt = old_source;
         rebuilt.content = std::sync::Arc::new(equivalent.into_scene());
         assert_eq!(

@@ -214,7 +214,7 @@ impl NovaRenderer {
     fn renderer_memory_profile(&self) -> RendererMemoryProfile {
         let upload = &self.frame_upload;
         let cpu_retained_chunks =
-            upload.retained_quad_memory(&self.retained_upload.quad_chunks);
+            upload.retained_chunk_memory(&self.retained_upload.retained_chunks);
         let (cpu_atlas_upload, atlas_live_keys, atlas_tile_bytes) = self.atlas.memory_profile();
         let mut profile = RendererMemoryProfile {
             frame_slots: self.frame_resources.len(),
@@ -223,7 +223,7 @@ impl NovaRenderer {
             cpu_retained_chunks,
             cpu_path_cache_bytes: upload.path_rasterization_cache.payload_bytes(),
             cpu_frame_capacity_bytes: upload
-                .retained_byte_capacity(&self.retained_upload.quad_chunks)
+                .retained_byte_capacity(&self.retained_upload.retained_chunks)
                 as u64,
             cpu_atlas_upload,
             atlas_live_keys,

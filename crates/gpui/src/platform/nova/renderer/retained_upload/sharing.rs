@@ -90,10 +90,18 @@ impl RetainedUpload {
         if let Some(Some(signature)) = self.uploaded_slots.get_mut(slot) {
             *signature.stream_mut(stream) = invalid_token();
         }
-        if stream == BufferStream::Quad {
-            if let Some(layout) = self.uploaded_quad_layouts.get_mut(slot) {
-                *layout = None;
+        match stream {
+            BufferStream::Quad => {
+                if let Some(layout) = self.uploaded_quad_layouts.get_mut(slot) {
+                    *layout = None;
+                }
             }
+            BufferStream::MonoSprites => {
+                if let Some(layout) = self.uploaded_monochrome_sprite_layouts.get_mut(slot) {
+                    *layout = None;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -120,6 +128,9 @@ impl RetainedUpload {
         self.uploaded_shareable[slot][index] = true;
         if stream == BufferStream::Quad {
             self.uploaded_quad_layouts[slot] = self.uploaded_quad_layouts[source].clone();
+        } else if stream == BufferStream::MonoSprites {
+            self.uploaded_monochrome_sprite_layouts[slot] =
+                self.uploaded_monochrome_sprite_layouts[source].clone();
         }
     }
 }
@@ -148,7 +159,7 @@ mod tests {
             FrameUploadSummary::default(),
             2,
             StaticUploadSignature::from_frame_upload(upload).0,
-            QuadResidentLayout::from_upload(upload),
+            RetainedChunkLayouts::from_upload_reusing(&RetainedChunkLayouts::default(), upload),
         );
         retained.update_shareability(upload);
         retained.mark_uploaded(0);
@@ -184,7 +195,11 @@ mod tests {
     fn unchanged_frame_restores_all_stream_shareability_only_when_valid() {
         let upload = FrameUpload::default();
         let mut retained = resident(&upload);
-        assert!(BufferStream::ALL.into_iter().all(|stream| retained.stream_shareable(stream)));
+        assert!(
+            BufferStream::ALL
+                .into_iter()
+                .all(|stream| retained.stream_shareable(stream))
+        );
 
         let quad = BufferStream::Quad;
         retained.current_shareable[quad.index()] = false;
@@ -192,10 +207,16 @@ mod tests {
         assert!(!retained.stream_state(0, quad).0);
         retained.update_shareability(&upload);
         retained.mark_uploaded(0);
-        assert!(!retained.stream_state(0, quad).0, "matching CPU-patched bytes must not be shared");
+        assert!(
+            !retained.stream_state(0, quad).0,
+            "matching CPU-patched bytes must not be shared"
+        );
         retained.invalidate_stream(0, quad);
         retained.mark_uploaded(0);
-        assert!(retained.stream_state(0, quad).0, "a fresh static replacement restores sharing");
+        assert!(
+            retained.stream_state(0, quad).0,
+            "a fresh static replacement restores sharing"
+        );
         for stream in BufferStream::ALL {
             assert!(retained.stream_shareable(stream));
         }
@@ -230,7 +251,7 @@ mod tests {
         assert_eq!(dirty.count(), 1);
         assert!(matches!(
             retained.quad_upload_plan(1, 0),
-            QuadUploadPlan::None
+            ChunkUploadPlan::None
         ));
     }
 
@@ -244,7 +265,7 @@ mod tests {
         assert!(!retained.static_upload_mask(0).quad);
         assert!(matches!(
             retained.quad_upload_plan(1, PACKED_QUAD_BYTES),
-            QuadUploadPlan::Full
+            ChunkUploadPlan::Full
         ));
     }
 
@@ -312,11 +333,12 @@ mod tests {
                 wavy: 0,
             });
             scene.finish();
-            let mut chunk_cache = RetainedQuadChunkCache::default();
+            let mut chunk_cache = RetainedChunkCache::default();
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
                 &mut chunk_cache,
-                &scene, &scene.retention,
+                &scene,
+                &scene.retention,
                 &[],
                 DrawableSize {
                     width: 16,
@@ -357,7 +379,8 @@ mod tests {
         );
         let mut retained = resident(&before);
         retained.static_signature = Some(StaticUploadSignature::from_frame_upload(&after).0);
-        retained.current_quad_layout = QuadResidentLayout::from_upload(&after);
+        retained.current_chunk_layouts =
+            RetainedChunkLayouts::from_upload_reusing(&RetainedChunkLayouts::default(), &after);
         retained.update_shareability(&after);
         assert!(
             !retained.stream_state(0, BufferStream::Quad).0,
@@ -366,13 +389,13 @@ mod tests {
         assert!(retained.static_upload_mask(0).quad);
         assert_eq!(
             retained.quad_upload_plan(0, after.quads.len()),
-            QuadUploadPlan::Ranges(smallvec::smallvec![gap..after.quads.len()]),
+            ChunkUploadPlan::Ranges(smallvec::smallvec![gap..after.quads.len()]),
             "only the animated gap needs uploading into an owned resident buffer"
         );
         retained.invalidate_stream(0, BufferStream::Quad);
         assert_eq!(
             retained.quad_upload_plan(0, after.quads.len()),
-            QuadUploadPlan::Full,
+            ChunkUploadPlan::Full,
             "a new COW version must initialize static gaps too"
         );
     }

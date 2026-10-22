@@ -231,6 +231,10 @@ fn begin_retained_element_mount(
     element_type: TypeId,
     window: &mut Window,
 ) -> RetainedElementMount {
+    let _work = crate::window::element_work::begin_named(
+        "layout_retained_mount",
+        crate::window::element_work::ElementWorkPhase::Layout,
+    );
     let retained_identity = if let Some(element_id) = element_id.clone() {
         RetainedElementIdentity::Explicit(element_id)
     } else if retained_source_location.is_some() || element_source_location.is_some() {
@@ -274,10 +278,14 @@ fn begin_retained_element_mount(
 fn finish_retained_element_layout(
     mount: &RetainedElementMount,
     layout_id: LayoutId,
-    request_layout: &dyn Any,
+    request_layout: &mut dyn Any,
     plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
     window: &mut Window,
 ) {
+    let _work = crate::window::element_work::begin_named(
+        "layout_retained_metadata",
+        crate::window::element_work::ElementWorkPhase::Layout,
+    );
     window.register_retained_layout_semantics(
         &mount.retained_id,
         &mount.retained_segment,
@@ -513,7 +521,7 @@ fn compute_element_root_layout(
     cx: &mut App,
 ) {
     if previous_available_space != Some(available_space) {
-        window.compute_layout_with_diagnostic_id(layout_id, available_space, global_id, cx);
+        window.compute_diagnostic_layout(layout_id, available_space, global_id, cx);
     }
 }
 
@@ -558,7 +566,7 @@ impl<E: Element> Drawable<E> {
                     window,
                 );
 
-                let (layout_id, request_layout) = self.element.request_layout(
+                let (layout_id, mut request_layout) = self.element.request_layout(
                     mount.global_id.as_ref(),
                     mount.inspector_id.as_ref(),
                     window,
@@ -569,7 +577,7 @@ impl<E: Element> Drawable<E> {
                 finish_retained_element_layout(
                     &mount,
                     layout_id,
-                    &request_layout as &dyn Any,
+                    &mut request_layout as &mut dyn Any,
                     plain_text_semantics,
                     window,
                 );

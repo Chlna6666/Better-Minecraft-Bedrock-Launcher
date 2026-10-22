@@ -23,14 +23,10 @@ impl FrameUpload {
         drawable_size: DrawableSize,
         summary: &mut FrameUploadSummary,
     ) -> bool {
-        self.capture_encoded_static_prefix_for_target_size(
-            prefix,
-            drawable_size,
-            summary,
-        )
+        self.capture_static_prefix(prefix, drawable_size, summary)
     }
 
-    pub(in crate::platform::nova) fn capture_encoded_static_prefix_for_target_size(
+    pub(in crate::platform::nova) fn capture_static_prefix(
         &mut self,
         prefix: &StaticPrefix,
         target_size: DrawableSize,
@@ -150,7 +146,7 @@ impl FrameUpload {
         }
 
         let index = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-        write_paint_blur_fields_for_target_size(
+        write_paint_blur_fields(
             &mut self.backdrop_blurs,
             0,
             bounds,

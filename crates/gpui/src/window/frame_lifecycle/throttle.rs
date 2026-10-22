@@ -2,7 +2,10 @@ use std::time::{Duration, Instant};
 
 const HIGH_REFRESH_FRAME_BUDGET_HEADROOM: f32 = 0.85;
 const HIGH_REFRESH_FRAME_INTERVAL: Duration = Duration::from_millis(8);
-const FASTEST_SUPPORTED_DISPLAY_INTERVAL: Duration = Duration::from_micros(4_167);
+// Exactly 1/240 s rounded to the nearest nanosecond. Integer microsecond
+// rounding (4_167 us) is one nanosecond slower than Duration::from_secs_f64(1/240),
+// so clamping to it changed a genuine 240 Hz interval.
+const FASTEST_SUPPORTED_DISPLAY_INTERVAL: Duration = Duration::from_nanos(4_166_667);
 const MIN_DYNAMIC_FRAME_BUDGET: Duration = Duration::from_millis(2);
 const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAME_GENERATION_WARNING_HEADROOM: f32 = 0.95;
@@ -151,9 +154,18 @@ impl WindowFrameThrottle {
     }
 
     pub(in crate::window) fn frame_budget(self) -> Duration {
+        // A UI burst (WM_SIZE coalescing, a burst of input, several queued
+        // animation requests) can start frames far faster than the display can
+        // present them. The old lower bound allowed those bursts to shrink the
+        // generation budget to one quarter of the fastest supported display
+        // interval, so ordinary frames were reported as budget misses and
+        // progressive degradation could trigger during a resize. The budget
+        // describes time available before a real presentation, so it must never
+        // be smaller than the fastest supported display interval.
         let interval = self
             .estimated_frame_interval
-            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL);
+            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL)
+            .max(FASTEST_SUPPORTED_DISPLAY_INTERVAL);
         let budget = interval.mul_f32(HIGH_REFRESH_FRAME_BUDGET_HEADROOM);
         budget.clamp(MIN_DYNAMIC_FRAME_BUDGET, DEFAULT_DISPLAY_FRAME_INTERVAL)
     }
@@ -313,6 +325,19 @@ mod tests {
                 "refresh rate: {refresh_rate} Hz"
             );
         }
+    }
+
+    #[test]
+    fn frame_budget_never_shrinks_below_supported_display_interval() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + Duration::from_millis(2));
+
+        assert_eq!(
+            throttle.frame_budget(),
+            FASTEST_SUPPORTED_DISPLAY_INTERVAL.mul_f32(HIGH_REFRESH_FRAME_BUDGET_HEADROOM)
+        );
     }
 
     #[test]

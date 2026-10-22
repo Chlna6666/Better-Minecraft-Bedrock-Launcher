@@ -1,6 +1,7 @@
 //! Renderer instances belong to one GPU owner; scene nodes only supply immutable inputs.
 
 use super::*;
+use crate::ExtensionDevice;
 use std::{any::TypeId, collections::hash_map::Entry};
 
 #[derive(Default)]
@@ -22,9 +23,9 @@ impl RendererRegistry {
     pub(super) fn prepare(
         &mut self,
         input: &dyn crate::RendererExtension,
-        device: &mut dyn gfx_core::ExtensionDevice,
+        device: &mut dyn ExtensionDevice,
         context: crate::RendererExtensionContext,
-        steps: &mut Vec<RenderStepDescriptor>,
+        steps: &mut Vec<RenderCommand>,
     ) -> Result<()> {
         let renderer = match self.renderers.entry(input.renderer_type()) {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -33,7 +34,7 @@ impl RendererRegistry {
         renderer.render(input, device, context, steps)
     }
 
-    pub(super) fn retain(&mut self, active: &[TypeId], device: &mut dyn gfx_core::ExtensionDevice) {
+    pub(super) fn retain(&mut self, active: &[TypeId], device: &mut dyn ExtensionDevice) {
         self.renderers.retain(|type_id, renderer| {
             if active.contains(type_id) {
                 return true;
@@ -47,7 +48,7 @@ impl RendererRegistry {
 
     pub(super) fn trim(
         &mut self,
-        device: &mut dyn gfx_core::ExtensionDevice,
+        device: &mut dyn ExtensionDevice,
         level: gfx_core::MemoryTrimLevel,
     ) {
         for renderer in self.renderers.values_mut() {
@@ -57,7 +58,7 @@ impl RendererRegistry {
         }
     }
 
-    pub(super) fn destroy(&mut self, device: &mut dyn gfx_core::ExtensionDevice) {
+    pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) {
         self.retain(&[], device);
     }
 }

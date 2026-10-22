@@ -1,4 +1,4 @@
-use super::chunk_upload::QuadUploadPlan;
+use super::chunk_upload::ChunkUploadPlan;
 use super::retained_upload::StaticUploadMask;
 use super::*;
 use crate::diagnostics::performance_metrics::{
@@ -50,10 +50,11 @@ pub(super) struct FrameBufferUpload<'a> {
     pub source: &'a FrameUpload,
     pub has_compositor_descriptors: bool,
     pub static_uploads: StaticUploadMask,
-    pub quad_upload_plan: &'a QuadUploadPlan,
+    pub quad_upload_plan: &'a ChunkUploadPlan,
+    pub mono_sprite_upload_plan: &'a ChunkUploadPlan,
 }
 
-pub(super) fn upload_frame_buffers<D: BackendResources>(
+pub(super) fn upload_frame_buffers<D: ResourceDevice>(
     device: &mut D,
     upload: FrameBufferUpload<'_>,
 ) -> Result<()> {
@@ -68,34 +69,47 @@ pub(super) fn upload_frame_buffers<D: BackendResources>(
         upload.source,
         upload.static_uploads,
         upload.quad_upload_plan,
+        upload.mono_sprite_upload_plan,
     ) {
         record_nova_buffer_upload_time(plan_started.elapsed());
         return upload_buffer_batch(device, &batch);
     }
     plan_static_buffers(&mut batch, &upload)?;
-    plan_quad_buffer(
+    plan_packed_stream(
         &mut batch,
         upload.buffers.quad,
         &upload.source.quads,
         upload.quad_upload_plan,
     )?;
+    plan_packed_stream(
+        &mut batch,
+        upload.buffers.mono_sprite,
+        &upload.source.mono_sprites,
+        upload.mono_sprite_upload_plan,
+    )?;
     plan_animated_buffers(&mut batch, &upload)?;
     record_nova_buffer_upload_time(plan_started.elapsed());
     upload_buffer_batch(device, &batch)?;
     #[cfg(test)]
-    TEST_QUAD_UPLOAD_BYTES.set(batch.writes()
-        .filter(|write| write.descriptor.buffer == upload.buffers.quad)
-        .map(|write| write.data.len()).sum());
+    TEST_QUAD_UPLOAD_BYTES.set(
+        batch
+            .writes()
+            .filter(|write| write.descriptor.buffer == upload.buffers.quad)
+            .map(|write| write.data.len())
+            .sum(),
+    );
     Ok(())
 }
 
 fn requires_buffer_upload_planning(
     source: &FrameUpload,
     static_uploads: StaticUploadMask,
-    quad_upload_plan: &QuadUploadPlan,
+    quad_upload_plan: &ChunkUploadPlan,
+    mono_sprite_upload_plan: &ChunkUploadPlan,
 ) -> bool {
     !static_uploads.is_empty()
-        || !matches!(quad_upload_plan, QuadUploadPlan::None)
+        || !matches!(quad_upload_plan, ChunkUploadPlan::None)
+        || !matches!(mono_sprite_upload_plan, ChunkUploadPlan::None)
         || !source.animated_primitives.is_empty()
         || source.has_animated_backdrop_blurs()
 }
@@ -116,7 +130,7 @@ pub(super) fn record_empty_buffer_batch(batch: &BufferUploadBatch<'_>, started_a
     record_nova_buffer_upload_time(started_at.elapsed());
 }
 
-pub(super) fn upload_buffer_batch<D: BackendResources>(
+pub(super) fn upload_buffer_batch<D: ResourceDevice>(
     device: &mut D,
     batch: &BufferUploadBatch<'_>,
 ) -> Result<()> {
@@ -161,7 +175,6 @@ fn plan_static_buffers<'a>(
             dirty.path_rasterization_vertex,
         ),
         (buffers.path_sprite, &source.path_sprites, dirty.path_sprite),
-        (buffers.mono_sprite, &source.mono_sprites, dirty.mono_sprite),
         (buffers.poly_sprite, &source.poly_sprites, dirty.poly_sprite),
         (buffers.underline, &source.underlines, dirty.underline),
         (
@@ -182,28 +195,28 @@ fn plan_static_buffers<'a>(
     Ok(())
 }
 
-fn plan_quad_buffer<'a>(
+fn plan_packed_stream<'a>(
     batch: &mut BufferUploadBatch<'a>,
     buffer: BufferId,
-    source: &'a PackedQuadStream,
-    plan: &QuadUploadPlan,
+    source: &'a PackedByteStream,
+    plan: &ChunkUploadPlan,
 ) -> Result<()> {
     match plan {
-        QuadUploadPlan::None => {}
-        QuadUploadPlan::Full => plan_quad_range(batch, buffer, source, 0..source.len())?,
-        QuadUploadPlan::Ranges(ranges) => {
+        ChunkUploadPlan::None => {}
+        ChunkUploadPlan::Full => plan_packed_range(batch, buffer, source, 0..source.len())?,
+        ChunkUploadPlan::Ranges(ranges) => {
             for range in ranges {
-                plan_quad_range(batch, buffer, source, range.clone())?;
+                plan_packed_range(batch, buffer, source, range.clone())?;
             }
         }
     }
     Ok(())
 }
 
-fn plan_quad_range<'a>(
+fn plan_packed_range<'a>(
     batch: &mut BufferUploadBatch<'a>,
     buffer: BufferId,
-    source: &'a PackedQuadStream,
+    source: &'a PackedByteStream,
     range: std::ops::Range<usize>,
 ) -> Result<()> {
     for (offset, bytes) in source.slices(range) {
@@ -235,6 +248,31 @@ fn plan_animated_buffer_kind<'a>(
     Ok(())
 }
 
+fn plan_animated_stream_kind<'a>(
+    batch: &mut BufferUploadBatch<'a>,
+    buffer: BufferId,
+    source: &'a PackedByteStream,
+    frame_upload: &FrameUpload,
+    kind: AnimatedPrimitiveKind,
+) -> Result<()> {
+    for primitive in frame_upload
+        .animated_primitives
+        .iter()
+        .filter(|primitive| primitive.kind == kind)
+    {
+        let start = usize::try_from(primitive.offset()).map_err(|_| {
+            anyhow::anyhow!("nova animated buffer offset does not fit usize: kind={kind:?}")
+        })?;
+        let end = start
+            .checked_add(primitive.bytes.len())
+            .ok_or_else(|| anyhow::anyhow!("nova animated buffer range overflow: kind={kind:?}"))?;
+        for (offset, bytes) in source.slices(start..end) {
+            batch.push_at(buffer, offset as u64, bytes)?;
+        }
+    }
+    Ok(())
+}
+
 /// Emit only the animated Quad bytes not already covered by this slot's
 /// static upload plan. A change in static animation topology does not prove
 /// the retained Quad spans contain every sampled CPU-animated record.
@@ -243,14 +281,14 @@ fn plan_animated_buffer_kind<'a>(
 /// partition_point avoids repeatedly scanning their unrelated prefix.
 /// Non-overlapping animation writes preserve byte-order within each primitive.
 fn for_each_uncovered_animated_quad_range(
-    static_plan: &QuadUploadPlan,
+    static_plan: &ChunkUploadPlan,
     animated: std::ops::Range<usize>,
     mut emit: impl FnMut(std::ops::Range<usize>) -> Result<()>,
 ) -> Result<()> {
-    if animated.is_empty() || matches!(static_plan, QuadUploadPlan::Full) {
+    if animated.is_empty() || matches!(static_plan, ChunkUploadPlan::Full) {
         return Ok(());
     }
-    let QuadUploadPlan::Ranges(static_ranges) = static_plan else {
+    let ChunkUploadPlan::Ranges(static_ranges) = static_plan else {
         return emit(animated);
     };
     let mut cursor = animated.start;
@@ -296,14 +334,12 @@ fn plan_animated_buffers<'a>(
         .filter(|primitive| primitive.kind == AnimatedPrimitiveKind::Quad)
     {
         let start = usize::try_from(primitive.offset())?;
-        let end = start.checked_add(primitive.bytes.len()).ok_or_else(|| {
-            anyhow::anyhow!("nova animated quad range overflow at byte {start}")
+        let end = start
+            .checked_add(primitive.bytes.len())
+            .ok_or_else(|| anyhow::anyhow!("nova animated quad range overflow at byte {start}"))?;
+        for_each_uncovered_animated_quad_range(upload.quad_upload_plan, start..end, |range| {
+            plan_packed_range(batch, buffers.quad, &source.quads, range)
         })?;
-        for_each_uncovered_animated_quad_range(
-            upload.quad_upload_plan,
-            start..end,
-            |range| plan_quad_range(batch, buffers.quad, &source.quads, range),
-        )?;
     }
     for (buffer, bytes, kind, selected) in [
         (
@@ -311,12 +347,6 @@ fn plan_animated_buffers<'a>(
             &source.shadows,
             AnimatedPrimitiveKind::Shadow,
             !dirty.shadow,
-        ),
-        (
-            buffers.mono_sprite,
-            &source.mono_sprites,
-            AnimatedPrimitiveKind::MonochromeSprite,
-            !dirty.mono_sprite,
         ),
         (
             buffers.poly_sprite,
@@ -335,6 +365,15 @@ fn plan_animated_buffers<'a>(
             plan_animated_buffer_kind(batch, buffer, bytes, source, kind)?;
         }
     }
+    if !dirty.mono_sprite {
+        plan_animated_stream_kind(
+            batch,
+            buffers.mono_sprite,
+            &source.mono_sprites,
+            source,
+            AnimatedPrimitiveKind::MonochromeSprite,
+        )?;
+    }
     Ok(())
 }
 
@@ -343,22 +382,21 @@ mod tests {
     use super::*;
 
     fn uncovered_ranges(
-        static_plan: &QuadUploadPlan,
+        static_plan: &ChunkUploadPlan,
         animated: std::ops::Range<usize>,
     ) -> Vec<std::ops::Range<usize>> {
         let mut result = Vec::new();
         for_each_uncovered_animated_quad_range(static_plan, animated, |range| {
             result.push(range);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         result
     }
 
     #[test]
     fn animated_quad_upload_fills_only_static_plan_gaps() {
-        let static_plan = QuadUploadPlan::Ranges(
-            smallvec::smallvec![0..32, 64..96, 128..160]
-        );
+        let static_plan = ChunkUploadPlan::Ranges(smallvec::smallvec![0..32, 64..96, 128..160]);
         assert_eq!(uncovered_ranges(&static_plan, 40..88), vec![40..64]);
         assert_eq!(uncovered_ranges(&static_plan, 16..80), vec![32..64]);
         assert_eq!(uncovered_ranges(&static_plan, 32..64), vec![32..64]);
@@ -372,19 +410,23 @@ mod tests {
 
     #[test]
     fn quad_full_or_none_plans_do_not_duplicate_or_lose_animation_bytes() {
-        assert!(uncovered_ranges(&QuadUploadPlan::Full, 40..88).is_empty());
+        assert!(uncovered_ranges(&ChunkUploadPlan::Full, 40..88).is_empty());
         assert_eq!(
-            uncovered_ranges(&QuadUploadPlan::None, 40..88),
+            uncovered_ranges(&ChunkUploadPlan::None, 40..88),
             vec![40..88]
         );
-        assert!(uncovered_ranges(&QuadUploadPlan::None, 0..0).is_empty());
+        assert!(uncovered_ranges(&ChunkUploadPlan::None, 0..0).is_empty());
     }
 
     #[test]
     fn animated_quads_across_multiple_resident_islands_keep_byte_order() {
-        let static_plan = QuadUploadPlan::Ranges(
-            smallvec::smallvec![16..32, 48..64, 80..96, 112..128, 144..160]
-        );
+        let static_plan = ChunkUploadPlan::Ranges(smallvec::smallvec![
+            16..32,
+            48..64,
+            80..96,
+            112..128,
+            144..160
+        ]);
         assert_eq!(
             uncovered_ranges(&static_plan, 8..168),
             vec![8..16, 32..48, 64..80, 96..112, 128..144, 160..168]
@@ -399,7 +441,8 @@ mod tests {
         assert!(!requires_buffer_upload_planning(
             &upload,
             StaticUploadMask::default(),
-            &QuadUploadPlan::None,
+            &ChunkUploadPlan::None,
+            &ChunkUploadPlan::None,
         ));
     }
 
@@ -412,17 +455,26 @@ mod tests {
                 global: true,
                 ..Default::default()
             },
-            &QuadUploadPlan::None,
+            &ChunkUploadPlan::None,
+            &ChunkUploadPlan::None,
         ));
         assert!(requires_buffer_upload_planning(
             &upload,
             StaticUploadMask::default(),
-            &QuadUploadPlan::Full,
+            &ChunkUploadPlan::Full,
+            &ChunkUploadPlan::None,
         ));
         assert!(requires_buffer_upload_planning(
             &upload,
             StaticUploadMask::default(),
-            &QuadUploadPlan::Ranges(smallvec::smallvec![0..16]),
+            &ChunkUploadPlan::Ranges(smallvec::smallvec![0..16]),
+            &ChunkUploadPlan::None,
+        ));
+        assert!(requires_buffer_upload_planning(
+            &upload,
+            StaticUploadMask::default(),
+            &ChunkUploadPlan::None,
+            &ChunkUploadPlan::Ranges(smallvec::smallvec![16..32]),
         ));
     }
 
@@ -434,5 +486,30 @@ mod tests {
         assert_eq!(batch.requested_bytes(), 0);
         assert_eq!(gfx_core::BufferUploadStats::default().calls, 0);
         assert_eq!(gfx_core::BufferUploadStats::default().bytes, 0);
+    }
+
+    #[test]
+    fn retained_monochrome_sprite_plan_emits_only_its_dirty_range() {
+        let mut source = PackedByteStream::default();
+        source.write(|bytes| bytes.extend(0_u8..64));
+        let buffer = BufferId::from_parts(1, 1);
+        let mut batch = BufferUploadBatch::default();
+
+        plan_packed_stream(
+            &mut batch,
+            buffer,
+            &source,
+            &ChunkUploadPlan::Ranges(smallvec::smallvec![16..32, 48..56]),
+        )
+        .unwrap();
+
+        let writes: Vec<_> = batch
+            .writes()
+            .map(|write| (write.descriptor.offset, write.data.to_vec()))
+            .collect();
+        assert_eq!(
+            writes,
+            vec![(16, (16_u8..32).collect()), (48, (48_u8..56).collect())]
+        );
     }
 }
