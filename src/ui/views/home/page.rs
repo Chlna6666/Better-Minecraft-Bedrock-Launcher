@@ -211,7 +211,9 @@ impl HomePageView {
     fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
         let sample = self.dropdown_spring.sample(now);
         self.dropdown_animating = !sample.done;
-        sample.value.clamp(0.0, 1.08)
+        // Geometry must never overshoot the final list height: the spring may
+        // have a velocity overshoot, but flex layout must keep one stable extent.
+        sample.value.clamp(0.0, 1.0)
     }
 
     fn begin_dropdown_transition(&mut self, open: bool) {
@@ -242,10 +244,10 @@ impl HomePageView {
         item_height_px: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if dropdown_factor <= 0.001 {
-            return div().into_any_element();
-        }
-
+        // Keep the same list element mounted for the entire in-flight spring,
+        // including its zero-height first and last samples. Returning a different
+        // empty element at an arbitrary epsilon discards retained list identity
+        // and can produce a one-frame flash when rapidly reversing direction.
         let version_count = self.versions.len();
         let theme_colors = theme_colors.clone();
         let versions = uniform_list(
