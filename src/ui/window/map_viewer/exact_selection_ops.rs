@@ -344,7 +344,7 @@ impl MapViewerWindowView {
             }
         });
         match submitted {
-            Ok(()) => {
+            Ok(_join_handle) => {
                 self.status = SharedString::from(format!(
                     "已提交精确选区模型导出任务 · {chunk_count} chunks"
                 ));
