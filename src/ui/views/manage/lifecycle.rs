@@ -238,6 +238,27 @@ pub(super) struct ServersLoadSignature {
     pub(super) enable_redirection: bool,
 }
 
+/// Scalar request facts for the selected instance. Deliberately excludes an
+/// owned ManagedVersionEntry so the per-frame preflight does not clone the
+/// play-history BTreeMap and extra JSON payload.
+struct SelectedVersionRequestState {
+    folder: SharedString,
+    is_gdk: bool,
+    tab: ManageTab,
+    pack_subtype: ManagePackSubtype,
+    selected_gdk_user: Option<SharedString>,
+    enable_redirection: bool,
+    version_config_loading: bool,
+    user_scoped_tab: bool,
+    assets_loaded: bool,
+    assets_loading: bool,
+    screenshots_loaded: bool,
+    screenshots_loading: bool,
+    servers_loaded: bool,
+    servers_loading: bool,
+    locale_code: SharedString,
+}
+
 impl ManagePageView {
     pub(super) fn ensure_asset_search_input(
         &mut self,
@@ -471,131 +492,203 @@ impl ManagePageView {
             .find(|version| version.folder.as_ref() == selected.as_ref())
     }
 
+    /// Per-frame request preflight. Reads only scalar flags and shared handles
+    /// from the global state; cloning a ManagedVersionEntry (which owns the
+    /// play-history BTreeMap and extra JSON) is deferred to a request that
+    /// actually needs an owned snapshot. The previous implementation cloned the
+    /// selected version on every Manage frame.
     pub(super) fn sync_data_requests(&mut self, cx: &mut Context<Self>) {
-        let locale_code = SharedString::from(cx.global::<I18n>().locale().code());
-        let (
-            selected_version,
-            version_config_loading,
-            version_config,
-            tab,
-            pack_subtype,
-            selected_gdk_user,
-            assets_loaded,
-            assets_loading,
-            screenshots_loaded,
-            screenshots_loading,
-            servers_loaded,
-            servers_loading,
-        ) = {
-            let state = cx.global::<ManagePageState>();
-            (
-                self.selected_version(state).cloned(),
-                state.version_config_loading,
-                state.version_config.clone(),
-                state.tab,
-                state.pack_subtype,
-                state.selected_gdk_user.clone(),
-                state.assets_loaded,
-                state.assets_loading,
-                state.screenshots_loaded,
-                state.screenshots_loading,
-                state.servers_loaded,
-                state.servers_loading,
-            )
-        };
-
-        let Some(selected_version) = selected_version else {
+        let Some(snapshot) = self.version_request_snapshot(cx) else {
             return;
         };
 
         let config_signature = VersionConfigLoadSignature {
-            folder: selected_version.folder.clone(),
+            folder: snapshot.folder.clone(),
         };
         if self.last_version_config_signature.as_ref() != Some(&config_signature) {
             self.last_version_config_signature = Some(config_signature);
-            self.request_version_config(selected_version.clone(), cx);
+            self.request_version_config_for_selected(cx);
             return;
         }
 
-        if version_config_loading {
+        if snapshot.version_config_loading {
             return;
         }
 
-        if selected_version.is_gdk() && is_gdk_user_scoped_tab(tab) {
+        if snapshot.is_gdk && snapshot.user_scoped_tab {
             let gdk_signature = GdkUsersLoadSignature {
-                folder: selected_version.folder.clone(),
-                enable_redirection: version_config.enable_redirection,
+                folder: snapshot.folder.clone(),
+                enable_redirection: snapshot.enable_redirection,
             };
             if self.last_gdk_users_signature.as_ref() != Some(&gdk_signature) {
                 self.last_gdk_users_signature = Some(gdk_signature);
-                self.request_gdk_users(selected_version.clone(), version_config.clone(), cx);
+                self.request_gdk_users_for_selected(cx);
             }
         }
 
-        if selected_version.is_gdk() && is_gdk_user_scoped_tab(tab) && selected_gdk_user.is_none() {
-            self.clear_active_user_scoped_data(tab, cx);
+        if snapshot.is_gdk && snapshot.user_scoped_tab && snapshot.selected_gdk_user.is_none() {
+            self.clear_active_user_scoped_data(snapshot.tab, cx);
             return;
         }
 
-        match tab {
+        match snapshot.tab {
             ManageTab::Statistics => {}
             ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
                 let assets_signature = AssetsLoadSignature {
-                    folder: selected_version.folder.clone(),
-                    tab,
-                    pack_subtype,
-                    selected_gdk_user: selected_gdk_user.clone(),
-                    enable_redirection: version_config.enable_redirection,
-                    locale_code,
+                    folder: snapshot.folder.clone(),
+                    tab: snapshot.tab,
+                    pack_subtype: snapshot.pack_subtype,
+                    selected_gdk_user: snapshot.selected_gdk_user.clone(),
+                    enable_redirection: snapshot.enable_redirection,
+                    locale_code: snapshot.locale_code,
                 };
 
                 if self.last_assets_signature.as_ref() != Some(&assets_signature)
-                    || (!assets_loaded && !assets_loading)
+                    || (!snapshot.assets_loaded && !snapshot.assets_loading)
                 {
                     self.last_assets_signature = Some(assets_signature.clone());
-                    self.request_assets(
-                        selected_version,
-                        version_config,
-                        tab,
-                        pack_subtype,
-                        selected_gdk_user,
-                        assets_signature.locale_code,
-                        cx,
-                    );
+                    self.request_assets_for_selected(assets_signature, cx);
                 }
             }
             ManageTab::Screenshot => {
                 let screenshots_signature = ScreenshotsLoadSignature {
-                    folder: selected_version.folder.clone(),
-                    selected_gdk_user: selected_gdk_user.clone(),
-                    enable_redirection: version_config.enable_redirection,
+                    folder: snapshot.folder.clone(),
+                    selected_gdk_user: snapshot.selected_gdk_user.clone(),
+                    enable_redirection: snapshot.enable_redirection,
                 };
                 if self.last_screenshots_signature.as_ref() != Some(&screenshots_signature)
-                    || (!screenshots_loaded && !screenshots_loading)
+                    || (!snapshot.screenshots_loaded && !snapshot.screenshots_loading)
                 {
-                    self.last_screenshots_signature = Some(screenshots_signature);
-                    self.request_screenshots(
-                        selected_version,
-                        version_config,
-                        selected_gdk_user,
-                        cx,
-                    );
+                    self.last_screenshots_signature = Some(screenshots_signature.clone());
+                    self.request_screenshots_for_selected(screenshots_signature, cx);
                 }
             }
             ManageTab::Server => {
                 let servers_signature = ServersLoadSignature {
-                    folder: selected_version.folder.clone(),
-                    selected_gdk_user: selected_gdk_user.clone(),
-                    enable_redirection: version_config.enable_redirection,
+                    folder: snapshot.folder.clone(),
+                    selected_gdk_user: snapshot.selected_gdk_user.clone(),
+                    enable_redirection: snapshot.enable_redirection,
                 };
                 if self.last_servers_signature.as_ref() != Some(&servers_signature)
-                    || (!servers_loaded && !servers_loading)
+                    || (!snapshot.servers_loaded && !snapshot.servers_loading)
                 {
-                    self.last_servers_signature = Some(servers_signature);
-                    self.request_servers(selected_version, version_config, selected_gdk_user, cx);
+                    self.last_servers_signature = Some(servers_signature.clone());
+                    self.request_servers_for_selected(servers_signature, cx);
                 }
             }
         }
+    }
+
+    fn version_request_snapshot(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<SelectedVersionRequestState> {
+        let state = cx.global::<ManagePageState>();
+        let version = self.selected_version(state)?;
+        Some(SelectedVersionRequestState {
+            folder: version.folder.clone(),
+            is_gdk: version.is_gdk(),
+            tab: state.tab,
+            pack_subtype: state.pack_subtype,
+            selected_gdk_user: state.selected_gdk_user.clone(),
+            enable_redirection: state.version_config.enable_redirection,
+            version_config_loading: state.version_config_loading,
+            user_scoped_tab: is_gdk_user_scoped_tab(state.tab),
+            assets_loaded: state.assets_loaded,
+            assets_loading: state.assets_loading,
+            screenshots_loaded: state.screenshots_loaded,
+            screenshots_loading: state.screenshots_loading,
+            servers_loaded: state.servers_loaded,
+            servers_loading: state.servers_loading,
+            locale_code: SharedString::from(cx.global::<I18n>().locale().code()),
+        })
+    }
+
+    fn selected_version_snapshot(&self, cx: &mut Context<Self>) -> Option<ManagedVersionEntry> {
+        let state = cx.global::<ManagePageState>();
+        self.selected_version(state).cloned()
+    }
+
+    fn request_version_config_for_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(version) = self.selected_version_snapshot(cx) {
+            self.request_version_config(version, cx);
+        }
+    }
+
+    fn request_gdk_users_for_selected(&mut self, cx: &mut Context<Self>) {
+        let snapshot = {
+            let state = cx.global::<ManagePageState>();
+            (
+                self.selected_version(state).cloned(),
+                state.version_config.clone(),
+            )
+        };
+        let (Some(version), config) = snapshot else {
+            return;
+        };
+        self.request_gdk_users(version, config, cx);
+    }
+
+    fn request_assets_for_selected(
+        &mut self,
+        signature: AssetsLoadSignature,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = {
+            let state = cx.global::<ManagePageState>();
+            (
+                self.selected_version(state).cloned(),
+                state.version_config.clone(),
+            )
+        };
+        let (Some(version), config) = snapshot else {
+            return;
+        };
+        self.request_assets(
+            version,
+            config,
+            signature.tab,
+            signature.pack_subtype,
+            signature.selected_gdk_user,
+            signature.locale_code,
+            cx,
+        );
+    }
+
+    fn request_screenshots_for_selected(
+        &mut self,
+        signature: ScreenshotsLoadSignature,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = {
+            let state = cx.global::<ManagePageState>();
+            (
+                self.selected_version(state).cloned(),
+                state.version_config.clone(),
+            )
+        };
+        let (Some(version), config) = snapshot else {
+            return;
+        };
+        self.request_screenshots(version, config, signature.selected_gdk_user, cx);
+    }
+
+    fn request_servers_for_selected(
+        &mut self,
+        signature: ServersLoadSignature,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = {
+            let state = cx.global::<ManagePageState>();
+            (
+                self.selected_version(state).cloned(),
+                state.version_config.clone(),
+            )
+        };
+        let (Some(version), config) = snapshot else {
+            return;
+        };
+        self.request_servers(version, config, signature.selected_gdk_user, cx);
     }
 
     pub(super) fn request_version_config(

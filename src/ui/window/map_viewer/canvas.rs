@@ -414,33 +414,28 @@ impl Render for MapCanvasView {
             .min_h(px(0.0))
             .overflow_hidden()
             .bg(colors.surface)
-            .child(cached_absolute_layer(&self.tile_layer, tile_revision))
-            .child(cached_absolute_layer(&self.overlay_layer, frame_revision))
-            .child(cached_absolute_layer(&self.hud_layer, hud_revision))
+            .child(cached_absolute_layer(&self.tile_layer))
+            .child(cached_absolute_layer(&self.overlay_layer))
+            .child(cached_absolute_layer(&self.hud_layer))
             .child(render_interaction_layer(
                 &self.map_focus_handle,
                 self.interaction_cursor,
                 cx,
             ))
-            .child(cached_absolute_layer(&self.marker_layer, frame_revision))
-            .child(cached_absolute_layer(
-                &self.paste_controls_layer,
-                frame_revision,
-            ))
+            .child(cached_absolute_layer(&self.marker_layer))
+            .child(cached_absolute_layer(&self.paste_controls_layer))
             .into_any_element()
     }
 }
 
-fn cached_absolute_layer<V: Render + 'static, R: std::hash::Hash>(
+fn cached_absolute_layer<V: Render + 'static>(
     layer: &Entity<V>,
-    frame_revision: R,
-) -> CachedView {
-    let cache_key = (layer.entity_id().as_u64(), frame_revision);
-    layer
-        .clone()
-        .cached_absolute_by(&cache_key)
-        .reuse_on_window_refresh()
-        .progressive()
+) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .child(layer.clone())
+        .into_any_element()
 }
 
 #[derive(Clone)]

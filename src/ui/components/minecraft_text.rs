@@ -121,13 +121,14 @@ impl RenderOnce for MinecraftFormattedText {
             parsed = Arc::new(apply_obfuscated_frame(parsed.as_ref(), frame));
         }
 
+        let base_font = window.text_style().font();
         if parsed.has_glyphs {
-            return render_glyph_text(self, &parsed)
+            return render_glyph_text(self, &parsed, &base_font)
                 .with_layout_animation_target_interval(animate_obfuscated, OBFUSCATED_FRAME)
                 .into_any_element();
         }
 
-        let runs = build_text_runs(parsed.runs.as_ref(), self.default_color);
+        let runs = build_text_runs(parsed.runs.as_ref(), self.default_color, &base_font);
 
         let mut container = div()
             .text_size(self.font_size)
@@ -146,7 +147,11 @@ impl RenderOnce for MinecraftFormattedText {
     }
 }
 
-fn render_glyph_text(component: MinecraftFormattedText, parsed: &ParsedMinecraftText) -> Div {
+fn render_glyph_text(
+    component: MinecraftFormattedText,
+    parsed: &ParsedMinecraftText,
+    base_font: &Font,
+) -> Div {
     let glyph_size = px((component.font_size / px(1.0)).max(14.0));
     let line_height = component.line_height;
     let pieces = build_inline_pieces(parsed, component.default_color);
@@ -181,6 +186,7 @@ fn render_glyph_text(component: MinecraftFormattedText, parsed: &ParsedMinecraft
                     piece.style,
                     component.font_size,
                     line_height,
+                    base_font,
                 ));
             }
             InlinePieceKind::Glyph(code_point) => {
@@ -197,8 +203,9 @@ fn render_text_piece(
     piece_style: InlinePieceStyle,
     font_size: Pixels,
     line_height: DefiniteLength,
+    base_font: &Font,
 ) -> AnyElement {
-    let runs = vec![make_text_run(text.len(), piece_style)];
+    let runs = vec![make_text_run(text.len(), piece_style, base_font)];
 
     div()
         .flex_none()
@@ -473,7 +480,11 @@ fn parse_minecraft_formatted_text(input: &str) -> ParsedMinecraftText {
     }
 }
 
-fn build_text_runs(runs: &[MinecraftTextRunSpec], default_color: Hsla) -> Vec<TextRun> {
+fn build_text_runs(
+    runs: &[MinecraftTextRunSpec],
+    default_color: Hsla,
+    base_font: &Font,
+) -> Vec<TextRun> {
     runs.iter()
         .map(|spec| {
             make_text_run(
@@ -482,6 +493,7 @@ fn build_text_runs(runs: &[MinecraftTextRunSpec], default_color: Hsla) -> Vec<Te
                     color: resolve_run_color(spec.color_code, default_color),
                     style: spec.style,
                 },
+                base_font,
             )
         })
         .collect()
@@ -493,13 +505,10 @@ fn resolve_run_color(color_code: Option<char>, default_color: Hsla) -> Hsla {
         .unwrap_or(default_color)
 }
 
-fn make_text_run(len: usize, piece_style: InlinePieceStyle) -> TextRun {
+fn make_text_run(len: usize, piece_style: InlinePieceStyle, base_font: &Font) -> TextRun {
     TextRun {
         len,
         font: Font {
-            family: "HarmonyOS Sans".into(),
-            features: FontFeatures::default(),
-            fallbacks: None,
             weight: if piece_style.style.bold {
                 FontWeight::BOLD
             } else {
@@ -510,6 +519,7 @@ fn make_text_run(len: usize, piece_style: InlinePieceStyle) -> TextRun {
             } else {
                 FontStyle::Normal
             },
+            ..base_font.clone()
         },
         color: piece_style.color,
         background_color: None,
@@ -694,6 +704,22 @@ fn relative_luminance(color: Rgba) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn formatted_runs_inherit_ui_font_and_preserve_formatting() {
+        let base_font = font("Configured UI Font");
+        let parsed = parse_minecraft_formatted_text("plain §lbold §oitalic");
+        let runs = build_text_runs(parsed.runs.as_ref(), rgb(0xffffff).into(), &base_font);
+        assert_eq!(runs.len(), 3);
+        for run in &runs {
+            assert_eq!(run.font.family, base_font.family);
+            assert_eq!(run.font.features, base_font.features);
+            assert_eq!(run.font.fallbacks, base_font.fallbacks);
+        }
+        assert_eq!(runs[0].font.weight, FontWeight::NORMAL);
+        assert_eq!(runs[1].font.weight, FontWeight::BOLD);
+        assert_eq!(runs[2].font.style, FontStyle::Italic);
+    }
 
     #[::core::prelude::v1::test]
     fn obfuscated_frame_changes_ascii_text() {

@@ -70,7 +70,31 @@ impl LaunchRequest {
     }
 }
 
-pub fn start_launch_task(request: LaunchRequest) -> String {
+/// A started launch task plus the structured result channel used by the
+/// command-line launch mode. The GUI still calls start_launch_task and
+/// ignores the channel.
+pub(crate) struct LaunchTask {
+    task_id: String,
+    completion: tokio::sync::oneshot::Receiver<Result<Option<u32>, String>>,
+    spawn_error: Option<String>,
+}
+
+impl LaunchTask {
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub(crate) async fn wait(self) -> Result<Option<u32>, String> {
+        if let Some(error) = self.spawn_error {
+            return Err(error);
+        }
+        self.completion
+            .await
+            .map_err(|_| "启动任务未返回结果".to_string())?
+    }
+}
+
+pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     let title = format!("启动 {}", request.display_name);
     let detail = Some(request.version.to_string());
     let task_id = create_task_with_details(
@@ -93,6 +117,7 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
         "已创建游戏启动任务"
     );
 
+    let (completion_tx, completion) = tokio::sync::oneshot::channel();
     let task_id_for_task = task_id.clone();
     let join_handle = match crate::tasks::runtime::spawn_io(async move {
         info!(
@@ -102,11 +127,11 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
             "游戏启动任务开始执行"
         );
         let result = launch_game(&request, &task_id_for_task).await;
-        match result {
+        match &result {
             Ok(Some(pid)) => {
                 let session = crate::core::version::game_info::GameSession::start(
                     PathBuf::from(request.package_folder.as_ref()),
-                    pid,
+                    *pid,
                 )
                 .await;
                 let session = match session {
@@ -117,6 +142,7 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
                     }
                 };
                 if let Some(mut session) = session {
+                    let pid = *pid;
                     let monitor_task_id = task_id_for_task.clone();
                     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
                         let process_exit = wait_for_process_exit(pid);
@@ -148,7 +174,7 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
                 }
                 info!(
                     task_id = %task_id_for_task,
-                    pid,
+                    pid = *pid,
                     "游戏启动任务执行完成，已获得进程 PID"
                 );
                 append_log(&task_id_for_task, format!("游戏已启动，PID {pid}"));
@@ -170,24 +196,38 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
                         "cancelled",
                         Some("启动已取消".to_string()),
                     );
+                    let _ = completion_tx.send(Err("启动已取消".to_string()));
                     return;
                 }
 
                 error!("launch task failed: {error}");
                 append_log(&task_id_for_task, format!("启动失败: {error}"));
-                finish_task(&task_id_for_task, "error", Some(error));
+                finish_task(&task_id_for_task, "error", Some(error.clone()));
             }
         }
+        let _ = completion_tx.send(result);
     }) {
         Ok(join_handle) => join_handle,
         Err(error) => {
             append_log(&task_id, format!("无法调度启动任务: {error}"));
-            finish_task(&task_id, "error", Some(error));
-            return task_id;
+            finish_task(&task_id, "error", Some(error.clone()));
+            return LaunchTask {
+                task_id,
+                completion,
+                spawn_error: Some(error),
+            };
         }
     };
     register_abort_handle(&task_id, join_handle);
-    task_id
+    LaunchTask {
+        task_id,
+        completion,
+        spawn_error: None,
+    }
+}
+
+pub fn start_launch_task(request: LaunchRequest) -> String {
+    start_launch_task_observed(request).task_id
 }
 
 fn register_abort_handle(task_id: &str, join_handle: JoinHandle<()>) {
@@ -514,12 +554,19 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     if version_config.editor_mode
         && compare_versions(&identity_version, "1.19.80.20") != Ordering::Less
     {
-        let is_preview = identity_name.contains("Beta") || identity_name.contains("Preview");
-        final_launch_args = Some(build_editor_deeplink(is_win32, is_preview));
-        append_log(
-            task_id,
-            "检测到编辑器模式，已生成 Deeplink 参数".to_string(),
-        );
+        if final_launch_args.is_some() {
+            append_log(
+                task_id,
+                "检测到编辑器模式，但调用方已提供启动参数，保留调用方参数".to_string(),
+            );
+        } else {
+            let is_preview = identity_name.contains("Beta") || identity_name.contains("Preview");
+            final_launch_args = Some(build_editor_deeplink(is_win32, is_preview));
+            append_log(
+                task_id,
+                "检测到编辑器模式，已生成 Deeplink 参数".to_string(),
+            );
+        }
     }
 
     check_cancelled(task_id)?;

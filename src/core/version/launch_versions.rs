@@ -111,6 +111,61 @@ pub(crate) fn version_folder_matches(left: &str, right: &str) -> bool {
     }
 }
 
+fn candidate_list(versions: &[LaunchVersionEntry]) -> String {
+    let mut candidates = versions
+        .iter()
+        .take(8)
+        .map(|entry| format!("{}（{}）", entry.folder, entry.version))
+        .collect::<Vec<_>>();
+    if versions.len() > candidates.len() {
+        candidates.push("等".to_string());
+    }
+    candidates.join("、")
+}
+
+/// Resolves a command-line version selector. Folder names win over display
+/// names and game versions because folders are the stable instance identity.
+pub(crate) fn select_launch_version<'a>(
+    versions: &'a [LaunchVersionEntry],
+    query: Option<&str>,
+) -> Result<&'a LaunchVersionEntry, String> {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return versions
+            .first()
+            .ok_or_else(|| "未找到已安装的游戏版本".to_string());
+    };
+
+    if let Some(entry) = versions
+        .iter()
+        .find(|entry| version_folder_matches(&entry.folder, query))
+    {
+        return Ok(entry);
+    }
+
+    let matches = versions
+        .iter()
+        .filter(|entry| {
+            entry.name.eq_ignore_ascii_case(query) || entry.version.eq_ignore_ascii_case(query)
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [entry] => Ok(entry),
+        [] => Err(format!(
+            "未找到版本“{query}”。可用版本：{}",
+            candidate_list(versions)
+        )),
+        _ => Err(format!(
+            "版本“{query}”匹配到多个实例，请改用版本目录名：{}",
+            matches
+                .iter()
+                .map(|entry| entry.folder.to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +225,72 @@ mod tests {
             "versions/Stable",
             "versions/stable"
         ));
+    }
+    fn named_version(folder: &str, name: &str, game_version: &str) -> LaunchVersionEntry {
+        let mut entry = version(folder, game_version, 0);
+        entry.name = Arc::from(name);
+        entry
+    }
+
+    #[test]
+    fn default_selection_uses_the_first_sorted_version() {
+        let versions = vec![version("recent", "1.21.0", 9), version("old", "1.20.0", 1)];
+        let selected = select_launch_version(&versions, None).expect("default selection");
+        assert_eq!(selected.folder.as_ref(), "recent");
+        assert!(select_launch_version(&[], None).is_err());
+    }
+
+    #[test]
+    fn selection_prefers_the_exact_folder() {
+        let versions = vec![
+            named_version("stable", "1.21.0", "1.21.0"),
+            named_version("preview", "1.21.0 Preview", "1.21.0.0"),
+        ];
+        let selected = select_launch_version(&versions, Some("stable")).expect("folder selection");
+        assert_eq!(selected.folder.as_ref(), "stable");
+    }
+
+    #[test]
+    fn selection_accepts_display_name_and_game_version() {
+        let versions = vec![
+            named_version("stable", "Stable", "1.21.0"),
+            named_version("preview", "Preview", "1.21.1.0"),
+        ];
+        assert_eq!(
+            select_launch_version(&versions, Some("preview"))
+                .expect("display name selection")
+                .folder
+                .as_ref(),
+            "preview"
+        );
+        assert_eq!(
+            select_launch_version(&versions, Some("1.21.0"))
+                .expect("game version selection")
+                .folder
+                .as_ref(),
+            "stable"
+        );
+    }
+
+    #[test]
+    fn selection_reports_ambiguous_display_names() {
+        let versions = vec![
+            named_version("first", "Same Name", "1.21.0"),
+            named_version("second", "Same Name", "1.21.1"),
+        ];
+        let error = select_launch_version(&versions, Some("Same Name"))
+            .expect_err("ambiguous display name must fail");
+        assert!(error.contains("多个实例"));
+        assert!(error.contains("first"));
+        assert!(error.contains("second"));
+    }
+
+    #[test]
+    fn selection_lists_candidates_for_unknown_versions() {
+        let versions = vec![named_version("stable", "Stable", "1.21.0")];
+        let error = select_launch_version(&versions, Some("missing"))
+            .expect_err("unknown version must fail");
+        assert!(error.contains("missing"));
+        assert!(error.contains("stable"));
     }
 }

@@ -410,7 +410,7 @@ fn install_package_to_development_dir(
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry.name()?.replace('\\', "/");
         if name.is_empty() || name.contains("..") || name.starts_with('/') || name.starts_with('.')
         {
             continue;

@@ -226,15 +226,16 @@ impl MainWindowView {
                 let state = cx.global::<LauncherState>();
                 let previous = this.launcher_snapshot.clone();
                 let current = crate::ui::hooks::use_launcher::read_launcher_snapshot(cx);
-                let changed = crate::ui::hooks::use_launcher::launcher_snapshot_changed(
-                    &previous,
-                    &current,
-                );
+                let changed =
+                    crate::ui::hooks::use_launcher::launcher_snapshot_changed(&previous, &current);
                 if changed {
                     this.launcher_snapshot = Arc::new(current);
                 }
-                if (changed && (previous.show_modal || previous.modal_visible
-                    || state.show_modal || state.modal_visible))
+                if (changed
+                    && (previous.show_modal
+                        || previous.modal_visible
+                        || state.show_modal
+                        || state.modal_visible))
                     || state.is_modal_animating(now)
                 {
                     cx.notify();
@@ -319,10 +320,7 @@ impl MainWindowView {
                 let was_visible = this.agreement_render_state.visible;
                 let changed = was_visible != next.visible
                     || this.agreement_render_state.accept_unlocked != next.accept_unlocked
-                    || !Arc::ptr_eq(
-                        &this.agreement_render_state.document,
-                        &next.document,
-                    );
+                    || !Arc::ptr_eq(&this.agreement_render_state.document, &next.document);
                 if changed {
                     let visible = next.visible;
                     this.agreement_render_state = Arc::new(next);
@@ -704,7 +702,8 @@ impl MainWindowView {
             )
         });
 
-        let launcher_snapshot = Arc::new(crate::ui::hooks::use_launcher::read_launcher_snapshot(cx));
+        let launcher_snapshot =
+            Arc::new(crate::ui::hooks::use_launcher::read_launcher_snapshot(cx));
         let diagnostics_state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
         let diagnostics_visible = diagnostics_state.pending_report.is_some();
         let diagnostics_signature = (
@@ -780,6 +779,7 @@ impl MainWindowView {
             background_animation_suppressed: false,
             last_route_for_side_effects: None,
             recent_page_target: None,
+            route_transition_started_at: None,
             runtime_font_logged: false,
             startup_route_bootstrapped: false,
             startup_deferred_ready: false,

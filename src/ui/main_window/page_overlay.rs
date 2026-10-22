@@ -45,9 +45,7 @@ impl PageOverlayView {
             ),
             _subscriptions: vec![
                 cx.observe_global::<SettingsPageState>(|this, cx| {
-                    if this.route == AppRoute::Settings
-                        && (this.was_visible || this.visible(cx))
-                    {
+                    if this.route == AppRoute::Settings && (this.was_visible || this.visible(cx)) {
                         let next = settings_projection(
                             cx.global::<SettingsPageState>(),
                             cx.global::<AgreementState>(),
@@ -76,9 +74,7 @@ impl PageOverlayView {
                     }
                 }),
                 cx.observe_global::<AgreementState>(|this, cx| {
-                    if this.route == AppRoute::Settings
-                        && (this.was_visible || this.visible(cx))
-                    {
+                    if this.route == AppRoute::Settings && (this.was_visible || this.visible(cx)) {
                         let next = settings_projection(
                             cx.global::<SettingsPageState>(),
                             cx.global::<AgreementState>(),

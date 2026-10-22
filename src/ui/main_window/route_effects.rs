@@ -69,6 +69,7 @@ impl MainWindowView {
             // A -> B keeps A hot; A -> B -> C evicts A and keeps B. The policy lives entirely in
             // MainWindowView so ordinary page code remains unaware of cache residency.
             self.recent_page_target = previous_route.clone();
+            self.route_transition_started_at = Some(Instant::now());
             self.sync_route_navigation(&route, cx);
             self.on_route_changed_cleanup(previous_route.as_ref(), &route, cx);
             self.on_route_changed_registry(&route, cx);

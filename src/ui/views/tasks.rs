@@ -746,7 +746,7 @@ impl TasksPageView {
             })?;
             Ok(())
         })
-        .detach_and_log_err(cx);
+        .detach_logged(cx);
     }
 
     pub(super) fn schedule_exit_motion(
@@ -783,7 +783,7 @@ impl TasksPageView {
             })?;
             Ok(())
         })
-        .detach_and_log_err(cx);
+        .detach_logged(cx);
     }
 
     fn prepare_render_model(
@@ -909,7 +909,7 @@ impl TasksPageView {
             })?;
             Ok(())
         })
-        .detach_and_log_err(cx);
+        .detach_logged(cx);
     }
 
     fn next_motion_sequence(&mut self) -> u64 {

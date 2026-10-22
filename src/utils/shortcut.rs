@@ -25,7 +25,7 @@ pub fn create_desktop_shortcut(version_folder: &str, display_name: &str) -> Resu
     let exe_path = std::env::current_exe().context("无法获取应用程序二进制路径")?;
     let exe_dir = exe_path.parent().context("无法获取可执行文件所在目录")?;
 
-    let arguments = format!("--launch-version \"{version_folder}\"");
+    let arguments = format!("--launch \"{version_folder}\"");
     let description = format!("启动 {display_name}");
 
     unsafe {

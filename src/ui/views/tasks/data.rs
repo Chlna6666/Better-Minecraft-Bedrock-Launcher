@@ -231,7 +231,7 @@ impl TasksPageView {
                     }
                     Ok::<(), anyhow::Error>(())
                 })
-                .detach_and_log_err(cx);
+                .detach_logged(cx);
             }
         }
     }

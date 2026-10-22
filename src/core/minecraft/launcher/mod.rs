@@ -9,3 +9,4 @@ pub mod task;
 #[path = "task_linux.rs"]
 pub mod task;
 pub use task::{LaunchRequest, start_launch_task};
+pub(crate) use task::{LaunchTask, start_launch_task_observed};

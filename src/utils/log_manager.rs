@@ -4,8 +4,11 @@ use std::cmp::Reverse;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::{Duration, SystemTime};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tracing_subscriber::fmt::MakeWriter;
@@ -17,6 +20,29 @@ const PENDING_EXTENSION: &str = "pending";
 const ARCHIVE_EXTENSION: &str = "zst";
 const ARCHIVE_WAKE_CAPACITY: usize = 1;
 const AUXILIARY_LOG_SETTLE_AGE: Duration = Duration::from_mins(10);
+
+// Bounded log queue. Emitting threads only copy bytes and try_send; a dedicated
+// writer thread owns file rotation, archive wake-ups and durable flush. Formatting
+// and disk latency must never run on the UI/GPU-owner threads: a single slow append
+// previously stalled a 37-element view render for ~9 ms while tracing was enabled.
+const ASYNC_LOG_QUEUE_CAPACITY: usize = 4096;
+const ASYNC_LOG_BATCH_BYTES: usize = 64 * 1024;
+const ASYNC_LOG_BATCH_INTERVAL: Duration = Duration::from_millis(100);
+const ASYNC_LOG_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+enum LogMessage {
+    Bytes(Vec<u8>),
+    Flush(SyncSender<()>),
+}
+
+// Shutdown/panic-time handle that can drain the queue without holding App state.
+#[derive(Clone)]
+struct LogFlushHandle {
+    sender: SyncSender<LogMessage>,
+    dropped: Arc<AtomicU64>,
+}
+
+static LOG_FLUSH_HANDLE: OnceLock<LogFlushHandle> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug)]
 struct LogRetentionPolicy {
@@ -45,7 +71,10 @@ impl From<&crate::config::config::LogManagementConfig> for LogRetentionPolicy {
 #[derive(Clone)]
 pub(crate) struct ManagedLogWriter {
     state: Arc<Mutex<ActiveLog>>,
+    sender: SyncSender<LogMessage>,
+    dropped: Arc<AtomicU64>,
     _worker: Option<Arc<ArchiveWorker>>,
+    _writer_thread: Option<Arc<JoinHandle<()>>>,
 }
 
 struct ActiveLog {
@@ -71,7 +100,8 @@ struct LogController {
 static LOG_CONTROLLER: OnceLock<LogController> = OnceLock::new();
 
 pub(crate) struct BufferedLogEvent {
-    state: Arc<Mutex<ActiveLog>>,
+    sender: SyncSender<LogMessage>,
+    dropped: Arc<AtomicU64>,
     bytes: Vec<u8>,
 }
 
@@ -104,18 +134,25 @@ impl ManagedLogWriter {
                 }
             };
 
+        let state = Arc::new(Mutex::new(ActiveLog {
+            path: active_path,
+            archive_directory,
+            file: Some(file),
+            bytes_written,
+            opened_on: Local::now().date_naive(),
+            next_sequence: 1,
+            policy: Arc::clone(&policy),
+            archive_wake,
+        }));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(ASYNC_LOG_QUEUE_CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let writer_thread = start_async_writer(Arc::clone(&state), receiver, Arc::clone(&dropped))?;
         let writer = Self {
-            state: Arc::new(Mutex::new(ActiveLog {
-                path: active_path,
-                archive_directory,
-                file: Some(file),
-                bytes_written,
-                opened_on: Local::now().date_naive(),
-                next_sequence: 1,
-                policy: Arc::clone(&policy),
-                archive_wake,
-            })),
+            state,
+            sender: sender.clone(),
+            dropped: dropped.clone(),
             _worker: worker,
+            _writer_thread: Some(Arc::new(writer_thread)),
         };
         if let Some(archive_wake) = writer
             .state
@@ -132,6 +169,7 @@ impl ManagedLogWriter {
         {
             eprintln!("Log manager controller was already initialized");
         }
+        let _ = LOG_FLUSH_HANDLE.set(LogFlushHandle { sender, dropped });
         writer.wake_archive_worker();
         Ok(writer)
     }
@@ -145,12 +183,155 @@ impl ManagedLogWriter {
     }
 }
 
+fn start_async_writer(
+    state: Arc<Mutex<ActiveLog>>,
+    receiver: std::sync::mpsc::Receiver<LogMessage>,
+    dropped: Arc<AtomicU64>,
+) -> io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("bmcbl-log-writer".to_owned())
+        .spawn(move || run_log_writer(state, receiver, dropped))
+}
+
+fn run_log_writer(
+    state: Arc<Mutex<ActiveLog>>,
+    receiver: std::sync::mpsc::Receiver<LogMessage>,
+    dropped: Arc<AtomicU64>,
+) {
+    let mut batch: Vec<u8> = Vec::with_capacity(ASYNC_LOG_BATCH_BYTES);
+    let mut last_write = Instant::now();
+    loop {
+        if batch.is_empty() {
+            match receiver.recv() {
+                Ok(message) => {
+                    handle_log_message(message, &state, &mut batch, &dropped, &mut last_write)
+                }
+                Err(_) => break,
+            }
+            continue;
+        }
+
+        match receiver.recv_timeout(ASYNC_LOG_BATCH_INTERVAL) {
+            Ok(message) => {
+                handle_log_message(message, &state, &mut batch, &dropped, &mut last_write)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                write_log_batch(&state, &mut batch, &dropped);
+                last_write = Instant::now();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                write_log_batch(&state, &mut batch, &dropped);
+                break;
+            }
+        }
+    }
+}
+
+fn handle_log_message(
+    message: LogMessage,
+    state: &Mutex<ActiveLog>,
+    batch: &mut Vec<u8>,
+    dropped: &AtomicU64,
+    last_write: &mut Instant,
+) {
+    match message {
+        LogMessage::Bytes(bytes) => {
+            batch.extend_from_slice(&bytes);
+            if batch.len() >= ASYNC_LOG_BATCH_BYTES
+                || last_write.elapsed() >= ASYNC_LOG_BATCH_INTERVAL
+            {
+                write_log_batch(state, batch, dropped);
+                *last_write = Instant::now();
+            }
+        }
+        LogMessage::Flush(acknowledge) => {
+            write_log_batch(state, batch, dropped);
+            let flushed = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .flush_file();
+            if let Err(error) = flushed {
+                eprintln!("Failed to flush application log file: {error}");
+            }
+            let _ = acknowledge.try_send(());
+            *last_write = Instant::now();
+        }
+    }
+}
+
+fn write_log_batch(state: &Mutex<ActiveLog>, batch: &mut Vec<u8>, dropped: &AtomicU64) {
+    let dropped_events = dropped.swap(0, Ordering::Relaxed);
+    if dropped_events > 0 {
+        batch.extend_from_slice(
+            format!(
+                "bmcbl log writer: dropped {dropped_events} events because the async queue was full\n"
+            )
+            .as_bytes(),
+        );
+    }
+    if batch.is_empty() {
+        return;
+    }
+
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(error) = state.write_event(batch) {
+        eprintln!("Failed to write application log event: {error}");
+    }
+    batch.clear();
+}
+
+fn flush_log_sender(sender: &SyncSender<LogMessage>, timeout: Duration) -> bool {
+    // Capacity 1 keeps the acknowledgement valid even if the writer finishes
+    // before this thread starts waiting. A rendezvous channel (capacity 0)
+    // would drop that fast acknowledgement and report a false flush timeout.
+    let (acknowledge, acknowledged) = std::sync::mpsc::sync_channel(1);
+    let deadline = Instant::now() + timeout;
+    loop {
+        match sender.try_send(LogMessage::Flush(acknowledge.clone())) {
+            Ok(()) => break,
+            Err(TrySendError::Full(_)) => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+
+    acknowledged
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .is_ok()
+}
+
+/// Drains queued records from shutdown, panic or explicit diagnostic paths.
+/// Ordinary emitters never call this function.
+pub(crate) fn flush_async_logs(timeout: Duration) -> bool {
+    let Some(handle) = LOG_FLUSH_HANDLE.get() else {
+        return true;
+    };
+    let dropped = handle.dropped.swap(0, Ordering::Relaxed);
+    let flushed = flush_log_sender(&handle.sender, timeout);
+    if dropped > 0 {
+        eprintln!("BMCBL log queue dropped {dropped} events because the writer could not keep up");
+    }
+    flushed
+}
+
+/// Bounded shutdown flush used by the application exit path.
+pub(crate) fn flush_async_logs_now() {
+    let _ = flush_async_logs(ASYNC_LOG_FLUSH_TIMEOUT);
+}
+
 impl<'writer> MakeWriter<'writer> for ManagedLogWriter {
     type Writer = BufferedLogEvent;
 
     fn make_writer(&'writer self) -> Self::Writer {
         BufferedLogEvent {
-            state: Arc::clone(&self.state),
+            sender: self.sender.clone(),
+            dropped: Arc::clone(&self.dropped),
             bytes: Vec::with_capacity(512),
         }
     }
@@ -173,12 +354,18 @@ impl Drop for BufferedLogEvent {
             return;
         }
 
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Err(error) = state.write_event(&self.bytes) {
-            eprintln!("Failed to write application log event: {error}");
+        // The emitting thread must never wait on disk, rotation or a mutex held
+        // by the writer. A full queue drops the record and increments a counter
+        // that the writer reports in the next successful batch.
+        match self
+            .sender
+            .try_send(LogMessage::Bytes(std::mem::take(&mut self.bytes)))
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 }
@@ -209,6 +396,13 @@ impl ActiveLog {
         file.write_all(bytes)?;
         self.bytes_written = self.bytes_written.saturating_add(incoming_bytes);
         Ok(())
+    }
+
+    fn flush_file(&mut self) -> io::Result<()> {
+        match &mut self.file {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
     }
 
     fn rotate(&mut self, current_date: NaiveDate) -> io::Result<()> {
@@ -336,14 +530,19 @@ fn start_archive_worker(
             match result {
                 Ok(Ok(report)) => {
                     if report.archived > 0 || report.removed > 0 {
-                        eprintln!(
-                            "Log archive maintenance completed: archived={}, removed={}",
-                            report.archived, report.removed
+                        tracing::info!(
+                            archived = report.archived,
+                            removed = report.removed,
+                            "log archive maintenance completed"
                         );
                     }
                 }
-                Ok(Err(error)) => eprintln!("Log archive maintenance failed: {error}"),
-                Err(error) => eprintln!("Log archive maintenance task failed: {error}"),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "log archive maintenance failed");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "log archive maintenance task failed");
+                }
             }
         }
     })?;

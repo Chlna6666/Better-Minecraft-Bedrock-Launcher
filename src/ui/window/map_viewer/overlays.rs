@@ -65,7 +65,7 @@ impl MapViewerWindowView {
             })?;
             Ok::<(), anyhow::Error>(())
         })
-        .detach_and_log_err(cx);
+        .detach_logged(cx);
     }
 
     fn sync_entity_avatar_overlay_snapshot(&mut self, cx: &mut Context<Self>) {

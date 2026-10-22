@@ -85,7 +85,7 @@ pub(super) fn open_modal(mod_entry: LeviLaminaModEntry, cx: &mut App) {
         })?;
         Ok::<(), anyhow::Error>(())
     })
-    .detach_and_log_err(cx);
+    .detach_logged(cx);
 }
 
 pub(super) fn compatible_releases(

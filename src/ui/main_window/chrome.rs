@@ -141,12 +141,16 @@ pub(super) fn render_nav(
     let step_width_px = (item_width + capsule_gap) / px(1.);
     let pill_inner_inset_px = 1.5;
     let pill_width = item_width - px(pill_inner_inset_px * 2.);
+    let pill_offset = px(step_width_px * active_index as f32);
+    let previous_index = state
+        .pill_from_index
+        .min(navigation_length.saturating_sub(1));
 
-    // Stable geometry lets the presentation lane sample both liquid edges without
-    // rebuilding navigation or changing the layout of its icons and labels.
+    // Keep the base at the selected item. The renderer animates relative to this
+    // final layout, so a settled/absent sample cannot leave the pill on an old tab.
     let pill = div()
         .absolute()
-        .left(capsule_padding + px(pill_inner_inset_px))
+        .left(capsule_padding + px(pill_inner_inset_px) + pill_offset)
         .top(capsule_padding)
         .w(pill_width)
         .h(item_height)
@@ -155,11 +159,8 @@ pub(super) fn render_nav(
         .with_animation_group(
             "chrome-nav-pill",
             AnimationGroup::horizontal_edges(
-                px(step_width_px
-                    * state
-                        .pill_from_index
-                        .min(navigation_length.saturating_sub(1)) as f32),
-                px(step_width_px * active_index as f32),
+                px(step_width_px * (previous_index as f32 - active_index as f32)),
+                px(0.),
                 crate::ui::animation::apple_spring(0.34, 0.60),
                 crate::ui::animation::apple_spring(0.42, 0.80),
             ),
@@ -469,7 +470,8 @@ pub(super) fn render_shell(
 
 #[cfg(test)]
 mod native_resize_nav_tests {
-    use super::*;
+    use super::nav_link_padding_for_width;
+    use gpui::px;
 
     #[test]
     fn navigation_item_padding_changes_continuously_around_old_breakpoint() {
@@ -483,8 +485,10 @@ mod native_resize_nav_tests {
             let delta = (nav_link_padding_for_width((width + 1) as f32)
                 - nav_link_padding_for_width(width as f32))
                 / px(1.);
-            assert!(delta >= 0. && delta <= 0.0751,
-                "native one-pixel size changes must not jump item geometry");
+            assert!(
+                delta >= 0. && delta <= 0.0751,
+                "native one-pixel size changes must not jump item geometry"
+            );
         }
     }
 }

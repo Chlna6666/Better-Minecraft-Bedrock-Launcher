@@ -437,7 +437,7 @@ pub async fn download_and_apply_update(
 
     set_task_message(&task_id, Some("正在启动更新程序".to_string()));
     let child = Command::new(updater_path.clone())
-        .arg("run-updater")
+        .arg("--updater")
         .arg(&src.to_string_lossy().to_string())
         .arg(&dst.to_string_lossy().to_string())
         .arg(timeout_secs.to_string())

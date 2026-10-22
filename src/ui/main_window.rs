@@ -67,11 +67,10 @@ pub(crate) fn preload_startup_background_bytes_from_values(
         .unwrap_or(0)
 }
 
-pub(crate) fn preload_startup_background_target_from_values(
+pub(crate) fn preload_startup_background_image_from_values(
     background_option: &str,
     local_image_path: &str,
     network_image_url: &str,
-    window: &Window,
     cx: &mut App,
 ) -> usize {
     let source = resolve_background_source_from_values(
@@ -81,21 +80,10 @@ pub(crate) fn preload_startup_background_target_from_values(
         0,
     );
 
+    // Match AppBackgroundView's source-based loader; a viewport-sized request is a separate
+    // decode that the displayed background never consumes.
     background_resource(&source)
-        .and_then(|resource| {
-            cx.image_render_request(
-                resource,
-                window.viewport_size(),
-                window.scale_factor(),
-                ObjectFit::Cover,
-            )
-        })
-        .map(|target| {
-            let resource = target.resource().clone();
-            let _preload = cx.preload_sized_image(target);
-            cx.remove_compressed_image_resource(&resource);
-            1
-        })
+        .map(|resource| cx.preload_image_resources([resource]).len())
         .unwrap_or(0)
 }
 
@@ -125,16 +113,49 @@ fn route_transition_direction(from_index: Option<usize>, to_index: usize) -> f32
 
 fn route_page_enter_motion(direction: f32) -> Animation {
     Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(220))
-            .fill_mode(FillMode::Both)
-            .ease(Easing::OutCubic),
+        AnimationSpec::new(if direction == 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(220)
+        })
+        .fill_mode(FillMode::Both)
+        .ease(Easing::OutCubic),
     )
     .with_property(AnimationProperty::clipped_translation_opacity(
         point(px(18.0 * direction), px(0.0)),
         Point::default(),
-        0.94,
+        if direction == 0.0 { 1.0 } else { 0.94 },
         1.0,
     ))
+}
+
+fn render_route_page_transition(
+    page: AnyElement,
+    route: &RouteTarget,
+    transition_direction: f32,
+    transition_active: bool,
+) -> AnyElement {
+    let page = div().size_full().child(page);
+    let direction = if transition_active && !crate::core::ui_prefs::reduced_motion() {
+        transition_direction
+    } else {
+        0.0
+    };
+    // Keep this ancestor identity after completion: removing it rebuilds descendant animation
+    // and image states. AnimationElement releases its composite binding when its track finishes.
+    let animated_page = page
+        .with_visual_animation(
+            route_enter_animation_key(route),
+            route_page_enter_motion(direction),
+        )
+        .expect("route page uses one retained subtree translation/opacity track");
+
+    div()
+        .absolute()
+        .inset_0()
+        .size_full()
+        .child(animated_page)
+        .into_any_element()
 }
 
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
@@ -144,12 +165,8 @@ where
     view.map_or_else(
         || Empty {}.into_any_element(),
         |view| {
-            view.cached_by(
-                StyleRefinement::default().size_full(),
-                &(route_key, type_name::<T>()),
-            )
-            .progressive()
-            .into_any_element()
+            let _ = (route_key, type_name::<T>());
+            div().size_full().child(view).into_any_element()
         },
     )
 }
@@ -190,6 +207,7 @@ struct MainWindowRenderModel {
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     route_transition_direction: f32,
+    route_transition_active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -245,6 +263,7 @@ pub struct MainWindowView {
     // The residency policy is centralized: one inactive route may stay warm next to the active
     // route. Page implementations do not need cache hooks or special navigation code.
     recent_page_target: Option<RouteTarget>,
+    route_transition_started_at: Option<Instant>,
     runtime_font_logged: bool,
     startup_route_bootstrapped: bool,
     startup_deferred_ready: bool,
@@ -392,8 +411,9 @@ impl MainWindowView {
         let diagnostics_visible = self.diagnostics_visible;
         let launcher_snapshot = self.launcher_snapshot.clone();
         #[cfg(target_os = "windows")]
-        let launch_prereq_visible =
-            cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>().visible;
+        let launch_prereq_visible = cx
+            .global::<crate::ui::state::launch_prereq::LaunchPrereqState>()
+            .visible;
         let (toast_visible, toast_breadcrumb_visible) = {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             let window_id = window.window_handle().window_id();
@@ -408,6 +428,11 @@ impl MainWindowView {
                 .map(|previous| previous.visual_index(cx)),
             route.visual_index(cx),
         );
+        // Stop declaring entrance motion after its completion; keep the ancestor element itself
+        // stable so nested animations and image leases survive this update.
+        let route_transition_active = self.route_transition_started_at.is_some_and(|started| {
+            now.saturating_duration_since(started) < Duration::from_millis(260)
+        });
         MainWindowRenderModel {
             now,
             route,
@@ -432,10 +457,16 @@ impl MainWindowView {
             toast_visible,
             toast_breadcrumb_visible,
             route_transition_direction,
+            route_transition_active,
         }
     }
 
-    fn render_active_page(&self, route: &RouteTarget, transition_direction: f32) -> AnyElement {
+    fn render_active_page(
+        &self,
+        route: &RouteTarget,
+        transition_direction: f32,
+        transition_active: bool,
+    ) -> AnyElement {
         let page = match route {
             RouteTarget::Builtin(AppRoute::Home) => {
                 optional_page_view_element(AppRoute::Home.pathname(), self.home_page_view.clone())
@@ -464,34 +495,9 @@ impl MainWindowView {
             }
         };
 
-        let page = div().size_full().child(page);
-        if crate::core::ui_prefs::reduced_motion() || transition_direction == 0.0 {
-            return div()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .child(page)
-                .into_any_element();
-        }
-
-        // A route page is a heterogeneous subtree (text, images, SVGs, clips, blur-backed cards).
-        // Bind one retained composite transform to the page instead of applying Translation to
-        // every primitive independently. This keeps text/image/clip motion phase-locked while still
-        // avoiding the old extra explicit composite_layer wrapper.
-        let animated_page = page
-            .with_visual_animation(
-                route_enter_animation_key(route),
-                route_page_enter_motion(transition_direction),
-            )
-            .expect("route page uses one retained subtree translation/opacity track");
-
-        div()
-            .absolute()
-            .inset_0()
-            .size_full()
-            .child(animated_page)
-            .into_any_element()
+        render_route_page_transition(page, route, transition_direction, transition_active)
     }
+
     fn compose_root(
         &mut self,
         model: &MainWindowRenderModel,
@@ -505,15 +511,10 @@ impl MainWindowView {
             .size_full()
             .bg(gpui::transparent_black())
             .child(
-                self.background_view
-                    .clone()
-                    .cached_absolute_by(&(
-                        "main-window-background",
-                        model.window_width,
-                        model.window_height,
-                    ))
-                    .reuse_on_window_refresh()
-                    .critical()
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.background_view.clone())
                     .into_any_element(),
             );
 
@@ -528,18 +529,20 @@ impl MainWindowView {
         if model.builtin_route == AppRoute::Download {
             auth_blocked |= self.download_overlay_active;
             root = root.child(
-                self.download_overlay_view
-                    .clone()
-                    .cached_absolute_by(&"main-window-download-overlay"),
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.download_overlay_view.clone()),
             );
         }
 
         if model.builtin_route == AppRoute::Settings {
             auth_blocked |= self.settings_overlay_active;
             root = root.child(
-                self.settings_overlay_view
-                    .clone()
-                    .cached_absolute_by(&"main-window-settings-overlay"),
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.settings_overlay_view.clone()),
             );
         }
 
@@ -651,8 +654,7 @@ impl MainWindowView {
                 auth_blocked = true;
                 let modal_duration = cx.global::<UpdateState>().modal_animation_duration;
                 if !model.update_modal_visible
-                    && let Some(started_at) =
-                        cx.global::<UpdateState>().modal_animation_started_at
+                    && let Some(started_at) = cx.global::<UpdateState>().modal_animation_started_at
                 {
                     window.request_invalidation_at(
                         started_at + modal_duration + Duration::from_millis(1),
@@ -674,24 +676,22 @@ impl MainWindowView {
                     self.pause_update_markdown_view(cx);
                 }
 
-                root = root.child(
-                    crate::ui::overlays::update::render_update_modal(
-                        release,
-                        markdown_view,
-                        changelog_scroll_handle,
-                        model.window_width,
-                        model.window_height,
-                        model.update_modal_visible,
-                        downloading,
-                        task_id,
-                        snap,
-                        download_error,
-                        model.theme_k,
-                        modal_duration,
-                        model.theme_accent,
-                        cx.global::<I18n>(),
-                    ),
-                );
+                root = root.child(crate::ui::overlays::update::render_update_modal(
+                    release,
+                    markdown_view,
+                    changelog_scroll_handle,
+                    model.window_width,
+                    model.window_height,
+                    model.update_modal_visible,
+                    downloading,
+                    task_id,
+                    snap,
+                    download_error,
+                    model.theme_k,
+                    modal_duration,
+                    model.theme_accent,
+                    cx.global::<I18n>(),
+                ));
             } else {
                 self.pause_update_markdown_view(cx);
             }
@@ -717,13 +717,11 @@ impl MainWindowView {
 
             if model.launcher_snapshot.show_modal {
                 auth_blocked = true;
-                root = root.child(
-                    crate::ui::overlays::launcher::render_launcher_overlay(
-                        &model.launcher_snapshot,
-                        window,
-                        cx,
-                    ),
-                );
+                root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
+                    &model.launcher_snapshot,
+                    window,
+                    cx,
+                ));
             }
 
             #[cfg(target_os = "windows")]
@@ -840,7 +838,8 @@ impl MainWindowView {
                     window,
                     cx,
                 )
-            } else if let Some(error) = registry.cached_page_error(&modal.plugin_id, &modal.page_id) {
+            } else if let Some(error) = registry.cached_page_error(&modal.plugin_id, &modal.page_id)
+            {
                 crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
             } else {
                 crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
@@ -1380,7 +1379,7 @@ impl MainWindowView {
 
             Ok::<(), anyhow::Error>(())
         })
-        .detach_and_log_err(cx);
+        .detach_logged(cx);
 
         false
     }
@@ -1732,7 +1731,11 @@ impl Render for MainWindowView {
             cx.notify();
         }
 
-        let page = self.render_active_page(&model.route, model.route_transition_direction);
+        let page = self.render_active_page(
+            &model.route,
+            model.route_transition_direction,
+            model.route_transition_active,
+        );
         let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self
             .compose_easter_egg(root, &model, window, cx)
@@ -1754,9 +1757,10 @@ impl Render for MainWindowView {
         // including the Import overlay, so a trigger inside a modal cannot paint its menu below
         // the modal backdrop/card or be clipped by the modal's scrolling content.
         let root = root.child(
-            self.dropdown_overlay_view
-                .clone()
-                .cached_absolute_by(&"main-window-dropdown-overlay"),
+            div()
+                .absolute()
+                .inset_0()
+                .child(self.dropdown_overlay_view.clone()),
         );
 
         if let Some(chrome) = &self.chrome_view
@@ -1840,5 +1844,64 @@ mod tests {
         let route = RouteTarget::Builtin(AppRoute::Home);
 
         assert!(background_animation_suppressed(&route, true));
+    }
+    struct TransitionProbe {
+        states: std::rc::Rc<std::cell::RefCell<Vec<gpui::EntityId>>>,
+    }
+
+    impl gpui::Render for TransitionProbe {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let state = window.use_keyed_state("nested-page-state", cx, |_, _| ());
+            self.states.borrow_mut().push(state.entity_id());
+            gpui::div()
+        }
+    }
+
+    struct TransitionPage {
+        child: gpui::Entity<TransitionProbe>,
+        transition_active: bool,
+    }
+
+    impl gpui::Render for TransitionPage {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::{IntoElement as _, ParentElement as _};
+            super::render_route_page_transition(
+                gpui::div().child(self.child.clone()).into_any_element(),
+                &RouteTarget::Builtin(AppRoute::Download),
+                1.,
+                self.transition_active,
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn route_completion_preserves_nested_page_state(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let states = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let child = cx.new(|_| TransitionProbe {
+            states: states.clone(),
+        });
+        let (root, visual) = cx.add_window_view(|_, _| TransitionPage {
+            child,
+            transition_active: true,
+        });
+        let before = *states.borrow().last().expect("initial page state");
+        root.update(visual, |root, cx| {
+            root.transition_active = false;
+            cx.notify();
+        });
+        assert_eq!(
+            *states.borrow().last().expect("updated page state"),
+            before,
+            "finishing the outer transition must preserve nested image and animation state"
+        );
     }
 }

@@ -14,7 +14,6 @@ use tokio::time::sleep;
 use uuid::Uuid;
 use windows::Win32::System::Console::GetConsoleWindow;
 
-const TERMINAL_HOST_FLAG: &str = "--bmcbl-terminal-host";
 const TERMINAL_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_BIND_TIMEOUT: Duration = Duration::from_secs(90);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -137,9 +136,8 @@ pub(crate) async fn start_host() -> Result<Option<TerminalHostHandle>, String> {
     // the real console process in the WT tab; the lightweight BMCBL helper then
     // AttachConsole(ATTACH_PARENT_PROCESS) to that same ConPTY session.
     let host_command = format!(
-        "start \"\" /wait /b {} {} {} {}",
+        "start \"\" /wait /b {} --terminal-host {} {}",
         cmd_quote(&current_exe),
-        TERMINAL_HOST_FLAG,
         cmd_quote(&command_path),
         cmd_quote(&response_path),
     );
@@ -210,25 +208,7 @@ pub(crate) async fn start_host() -> Result<Option<TerminalHostHandle>, String> {
 /// Runs before normal GPUI startup. This helper owns only the terminal session;
 /// it never initializes the BMCBL runtime, reads Xbox credentials, registers an
 /// XUser payload, or creates Minecraft.
-pub(crate) fn run_host_from_args() -> Result<bool, String> {
-    let mut args = std::env::args_os();
-    let _program = args.next();
-    let Some(flag) = args.next() else {
-        return Ok(false);
-    };
-    if flag.to_string_lossy() != TERMINAL_HOST_FLAG {
-        return Ok(false);
-    }
-
-    let command_path = args
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "Windows Terminal Host 缺少 command 路径".to_string())?;
-    let response_path = args
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "Windows Terminal Host 缺少 response 路径".to_string())?;
-
+pub(crate) fn run_host(command_path: &Path, response_path: &Path) -> Result<(), String> {
     if unsafe { GetConsoleWindow().0.is_null() } {
         unsafe {
             let _ = attach_console_raw(ATTACH_PARENT_PROCESS);
@@ -236,19 +216,19 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
     }
     if unsafe { GetConsoleWindow().0.is_null() } {
         let _ = write_response(
-            &response_path,
+            response_path,
             &TerminalHostResponse {
                 state: "error".to_string(),
                 host_pid: None,
                 error: Some("BMCBL Host 未附加到 Windows Terminal 控制台".to_string()),
             },
         );
-        return Ok(true);
+        return Ok(());
     }
 
     let host_pid = unsafe { get_current_process_id_raw() };
     write_response(
-        &response_path,
+        response_path,
         &TerminalHostResponse {
             state: "ready".to_string(),
             host_pid: Some(host_pid),
@@ -260,21 +240,21 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
     // authentication material crosses this helper boundary.
     let started = Instant::now();
     let minecraft_pid = loop {
-        if let Ok(bytes) = fs::read(&command_path)
+        if let Ok(bytes) = fs::read(command_path)
             && let Ok(command) = serde_json::from_slice::<TerminalHostCommand>(&bytes)
         {
-            let _ = fs::remove_file(&command_path);
+            let _ = fs::remove_file(command_path);
             if command.cancel {
-                let _ = fs::remove_file(&response_path);
-                return Ok(true);
+                let _ = fs::remove_file(response_path);
+                return Ok(());
             }
             if let Some(pid) = command.minecraft_pid.filter(|pid| *pid != 0) {
                 break pid;
             }
         }
         if started.elapsed() >= TERMINAL_BIND_TIMEOUT {
-            let _ = fs::remove_file(&response_path);
-            return Ok(true);
+            let _ = fs::remove_file(response_path);
+            return Ok(());
         }
         std::thread::sleep(TERMINAL_POLL_INTERVAL);
     };
@@ -286,6 +266,6 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
             let _ = close_handle_raw(process);
         }
     }
-    let _ = fs::remove_file(&response_path);
-    Ok(true)
+    let _ = fs::remove_file(response_path);
+    Ok(())
 }

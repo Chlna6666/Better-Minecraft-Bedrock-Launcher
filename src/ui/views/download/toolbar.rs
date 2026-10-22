@@ -1,4 +1,4 @@
-use crate::ui::animation::{apple_spring, spring_motion};
+use crate::ui::animation::{apple_spring, settled_animation};
 use crate::ui::components::button::IconButton;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
@@ -256,21 +256,25 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
         .h(px(TAB_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.surface);
-    let indicator = if transition_seq != 0 && from != active {
+    let offset =
+        if transition_seq != 0 && from != active && !crate::core::ui_prefs::reduced_motion() {
+            from_x - to_x
+        } else {
+            0.0
+        };
+    let indicator = if offset == 0.0 {
         indicator
             .with_visual_animation(
-                SharedString::from(format!("download-tab-indicator-{transition_seq}")),
-                spring_motion(apple_spring(0.30, 0.82)).with_property(
-                    AnimationProperty::translation(
-                        point(px(from_x - to_x), px(0.0)),
-                        Point::default(),
-                    ),
-                ),
+                "download-tab-indicator",
+                settled_animation().with_translation(Point::default(), Point::default()),
             )
-            .expect("animation declares presentation properties")
-            .into_any_element()
+            .expect("indicator uses a visual translation")
     } else {
-        indicator.into_any_element()
+        let spring = apple_spring(0.30, 0.82);
+        indicator.with_animation_group(
+            "download-tab-indicator",
+            AnimationGroup::horizontal_edges(px(offset), px(0.0), spring, spring),
+        )
     };
 
     div()

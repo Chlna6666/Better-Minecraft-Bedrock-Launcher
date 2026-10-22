@@ -73,3 +73,114 @@ fn retention_uses_original_log_timestamp_from_archive_name() -> io::Result<()> {
     fs::remove_dir_all(directory)?;
     Ok(())
 }
+fn async_test_state(directory: &Path) -> io::Result<(Arc<Mutex<ActiveLog>>, PathBuf)> {
+    let active_path = directory.join(ACTIVE_LOG_FILE);
+    fs::create_dir_all(directory)?;
+    fs::create_dir_all(directory.join(ARCHIVE_DIRECTORY))?;
+    let file = open_active_log(&active_path)?;
+    let policy = Arc::new(RwLock::new(LogRetentionPolicy {
+        max_active_bytes: 1024 * 1024,
+        max_previous_bytes: 1024,
+        max_archive_bytes: 1024 * 1024,
+        max_archive_files: 4,
+        max_archive_age: Duration::from_secs(60),
+        compression_level: 1,
+    }));
+    let state = Arc::new(Mutex::new(ActiveLog {
+        path: active_path.clone(),
+        archive_directory: directory.join(ARCHIVE_DIRECTORY),
+        file: Some(file),
+        bytes_written: 0,
+        opened_on: Local::now().date_naive(),
+        next_sequence: 1,
+        policy,
+        archive_wake: None,
+    }));
+    Ok((state, active_path))
+}
+
+fn send_log_event(sender: &SyncSender<LogMessage>, bytes: &[u8]) {
+    sender
+        .send(LogMessage::Bytes(bytes.to_vec()))
+        .expect("test log queue should accept records");
+}
+
+#[test]
+fn async_log_writer_persists_queued_events_in_order() -> io::Result<()> {
+    let directory = test_directory("async-order");
+    let (state, active_path) = async_test_state(&directory)?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+    let dropped = Arc::new(AtomicU64::new(0));
+    let worker_state = Arc::clone(&state);
+    let worker_dropped = Arc::clone(&dropped);
+    let writer = std::thread::spawn(move || run_log_writer(worker_state, receiver, worker_dropped));
+
+    send_log_event(&sender, b"first record\n");
+    send_log_event(&sender, b"second record\n");
+    assert!(flush_log_sender(&sender, Duration::from_secs(2)));
+
+    let content = fs::read_to_string(&active_path)?;
+    assert!(content.contains("first record"));
+    assert!(content.contains("second record"));
+    assert!(
+        content.find("first record") < content.find("second record"),
+        "queued records must keep emission order"
+    );
+
+    drop(sender);
+    writer.join().expect("log writer thread must exit");
+    drop(state);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+fn buffered_log_event_never_blocks_when_queue_is_full() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    sender
+        .send(LogMessage::Bytes(b"occupied".to_vec()))
+        .expect("first record should fit");
+    let dropped = Arc::new(AtomicU64::new(0));
+
+    let started_at = Instant::now();
+    for _ in 0..128 {
+        drop(BufferedLogEvent {
+            sender: sender.clone(),
+            dropped: Arc::clone(&dropped),
+            bytes: b"dropped record".to_vec(),
+        });
+    }
+
+    assert!(
+        started_at.elapsed() < Duration::from_secs(1),
+        "a saturated queue must never stall the emitting thread"
+    );
+    assert_eq!(dropped.load(Ordering::Relaxed), 128);
+    drop(receiver);
+}
+
+#[test]
+fn log_flush_times_out_when_writer_is_not_draining() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(8);
+    let started_at = Instant::now();
+    assert!(!flush_log_sender(&sender, Duration::from_millis(50)));
+    assert!(started_at.elapsed() >= Duration::from_millis(40));
+    drop(receiver);
+}
+
+#[test]
+fn saturated_queue_drops_are_reported_to_the_log_file() -> io::Result<()> {
+    let directory = test_directory("async-dropped");
+    let (state, active_path) = async_test_state(&directory)?;
+    let dropped = Arc::new(AtomicU64::new(3));
+    let mut batch = b"kept record\n".to_vec();
+
+    write_log_batch(&state, &mut batch, &dropped);
+
+    let content = fs::read_to_string(&active_path)?;
+    assert!(content.contains("kept record"));
+    assert!(content.contains("dropped 3 events"));
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}

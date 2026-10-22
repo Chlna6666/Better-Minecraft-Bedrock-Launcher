@@ -1,6 +1,8 @@
 pub mod app_info;
 pub mod cloudflare;
 #[cfg(target_os = "windows")]
+pub(crate) mod console;
+#[cfg(target_os = "windows")]
 pub mod developer_mode;
 pub mod diagnostics;
 pub mod file_ops;

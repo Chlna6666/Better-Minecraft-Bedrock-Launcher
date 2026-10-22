@@ -493,7 +493,31 @@ async fn ensure_gdk_data_directories(
     Ok(())
 }
 
-pub fn start_launch_task(request: LaunchRequest) -> String {
+/// A started launch task plus the structured result channel used by the
+/// command-line launch mode. The GUI still calls start_launch_task and
+/// ignores the channel.
+pub(crate) struct LaunchTask {
+    task_id: String,
+    completion: tokio::sync::oneshot::Receiver<Result<Option<u32>, String>>,
+    spawn_error: Option<String>,
+}
+
+impl LaunchTask {
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub(crate) async fn wait(self) -> Result<Option<u32>, String> {
+        if let Some(error) = self.spawn_error {
+            return Err(error);
+        }
+        self.completion
+            .await
+            .map_err(|_| "启动任务未返回结果".to_string())?
+    }
+}
+
+pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     let task_id = create_task_with_details(
         None,
         format!("启动 {}", request.display_name),
@@ -505,9 +529,11 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
     set_total(&task_id, Some(LAUNCH_TOTAL_STEPS));
     append_task_log(&task_id, format!("准备启动 {}", request.display_name));
 
+    let (completion_tx, completion) = tokio::sync::oneshot::channel();
     let task_id_for_task = task_id.clone();
     let join_handle = match crate::tasks::runtime::spawn_io(async move {
-        match launch_game(&request, &task_id_for_task).await {
+        let result = launch_game(&request, &task_id_for_task).await;
+        match &result {
             Ok(Some(process_id)) => {
                 append_task_log(
                     &task_id_for_task,
@@ -525,19 +551,32 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
             Err(error) => {
                 error!(task_id = %task_id_for_task, %error, "Linux game launch failed");
                 append_task_log(&task_id_for_task, format!("启动失败：{error}"));
-                finish_task(&task_id_for_task, "error", Some(error));
+                finish_task(&task_id_for_task, "error", Some(error.clone()));
             }
         }
+        let _ = completion_tx.send(result);
     }) {
         Ok(join_handle) => join_handle,
         Err(error) => {
             append_task_log(&task_id, format!("无法调度启动任务：{error}"));
-            finish_task(&task_id, "error", Some(error));
-            return task_id;
+            finish_task(&task_id, "error", Some(error.clone()));
+            return LaunchTask {
+                task_id,
+                completion,
+                spawn_error: Some(error),
+            };
         }
     };
     register_task_abort_handle(task_id.clone(), join_handle.abort_handle());
-    task_id
+    LaunchTask {
+        task_id,
+        completion,
+        spawn_error: None,
+    }
+}
+
+pub fn start_launch_task(request: LaunchRequest) -> String {
+    start_launch_task_observed(request).task_id
 }
 
 async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
@@ -730,7 +769,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        command.arg(argument);
+        command.args(crate::launch::split_launch_args(argument));
     }
     if let Some(auth) = &launch_auth {
         auth.apply_to_command(&mut command)?;

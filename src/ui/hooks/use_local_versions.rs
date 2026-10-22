@@ -247,7 +247,7 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
         cx.update(sync_manage_page_state_from_local_versions)?;
         Ok::<(), anyhow::Error>(())
     })
-    .detach_and_log_err(cx);
+    .detach_logged(cx);
 }
 
 pub fn remove_local_version(folder_name: &str, cx: &mut App) {
@@ -432,7 +432,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         }
         Ok::<(), anyhow::Error>(())
     })
-    .detach_and_log_err(cx);
+    .detach_logged(cx);
 }
 
 pub fn version_build_type(version: &LaunchVersionEntry) -> BuildType {

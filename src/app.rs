@@ -300,7 +300,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         let plugin_init_elapsed = plugin_init_started_at.elapsed();
 
         gpui_router::init(cx);
-        if matches!(bootstrap.launch_mode, LaunchMode::Main) {
+        if bootstrap.launch_mode.is_main() {
             let preloaded_backgrounds =
                 crate::ui::main_window::preload_startup_background_bytes_from_values(
                     &bootstrap.config.custom_style.background_option,
@@ -324,6 +324,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
                 open_window_elapsed.as_secs_f64() * 1000.0,
             );
             if main_window_opened {
+                schedule_direct_launch(&bootstrap, cx);
                 schedule_post_visible_startup_services(cx);
                 schedule_post_startup_warmups(cx);
                 if bootstrap.debug_enabled {
@@ -503,16 +504,15 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
     let window_options = main_window_options(&window_title, cx);
     let main_window = cx.open_window(window_options, move |window, cx| {
         window.set_title(&window_title);
-        let preloaded_targets =
-            crate::ui::main_window::preload_startup_background_target_from_values(
+        let preloaded_images =
+            crate::ui::main_window::preload_startup_background_image_from_values(
                 &startup_background_option,
                 &startup_local_image_path,
                 &startup_network_image_url,
-                window,
                 cx,
             );
-        if preloaded_targets > 0 {
-            debug!("startup background target image preload scheduled");
+        if preloaded_images > 0 {
+            debug!("startup background source image preload scheduled");
         }
 
         let view = cx.new(|cx| {
@@ -544,6 +544,88 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
         }
     }
 }
+
+/// Starts the version requested by the command line after the main window is
+/// ready, so the normal UI launch flow (prerequisite checks, modals and error
+/// reporting) is reused instead of duplicating it in the CLI layer.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn schedule_direct_launch(bootstrap: &AppBootstrap, cx: &mut App) {
+    const GATE_WAIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    const GATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+    let Some(context) = bootstrap.launch_mode.direct_launch() else {
+        return;
+    };
+    if context.silent {
+        return;
+    }
+
+    let descriptor = crate::ui::hooks::use_launcher::LaunchVersionDescriptor {
+        folder: context.target.folder.clone().into(),
+        name: context.target.name.clone().into(),
+        version: context.target.version.clone().into(),
+        kind: context.target.kind.clone().into(),
+        path: context.target.package_folder.clone().into(),
+        launch_args: context.game_args.clone().map(SharedString::from),
+    };
+
+    if bootstrap.agreement_accepted && bootstrap.onboarding_completed {
+        start_direct_launch(descriptor, cx);
+        return;
+    }
+
+    warn!(
+        version_folder = %context.target.folder,
+        "command-line GUI launch is waiting for the agreement and onboarding gates"
+    );
+    cx.spawn(async move |cx| {
+        let started_at = Instant::now();
+        let mut descriptor = Some(descriptor);
+        loop {
+            let gates_complete = cx
+                .update(|cx| {
+                    let agreement_accepted = cx
+                        .try_global::<crate::ui::state::agreement::AgreementState>()
+                        .is_some_and(|state| state.accepted);
+                    let onboarding_completed = cx
+                        .try_global::<crate::ui::onboarding::state::OnboardingTourState>()
+                        .is_some_and(|state| !state.visible);
+                    agreement_accepted && onboarding_completed
+                })
+                .unwrap_or(false);
+            if gates_complete {
+                if let Some(descriptor) = descriptor.take() {
+                    let started = cx
+                        .update(move |cx| start_direct_launch(descriptor, cx))
+                        .unwrap_or(());
+                    let _ = started;
+                }
+                break;
+            }
+            if started_at.elapsed() >= GATE_WAIT_TIMEOUT {
+                warn!(
+                    "command-line GUI launch timed out waiting for the agreement and onboarding gates"
+                );
+                break;
+            }
+            Timer::after(GATE_POLL_INTERVAL).await;
+        }
+    })
+    .detach();
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn start_direct_launch(
+    descriptor: crate::ui::hooks::use_launcher::LaunchVersionDescriptor,
+    cx: &mut App,
+) {
+    if crate::ui::hooks::use_launcher::start_launcher(descriptor, cx).is_none() {
+        warn!("command-line launch was ignored because another launch flow is active");
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn schedule_direct_launch(_bootstrap: &AppBootstrap, _cx: &mut App) {}
 
 fn schedule_post_visible_startup_services(cx: &mut App) {
     cx.spawn(async move |cx| {
@@ -785,7 +867,7 @@ fn should_quit_after_window_close(closed: u64, main: Option<u64>, remaining: usi
 }
 
 fn register_app_lifecycle(cx: &mut App) {
-    let subscription = cx.on_window_closed_with_id(|closed_id, cx| {
+    let subscription = cx.on_window_closed_id(|closed_id, cx| {
         let closed_id = closed_id.as_u64();
         let (main_id, debug_id) =
             cx.read_global(|state: &crate::ui::window::debug::DebugState, _| {

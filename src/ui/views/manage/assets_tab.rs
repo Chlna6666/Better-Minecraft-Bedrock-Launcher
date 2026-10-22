@@ -425,20 +425,101 @@ mod tests {
         assert_eq!(cache.filtered_indices(), &[0, 1]);
     }
 
-    #[::core::prelude::v1::test]
-    pub(super) fn asset_virtual_list_keeps_render_window_small() {
-        let plan = compute_virtual_list_plan(
-            1_000,
-            MANAGE_ASSET_ROW_PITCH_PX,
-            px(-680.),
-            px(340.),
-            MANAGE_ASSET_ROW_OVERSCAN,
-            MANAGE_ASSET_HEAVY_BUDGET,
-        );
+    struct AssetListResizeProbe {
+        manager: Entity<ManagePageView>,
+        state: ManagePageState,
+        version: ManagedVersionEntry,
+        indices: Vec<usize>,
+        scroll: ScrollHandle,
+        height: f32,
+    }
 
-        assert!(plan.render_slice.visible_len() <= 24);
-        assert!(plan.heavy_slice.len() <= MANAGE_ASSET_HEAVY_BUDGET);
-        assert!(plan.render_slice.end_index < 40);
+    impl Render for AssetListResizeProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(900.))
+                .h(px(self.height))
+                .child(self.manager.update(cx, |_, cx| {
+                    render_asset_list(
+                        &LightColors::colors(),
+                        &self.version,
+                        &self.state,
+                        &self.indices,
+                        &self.scroll,
+                        window,
+                        cx,
+                    )
+                }))
+        }
+    }
+
+    #[gpui::test]
+    fn asset_list_uses_current_viewport_through_grow_shrink_and_scroll(cx: &mut TestAppContext) {
+        let mut state = test_state(
+            (0..100)
+                .map(|index| {
+                    test_asset(
+                        &format!("asset:{index}"),
+                        "Asset",
+                        "folder",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
+                .collect(),
+        );
+        state.assets_loaded = true;
+        state.tab = ManageTab::ResourcePack;
+        state.tab_anim_from = state.tab;
+        let manager = cx.update(|cx| {
+            cx.set_global(state.clone());
+            cx.set_global(I18n::new());
+            cx.new(ManagePageView::new)
+        });
+        let version = ManagedVersionEntry {
+            folder: "test".into(),
+            name: "Test".into(),
+            version: "1".into(),
+            manifest_version: "1".into(),
+            path: "test".into(),
+            kind: "uwp".into(),
+            icon_path: None,
+            mod_loaders: Arc::from([]),
+            game_info: Default::default(),
+        };
+        let indices = (0..state.assets.len()).collect::<Vec<_>>();
+        let scroll = ScrollHandle::new();
+        let (probe, visual) = cx.add_window_view(|_, _| AssetListResizeProbe {
+            manager,
+            state,
+            version,
+            indices,
+            scroll: scroll.clone(),
+            height: 340.,
+        });
+        for height in [340., 680., 136., 476., 204.] {
+            probe.update(visual, |probe, cx| {
+                probe.height = height;
+                cx.notify();
+            });
+            assert_eq!(scroll.bounds().size.height, px(height));
+            assert_eq!(
+                scroll.max_offset().height,
+                px(100. * MANAGE_ASSET_ROW_PITCH_PX - height)
+            );
+            scroll.set_offset(point(px(0.), -scroll.max_offset().height));
+        }
+        // A shorter filtered list must clamp an old bottom offset immediately.
+        probe.update(visual, |probe, cx| {
+            probe.indices.truncate(2);
+            probe.height = 340.;
+            cx.notify();
+        });
+        assert_eq!(scroll.offset().y, px(0.));
+        assert_eq!(scroll.max_offset().height, px(0.));
     }
 }
 impl AssetListSignature {
@@ -720,38 +801,17 @@ pub(super) fn render_asset_list(
             .into_any_element();
     }
 
-    let scroll_handle = asset_scroll_handle.clone();
-    let virtual_list_plan = compute_virtual_list_plan(
-        filtered_asset_indices.len(),
-        MANAGE_ASSET_ROW_PITCH_PX,
-        asset_scroll_handle.offset().y,
-        asset_scroll_handle.bounds().size.height,
-        MANAGE_ASSET_ROW_OVERSCAN,
-        MANAGE_ASSET_HEAVY_BUDGET,
-    );
-    let selected_asset_keys = state
-        .selected_asset_keys
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>();
-
-    let render_started_at = Instant::now();
     let primary_rows_animating = state.assets_loaded
         && state.tab_anim_seq != 0
         && state.tab_anim_from != state.tab
         && !reduced_motion
-        && tab_list_stagger_active(window, cx, "manage-asset-list-stagger", state.tab_anim_seq);
+        && tab_list_stagger_active(window.animation_time(), state.tab_anim_started_at);
     let subtype_rows_animating = state.assets_loaded
         && !primary_rows_animating
         && state.pack_subtype_anim_seq != 0
         && state.pack_subtype_anim_from != state.pack_subtype
         && !reduced_motion
-        && tab_list_stagger_active(
-            window,
-            cx,
-            "manage-pack-subtype-list-stagger",
-            state.pack_subtype_anim_seq,
-        );
+        && tab_list_stagger_active(window.animation_time(), state.pack_subtype_anim_started_at);
     let (animate_rows, animation_from, animation_to) = if primary_rows_animating {
         (true, state.tab_anim_from.index(), state.tab.index())
     } else if subtype_rows_animating {
@@ -764,111 +824,101 @@ pub(super) fn render_asset_list(
         (false, state.tab.index(), state.tab.index())
     };
 
-    let mut rows = div().w_full().flex().flex_col().min_w(px(0.));
-    if virtual_list_plan.render_slice.top_spacer > px(0.) {
-        rows = rows.child(div().h(virtual_list_plan.render_slice.top_spacer));
-    }
-
-    for virtual_index in virtual_list_plan.render_slice.start_index
-        ..virtual_list_plan
-            .render_slice
-            .end_index
-            .min(filtered_asset_indices.len())
-    {
-        let Some(asset_index) = filtered_asset_indices.get(virtual_index).copied() else {
-            continue;
-        };
-        let Some(asset) = state.assets.get(asset_index) else {
-            continue;
-        };
-        let animate_row = animate_rows && virtual_list_plan.visible_slice.contains(virtual_index);
-        let visible_index =
-            virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
-        let row = div()
-            .w_full()
-            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
-            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
-            .flex_none()
-            .child(render_asset_row(
-                colors,
-                state,
-                version,
-                asset,
-                selected_asset_keys.contains(&asset.key),
-                virtual_list_plan.heavy_slice.contains(virtual_index),
-                &i18n,
-                cx,
-            ));
-        let direction =
-            crate::ui::animation::tab_transition_direction(animation_from, animation_to);
-        let row = row
-            .with_visual_animation(
-                SharedString::from(format!(
-                    "manage-asset-row-{}-{}-{}",
-                    state.tab_anim_seq,
-                    state.pack_subtype_anim_seq,
-                    asset.key.as_ref()
-                )),
-                if animate_row {
-                    tab_list_item_motion(animation_from, animation_to, visible_index).with_property(
-                        AnimationProperty::clipped_translation(
-                            point(px(12.0 * direction), px(0.0)),
-                            Point::default(),
-                        ),
+    // Build rows from this frame's viewport during prepaint, rather than the previous
+    // frame's ScrollHandle bounds. Offscreen rows do not enter the root flex layout.
+    let colors = colors.clone();
+    let version = version.clone();
+    let state = state.clone();
+    let indices = filtered_asset_indices.to_vec();
+    let selected_asset_keys = state
+        .selected_asset_keys
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let handle = UniformListScrollHandle(Rc::new(std::cell::RefCell::new(UniformListScroll {
+        base_handle: asset_scroll_handle.clone(),
+        ..Default::default()
+    })));
+    let scroll_handle = asset_scroll_handle.clone();
+    let list = uniform_list(
+        "manage-asset-list-scroll",
+        indices.len(),
+        cx.processor(move |_, range: std::ops::Range<usize>, _window, cx| {
+            let first_visible = range.start;
+            range
+                .filter_map(|virtual_index| {
+                    let asset = state.assets.get(*indices.get(virtual_index)?)?;
+                    let row = div()
+                        .w_full()
+                        .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+                        .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+                        .flex_none()
+                        .child(render_asset_row(
+                            &colors,
+                            &state,
+                            &version,
+                            asset,
+                            selected_asset_keys.contains(&asset.key),
+                            true,
+                            &i18n,
+                            cx,
+                        ));
+                    let direction = crate::ui::animation::tab_transition_direction(
+                        animation_from,
+                        animation_to,
+                    );
+                    Some(
+                        row.with_visual_animation(
+                            SharedString::from(format!(
+                                "manage-asset-row-{}-{}-{}",
+                                state.tab_anim_seq,
+                                state.pack_subtype_anim_seq,
+                                asset.key.as_ref()
+                            )),
+                            if animate_rows {
+                                tab_list_item_motion(
+                                    animation_from,
+                                    animation_to,
+                                    virtual_index.saturating_sub(first_visible),
+                                )
+                                .with_property(
+                                    AnimationProperty::clipped_translation(
+                                        point(px(12.0 * direction), px(0.0)),
+                                        Point::default(),
+                                    ),
+                                )
+                            } else {
+                                settled_animation().with_property(AnimationProperty::translation(
+                                    Point::default(),
+                                    Point::default(),
+                                ))
+                            },
+                        )
+                        .expect("animation declares presentation properties")
+                        .into_any_element(),
                     )
-                } else {
-                    settled_animation().with_property(AnimationProperty::translation(
-                        Point::default(),
-                        Point::default(),
-                    ))
-                },
-            )
-            .expect("animation declares presentation properties")
-            .into_any_element();
-        rows = rows.child(row);
-    }
-
-    if virtual_list_plan.render_slice.bottom_spacer > px(0.) {
-        rows = rows.child(div().h(virtual_list_plan.render_slice.bottom_spacer));
-    }
-
-    let render_elapsed_ms = render_started_at.elapsed().as_secs_f64() * 1000.0;
-    if render_elapsed_ms >= 6.0 {
-        tracing::debug!(
-            "manage asset rows render slow: elapsed_ms={render_elapsed_ms:.3} total={} render_start={} render_len={} visible_start={} visible_len={} heavy_start={} heavy_len={}",
-            filtered_asset_indices.len(),
-            virtual_list_plan.render_slice.start_index,
-            virtual_list_plan.render_slice.visible_len(),
-            virtual_list_plan.visible_slice.start_index,
-            virtual_list_plan.visible_slice.len(),
-            virtual_list_plan.heavy_slice.start_index,
-            virtual_list_plan.heavy_slice.len()
-        );
-    }
-
-    let list = div()
-        .id("manage-asset-list-scroll")
-        .w_full()
-        .h_full()
-        .min_h(px(0.))
-        .min_w(px(0.))
-        .overflow_y_scroll()
-        .track_scroll(asset_scroll_handle)
-        .on_scroll_wheel(move |event, window, cx| {
-            let offset = scroll_handle.offset();
-            let max_offset = scroll_handle.max_offset();
-            let delta_y = scroll_event_delta_y(event);
-            let at_bottom = offset.y <= -max_offset.height;
-            let at_top = offset.y >= px(0.);
-
-            if (at_bottom && delta_y < Pixels::ZERO) || (at_top && delta_y > Pixels::ZERO) {
-                scroll_handle
-                    .set_offset(point(offset.x, offset.y.clamp(-max_offset.height, px(0.))));
-                window.prevent_default();
-                cx.stop_propagation();
-            }
-        })
-        .child(rows);
+                })
+                .collect()
+        }),
+    )
+    .with_sizing_behavior(ListSizingBehavior::Auto)
+    .track_scroll(handle)
+    .w_full()
+    .h_full()
+    .min_h(px(0.))
+    .min_w(px(0.))
+    .on_scroll_wheel(move |event, window, cx| {
+        let offset = scroll_handle.offset();
+        let max_offset = scroll_handle.max_offset();
+        let delta_y = scroll_event_delta_y(event);
+        let at_bottom = offset.y <= -max_offset.height;
+        let at_top = offset.y >= px(0.);
+        if (at_bottom && delta_y < Pixels::ZERO) || (at_top && delta_y > Pixels::ZERO) {
+            scroll_handle.set_offset(point(offset.x, offset.y.clamp(-max_offset.height, px(0.))));
+            window.prevent_default();
+            cx.stop_propagation();
+        }
+    });
 
     if let Some((from_index, to_index, sequence, scope, animating)) = stale_transition {
         let direction = crate::ui::animation::tab_transition_direction(from_index, to_index);

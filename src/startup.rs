@@ -3,9 +3,19 @@
     reason = "startup singleton and foreground handling use native Windows handles"
 )]
 
-use crate::launch::{LaunchMode, parse_launch_mode};
-use anyhow::Result;
-use std::path::Path;
+use crate::cli::CliAction;
+use crate::core::version::api::get_version_list;
+use crate::core::version::launch_versions::{LaunchVersionEntry, select_launch_version};
+use crate::launch::{
+    DirectLaunchContext, ImportLaunchContext, LaunchMode, LaunchOptions, LaunchTarget,
+    LaunchUiMode, UpdaterLaunchContext,
+};
+use crate::startup_args::{StartupAction, TerminalHostCommand};
+use crate::tasks::runtime::AppRuntime;
+use anyhow::{Context as _, Result};
+use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, process};
 use tracing::{debug, error, info, warn};
@@ -30,7 +40,7 @@ fn bring_main_window_to_foreground() {
         .chain(std::iter::once(0))
         .collect();
 
-    // SAFETY: `wide_window_title` is NUL-terminated and remains alive for the duration of the call.
+    // SAFETY: wide_window_title is NUL-terminated and remains alive for the call.
     let hwnd = match unsafe { FindWindowW(PCWSTR::null(), PCWSTR(wide_window_title.as_ptr())) } {
         Ok(hwnd) => hwnd,
         Err(error) => {
@@ -39,13 +49,13 @@ fn bring_main_window_to_foreground() {
         }
     };
 
-    // SAFETY: `hwnd` came from `FindWindowW` and is only queried for its iconic state.
+    // SAFETY: hwnd came from FindWindowW and is only queried for its iconic state.
     if unsafe { IsIconic(hwnd).as_bool() } {
-        // SAFETY: `hwnd` came from `FindWindowW`; restoring it is a best-effort foreground action.
+        // SAFETY: hwnd came from FindWindowW; restoring it is best-effort.
         let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
     }
 
-    // SAFETY: `hwnd` came from `FindWindowW`; foreground activation is best-effort.
+    // SAFETY: hwnd came from FindWindowW; foreground activation is best-effort.
     let _ = unsafe { SetForegroundWindow(hwnd) };
     info!(window_title = %window_title, "Brought existing main window to foreground");
 }
@@ -74,7 +84,7 @@ fn check_single_instance() -> Option<bool> {
         .chain(std::iter::once(0))
         .collect();
 
-    // SAFETY: `wide_name` is NUL-terminated and remains alive for the duration of the call.
+    // SAFETY: wide_name is NUL-terminated and remains alive for the call.
     let mutex_handle = match unsafe { CreateMutexW(None, true, PCWSTR(wide_name.as_ptr())) } {
         Ok(handle) => handle,
         Err(error) => {
@@ -83,9 +93,9 @@ fn check_single_instance() -> Option<bool> {
         }
     };
 
-    // SAFETY: `GetLastError` reads the thread-local Win32 error after `CreateMutexW`.
+    // SAFETY: GetLastError reads the thread-local Win32 error after CreateMutexW.
     if unsafe { GetLastError() }.0 == ERROR_ALREADY_EXISTS.0 {
-        // SAFETY: `mutex_handle` is the valid handle returned by `CreateMutexW`.
+        // SAFETY: mutex_handle is the valid handle returned by CreateMutexW.
         let _ = unsafe { CloseHandle(mutex_handle) };
         bring_main_window_to_foreground();
         return Some(false);
@@ -97,30 +107,72 @@ fn check_single_instance() -> Option<bool> {
 
 #[cfg(windows)]
 fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard> {
-    if matches!(launch_mode, LaunchMode::Main) {
-        match check_single_instance() {
-            Some(true) => Some(SingleInstanceGuard),
-            Some(false) => {
-                info!(
-                    "Another instance is already running. Brought main window to foreground and exiting."
-                );
-                process::exit(0);
-            }
-            None => {
-                error!("Single instance check failed, continuing anyway.");
-                Some(SingleInstanceGuard)
-            }
+    let opens_main_window = matches!(launch_mode, LaunchMode::Main);
+    let opens_gui_launch = launch_mode
+        .direct_launch()
+        .is_some_and(|context| !context.silent);
+    if !opens_main_window && !opens_gui_launch {
+        return None;
+    }
+
+    match check_single_instance() {
+        Some(true) => Some(SingleInstanceGuard),
+        Some(false) if opens_main_window => {
+            info!(
+                "Another instance is already running. Brought main window to foreground and exiting."
+            );
+            process::exit(0);
         }
-    } else {
-        None
+        Some(false) => {
+            let message = "已有 BMCBL 实例正在运行，无法在 GUI 模式启动新实例。请先关闭现有实例，或使用 --silent 以静默方式启动。";
+            error!("{message}");
+            eprintln!("{message}");
+            crate::result::show_startup_failure(
+                "启动失败 - 已有实例",
+                "single_instance_guard",
+                message,
+            );
+            process::exit(1);
+        }
+        None => {
+            error!("Single instance check failed, continuing anyway.");
+            Some(SingleInstanceGuard)
+        }
     }
 }
 
-pub fn run() -> Result<()> {
+pub(crate) enum Invocation {
+    Startup(StartupAction),
+    Cli(CliAction),
+}
+
+pub(crate) fn run(invocation: Invocation) -> Result<()> {
+    let invocation = match invocation {
+        Invocation::Startup(StartupAction::TerminalHost(command)) => {
+            return run_terminal_host(command);
+        }
+        Invocation::Cli(CliAction::Info { json }) => return run_info(json),
+        invocation => invocation,
+    };
+
     let startup_started = Instant::now();
     crate::utils::memory::configure_mimalloc_optimizer();
     let runtime = crate::tasks::runtime::initialize_app_runtime()?;
-    let launch_mode = parse_launch_mode();
+
+    let launch_mode = match invocation {
+        Invocation::Cli(CliAction::List { json }) => {
+            crate::utils::file_ops::create_initial_directories();
+            crate::utils::logger::init_logging(
+                false,
+                false,
+                &crate::config::config::LogManagementConfig::default(),
+                false,
+            );
+            return run_list(runtime, json);
+        }
+        Invocation::Startup(action) => resolve_startup_mode(runtime, action)?,
+        Invocation::Cli(action) => resolve_cli_mode(runtime, action)?,
+    };
 
     if let Some(working_dir) = launch_working_dir(&launch_mode)
         && let Err(error) = env::set_current_dir(&working_dir)
@@ -140,21 +192,30 @@ pub fn run() -> Result<()> {
             false,
             false,
             &crate::config::config::LogManagementConfig::default(),
+            false,
         );
         return run_updater_mode(context);
     }
 
+    #[cfg(target_os = "linux")]
+    refuse_root_launch()?;
+
+    let is_headless_launch = launch_mode
+        .direct_launch()
+        .is_some_and(|context| context.silent);
     crate::utils::file_ops::create_initial_directories();
     let config = match crate::config::config::initialize_config_cache() {
         Ok(config) => config,
         Err(error) => {
             let message = format!("读取配置失败: {error:?}\n程序将退出。");
             eprintln!("{message}");
-            crate::result::show_startup_failure(
-                "启动失败 - 读取配置",
-                "initialize_config_cache",
-                &message,
-            );
+            if !is_headless_launch {
+                crate::result::show_startup_failure(
+                    "启动失败 - 读取配置",
+                    "initialize_config_cache",
+                    &message,
+                );
+            }
             process::exit(1);
         }
     };
@@ -162,6 +223,7 @@ pub fn run() -> Result<()> {
         config.launcher.debug,
         config.launcher.gpui_trace,
         &config.launcher.log_management,
+        !is_headless_launch,
     );
     debug!(
         elapsed_ms = startup_started.elapsed().as_millis(),
@@ -177,22 +239,10 @@ pub fn run() -> Result<()> {
         debug!("system-local Xbox probe and BMCBL managed-account restore scheduled independently");
     }
 
-    if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {
-        let version_config = runtime
-            .block_on(crate::core::version::settings::get_version_config(
-                direct_ctx.version_folder.clone(),
-            ))
-            .unwrap_or_default();
-        let is_silent = direct_ctx
-            .silent_override
-            .unwrap_or(version_config.shortcut_silent_launch);
-        if is_silent {
-            info!(
-                version_folder = %direct_ctx.version_folder,
-                "执行 CMD/快捷方式静默启动"
-            );
-            return runtime.block_on(run_silent_direct_launch(&direct_ctx.version_folder));
-        }
+    if let Some(context) = launch_mode.direct_launch()
+        && context.silent
+    {
+        return run_headless_launch(runtime, context);
     }
 
     if launch_mode.is_main() && config.launcher.stats_upload {
@@ -223,6 +273,290 @@ pub fn run() -> Result<()> {
     // 配置写盘为 ~500ms 合并延迟，退出前把未落盘的改动立即写入磁盘。
     crate::config::config::flush_config_now();
 
+    // 异步日志线程在退出前排空队列，避免丢失退出前的诊断信息。
+    crate::utils::log_manager::flush_async_logs_now();
+
+    Ok(())
+}
+
+fn resolve_startup_mode(runtime: &AppRuntime, action: StartupAction) -> Result<LaunchMode> {
+    match action {
+        StartupAction::Gui => Ok(LaunchMode::Main),
+        StartupAction::Launch(options) => Ok(LaunchMode::DirectLaunch(resolve_direct_launch(
+            runtime, options,
+        )?)),
+        StartupAction::Import(file_path) => Ok(LaunchMode::Import(ImportLaunchContext {
+            file_path: absolute_path(file_path),
+        })),
+        StartupAction::Updater(command) => Ok(LaunchMode::Updater(UpdaterLaunchContext {
+            source_path: absolute_path(command.source_path),
+            destination_path: absolute_path(command.destination_path),
+            timeout_secs: command.timeout_secs,
+        })),
+        StartupAction::TerminalHost(_) => {
+            Err(anyhow::anyhow!("terminal-host 命令已在启动流程前处理"))
+        }
+    }
+}
+
+fn resolve_cli_mode(runtime: &AppRuntime, action: CliAction) -> Result<LaunchMode> {
+    match action {
+        CliAction::Launch(options) => Ok(LaunchMode::DirectLaunch(resolve_direct_launch(
+            runtime, options,
+        )?)),
+        CliAction::Import(file_path) => Ok(LaunchMode::Import(ImportLaunchContext {
+            file_path: absolute_path(file_path),
+        })),
+        CliAction::List { .. } | CliAction::Info { .. } => {
+            Err(anyhow::anyhow!("该命令已在启动流程前处理"))
+        }
+    }
+}
+
+fn resolve_direct_launch(
+    runtime: &AppRuntime,
+    options: LaunchOptions,
+) -> Result<DirectLaunchContext> {
+    // The version directory is created on first run; scanning before it
+    // exists would report an IO error instead of "no version installed".
+    crate::utils::file_ops::create_initial_directories();
+    let versions = runtime
+        .block_on(get_version_list())
+        .context("读取本地版本列表失败")?;
+    let entry =
+        select_launch_version(&versions, options.version.as_deref()).map_err(anyhow::Error::msg)?;
+    let target = launch_target_from_entry(entry);
+    let silent = match options.ui_mode {
+        LaunchUiMode::Silent => true,
+        LaunchUiMode::Gui => false,
+        LaunchUiMode::Auto => {
+            runtime
+                .block_on(crate::core::version::settings::get_version_config(
+                    target.folder.clone(),
+                ))
+                .unwrap_or_else(|error| {
+                    warn!(
+                        version_folder = %target.folder,
+                        %error,
+                        "failed to read instance launch mode; using the default"
+                    );
+                    crate::core::version::settings::VersionConfig::default()
+                })
+                .shortcut_silent_launch
+        }
+    };
+    info!(
+        version_folder = %target.folder,
+        version = %target.version,
+        silent,
+        has_game_args = options.game_args.is_some(),
+        "resolved launch target"
+    );
+    Ok(DirectLaunchContext {
+        target,
+        silent,
+        game_args: options.game_args,
+        json: options.json,
+    })
+}
+
+/// Resolves user-provided paths before startup changes the process working
+/// directory to the executable directory.
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    env::current_dir()
+        .map(|current_dir| current_dir.join(&path))
+        .unwrap_or(path)
+}
+
+fn launch_target_from_entry(entry: &LaunchVersionEntry) -> LaunchTarget {
+    LaunchTarget {
+        folder: entry.folder.to_string(),
+        name: entry.name.to_string(),
+        version: entry.version.to_string(),
+        kind: entry.kind.to_string(),
+        package_folder: entry.path.to_string(),
+    }
+}
+
+fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> Result<()> {
+    let target = &context.target;
+    info!(
+        version_folder = %target.folder,
+        version = %target.version,
+        "执行命令行静默启动"
+    );
+
+    let request = crate::core::minecraft::launcher::LaunchRequest {
+        launch_args: context
+            .game_args
+            .as_ref()
+            .map(|value| Arc::<str>::from(value.as_str())),
+        ..crate::core::minecraft::launcher::LaunchRequest::new(
+            target.folder.clone(),
+            target.name.clone(),
+            target.version.clone(),
+            target.package_folder.clone(),
+        )
+    };
+    let launch = crate::core::minecraft::launcher::start_launch_task_observed(request);
+    let task_id = launch.task_id().to_string();
+    let outcome = runtime.block_on(launch.wait());
+
+    let result = match outcome {
+        Ok(Some(pid)) if pid != 0 => {
+            if context.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "taskId": task_id,
+                        "folder": target.folder,
+                        "name": target.name,
+                        "version": target.version,
+                        "pid": pid,
+                    })
+                );
+            } else {
+                println!("已启动 {}（{}，PID {pid}）", target.name, target.version);
+            }
+            Ok(())
+        }
+        Ok(_) => {
+            if context.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "taskId": task_id,
+                        "folder": target.folder,
+                        "name": target.name,
+                        "version": target.version,
+                        "pid": serde_json::Value::Null,
+                    })
+                );
+            } else {
+                println!("启动流程已完成，但未返回游戏进程 PID");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let cancelled = crate::tasks::task_manager::get_snapshot_arc(&task_id)
+                .is_some_and(|snapshot| snapshot.status.as_ref() == "cancelled");
+            let message = if cancelled {
+                "启动已取消".to_string()
+            } else {
+                format!("启动失败：{error}")
+            };
+            error!(
+                task_id = %task_id,
+                %message,
+                "命令行静默启动失败"
+            );
+            let logs = crate::tasks::task_manager::task_logs(&task_id);
+            for line in logs.iter().rev().take(8).rev() {
+                eprintln!("  {line}");
+            }
+            Err(anyhow::anyhow!(message))
+        }
+    };
+
+    crate::config::config::flush_config_now();
+    crate::utils::log_manager::flush_async_logs_now();
+    result
+}
+
+fn run_list(runtime: &AppRuntime, json_output: bool) -> Result<()> {
+    let versions = runtime
+        .block_on(get_version_list())
+        .context("读取本地版本列表失败")?;
+    if json_output {
+        let entries = versions
+            .iter()
+            .map(|version| {
+                json!({
+                    "folder": version.folder.as_ref(),
+                    "name": version.name.as_ref(),
+                    "version": version.version.as_ref(),
+                    "kind": version.kind.as_ref(),
+                    "path": version.path.as_ref(),
+                    "sessions": version.game_info.total_sessions,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else if versions.is_empty() {
+        println!("未找到已安装的游戏版本");
+    } else {
+        for version in &versions {
+            println!(
+                "{}\t{}\t{}\t{}",
+                version.folder, version.name, version.version, version.kind
+            );
+        }
+    }
+    crate::utils::log_manager::flush_async_logs_now();
+    Ok(())
+}
+
+fn run_info(json_output: bool) -> Result<()> {
+    let executable = env::current_exe().ok();
+    let data_dir = crate::utils::file_ops::bmcbl_dir();
+    let versions_dir = crate::utils::file_ops::bmcbl_subdir("versions");
+    if json_output {
+        println!(
+            "{}",
+            json!({
+                "version": crate::utils::app_info::get_version(),
+                "channel": crate::utils::app_info::build_channel().as_str(),
+                "buildInfo": crate::utils::app_info::get_build_info(),
+                "executable": executable.as_ref().map(|path| path.to_string_lossy()),
+                "dataDir": data_dir.to_string_lossy(),
+                "versionsDir": versions_dir.to_string_lossy(),
+            })
+        );
+    } else {
+        println!("BMCBL {}", crate::utils::app_info::get_version());
+        println!("{}", crate::utils::app_info::get_build_info());
+        if let Some(executable) = executable {
+            println!("可执行文件: {}", executable.display());
+        }
+        println!("数据目录: {}", data_dir.display());
+        println!("版本目录: {}", versions_dir.display());
+    }
+    Ok(())
+}
+
+fn run_terminal_host(command: TerminalHostCommand) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::core::windows_terminal::run_host(&command.command_path, &command.response_path)
+            .map_err(anyhow::Error::msg)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = command;
+        anyhow::bail!("terminal-host 是 Windows 专用内部命令")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn refuse_root_launch() -> Result<()> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    let effective_user_id = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|uids| uids.split_whitespace().nth(1))
+        .and_then(|uid| uid.parse::<u32>().ok());
+
+    if effective_user_id == Some(0) {
+        anyhow::bail!(
+            "请不要以 root 身份运行 BMCBL。请使用普通桌面用户启动；需要安装系统依赖时，BMCBL 将单独请求授权。"
+        );
+    }
+
     Ok(())
 }
 
@@ -241,6 +575,18 @@ mod runtime_boundary_tests {
     #[test]
     fn gpui_event_loop_is_allowed_on_a_plain_thread() {
         assert!(ensure_gpui_outside_tokio_runtime().is_ok());
+    }
+
+    #[test]
+    fn relative_paths_are_resolved_before_the_working_directory_changes() {
+        let resolved = absolute_path(PathBuf::from("pack.mcpack"));
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            std::env::current_dir()
+                .expect("current directory should exist")
+                .join("pack.mcpack")
+        );
     }
 
     #[test]
@@ -319,10 +665,12 @@ fn run_updater_mode(context: &crate::launch::UpdaterLaunchContext) -> Result<()>
                 elapsed_ms = %elapsed.as_millis(),
                 "updater-child success"
             );
+            crate::utils::log_manager::flush_async_logs_now();
             process::exit(0);
         }
         Err(error) => {
             error!(src = %src, dst = %dst, error = ?error, "updater-child failed");
+            crate::utils::log_manager::flush_async_logs_now();
             process::exit(2);
         }
     }
@@ -346,41 +694,4 @@ fn log_system_info() {
         crate::utils::system_info::get_cpu_architecture(),
         crate::utils::system_info::get_system_language()
     );
-}
-
-async fn run_silent_direct_launch(version_folder: &str) -> Result<()> {
-    info!(version_folder = %version_folder, "开始执行静默直接启动");
-    let version_list = match crate::core::version::api::get_version_list().await {
-        Ok(list) => list,
-        Err(err) => {
-            error!(error = %err, "获取本地版本列表失败");
-            eprintln!("获取本地版本列表失败: {err}");
-            process::exit(1);
-        }
-    };
-
-    let target = version_list
-        .into_iter()
-        .find(|v| v.folder.as_ref() == version_folder);
-
-    let Some(version) = target else {
-        error!(version_folder = %version_folder, "未找到目标游戏版本");
-        eprintln!("未找到目标游戏版本: {version_folder}");
-        process::exit(1);
-    };
-
-    let request = crate::core::minecraft::launcher::LaunchRequest::new(
-        version.folder.as_ref(),
-        version.name.as_ref(),
-        version.version.as_ref(),
-        version.path.as_ref(),
-    );
-
-    let task_id = crate::core::minecraft::launcher::start_launch_task(request);
-    info!(task_id = %task_id, "已触发游戏静默启动任务");
-
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    // process::exit 不会执行常规退出路径，手动冲刷未落盘配置。
-    crate::config::config::flush_config_now();
-    process::exit(0);
 }

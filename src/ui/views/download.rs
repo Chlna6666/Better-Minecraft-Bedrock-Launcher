@@ -571,6 +571,9 @@ impl DownloadPageView {
         }
 
         self.active = active;
+        if !active {
+            cx.update_global(|state: &mut DownloadPageState, _| state.tab_anim_from = state.tab);
+        }
         let current_tab = cx.global::<DownloadPageState>().tab;
         let curseforge_active = active && current_tab == DownloadTab::ResourcePack;
         let game_active = active && current_tab == DownloadTab::Game;
@@ -755,25 +758,21 @@ pub(super) fn render_download_page(
         }
     };
 
-    let body = if tab_anim_seq != 0
-        && tab_anim_from != active_tab
-        && !crate::core::ui_prefs::reduced_motion()
-    {
-        div()
-            .size_full()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .child(body)
-            .composite_layer()
-            .with_visual_animation(
-                tab_content_animation_key("download-tab-content", tab_anim_seq),
-                tab_content_motion(tab_anim_from.index(), active_tab.index()),
-            )
-            .expect("animation declares presentation properties")
-            .into_any_element()
+    let transition_from = if tab_anim_seq != 0 && !crate::core::ui_prefs::reduced_motion() {
+        tab_anim_from.index()
     } else {
-        body
+        active_tab.index()
     };
+    let body = div()
+        .size_full()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .child(body)
+        .with_visual_animation(
+            tab_content_animation_key("download-tab-content", tab_anim_seq),
+            tab_content_motion(transition_from, active_tab.index()),
+        )
+        .expect("animation declares presentation properties");
 
     let unified_panel = crate::ui::components::page_shell::page_panel(&colors)
         .size_full()

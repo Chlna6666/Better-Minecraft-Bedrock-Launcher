@@ -136,6 +136,14 @@ impl ManagePageView {
             return;
         }
         self.active = active;
+        if !active {
+            cx.update_global(|state: &mut ManagePageState, _| {
+                state.tab_anim_from = state.tab;
+                state.tab_anim_started_at = None;
+                state.pack_subtype_anim_from = state.pack_subtype;
+                state.pack_subtype_anim_started_at = None;
+            });
+        }
         self.tab_body_view
             .update(cx, |view, cx| view.set_active(active, cx));
         if active {
@@ -966,22 +974,23 @@ impl ManagePageView {
             }
         };
 
-        let content = if animating {
-            div()
-                .size_full()
-                .min_w(px(0.))
-                .min_h(px(0.))
-                .child(content)
-                .composite_layer()
-                .with_visual_animation(
-                    tab_content_animation_key("manage-tab-content", state.tab_anim_seq),
-                    tab_content_motion(state.tab_anim_from.index(), state.tab.index()),
-                )
-                .expect("animation declares presentation properties")
-                .into_any_element()
-        } else {
-            content
-        };
+        let content = div()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .child(content)
+            .with_visual_animation(
+                tab_content_animation_key("manage-tab-content", state.tab_anim_seq),
+                tab_content_motion(
+                    if animating {
+                        state.tab_anim_from.index()
+                    } else {
+                        state.tab.index()
+                    },
+                    state.tab.index(),
+                ),
+            )
+            .expect("animation declares presentation properties");
 
         div()
             .flex_1()

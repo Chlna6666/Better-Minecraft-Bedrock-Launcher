@@ -1,5 +1,5 @@
 use gpui::{
-    Animation, AnimationDriver, AnimationProperty, AnimationSpec, App, Easing, FillMode,
+    Animation, AnimationDriver, AnimationProperty, AnimationSpec, Easing, FillMode,
     HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, Window, point, px,
 };
 use std::time::{Duration, Instant};
@@ -75,13 +75,23 @@ pub fn settled_animation() -> Animation {
 /// Main content and visible list rows intentionally use the same physical spring so their velocity
 /// profile stays coherent. Rows add only a short nonlinear start delay.
 pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
+    if from_index == to_index {
+        return settled_animation().with_property(AnimationProperty::clipped_translation_opacity(
+            Default::default(),
+            Default::default(),
+            1.0,
+            1.0,
+        ));
+    }
     let direction = tab_transition_direction(from_index, to_index);
-    spring_motion(tab_transition_spring()).with_property(AnimationProperty::translation_opacity(
-        point(px(16.0 * direction), px(0.0)),
-        point(px(0.0), px(0.0)),
-        0.90,
-        1.0,
-    ))
+    spring_motion(tab_transition_spring()).with_property(
+        AnimationProperty::clipped_translation_opacity(
+            point(px(16.0 * direction), px(0.0)),
+            point(px(0.0), px(0.0)),
+            0.90,
+            1.0,
+        ),
+    )
 }
 
 /// Short outgoing motion used only while an asset-to-asset target is loading.
@@ -109,41 +119,11 @@ fn tab_list_item_delay(visible_index: usize) -> Duration {
     Duration::from_millis((TAB_LIST_ITEM_MAX_STAGGER_MS as f32 * curved).round() as u64)
 }
 
-#[derive(Clone, Copy, Debug)]
-struct TabListStaggerState {
-    sequence: u64,
-    started_at: Instant,
-}
-
-/// Keep a tab-entry stagger alive only long enough for its renderer-owned row animations.
-///
-/// The keyed owner survives row virtualization, so scrolling later does not restart the entrance
-/// animation with the direction of an old tab switch.
-pub fn tab_list_stagger_active(
-    window: &mut Window,
-    cx: &mut App,
-    id: &'static str,
-    sequence: u64,
-) -> bool {
-    if sequence == 0 {
-        return false;
-    }
-
-    let now = window.animation_time();
-    let state = window.use_keyed_state(id, cx, |_, _| TabListStaggerState {
-        sequence,
-        started_at: now,
-    });
-    let mut snapshot = *state.read(cx);
-    if snapshot.sequence != sequence {
-        state.update(cx, |state, _| {
-            state.sequence = sequence;
-            state.started_at = now;
-        });
-        snapshot = *state.read(cx);
-    }
-
-    now.saturating_duration_since(snapshot.started_at) <= TAB_LIST_STAGGER_WINDOW
+/// Bound row entrances to the navigation event, rather than the first loaded/rendered row.
+/// Late async results and remounts must not extend an earlier tab's entrance window.
+pub fn tab_list_stagger_active(now: Instant, started_at: Option<Instant>) -> bool {
+    started_at
+        .is_some_and(|started| now.saturating_duration_since(started) <= TAB_LIST_STAGGER_WINDOW)
 }
 
 /// Direction-aware row entrance timeline used by management lists.
@@ -473,6 +453,19 @@ mod tests {
             tab_list_item_delay(TAB_LIST_ITEM_MAX_STAGGER_SLOT + 20),
             Duration::from_millis(TAB_LIST_ITEM_MAX_STAGGER_MS)
         );
+    }
+
+    #[test]
+    fn tab_list_stagger_does_not_restart_for_late_results() {
+        let clicked_at = Instant::now();
+        assert!(tab_list_stagger_active(clicked_at, Some(clicked_at)));
+        assert!(!tab_list_stagger_active(clicked_at, None));
+        let loaded_at = clicked_at + TAB_LIST_STAGGER_WINDOW + Duration::from_millis(1);
+        assert!(!tab_list_stagger_active(loaded_at, Some(clicked_at)));
+        assert!(!tab_list_stagger_active(
+            loaded_at + Duration::from_millis(50),
+            Some(clicked_at)
+        ));
     }
 
     #[test]

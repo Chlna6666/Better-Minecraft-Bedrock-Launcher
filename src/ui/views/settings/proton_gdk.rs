@@ -103,7 +103,7 @@ fn start_runner_snapshot(force: bool, cx: &mut App) {
         })?;
         Ok::<(), anyhow::Error>(())
     })
-    .detach_and_log_err(cx);
+    .detach_logged(cx);
 }
 
 pub(super) fn ensure_runner_snapshot(cx: &mut App) {
@@ -570,7 +570,7 @@ fn register_local_runner(window: &Window, cx: &mut App) {
         })?;
         Ok::<(), anyhow::Error>(())
     })
-    .detach_and_log_err(cx);
+    .detach_logged(cx);
 }
 
 fn installed_runner_card(

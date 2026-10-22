@@ -376,7 +376,7 @@ pub(super) fn render_server_list(
         && state.tab_anim_seq != 0
         && state.tab_anim_from != state.tab
         && !crate::core::ui_prefs::reduced_motion()
-        && tab_list_stagger_active(window, cx, "manage-server-list-stagger", state.tab_anim_seq);
+        && tab_list_stagger_active(window.animation_time(), state.tab_anim_started_at);
     let animation_from = state.tab_anim_from.index();
     let animation_to = state.tab.index();
 

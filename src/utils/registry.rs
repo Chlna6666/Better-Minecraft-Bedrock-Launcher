@@ -18,7 +18,7 @@ const EXTENSIONS: &[&str] = &[".mcpack", ".mcworld", ".mcaddon", ".mctemplate"];
 // 注册表中的自定义标识键，用于检测是否需要更新关联
 const REG_APP_PATH_KEY: &str = "AppPath";
 const REG_VERSION_KEY: &str = "AssocVersion";
-const ASSOC_VERSION: u32 = 1; // 关联版本号，格式变更时可递增强制刷新
+const ASSOC_VERSION: u32 = 2; // 关联版本号，格式变更时可递增强制刷新
 
 /// 注册文件关联 (仅在 Windows 下有效)
 /// 包含检查机制，仅在路径变更、版本变更或未注册时执行写入
@@ -107,7 +107,7 @@ fn register_associations_safe() -> std::io::Result<()> {
     // --- 执行注册 ---
 
     // 构造命令字符串
-    let open_cmd = format!("\"{}\" --import-file \"%1\"", exe_path_str);
+    let open_cmd = format!("\"{}\" --import \"%1\"", exe_path_str);
     let icon_str = format!("\"{}\",0", exe_path_str);
 
     // 2. 创建/更新 ProgID

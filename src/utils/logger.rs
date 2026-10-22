@@ -9,7 +9,7 @@ use crate::utils::log_manager::ManagedLogWriter;
 use once_cell::sync::{Lazy, OnceCell};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -228,6 +228,9 @@ fn elapsed_time() -> String {
 }
 
 fn append_crash_line(message: &str) {
+    // Keep crash diagnostics after the buffered context instead of racing the
+    // asynchronous writer. This only runs on panic/unhandled-exception paths.
+    let _ = crate::utils::log_manager::flush_async_logs(Duration::from_millis(200));
     let Some(path) = LATEST_LOG_PATH.get() else {
         eprintln!("{message}");
         return;
@@ -355,6 +358,7 @@ pub fn init_logging(
     debug_enabled: bool,
     gpui_trace_enabled: bool,
     log_management: &crate::config::config::LogManagementConfig,
+    console_output: bool,
 ) {
     let logs_dir: PathBuf = file_ops::logs_dir();
     let latest_log_file = logs_dir.join("latest.log");
@@ -362,9 +366,9 @@ pub fn init_logging(
         eprintln!("Latest log path was already initialized");
     }
 
-    if let Err(error) = tracing_log::LogTracer::init() {
-        eprintln!("Failed to bridge GPUI log records into tracing: {error}");
-    }
+    // tracing-subscriber installs its own log bridge from try_init below; calling
+    // LogTracer::init here first makes try_init fail with "logger already set"
+    // and leaves the process without any tracing subscriber.
 
     let log_writer = match ManagedLogWriter::initialize(&logs_dir, log_management) {
         Ok(writer) => writer,
@@ -378,11 +382,17 @@ pub fn init_logging(
         }
     };
 
-    // 控制台层
+    // 控制台层。只有真正连接到终端时才格式化控制台输出：release 的
+    // windows_subsystem 没有控制台，重定向后的 stdout 也可能阻塞。UI/GPU owner
+    // 线程不应为看不见的控制台承担格式化与管道写入成本。
+    let console_enabled = console_output && std::io::stdout().is_terminal();
     let console_layer = tracing_subscriber::fmt::layer()
         .with_timer(UptimeTimer) // 使用启动时间计时器
-        .with_ansi(true) // 控制台输出时使用 ANSI 转义字符
-        .with_target(true); // 显示目标模块
+        .with_ansi(console_enabled) // 控制台输出时使用 ANSI 转义字符
+        .with_target(true) // 显示目标模块
+        .with_filter(tracing_subscriber::filter::filter_fn(move |_| {
+            console_enabled
+        }));
 
     let latest_log_layer = tracing_subscriber::fmt::layer()
         .with_timer(UptimeTimer)
@@ -409,7 +419,10 @@ pub fn init_logging(
 
     info!("Logging initialized");
     info!("Debug logging enabled: {}", debug_enabled);
-    info!("GPUI/Nova Trace enabled: {} (restart required to change)", gpui_trace_enabled);
+    info!(
+        "GPUI/Nova Trace enabled: {} (restart required to change)",
+        gpui_trace_enabled
+    );
     info!(
         "Managed log files ready: latest={}, archive={}",
         latest_log_file.display(),
@@ -473,7 +486,12 @@ mod tests {
 
     #[test]
     fn test_logging_init() {
-        init_logging(true, false, &crate::config::config::LogManagementConfig::default());
+        init_logging(
+            true,
+            false,
+            &crate::config::config::LogManagementConfig::default(),
+            true,
+        );
         info!("这是 info 测试日志");
         debug!("这是 debug 测试日志");
         warn!("这是 warn 测试日志");

@@ -106,33 +106,23 @@ impl Render for AppChromeView {
         chrome::render_shell(
             &colors,
             self.glass_effect_enabled,
-            self.brand
-                .clone()
-                .cached_by(
-                    StyleRefinement::default()
-                        .w(px(300.))
-                        .h(px(60.))
-                        .flex_none(),
-                    &"chrome-brand",
-                )
+            div()
+                .w(px(300.))
+                .h(px(60.))
+                .flex_none()
+                .child(self.brand.clone())
                 .into_any_element(),
-            self.controls
-                .clone()
-                .cached_by(
-                    StyleRefinement::default()
-                        .w(px(124.))
-                        .h(px(60.))
-                        .flex_none(),
-                    &"chrome-controls",
-                )
+            div()
+                .w(px(124.))
+                .h(px(60.))
+                .flex_none()
+                .child(self.controls.clone())
                 .into_any_element(),
-            self.nav
-                .clone()
-                .cached_by(StyleRefinement::default().size_full(), &"chrome-nav")
-                .into_any_element(),
-            self.auth
-                .clone()
-                .cached_absolute_by(&"chrome-auth")
+            div().size_full().child(self.nav.clone()).into_any_element(),
+            div()
+                .absolute()
+                .inset_0()
+                .child(self.auth.clone())
                 .into_any_element(),
         )
     }
@@ -198,6 +188,7 @@ struct NavChromeView {
     items: Vec<chrome::NavItem>,
     revision: (u64, u64),
     signature: (usize, usize, usize, bool),
+    last_pill_target: Option<usize>,
 }
 
 impl NavChromeView {
@@ -257,6 +248,19 @@ impl NavChromeView {
             items,
             revision,
             signature,
+            last_pill_target: Some(signature.0),
+        }
+    }
+
+    // A resize/hover rebuild must not replay the previous route transition.
+    // Active tracks keep their presented value through GPUI retargeting.
+    fn pill_from_index(&mut self, nav: &NavState) -> usize {
+        let target = nav.visual_active_index();
+        let previous = self.last_pill_target.replace(target);
+        if previous == Some(target) {
+            target
+        } else {
+            nav.pill_from_index
         }
     }
 
@@ -291,7 +295,7 @@ impl Render for NavChromeView {
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
-            pill_from_index: nav.pill_from_index,
+            pill_from_index: self.pill_from_index(nav),
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
         };
@@ -469,5 +473,35 @@ impl Render for WindowControlsView {
                 cx.global::<ThemeState>().target_dark,
                 &colors,
             ))
+    }
+}
+
+#[cfg(test)]
+mod nav_pill_tests {
+    use super::{NavChromeView, NavState};
+
+    #[test]
+    fn layout_rebuilds_do_not_replay_the_previous_route() {
+        let mut view = NavChromeView {
+            _subscriptions: Vec::new(),
+            items: Vec::new(),
+            revision: (0, 0),
+            signature: (0, 0, 0, true),
+            last_pill_target: Some(0),
+        };
+        let mut nav = NavState::default();
+        assert_eq!(view.pill_from_index(&nav), 0);
+        nav.start_pill_animation(1);
+        nav.confirm_route(1);
+        assert_eq!(view.pill_from_index(&nav), 0);
+        for _ in 0..8 {
+            assert_eq!(view.pill_from_index(&nav), 1);
+        }
+        nav.start_pill_animation(0);
+        nav.confirm_route(0);
+        assert_eq!(view.pill_from_index(&nav), 1);
+        for _ in 0..8 {
+            assert_eq!(view.pill_from_index(&nav), 0);
+        }
     }
 }

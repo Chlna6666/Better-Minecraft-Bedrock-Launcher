@@ -233,11 +233,13 @@ impl CurseForgeResourcePanelView {
                 }
             }),
         ];
-        subscriptions.push(cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
-            if this.active {
-                cx.notify();
-            }
-        }));
+        subscriptions.push(
+            cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+        );
         subscriptions.push(cx.observe_global::<I18n>(|this, cx| {
             if this.active {
                 cx.notify();
@@ -361,32 +363,33 @@ impl CurseForgeSidebarView {
                     state.curseforge_loaded,
                 )
             });
-        let subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
-            if !this.active {
-                return;
-            }
-            let (root_id, sub_id, category_count, loaded) =
-                cx.read_global(|state: &DownloadPageState, _cx| {
-                    (
-                        state.curseforge_selected_root_id,
-                        state.curseforge_selected_sub_id,
-                        state.curseforge_categories.len(),
-                        state.curseforge_loaded,
-                    )
-                });
+        let subscriptions = vec![
+            cx.observe_global::<DownloadPageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
+                let (root_id, sub_id, category_count, loaded) =
+                    cx.read_global(|state: &DownloadPageState, _cx| {
+                        (
+                            state.curseforge_selected_root_id,
+                            state.curseforge_selected_sub_id,
+                            state.curseforge_categories.len(),
+                            state.curseforge_loaded,
+                        )
+                    });
 
-            if root_id != this.last_root_id
-                || sub_id != this.last_sub_id
-                || category_count != this.last_category_count
-                || loaded != this.last_loaded
-            {
-                this.last_root_id = root_id;
-                this.last_sub_id = sub_id;
-                this.last_category_count = category_count;
-                this.last_loaded = loaded;
-                cx.notify();
-            }
-        }),
+                if root_id != this.last_root_id
+                    || sub_id != this.last_sub_id
+                    || category_count != this.last_category_count
+                    || loaded != this.last_loaded
+                {
+                    this.last_root_id = root_id;
+                    this.last_sub_id = sub_id;
+                    this.last_category_count = category_count;
+                    this.last_loaded = loaded;
+                    cx.notify();
+                }
+            }),
             cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
                 if this.active {
                     cx.notify();
@@ -463,18 +466,19 @@ impl CurseForgeContentView {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let initial_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
 
-        let subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
-            if !this.active {
-                return;
-            }
-            // 关键：只在标签页变化时刷新
-            let current_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
+        let subscriptions = vec![
+            cx.observe_global::<DownloadPageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
+                // 关键：只在标签页变化时刷新
+                let current_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
 
-            if current_tab != this.last_tab {
-                this.last_tab = current_tab;
-                cx.notify();
-            }
-        }),
+                if current_tab != this.last_tab {
+                    this.last_tab = current_tab;
+                    cx.notify();
+                }
+            }),
             cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
                 if this.active {
                     cx.notify();
@@ -3534,7 +3538,7 @@ fn render_curseforge_install_modal(
                 })?;
                 Ok::<(), anyhow::Error>(())
             })
-            .detach_and_log_err(cx);
+            .detach_logged(cx);
         });
 
     let version_card = div()

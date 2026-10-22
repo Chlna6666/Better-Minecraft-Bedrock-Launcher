@@ -66,7 +66,7 @@ toml_edit = "0.25.11"
 once_cell = "1.21.3"
 chrono = "0.4.42"
 serde_json="1.0.145"
-zip = { version = "9.0.0-pre2", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2"] }
 tracing = "0.1.43"
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
@@ -143,7 +143,6 @@ default = ["gpui-windows-dx12", "gpui-windows-vulkan", "gpui-opengl"]
 bench-support = ["dep:criterion", "dep:wasm-encoder"]
 gpui-opengl = ["gpui/nova-gfx-opengl"]
 gpui-windows-dx12 = ["gpui/nova-gfx-dx12"]
-preview-3d-dx12 = []
 gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 
 [workspace]
@@ -183,7 +182,6 @@ members = [
     "crates/nova-gfx/examples/atlas-smoke-dx12",
     "crates/nova-gfx/examples/atlas-smoke-metal",
     "crates/nova-gfx/examples/public-api-smoke",
-    "crates/nova-gfx/examples/gpui-minimal-window-smoke",
 ]
 exclude = ["crates/easytier", "crates/raknet", "vendor/sctk-adwaita"]
 
