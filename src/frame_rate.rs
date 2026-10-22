@@ -1,6 +1,6 @@
 //! Application-wide UI frame pacing. Display VSync remains authoritative in auto
 //! mode; explicit custom/unlimited modes opt in to Immediate presentation.
-use gpui::{App, FrameClock, PresentModePreference};
+use gpui::{App, AppContext as _, FrameClock, PresentModePreference};
 
 pub(crate) const DEFAULT_FPS: u32 = 120;
 pub(crate) const MAX_FPS: u32 = 1000;
