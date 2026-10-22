@@ -160,6 +160,22 @@ fn animation_content_mask(mask: ContentMask, animation: VisualAnimation) -> Cont
         result.bounds.origin.y = clipped_top;
         result.bounds.size.x = max(clipped_right - clipped_left, 0.0);
         result.bounds.size.y = max(clipped_bottom - clipped_top, 0.0);
+
+        // A reveal on rounded content must round the *moving* boundary, not
+        // only the source's final top/bottom corners. The rectangular clip
+        // still trims the visible region; the existing content-mask SDF
+        // rounds its exposed corners without an extra offscreen pass.
+        if (result.corner_radii.top_left > 0.0 ||
+            result.corner_radii.top_right > 0.0 ||
+            result.corner_radii.bottom_right > 0.0 ||
+            result.corner_radii.bottom_left > 0.0) {
+            result.corner_bounds = result.bounds;
+            let radius_limit = max(min(result.bounds.size.x, result.bounds.size.y) * 0.5, 0.0);
+            result.corner_radii.top_left = min(result.corner_radii.top_left, radius_limit);
+            result.corner_radii.top_right = min(result.corner_radii.top_right, radius_limit);
+            result.corner_radii.bottom_right = min(result.corner_radii.bottom_right, radius_limit);
+            result.corner_radii.bottom_left = min(result.corner_radii.bottom_left, radius_limit);
+        }
     }
     return result;
 }

@@ -433,6 +433,19 @@ fn apply_clip_reveal(primitive: &mut Primitive, left: f32, right: f32, top: f32,
     mask.bounds.origin.y = clipped_top;
     mask.bounds.size.width = (clipped_right - clipped_left).max(crate::ScaledPixels(0.0));
     mask.bounds.size.height = (clipped_bottom - clipped_top).max(crate::ScaledPixels(0.0));
+
+    // The clip's moving edge must use the same rounded geometry as the source
+    // content mask. Keeping corner_bounds at the *final* popup rectangle cuts
+    // an animated half-open popup with a square edge.
+    //
+    // Plain rectangular masks remain unchanged. Corner radii are bounded by
+    // the current visible size to avoid inverted SDFs near zero progress.
+    if mask.corner_radii != crate::Corners::default() {
+        mask.corner_bounds = mask.bounds;
+        mask.corner_radii = mask
+            .corner_radii
+            .clamp_radii_for_quad_size(mask.bounds.size);
+    }
 }
 
 fn apply_scale(

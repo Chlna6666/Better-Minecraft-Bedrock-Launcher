@@ -489,6 +489,10 @@ pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyE
     )
     .track_scroll(menu_scroll_handle)
     .h_full();
+    // The reveal is a retained subtree composite: it captures the content
+    // mask *before* painting the popup. Keep the rounded mask on this outer
+    // shell so the compositor (not only its cached source texture) knows the
+    // radius when it animates the moving reveal edge.
     let popup = div()
         .absolute()
         .left(active.top_left.x)
@@ -499,59 +503,66 @@ pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyE
         .overflow_hidden()
         .relative()
         .occlude()
-        .bg(Hsla {
-            a: 0.96,
-            ..colors.settings_panel_bg
-        })
-        .border_1()
-        .border_color(Hsla {
-            a: 0.22,
-            ..colors.border
-        })
-        .on_scroll_wheel(|_, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(MouseButton::Right, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(MouseButton::Middle, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(MouseButton::Left, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(MouseButton::Right, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(MouseButton::Middle, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
         .child(
             div()
                 .size_full()
-                .px(px(8.))
-                .pt(px(8.))
-                .pb(px(4.))
-                .child(option_list),
-        )
-        // ClipReveal already owns a retained capture of the full menu. Do not nest a
-        // second identity composite and an opacity track: those create an extra
-        // offscreen source even though the popup has no independently animated content.
-        // The single reveal animation retains the popup identity across retargets.
-        .with_visual_animation(
-            active.id.clone(),
-            motion
-                .animation()
-                .with_property(AnimationProperty::vertical_reveal(
-                    reveal_edge,
-                    1.0 - target,
-                    target,
-                )),
-        )
-        .expect("reveal is a declared presentation property");
+                // Preserve the rounded border geometry in the retained source.
+                // The outer shell owns the rounded *compositor* mask.
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla {
+                    a: 0.96,
+                    ..colors.settings_panel_bg
+                })
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.22,
+                    ..colors.border
+                })
+                .on_scroll_wheel(|_, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Right, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Middle, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(MouseButton::Left, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(MouseButton::Right, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(MouseButton::Middle, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    div()
+                        .size_full()
+                        .px(px(8.))
+                        .pt(px(8.))
+                        .pb(px(4.))
+                        .child(option_list),
+                )
+                // ClipReveal already owns a retained capture of the full menu. Do not nest a
+                // second identity composite and an opacity track: those create an extra
+                // offscreen source even though the popup has no independently animated content.
+                // The single reveal animation retains the popup identity across retargets.
+                .with_visual_animation(
+                    active.id.clone(),
+                    motion
+                        .animation()
+                        .with_property(AnimationProperty::vertical_reveal(
+                            reveal_edge,
+                            1.0 - target,
+                            target,
+                        )),
+                )
+                .expect("reveal is a declared presentation property"),
+        );
 
     div()
         .absolute()

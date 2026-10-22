@@ -50,12 +50,22 @@ pub(crate) fn gpu_sample_damage(
                         .filter(|value| value.animation_id == animation_id)
                         .all(crate::paint::animation_sample_is_identity))
             {
-                // ClipReveal is applied to the final compositor output:
-                // pixels visible at both samples do not change. Only the
-                // strip crossing the moving clip edge must be damaged.
-                // Incompatible clips, absent samples and other properties
-                // deliberately retain the conservative swept-bounds path.
-                let clip_delta = last
+                // Rectangular ClipReveal changes only the moving-edge strip.
+                // Rounded clips also change coverage near the fixed corners
+                // when the exposed height falls below twice the radius.
+                // Preserve correctness during fast reversals by using the
+                // swept output for those masks; this does not repaint the
+                // retained capture source or introduce another GPU pass.
+                let rounded_reveal = match operation {
+                    PaintOperation::Primitive(primitive) => {
+                        primitive.content_mask().corner_radii != crate::Corners::default()
+                    }
+                    PaintOperation::StartBlur(capture) => {
+                        capture.content_mask.corner_radii != crate::Corners::default()
+                    }
+                    _ => false,
+                };
+                let clip_delta = (!rounded_reveal).then_some(()).and_then(|_| last)
                     .zip(now)
                     .filter(|(before, after)| {
                         before.property == TransitionProperty::ClipReveal

@@ -292,6 +292,114 @@ fn retained_clip_reveal_changes_only_the_content_mask() {
 }
 
 #[test]
+fn rounded_clip_reveal_tracks_both_animated_popup_edges() {
+    let bounds = crate::bounds(
+        crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+        crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+    );
+    let radius = crate::ScaledPixels(8.0);
+    let original_mask = crate::ContentMask {
+        bounds,
+        corner_bounds: bounds,
+        corner_radii: crate::Corners::all(radius),
+    };
+
+    // Downward opening has a moving bottom edge; upward opening has a moving
+    // top edge. Both need a rounded mask rather than a static final mask plus
+    // a rectangular scissor.
+    for (start, end) in [(20.0, 60.0), (60.0, 100.0)] {
+        let mut primitive = Primitive::Quad(Quad {
+            bounds,
+            content_mask: original_mask,
+            ..Default::default()
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(1),
+                property: TransitionProperty::ClipReveal,
+                progress: 1.0,
+                from: [10.0, 110.0, start, end],
+                to: [10.0, 110.0, start, end],
+            },
+        );
+        let Primitive::Quad(quad) = primitive else {
+            panic!("quad");
+        };
+        assert_eq!(quad.bounds, bounds, "reveal must not relayout child");
+        assert_eq!(quad.content_mask.corner_bounds, quad.content_mask.bounds);
+        assert_eq!(quad.content_mask.corner_radii, crate::Corners::all(radius));
+        assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(start));
+        assert_eq!(
+            quad.content_mask.bounds.size.height,
+            crate::ScaledPixels(40.0)
+        );
+    }
+}
+
+#[test]
+fn rounded_clip_reveal_clamps_radii_for_collapsed_popup() {
+    let bounds = crate::bounds(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(crate::ScaledPixels(180.0), crate::ScaledPixels(126.0)),
+    );
+    let mut primitive = Primitive::Quad(Quad {
+        bounds,
+        content_mask: crate::ContentMask {
+            bounds,
+            corner_bounds: bounds,
+            corner_radii: crate::Corners::all(crate::ScaledPixels(8.0)),
+        },
+        ..Default::default()
+    });
+    apply_value(
+        &mut primitive,
+        &SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: TransitionProperty::ClipReveal,
+            progress: 1.0,
+            from: [0.0, 180.0, 0.0, 4.0],
+            to: [0.0, 180.0, 0.0, 4.0],
+        },
+    );
+    let Primitive::Quad(quad) = primitive else {
+        panic!("quad");
+    };
+    assert_eq!(
+        quad.content_mask.corner_radii,
+        crate::Corners::all(crate::ScaledPixels(2.0))
+    );
+    assert_eq!(quad.content_mask.corner_bounds, quad.content_mask.bounds);
+    // Full height restores the original radius without accumulating drift.
+    let mut full = Primitive::Quad(Quad {
+        bounds,
+        content_mask: crate::ContentMask {
+            bounds,
+            corner_bounds: bounds,
+            corner_radii: crate::Corners::all(crate::ScaledPixels(8.0)),
+        },
+        ..Default::default()
+    });
+    apply_value(
+        &mut full,
+        &SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: TransitionProperty::ClipReveal,
+            progress: 1.0,
+            from: [0.0, 180.0, 0.0, 126.0],
+            to: [0.0, 180.0, 0.0, 126.0],
+        },
+    );
+    let Primitive::Quad(quad) = full else {
+        panic!("quad");
+    };
+    assert_eq!(
+        quad.content_mask.corner_radii,
+        crate::Corners::all(crate::ScaledPixels(8.0))
+    );
+}
+
+#[test]
 fn retained_horizontal_clip_reveal_changes_only_mask_width() {
     let bounds = crate::bounds(
         crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),

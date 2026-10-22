@@ -1557,6 +1557,42 @@ fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
 }
 
 #[test]
+fn rounded_gpu_clip_reveal_damages_fixed_corner_coverage_during_growth() {
+    let area = bounds(
+        point(ScaledPixels(40.0), ScaledPixels(80.0)),
+        size(ScaledPixels(200.0), ScaledPixels(220.0)),
+    );
+    let animation_id = SceneAnimationId(703);
+    let mut scene = crate::scene::Painter::default();
+    scene.insert_animated_primitive(
+        Quad {
+            bounds: area,
+            content_mask: ContentMask {
+                bounds: area,
+                corner_bounds: area,
+                corner_radii: crate::Corners::all(ScaledPixels(8.0)),
+            },
+            ..Default::default()
+        },
+        animation_id,
+    );
+    let sample = |bottom: f32| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::ClipReveal,
+        progress: 1.0,
+        from: [40.0, 240.0, 80.0, bottom],
+        to: [40.0, 240.0, 80.0, bottom],
+    };
+    // Between heights 4 and 6 px, the rounded fixed edge also changes as
+    // radius clamps from 2 to 3. The moving 2px strip alone would miss it.
+    let pixels = crate::paint::gpu_sample_damage(&scene, &[sample(84.0)], &[sample(86.0)]);
+    assert_eq!(pixels.len(), 1);
+    assert_eq!(pixels[0].origin.y.0, 80.0);
+    assert_eq!(pixels[0].size.height.0, 6.0);
+    assert_eq!(pixels[0].size.width.0, 200.0);
+}
+
+#[test]
 fn identical_filter_scene_and_samples_skip_nested_source_revalidation() {
     let viewport = bounds(
         point(ScaledPixels(0.0), ScaledPixels(0.0)),
