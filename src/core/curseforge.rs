@@ -5,8 +5,8 @@ pub mod queries;
 use crate::config::config::read_config;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use url::Url;
 
 // Bedrock Game ID (CurseForge).
@@ -19,26 +19,81 @@ const CURSEFORGE_MIRROR_BASE: &str = "https://mod.mcimirror.top/curseforge";
 const API_KEY: &str = "$2a$10$3Dr/WLO28GST4n7h7vD0zeWNPjIbwqb1cyVsL66BXAfliCpBC5Ejm";
 const CURSEFORGE_API_MAX_ATTEMPTS: usize = 3;
 const CURSEFORGE_API_RETRY_DELAY_MS: u64 = 200;
+const MIRROR_FAILOVER_COOLDOWN: Duration = Duration::from_secs(45);
+const MIRROR_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+
+// Shared across short-lived clients so a failing mirror does not stall every page.
+static MIRROR_UNHEALTHY_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
 #[derive(Clone)]
 pub struct CurseForgeClient {
     client: Client,
     base_v1: String,
     base_v2: String,
+    mirror_failover: bool,
 }
 
 impl CurseForgeClient {
     pub fn new() -> Result<Self, String> {
         let client = build_http_client()?.clone();
-        let (base_v1, base_v2) = build_base_urls()?;
+        let (base_v1, base_v2, mirror_failover) = build_base_urls()?;
         Ok(Self {
             client,
             base_v1,
             base_v2,
+            mirror_failover,
         })
     }
 
+    // Mirror selection is an automatic two-source policy: preserve the selected
+    // mirror while it is healthy, and try the official API only for mirror errors.
+    // Explicit official/custom sources never silently contact another host.
     async fn get<T>(&self, url: Url) -> Result<T, String>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let alternative = self.official_fallback_url(&url);
+        if let Some(ref official) = alternative
+            && mirror_in_cooldown()
+        {
+            return self
+                .get_one::<T>(official.clone(), false)
+                .await
+                .map_err(|error| format!("CurseForge 镜像暂不可用，官方 API 请求失败：{}", error.message));
+        }
+
+        match self.get_one::<T>(url.clone(), alternative.is_some()).await {
+            Ok(value) => Ok(value),
+            Err(error) if error.fallback_allowed && alternative.is_some() => {
+                if error.mirror_health_failure {
+                    mirror_mark_unhealthy();
+                }
+                tracing::warn!(
+                    mirror = %url,
+                    reason = %error.message,
+                    "CurseForge 镜像请求失败，自动回退官方 API"
+                );
+                self.get_one::<T>(alternative.expect("checked fallback presence"), false)
+                    .await
+                    .map_err(|official_error| format!(
+                        "CurseForge 镜像失败（{}），官方 API 也失败（{}）",
+                        error.message, official_error.message
+                    ))
+            }
+            Err(error) => Err(error.message),
+        }
+    }
+
+    fn official_fallback_url(&self, url: &Url) -> Option<Url> {
+        if !self.mirror_failover {
+            return None;
+        }
+        official_fallback_url(url)
+    }
+
+    // Each endpoint owns its own cache key. A successful official fallback must
+    // never be stored as if it had come from the mirror.
+    async fn get_one<T>(&self, url: Url, mirror_request: bool) -> Result<T, FetchError>
     where
         T: DeserializeOwned + Send + 'static,
     {
@@ -54,7 +109,12 @@ impl CurseForgeClient {
         if let Some(body) = cache::load(&cache_key, policy.stale_for).await {
             match serde_json::from_slice(&body) {
                 Ok(value) => {
-                    self.refresh_in_background::<T>(url, cache_key, policy.fresh_for);
+                    self.refresh_in_background::<T>(
+                        url,
+                        cache_key,
+                        policy.fresh_for,
+                        mirror_request,
+                    );
                     return Ok(value);
                 }
                 Err(_) => cache::invalidate(&cache_key).await,
@@ -63,38 +123,56 @@ impl CurseForgeClient {
 
         let _request_guard = cache::request_guard(&cache_key).await;
         if let Some(body) = cache::load(&cache_key, policy.fresh_for).await {
-            return serde_json::from_slice(&body).map_err(|error| error.to_string());
+            match serde_json::from_slice(&body) {
+                Ok(value) => return Ok(value),
+                Err(_) => cache::invalidate(&cache_key).await,
+            }
         }
 
-        match self.fetch(url).await {
+        // Another request may have tripped the breaker while we waited for
+        // the per-URL cache lock. Avoid retrying the same broken mirror.
+        if mirror_request && mirror_in_cooldown() {
+            return Err(FetchError::cooldown());
+        }
+        let attempts = if mirror_request { 1 } else { CURSEFORGE_API_MAX_ATTEMPTS };
+        match self.fetch(url, attempts, mirror_request).await {
             Ok(body) => {
-                let parsed =
-                    serde_json::from_slice::<T>(&body).map_err(|error| error.to_string())?;
-                let body = Arc::<[u8]>::from(body);
-                if let Err(error) = cache::store(&cache_key, body).await {
+                let parsed = serde_json::from_slice::<T>(&body)
+                    .map_err(|error| FetchError::fallbackable(format!(
+                        "CurseForge API 响应格式无效：{error}"
+                    )))?;
+                if mirror_request {
+                    mirror_mark_healthy();
+                }
+                if let Err(error) = cache::store(&cache_key, Arc::<[u8]>::from(body)).await {
                     tracing::debug!("store CurseForge response cache failed: {error}");
                 }
                 Ok(parsed)
             }
-            Err(error) if error.retryable => {
+            Err(error) if error.retryable && !mirror_request => {
                 if let Some(body) = cache::load(&cache_key, policy.stale_for).await
                     && let Ok(value) = serde_json::from_slice(&body)
                 {
                     tracing::warn!(
                         url = %cache_key,
-                        "using stale CurseForge cache after request failure: {}",
-                        error.message
+                        reason = %error.message,
+                        "CurseForge 请求失败，使用旧缓存"
                     );
                     return Ok(value);
                 }
-                Err(error.message)
+                Err(error)
             }
-            Err(error) => Err(error.message),
+            Err(error) => Err(error),
         }
     }
 
-    fn refresh_in_background<T>(&self, url: Url, cache_key: String, fresh_for: Duration)
-    where
+    fn refresh_in_background<T>(
+        &self,
+        url: Url,
+        cache_key: String,
+        fresh_for: Duration,
+        mirror_request: bool,
+    ) where
         T: DeserializeOwned + Send + 'static,
     {
         let client = self.clone();
@@ -104,16 +182,49 @@ impl CurseForgeClient {
                 return;
             }
 
-            match client.fetch(url).await {
-                Ok(body) if serde_json::from_slice::<T>(&body).is_ok() => {
+            if mirror_request && mirror_in_cooldown() {
+                if let Some(official) = client.official_fallback_url(&url) {
+                    let _ = client.get_one::<T>(official, false).await;
+                }
+                return;
+            }
+            let attempts = if mirror_request { 1 } else { CURSEFORGE_API_MAX_ATTEMPTS };
+            let fetched = client.fetch(url.clone(), attempts, mirror_request).await
+                .and_then(|body| {
+                    serde_json::from_slice::<T>(&body)
+                        .map(|_| body)
+                        .map_err(|error| FetchError::fallbackable(format!(
+                            "CurseForge API 响应格式无效：{error}"
+                        )))
+                });
+
+            match fetched {
+                Ok(body) => {
+                    if mirror_request {
+                        mirror_mark_healthy();
+                    }
                     if let Err(error) = cache::store(&cache_key, Arc::<[u8]>::from(body)).await {
                         tracing::debug!("store refreshed CurseForge cache failed: {error}");
                     }
                 }
-                Ok(_) => tracing::debug!("ignore invalid refreshed CurseForge response"),
+                Err(error) if mirror_request && error.fallback_allowed => {
+                    if error.mirror_health_failure {
+                        mirror_mark_unhealthy();
+                    }
+                    tracing::warn!(
+                        mirror = %url,
+                        reason = %error.message,
+                        "CurseForge 镜像后台刷新失败，转用官方 API"
+                    );
+                    if let Some(official) = client.official_fallback_url(&url)
+                        && let Err(error) = client.get_one::<T>(official, false).await
+                    {
+                        tracing::debug!("CurseForge 官方 API 后台刷新也失败：{}", error.message);
+                    }
+                }
                 Err(error) => tracing::debug!(
                     url = %cache_key,
-                    "background CurseForge refresh failed: {}",
+                    "CurseForge 后台刷新失败：{}",
                     error.message
                 ),
             }
@@ -123,11 +234,22 @@ impl CurseForgeClient {
         }
     }
 
-    async fn fetch(&self, url: Url) -> Result<Vec<u8>, FetchError> {
+    async fn fetch(
+        &self,
+        url: Url,
+        max_attempts: usize,
+        mirror_request: bool,
+    ) -> Result<Vec<u8>, FetchError> {
         let mut last_error = None;
 
-        for attempt in 0..CURSEFORGE_API_MAX_ATTEMPTS {
-            match self.client.get(url.clone()).send().await {
+        for attempt in 0..max_attempts {
+            let mut request = self.client.get(url.clone());
+            if mirror_request {
+                // The official fallback should not wait for three full 20s
+                // timeouts on an unreachable mirror.
+                request = request.timeout(MIRROR_REQUEST_TIMEOUT);
+            }
+            match request.send().await {
                 Ok(response) => {
                     if response.status().is_success() {
                         return response
@@ -138,8 +260,8 @@ impl CurseForgeClient {
                     }
 
                     let status = response.status();
-                    if attempt + 1 < CURSEFORGE_API_MAX_ATTEMPTS && should_retry_status(status) {
-                        last_error = Some(format!("API Error: Status {}", status));
+                    if attempt + 1 < max_attempts && should_retry_status(status) {
+                        last_error = Some(format!("API Error: Status {status}"));
                         tokio::time::sleep(Duration::from_millis(CURSEFORGE_API_RETRY_DELAY_MS))
                             .await;
                         continue;
@@ -148,11 +270,13 @@ impl CurseForgeClient {
                     return Err(FetchError {
                         message: format!("API Error: Status {status}"),
                         retryable: should_retry_status(status),
+                        fallback_allowed: should_fallback_status(status),
+                        mirror_health_failure: should_open_mirror_circuit(status),
                     });
                 }
                 Err(error) => {
                     let error_message = error.to_string();
-                    if attempt + 1 < CURSEFORGE_API_MAX_ATTEMPTS {
+                    if attempt + 1 < max_attempts {
                         last_error = Some(error_message);
                         tokio::time::sleep(Duration::from_millis(CURSEFORGE_API_RETRY_DELAY_MS))
                             .await;
@@ -183,10 +307,13 @@ impl CurseForgeClient {
         let response = match self.get::<GetVersionsV2Response>(url_primary).await {
             Ok(response) => response,
             Err(err) => {
-                // Mirrors and custom endpoints may omit v2 game versions; use an
-                // unfiltered catalog instead. Never issue a hidden request to
-                // a different API source.
-                if err.contains("Status 404") {
+                // Some mirrors omit v2 versions entirely. We already tried the
+                // official fallback when mirror mode is selected; allow browsing
+                // without a version filter if the mirror route was missing.
+                // Custom sources remain pinned to their configured host.
+                if err.starts_with("API Error: Status 404")
+                    || err.contains("镜像失败（API Error: Status 404")
+                {
                     return Ok(Vec::new());
                 }
                 return Err(err);
@@ -312,6 +439,8 @@ pub fn prewarm() -> Result<(), String> {
 struct FetchError {
     message: String,
     retryable: bool,
+    fallback_allowed: bool,
+    mirror_health_failure: bool,
 }
 
 impl FetchError {
@@ -319,6 +448,26 @@ impl FetchError {
         Self {
             message,
             retryable: true,
+            fallback_allowed: true,
+            mirror_health_failure: true,
+        }
+    }
+
+    fn fallbackable(message: String) -> Self {
+        Self {
+            message,
+            retryable: false,
+            fallback_allowed: true,
+            mirror_health_failure: true,
+        }
+    }
+
+    fn cooldown() -> Self {
+        Self {
+            message: "CurseForge 镜像正在故障冷却中".to_string(),
+            retryable: false,
+            fallback_allowed: true,
+            mirror_health_failure: false,
         }
     }
 }
@@ -360,9 +509,61 @@ fn should_retry_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
+fn should_fallback_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || matches!(
+            status,
+            reqwest::StatusCode::REQUEST_TIMEOUT
+                | reqwest::StatusCode::TOO_MANY_REQUESTS
+                | reqwest::StatusCode::NOT_FOUND
+                | reqwest::StatusCode::UNAUTHORIZED
+                | reqwest::StatusCode::FORBIDDEN
+        )
+}
+
+// An absent API route is local to that route, not evidence that all
+// unrelated mirror routes are down. Do not globally open the circuit on 404.
+fn should_open_mirror_circuit(status: reqwest::StatusCode) -> bool {
+    should_fallback_status(status) && status != reqwest::StatusCode::NOT_FOUND
+}
+
+fn official_fallback_url(mirror_url: &Url) -> Option<Url> {
+    if mirror_url.scheme() != "https" || mirror_url.host_str() != Some("mod.mcimirror.top") {
+        return None;
+    }
+    // Do not accidentally replace a similarly-named path on the mirror host.
+    let suffix = mirror_url.path().strip_prefix("/curseforge")?;
+    if !suffix.starts_with("/v1/") && !suffix.starts_with("/v2/") {
+        return None;
+    }
+    let mut official = Url::parse(CURSEFORGE_OFFICIAL_BASE).ok()?;
+    official.set_path(suffix);
+    official.set_query(mirror_url.query());
+    Some(official)
+}
+
+fn mirror_in_cooldown() -> bool {
+    MIRROR_UNHEALTHY_UNTIL
+        .lock()
+        .map(|until| until.is_some_and(|deadline| deadline > Instant::now()))
+        .unwrap_or(false)
+}
+
+fn mirror_mark_unhealthy() {
+    if let Ok(mut until) = MIRROR_UNHEALTHY_UNTIL.lock() {
+        *until = Some(Instant::now() + MIRROR_FAILOVER_COOLDOWN);
+    }
+}
+
+fn mirror_mark_healthy() {
+    if let Ok(mut until) = MIRROR_UNHEALTHY_UNTIL.lock() {
+        *until = None;
+    }
+}
+
 // Resolve at client construction rather than pinning the first launch setting for
 // the process lifetime. HTTP connection pooling remains shared by build_http_client().
-fn build_base_urls() -> Result<(String, String), String> {
+fn build_base_urls() -> Result<(String, String, bool), String> {
     let (source, custom_base) = read_config()
         .ok()
         .map(|config| (
@@ -370,7 +571,17 @@ fn build_base_urls() -> Result<(String, String), String> {
             config.launcher.download.curseforge_api_base,
         ))
         .unwrap_or_default();
-    resolve_base_urls(&source, &custom_base)
+    let (v1, v2) = resolve_base_urls(&source, &custom_base)?;
+    Ok((v1, v2, mirror_fallback_enabled(&source)))
+}
+
+// Explicit custom URLs never inherit the mirror's automatic fallback policy,
+// even when the supplied URL happens to equal the bundled mirror URL.
+fn mirror_fallback_enabled(source: &str) -> bool {
+    !matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "custom" | "official"
+    )
 }
 
 fn resolve_base_urls(source: &str, custom_base: &str) -> Result<(String, String), String> {
@@ -398,7 +609,13 @@ fn resolve_base_urls(source: &str, custom_base: &str) -> Result<(String, String)
 
 #[cfg(test)]
 mod api_source_tests {
-    use super::{CURSEFORGE_MIRROR_BASE, resolve_base_urls};
+    use super::{
+        CURSEFORGE_MIRROR_BASE, CURSEFORGE_OFFICIAL_BASE,
+        official_fallback_url, mirror_fallback_enabled, resolve_base_urls,
+        should_fallback_status, should_open_mirror_circuit,
+    };
+    use reqwest::StatusCode;
+    use url::Url;
 
     #[test]
     fn custom_source_keeps_its_prefix_and_trims_trailing_slash() {
@@ -414,6 +631,73 @@ mod api_source_tests {
             resolve_base_urls("mirror", "").unwrap().0,
             format!("{CURSEFORGE_MIRROR_BASE}/v1")
         );
+    }
+
+
+    #[test]
+    fn mirror_fallback_preserves_version_path_and_encoded_queries() {
+        let mirror = Url::parse(
+            "https://mod.mcimirror.top/curseforge/v1/mods/search?gameId=78022&searchFilter=abc%20def&pageSize=20"
+        ).unwrap();
+        let official = official_fallback_url(&mirror).unwrap();
+        assert_eq!(
+            official.as_str(),
+            format!(
+                "{CURSEFORGE_OFFICIAL_BASE}/v1/mods/search?gameId=78022&searchFilter=abc%20def&pageSize=20"
+            )
+        );
+        let versions = Url::parse(
+            "https://mod.mcimirror.top/curseforge/v2/games/78022/versions"
+        ).unwrap();
+        assert_eq!(
+            official_fallback_url(&versions).unwrap().as_str(),
+            format!("{CURSEFORGE_OFFICIAL_BASE}/v2/games/78022/versions")
+        );
+    }
+
+    #[test]
+    fn fallback_rejects_unrelated_hosts_and_lookalike_paths() {
+        for url in [
+            "https://api.curseforge.com/v1/mods/search",
+            "https://other.example/curseforge/v1/mods/search",
+            "https://mod.mcimirror.top/curseforge-other/v1/mods/search",
+            "https://mod.mcimirror.top/curseforge/v3/mods/search",
+        ] {
+            assert!(official_fallback_url(&Url::parse(url).unwrap()).is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn explicit_custom_and_official_sources_never_use_mirror_fallback() {
+        assert!(mirror_fallback_enabled("mirror"));
+        assert!(mirror_fallback_enabled(""));
+        assert!(!mirror_fallback_enabled("official"));
+        assert!(!mirror_fallback_enabled("custom"));
+        assert!(!mirror_fallback_enabled(" CUSTOM "));
+    }
+
+    #[test]
+    fn fallback_distinguishes_mirror_failures_from_bad_queries() {
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(should_fallback_status(status), "{status}");
+            assert_eq!(
+                should_open_mirror_circuit(status),
+                status != StatusCode::NOT_FOUND,
+                "{status}"
+            );
+        }
+        for status in [StatusCode::BAD_REQUEST, StatusCode::UNPROCESSABLE_ENTITY] {
+            assert!(!should_fallback_status(status), "{status}");
+            assert!(!should_open_mirror_circuit(status), "{status}");
+        }
     }
 
     #[test]
