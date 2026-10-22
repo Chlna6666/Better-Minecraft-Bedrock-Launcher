@@ -154,6 +154,14 @@ impl PlatformInputHandler {
         self.handler.replace_text_in_range(None, input, window, cx);
     }
 
+    /// Updates the existing marked range in the currently focused editor.
+    /// Unlike key events, IME preedit must not trigger a keyboard shortcut.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn dispatch_preedit(&mut self, input: &str, window: &mut Window, cx: &mut App) {
+        self.handler
+            .replace_and_mark_text_in_range(None, input, None, window, cx);
+    }
+
     pub fn selected_bounds(&mut self, window: &mut Window, cx: &mut App) -> Option<Bounds<Pixels>> {
         let selection = self.handler.selected_text_range(true, window, cx)?;
         self.handler.bounds_for_range(

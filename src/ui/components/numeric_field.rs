@@ -39,6 +39,20 @@ impl NumericField {
             .w(px(88.0))
     }
 
+    /// Shared compact numeric edit surface for settings. The surrounding
+    /// settings_control_box owns the field's background, focus ring and border;
+    /// do not nest a second Input shell or show a destructive clear button.
+    pub(crate) fn settings_control(state: &Entity<InputState>) -> Input {
+        Input::new(state)
+            .with_size(InputSize::Small)
+            .appearance(false)
+            .bordered(false)
+            .focus_bordered(false)
+            .cleanable(false)
+            .w_full()
+            .h(px(30.0))
+    }
+
     pub(crate) fn parse(&self, cx: &App, min: u32, max: u32) -> Option<u32> {
         parse_bounded_u32(self.state.read(cx).value().as_ref(), min, max)
     }

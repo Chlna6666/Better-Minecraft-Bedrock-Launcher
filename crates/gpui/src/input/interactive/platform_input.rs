@@ -12,6 +12,11 @@ pub enum PlatformInput {
     KeyDown(KeyDownEvent),
     /// A key was released.
     KeyUp(KeyUpEvent),
+    /// Text committed by the platform IME, virtual keyboard or remote input source.
+    /// This is text, not a simulated hardware shortcut.
+    TextInput(String),
+    /// Provisional IME text, replacing the previously marked range.
+    TextPreedit(String),
     /// The keyboard modifiers were changed.
     ModifiersChanged(ModifiersChangedEvent),
     /// The mouse was pressed.
@@ -46,6 +51,8 @@ impl PlatformInput {
             }
             PlatformInput::ScrollWheel(_) => PlatformInputDispatchClass::Scroll,
             PlatformInput::KeyDown(_)
+            | PlatformInput::TextInput(_)
+            | PlatformInput::TextPreedit(_)
             | PlatformInput::KeyUp(_)
             | PlatformInput::ModifiersChanged(_) => PlatformInputDispatchClass::Keyboard,
             PlatformInput::FileDrop(_) => PlatformInputDispatchClass::DragDrop,
@@ -63,6 +70,7 @@ impl PlatformInput {
     pub(crate) fn mouse_event(&self) -> Option<&dyn Any> {
         match self {
             PlatformInput::KeyDown { .. } => None,
+            PlatformInput::TextInput(_) | PlatformInput::TextPreedit(_) => None,
             PlatformInput::KeyUp { .. } => None,
             PlatformInput::ModifiersChanged { .. } => None,
             PlatformInput::MouseDown(event) => Some(event),
@@ -80,6 +88,7 @@ impl PlatformInput {
     pub(crate) fn keyboard_event(&self) -> Option<&dyn Any> {
         match self {
             PlatformInput::KeyDown(event) => Some(event),
+            PlatformInput::TextInput(_) | PlatformInput::TextPreedit(_) => None,
             PlatformInput::KeyUp(event) => Some(event),
             PlatformInput::ModifiersChanged(event) => Some(event),
             PlatformInput::MouseDown(_) => None,
@@ -120,6 +129,24 @@ impl PlatformInputDispatchClass {
             // hit. Real handlers schedule their own invalidation after hit testing.
             Self::PassivePointerMove | Self::PointerButton => false,
             Self::InteractivePointerMove | Self::Scroll | Self::Keyboard | Self::DragDrop => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_input_tests {
+    use super::*;
+
+    #[test]
+    fn committed_unicode_and_preedit_are_text_not_key_events() {
+        for input in [
+            PlatformInput::TextInput("RDP 中文 😀".into()),
+            PlatformInput::TextPreedit("拼".into()),
+        ] {
+            assert_eq!(input.dispatch_class(), PlatformInputDispatchClass::Keyboard);
+            assert!(input.keyboard_event().is_none());
+            assert!(input.mouse_event().is_none());
+            assert!(input.unconditionally_extends_recent_input());
         }
     }
 }

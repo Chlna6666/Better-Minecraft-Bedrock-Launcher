@@ -242,7 +242,9 @@ impl Window {
         // modality do not repeatedly force view-cache refreshes.
         let previous_input_modality = self.last_input_modality;
         self.last_input_modality = match &event {
-            PlatformInput::KeyDown(_) => InputModality::Keyboard,
+            PlatformInput::KeyDown(_)
+            | PlatformInput::TextInput(_)
+            | PlatformInput::TextPreedit(_) => InputModality::Keyboard,
             PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
             PlatformInput::Touch(_) | PlatformInput::LongPress(_) | PlatformInput::TouchDrag(_) => {
                 InputModality::Touch
@@ -389,7 +391,10 @@ impl Window {
                     PlatformInput::FileDrop(FileDropEvent::Exited)
                 }
             },
-            PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+            PlatformInput::KeyDown(_)
+            | PlatformInput::KeyUp(_)
+            | PlatformInput::TextInput(_)
+            | PlatformInput::TextPreedit(_) => event,
         };
 
         if !self.has_completed_rendered_frame {
@@ -411,6 +416,30 @@ impl Window {
             }
             false
         };
+
+        // Composing text must update the editor's marked range without
+        // activating bindings or committing its value.
+        #[cfg(target_os = "windows")]
+        if let PlatformInput::TextPreedit(text) = &event
+            && let Some(mut input_handler) = self.platform_window.take_input_handler()
+        {
+            input_handler.dispatch_preedit(text, self, cx);
+            self.platform_window.set_input_handler(input_handler);
+            cx.propagate_event = false;
+        }
+
+        // IME commit / remote Unicode text is an atomic text operation, not a
+        // synthetic hardware key. It must bypass keybindings and target only the
+        // currently focused platform text handler (never global key listeners).
+        #[cfg(target_os = "windows")]
+        if let PlatformInput::TextInput(text) = &event
+            && !text.is_empty()
+            && let Some(mut input_handler) = self.platform_window.take_input_handler()
+        {
+            input_handler.dispatch_input(text, self, cx);
+            self.platform_window.set_input_handler(input_handler);
+            cx.propagate_event = false;
+        }
 
         // The winit-based Windows backend reports committed text through KeyEvent::text,
         // which is stored in Keystroke::key_char. Key actions still run first, but text input

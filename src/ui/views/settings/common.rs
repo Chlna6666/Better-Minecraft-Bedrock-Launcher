@@ -607,6 +607,31 @@ pub(super) fn settings_sub_row(
         .child(control)
 }
 
+/// Compact numeric setting, aligned with the 180px dropdown in the card
+/// header. Unlike the URL editor, this has no clear button or nested border.
+pub(super) fn settings_sub_numeric_row(
+    colors: &ThemeColors,
+    label: SharedString,
+    input: Option<&Entity<InputState>>,
+    placeholder: &'static str,
+) -> Div {
+    let control: AnyElement = input.map_or_else(
+        || div()
+            .w_full()
+            .text_size(px(13.))
+            .text_color(colors.text_muted)
+            .child(placeholder)
+            .into_any_element(),
+        |state| crate::ui::components::numeric_field::NumericField::settings_control(state)
+            .into_any_element(),
+    );
+    settings_sub_row(
+        colors,
+        label,
+        settings_control_box(colors, false, px(180.), control),
+    )
+}
+
 pub(super) fn settings_sub_input_row(
     colors: &ThemeColors,
     label: SharedString,

@@ -1813,6 +1813,30 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                     }
                 }
             }
+            // Text coming from TSF/IME and Unicode virtual keyboards is not a
+            // hardware keystroke. Forward it as text so it cannot activate a
+            // shortcut, and preserve the marked-text lifecycle for CJK input.
+            winit::event::WindowEvent::Ime(ime) => {
+                let input = match ime {
+                    winit::event::Ime::Commit(text) => Some(PlatformInput::TextInput(text)),
+                    winit::event::Ime::Preedit(text, _) => {
+                        Some(PlatformInput::TextPreedit(text))
+                    }
+                    // Cancelling an IME session must also discard provisional
+                    // text; otherwise it can linger in an RDP-disconnected field.
+                    winit::event::Ime::Disabled => {
+                        Some(PlatformInput::TextPreedit(String::new()))
+                    }
+                    winit::event::Ime::Enabled => None,
+                };
+                if let Some(input) = input {
+                    let callback = window.0.state.borrow_mut().callbacks.input.take();
+                    if let Some(mut callback) = callback {
+                        let _ = callback(input);
+                        window.0.state.borrow_mut().callbacks.input = Some(callback);
+                    }
+                }
+            }
             _ => {}
         }
         ACTIVE_CONTEXT.with(|storage| {

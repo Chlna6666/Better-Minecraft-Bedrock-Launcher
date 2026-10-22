@@ -107,6 +107,16 @@ pub(crate) fn keystroke_from_winit(
             (key, key_char)
         }
         WinitKey::Unidentified(_) | WinitKey::Dead(_) => {
+            // RDP, VK_PACKET, SendInput(UNICODE) and software keyboards may
+            // provide committed text without a usable physical scan code.
+            // The previous '?' discarded those events before GPUI's focused
+            // InputHandler could receive them. Use the text payload instead of
+            // synthesizing a key from an unrelated keyboard layout.
+            if let Some(value) = text
+                && let Some(committed) = virtual_text_keystroke(value, modifiers)
+            {
+                return Some(committed);
+            }
             let (key, key_char) = super::keyboard::key_from_physical_key(physical_key, modifiers)?;
             return Some(Keystroke {
                 modifiers,
@@ -133,5 +143,46 @@ pub(crate) fn apply_cursor_style_to_window(window: &winit::window::Window, style
                 .unwrap_or(winit::window::Cursor::default());
             window.set_cursor(cursor);
         }
+    }
+}
+
+/// Committed Unicode from a software keyboard is text, not a physical scancode.
+/// Preserve complete UTF-8 strings (including non-BMP characters) for the IME
+/// input handler. Never turn shortcut modifier combinations or control chars
+/// into text, and leave dead keys to the platform's composition path.
+fn virtual_text_keystroke(text: &str, modifiers: Modifiers) -> Option<Keystroke> {
+    if text.is_empty()
+        || text.chars().any(char::is_control)
+        || modifiers.platform
+        || modifiers.function
+        || (modifiers.control && !modifiers.alt)
+        || (modifiers.alt && !modifiers.control)
+    {
+        return None;
+    }
+    Some(Keystroke {
+        modifiers,
+        key: "virtual-text".into(),
+        key_char: Some(text.to_string()),
+    })
+}
+
+#[cfg(test)]
+mod virtual_text_tests {
+    use super::*;
+
+    #[test]
+    fn remote_unicode_text_requires_no_physical_key() {
+        let value = virtual_text_keystroke("😀中文", Modifiers::default()).unwrap();
+        assert_eq!(value.key_char.as_deref(), Some("😀中文"));
+        assert_eq!(value.key, "virtual-text");
+        assert!(virtual_text_keystroke("246", Modifiers::default()).is_some());
+    }
+
+    #[test]
+    fn shortcut_and_control_events_do_not_insert_text() {
+        assert!(virtual_text_keystroke("", Modifiers::default()).is_none());
+        assert!(virtual_text_keystroke("\\r", Modifiers::default()).is_none());
+        assert!(virtual_text_keystroke("c", Modifiers::control()).is_none());
     }
 }

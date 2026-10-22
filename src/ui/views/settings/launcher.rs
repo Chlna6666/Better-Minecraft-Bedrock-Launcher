@@ -152,7 +152,7 @@ fn launcher_frame_rate_row(
             .child(dropdown),
         )
         .when(state.frame_rate_mode.as_ref() == "custom", |this| {
-            this.child(super::common::settings_sub_input_row(
+            this.child(super::common::settings_sub_numeric_row(
                 colors,
                 t!("LauncherSettings.fps.limit"),
                 state.frame_rate_limit_input.as_ref(),

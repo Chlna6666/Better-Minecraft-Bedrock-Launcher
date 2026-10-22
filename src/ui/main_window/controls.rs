@@ -455,27 +455,33 @@ impl MainWindowView {
             let sub = cx.subscribe(
                 &input,
                 |this, input: Entity<InputState>, ev: &InputEvent, cx| {
-                    let parsed = input.read(cx).value().trim().parse::<u32>().ok()
-                        .filter(|value| (1..=1000).contains(value));
+                    let value = input.read(cx).value();
+                    let parsed = crate::ui::components::numeric_field::parse_bounded_u32(
+                        value.as_ref(), 1, 1000,
+                    );
                     match ev {
-                        InputEvent::Change => {
-                            if let Some(limit) = parsed {
-                                cx.update_global(
-                                    |state: &mut crate::ui::views::settings::state::SettingsPageState, _| {
-                                        state.frame_rate_limit = limit;
-                                    },
-                                );
-                            }
-                        }
+                        // Keep a partially typed number in the Input edit buffer.
+                        // Business state is only updated after a valid commit.
+                        InputEvent::Change => {}
                         InputEvent::Blur | InputEvent::PressEnter { .. } => {
                             if let Some(limit) = parsed {
-                                cx.update_global(
+                                let changed = cx.update_global(
                                     |state: &mut crate::ui::views::settings::state::SettingsPageState, _| {
+                                        let changed = state.frame_rate_limit != limit;
                                         state.frame_rate_limit = limit;
+                                        changed
                                     },
                                 );
-                                this.persist_frame_rate_limit(limit, cx);
+                                if changed {
+                                    this.persist_frame_rate_limit(limit, cx);
+                                }
                             } else {
+                                let restored = cx.global::<
+                                    crate::ui::views::settings::state::SettingsPageState
+                                >().frame_rate_limit;
+                                input.update(cx, |state, cx| {
+                                    state.set_text(restored.to_string(), cx);
+                                });
                                 crate::ui::components::toast::error(
                                     cx,
                                     t!("LauncherSettings.fps.invalid"),

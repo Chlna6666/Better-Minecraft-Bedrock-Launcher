@@ -5,6 +5,7 @@ const SLOW_INPUT_DISPATCH: Duration = Duration::from_millis(16);
 pub(super) fn platform_input_name(event: &PlatformInput) -> &'static str {
     match event {
         PlatformInput::KeyDown(_) => "key_down",
+        PlatformInput::TextInput(_) => "text_input",
         PlatformInput::KeyUp(_) => "key_up",
         PlatformInput::ModifiersChanged(_) => "modifiers_changed",
         PlatformInput::MouseDown(_) => "mouse_down",

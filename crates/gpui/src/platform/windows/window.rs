@@ -1780,6 +1780,10 @@ impl WindowsWindow {
         let winit_window = event_loop
             .create_window(attributes)
             .context("creating winit window")?;
+        // Register this custom-drawn window as a native IME text target. With
+        // IME disabled, RDP/virtual Unicode text and composition commits can be
+        // dropped before they reach GPUI's focused InputHandler.
+        winit_window.set_ime_allowed(true);
         let hwnd = Self::native_hwnd_from_winit_window(&winit_window);
         if let Some(hwnd) = hwnd {
             install_size_move_loop_subclass(hwnd);
