@@ -2,7 +2,7 @@ use crate::{
     AnimationError, AnimationScratch, Camera, CameraError, Mat4, Ray, RaycastError, RaycastScratch,
     Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2, Vec3,
 };
-use gfx_core::ExtensionDevice;
+use gpui::ExtensionDevice;
 use gpui::{
     IntoElement, RendererExtension, RendererExtensionContext, RendererExtensionRenderer, Styled,
     Window, canvas,
@@ -1139,14 +1139,14 @@ mod tests {
                 (ShaderStage::Fragment, "fs_main"),
             ] {
                 let binary = if backend == BackendKind::Metal {
-                    gfx_shader::compile_wgsl_to_msl_with_version(
+                    gfx_shader::compile_wgsl_to_msl_versioned(
                         SHADER,
                         stage,
                         entry_point,
                         gfx_shader::MslVersion::V1_2,
                     )
                 } else {
-                    gfx_shader::compile_wgsl_for_backend(SHADER, backend, stage, entry_point)
+                    gfx_shader::compile_wgsl_to_backend(SHADER, backend, stage, entry_point)
                 };
                 binary.unwrap();
             }

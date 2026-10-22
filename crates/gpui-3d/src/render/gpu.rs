@@ -26,19 +26,18 @@ use crate::{
     TextureAsset, TextureAssetId, TextureColorSpace, Vec3,
 };
 use gfx_core::{
-    AddressMode, BackendKind, BindingResource, BlendMode, BufferBinding, BufferDescriptor,
-    BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor, CompareFunction,
-    DepthAttachmentDescriptor, DepthState, Device, DrawIndexedStepDescriptor, DrawStepDescriptor,
-    Extent2d, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    MemoryTrimLevel, Origin2d, PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology,
-    RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
-    RenderPipelineId, RenderStepDescriptor, RenderStepList, ResourceBinding, ResourceBindingType,
-    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutEntry,
-    ResourceSetLayoutId, SamplerBinding, SamplerDescriptor, SamplerId, ShaderModuleDescriptor,
+    AddressMode, BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutId, BindingResource,
+    BindingType, BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUsage, ClearColor,
+    ColorAttachmentDescriptor, CompareFunction, DepthAttachment, DepthAttachmentDescriptor,
+    DepthState, Device, DrawCommand, DrawIndexedCommand, Extent2d, FilterMode, Format,
+    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel, Origin2d,
+    PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology, RenderCommand,
+    RenderPassCommands, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+    RenderPipelineId, SamplerBinding, SamplerDescriptor, SamplerId, ShaderModuleDescriptor,
     ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus, TextureBinding,
-    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureRenderStepList,
-    TextureTransferDevice, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite,
-    TextureWriteDescriptor,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureTransferDevice,
+    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -201,9 +200,9 @@ pub(crate) struct GpuState {
     fallback_texture: Option<TextureResources>,
     batch_sets: HashMap<BatchKey, BatchSets>,
     used_batch_keys: Vec<BatchKey>,
-    post_set: Option<ResourceSetId>,
-    bloom_set: Option<ResourceSetId>,
-    sky_set: Option<ResourceSetId>,
+    post_set: Option<BindGroupId>,
+    bloom_set: Option<BindGroupId>,
+    sky_set: Option<BindGroupId>,
     environment: Option<(TextureAssetId, TextureResources)>,
     resource_epoch: u64,
     frame_index: u64,
@@ -372,13 +371,13 @@ impl GpuState {
             }
         }
         if let Some(set) = self.sky_set.take() {
-            device.destroy_resource_set(set)?;
+            device.destroy_bind_group(set)?;
         }
         if let Some(set) = self.bloom_set.take() {
-            device.destroy_resource_set(set)?;
+            device.destroy_bind_group(set)?;
         }
         if let Some(set) = self.post_set.take() {
-            device.destroy_resource_set(set)?;
+            device.destroy_bind_group(set)?;
         }
         Ok(())
     }
@@ -526,9 +525,9 @@ impl GpuState {
         if environment.is_some() && options.debug_view == DebugView::Shaded {
             if let Some(sky_set) = self.ensure_sky_set(device)? {
                 let sky_pipeline = self.pipelines()?.sky_pipeline;
-                scene_steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
+                scene_steps.push(RenderCommand::Draw(DrawCommand {
                     pipeline: sky_pipeline,
-                    resource_sets: gfx_core::resource_set_list([sky_set]),
+                    bind_groups: gfx_core::bind_group_list([sky_set]),
                     vertex_count: 3,
                     first_vertex: 0,
                     instance_count: 1,
@@ -549,9 +548,9 @@ impl GpuState {
         } else {
             None
         };
-        let post_steps = [RenderStepDescriptor::Draw(DrawStepDescriptor {
+        let post_steps = [RenderCommand::Draw(DrawCommand {
             pipeline: self.pipelines()?.post_pipeline,
-            resource_sets: gfx_core::resource_set_list([post_set]),
+            bind_groups: gfx_core::bind_group_list([post_set]),
             vertex_count: 3,
             first_vertex: 0,
             instance_count: 1,
@@ -560,9 +559,9 @@ impl GpuState {
         })];
         let mut bloom_steps = Vec::with_capacity(1);
         if let Some(bloom_set) = bloom_set {
-            bloom_steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
+            bloom_steps.push(RenderCommand::Draw(DrawCommand {
                 pipeline: self.pipelines()?.bloom_pipeline,
-                resource_sets: gfx_core::resource_set_list([bloom_set]),
+                bind_groups: gfx_core::bind_group_list([bloom_set]),
                 vertex_count: 3,
                 first_vertex: 0,
                 instance_count: 1,
@@ -573,10 +572,10 @@ impl GpuState {
 
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         let pipelines = self.pipelines()?;
-        let shadow_pass = TextureRenderStepList {
+        let shadow_pass = RenderPassCommands {
             texture_view: targets.shadow_color_view,
             render_pass: pipelines.shadow_pass,
-            steps: RenderStepList::Render(&shadow_steps),
+            commands: &shadow_steps,
             color_load_op: LoadOp::Clear(ClearColor {
                 red: 1.0,
                 green: 1.0,
@@ -584,16 +583,16 @@ impl GpuState {
                 alpha: 1.0,
             }),
             clear_region: None,
-            depth_attachment: Some(RenderPassDepthAttachment {
+            depth_attachment: Some(DepthAttachment {
                 target: targets.shadow_depth_view,
                 depth_load_op: LoadOp::Clear(1.0),
             }),
             viewport: None,
         };
-        let scene_pass = TextureRenderStepList {
+        let scene_pass = RenderPassCommands {
             texture_view: targets.scene_color_view,
             render_pass: pipelines.scene_pass,
-            steps: RenderStepList::Render(&scene_steps),
+            commands: &scene_steps,
             color_load_op: LoadOp::Clear(ClearColor {
                 red: clear_color[0],
                 green: clear_color[1],
@@ -601,25 +600,25 @@ impl GpuState {
                 alpha: clear_color[3],
             }),
             clear_region: None,
-            depth_attachment: Some(RenderPassDepthAttachment {
+            depth_attachment: Some(DepthAttachment {
                 target: targets.scene_depth_view,
                 depth_load_op: LoadOp::Clear(1.0),
             }),
             viewport: None,
         };
-        let bloom_pass = TextureRenderStepList {
+        let bloom_pass = RenderPassCommands {
             texture_view: targets.bloom_color_view,
             render_pass: pipelines.bloom_pass,
-            steps: RenderStepList::Render(&bloom_steps),
+            commands: &bloom_steps,
             color_load_op: LoadOp::Clear(ClearColor::default()),
             clear_region: None,
             depth_attachment: None,
             viewport: None,
         };
-        let post_pass = TextureRenderStepList {
+        let post_pass = RenderPassCommands {
             texture_view: targets.post_color_view,
             render_pass: pipelines.post_pass,
-            steps: RenderStepList::Render(&post_steps),
+            commands: &post_steps,
             color_load_op: LoadOp::Clear(ClearColor::default()),
             clear_region: None,
             depth_attachment: None,
@@ -634,7 +633,7 @@ impl GpuState {
         }
         passes.push(post_pass);
         let submit_started = Instant::now();
-        self.pending_submission = device.render_step_lists_to_textures_deferred(&passes)?;
+        self.pending_submission = device.render_to_textures(&passes)?;
         statistics.submit_nanos = submit_started.elapsed().as_nanos() as u64;
         statistics.cpu_prepare_nanos = started.elapsed().as_nanos() as u64;
         self.submission_unobserved = true;
@@ -772,7 +771,7 @@ impl GpuState {
         RendererStatistics {
             live_meshes: self.meshes.len(),
             live_textures: self.textures.len() + usize::from(self.environment.is_some()),
-            resource_set_count: self.batch_sets.len()
+            bind_group_count: self.batch_sets.len()
                 + usize::from(self.post_set.is_some())
                 + usize::from(self.bloom_set.is_some())
                 + usize::from(self.sky_set.is_some()),
@@ -1138,9 +1137,9 @@ impl GpuState {
         };
         let index_count = part.index_count();
         Ok(BatchSteps {
-            shadow: RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
+            shadow: RenderCommand::DrawIndexed(DrawIndexedCommand {
                 pipeline: pipelines.shadow_pipeline,
-                resource_sets: gfx_core::resource_set_list([sets.shadow]),
+                bind_groups: gfx_core::bind_group_list([sets.shadow]),
                 index_buffer: IndexBufferBinding {
                     buffer: indices,
                     format: IndexFormat::Uint32,
@@ -1153,9 +1152,9 @@ impl GpuState {
                 first_instance: key.draw_index,
                 scissor: None,
             }),
-            scene: RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
+            scene: RenderCommand::DrawIndexed(DrawIndexedCommand {
                 pipeline: scene_pipeline,
-                resource_sets: gfx_core::resource_set_list([sets.scene]),
+                bind_groups: gfx_core::bind_group_list([sets.scene]),
                 index_buffer: IndexBufferBinding {
                     buffer: indices,
                     format: IndexFormat::Uint32,
@@ -1233,10 +1232,10 @@ impl GpuState {
             Some(tangents) => (tangents, 0, tangent_bytes.max(16)),
             None => (draw_buffer, draw_offset, 16),
         };
-        let scene = device.create_resource_set(&ResourceSetDescriptor {
+        let scene = device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d offscreen scene resource set".into()),
             layout: scene_layout,
-            bindings: vec![
+            entries: vec![
                 buffer_binding(
                     crate::scene_view::VERTEX_BINDING,
                     vertices,
@@ -1289,10 +1288,10 @@ impl GpuState {
                 sampler_binding(SCENE_ENVIRONMENT_SAMPLER_BINDING, environment_sampler),
             ],
         })?;
-        let shadow = match device.create_resource_set(&ResourceSetDescriptor {
+        let shadow = match device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d offscreen shadow resource set".into()),
             layout: shadow_layout,
-            bindings: vec![
+            entries: vec![
                 buffer_binding(
                     SHADOW_VERTEX_BINDING,
                     vertices,
@@ -1312,7 +1311,7 @@ impl GpuState {
         }) {
             Ok(set) => set,
             Err(error) => {
-                device.destroy_resource_set(scene)?;
+                device.destroy_bind_group(scene)?;
                 return Err(error.into());
             }
         };
@@ -1341,16 +1340,16 @@ impl GpuState {
     fn ensure_post_set<D: Device + ?Sized>(
         &mut self,
         device: &mut D,
-    ) -> Result<ResourceSetId, RenderError> {
+    ) -> Result<BindGroupId, RenderError> {
         if let Some(set) = self.post_set {
             return Ok(set);
         }
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         let pipelines = self.pipelines()?;
-        let set = device.create_resource_set(&ResourceSetDescriptor {
+        let set = device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d offscreen post resource set".into()),
             layout: pipelines.post_layout,
-            bindings: vec![
+            entries: vec![
                 texture_binding(POST_COLOR_BINDING, targets.scene_color_view),
                 sampler_binding(POST_SAMPLER_BINDING, pipelines.post_sampler),
                 buffer_binding(
@@ -1370,16 +1369,16 @@ impl GpuState {
     fn ensure_bloom_set<D: Device + ?Sized>(
         &mut self,
         device: &mut D,
-    ) -> Result<ResourceSetId, RenderError> {
+    ) -> Result<BindGroupId, RenderError> {
         if let Some(set) = self.bloom_set {
             return Ok(set);
         }
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         let pipelines = self.pipelines()?;
-        let set = device.create_resource_set(&ResourceSetDescriptor {
+        let set = device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d offscreen bloom resource set".into()),
             layout: pipelines.bloom_layout,
-            bindings: vec![
+            entries: vec![
                 texture_binding(BLOOM_SCENE_BINDING, targets.scene_color_view),
                 sampler_binding(BLOOM_SAMPLER_BINDING, pipelines.post_sampler),
                 buffer_binding(
@@ -1435,7 +1434,7 @@ impl GpuState {
     fn ensure_sky_set<D: Device + ?Sized>(
         &mut self,
         device: &mut D,
-    ) -> Result<Option<ResourceSetId>, RenderError> {
+    ) -> Result<Option<BindGroupId>, RenderError> {
         if self.sky_set.is_some() {
             return Ok(self.sky_set);
         }
@@ -1447,10 +1446,10 @@ impl GpuState {
         let layout = pipelines.sky_layout;
         let environment_sampler = pipelines.environment_sampler;
         let frame_buffer = self.frame_buffers.frame.buffer;
-        let set = device.create_resource_set(&ResourceSetDescriptor {
+        let set = device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d offscreen sky resource set".into()),
             layout,
-            bindings: vec![
+            entries: vec![
                 texture_binding(SKY_ENVIRONMENT_BINDING, texture_view),
                 sampler_binding(SKY_SAMPLER_BINDING, environment_sampler),
                 buffer_binding(SKY_FRAME_BINDING, frame_buffer, 0, FRAME_STRIDE, None),
@@ -1509,8 +1508,8 @@ fn buffer_binding(
     offset: u64,
     size: u64,
     stride: Option<u32>,
-) -> ResourceBinding {
-    ResourceBinding {
+) -> BindGroupEntry {
+    BindGroupEntry {
         binding,
         resource: BindingResource::Buffer(BufferBinding {
             buffer,
@@ -1521,23 +1520,23 @@ fn buffer_binding(
     }
 }
 
-fn texture_binding(binding: u32, texture_view: TextureViewId) -> ResourceBinding {
-    ResourceBinding {
+fn texture_binding(binding: u32, texture_view: TextureViewId) -> BindGroupEntry {
+    BindGroupEntry {
         binding,
         resource: BindingResource::Texture(TextureBinding { texture_view }),
     }
 }
 
-fn sampler_binding(binding: u32, sampler: SamplerId) -> ResourceBinding {
-    ResourceBinding {
+fn sampler_binding(binding: u32, sampler: SamplerId) -> BindGroupEntry {
+    BindGroupEntry {
         binding,
         resource: BindingResource::Sampler(SamplerBinding { sampler }),
     }
 }
 
 struct BatchSteps {
-    shadow: RenderStepDescriptor,
-    scene: RenderStepDescriptor,
+    shadow: RenderCommand,
+    scene: RenderCommand,
     alpha_mode: AlphaMode,
     triangles: u64,
     instances: u64,
@@ -1562,16 +1561,16 @@ struct BatchKey {
 
 #[derive(Clone, Copy)]
 struct BatchSets {
-    scene: ResourceSetId,
-    shadow: ResourceSetId,
+    scene: BindGroupId,
+    shadow: BindGroupId,
 }
 
 fn destroy_batch_sets<D: Device + ?Sized>(
     device: &mut D,
     sets: BatchSets,
 ) -> Result<(), RenderError> {
-    device.destroy_resource_set(sets.shadow)?;
-    device.destroy_resource_set(sets.scene)?;
+    device.destroy_bind_group(sets.shadow)?;
+    device.destroy_bind_group(sets.scene)?;
     Ok(())
 }
 
@@ -2005,7 +2004,7 @@ fn destroy_texture<D: Device + ?Sized>(
 struct HandleScratch {
     shaders: Vec<ShaderModuleId>,
     passes: Vec<RenderPassId>,
-    layouts: Vec<ResourceSetLayoutId>,
+    layouts: Vec<BindGroupLayoutId>,
     pipeline_layouts: Vec<PipelineLayoutId>,
     pipelines: Vec<RenderPipelineId>,
     samplers: Vec<SamplerId>,
@@ -2021,7 +2020,7 @@ impl HandleScratch {
             let _ = device.destroy_sampler(sampler);
         }
         for layout in self.layouts {
-            let _ = device.destroy_resource_set_layout(layout);
+            let _ = device.destroy_bind_group_layout(layout);
         }
         for layout in self.pipeline_layouts {
             let _ = device.destroy_pipeline_layout(layout);
@@ -2039,11 +2038,11 @@ impl HandleScratch {
 }
 
 struct Pipelines {
-    shadow_layout: ResourceSetLayoutId,
-    scene_layout: ResourceSetLayoutId,
-    post_layout: ResourceSetLayoutId,
-    bloom_layout: ResourceSetLayoutId,
-    sky_layout: ResourceSetLayoutId,
+    shadow_layout: BindGroupLayoutId,
+    scene_layout: BindGroupLayoutId,
+    post_layout: BindGroupLayoutId,
+    bloom_layout: BindGroupLayoutId,
+    sky_layout: BindGroupLayoutId,
     shadow_pass: RenderPassId,
     scene_pass: RenderPassId,
     post_pass: RenderPassId,
@@ -2090,166 +2089,166 @@ impl Pipelines {
         scratch: &mut HandleScratch,
     ) -> Result<Self, RenderError> {
         let extent = Extent2d::new(width, height)?;
-        let shadow_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        let shadow_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gpui-3d offscreen shadow layout".into()),
             entries: vec![
                 layout_entry(
                     SHADOW_VERTEX_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
                     SHADOW_INSTANCE_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
                     SHADOW_FRAME_BINDING,
-                    ResourceBindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
                     ShaderStages::VERTEX,
                 ),
             ],
         })?;
         scratch.layouts.push(shadow_layout);
-        let scene_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        let scene_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gpui-3d offscreen scene layout".into()),
             entries: vec![
                 layout_entry(
                     crate::scene_view::VERTEX_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
                     crate::scene_view::DRAW_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::LIGHT_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::ALBEDO_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::SAMPLER_BINDING,
-                    ResourceBindingType::Sampler,
+                    BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::NORMAL_MAP_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::OCCLUSION_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     crate::scene_view::TANGENT_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
                     crate::scene_view::INSTANCE_BINDING,
-                    ResourceBindingType::StorageBuffer,
+                    BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
                     crate::scene_view::FRAME_BINDING,
-                    ResourceBindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
                     ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SCENE_SHADOW_MAP_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SCENE_METALLIC_ROUGHNESS_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SCENE_ENVIRONMENT_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SCENE_ENVIRONMENT_SAMPLER_BINDING,
-                    ResourceBindingType::Sampler,
+                    BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
             ],
         })?;
         scratch.layouts.push(scene_layout);
-        let post_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        let post_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gpui-3d offscreen post layout".into()),
             entries: vec![
                 layout_entry(
                     POST_COLOR_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     POST_SAMPLER_BINDING,
-                    ResourceBindingType::Sampler,
+                    BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     POST_FRAME_BINDING,
-                    ResourceBindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     POST_BLOOM_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
             ],
         })?;
         scratch.layouts.push(post_layout);
-        let bloom_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        let bloom_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gpui-3d offscreen bloom layout".into()),
             entries: vec![
                 layout_entry(
                     BLOOM_SCENE_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     BLOOM_SAMPLER_BINDING,
-                    ResourceBindingType::Sampler,
+                    BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     BLOOM_FRAME_BINDING,
-                    ResourceBindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
                     ShaderStages::FRAGMENT,
                 ),
             ],
         })?;
         scratch.layouts.push(bloom_layout);
-        let sky_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+        let sky_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gpui-3d offscreen sky layout".into()),
             entries: vec![
                 layout_entry(
                     SKY_ENVIRONMENT_BINDING,
-                    ResourceBindingType::SampledTexture,
+                    BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SKY_SAMPLER_BINDING,
-                    ResourceBindingType::Sampler,
+                    BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
                     SKY_FRAME_BINDING,
-                    ResourceBindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
                     ShaderStages::FRAGMENT,
                 ),
             ],
@@ -2258,27 +2257,27 @@ impl Pipelines {
 
         let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen shadow pipeline layout".into()),
-            resource_set_layouts: vec![shadow_layout],
+            bind_group_layouts: vec![shadow_layout],
         })?;
         scratch.pipeline_layouts.push(shadow_pipeline_layout);
         let scene_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen scene pipeline layout".into()),
-            resource_set_layouts: vec![scene_layout],
+            bind_group_layouts: vec![scene_layout],
         })?;
         scratch.pipeline_layouts.push(scene_pipeline_layout);
         let post_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen post pipeline layout".into()),
-            resource_set_layouts: vec![post_layout],
+            bind_group_layouts: vec![post_layout],
         })?;
         scratch.pipeline_layouts.push(post_pipeline_layout);
         let bloom_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen bloom pipeline layout".into()),
-            resource_set_layouts: vec![bloom_layout],
+            bind_group_layouts: vec![bloom_layout],
         })?;
         scratch.pipeline_layouts.push(bloom_pipeline_layout);
         let sky_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen sky pipeline layout".into()),
-            resource_set_layouts: vec![sky_layout],
+            bind_group_layouts: vec![sky_layout],
         })?;
         scratch.pipeline_layouts.push(sky_pipeline_layout);
 
@@ -2564,11 +2563,11 @@ impl Pipelines {
         device.destroy_render_pass(self.scene_pass)?;
         device.destroy_render_pass(self.post_pass)?;
         device.destroy_render_pass(self.bloom_pass)?;
-        device.destroy_resource_set_layout(self.shadow_layout)?;
-        device.destroy_resource_set_layout(self.scene_layout)?;
-        device.destroy_resource_set_layout(self.post_layout)?;
-        device.destroy_resource_set_layout(self.bloom_layout)?;
-        device.destroy_resource_set_layout(self.sky_layout)?;
+        device.destroy_bind_group_layout(self.shadow_layout)?;
+        device.destroy_bind_group_layout(self.scene_layout)?;
+        device.destroy_bind_group_layout(self.post_layout)?;
+        device.destroy_bind_group_layout(self.bloom_layout)?;
+        device.destroy_bind_group_layout(self.sky_layout)?;
         // Pipeline layouts were previously leaked on every renderer drop/resize.
         device.destroy_pipeline_layout(self.shadow_pipeline_layout)?;
         device.destroy_pipeline_layout(self.scene_pipeline_layout)?;
@@ -2581,10 +2580,10 @@ impl Pipelines {
 
 fn layout_entry(
     binding: u32,
-    binding_type: ResourceBindingType,
+    binding_type: BindingType,
     stages: ShaderStages,
-) -> ResourceSetLayoutEntry {
-    ResourceSetLayoutEntry {
+) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
         binding,
         binding_type,
         stages,

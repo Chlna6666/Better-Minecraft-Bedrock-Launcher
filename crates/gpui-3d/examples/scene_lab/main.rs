@@ -649,10 +649,10 @@ fn print_report(report: &backend::BackendReport) {
     );
     let renderer = report.renderer;
     println!(
-        "renderer: live_meshes={} live_textures={} resource_sets={} buffers={}KB targets={}KB cached_mesh={}KB cached_texture={}KB draw_capacity={} instance_capacity={} shadow={} render_target={}x{}",
+        "renderer: live_meshes={} live_textures={} bind_groups={} buffers={}KB targets={}KB cached_mesh={}KB cached_texture={}KB draw_capacity={} instance_capacity={} shadow={} render_target={}x{}",
         renderer.live_meshes,
         renderer.live_textures,
-        renderer.resource_set_count,
+        renderer.bind_group_count,
         renderer.resident_buffer_bytes / 1024,
         renderer.target_bytes / 1024,
         renderer.cached_mesh_bytes / 1024,
@@ -748,7 +748,7 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
             "  \"debug_view\": \"{:?}\",\n",
             "  \"first_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
             "  \"steady_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
-            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{},\"render_scale\":{:.3},\"render_target_width\":{},\"render_target_height\":{}}},\n",
+            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"bind_groups\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{},\"render_scale\":{:.3},\"render_target_width\":{},\"render_target_height\":{}}},\n",
             "  \"memory\": {{\"target_bytes\":{},\"cached_mesh_bytes\":{},\"cached_texture_bytes\":{},\"resident_bytes\":{},\"peak_resident_bytes\":{},\"upload_bytes_total\":{},\"mesh_cache_hits\":{},\"mesh_cache_misses\":{},\"texture_cache_hits\":{},\"texture_cache_misses\":{},\"evictions\":{},\"tracker_cpu_bytes\":{},\"budget_bytes\":{},\"cpu_staging_bytes\":{},\"buffer_allocations\":{},\"buffer_slack_bytes\":{},\"pooled_bytes\":{},\"pooled_buffers\":{},\"buffer_reuses\":{}}},\n",
             "  \"frame_times_nanos\": {{\"render_p50\":{},\"render_p95\":{},\"render_p99\":{},\"capture_p50\":{},\"capture_p95\":{},\"capture_p99\":{}}},\n",
             "  \"cpu_pick\": {},\n",
@@ -786,7 +786,7 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
         frame.submit_nanos,
         renderer.live_meshes,
         renderer.live_textures,
-        renderer.resource_set_count,
+        renderer.bind_group_count,
         renderer.resident_buffer_bytes,
         renderer.resident_texture_bytes,
         renderer.draw_capacity,

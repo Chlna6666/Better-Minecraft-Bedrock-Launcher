@@ -1,8 +1,7 @@
 use super::{SceneView, SceneViewId, resources::RendererResources, scene::SceneResources};
 use anyhow::{anyhow, bail};
-use gfx_core::{
-    BackendKind, ExtensionDevice, MemoryTrimLevel, RenderPassId, RenderStepDescriptor,
-};
+use gfx_core::{BackendKind, MemoryTrimLevel, RenderCommand, RenderPassId};
+use gpui::ExtensionDevice;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
 use std::{
     collections::HashMap,
@@ -141,17 +140,9 @@ mod tests {
         let idle = now - SCENE_MEMORY_TRIM_IDLE;
 
         assert!(!should_trim_scene(MemoryTrimLevel::Light, idle, now));
-        assert!(!should_trim_scene(
-            MemoryTrimLevel::Moderate,
-            recent,
-            now
-        ));
+        assert!(!should_trim_scene(MemoryTrimLevel::Moderate, recent, now));
         assert!(should_trim_scene(MemoryTrimLevel::Moderate, idle, now));
-        assert!(should_trim_scene(
-            MemoryTrimLevel::Aggressive,
-            recent,
-            now
-        ));
+        assert!(should_trim_scene(MemoryTrimLevel::Aggressive, recent, now));
     }
 }
 
@@ -161,7 +152,7 @@ impl RendererExtensionRenderer for Renderer {
         extension: &dyn RendererExtension,
         device: &mut dyn ExtensionDevice,
         context: RendererExtensionContext,
-        steps: &mut Vec<RenderStepDescriptor>,
+        steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
         let scene_view = extension
             .downcast_ref::<SceneView>()

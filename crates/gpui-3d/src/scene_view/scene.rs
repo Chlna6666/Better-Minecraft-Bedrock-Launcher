@@ -14,10 +14,11 @@ use crate::{
 };
 use anyhow::{Context as _, anyhow, bail};
 use gfx_core::{
-    BackendKind, BufferDescriptor, BufferId, BufferUsage, DrawIndexedStepDescriptor,
-    ExtensionDevice, IndexBufferBinding, IndexFormat, MemoryLocation, RenderStepDescriptor,
-    ResourceSetId, ResourceSetLayoutId, SamplerId, resource_set_list,
+    BackendKind, BindGroupId, BindGroupLayoutId, BufferDescriptor, BufferId, BufferUsage,
+    DrawIndexedCommand, IndexBufferBinding, IndexFormat, MemoryLocation, RenderCommand, SamplerId,
+    bind_group_list,
 };
+use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 use std::{
     collections::{HashMap, HashSet},
@@ -76,7 +77,7 @@ struct DrawResources {
     normal_id: Option<TextureAssetId>,
     occlusion_id: Option<TextureAssetId>,
     metallic_roughness_id: Option<TextureAssetId>,
-    resource_set: ResourceSetId,
+    bind_group: BindGroupId,
 }
 
 impl SceneResources {
@@ -225,11 +226,11 @@ impl SceneResources {
             });
         }
         if draw_state_changed {
-            let resource_set_layout = renderer.resource_set_layout()?;
+            let bind_group_layout = renderer.bind_group_layout()?;
             self.sync_buffers(
                 device,
                 renderer,
-                resource_set_layout,
+                bind_group_layout,
                 projection,
                 scene_view.camera,
                 sampler,
@@ -239,7 +240,7 @@ impl SceneResources {
             self.sync_draw_resources(
                 device,
                 renderer,
-                renderer.resource_set_layout()?,
+                renderer.bind_group_layout()?,
                 sampler,
                 sampler_changed,
             )?;
@@ -282,7 +283,7 @@ impl SceneResources {
         &mut self,
         device: &mut dyn ExtensionDevice,
         renderer: &RendererResources,
-        resource_set_layout: ResourceSetLayoutId,
+        bind_group_layout: BindGroupLayoutId,
         projection: FrameProjection,
         camera: Camera,
         sampler: SamplerId,
@@ -383,7 +384,7 @@ impl SceneResources {
         if let Err(error) = self.sync_draw_resources(
             device,
             renderer,
-            resource_set_layout,
+            bind_group_layout,
             sampler,
             sampler_changed || replace_draw || replace_instances || replace_lights,
         ) {
@@ -520,7 +521,7 @@ impl SceneResources {
         &mut self,
         device: &mut dyn ExtensionDevice,
         renderer: &RendererResources,
-        resource_set_layout: ResourceSetLayoutId,
+        bind_group_layout: BindGroupLayoutId,
         sampler: SamplerId,
         force: bool,
     ) -> gpui::Result<()> {
@@ -560,7 +561,7 @@ impl SceneResources {
                     normal_id,
                     occlusion_id,
                     metallic_roughness_id,
-                    resource_set: previous.resource_set,
+                    bind_group: previous.bind_group,
                 });
                 continue;
             }
@@ -603,7 +604,7 @@ impl SceneResources {
             match create_draw_resource_set(
                 device,
                 DrawBindingResources {
-                    resource_set_layout,
+                    bind_group_layout,
                     mesh,
                     draw_buffer: self.draw_buffer,
                     draw_index: index,
@@ -619,8 +620,8 @@ impl SceneResources {
                     frame_buffer: self.frame_buffer,
                 },
             ) {
-                Ok(resource_set) => {
-                    created.push(resource_set);
+                Ok(bind_group) => {
+                    created.push(bind_group);
                     next.push(DrawResources {
                         draw_index: index,
                         instance_count,
@@ -630,12 +631,12 @@ impl SceneResources {
                         normal_id,
                         occlusion_id,
                         metallic_roughness_id,
-                        resource_set,
+                        bind_group,
                     });
                 }
                 Err(error) => {
-                    for resource_set in created {
-                        device.destroy_resource_set(resource_set)?;
+                    for bind_group in created {
+                        device.destroy_bind_group(bind_group)?;
                     }
                     return Err(error);
                 }
@@ -646,9 +647,9 @@ impl SceneResources {
             if !self
                 .draw_resources
                 .iter()
-                .any(|current| current.resource_set == previous.resource_set)
+                .any(|current| current.bind_group == previous.bind_group)
             {
-                device.destroy_resource_set(previous.resource_set)?;
+                device.destroy_bind_group(previous.bind_group)?;
             }
         }
         Ok(())
@@ -657,7 +658,7 @@ impl SceneResources {
     pub(super) fn append_steps(
         &self,
         renderer: &RendererResources,
-        steps: &mut Vec<RenderStepDescriptor>,
+        steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
         for (batch_index, batch) in self.batches.iter().enumerate() {
             let index = batch.first_instance;
@@ -683,32 +684,30 @@ impl SceneResources {
                     .opaque_pipeline
                     .ok_or_else(|| anyhow!("GPUI 3D opaque pipeline is unavailable"))?
             };
-            steps.push(RenderStepDescriptor::DrawIndexed(
-                DrawIndexedStepDescriptor {
-                    pipeline,
-                    resource_sets: resource_set_list([draw_resources.resource_set]),
-                    index_buffer: IndexBufferBinding {
-                        buffer: mesh.indices,
-                        format: IndexFormat::Uint32,
-                        offset: 0,
-                    },
-                    index_count: draw.part.index_count(),
-                    first_index: draw.part.first_index(),
-                    base_vertex: 0,
-                    instance_count: u32::try_from(batch.instance_count)
-                        .context("GPUI 3D instance count exceeds u32")?,
-                    first_instance: u32::try_from(batch.first_instance)
-                        .context("GPUI 3D first instance exceeds u32")?,
-                    scissor: None,
+            steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
+                pipeline,
+                bind_groups: bind_group_list([draw_resources.bind_group]),
+                index_buffer: IndexBufferBinding {
+                    buffer: mesh.indices,
+                    format: IndexFormat::Uint32,
+                    offset: 0,
                 },
-            ));
+                index_count: draw.part.index_count(),
+                first_index: draw.part.first_index(),
+                base_vertex: 0,
+                instance_count: u32::try_from(batch.instance_count)
+                    .context("GPUI 3D instance count exceeds u32")?,
+                first_instance: u32::try_from(batch.first_instance)
+                    .context("GPUI 3D first instance exceeds u32")?,
+                scissor: None,
+            }));
         }
         Ok(())
     }
 
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         for draw in self.draw_resources.drain(..) {
-            device.destroy_resource_set(draw.resource_set)?;
+            device.destroy_bind_group(draw.bind_group)?;
         }
         for (_, mesh) in self.meshes.drain() {
             destroy_mesh(device, mesh)?;

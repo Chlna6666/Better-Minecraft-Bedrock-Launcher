@@ -6,18 +6,18 @@ use super::{
 use crate::TextureSampling;
 use anyhow::anyhow;
 use gfx_core::{
-    AddressMode, BackendKind, BlendMode, CompareFunction, DepthState, ExtensionDevice, Extent2d,
-    FilterMode, Format, MemoryLocation, PipelineLayoutDescriptor, PipelineLayoutId,
-    PrimitiveTopology, RenderPipelineDescriptor, RenderPipelineId, ResourceBindingType,
-    ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerDescriptor,
-    SamplerId, ShaderBinary, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages,
-    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
-    TextureViewId,
+    AddressMode, BackendKind, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutId,
+    BindingType, BlendMode, CompareFunction, DepthState, Extent2d, FilterMode, Format,
+    MemoryLocation, PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology,
+    RenderPipelineDescriptor, RenderPipelineId, SamplerDescriptor, SamplerId, ShaderBinary,
+    ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, TextureDescriptor,
+    TextureDimension, TextureId, TextureUsage, TextureViewDescriptor, TextureViewId,
 };
+use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 
 pub(super) struct RendererResources {
-    resource_set_layout: Option<ResourceSetLayoutId>,
+    bind_group_layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
     vertex_shader: Option<ShaderModuleId>,
     fragment_shader: Option<ShaderModuleId>,
@@ -36,7 +36,7 @@ impl RendererResources {
         let vertex_binary = embedded_shader(context, ShaderStage::Vertex, "vs_main")?;
         let fragment_binary = embedded_shader(context, ShaderStage::Fragment, "fs_main")?;
         let mut resources = Self {
-            resource_set_layout: None,
+            bind_group_layout: None,
             pipeline_layout: None,
             vertex_shader: None,
             fragment_shader: None,
@@ -47,72 +47,71 @@ impl RendererResources {
             samplers: [None; 4],
         };
         let result = (|| {
-            resources.resource_set_layout = Some(device.create_resource_set_layout(
-                &ResourceSetLayoutDescriptor {
+            resources.bind_group_layout =
+                Some(device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d scene-view resource-set layout".into()),
                     entries: vec![
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: VERTEX_BINDING,
-                            binding_type: ResourceBindingType::StorageBuffer,
+                            binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::VERTEX,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: DRAW_BINDING,
-                            binding_type: ResourceBindingType::StorageBuffer,
+                            binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: LIGHT_BINDING,
-                            binding_type: ResourceBindingType::StorageBuffer,
+                            binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: ALBEDO_BINDING,
-                            binding_type: ResourceBindingType::SampledTexture,
+                            binding_type: BindingType::SampledTexture,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: SAMPLER_BINDING,
-                            binding_type: ResourceBindingType::Sampler,
+                            binding_type: BindingType::Sampler,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: NORMAL_MAP_BINDING,
-                            binding_type: ResourceBindingType::SampledTexture,
+                            binding_type: BindingType::SampledTexture,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: OCCLUSION_BINDING,
-                            binding_type: ResourceBindingType::SampledTexture,
+                            binding_type: BindingType::SampledTexture,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: METALLIC_ROUGHNESS_BINDING,
-                            binding_type: ResourceBindingType::SampledTexture,
+                            binding_type: BindingType::SampledTexture,
                             stages: ShaderStages::FRAGMENT,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: TANGENT_BINDING,
-                            binding_type: ResourceBindingType::StorageBuffer,
+                            binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::VERTEX,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: INSTANCE_BINDING,
-                            binding_type: ResourceBindingType::StorageBuffer,
+                            binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::VERTEX,
                         },
-                        ResourceSetLayoutEntry {
+                        BindGroupLayoutEntry {
                             binding: FRAME_BINDING,
-                            binding_type: ResourceBindingType::UniformBuffer,
+                            binding_type: BindingType::UniformBuffer,
                             stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                         },
                     ],
-                },
-            )?);
+                })?);
             resources.pipeline_layout =
                 Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("gpui-3d pipeline layout".into()),
-                    resource_set_layouts: vec![resources.resource_set_layout()?],
+                    bind_group_layouts: vec![resources.bind_group_layout()?],
                 })?);
             resources.vertex_shader =
                 Some(device.create_shader_module(&ShaderModuleDescriptor {
@@ -155,8 +154,8 @@ impl RendererResources {
         Ok(resources)
     }
 
-    pub(super) fn resource_set_layout(&self) -> gpui::Result<ResourceSetLayoutId> {
-        self.resource_set_layout
+    pub(super) fn bind_group_layout(&self) -> gpui::Result<BindGroupLayoutId> {
+        self.bind_group_layout
             .ok_or_else(|| anyhow!("GPUI 3D resource-set layout is unavailable"))
     }
 
@@ -248,8 +247,8 @@ impl RendererResources {
         if let Some(layout) = self.pipeline_layout.take() {
             device.destroy_pipeline_layout(layout)?;
         }
-        if let Some(layout) = self.resource_set_layout.take() {
-            device.destroy_resource_set_layout(layout)?;
+        if let Some(layout) = self.bind_group_layout.take() {
+            device.destroy_bind_group_layout(layout)?;
         }
         Ok(())
     }

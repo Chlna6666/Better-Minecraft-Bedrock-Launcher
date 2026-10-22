@@ -332,7 +332,7 @@ pub struct RendererStatistics {
     /// Live GPU texture resources.
     pub live_textures: usize,
     /// Cached per-batch resource sets reused across frames.
-    pub resource_set_count: usize,
+    pub bind_group_count: usize,
     /// GPU bytes owned by renderer buffers.
     pub resident_buffer_bytes: u64,
     /// GPU bytes owned by renderer textures, including shadow and scene targets.

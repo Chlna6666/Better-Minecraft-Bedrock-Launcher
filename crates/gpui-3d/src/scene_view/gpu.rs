@@ -10,13 +10,14 @@ use crate::{
 };
 use anyhow::{Context as _, anyhow};
 use gfx_core::{
-    BackendKind, BindingResource, BufferBinding, BufferDescriptor, BufferId, BufferUsage,
-    ExtensionDevice, Extent2d, Format, MemoryLocation, Origin2d, ResourceBinding,
-    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutId, SamplerBinding, SamplerId,
-    TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureId,
-    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+    BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId, BindGroupLayoutId,
+    BindingResource, BufferBinding, BufferDescriptor, BufferId, BufferUsage, Extent2d, Format,
+    MemoryLocation, Origin2d, SamplerBinding, SamplerId, TextureBinding, TextureDataLayout,
+    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
+    TextureViewId, TextureWrite, TextureWriteDescriptor,
 };
 use gpui::Bounds;
+use gpui::ExtensionDevice;
 use std::convert::TryFrom;
 
 const ALPHA_MODE_OPAQUE: u32 = 0;
@@ -48,7 +49,7 @@ pub(super) struct TextureResources {
 }
 
 pub(super) struct DrawBindingResources<'a> {
-    pub(super) resource_set_layout: ResourceSetLayoutId,
+    pub(super) bind_group_layout: BindGroupLayoutId,
     pub(super) mesh: &'a MeshResources,
     pub(super) draw_buffer: BufferId,
     pub(super) draw_index: usize,
@@ -339,9 +340,9 @@ fn write_vertex(bytes: &mut Vec<u8>, vertex: &Vertex, barycentrics: [f32; 3], ed
 pub(super) fn create_draw_resource_set(
     device: &mut dyn ExtensionDevice,
     bindings: DrawBindingResources<'_>,
-) -> gpui::Result<ResourceSetId> {
+) -> gpui::Result<BindGroupId> {
     let DrawBindingResources {
-        resource_set_layout,
+        bind_group_layout,
         mesh,
         draw_buffer,
         draw_index,
@@ -371,11 +372,11 @@ pub(super) fn create_draw_resource_set(
     } else {
         (draw_buffer, draw_offset, 16)
     };
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
+    Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some("gpui-3d mesh draw resource set".into()),
-        layout: resource_set_layout,
-        bindings: vec![
-            ResourceBinding {
+        layout: bind_group_layout,
+        entries: vec![
+            BindGroupEntry {
                 binding: VERTEX_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: mesh.vertices,
@@ -385,7 +386,7 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(PACKED_VERTEX_STRIDE),
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: DRAW_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: draw_buffer,
@@ -394,7 +395,7 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(DRAW_PARAMS_STRIDE),
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: LIGHT_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: light_buffer,
@@ -404,37 +405,37 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(LIGHT_STRIDE),
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: ALBEDO_BINDING,
                 resource: BindingResource::Texture(TextureBinding {
                     texture_view: albedo_view,
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: SAMPLER_BINDING,
                 resource: BindingResource::Sampler(SamplerBinding {
                     sampler: material_sampler,
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: NORMAL_MAP_BINDING,
                 resource: BindingResource::Texture(TextureBinding {
                     texture_view: normal_texture_view,
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: OCCLUSION_BINDING,
                 resource: BindingResource::Texture(TextureBinding {
                     texture_view: occlusion_view,
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: METALLIC_ROUGHNESS_BINDING,
                 resource: BindingResource::Texture(TextureBinding {
                     texture_view: metallic_roughness_view,
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: TANGENT_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: tangent_buffer,
@@ -443,7 +444,7 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(16),
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: INSTANCE_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: instance_buffer,
@@ -453,7 +454,7 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(INSTANCE_STRIDE),
                 }),
             },
-            ResourceBinding {
+            BindGroupEntry {
                 binding: FRAME_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: frame_buffer,

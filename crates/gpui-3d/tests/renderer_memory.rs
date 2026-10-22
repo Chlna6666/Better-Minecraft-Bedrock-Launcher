@@ -206,7 +206,7 @@ fn asset_cycling_stays_bounded_and_aggressive_trim_reclaims_everything() {
     let trimmed = renderer.statistics();
     assert_eq!(trimmed.live_meshes, 0);
     assert_eq!(trimmed.live_textures, 0);
-    assert_eq!(trimmed.resource_set_count, 0);
+    assert_eq!(trimmed.bind_group_count, 0);
     assert!(trimmed.evictions >= 8);
     assert!(trimmed.peak_resident_bytes >= trimmed.resident_buffer_bytes);
     renderer.destroy(&mut device).expect("destroy renderer");
@@ -314,7 +314,7 @@ fn resize_stress_keeps_caches_warm_and_targets_correct() {
         let statistics = renderer.statistics();
         assert_eq!(statistics.target_width, width);
         assert_eq!(statistics.target_height, height);
-        assert_eq!(statistics.resource_set_count, 3);
+        assert_eq!(statistics.bind_group_count, 3);
     }
     renderer.destroy(&mut device).expect("destroy renderer");
 }
@@ -563,7 +563,7 @@ fn long_session_scene_cycling_stays_bounded() {
         let stats = renderer.statistics();
         peak_resident =
             peak_resident.max(stats.resident_buffer_bytes + stats.resident_texture_bytes);
-        peak_resource_sets = peak_resource_sets.max(stats.resource_set_count);
+        peak_resource_sets = peak_resource_sets.max(stats.bind_group_count);
         assert!(
             stats.resident_buffer_bytes + stats.resident_texture_bytes
                 <= overhead + 4 * 1024 * 1024,
@@ -588,7 +588,7 @@ fn long_session_scene_cycling_stays_bounded() {
     let trimmed = renderer.statistics();
     assert_eq!(trimmed.live_meshes, 0);
     assert_eq!(trimmed.live_textures, 0);
-    assert_eq!(trimmed.resource_set_count, 0);
+    assert_eq!(trimmed.bind_group_count, 0);
     renderer.destroy(&mut device).expect("destroy renderer");
 }
 
