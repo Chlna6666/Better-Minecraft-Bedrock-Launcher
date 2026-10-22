@@ -2,7 +2,9 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use image::{ImageReader, Limits, RgbaImage};
+use image::{ImageReader, Limits};
+#[cfg(test)]
+use image::RgbaImage;
 
 use crate::{
     Result,
@@ -14,9 +16,25 @@ use crate::{
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 
-pub(super) fn load_textures(model: &ObjModel) -> Result<Vec<Option<Arc<RgbaImage>>>> {
+/// CPU-side RGBA source that can be borrowed by both GPUI-3D and the voxelizer.
+/// Decoded pixels are held in a single Arc allocation and are never decoded on
+/// an animation frame or individually for each material slot.
+#[derive(Clone, Debug)]
+pub struct SourceTexture {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Arc<[u8]>,
+    pub has_alpha: bool,
+}
+
+/// Loads each distinct local OBJ texture only once, with bounded memory.
+///
+/// # Errors
+/// Returns an error when files cannot be read, decoded images are too large,
+/// or the combined decoded texture budget is exceeded.
+pub fn load_obj_textures(model: &ObjModel) -> Result<Vec<Option<Arc<SourceTexture>>>> {
     let mut total_bytes = 0_u64;
-    let mut decoded = HashMap::<PathBuf, Arc<RgbaImage>>::new();
+    let mut decoded = HashMap::<PathBuf, Arc<SourceTexture>>::new();
     model
         .materials
         .iter()
@@ -54,7 +72,14 @@ pub(super) fn load_textures(model: &ObjModel) -> Result<Vec<Option<Arc<RgbaImage
             if total_bytes > MAX_DECODED_BYTES {
                 return Err(validation("OBJ textures exceed 256 MiB decoded budget"));
             }
-            let texture = Arc::new(image.to_rgba8());
+            let rgba = image.to_rgba8();
+            let has_alpha = rgba.pixels().any(|p| p.0[3] != 255);
+            let texture = Arc::new(SourceTexture {
+                width: rgba.width(),
+                height: rgba.height(),
+                pixels: Arc::from(rgba.into_raw()),
+                has_alpha,
+            });
             decoded.insert(path.clone(), texture.clone());
             Ok(Some(texture))
         })
@@ -62,9 +87,14 @@ pub(super) fn load_textures(model: &ObjModel) -> Result<Vec<Option<Arc<RgbaImage
 }
 
 /// Bilinear sample with repeating U/V and OBJ's bottom-up V coordinates.
-pub(super) fn sample(texture: &RgbaImage, uv: [f32; 2]) -> [u8; 4] {
-    let width = texture.width();
-    let height = texture.height();
+pub(super) fn sample(texture: &SourceTexture, uv: [f32; 2]) -> [u8; 4] {
+    let width = texture.width;
+    let height = texture.height;
+    let texel = |x: u32, y: u32| -> [u8; 4] {
+        let offset = ((y * width + x) * 4) as usize;
+        let data = &texture.pixels[offset..offset + 4];
+        [data[0], data[1], data[2], data[3]]
+    };
     let u = uv[0].rem_euclid(1.0) * width as f32 - 0.5;
     let v = (1.0 - uv[1]).rem_euclid(1.0) * height as f32 - 0.5;
     let x0 = u.floor();
@@ -77,10 +107,10 @@ pub(super) fn sample(texture: &RgbaImage, uv: [f32; 2]) -> [u8; 4] {
     let y0 = wrap(y0, height);
     let y1 = (y0 + 1) % height;
     let corners = [
-        texture.get_pixel(x0, y0).0,
-        texture.get_pixel(x1, y0).0,
-        texture.get_pixel(x0, y1).0,
-        texture.get_pixel(x1, y1).0,
+        texel(x0, y0),
+        texel(x1, y0),
+        texel(x0, y1),
+        texel(x1, y1),
     ];
     let sample_channel = |channel: usize| {
         let top = f32::from(corners[0][channel]) * (1.0 - tx) + f32::from(corners[1][channel]) * tx;
@@ -113,6 +143,15 @@ mod tests {
     use super::*;
     use crate::obj::ObjMaterial;
 
+    fn shared_texture(texture: RgbaImage) -> SourceTexture {
+        SourceTexture {
+            width: texture.width(),
+            height: texture.height(),
+            has_alpha: texture.pixels().any(|p| p.0[3] != 255),
+            pixels: Arc::from(texture.into_raw()),
+        }
+    }
+
     #[test]
     fn uv_sampler_repeats_and_flips_v() {
         let texture = RgbaImage::from_raw(
@@ -124,6 +163,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let texture = shared_texture(texture);
         assert_eq!(sample(&texture, [0.25, 0.75]), [255, 0, 0, 255]);
         assert_eq!(sample(&texture, [1.25, 0.75]), [255, 0, 0, 255]);
         assert_eq!(sample(&texture, [0.25, 0.25]), [0, 0, 255, 255]);
@@ -134,14 +174,14 @@ mod tests {
         let texture =
             RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]).expect("texture");
 
-        assert_eq!(sample(&texture, [0.5, 0.5]), [188, 188, 188, 255]);
+        assert_eq!(sample(&shared_texture(texture), [0.5, 0.5]), [188, 188, 188, 255]);
     }
 
     #[test]
     fn uv_sampler_premultiplies_transparent_texels_before_filtering() {
         let texture = RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 0, 0]).expect("texture");
 
-        assert_eq!(sample(&texture, [0.5, 0.5]), [255, 0, 0, 128]);
+        assert_eq!(sample(&shared_texture(texture), [0.5, 0.5]), [255, 0, 0, 128]);
     }
 
     #[test]
@@ -163,7 +203,7 @@ mod tests {
             triangles: Vec::new(),
             materials: vec![material.clone(), material],
         };
-        let textures = load_textures(&model).expect("textures");
+        let textures = load_obj_textures(&model).expect("textures");
         assert!(Arc::ptr_eq(
             textures[0].as_ref().expect("first"),
             textures[1].as_ref().expect("second")

@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use super::{ObjTriangle, ObjVoxelOptions, closest, cross, dot, subtract};
 use crate::block_image::{distance_squared, linear_srgb, oklab, srgb_linear};
-use crate::obj_texture::sample;
-use image::RgbaImage;
+use crate::obj_texture::{SourceTexture, sample};
 
 /// The closest eligible surface's palette index and distance from the cell center.
 pub(super) struct SurfaceSample {
@@ -25,7 +24,7 @@ pub(super) fn rasterize_triangle(
     opaque_candidate_indices: &[usize],
     diffuse: [u8; 3],
     opacity: f32,
-    texture: Option<&RgbaImage>,
+    texture: Option<&SourceTexture>,
     options: ObjVoxelOptions,
 ) {
     if texture.is_none() && opacity * 255.0 < f32::from(options.alpha_threshold) {

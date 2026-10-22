@@ -15,7 +15,11 @@ pub use block_image::{
     flat_block_plan_with_progress,
 };
 pub use obj::{ObjMaterial, ObjModel, ObjTriangle, ObjVertex, load_obj_model};
-pub use obj_voxel::{ObjFill, ObjVoxelOptions, voxelize_obj, voxelize_obj_with_progress};
+pub use obj_texture::{SourceTexture, load_obj_textures};
+pub use obj_voxel::{
+    ObjFill, ObjVoxelOptions, voxelize_obj, voxelize_obj_with_progress,
+    voxelize_obj_with_textures_and_progress,
+};
 pub use palette::default_block_candidates;
 pub use relief::{
     MAX_RELIEF_BLOCK_VOLUME, ReliefImageFill, ReliefImageOptions, relief_block_plan_with_progress,

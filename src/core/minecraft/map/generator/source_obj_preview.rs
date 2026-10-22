@@ -2,56 +2,22 @@
 //! This is the actual triangulated OBJ geometry (not Minecraft voxels). MTL diffuse
 //! colors and alpha are retained; texture sampling will be supported separately.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use image::{ImageReader, Limits};
-
-use bedrock_voxel::ObjModel;
+use bedrock_voxel::{ObjModel, SourceTexture, load_obj_textures};
 use gpui_3d::{
-    AlphaMode, Camera, Material, Mesh, MeshPart, Node, ProjectionRegion, Scene, SceneView,
+    AlphaMode, Camera, ImportedScene, Material, Mesh, MeshPart, Node, ProjectionRegion, Scene, SceneView,
     ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
 };
 
 /// Limit CPU/GPU retention while preserving a deterministic overview of huge models.
 const MAX_PREVIEW_TRIANGLES: usize = 80_000;
-const MAX_PREVIEW_TEXTURE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_TEXTURE_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
-fn preview_texture(
-    path: &PathBuf,
-    used_bytes: &mut u64,
-) -> Result<(Arc<TextureAsset>, bool), String> {
-    if path.metadata().map_err(|error| error.to_string())?.len() > MAX_TEXTURE_FILE_BYTES {
-        return Err("原始 OBJ 纹理文件超过 64 MiB 上限".to_owned());
-    }
-    let mut reader = ImageReader::open(path).map_err(|error| error.to_string())?;
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(MAX_PREVIEW_TEXTURE_BYTES);
-    reader.limits(limits);
-    let image = reader.decode().map_err(|error| error.to_string())?;
-    let bytes = u64::from(image.width())
-        .checked_mul(u64::from(image.height()))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "原始 OBJ 纹理尺寸溢出".to_owned())?;
-    *used_bytes = used_bytes.checked_add(bytes)
-        .ok_or_else(|| "原始 OBJ 纹理显存预算溢出".to_owned())?;
-    if *used_bytes > MAX_PREVIEW_TEXTURE_BYTES {
-        return Err("原始 OBJ 纹理总量超过 128 MiB 预览上限".to_owned());
-    }
-    let rgba = image.to_rgba8();
-    let has_alpha = rgba.pixels().any(|pixel| pixel.0[3] != 255);
-    let asset = TextureAsset::rgba8(
-        rgba.width(), rgba.height(), Arc::<[u8]>::from(rgba.into_raw()),
-    ).map_err(|error| error.to_string())?;
-    Ok((Arc::new(asset), has_alpha))
-}
-
-
 #[derive(Clone, Debug)]
 pub struct ObjSourcePreview {
     pub scene_view: Arc<SceneView>,
+    /// The exact GPUI-3D source assets backing the rendered preview.
+    /// Retained by Arc; no second mesh or texture decode is necessary.
+    pub imported_scene: Arc<ImportedScene>,
     pub total_triangles: usize,
     pub displayed_triangles: usize,
     /// Materials that actually use a decoded MTL map_Kd image.
@@ -61,6 +27,19 @@ pub struct ObjSourcePreview {
 /// Builds an immutable, centered source mesh, on the TaskManager CPU worker.
 /// This intentionally does not open a world or create GPUI-owned futures.
 pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview>, String> {
+    let textures = load_obj_textures(model).map_err(|error| error.to_string())?;
+    build_obj_source_preview_with_textures(model, &textures)
+}
+
+/// Uses exactly the same decoded MTL pixels as the voxelizer. The texture data
+/// are shared by Arc, so this only creates lightweight GPU asset handles.
+pub fn build_obj_source_preview_with_textures(
+    model: &ObjModel,
+    decoded_textures: &[Option<Arc<SourceTexture>>],
+) -> Result<Arc<ObjSourcePreview>, String> {
+    if decoded_textures.len() != model.materials.len() {
+        return Err("OBJ texture table has incorrect material count".to_owned());
+    }
     let total_triangles = model.triangles.len();
     if total_triangles == 0 {
         return Err("OBJ 没有可显示的三角形".to_owned());
@@ -102,8 +81,7 @@ pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview
     // its triangles preserve diffuse colors as vertex attributes.
     let mut textures = Vec::<Arc<TextureAsset>>::new();
     let mut textured_materials = 0_usize;
-    let mut texture_by_path = HashMap::<PathBuf, (Arc<TextureAsset>, bool)>::new();
-    let mut texture_budget = 0_u64;
+    let mut texture_by_source = HashMap::<usize, Arc<TextureAsset>>::new();
     let mut materials = Vec::<Arc<Material>>::with_capacity(groups.len());
     for (slot, triangles) in groups.into_iter().enumerate() {
         let source_material = model.materials.get(slot);
@@ -119,18 +97,23 @@ pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview
                 [0.79, 0.81, 0.86]
             });
             opacity = source.opacity;
-            if let Some(path) = source.diffuse_texture.as_ref() {
-                let (texture, has_alpha) = if let Some(entry) = texture_by_path.get(path) {
-                    entry.clone()
+            if let Some(decoded) = decoded_textures.get(slot).and_then(Option::as_ref) {
+                let key = Arc::as_ptr(decoded) as usize;
+                let texture = if let Some(asset) = texture_by_source.get(&key) {
+                    asset.clone()
                 } else {
-                    let entry = preview_texture(path, &mut texture_budget)?;
-                    texture_by_path.insert(path.clone(), entry.clone());
-                    textures.push(entry.0.clone());
-                    entry
+                    let asset = Arc::new(TextureAsset::rgba8(
+                        decoded.width,
+                        decoded.height,
+                        decoded.pixels.clone(),
+                    ).map_err(|error| error.to_string())?);
+                    textures.push(asset.clone());
+                    texture_by_source.insert(key, asset.clone());
+                    asset
                 };
                 material.albedo_texture = Some(texture.id());
                 textured_materials += 1;
-                if has_alpha {
+                if decoded.has_alpha {
                     material.alpha_mode = AlphaMode::Blend;
                 }
             }
@@ -193,21 +176,23 @@ pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview
     let mut scene = Scene::new();
     scene.insert(None, Node::new().with_mesh(mesh).with_materials(materials))
         .map_err(|error| error.to_string())?;
-    let view = SceneView::new(
-        Arc::new(scene),
+    let imported_scene = Arc::new(ImportedScene::from_parts(
+        scene, textures, displayed_triangles,
+    ));
+    let view = imported_scene.view(
         Camera::perspective(
             Vec3::new(2.5, 1.5, 2.6),
             Vec3::ZERO, Vec3::Y,
             50.0_f32.to_radians(), 0.05, 64.0,
         ),
     )
-    .with_textures(textures)
     .map_err(|error| error.to_string())?
     .with_projection_region(ProjectionRegion::VisibleContent)
     .with_projection_inset(4.0, 0.06)
     .map_err(|e| e.to_string())?;
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),
+        imported_scene,
         total_triangles,
         displayed_triangles,
         textured_materials,
@@ -249,6 +234,7 @@ mod tests {
         let preview = build_obj_source_preview(&model).expect("textured preview");
         assert_eq!(preview.textured_materials, 1);
         assert_eq!(preview.displayed_triangles, 1);
+        assert_eq!(preview.imported_scene.triangle_count, 1);
         std::fs::remove_file(&path).expect("clean fixture");
     }
 

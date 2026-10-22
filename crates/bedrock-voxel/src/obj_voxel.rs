@@ -1,6 +1,6 @@
 //! Pure OBJ geometry conversion into local Bedrock block placements.
 
-use std::collections::{HashMap, VecDeque};
+use std::{collections::{HashMap, VecDeque}, sync::Arc};
 
 use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
 use bedrock_world::surface::CancelFlag;
@@ -9,7 +9,7 @@ use crate::{
     FlatBlockCandidate, Result,
     block_image::{is_glass_candidate, linear_srgb, oklab, srgb_linear},
     obj::{ObjModel, ObjTriangle},
-    obj_texture::load_textures,
+    obj_texture::{SourceTexture, load_obj_textures},
     validation,
 };
 
@@ -95,8 +95,28 @@ pub fn voxelize_obj_with_progress(
     candidates: &[FlatBlockCandidate],
     options: ObjVoxelOptions,
     cancel: &CancelFlag,
+    progress: impl FnMut(usize, usize),
+) -> Result<BlockPlacementPlan> {
+    let textures = load_obj_textures(model)?;
+    voxelize_obj_with_textures_and_progress(model, &textures, candidates, options, cancel, progress)
+}
+
+/// Uses previously decoded MTL images shared with the GPUI-3D source preview.
+/// Call this when generating both views from the same source TaskManager job.
+///
+/// # Errors
+/// Returns the same geometry, palette and cancellation errors as the ordinary voxelizer.
+pub fn voxelize_obj_with_textures_and_progress(
+    model: &ObjModel,
+    textures: &[Option<Arc<SourceTexture>>],
+    candidates: &[FlatBlockCandidate],
+    options: ObjVoxelOptions,
+    cancel: &CancelFlag,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<BlockPlacementPlan> {
+    if textures.len() != model.materials.len() {
+        return Err(validation("OBJ texture table has incorrect material count"));
+    }
     if !(1..=384).contains(&options.longest_side_blocks) {
         return Err(validation("OBJ longest side must be 1..=384 blocks"));
     }
@@ -105,7 +125,6 @@ pub fn voxelize_obj_with_progress(
             "OBJ geometry and block candidates must be nonempty",
         ));
     }
-    let textures = load_textures(model)?;
     if cancel.is_cancelled() {
         return Err(validation("OBJ conversion cancelled"));
     }
@@ -177,7 +196,9 @@ pub fn voxelize_obj_with_progress(
             return Err(validation("OBJ conversion cancelled"));
         }
         let rgb = material_rgb(model, triangle)?;
-        let texture = triangle.material.and_then(|id| textures[id].as_deref());
+        let texture = triangle.material
+            .and_then(|id| textures.get(id))
+            .and_then(Option::as_deref);
         if texture.is_some() && triangle.vertices.iter().any(|vertex| vertex.uv.is_none()) {
             return Err(validation("textured OBJ face is missing UV coordinates"));
         }

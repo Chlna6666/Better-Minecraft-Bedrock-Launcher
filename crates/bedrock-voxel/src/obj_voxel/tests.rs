@@ -385,3 +385,37 @@ fn material_opacity_allows_glass_only_for_translucent_surfaces() {
             .all(|block| block.state.name != "minecraft:glass")
     );
 }
+
+#[test]
+fn predecoded_texture_survives_source_removal_and_is_reused_for_voxelization() {
+    let file = std::env::temp_dir().join(format!(
+        "bmcbl-shared-voxel-texture-{}.png",
+        std::process::id()
+    ));
+    image::RgbaImage::from_raw(1, 1, vec![220, 30, 40, 255])
+        .unwrap()
+        .save(&file)
+        .unwrap();
+    let mut model = cube();
+    model.materials[0].diffuse_texture = Some(file.clone());
+    model.triangles.iter_mut().for_each(|triangle| {
+        triangle.material = Some(0);
+        triangle.vertices.iter_mut().for_each(|vertex| {
+            vertex.uv = Some([0.5, 0.5]);
+        });
+    });
+    let decoded = crate::load_obj_textures(&model).unwrap();
+    assert_eq!(decoded[0].as_ref().unwrap().pixels.len(), 4);
+    std::fs::remove_file(&file).unwrap();
+
+    // No file I/O is permitted after the shared textures have been prepared.
+    let result = voxelize_obj_with_textures_and_progress(
+        &model,
+        &decoded,
+        &[candidate()],
+        ObjVoxelOptions { longest_side_blocks: 3, ..ObjVoxelOptions::default() },
+        &CancelFlag::new(),
+        |_, _| {},
+    ).unwrap();
+    assert!(!result.blocks().is_empty());
+}

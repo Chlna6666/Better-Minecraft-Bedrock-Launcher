@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use bedrock_voxel::{
-    ObjVoxelOptions, default_block_candidates, load_obj_model, voxelize_obj_with_progress,
+    ObjVoxelOptions, default_block_candidates, load_obj_model, load_obj_textures,
+    voxelize_obj_with_textures_and_progress,
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
@@ -102,7 +103,11 @@ async fn export_obj(
     cancel: &CancelFlag,
 ) -> Result<String, String> {
     let source = request.source;
-    let model = runtime::run_io_blocking(move || load_obj_model(&source)).await??;
+    let (model, decoded) = runtime::run_io_blocking(move || {
+        let model = load_obj_model(&source)?;
+        let decoded = load_obj_textures(&model).map_err(|error| error.to_string())?;
+        Ok::<_, String>((model, decoded))
+    }).await??;
     if cancel.is_cancelled() {
         return Err("OBJ 转换已取消".to_owned());
     }
@@ -117,8 +122,9 @@ async fn export_obj(
             return Err("没有可用的普通实心方块颜色".to_owned());
         }
         let mut previous = 0_usize;
-        let plan = voxelize_obj_with_progress(
+        let plan = voxelize_obj_with_textures_and_progress(
             &model,
+            &decoded,
             candidates,
             request.voxel,
             &worker_cancel,

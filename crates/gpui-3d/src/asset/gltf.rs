@@ -29,10 +29,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-const GLB_MAGIC: u32 = 0x4654_6C67;
-const GLB_VERSION: u32 = 2;
-const GLB_CHUNK_JSON: u32 = 0x4E4F_534A;
-const GLB_CHUNK_BIN: u32 = 0x004E_4942;
 const MAX_RECURSION_DEPTH: usize = 256;
 const MAX_ACCESSOR_ELEMENTS: usize = 16_000_000;
 const SUPPORTED_REQUIRED_EXTENSIONS: [&str; 2] = ["KHR_lights_punctual", "KHR_materials_unlit"];
@@ -103,18 +99,21 @@ impl<'a> Document<'a> {
         options: &'a GltfLoadOptions,
         base_dir: Option<&Path>,
     ) -> Result<Self, GltfError> {
-        let (json, glb_bin) = parse_container(bytes)?;
-        let json: Value = serde_json::from_slice(&json)
-            .map_err(|error| GltfError::Invalid(format!("JSON parse failed: {error}")))?;
-        if !json.is_object() {
-            return Err(GltfError::Invalid(
-                "root JSON value is not an object".into(),
-            ));
-        }
-        validate_asset(&json)?;
+        // gltf-rs owns format parsing and schema validation. Its GLB
+        // decoder also returns the binary chunk without a second custom GLB
+        // parser. Keep the existing GPUI-3D conversion, security limits,
+        // sparse accessor support, animation and texture semantics.
+        //
+        // Converting the typed document to Value is a transitional adapter:
+        // it avoids running two separate JSON parsers, but typed conversion
+        // should migrate directly to gltf-rs iterators in a future phase.
+        let parsed = ::gltf::Gltf::from_slice(bytes)
+            .map_err(|error| GltfError::Invalid(format!("glTF document: {error}")))?;
+        let json: Value = serde_json::to_value(parsed.document.as_json())
+            .map_err(|error| GltfError::Invalid(format!("glTF schema conversion: {error}")))?;
         let mut warnings = Vec::new();
         validate_extensions(&json, &mut warnings)?;
-        let buffers = load_buffers(&json, glb_bin.as_deref(), options, base_dir)?;
+        let buffers = load_buffers(&json, parsed.blob.as_deref(), options, base_dir)?;
         // External resource paths are resolved relative to the document directory only.
         let base_dir = base_dir.map(Path::to_path_buf);
         let mut document = Self {
@@ -1492,63 +1491,6 @@ fn default_material() -> Arc<Material> {
     )
 }
 
-fn parse_container(bytes: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), GltfError> {
-    if bytes.len() < 4 || read_u32(bytes, 0) != GLB_MAGIC {
-        return Ok((bytes.to_vec(), None));
-    }
-    if bytes.len() < 12 {
-        return Err(GltfError::Invalid("GLB header is truncated".into()));
-    }
-    let version = read_u32(bytes, 4);
-    if version != GLB_VERSION {
-        return Err(GltfError::Unsupported(format!("GLB version {version}")));
-    }
-    let declared_length = read_u32(bytes, 8) as usize;
-    if declared_length != bytes.len() {
-        return Err(GltfError::Invalid(format!(
-            "GLB length {declared_length} does not match the {} byte file",
-            bytes.len()
-        )));
-    }
-    let mut offset = 12_usize;
-    let mut json = None;
-    let mut bin = None;
-    while offset < bytes.len() {
-        if offset + 8 > bytes.len() {
-            return Err(GltfError::Invalid("GLB chunk header is truncated".into()));
-        }
-        let chunk_length = read_u32(bytes, offset) as usize;
-        let chunk_type = read_u32(bytes, offset + 4);
-        let data_start = offset + 8;
-        let data_end = data_start
-            .checked_add(chunk_length)
-            .ok_or_else(|| GltfError::Invalid("GLB chunk length overflows".into()))?;
-        let data = bytes
-            .get(data_start..data_end)
-            .ok_or_else(|| GltfError::Invalid("GLB chunk exceeds the file".into()))?;
-        match chunk_type {
-            GLB_CHUNK_JSON => json = Some(data.to_vec()),
-            GLB_CHUNK_BIN => bin = Some(data.to_vec()),
-            _ => {}
-        }
-        offset = data_end;
-    }
-    let json = json.ok_or_else(|| GltfError::Invalid("GLB has no JSON chunk".into()))?;
-    Ok((json, bin))
-}
-
-fn validate_asset(json: &Value) -> Result<(), GltfError> {
-    let version = json
-        .get("asset")
-        .and_then(|asset| asset.get("version"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| GltfError::Invalid("document has no asset.version".into()))?;
-    if !version.starts_with('2') {
-        return Err(GltfError::Unsupported(format!("glTF version {version}")));
-    }
-    Ok(())
-}
-
 fn validate_extensions(json: &Value, warnings: &mut Vec<String>) -> Result<(), GltfError> {
     if let Some(required) = json.get("extensionsRequired").and_then(Value::as_array) {
         for extension in required {
@@ -2040,11 +1982,3 @@ fn float_array(value: Option<&Value>, expected: usize) -> Option<Vec<f32>> {
         .collect()
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
