@@ -632,6 +632,102 @@ pub(super) fn settings_sub_numeric_row(
     )
 }
 
+/// Saved API credentials never enter the SettingsSnapshot or input widget.
+/// The editor is write-only: paste a new credential, Enter/blur to commit,
+/// or explicitly clear it. Avoid displaying saved tokens on screen.
+pub(super) fn settings_sub_api_key_row(
+    colors: &ThemeColors,
+    label: SharedString,
+    input: Option<&Entity<InputState>>,
+    configured: bool,
+    kind: &'static str,
+) -> Div {
+    let control: AnyElement = input.map_or_else(
+        || div().child(t!("LauncherSettings.download.key.placeholder")).into_any_element(),
+        |state| Input::new(state)
+            .appearance(false)
+            .bordered(false)
+            .focus_bordered(false)
+            .cleanable(false)
+            .w_full()
+            .h(px(30.))
+            .text_size(px(13.))
+            .into_any_element(),
+    );
+    let mut trailing = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(colors.text_secondary)
+                .child(if configured {
+                    t!("LauncherSettings.download.key.configured")
+                } else {
+                    t!("LauncherSettings.download.key.unset")
+                }),
+        );
+    if configured {
+        trailing = trailing.child(
+            div()
+                .id(SharedString::from(format!("settings-clear-{kind}-credential")))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(colors.text_primary)
+                .child(t!("LauncherSettings.download.key.clear"))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    persist_download_api_key(kind, String::new(), cx);
+                }),
+        );
+    }
+    settings_sub_row(
+        colors,
+        label,
+        div()
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .child(settings_control_box(colors, false, px(180.), control))
+            .child(trailing),
+    )
+}
+
+pub(crate) fn persist_download_api_key(kind: &'static str, secret: String, cx: &mut App) {
+    // Never put a credential into a toast, tracing span, or error string.
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            let configured = !secret.is_empty();
+            crate::config::config::update_config(|config| match kind {
+                "curseforge" => config.launcher.download.curseforge_api_key = secret,
+                "github" => config.launcher.download.github.api_token = secret,
+                _ => {}
+            })?;
+            Ok::<bool, std::io::Error>(configured)
+        }).await;
+        match result {
+            Ok(Ok(configured)) => {
+                let _ = cx.update(|cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _| {
+                        match kind {
+                            "curseforge" => state.download_curseforge_key_configured = configured,
+                            "github" => state.download_github_key_configured = configured,
+                            _ => {}
+                        }
+                    });
+                    if kind == "curseforge" {
+                        crate::ui::views::download::curseforge::on_api_source_changed(cx);
+                    }
+                });
+            }
+            _ => {
+                tracing::warn!("saving {kind} API credential failed (secret omitted)");
+                let _ = cx.update(|cx| toast::error(cx, t!("Settings.save_failed")));
+            }
+        }
+    }).detach();
+}
+
 pub(super) fn settings_sub_input_row(
     colors: &ThemeColors,
     label: SharedString,

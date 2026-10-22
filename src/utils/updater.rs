@@ -115,8 +115,7 @@ pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Va
 
     let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
 
-    let resp = client
-        .get(&url)
+    let resp = crate::github::api_request(&client, &url)
         .timeout(Duration::from_secs(15))
         .header("User-Agent", "BMCBL-Updater")
         .header("Accept", "application/vnd.github.v3+json")

@@ -250,7 +250,7 @@ pub enum GithubSource {
 }
 
 /// GitHub file-download acceleration settings.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct GithubConfig {
     /// Determines which mirror candidates are used for public GitHub files.
@@ -258,6 +258,21 @@ pub struct GithubConfig {
     /// Custom mirror URL or template. `{url}` receives the full source URL and
     /// `{route}` receives the path after `github.com/` when applicable.
     pub custom_mirror: String,
+    /// Optional personal access token for requests to api.github.com only.
+    #[serde(default)]
+    pub api_token: String,
+}
+
+// API credentials are persisted locally, but must not appear in diagnostic
+// dumps of the launcher configuration (including crash reports).
+impl std::fmt::Debug for GithubConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubConfig")
+            .field("source", &self.source)
+            .field("custom_mirror", &self.custom_mirror)
+            .field("api_token_configured", &!self.api_token.is_empty())
+            .finish()
+    }
 }
 
 impl Default for UpdateChannel {
@@ -277,7 +292,7 @@ impl FromStr for UpdateChannel {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct DownloadConfig {
     pub multi_thread: bool,
     pub max_threads: u32,
@@ -289,6 +304,24 @@ pub struct DownloadConfig {
     pub curseforge_api_source: String,
     #[serde(default)]
     pub curseforge_api_base: String,
+    /// Optional personal CurseForge API key; empty uses the built-in key.
+    #[serde(default)]
+    pub curseforge_api_key: String,
+}
+
+impl std::fmt::Debug for DownloadConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DownloadConfig")
+            .field("multi_thread", &self.multi_thread)
+            .field("max_threads", &self.max_threads)
+            .field("auto_thread_count", &self.auto_thread_count)
+            .field("proxy", &self.proxy)
+            .field("github", &self.github)
+            .field("curseforge_api_source", &self.curseforge_api_source)
+            .field("curseforge_api_base", &self.curseforge_api_base)
+            .field("curseforge_api_key_configured", &!self.curseforge_api_key.is_empty())
+            .finish()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -377,7 +410,7 @@ pub struct Launcher {
     /// Applied at startup; older settings files default to disabled.
     #[serde(default)]
     pub gpui_trace: bool,
-    /// UI frame pacing: auto (min of VSync and 120), custom, or unlimited.
+    /// UI pacing: auto (VSync with 120 cap), vsync (native refresh), custom, or unlimited.
     #[serde(default = "default_frame_rate_mode")]
     pub frame_rate_mode: String,
     /// Custom limit (1..=1000 FPS); used only in custom mode.

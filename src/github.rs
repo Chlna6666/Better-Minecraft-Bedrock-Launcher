@@ -11,6 +11,28 @@ const BUILT_IN_MIRRORS: &[&str] = &[
     "https://gitproxy.click/{url}",
 ];
 
+/// Adds a personal GitHub PAT only to the exact HTTPS GitHub API origin.
+/// Never attach credentials to public GitHub file mirrors or a custom mirror.
+pub(crate) fn api_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    let mut request = client.get(url);
+    let trusted = reqwest::Url::parse(url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("api.github.com")
+            && url.port_or_known_default() == Some(443)
+            && url.username().is_empty()
+            && url.password().is_none()
+    });
+    if trusted {
+        if let Ok(config) = crate::config::config::read_config() {
+            let token = config.launcher.download.github.api_token;
+            if !token.trim().is_empty() {
+                request = request.bearer_auth(token.trim());
+            }
+        }
+    }
+    request
+}
+
 /// Builds the configured candidates for a public GitHub file URL.
 ///
 /// Non-GitHub URLs and malformed URLs are returned unchanged. The original
@@ -111,6 +133,17 @@ mod tests {
         "https://github.com/LiteLDev/LeviLamina/releases/download/v1.0/file.zip";
 
     #[test]
+    fn personal_token_does_not_change_public_mirror_order() {
+        let config = GithubConfig {
+            api_token: "private-token-must-not-appear-in-url".into(),
+            ..GithubConfig::default()
+        };
+        for url in download_urls(RELEASE_URL, &config) {
+            assert!(!url.contains("private-token"));
+        }
+    }
+
+    #[test]
     fn auto_uses_bedrock_boot_mirrors_before_github() {
         let urls = download_urls(RELEASE_URL, &GithubConfig::default());
 
@@ -133,6 +166,7 @@ mod tests {
         let config = GithubConfig {
             source: GithubSource::Custom,
             custom_mirror: "https://mirror.example/{url}".to_string(),
+            api_token: String::new(),
         };
 
         assert_eq!(
@@ -149,6 +183,7 @@ mod tests {
         let config = GithubConfig {
             source: GithubSource::Custom,
             custom_mirror: "https://mirror.example/".to_string(),
+            api_token: String::new(),
         };
 
         assert_eq!(

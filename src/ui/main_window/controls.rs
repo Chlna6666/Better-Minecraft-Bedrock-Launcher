@@ -328,7 +328,7 @@ impl MainWindowView {
         self.settings_controls_initialized = true;
         self.ensure_settings_github_control(window, cx);
 
-        let (frame_input, base_input, http_input, socks_input, theme_input, local_input, network_input) = cx
+        let (frame_input, base_input, curseforge_key_input, github_key_input, http_input, socks_input, theme_input, local_input, network_input) = cx
             .update_global(
                 |s: &mut crate::ui::views::settings::state::SettingsPageState, cx| {
                     if s.frame_rate_limit_input.is_none() {
@@ -340,6 +340,23 @@ impl MainWindowView {
                             st
                         });
                         s.frame_rate_limit_input = Some(input);
+                    }
+                    for kind in ["curseforge", "github"] {
+                        let slot = if kind == "curseforge" {
+                            &mut s.download_curseforge_key_input
+                        } else {
+                            &mut s.download_github_key_input
+                        };
+                        if slot.is_none() {
+                            *slot = Some(cx.new(|cx| {
+                                let mut input = InputState::new(window, cx);
+                                input.set_placeholder(
+                                    SharedString::from("Paste API key / token"),
+                                    window, cx,
+                                );
+                                input
+                            }));
+                        }
                     }
                     if s.download_curseforge_api_base_input.is_none() {
                         let initial = s.download_curseforge_api_base.to_string();
@@ -442,6 +459,8 @@ impl MainWindowView {
                     (
                         s.frame_rate_limit_input.clone(),
                         s.download_curseforge_api_base_input.clone(),
+                        s.download_curseforge_key_input.clone(),
+                        s.download_github_key_input.clone(),
                         s.download_http_proxy_url_input.clone(),
                         s.download_socks_proxy_url_input.clone(),
                         s.theme_color_input.clone(),
@@ -493,6 +512,31 @@ impl MainWindowView {
                 },
             );
             self.settings_controls_subscriptions.push(sub);
+        }
+
+        for (kind, input) in [
+            ("curseforge", curseforge_key_input),
+            ("github", github_key_input),
+        ] {
+            if let Some(input) = input {
+                let sub = cx.subscribe(
+                    &input,
+                    move |_this, input: Entity<InputState>, event: &InputEvent, cx| {
+                        if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                            return;
+                        }
+                        let credential = input.read(cx).value().trim().to_string();
+                        if credential.is_empty() {
+                            return;
+                        }
+                        // Clear the editor before the value reaches persistent storage.
+                        // A configured key is never rehydrated into the UI.
+                        input.update(cx, |input, cx| input.set_text("", cx));
+                        crate::ui::views::settings::persist_download_api_key(kind, credential, cx);
+                    },
+                );
+                self.settings_controls_subscriptions.push(sub);
+            }
         }
 
         if let Some(input) = base_input {

@@ -31,18 +31,49 @@ pub struct CurseForgeClient {
     base_v1: String,
     base_v2: String,
     mirror_failover: bool,
+    api_key: String,
+    custom_endpoint: bool,
 }
 
 impl CurseForgeClient {
     pub fn new() -> Result<Self, String> {
         let client = build_http_client()?.clone();
         let (base_v1, base_v2, mirror_failover) = build_base_urls()?;
+        let auth_config = read_config()
+            .map_err(|error| format!("读取 CurseForge API Key 配置失败：{error}"))?;
+        let api_key = auth_config.launcher.download.curseforge_api_key;
+        let custom_endpoint = auth_config.launcher.download.curseforge_api_source == "custom";
         Ok(Self {
             client,
             base_v1,
             base_v2,
             mirror_failover,
+            api_key,
+            custom_endpoint,
         })
+    }
+
+    fn credential_for(&self, url: &Url) -> Option<&str> {
+        // Never send a personally supplied API key to third-party mirrors.
+        // A custom HTTPS endpoint is explicitly chosen by the user.
+        if url.scheme() != "https" {
+            return None;
+        }
+        let host = url.host_str()?;
+        if host == "api.curseforge.com" {
+            return Some(if self.api_key.trim().is_empty() {
+                API_KEY
+            } else {
+                self.api_key.trim()
+            });
+        }
+        if self.custom_endpoint && !self.api_key.trim().is_empty() {
+            return Some(self.api_key.trim());
+        }
+        if host == "mod.mcimirror.top" {
+            return Some(API_KEY);
+        }
+        None
     }
 
     // Mirror selection is an automatic two-source policy: preserve the selected
@@ -97,7 +128,9 @@ impl CurseForgeClient {
     where
         T: DeserializeOwned + Send + 'static,
     {
-        let cache_key = url.as_str().to_string();
+        // Keep cached results isolated when the user rotates an API key without
+        // placing raw credentials in cache paths, logs, or URLs.
+        let cache_key = format!("{}#auth={:016x}", url, auth_cache_tag(self.credential_for(&url)));
         let policy = cache::policy_for(&url);
         if let Some(body) = cache::load(&cache_key, policy.fresh_for).await {
             match serde_json::from_slice(&body) {
@@ -244,6 +277,9 @@ impl CurseForgeClient {
 
         for attempt in 0..max_attempts {
             let mut request = self.client.get(url.clone());
+            if let Some(key) = self.credential_for(&url) {
+                request = request.header("x-api-key", key);
+            }
             if mirror_request {
                 // The official fallback should not wait for three full 20s
                 // timeouts on an unreachable mirror.
@@ -486,23 +522,22 @@ pub struct SearchModsQuery {
 
 fn build_http_client() -> Result<&'static Client, String> {
     static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
-
     CLIENT
         .get_or_init(|| {
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                "x-api-key",
-                reqwest::header::HeaderValue::from_static(API_KEY),
-            );
-
             Client::builder()
-                .default_headers(headers)
                 .timeout(Duration::from_secs(20))
                 .build()
                 .map_err(|error| error.to_string())
         })
         .as_ref()
         .map_err(Clone::clone)
+}
+
+fn auth_cache_tag(key: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hash);
+    hash.finish()
 }
 
 fn should_retry_status(status: reqwest::StatusCode) -> bool {
@@ -698,6 +733,12 @@ mod api_source_tests {
             assert!(!should_fallback_status(status), "{status}");
             assert!(!should_open_mirror_circuit(status), "{status}");
         }
+    }
+
+    #[test]
+    fn api_auth_cache_tags_distinguish_keys() {
+        assert_ne!(super::auth_cache_tag(Some("one")), super::auth_cache_tag(Some("two")));
+        assert_ne!(super::auth_cache_tag(None), super::auth_cache_tag(Some("one")));
     }
 
     #[test]

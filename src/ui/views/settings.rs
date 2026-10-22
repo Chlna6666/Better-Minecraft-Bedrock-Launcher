@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 mod about;
 mod common;
+pub(crate) use common::persist_download_api_key;
 mod content;
 mod customization;
 mod game;

@@ -447,3 +447,32 @@ fn telemetry_defaults_and_resolvers() {
         "custom_key_123"
     );
 }
+
+#[test]
+fn api_credentials_roundtrip_without_debug_exposure() {
+    let mut config = super::config::get_default_config();
+    assert!(config.launcher.download.github.api_token.is_empty());
+    assert!(config.launcher.download.curseforge_api_key.is_empty());
+    config.launcher.download.github.api_token = "github-private-test-token".into();
+    config.launcher.download.curseforge_api_key = "curseforge-private-test-key".into();
+    config.launcher.frame_rate_mode = "vsync".into();
+    let saved = toml::to_string(&config).expect("API credentials must serialize");
+    let restored: super::config::Config = toml::from_str(&saved).expect("settings parse");
+    assert_eq!(restored.launcher.download.github.api_token, "github-private-test-token");
+    assert_eq!(restored.launcher.download.curseforge_api_key, "curseforge-private-test-key");
+    assert_eq!(restored.launcher.frame_rate_mode, "vsync");
+
+    let rendered = format!("{:?}", restored.launcher.download);
+    assert!(!rendered.contains("github-private-test-token"));
+    assert!(!rendered.contains("curseforge-private-test-key"));
+    assert!(rendered.contains("api_token_configured"));
+
+    // Old TOML without either credential must remain valid.
+    let legacy = saved
+        .replace("api_token = \"github-private-test-token\"\n", "")
+        .replace("curseforge_api_key = \"curseforge-private-test-key\"\n", "");
+    let old: super::config::Config = toml::from_str(&legacy).unwrap();
+    assert!(old.launcher.download.github.api_token.is_empty());
+    assert!(old.launcher.download.curseforge_api_key.is_empty());
+}
+

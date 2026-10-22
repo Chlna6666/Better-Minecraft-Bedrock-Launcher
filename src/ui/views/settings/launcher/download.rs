@@ -6,7 +6,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use super::super::common::{
-    settings_card, settings_card_header, settings_sub_input_row, snapshot_from_state,
+    settings_card, settings_card_header, settings_sub_api_key_row, settings_sub_input_row, snapshot_from_state,
     spawn_persist_settings,
 };
 use super::super::rows::setting_dropdown_row;
@@ -92,6 +92,13 @@ fn launcher_github_source_row(
                 "https://mirror.example/{url}",
             ))
         })
+        .child(settings_sub_api_key_row(
+            colors,
+            t!("LauncherSettings.download.github_api_token"),
+            state.download_github_key_input.as_ref(),
+            state.download_github_key_configured,
+            "github",
+        ))
 }
 
 fn download_section_title(colors: &ThemeColors, _i18n: &I18n) -> impl IntoElement {
@@ -330,4 +337,11 @@ fn launcher_curseforge_source_row(
                 ))
             },
         )
+        .child(settings_sub_api_key_row(
+            colors,
+            t!("LauncherSettings.download.curseforge_api_key"),
+            state.download_curseforge_key_input.as_ref(),
+            state.download_curseforge_key_configured,
+            "curseforge",
+        ))
 }

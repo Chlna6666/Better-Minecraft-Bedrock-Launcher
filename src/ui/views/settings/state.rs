@@ -116,8 +116,13 @@ pub struct SettingsPageState {
     pub download_proxy_type: SharedString,
     pub download_github_source: SharedString,
     pub download_github_custom_mirror: SharedString,
+    /// Presence only: never mirror saved secret material into UI state.
+    pub download_github_key_configured: bool,
+    pub download_github_key_input: Option<Entity<InputState>>,
     pub download_curseforge_api_source: SharedString,
     pub download_curseforge_api_base: SharedString,
+    pub download_curseforge_key_configured: bool,
+    pub download_curseforge_key_input: Option<Entity<InputState>>,
     pub download_http_proxy_url: SharedString,
     pub download_socks_proxy_url: SharedString,
     pub download_curseforge_api_base_input: Option<Entity<InputState>>,
@@ -268,8 +273,12 @@ impl SettingsPageState {
             download_proxy_type: SharedString::from(""),
             download_github_source: SharedString::from(""),
             download_github_custom_mirror: SharedString::from(""),
+            download_github_key_configured: false,
+            download_github_key_input: None,
             download_curseforge_api_source: SharedString::from(""),
             download_curseforge_api_base: SharedString::from(""),
+            download_curseforge_key_configured: false,
+            download_curseforge_key_input: None,
             download_http_proxy_url: SharedString::from(""),
             download_socks_proxy_url: SharedString::from(""),
             download_curseforge_api_base_input: None,
@@ -411,6 +420,7 @@ impl SettingsPageState {
             });
         self.download_github_custom_mirror =
             SharedString::from(config.launcher.download.github.custom_mirror.clone());
+        self.download_github_key_configured = !config.launcher.download.github.api_token.is_empty();
         self.download_curseforge_api_source = SharedString::from(
             match config
                 .launcher
@@ -426,6 +436,7 @@ impl SettingsPageState {
         );
         self.download_curseforge_api_base =
             SharedString::from(config.launcher.download.curseforge_api_base.clone());
+        self.download_curseforge_key_configured = !config.launcher.download.curseforge_api_key.is_empty();
         self.download_http_proxy_url =
             SharedString::from(config.launcher.download.proxy.http_proxy_url.clone());
         self.download_socks_proxy_url =
@@ -528,6 +539,8 @@ impl SettingsPageState {
             || self.download_http_proxy_url_input.is_some()
             || self.download_socks_proxy_url_input.is_some()
             || self.download_github_custom_mirror_input.is_some()
+            || self.download_github_key_input.is_some()
+            || self.download_curseforge_key_input.is_some()
             || self.launcher_connectivity_open
             || self.launcher_connectivity_running
             || self.launcher_connectivity_cancel_tx.is_some()
@@ -572,6 +585,8 @@ impl SettingsPageState {
         self.download_http_proxy_url_input = None;
         self.download_socks_proxy_url_input = None;
         self.download_github_custom_mirror_input = None;
+        self.download_github_key_input = None;
+        self.download_curseforge_key_input = None;
         self.launcher_connectivity_open = false;
         self.launcher_connectivity_running = false;
         self.launcher_connectivity_req_id = self.launcher_connectivity_req_id.saturating_add(1);

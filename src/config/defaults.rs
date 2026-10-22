@@ -141,6 +141,7 @@ pub fn get_default_config() -> Config {
                 github: GithubConfig::default(),
                 curseforge_api_source: "mirror".to_string(),
                 curseforge_api_base: "https://mod.mcimirror.top/curseforge".to_string(),
+                curseforge_api_key: String::new(),
             },
             update_channel: UpdateChannel::Stable,
             auto_check_updates: true,

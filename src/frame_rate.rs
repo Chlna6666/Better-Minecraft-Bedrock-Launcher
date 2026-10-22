@@ -7,6 +7,7 @@ pub(crate) const MAX_FPS: u32 = 1000;
 
 pub(crate) fn normalized_mode(mode: &str) -> &'static str {
     match mode {
+        "vsync" => "vsync",
         "custom" => "custom",
         "unlimited" => "unlimited",
         _ => "auto",
@@ -15,7 +16,7 @@ pub(crate) fn normalized_mode(mode: &str) -> &'static str {
 
 pub(crate) fn frame_clock(mode: &str, fps: u32) -> FrameClock {
     match normalized_mode(mode) {
-        "unlimited" => FrameClock::System,
+        "unlimited" | "vsync" => FrameClock::System,
         "custom" => FrameClock::fixed_fps(fps.clamp(1, MAX_FPS))
             .expect("validated nonzero custom FPS"),
         _ => FrameClock::fixed_fps(DEFAULT_FPS).expect("nonzero default FPS"),
@@ -23,7 +24,7 @@ pub(crate) fn frame_clock(mode: &str, fps: u32) -> FrameClock {
 }
 
 pub(crate) fn present_mode(mode: &str) -> PresentModePreference {
-    if normalized_mode(mode) == "auto" {
+    if matches!(normalized_mode(mode), "auto" | "vsync") {
         PresentModePreference::AutoVsync
     } else {
         PresentModePreference::Immediate
@@ -66,6 +67,15 @@ mod tests {
         assert_eq!(frame_clock("auto", 240).fps().unwrap().get(), 120);
         assert_eq!(present_mode("auto"), PresentModePreference::AutoVsync);
     }
+    #[test]
+    fn native_vsync_has_no_120_fps_software_cap() {
+        assert_eq!(normalized_mode("vsync"), "vsync");
+        assert!(frame_clock("vsync", 300).fps().is_none());
+        assert_eq!(present_mode("vsync"), PresentModePreference::AutoVsync);
+        // Original default policy is unchanged.
+        assert_eq!(frame_clock("auto", 300).fps().unwrap().get(), 120);
+    }
+
     #[test]
     fn custom_bypasses_vsync_and_obeys_explicit_cap() {
         assert_eq!(frame_clock("custom", 360).fps().unwrap().get(), 360);

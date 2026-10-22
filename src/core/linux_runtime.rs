@@ -443,8 +443,7 @@ async fn install_latest_proton_gdk(
         return install_roundmcdev_bundle(&client, task_id).await;
     }
 
-    let release = client
-        .get(source.latest_release_api())
+    let release = crate::github::api_request(&client, source.latest_release_api())
         .send()
         .await
         .map_err(|error| format!("获取 Proton-GDK 版本失败：{error}"))?

@@ -107,11 +107,13 @@ fn launcher_frame_rate_row(
 ) -> impl IntoElement {
     let values = vec![
         SharedString::from("auto"),
+        SharedString::from("vsync"),
         SharedString::from("custom"),
         SharedString::from("unlimited"),
     ];
     let labels = vec![
         t!("LauncherSettings.fps.auto"),
+        t!("LauncherSettings.fps.vsync"),
         t!("LauncherSettings.fps.custom"),
         t!("LauncherSettings.fps.unlimited"),
     ];

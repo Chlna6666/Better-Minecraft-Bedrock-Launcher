@@ -38,8 +38,7 @@ pub(crate) async fn releases(repository: &str) -> Result<Vec<Release>, String> {
     let url = format!("https://api.github.com/repos/{repository}/releases");
     let mut releases = Vec::new();
     for page in 1u32.. {
-        let response = client
-            .get(format!("{url}?per_page=100&page={page}"))
+        let response = crate::github::api_request(&client, &format!("{url}?per_page=100&page={page}"))
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .send()
             .await
