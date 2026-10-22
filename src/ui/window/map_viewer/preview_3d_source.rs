@@ -4587,7 +4587,7 @@ fn preview_3d_view_proj_model(
     mat4_mul(mat4_mul(proj, view), model)
 }
 
-pub(super) fn preview_3d_viewport_parameters(
+pub(super) pub(super) fn preview_3d_viewport_parameters(
     center: [f32; 3],
     fit_scale: f32,
     camera: Preview3dCamera,

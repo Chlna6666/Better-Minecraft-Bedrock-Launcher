@@ -147,7 +147,8 @@ impl MapViewerWindowView {
             // Commands are part of layout, above the preview; never overlay the world.
             .child(self.render_import_workspace_toolbar(colors, cx))
             .when(
-                preview
+                (preview
+                    && self.ui_state.active_right_panel != MapViewerRightPanel::Generator)
                     || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                     || self.import_task_snapshot().is_some()
                     || matches!(
@@ -295,6 +296,10 @@ impl MapViewerWindowView {
             // Source replacement lives in the dedicated right inspector card.
             // Avoid duplicating the same action in a cramped central toolbar.
             .child(div().flex_1())
+            .when(
+                preview && self.ui_state.active_right_panel == MapViewerRightPanel::Generator,
+                |toolbar| toolbar.child(self.render_obj_import_actions(colors, cx)),
+            )
             .when(is_map_image, |bar| {
                 bar.child(
                     div()
@@ -375,27 +380,35 @@ impl MapViewerWindowView {
                     .flex_col()
                     .child(import_preview_label(colors, "原始 OBJ · 三角形与材质色"))
                     .when_some(self.generator.original_preview.as_ref(), |panel, original| {
-                        let camera = self.preview_3d.camera;
-                        let distance = 3.4 / camera.zoom.max(0.05);
-                        let x = distance * camera.pitch.cos() * camera.yaw.sin();
-                        let y = distance * camera.pitch.sin();
-                        let z = distance * camera.pitch.cos() * camera.yaw.cos();
-                        let scene = original.scene_view.with_camera(
-                            gpui_3d::Camera::perspective(
-                                gpui_3d::Vec3::new(x, y, z),
-                                gpui_3d::Vec3::ZERO,
-                                gpui_3d::Vec3::Y,
-                                50.0_f32.to_radians(), 0.05, 80.0,
-                            ),
-                        );
+                        // Both panes share the same camera orientation, zoom/FOV,
+                        // scene rotation and mirror flags. The source mesh was
+                        // normalized to [-1, 1] and has its own fit scale,
+                        // but the viewing transform is otherwise identical
+                        // to the voxel result (no independent orbit camera).
+                        let (camera, transform) =
+                            super::preview_3d_source::preview_3d_viewport_parameters(
+                                [0.0; 3],
+                                0.91,
+                                self.preview_3d.camera,
+                                self.preview_3d.model_rotation,
+                            );
+                        let source = original.scene_view.with_camera(camera);
+                        let scene = source.with_scene_transform(transform)
+                            .unwrap_or(source);
                         panel
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
                                     .child(format!(
-                                        "源模型 {} 个三角形；当前显示 {} 个 · 暂以 MTL 材质色显示",
-                                        original.total_triangles, original.displayed_triangles,
+                                        "源模型 {} 三角形 · 预览 {} · {}",
+                                        original.total_triangles,
+                                        original.displayed_triangles,
+                                        if original.textured_materials > 0 {
+                                            format!("已加载 {} 个贴图材质", original.textured_materials)
+                                        } else {
+                                            "MTL 漫反射材质色（无贴图）".to_owned()
+                                        },
                                     )),
                             )
                             .child(
@@ -410,6 +423,15 @@ impl MapViewerWindowView {
                                         MouseButton::Left,
                                         cx.listener(|this, event: &MouseDownEvent, _window, cx| {
                                             this.preview_3d_begin_drag(
+                                                Preview3dDragMode::RotateModel, event.position, cx
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                            this.preview_3d_begin_drag(
                                                 Preview3dDragMode::OrbitCamera, event.position, cx
                                             );
                                             cx.stop_propagation();
@@ -417,12 +439,18 @@ impl MapViewerWindowView {
                                     )
                                     .on_mouse_move(
                                         cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                                            if event.pressed_button == Some(MouseButton::Left) {
-                                                this.preview_3d_orbit_camera_to(event.position, cx);
-                                            } else {
-                                                this.release_preview_3d_pointer_capture(
-                                                    "source obj mouse leave", cx
-                                                );
+                                            match event.pressed_button {
+                                                Some(MouseButton::Left) => {
+                                                    this.preview_3d_rotate_model_to(event.position, cx);
+                                                }
+                                                Some(MouseButton::Right) => {
+                                                    this.preview_3d_orbit_camera_to(event.position, cx);
+                                                }
+                                                _ => {
+                                                    this.release_preview_3d_pointer_capture(
+                                                        "source obj mouse leave", cx
+                                                    );
+                                                }
                                             }
                                             cx.stop_propagation();
                                         }),
@@ -432,6 +460,15 @@ impl MapViewerWindowView {
                                         cx.listener(|this, _, _, cx| {
                                             this.release_preview_3d_pointer_capture(
                                                 "source obj mouse up", cx
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_mouse_up(
+                                        MouseButton::Right,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.release_preview_3d_pointer_capture(
+                                                "source obj right mouse up", cx
                                             );
                                             cx.stop_propagation();
                                         }),

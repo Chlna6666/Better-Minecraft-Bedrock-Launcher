@@ -7,15 +7,45 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> Div {
         let busy = self.generator_busy();
+        // Keep import/export/placement in the same toolbar as the Preview/Placement
+        // workflow tabs. A second full-width floating action card consumed a
+        // large part of the model canvas and disconnected the actions from the
+        // step that owns them.
         div()
             .flex()
             .flex_wrap()
-            .gap(px(8.0))
+            .items_center()
+            .gap(px(6.0))
+            .px(px(5.0))
+            .py(px(4.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.surface_hover)
+            .child(
+                crate::ui::components::button::secondary_button(
+                    colors,
+                    "obj-workspace-import",
+                    if self.generator.source.is_some() { "更换 OBJ" } else { "导入 OBJ" },
+                )
+                .px(px(12.0))
+                .py(px(7.0))
+                .opacity(if busy { 0.45 } else { 1.0 })
+                .when(!busy, |button| {
+                    button.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.choose_generator_obj(cx)),
+                    )
+                }),
+            )
             .when(self.generator.preview_result_active && !busy, |bar| {
                 bar.child(
                     crate::ui::components::button::primary_button(
-                        colors, "obj-workspace-place", "选择放置位置",
-                    ).on_mouse_down(
+                        colors, "obj-workspace-place", "放置到世界",
+                    )
+                    .px(px(12.0))
+                    .py(px(7.0))
+                    .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.set_import_workspace_mode(
@@ -30,8 +60,10 @@ impl MapViewerWindowView {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "obj-workspace-export",
-                    if busy { "处理中…" } else { "导出 .mcstructure…" },
+                    if busy { "转换中…" } else { "导出结构…" },
                 )
+                .px(px(12.0))
+                .py(px(7.0))
                 .opacity(if self.generator.source.is_some() && !busy { 1.0 } else { 0.45 })
                 .when(self.generator.source.is_some() && !busy, |button| {
                     button.on_mouse_down(

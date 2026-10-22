@@ -196,7 +196,8 @@ impl MapViewerWindowView {
             .bg(colors.surface)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .when(
-                !placement || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage,
+                (!placement || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage)
+                    && self.ui_state.active_right_panel != MapViewerRightPanel::Generator,
                 |bar| {
                     // Avoid constructing hidden conversion actions (and their event
                     // handlers) on every world-placement render.
