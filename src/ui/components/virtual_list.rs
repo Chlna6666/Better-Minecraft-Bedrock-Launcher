@@ -37,6 +37,17 @@ pub struct VirtualListPlan {
     pub heavy_slice: VirtualListSlice,
 }
 
+/// Keep generous prefetch margins while scrolling, but avoid measuring
+/// offscreen rows on every native edge-drag frame. One guard row on either
+/// side protects against a scroll viewport that settles one frame later.
+pub fn resize_aware_overscan(normal: usize, native_resizing: bool) -> usize {
+    if native_resizing {
+        normal.min(1)
+    } else {
+        normal
+    }
+}
+
 pub fn compute_virtual_list_plan(
     total_items: usize,
     item_pitch_px: f32,
@@ -112,6 +123,26 @@ pub fn compute_windowed_list_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn native_resize_reduces_only_offscreen_overscan() {
+        assert_eq!(resize_aware_overscan(8, false), 8);
+        assert_eq!(resize_aware_overscan(8, true), 1);
+        assert_eq!(resize_aware_overscan(2, true), 1);
+        assert_eq!(resize_aware_overscan(0, true), 0);
+        let normal = compute_virtual_list_plan(100, 84.0, px(-840.0), px(420.0), 8, 12);
+        let resizing = compute_virtual_list_plan(
+            100,
+            84.0,
+            px(-840.0),
+            px(420.0),
+            resize_aware_overscan(8, true),
+            12,
+        );
+        assert_eq!(normal.visible_slice.start_index, resizing.visible_slice.start_index);
+        assert_eq!(normal.visible_slice.end_index, resizing.visible_slice.end_index);
+        assert!(normal.render_slice.visible_len() > resizing.render_slice.visible_len());
+    }
 
     #[::core::prelude::v1::test]
     fn virtual_list_clamps_overscrolled_short_list() {

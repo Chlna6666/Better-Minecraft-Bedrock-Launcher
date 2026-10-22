@@ -368,7 +368,10 @@ pub(super) fn render_server_list(
         MANAGE_ASSET_ROW_PITCH_PX,
         scroll_handle.offset().y,
         scroll_handle.bounds().size.height,
-        MANAGE_ASSET_ROW_OVERSCAN,
+        crate::ui::components::virtual_list::resize_aware_overscan(
+            MANAGE_ASSET_ROW_OVERSCAN,
+            window.is_live_resizing(),
+        ),
         MANAGE_ASSET_HEAVY_BUDGET,
     );
 

@@ -2000,7 +2000,10 @@ fn render_curseforge_results_list(
             CURSEFORGE_RESULT_CARD_PITCH_PX,
             state.curseforge_results_scroll.offset().y,
             state.curseforge_results_scroll.bounds().size.height,
-            CURSEFORGE_RESULT_CARD_OVERSCAN,
+            crate::ui::components::virtual_list::resize_aware_overscan(
+                CURSEFORGE_RESULT_CARD_OVERSCAN,
+                window.is_live_resizing(),
+            ),
             CURSEFORGE_RESULT_LOGO_RENDER_BUDGET,
         )
     });

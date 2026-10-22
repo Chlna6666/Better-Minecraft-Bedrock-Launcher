@@ -190,7 +190,7 @@ impl Render for ManagePageView {
             theme.accent,
         );
         let state = cx.global::<ManagePageState>().clone();
-        let page = self.render_page(&colors, &state, cx);
+        let page = self.render_page(&colors, &state, window, cx);
 
         div()
             .size_full()
@@ -219,6 +219,7 @@ impl ManagePageView {
         &mut self,
         colors: &ThemeColors,
         state: &ManagePageState,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         if is_level_dat_editor_route(cx) {
@@ -230,7 +231,7 @@ impl ManagePageView {
         }
 
         let page = crate::ui::components::page_shell::split_page(
-            self.render_sidebar(colors, state, cx),
+            self.render_sidebar(colors, state, window, cx),
             self.render_main(colors, state, cx),
         )
         .relative();
@@ -248,6 +249,7 @@ impl ManagePageView {
         &mut self,
         colors: &ThemeColors,
         state: &ManagePageState,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let _i18n = cx.global::<I18n>().clone();
@@ -263,7 +265,10 @@ impl ManagePageView {
             MANAGE_VERSION_ROW_PITCH_PX,
             self.version_scroll_handle.offset().y,
             self.version_scroll_handle.bounds().size.height,
-            MANAGE_VERSION_ROW_OVERSCAN,
+            crate::ui::components::virtual_list::resize_aware_overscan(
+                MANAGE_VERSION_ROW_OVERSCAN,
+                window.is_live_resizing(),
+            ),
             usize::MAX,
         );
         let no_versions = filtered_version_indices.is_empty();
