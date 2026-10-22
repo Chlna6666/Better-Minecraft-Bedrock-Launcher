@@ -4,15 +4,11 @@ This document describes the current UI layer. It is the local source of truth
 for where GPUI views, UI state, components, overlays, and utility windows
 belong.
 
-Broader boundaries are documented in
-[`docs/ARCHITECTURE_BOUNDARIES.md`](../../docs/ARCHITECTURE_BOUNDARIES.md).
-Background execution and state propagation are defined in
-[`docs/ASYNC_RUNTIME_MODEL.md`](../../docs/ASYNC_RUNTIME_MODEL.md).
-The GPUI rendering pipeline is documented in
-[`docs/GPUI_VENDOR_RENDERING.md`](../../docs/GPUI_VENDOR_RENDERING.md).
-Reusable 3D scene and viewport APIs are documented in
-[`docs/GPUI_3D.md`](../../docs/GPUI_3D.md); map and skin preview conversion stays in the owning
-`src/ui/window` modules.
+Broader boundaries and the rendering pipeline are documented in
+[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md). Background execution and state propagation
+follow [`docs/CONTRIBUTING.md`](../../docs/CONTRIBUTING.md). Reusable 3D scene and viewport APIs
+live in `crates/gpui-3d`; map and skin preview conversion stays in the owning `src/ui/window`
+modules.
 
 ## Role Of `src/ui`
 
@@ -439,7 +435,7 @@ All network work must happen off the UI thread. Preferred patterns:
 - Cached child entities and language-sensitive resource projections must
   invalidate on the language revision as well as their domain-data version.
 
-`docs/ASYNC_RUNTIME_MODEL.md` is authoritative when choosing an executor,
+`docs/ARCHITECTURE.md` and `docs/CONTRIBUTING.md` are authoritative when choosing an executor,
 defining terminal task states, deciding workflow lifetime, or bridging a
 background event into GPUI.
 

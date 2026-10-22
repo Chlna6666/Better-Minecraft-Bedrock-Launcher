@@ -213,20 +213,16 @@ bounded safely; otherwise the renderer falls back to full redraw.
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Development guide](docs/development.md)
-- [Contexts and entities](docs/contexts.md)
-- [Rendering and elements](docs/rendering.md)
-- [Renderer backend](docs/renderer_backend.md)
-- [Windows renderer backend](docs/windows_renderer_backend.md)
-- [Runtime WGSL shaders](docs/runtime_wgsl_shaders.md)
-- [Performance pipeline](docs/performance_pipeline.md)
-- [Examples](docs/examples.md)
-- [Validation](docs/validation.md)
+- [Documentation index](../../docs/README.en.md)
+- [Architecture](../../docs/ARCHITECTURE.en.md)
+- [Build and test](../../docs/BUILD_AND_TEST.en.md)
+- [Crate catalog](../../docs/CRATES.en.md)
+- [Naming rules](../../docs/NAMING.md)
+- [gpui / nova-gfx boundary ADR](../../docs/adr/0001-nova-gfx-gpui-boundary.md)
+- [Chinese README](README.zh-CN.md)
 
-BMCBL's integration-level renderer guide lives at
-`../../docs/GPUI_VENDOR_RENDERING.md` from this directory.
-The separate 3D ownership and API guide is [`../../docs/GPUI_3D.md`](../../docs/GPUI_3D.md).
+The renderer boundary and ownership rules live in the links above; per-subsystem notes are in
+rustdoc and the source modules.
 
 ## Examples
 

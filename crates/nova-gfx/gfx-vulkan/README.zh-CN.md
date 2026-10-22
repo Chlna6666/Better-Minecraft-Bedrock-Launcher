@@ -1,31 +1,40 @@
 # gfx-vulkan
 
-[English documentation](README.md)
+[English](README.md)
 
-`gfx-vulkan` 是 `gfx-core` device trait 的 Vulkan 实现。
+`gfx-vulkan` 是 `gfx-core` 设备 trait 的 Vulkan 实现，持有 Vulkan instance、device、
+queue、swapchain、资源、pipeline 与 command encoder 状态。
 
-本 crate 拥有 Vulkan instance、device、queue、swapchain、resource、
-pipeline 和 command encoder 状态。它只在后端内部使用 `raw-window-handle`
-创建原生 presentation surface；`gfx-core` 不依赖窗口句柄 crate。
+`raw-window-handle` 只在本 backend 内用于 native presentation surface 创建；
+`gfx-core` 保持不依赖窗口句柄 crate。
 
 ## API
 
-调用方导入需要的 `gfx_core::Gfx*Device` trait，然后在 `VulkanDevice` 上
-调用 trait 方法。
+导入相关的 `gfx_core` 能力 trait，在 `VulkanDevice` 上调用 trait 方法。帧入口：
 
 ```rust
-use gfx_core::{ClearColor, DrawStepDescriptor, PresentationDevice, RenderPassId, SwapchainId};
+use gfx_core::{
+    ClearColor, LoadOp, PresentationDevice, PresentFrameDescriptor, RenderCommand,
+    RenderPassId, SwapchainId,
+};
 use gfx_vulkan::VulkanDevice;
-
-fn present(
-    device: &mut VulkanDevice,
-    swapchain: SwapchainId,
-    render_pass: RenderPassId,
-    steps: &[DrawStepDescriptor],
-    clear: ClearColor,
-) -> gfx_core::Result<()> {
-    device.draw_steps_and_present(swapchain, render_pass, steps, clear)
-}
 ```
 
-原生 semaphore 等后端同步细节保留在本 crate 内部，不进入 core 公共 API。
+原生 semaphore/fence 等同步细节留在本 crate，不进入 core 公共 API。
+
+## 边界
+
+- 纯图形后端；不依赖 UI 框架/应用代码。
+- 呈现与 surface 生命周期通过 `gfx-core` trait 暴露。
+
+## 构建与测试
+
+```powershell
+cargo check -p gfx-vulkan
+cargo test -p gfx-vulkan -- --ignored --nocapture --test-threads=1
+```
+
+## 文档
+
+- [nova-gfx](../README.zh-CN.md)
+- [crate 目录](../../../docs/CRATES.md)

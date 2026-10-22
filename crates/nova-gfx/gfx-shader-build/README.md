@@ -61,7 +61,7 @@ Direct3D bytecode is generated only when the build host runs Windows, because
 accepts runtime compilation must explicitly select `AllowRuntimeCompilation`, and its
 DX12 runtime must enable `gfx-dx12/shader-compiler`. Under the strict default policy a Windows target built on a host that cannot run `D3DCompile` fails at
 build time instead of silently moving shader compilation back into application
-startup. BMCBL GPUI and gpui-3d shader sets use this strict policy.
+startup. BMCBL renderer shader sets use this strict policy.
 
 ## License
 

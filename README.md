@@ -1,6 +1,6 @@
 # Better Minecraft Bedrock Launcher
 
-[English](README.en.md)
+[English](README.en.md) | [项目文档](docs/README.md)
 
 Better Minecraft Bedrock Launcher（BMCBL）是一个使用 Rust + GPUI 构建的
 Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebView / React
@@ -20,7 +20,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | Linux | 测试阶段：支持通过 Proton / Wine 运行 GDK 游戏；成就、在线状态等不完整 |
 | Minecraft 版本类型 | UWP、GDK，含正式版 / 预览版 / 教育版相关分支 |
 | 渲染后端 | GPUI nova-gfx 路径，Windows 提供 DX11、DX12、Vulkan、OpenGL 4.5，默认 DX11；Linux 提供 Vulkan、OpenGL 4.5，默认 Vulkan |
-| 插件系统 | WASM 沙箱插件，API 版本 `0.4` |
+| 插件系统 | WASM 沙箱插件，API 版本 `0.6` |
 | 许可证 | GPL-3.0 |
 | 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -74,6 +74,8 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 - 支持正式版、预览版、教育版、教育预览版等分支的版本识别与启动入口。
 - 启动前检查 UWP 开发者模式、UWP 运行依赖、GDK GameInput 等必要条件。
 - 支持启动参数、启动器启动后保持 / 最小化 / 关闭、UWP 最小化修复等行为配置。
+- 支持终端命令行（launch / import / list / info）与独立的启动参数接口，详见
+  [docs/CLI.md](docs/CLI.md) 与 [docs/STARTUP_ARGUMENTS.md](docs/STARTUP_ARGUMENTS.md)。
 - 支持调试控制台、隔离模式、编辑器模式、禁用 Mod 加载、鼠标锁定和自定义解锁热键。
 - 使用 BMCBL 自有的 [BLoader](https://github.com/Chlna6666/BLoader) 项目提供的 `BLoader.dll` 加载器，支持
   原生 Mod 注入、注入延迟和多种 Mod 类型配置；Windows Win32 GDK 的托管 Xbox 会话也
@@ -120,8 +122,8 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
   捕获历史，可撤销 / 重做，并带有回档保护点。
 - 写入模式默认需要显式开启，避免误改世界数据。
 
-更多渲染管线细节见 [docs/MAP_RENDERER.md](docs/MAP_RENDERER.md)。
-地图实体图标生成与脚本渲染管线见 [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)。
+渲染栈与地图窗口的高层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
+构建、后端与测试矩阵见 [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md)。
 
 ### 联机
 
@@ -147,7 +149,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 BMCBL 的插件系统已经不是旧版 JavaScript 插件，而是 WASM 沙箱插件。
 
 - 插件清单文件为 `plugin.toml`，包格式为 `.bmcblx`。
-- 当前插件 API 版本为 `0.4`，manifest schema 版本为 `2`。
+- 当前插件 API 版本为 `0.6`，manifest schema 版本为 `2`。
 - 插件可注册导航页、独立窗口、UI 注入点和全局事件订阅。
 - Host 能力包括 Toast、导航、窗口、模态框、剪贴板、HTTP 文本请求、资源读取、
   KV 存储、任务进度、配置读写、主题快照和应用信息。
@@ -192,13 +194,10 @@ EGPUI --> GPUI
 | `crates/gpui-hooks` | GPUI hooks 辅助库 |
 | `crates/lucide-gpui` | Lucide 图标到 GPUI 的适配 |
 
-当前结构总览见 [docs/BMCBL_PROJECT_STRUCTURE.md](docs/BMCBL_PROJECT_STRUCTURE.md)。
-桌面应用框架任务见 [docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md](docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md)。
-架构边界见 [docs/ARCHITECTURE_BOUNDARIES.md](docs/ARCHITECTURE_BOUNDARIES.md)。
-异步运行时与 GPUI 状态桥接规范见
-[docs/ASYNC_RUNTIME_MODEL.md](docs/ASYNC_RUNTIME_MODEL.md)。
-GPUI 渲染细节见 [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md)。
-路由和 hooks 见 [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md)。
+架构与边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+crate 职责与状态见 [docs/CRATES.md](docs/CRATES.md)。
+命名规范见 [docs/NAMING.md](docs/NAMING.md)，
+gpui/nova-gfx 边界决策见 [docs/adr/0001-nova-gfx-gpui-boundary.md](docs/adr/0001-nova-gfx-gpui-boundary.md)。
 
 ## 实现与加载器说明
 
@@ -220,20 +219,9 @@ GPUI 渲染细节见 [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.
 - Git。
 - 可访问 Cargo registry 和 EasyTier Git 依赖。
 
-当前 `Cargo.toml` 使用了若干本地 path 依赖，默认期望 `BE-Community-Dev` 与本仓库
-位于同级目录：
-
-```text
-workspace-root/
-  BMCBL/
-  BE-Community-Dev/
-    mc-motd/
-    bedrock-world/
-    bedrock-render/
-    bedrock-block-model/
-```
-
-如果目录不同，需要同步修改 `Cargo.toml` 中对应的 `path` 依赖。
+工作区 crate 位于本仓库 `crates/`，通过根 `Cargo.toml` 的 `[workspace]` 管理；
+外部依赖来自 crates.io 或锁定版本的 Git 依赖（见 `Cargo.lock`），不要求额外的同级仓库。
+需要修改依赖来源时，在 PR 中说明原因并更新 `Cargo.lock`。
 
 ### 构建与运行
 
@@ -254,7 +242,6 @@ OpenGL 4.5。`--no-default-features` 在 Windows 保留 DX11、在 Linux 保留 
 cargo run --bin BMCBL
 cargo run --bin BMCBL --no-default-features
 cargo run --bin BMCBL --no-default-features --features gpui-opengl
-cargo run --bin BMCBL --features preview-3d-dx12
 ```
 
 `build.rs` 会嵌入 Windows 图标 / manifest、字体、本地化、图片、`BLoader.dll` 和
@@ -265,9 +252,13 @@ vendored 目录或 Cargo Git checkout 中查找；缺失时构建会给出 warni
 ### 常用检查
 
 ```powershell
-cargo fmt --all
-cargo test --workspace
+rustfmt --edition 2024 <改动文件...>
+cargo check -p bmcbl
+cargo test -p gfx-core
+pwsh -File scripts/check-docs.ps1
 ```
+
+更细的 feature、后端与测试分级见 [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md)。
 
 项目约定 Rust 代码使用：
 
@@ -303,14 +294,12 @@ cargo build --manifest-path examples/plugins/bedrock-notes/Cargo.toml --release 
 `assets/locales/agreement/*.md`。新增 UI 文案时需要同步补齐对应语言键值，并可运行：
 
 ```powershell
-scripts/check_i18n_lang.ps1
-scripts/check_i18n_ui.ps1
+pwsh -File scripts/check_i18n_lang.ps1
 ```
 
-`check_i18n_ui.ps1` 默认输出 UI 中常见文本出口（包括 `child`、按钮标签、输入框
-占位符，以及这些出口中的 `SharedString::from` 和带空格的 `format!`）的硬编码候选，
-以及不存在的静态翻译键；完成迁移后可使用 `-Strict` 将发现项作为验证失败处理。扫描
-结果需要人工排除元素 ID、协议值、路径、日志、字体名和其他非用户可见字符串。
+脚本以 `assets/locales/en-US.lang` 为基准，报告其他语言缺失或多余的键；加
+`-Strict` 可将键漂移作为验证失败。UI 中新增文案仍需要人工确认不会把元素 ID、协议值、
+路径、日志或字体名当作可翻译文本。
 
 ## 开发注意事项
 
@@ -318,11 +307,22 @@ scripts/check_i18n_ui.ps1
 - GPUI framework 代码不得依赖 BMCBL 应用路由、页面、资源、下载服务或窗口策略。
 - `src/ui` 只负责渲染和协调 UI 状态；网络 IO、解析、下载、缓存和持久化流程应放在
   `src/core`、`src/downloads`、`src/config` 或其他后端模块中。
-- 修改地图窗口时优先查看 `docs/MAP_RENDERER.md`，保持可见瓦片流式渲染、缓存和取消
-  generation 语义。
+- 修改地图窗口时先读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与
+  `src/ui/window/map_viewer`，保持可见瓦片流式渲染、缓存和取消 generation 语义。
 - 处理世界写入功能时必须保留显式确认、历史捕获和错误反馈，不能静默丢弃失败。
 - 新增运行时资源应通过 `build.rs` 或 `include_bytes!` / `include_str!` 嵌入；必须落盘的
   DLL 或驱动负载应写入本地 app data / cache 目录。
+
+## 文档
+
+- 文档入口：[docs/README.md](docs/README.md)
+- 架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- 构建与测试：[docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md)
+- 命名：[docs/NAMING.md](docs/NAMING.md)
+- crate 目录：[docs/CRATES.md](docs/CRATES.md)
+
+文档约定：中文为第一语言；crate README 提供中英双语；不收录测试输出、benchmark 原始
+数据、改名历史或带日期的计划草稿。
 
 ## 致谢
 

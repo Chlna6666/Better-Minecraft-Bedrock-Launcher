@@ -64,7 +64,7 @@ On the local Ryzen 7 7840H/AVX2 corpus below, five dev-profile paired runs
 improved complete index parsing by 4.32–5.63%; three release-profile runs improved
 it by 8.80–9.62%. File-open timings did not establish stable I/O improvement.
 These measurements do not guarantee gains on other CPUs or inputs. See the
-workspace [parsing audit](../../docs/PARSING_SIMD_AUDIT.md) for the retained and
+workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md) for the retained and
 rejected parsing candidates, fixture identities and validation limits.
 
 Format evidence (cross-checked against local Minecraft 26.40 resources):

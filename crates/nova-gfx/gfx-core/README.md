@@ -11,13 +11,18 @@ It contains:
 - `Error` and `Result`;
 - the public backend capability traits:
   `Backend`, `SurfaceDevice`, `ResourceDevice`, `PipelineDevice`,
-  `CommandDevice`, `PresentationDevice`, `DiagnosticsDevice`, and
-  `Device`.
+  `CommandDevice`, `SubmissionDevice`, `PresentationDevice`,
+  `DiagnosticsDevice`, and `Device`.
 
-`gfx-core` intentionally has no dependency on GPUI, winit, `raw-window-handle`,
-Vulkan, Direct3D 12, or Metal. Native window targets are expressed through
-`SurfaceDevice::SurfaceTarget`, an associated type selected by each backend
-crate.
+The vocabulary mirrors `wgpu`: `BindGroup`/`BindGroupLayout`,
+`RenderCommand`, `RenderPassCommands`, `PresentFrameDescriptor`, and
+`render_to_textures`. There is no compatibility-alias trait layer and no
+UI-framework policy in this crate.
+
+`gfx-core` intentionally has no dependency on any UI framework, winit,
+`raw-window-handle`, Vulkan, Direct3D 12, or Metal. Native window targets are
+expressed through `SurfaceDevice::SurfaceTarget`, an associated type selected by
+each backend crate.
 
 ## Recommended Use
 

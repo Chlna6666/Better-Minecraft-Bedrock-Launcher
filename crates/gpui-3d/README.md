@@ -23,35 +23,32 @@ Two rendering paths share one scene/asset model:
 PBR materials, decoded textures with mip chains, node hierarchies, punctual lights, cameras, and
 transform animations. Licensed test models with pinned SHA-256 hashes live in `test_assets/`.
 
-Verified on this development machine (AMD Radeon RX 7600M XT): DX12, DX11, Vulkan, and OpenGL 4.5
-render the offscreen studio scene and DamagedHelmet.glb with shadows and PBR textures; the DX11 and
-Vulkan pixel outputs agree with DX12 within 1%; steady-state frames upload 0 bytes after warm-up.
-GPU timestamped pass timings, skeletal/morph deformation, prefiltered cubemap irradiance probes and
-a real BRDF LUT, true asynchronous GPU-to-CPU readback, and compositor hand-off of an offscreen target
-without CPU readback remain unimplemented; see `docs/GPUI_3D.md` for the full status matrix and
-measured numbers.
+The offscreen path is implemented for DX12, DX11, Vulkan, and OpenGL 4.5. GPU timestamped pass
+timings, skeletal/morph deformation, prefiltered cubemap irradiance probes and a real BRDF LUT,
+true asynchronous GPU-to-CPU readback, and compositor hand-off of an offscreen target without CPU
+readback remain unimplemented; see the crate rustdoc and
+[architecture](../../docs/ARCHITECTURE.en.md) for ownership and backend status.
 
-Memory behavior is measurable and bounded: the renderer reports resident, peak, upload, cache-hit,
+Memory behavior is bounded and observable: the renderer reports resident, peak, upload, cache-hit,
 and eviction counters; incremental uploads are tracked per element with content hashes instead of a
 full CPU copy; `set_memory_budget` evicts idle assets after a frame; texture import caps and
-downscales oversized images; and the default 1024 shadow map keeps target memory at about 8 MiB
-instead of 33 MiB. Measured: 720p studio at 19.8 MiB resident (1024 shadow) or 44.3 MiB (2048);
-DamagedHelmet 79.8 MiB resident at 2048 textures vs 30.7 MiB with `--max-texture=1024`.
+downscales oversized images; and the default shadow map is deliberately small. Run the benchmark
+suite for current numbers instead of relying on README figures.
 
 Static frames are retained: an unchanged scene, camera, and options return the last frame with zero
 CPU preparation, uploads, or GPU submission, while a camera-only move re-culls without walking the
-scene graph. Instanced batching writes one draw slot per batch, so a 200,000-node cube field with
-one shared mesh/material renders in one indexed draw with 200,000 instances and 28 MiB of streaming
-buffers instead of 128 MiB. The lab exposes it with `--instances=200000`. Long-session budget
-cycling and two-renderers-on-one-device isolation are covered by the ignored native memory tests.
+scene graph. Instanced batching writes one draw slot per batch, so large repeated cube fields render
+as a single indexed draw with one instance per element instead of per-element streaming buffers.
+Long-session budget cycling and two-renderers-on-one-device isolation are covered by ignored native
+memory tests.
 
 Rendering resolves in linear HDR: the scene pass writes `Rgba16Float`, a half-resolution bloom pass
 bleeds bright emissive/specular light, and the post pass applies exposure, tone mapping, FXAA-style
 edge blending, vignette, film grain, and ordered dithering into the readback target. Debug views and
 object-id selection bypass grading. `RenderQuality` presets (Low/Medium/High/Ultra) select shadow
 resolution, bloom strength, FXAA, and grading; overrides stay available per option. Per-frame CPU
-encoders reuse staging buffers, evicted mesh buffers enter a bounded reuse pool (measured reuses,
-zero create/destroy churn across scene cycling), and pipeline layouts are now destroyed with the
+encoders reuse staging buffers, evicted mesh buffers enter a bounded reuse pool (reuse counters are
+exposed by the statistics API), and pipeline layouts are destroyed with the
 renderer instead of leaking on every drop/resize. Allocator metrics are exposed through
 `buffer_allocation_count`, `buffer_slack_bytes`, `pooled_buffer_bytes`, `pooled_buffer_count`,
 `buffer_reuses`, and `cpu_staging_bytes`.
@@ -284,7 +281,7 @@ The `gpui-3d` Criterion benches measure CPU work and do not measure GPU presenta
 Nova `mip-chain` cases measure batched upload cost for a 128x128 RGBA8 texture with eight levels;
 they report native GPU copy timing when timestamp support is available, not frame pacing.
 
-See [the GPUI 3D architecture and API guide](../../docs/GPUI_3D.md) for ownership, coordinate
+See [the workspace architecture](../../docs/ARCHITECTURE.en.md) for ownership, coordinate
 conventions, materials, resource lifetime, examples, benchmark interpretation, and the backend
 validation matrix.
 

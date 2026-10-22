@@ -1,8 +1,5 @@
 # bedrock-world
 
-See [`docs/COMPATIBILITY_MATRIX.md`](docs/COMPATIBILITY_MATRIX.md) for the verified Minecraft world,
-LegacyTerrain, SubChunk and Pocket `chunks.dat` support matrix.
-
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 `bedrock-world` is a multi-version Minecraft Bedrock world library built on top of
@@ -222,7 +219,7 @@ Raw Mojang LevelDB historical fixtures use the corresponding
 fixture. A skipped private performance fixture is not a historical compatibility
 pass.
 
-See [`docs/TESTING.md`](docs/TESTING.md) for the exact test contract.
+See the workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md) for the test contract.
 
 ## Completeness model
 
@@ -253,7 +250,7 @@ Rust 1.89 is required. The default `simd` feature uses workspace-pinned
 Other widths, CPUs and decode modes retain the scalar implementation; malformed
 input has the same first error. `--no-default-features` removes this dependency.
 Read-only fixture measurements and their limits are recorded in the workspace's
-[`parsing audit`](../../docs/PARSING_SIMD_AUDIT.md).
+[build and test guide](../../docs/BUILD_AND_TEST.en.md).
 
 - use file-level `level.dat` access when no database data is needed;
 - use exact `get_many` render reads instead of scanning unrelated records;
@@ -262,7 +259,7 @@ Read-only fixture measurements and their limits are recorded in the workspace's
 - avoid nested worker pools when a caller already owns render workers;
 - preserve raw bytes and borrow data when a structured owned form is not needed.
 
-Benchmarks and large-fixture notes live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Benchmarks and large-fixture notes are described in the workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md).
 
 ## Error handling
 
@@ -271,5 +268,5 @@ Public fallible APIs return `bedrock_world::Result<T>`. Match
 include read-only, validation, unsupported-format, corrupt-world, cancellation,
 and LevelDB failures.
 
-More detail is available in [`docs/API.md`](docs/API.md),
-[`docs/TESTING.md`](docs/TESTING.md), and [`ARCHITECTURE.md`](ARCHITECTURE.md).
+More detail is available in the crate rustdoc and the workspace
+[architecture](../../docs/ARCHITECTURE.en.md).

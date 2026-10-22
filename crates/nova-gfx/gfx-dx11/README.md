@@ -1,5 +1,7 @@
 # gfx-dx11
 
+[中文文档](README.zh-CN.md)
+
 Native Windows Direct3D 11 backend for nova-gfx, requiring hardware feature
 level 11.0. It uses D3D11 immediate-context commands, DXGI flip-model swapchains
 and DirectComposition for premultiplied window surfaces.
@@ -19,8 +21,8 @@ Hardware gates:
 
 ```powershell
 cargo test -p gfx-dx11 -- --ignored --nocapture --test-threads=1
-cargo test -p gpui --no-default-features --features nova-gfx-dx11 --lib production_glyphs_and_images -- --ignored --nocapture --test-threads=1
 ```
 
-The GPUI gate uses production shader artifacts, atlas formats and encoders,
-sprite packing and layouts to verify monochrome/subpixel glyphs and images.
+Production glyph and image paths are validated by the consumer renderer with
+its production shader artifacts, atlas formats, encoders, sprite packing, and
+layouts.

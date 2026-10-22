@@ -15,7 +15,7 @@ and persists manifest version edits. Older `BWLDB...` files remain readable for
 migration/backward compatibility only.
 
 Maintainers and contributors should also read the
-[development guide](docs/DEVELOPMENT.md).
+[build and test guide](../../docs/BUILD_AND_TEST.en.md).
 
 ## Quick Start
 
@@ -300,7 +300,7 @@ native table reads, native table point/prefix reads, WAL recovery, and
 sequential versus table-parallel scans. Large-world behavior should still be
 validated with real Bedrock fixtures in higher-level crates because this crate
 does not interpret world keys or NBT payloads. Latest local numbers are tracked
-in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+in the workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md).
 
 ## License
 

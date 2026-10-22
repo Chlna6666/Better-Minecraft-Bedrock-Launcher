@@ -2,27 +2,21 @@
 
 [English](README.md)
 
-GPUI 是一个面向 Rust 桌面应用的 GPU 加速 UI 框架，结合了 immediate mode 和
-retained mode。它在一个 crate 中提供应用状态、窗口、基于实体的视图、声明式
-元素、输入分发、平台集成和渲染后端。
+GPUI 是 Rust 桌面应用的 GPU 加速 UI 框架，混合即时模式与保留模式，提供应用状态、
+窗口、Entity 视图、声明式元素、输入分发、平台集成与渲染后端。
 
-这个独立 fork 保持 GPUI pre-1.0 定位，作为 BMCBL 原生桌面应用框架 `egpui` 的
-GUI 核心。它不是 Zed 官方发行版本。当前渲染方向是 nova-gfx：
+本仓库维护的是 BMCBL 使用的独立 fork，pre-1.0，作为 `egpui` 桌面应用框架的 GUI 核心；
+它不是 Zed 官方发行版。
 
-- Windows 使用 winit 平台路径，并在启用对应 feature 时默认走 Nova DX12 后端。
-- Vulkan 通过 Nova Vulkan 后端提供，包括可选的 Windows Vulkan 路径。
-- macOS 框架代码的普通 nova-gfx 路径面向 Nova Metal。
-- 默认合成策略是事件驱动。连续渲染只用于显式配置
-  `RenderPolicy::Continuous` 的窗口。
-- 自定义 GPU 绘制应使用 GPUI scene primitives、图片元素或通用
-  `RendererExtension` API。`WgslShaderSource` 负责校验 extension 自有 WGSL；可复用的
-  3D scene 和 viewport 位于独立 `gpui-3d` crate。
-- WGSL shader 可在构建时校验内置 renderer shader，也可由 extension 实现在运行时校验。
-- 示例使用当前 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` API 形态。
+## 渲染方向
+
+- 当前渲染路径为 nova-gfx；`RendererBackend` 可在启动时选择 DX11/DX12/Vulkan/OpenGL/Metal。
+- Windows 平台使用 winit 事件循环；Linux 支持 X11/Wayland；macOS 仅维护代码路径。
+- 合成默认事件驱动，连续渲染只用于显式 `RenderPolicy::Continuous`。
+- 自定义 GPU 内容使用场景图元、图片/SVG 元素或 `RendererExtension`；通用 3D 场景与
+  viewport 位于 `gpui-3d`。
 
 ## 快速开始
-
-在本仓库应用中使用 workspace path dependency：
 
 ```toml
 [dependencies]
@@ -30,11 +24,8 @@ gpui = { path = "crates/gpui", default-features = false, features = [
     "mimalloc-collect",
     "nova-gfx",
     "nova-gfx-dx12",
-    "nova-gfx-vulkan",
 ] }
 ```
-
-创建 `Application` 并挂载实体视图：
 
 ```rust
 use gpui::prelude::*;
@@ -59,181 +50,38 @@ fn main() {
 
 ## 核心概念
 
-- `App` 是根上下文，负责 globals、windows、entities、menus、key bindings、
-  assets 和平台服务。
-- `Context<T>` 会在创建、更新、渲染或处理 `Entity<T>` 事件时提供。
-- `Window` 会显式传入需要输入、焦点、绘制、帧请求、actions、平台状态或自定义
-  paint 的 render 与事件代码。
-- `Entity<T>` 保存由 GPUI 管理的状态。通过 `Entity::update` 或
-  `Context<T>` listener 更新实体，并在渲染需要变化时调用 `cx.notify()`。
-- `Render` view 构建元素树。`RenderOnce` component 是被消费式渲染的轻量元素配方。
-- `cx.spawn(async move |cx| ...)` 和
-  `window.spawn(cx, async move |cx| ...)` 用于前台异步任务。不能阻塞 UI 渲染的工作
-  应使用后台 executor 或 blocking task。
+- `App`：全局上下文，管理窗口、Entity、菜单、键位、资产与平台服务。
+- `Context<T>`：在创建、更新、渲染或事件回调中提供的 Entity 上下文。
+- `Window`：显式传入需要输入、焦点、绘制、帧请求或平台状态的代码。
+- `Entity<T>`：GPUI 管理的状态；通过 `Entity::update` 或 `Context<T>` 更新，状态变化
+  后调用 `cx.notify()`。
+- `Render` 构建元素树；`RenderOnce` 是渲染时消费的轻量组件。
+- `cx.spawn` / `window.spawn` 运行前台异步任务；阻塞或 IO 工作应放到后台执行器。
 
-新代码不要使用旧的应用层命名：`Model<T>`、`View<T>`、把 `AppContext` 当作具体
-上下文类型、`ModelContext<T>`、`WindowContext` 和 `ViewContext<T>`。
+新代码不要使用旧接口名：`Model<T>`、`View<T>`、`AppContext`、`ModelContext<T>`、
+`WindowContext`、`ViewContext<T>`。
 
-## 架构
+## 边界
 
-GPUI 围绕 foreground UI thread、entity state、显式 window state，以及应用启动时
-选择的 renderer backend 组织。
+- GPUI 是通用 UI 核心，不包含 BMCBL 路由、下载、地图等业务。
+- 渲染后端通过 `gfx-core` 能力 trait 访问；不得按 backend 调用固有方法。
+- 3D 场景准备与 viewport 资源在 `gpui-3d`；GPUI 只负责窗口、输入与 extension 调度。
 
-```mermaid
-flowchart TD
-    AppStartup["Application startup"] --> RendererOptions["RendererOptions"]
-    RendererOptions --> PlatformSelect{"Target platform"}
+## 构建与测试
 
-    PlatformSelect --> Windows["Windows platform"]
-    PlatformSelect --> MacOS["macOS platform"]
-    PlatformSelect --> Linux["Linux / FreeBSD platform"]
-    PlatformSelect --> Test["Headless test platform"]
-
-    Windows --> Winit["winit event loop"]
-    Windows --> NovaDx12["Nova DX12"]
-    Windows --> NovaVulkanWin["Nova Vulkan (optional)"]
-
-    MacOS --> NovaMetal["Nova Metal"]
-    Linux --> LinuxWindowing{"Windowing backend"}
-    LinuxWindowing --> X11["X11"]
-    LinuxWindowing --> Wayland["Wayland"]
-    Linux --> NovaVulkan["Nova Vulkan"]
-    Test --> Headless["Headless renderer"]
-
-    Winit --> PlatformEvents["Platform events"]
-    NovaDx12 --> NovaRenderer["NovaRenderer"]
-    NovaVulkanWin --> NovaRenderer
-    NovaMetal --> NovaRenderer
-    NovaVulkan --> NovaRenderer
-    X11 --> PlatformEvents
-    Wayland --> PlatformEvents
-    Headless --> PlatformEvents
-
-    PlatformEvents --> App["App"]
-    App --> Window["Window"]
-    App --> Entities["Entity<T> graph"]
-    Window --> ElementTree["Render / RenderOnce element tree"]
-    Entities --> ElementTree
-    ElementTree --> Layout["Layout and prepaint"]
-    Layout --> Scene["Scene primitives"]
-    Scene --> RenderPlan["PresentationPacket"]
-    RenderPlan --> NovaRenderer
-    NovaRenderer --> Present["Swapchain present"]
-    Present --> PlatformEvents
+```powershell
+cargo check -p gpui --no-default-features --features nova-gfx-dx12
+$env:RUST_MIN_STACK = '67108864'
+cargo test -p gpui --no-default-features --features nova-gfx-dx12 --lib platform::nova::
 ```
 
-## 帧流程
-
-普通帧路径是事件驱动的。状态变化会 notify entities，windows 会合并 frame
-requests，renderer 只在 scene state 或 presentation state 需要时重绘。
-
-```mermaid
-sequenceDiagram
-    participant Input as Platform input
-    participant Window as Window
-    participant App as App
-    participant Entity as Entity<T>
-    participant Render as Render tree
-    participant Renderer as Nova renderer
-
-    Input->>Window: mouse / keyboard / window event
-    Window->>App: dispatch action or event callback
-    App->>Entity: update state through Context<T>
-    Entity->>App: cx.notify()
-    App->>Window: request frame
-    Window->>Render: render entities into elements
-    Render->>Window: layout, prepaint, paint
-    Window->>Renderer: submit PresentationPacket
-    Renderer->>Window: draw, present, or presentation-only frame
-```
-
-`PlatformFrameRequest::ui_commit()` 请求新的 UI scene commit，但不要求立即 presentation。
-`PlatformFrameRequest::presentation()` 只呈现最后一次已提交的 retained scene，不强制 UI generation。`PresentationPacket` 不携带 Window 生命周期：dirty/blur/dynamic metadata 在提交时按值快照，只有不可变 `Scene` 通过 `Arc` 共享。
-
-## 自定义 GPU 内容
-
-旧的 application-facing surface 流程已经不是当前 GPUI API。新的自定义 GPU 内容
-应使用以下路径：
-
-- 普通 element paint 写入 GPUI scene primitives；
-- image 和 SVG elements；
-- 通过通用 `RendererExtension` 生命周期实现应用拥有的 GPU 绘制；
-- 通过独立 `gpui-3d` crate 创建 retained 3D scene、材质、查询和 viewport element。
-
-GPUI 负责窗口、输入和 extension 调度；`gpui-3d` 负责 3D 场景准备与 viewport 资源；
-应用 crate 负责领域数据转换。GPUI 本身不提供 3D mesh primitive 或业务策略。应用代码不应
-假设存在 backend-specific device、queue 或 surface handle。
-
-## 上游 GPUI 架构对比
-
-比较 baseline 是 `Cargo.toml` 记录的 Zed commit
-`6805d952f9f3d702f760aa11b1547df8a625fa16`。它只用于 review，不是 source 或 build
-dependency。
-
-| 领域 | 上游 GPUI 方向 | 当前独立 fork |
-| --- | --- | --- |
-| Windows platform | DirectX-oriented Windows renderer path | winit platform path with nova-gfx backends |
-| Windows backend selection | Platform-specific renderer implementation | `RendererBackend` 可选择 `NovaDx12` 或 `NovaVulkan` |
-| Renderer default | Platform renderer chosen internally | Windows 可用时默认 Nova DX12，Linux/FreeBSD 默认 Nova Vulkan，macOS 默认 Nova Metal |
-| Frame scheduling | Redraw behavior tied closely to platform renderer loops | 事件驱动 composition，并支持 presentation-only frames |
-| Layout | 上游 Taffy-based layout semantics | Taffy semantics 加 retained layout fingerprint，并提供 cold/retained Criterion baseline |
-| Damage | platform renderer 决定 redraw | 有界、传递合并的 dirty regions，并保留 conservative full-redraw fallback |
-| Animated images | 上游 image elements 和 format support | 固定 animation worker pool，同时按每个 stream 和全进程 decoded bytes 背压 |
-| Image memory | application/cache lifetime conventions | decoded/compressed/atlas/prefetch 有界预算、可取消 cache load 和 capacity-bucketed bitmap reuse |
-| Performance evidence | 上游 project-wide profiling infrastructure | fork 自有 layout/path/image/memory Criterion suites 与 runtime frame/resource metrics |
-| Shader model | Built-in renderer shaders owned by platform paths | 内置 WGSL validation，并提供通用 runtime WGSL helpers |
-| Custom GPU content | 主要通过 framework rendering primitives 扩展 | Scene primitives、图片、SVG 和通用 `RendererExtension` 生命周期；3D 能力由 `gpui-3d` 提供 |
-| Example API style | 旧示例可能使用 previous context 和 view terminology | 示例使用 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` |
-
-## 渲染说明
-
-`RendererOptions` 控制后端选择、GPU adapter 选择、present mode 偏好、GPU submission
-policy、render policy 和 frame metrics。`RendererBackend::Auto` 会选择平台默认值。
-显式后端包括 `NovaDx12`、`NovaVulkan`、`NovaMetal` 和 `HeadlessTest`。
-
-nova-gfx 路径会把 GPUI scene 转换为 frame upload buckets、GPU render steps、可选的
-offscreen path/backdrop passes、retained present-cache 更新和 swapchain presentation。
-当 dirty region 可以安全限定时使用 partial redraw，否则 renderer 会回退到 full
-redraw。
+硬件相关测试默认 `#[ignore]`，需真实窗口/GPU。完整矩阵见
+[构建与测试](../../docs/BUILD_AND_TEST.md)。
 
 ## 文档
 
-- [文档索引](docs/README.zh-CN.md)
-- [开发指南](docs/development.zh-CN.md)
-- [上下文与实体](docs/contexts.zh-CN.md)
-- [渲染与元素](docs/rendering.zh-CN.md)
-- [Renderer backend](docs/renderer_backend.zh-CN.md)
-- [Windows renderer backend](docs/windows_renderer_backend.zh-CN.md)
-- [运行时 WGSL shaders](docs/runtime_wgsl_shaders.zh-CN.md)
-- [Performance pipeline](docs/performance_pipeline.zh-CN.md)
-- [示例](docs/examples.zh-CN.md)
-- [验证](docs/validation.zh-CN.md)
-
-BMCBL 集成级渲染说明位于从当前目录访问的
-`../../docs/GPUI_VENDOR_RENDERING.md`。
-独立 3D 的职责边界和 API 说明见 [`../../docs/GPUI_3D.md`](../../docs/GPUI_3D.md)。
-
-## 示例
-
-示例保持在当前 GPUI API：
-
-```powershell
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --examples
-cargo run --manifest-path Cargo.toml --example hello_world
-cargo run --manifest-path Cargo.toml --example minimal_window
-cargo run --manifest-path Cargo.toml --example image_gallery
-```
-
-部分示例是平台专用的，必须声明所需 renderer features。独立 `gpui-3d` crate 提供 CPU
-scene 和原生 viewport 示例。
-
-## 验证
-
-建议使用以下命令验证本 crate：
-
-```powershell
-cargo fmt --manifest-path Cargo.toml --all
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12
-cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --lib -- -D warnings
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --examples
-```
+- [工作区文档索引](../../docs/README.md)
+- [架构](../../docs/ARCHITECTURE.md)
+- [crate 目录](../../docs/CRATES.md)
+- [命名规范](../../docs/NAMING.md)
+- [gpui / nova-gfx 边界 ADR](../../docs/adr/0001-nova-gfx-gpui-boundary.md)

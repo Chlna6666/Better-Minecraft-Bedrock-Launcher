@@ -405,8 +405,7 @@ and height shading scale decoded linear-light RGB and encode the result once;
 highlights do not mix the block's hue toward white. GPU tile processing receives
 the resulting sRGB RGBA8 pixels.
 
-Source policy and public references are documented in
-[docs/PALETTE_SOURCES.md](docs/PALETTE_SOURCES.md).
+Palette policy and public references are documented in this crate's API docs.
 
 Latest local reference-palette smoke run:
 
@@ -465,19 +464,13 @@ Biome colors sampled on an X/Z plane at the configured Y layer. If a column has
 no biome at that Y, the highest stored biome in the chunk fills the gap, matching
 BedrockMap's top-biome handling.
 
-![Biome map](docs/images/biome-viewport.png)
-
 ### `RawBiomeLayer { y }`
 
 Diagnostic biome-id map. Unknown or sparse ids are intentionally visible.
 
-![Raw biome map](docs/images/raw-biome-viewport.png)
-
 ### `LayerBlocks { y }`
 
 Fixed world-Y block layer rendered as an X/Z plane. This is not a side section.
-
-![Fixed Y layer map](docs/images/layer-y64-viewport.png)
 
 ### `SurfaceBlocks`
 
@@ -490,21 +483,15 @@ same-color blocks remain readable without switching to a 2.5D view. Use
 `HeightMap` for computed surface elevation and `RawHeightMap` for saved raw
 heightmap diagnostics.
 
-![Surface block map](docs/images/surface-viewport.png)
-
 ### `HeightMap`
 
 Height gradient derived from the same computed surface column used by
 `SurfaceBlocks`. Raw Data2D/Data3D/Legacy heightmap records are available through
 `RawHeightMap` when you need to debug saved height hints.
 
-![Height map](docs/images/heightmap-viewport.png)
-
 ### `CaveSlice { y }`
 
 Fixed Y cave diagnostic map for air, solid blocks, water, and lava.
-
-![Cave slice map](docs/images/cave-y32-viewport.png)
 
 ## Performance Model
 
@@ -592,11 +579,11 @@ cargo bench --bench render --all-features
 ```
 
 SIMD decisions follow the documented bulk-data crossover rules in
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md). The production path writes the requested
+the workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md). The production path writes the requested
 RGBA/BGRA order directly; it does not expose an order-conversion helper. Cache
 identity includes `TilePixelFormat`, with separate `FastRgbaZstd` and
 `FastBgraZstd` payloads. A format mismatch is a cache miss. API and testing
-details are in [docs/API.md](docs/API.md) and [docs/TESTING.md](docs/TESTING.md).
+details are in the crate rustdoc and the workspace [build and test guide](../../docs/BUILD_AND_TEST.en.md).
 
 ## Current Limits
 

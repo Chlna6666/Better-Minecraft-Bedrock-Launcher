@@ -9,9 +9,9 @@ those traits for Vulkan, Direct3D 11/12, OpenGL 4.5, and Metal.
 
 Current crates:
 
-- `gfx-core`: backend-neutral descriptions, handles, errors, and the
-  `Gfx*Device` traits. It has no GPUI, winit, raw-window-handle, Vulkan, DX12,
-  or Metal dependency.
+- `gfx-core`: backend-neutral descriptions, handles, errors, and the device
+  capability traits. It has no UI framework, winit, raw-window-handle, Vulkan,
+  DX12, or Metal dependency.
 - `gfx-memory`: GPU allocation wrappers, upload-ring accounting, deferred-free
   queues, and memory statistics.
 - `gfx-shader`: WGSL validation and SPIR-V / HLSL / MSL / GLSL generation through Naga.
@@ -29,12 +29,13 @@ Current crates:
 
 Use the narrowest core trait required by the caller:
 
-- `SurfaceDevice` for surfaces and swapchains.
-- `ResourceDevice` for buffers, textures, views, samplers, and resource sets.
-- `PipelineDevice` for shaders, render passes, layouts, and pipelines.
+- `SurfaceDevice` for surfaces, swapchains, and surface reconfiguration.
+- `ResourceDevice` for buffers, textures, views, samplers, and bind groups.
+- `PipelineDevice` for shaders, render pass layouts, pipeline layouts, and pipelines.
 - `CommandDevice` for explicit command encoder work.
-- `PresentationDevice` for `draw_steps_and_present` and
-  `draw_steps_to_texture`.
+- `SubmissionDevice` for deferred submissions and completion tracking.
+- `PresentationDevice` for `render_and_present`, `render_to_textures`,
+  surface readiness, and presentation capabilities.
 - `DiagnosticsDevice` for live resource statistics.
 
 `Device` combines the full device contract when a call site genuinely needs
@@ -43,9 +44,9 @@ API requirements.
 
 ## Publishing
 
-See [PUBLISHING.md](PUBLISHING.md) for the crates.io release order and package
-validation checklist. The release order matters because backend crates depend on
-`gfx-core`, and crates.io dry-runs require published dependency versions.
+Release order follows the dependency direction: publish `gfx-core` first, then
+`gfx-memory`/`gfx-shader`, then the backend crates. Validate each package with a
+crates.io dry-run before publishing dependants.
 
 ## Feature Selection
 
@@ -64,10 +65,10 @@ The backend crates enable only their own memory feature:
 - `gfx-dx12` depends on `gfx-memory` with `features = ["dx12"]`.
 - `gfx-metal` depends on `gfx-memory` with `features = ["metal"]`.
 
-GPUI users must choose a concrete nova-gfx backend explicitly:
+Consumers choose a concrete nova-gfx backend explicitly:
 
 ```toml
-gpui = { path = "../gpui", default-features = false, features = ["nova-gfx-vulkan"] }
+gfx-vulkan = { path = "../nova-gfx/gfx-vulkan" }
 ```
 
 Use `nova-gfx-vulkan`, `nova-gfx-dx11`, `nova-gfx-dx12`, `nova-gfx-opengl`, or `nova-gfx-metal`. The old
@@ -79,7 +80,7 @@ backend:
 
 ```powershell
 rtk cargo tree -p gfx-vulkan --no-default-features
-rtk cargo tree -p gpui --no-default-features --features nova-gfx-vulkan
+rtk cargo tree -p gfx-vulkan --no-default-features
 ```
 
 The Vulkan tree should not contain `gfx-dx12`, `gfx-metal`, D3D12, or Metal
@@ -108,11 +109,40 @@ DX12, and Metal backends use `raw-window-handle` in their own crates because
 native surface creation is a platform integration boundary, not a core trait
 dependency.
 
-## Breaking API Change
+## Boundary
 
-Backend public inherent methods that duplicate the core traits are no longer the
-maintained API. Callers should import the relevant `gfx_core::Gfx*Device` trait
-and use trait methods on the concrete backend device. Convenience triangle and
-atlas helpers such as `draw_and_present` and `draw_resources_and_present` are
-core trait default methods; production renderers should generally use
-`draw_steps_and_present` directly.
+nova-gfx is a graphics library, not a UI toolkit. Frame policy such as damage
+collection, retained layers, frame scheduling, partial-present decisions, and
+GPU work tracking belongs to the renderer consuming this crate. `gfx-core`
+contains only graphics vocabulary: devices, queues, resources, pipelines,
+commands, surfaces, and presentation primitives. It must not reference a UI
+framework, a widget tree, or renderer-specific damage models.
+
+The canonical frame entry points are descriptor-based:
+
+```rust
+use gfx_core::{
+    ClearColor, LoadOp, PresentedFrame, PresentFrameDescriptor, RenderCommand,
+    PresentationDevice, RenderPassId, SwapchainId,
+};
+
+fn present<D: PresentationDevice>(
+    device: &mut D,
+    swapchain: SwapchainId,
+    render_pass: RenderPassId,
+    commands: &[RenderCommand],
+) -> gfx_core::Result<Option<PresentedFrame>> {
+    device.render_and_present(&PresentFrameDescriptor {
+        swapchain,
+        render_pass,
+        commands,
+        color_load_op: LoadOp::Clear(ClearColor::default()),
+        depth_attachment: None,
+        present_region: None,
+    })
+}
+```
+
+Backend public inherent methods that duplicate the core traits are not the
+maintained API. Import the relevant capability trait and call trait methods on
+the concrete backend device.

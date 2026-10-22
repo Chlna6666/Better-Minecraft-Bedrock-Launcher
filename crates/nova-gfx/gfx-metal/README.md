@@ -9,6 +9,6 @@ encoders, and `CAMetalLayer` swapchains. On non-Apple targets it implements the
 core traits with a minimal stub that returns `Error::Unavailable`, allowing
 non-target builds to compile.
 
-Offscreen `draw_steps_to_texture` is currently reported as
+Offscreen `render_to_texture` is currently reported as
 `Error::Unavailable`; this crate keeps that behavior explicit until the Metal
 offscreen path is implemented.

@@ -1,12 +1,26 @@
 # gfx-metal
 
-[English documentation](README.md)
+[English](README.md)
 
-`gfx-metal` 是 `gfx-core` device trait 的 Metal 实现。
+`gfx-metal` 是 `gfx-core` 设备 trait 的 Metal 实现。Apple 目标上创建 Metal device、资源、
+pipeline、command encoder 与 `CAMetalLayer` swapchain；非 Apple 目标以 `Error::Unavailable`
+stub 实现 trait，保证非目标构建可编译。
 
-在 Apple 目标上，它创建 Metal device、resource、pipeline、command
-encoder 和 `CAMetalLayer` swapchain。在非 Apple 目标上，它实现最小 core
-trait stub，并返回 `Error::Unavailable`，让非目标平台构建可通过。
+离屏 `render_to_texture` 当前返回 `Error::Unavailable`；在实现 Metal 离屏路径前保持显式
+失败，不做静默回退。
 
-当前 `draw_steps_to_texture` 会明确返回 `Error::Unavailable`；Metal
-offscreen 路径尚未在本次实现中补齐。
+## 边界
+
+- 纯图形后端；不依赖 UI 框架/应用代码。
+- Windows 上只编译 stub；Apple 侧需单独构建验证。
+
+## 构建与测试
+
+```powershell
+cargo check -p gfx-metal
+```
+
+## 文档
+
+- [nova-gfx](../README.zh-CN.md)
+- [构建与测试](../../../docs/BUILD_AND_TEST.md)

@@ -15,17 +15,27 @@ Import the relevant `gfx_core::Gfx*Device` trait and call trait methods on
 `VulkanDevice`.
 
 ```rust
-use gfx_core::{PresentationDevice, SwapchainId, RenderPassId, DrawStepDescriptor, ClearColor};
+use gfx_core::{
+    ClearColor, LoadOp, PresentationDevice, PresentFrameDescriptor, RenderCommand,
+    RenderPassId, SwapchainId,
+};
 use gfx_vulkan::VulkanDevice;
 
 fn present(
     device: &mut VulkanDevice,
     swapchain: SwapchainId,
     render_pass: RenderPassId,
-    steps: &[DrawStepDescriptor],
-    clear: ClearColor,
+    commands: &[RenderCommand],
 ) -> gfx_core::Result<()> {
-    device.draw_steps_and_present(swapchain, render_pass, steps, clear)
+    let _frame = device.render_and_present(&PresentFrameDescriptor {
+        swapchain,
+        render_pass,
+        commands,
+        color_load_op: LoadOp::Clear(ClearColor::default()),
+        depth_attachment: None,
+        present_region: None,
+    })?;
+    Ok(())
 }
 ```
 

@@ -1,32 +1,30 @@
 # gfx-shader
 
-[English documentation](README.md)
+[English](README.md)
 
-`gfx-shader` 为 `nova-gfx` 校验 WGSL 源码，并生成后端 shader payload。
+`gfx-shader` 校验 WGSL 并为 `nova-gfx` 生成后端 shader payload：
 
-它使用 Naga 解析并校验 WGSL，然后生成：
+- Vulkan：SPIR-V；
+- Direct3D 12：HLSL；
+- Metal：MSL。
 
-- Vulkan 使用的 SPIR-V；
-- Direct3D 12 使用的 HLSL；
-- Metal 使用的 MSL。
+生成结果以 `gfx_core::ShaderBinary` 返回，可直接传入 `PipelineDevice` 的 shader module API。
+`compile_wgsl_to_msl`/`compile_wgsl_to_backend` 默认目标 MSL 1.0；需要更新语言特性时显式
+选择版本，例如 `compile_wgsl_to_msl_versioned`。
 
-生成结果以 `gfx_core::ShaderBinary` 返回，可直接传给
-`PipelineDevice` 的 shader module 创建接口。
+## 边界
 
-`compile_wgsl_to_msl` 和 `compile_wgsl_for_backend` 默认目标为 MSL 1.0。shader
-需要较新语言特性时，可显式选择版本：
+- 只做 shader 校验/翻译；不创建 GPU 资源。
+- 生产构建优先使用 `gfx-shader-build` 在构建期编译并嵌入。
 
-```rust
-use gfx_core::ShaderStage;
-use gfx_shader::{MslVersion, compile_wgsl_to_msl_with_version};
+## 构建与测试
 
-let shader = compile_wgsl_to_msl_with_version(
-    source,
-    ShaderStage::Vertex,
-    "vs_main",
-    MslVersion::V1_2,
-)?;
+```powershell
+cargo check -p gfx-shader
+cargo test -p gfx-shader
 ```
 
-GPUI 3D 在 Metal 上为 WGSL `instance_index` 选择 MSL 1.2；其他 shader 仍使用默认目标。
-翻译成功只证明生成了 MSL 源码，仍需在原生 Metal 设备上验证。
+## 文档
+
+- [nova-gfx](../README.zh-CN.md)
+- [该 crate 的 English README](README.md)
