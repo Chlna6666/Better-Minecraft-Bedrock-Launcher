@@ -6,6 +6,7 @@ pub(super) fn platform_input_name(event: &PlatformInput) -> &'static str {
     match event {
         PlatformInput::KeyDown(_) => "key_down",
         PlatformInput::TextInput(_) => "text_input",
+        PlatformInput::TextPreedit(_) => "text_preedit",
         PlatformInput::KeyUp(_) => "key_up",
         PlatformInput::ModifiersChanged(_) => "modifiers_changed",
         PlatformInput::MouseDown(_) => "mouse_down",
@@ -32,5 +33,22 @@ pub(super) fn log_timed_gpui_event(
         }
     } else if log::log_enabled!(log::Level::Trace) {
         log::trace!("{} elapsed={:?} {}", message, elapsed, log_fields());
+    }
+}
+
+#[cfg(test)]
+mod text_input_event_tests {
+    use super::*;
+
+    #[test]
+    fn committed_and_composing_text_have_distinct_event_names() {
+        assert_eq!(
+            platform_input_name(&PlatformInput::TextInput("中文".to_owned())),
+            "text_input"
+        );
+        assert_eq!(
+            platform_input_name(&PlatformInput::TextPreedit("中".to_owned())),
+            "text_preedit"
+        );
     }
 }
