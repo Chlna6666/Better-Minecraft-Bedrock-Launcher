@@ -207,10 +207,21 @@ fn allow_unpaced_native_frame(
     stalled && fallback_available
 }
 
-/// Native client geometry owns the modal cadence. Presentation-only animation
-/// ticks are never allowed to compete with an in-flight native Resize or the
-/// first matching UI Scene. This does not pause animations or their timestamps:
-/// the next full Scene samples the current animation time as usual.
+/// A held resize gesture is not itself an uncommitted geometry change.
+/// Once the latest native epoch has a matching committed Scene, compositor
+/// animations may continue even if WM_EXITSIZEMOVE has not arrived.
+fn native_resize_needs_matching_scene(
+    pending_resize: bool,
+    pending_native_size_retry: bool,
+    native_epoch: u64,
+    committed_epoch: u64,
+) -> bool {
+    pending_resize || pending_native_size_retry || native_epoch != committed_epoch
+}
+
+/// Do not present a previous-size Scene while a newer geometry generation
+/// is in flight. Unlike the modal gesture flag, this gate opens again as
+/// soon as the matching Scene has been committed.
 fn should_attempt_animation_present(
     has_active_animation: bool,
     native_resize_in_progress: bool,
@@ -2281,15 +2292,20 @@ impl WindowsWindow {
                 self.recover_stale_pending_renderer_resize();
             }
             let had_active_presentation = self.has_active_presentation_animations();
-            // Keep presenting the committed scene while a resize commit is being built. The
-            // native client can expose its new extent before the matching GPUI Scene reaches the
-            // renderer; suppressing these frames leaves that newly exposed area unpainted.
+            // WM_ENTERSIZEMOVE may remain active long after the user stops
+            // moving the border. Block animation-only submission for actual
+            // uncommitted geometry, not for the entire held mouse gesture.
+            // This also protects an epoch advanced before dispatch_pending_resize.
             let resize_pending = self.0.pending_renderer_size.get().is_some();
-            let native_resize_in_progress =
-                self.0.size_move_active.get() && self.0.size_move_has_resized.get();
+            let matching_scene_pending = native_resize_needs_matching_scene(
+                self.0.pending_resize.get().is_some(),
+                self.0.pending_native_size_retry.get(),
+                self.0.size_epoch.get(),
+                self.0.committed_epoch.get(),
+            );
             let try_animation_present = should_attempt_animation_present(
                 had_active_presentation,
-                native_resize_in_progress,
+                matching_scene_pending,
                 resize_pending,
             );
             let presented = if try_animation_present {
@@ -3521,12 +3537,39 @@ mod tests {
 
     #[test]
     fn native_resize_prioritizes_latest_geometry_over_animation_only_presents() {
-        use super::should_attempt_animation_present;
+        use super::{native_resize_needs_matching_scene, should_attempt_animation_present};
         assert!(should_attempt_animation_present(true, false, false));
         assert!(!should_attempt_animation_present(true, true, false));
         assert!(!should_attempt_animation_present(true, false, true));
         assert!(!should_attempt_animation_present(true, true, true));
         assert!(!should_attempt_animation_present(false, false, false));
+
+        // WM_SIZE enqueued but the Resize callback has not run yet.
+        assert!(native_resize_needs_matching_scene(true, false, 8, 8));
+        // Reentrant WM_SIZE could not access the native window state.
+        assert!(native_resize_needs_matching_scene(false, true, 8, 8));
+        // The native client has advanced but GPUI still owns an older Scene.
+        assert!(native_resize_needs_matching_scene(false, false, 9, 8));
+    }
+
+    #[test]
+    fn held_native_resize_allows_animation_after_geometry_settles() {
+        use super::{native_resize_needs_matching_scene, should_attempt_animation_present};
+
+        // The Win32 modal size/move gesture remains held, but a matching UI
+        // Scene has reached the committed geometry epoch: animations must
+        // continue without waiting for WM_EXITSIZEMOVE.
+        let modal_resize_still_held = true;
+        assert!(modal_resize_still_held);
+        let blocked = native_resize_needs_matching_scene(false, false, 9, 9);
+        assert!(!blocked);
+        assert!(should_attempt_animation_present(true, blocked, false));
+        // A later WM_SIZE must immediately close the presentation gate again.
+        assert!(!should_attempt_animation_present(
+            true,
+            native_resize_needs_matching_scene(true, false, 10, 9),
+            false,
+        ));
     }
 
     #[test]
