@@ -1,6 +1,7 @@
 use gpui::*;
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
+use crate::ui::components::input::Input;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
@@ -153,7 +154,7 @@ pub fn render_onboarding_tour(
             .top(px(geometry.panel.y))
             .w(px(geometry.panel.w))
             .h(px(geometry.panel.h))
-            .child(render_guide_panel(state, &colors, i18n, geometry.class)),
+            .child(render_guide_panel(state, &colors, i18n, geometry.class, cx)),
     )
     .into_any_element()
 }
@@ -186,6 +187,7 @@ fn adaptive_panel_size(
     let ideal_h: f32 = match scene {
         OnboardingScene::Welcome => 334.0,
         OnboardingScene::PlatformSetup => 342.0,
+        OnboardingScene::SettingsOverview => 394.0,
         OnboardingScene::Finish => 300.0,
         OnboardingScene::TasksOverview
         | OnboardingScene::ManageOverview
@@ -460,6 +462,7 @@ fn render_guide_panel(
     colors: &ThemeColors,
     i18n: &I18n,
     class: ViewportClass,
+    cx: &App,
 ) -> Div {
     let inner_px = if class == ViewportClass::Tight {
         13.0
@@ -497,7 +500,7 @@ fn render_guide_panel(
                 .overflow_y_scrollbar()
                 .px(px(inner_px))
                 .py(px(11.0))
-                .child(render_scene_body(state, colors, i18n)),
+                .child(render_scene_body(state, colors, i18n, cx)),
         )
         .child(render_footer(state, colors, i18n))
 }
@@ -579,7 +582,7 @@ fn render_header(
         )
 }
 
-fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n, cx: &App) -> AnyElement {
     match state.scene {
         OnboardingScene::Welcome => render_welcome(colors, i18n),
         OnboardingScene::DownloadNavigation => render_download_navigation(colors, i18n),
@@ -590,7 +593,7 @@ fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I
         OnboardingScene::TasksOverview => render_tasks_overview(colors, i18n),
         OnboardingScene::ManageOverview => render_manage_overview(colors, i18n),
         OnboardingScene::ManageContent => render_manage_content(colors, i18n),
-        OnboardingScene::SettingsOverview => render_settings_overview(colors, i18n),
+        OnboardingScene::SettingsOverview => render_settings_overview(colors, i18n, cx),
         OnboardingScene::ToolsOverview => render_tools_overview(colors, i18n),
         OnboardingScene::PlatformSetup => render_platform(state, colors, i18n),
         OnboardingScene::Finish => render_finish(colors, i18n),
@@ -831,8 +834,40 @@ fn render_manage_content(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
-    div()
+fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n, cx: &App) -> AnyElement {
+    let settings = cx.global::<crate::ui::views::settings::state::SettingsPageState>();
+    let current = settings.download_curseforge_api_source.as_ref();
+    let custom_input = settings.download_curseforge_api_base_input.as_ref();
+
+    let mut sources = div().flex().flex_wrap().gap(px(6.0));
+    for (source, label) in [
+        ("mirror", t!("LauncherSettings.download.curseforge_api_source.mirror")),
+        ("official", t!("LauncherSettings.download.curseforge_api_source.official")),
+        ("custom", t!("LauncherSettings.download.curseforge_api_source.custom")),
+    ] {
+        let selected = current == source;
+        sources = sources.child(
+            div()
+                .id(SharedString::from(format!("onboarding-cf-source-{source}")))
+                .px(px(10.0))
+                .h(px(30.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(if selected { colors.accent } else { colors.border })
+                .bg(colors.accent.opacity(if selected { 0.15 } else { 0.04 }))
+                .text_size(px(11.0))
+                .text_color(colors.text_primary)
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    crate::ui::onboarding::select_curseforge_source(source, cx);
+                }),
+        );
+    }
+
+    let mut content = div()
         .flex()
         .flex_col()
         .gap(px(8.0))
@@ -846,16 +881,34 @@ fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
         .child(step(
             colors,
             2,
-            t!("Onboarding.settings.network"),
-            t!("Onboarding.settings.network_detail"),
+            t!("Onboarding.settings.curseforge_source"),
+            t!("Onboarding.settings.curseforge_source_detail"),
         ))
-        .child(step(
+        .child(sources);
+
+    if current == "custom" {
+        let input = if let Some(input) = custom_input {
+            Input::new(input)
+                .appearance(false)
+                .bordered(true)
+                .w_full()
+                .h(px(32.0))
+                .px(px(7.0))
+                .text_size(px(11.0))
+                .into_any_element()
+        } else {
+            div()
+                .text_size(px(11.0))
+                .text_color(colors.text_secondary)
+                .child(t!("Onboarding.settings.curseforge_custom_hint"))
+                .into_any_element()
+        };
+        content = content.child(input).child(tip(
             colors,
-            3,
-            t!("Onboarding.settings.other"),
-            t!("Onboarding.settings.other_detail"),
-        ))
-        .into_any_element()
+            t!("Onboarding.settings.curseforge_custom_hint"),
+        ));
+    }
+    content.into_any_element()
 }
 
 fn render_tools_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {

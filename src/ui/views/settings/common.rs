@@ -105,6 +105,7 @@ pub(super) fn spawn_persist_settings_with_success(
 
     cx.spawn(async move |cx| {
         let res = crate::tasks::runtime::run_io_blocking(move || {
+            let mut curseforge_source_changed = false;
             crate::config::config::update_config(|cfg| {
                 cfg.game.launcher_visibility = match snapshot.launcher_display_mode {
                     LauncherDisplayMode::MinimizeOnLaunch => "minimize".to_string(),
@@ -151,6 +152,8 @@ pub(super) fn spawn_persist_settings_with_success(
                         _ => crate::config::config::GithubSource::Auto,
                     };
                 cfg.launcher.download.github.custom_mirror = snapshot.download_github_custom_mirror;
+                let old_curseforge_source = cfg.launcher.download.curseforge_api_source.clone();
+                let old_curseforge_base = cfg.launcher.download.curseforge_api_base.clone();
                 cfg.launcher.download.curseforge_api_source = match snapshot
                     .download_curseforge_api_source
                     .to_lowercase()
@@ -161,6 +164,8 @@ pub(super) fn spawn_persist_settings_with_success(
                     _ => "mirror".to_string(),
                 };
                 cfg.launcher.download.curseforge_api_base = snapshot.download_curseforge_api_base;
+                curseforge_source_changed = old_curseforge_source != cfg.launcher.download.curseforge_api_source
+                    || old_curseforge_base != cfg.launcher.download.curseforge_api_base;
                 cfg.launcher.download.proxy.http_proxy_url = snapshot.download_http_proxy_url;
                 cfg.launcher.download.proxy.socks_proxy_url = snapshot.download_socks_proxy_url;
                 cfg.custom_style.theme_color = snapshot.theme_color;
@@ -176,10 +181,11 @@ pub(super) fn spawn_persist_settings_with_success(
                 cfg.custom_style.local_font_family = snapshot.local_font_family;
                 cfg.custom_style.system_font_family = snapshot.system_font_family;
             })?;
-            Ok::<(), std::io::Error>(())
+            Ok::<bool, std::io::Error>(curseforge_source_changed)
         })
         .await;
 
+        let curseforge_source_changed = matches!(&res, Ok(Ok(true)));
         if let Err(join_err) = res {
             warn!("persist settings join error: {join_err}");
             toast::resolve_async(cx, toast_id, ToastKind::Error, t!("Settings.save_failed"));
@@ -193,6 +199,11 @@ pub(super) fn spawn_persist_settings_with_success(
                 t!("Settings.save_failed_with_error", error = &error_text),
             );
         } else {
+            if curseforge_source_changed {
+                if let Err(error) = cx.update(crate::ui::views::download::curseforge::on_api_source_changed) {
+                    warn!("invalidate CurseForge source state failed: {error:?}");
+                }
+            }
             toast::resolve_async(cx, toast_id, ToastKind::Success, t!("Settings.saved"));
             if let Some(on_success) = on_success {
                 if let Err(error) = cx.update(move |cx| {

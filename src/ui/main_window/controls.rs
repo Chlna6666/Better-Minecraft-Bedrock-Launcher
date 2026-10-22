@@ -212,21 +212,29 @@ impl MainWindowView {
         socks_proxy_url: String,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |_this, _cx| {
+        cx.spawn(async move |_this, cx| {
             let res = crate::tasks::runtime::run_io_blocking(move || {
+                let mut curseforge_source_changed = false;
                 crate::config::config::update_config(|cfg| {
+                    curseforge_source_changed =
+                        cfg.launcher.download.curseforge_api_base != curseforge_api_base;
                     cfg.launcher.download.curseforge_api_base = curseforge_api_base;
                     cfg.launcher.download.proxy.http_proxy_url = http_proxy_url;
                     cfg.launcher.download.proxy.socks_proxy_url = socks_proxy_url;
                 })?;
-                Ok::<(), std::io::Error>(())
+                Ok::<bool, std::io::Error>(curseforge_source_changed)
             })
             .await;
 
-            if let Err(join_err) = res {
-                tracing::warn!("persist launcher download text join error: {join_err}");
-            } else if let Ok(Err(io_err)) = res {
-                tracing::warn!("persist launcher download text failed: {io_err}");
+            match res {
+                Ok(Ok(true)) => {
+                    if let Err(error) = cx.update(crate::ui::views::download::curseforge::on_api_source_changed) {
+                        tracing::warn!("invalidate CurseForge source after URL edit failed: {error:?}");
+                    }
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => tracing::warn!("persist launcher download text failed: {error}"),
+                Err(error) => tracing::warn!("persist launcher download text join error: {error}"),
             }
         })
         .detach();

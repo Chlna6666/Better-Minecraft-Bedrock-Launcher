@@ -35,6 +35,27 @@ pub(crate) use results::{
     render_curseforge_results_list_placeholder_aligned, render_result_logo_placeholder,
 };
 
+/// Drop source-specific metadata and in-flight result generations after an API
+/// endpoint change. The next visit to the resource tab reloads from the new host.
+pub(crate) fn on_api_source_changed(cx: &mut App) {
+    cx.update_global(|state: &mut DownloadPageState, cx| {
+        state.curseforge_metadata_request_id =
+            state.curseforge_metadata_request_id.wrapping_add(1);
+        state.curseforge_loaded = false;
+        state.curseforge_loading = false;
+        state.curseforge_error = None;
+        state.curseforge_categories.clear();
+        state.curseforge_versions.clear();
+        state.curseforge_selected_root_id = None;
+        state.curseforge_selected_sub_id = None;
+        state.curseforge_selected_game_version = SharedString::from("");
+        state.curseforge_page_index = 0;
+        state.curseforge_total_count = None;
+        state.curseforge_view_epoch = state.curseforge_view_epoch.wrapping_add(1);
+        results_state::invalidate_results_now_in_state(state, cx);
+    });
+}
+
 pub(crate) use modals::handle_close_overlay;
 pub(crate) use results_state::{
     apply_results_query_change_in_state, begin_page_results_transition_in_state,

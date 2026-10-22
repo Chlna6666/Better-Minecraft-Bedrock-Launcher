@@ -30,7 +30,7 @@ pub struct CurseForgeClient {
 impl CurseForgeClient {
     pub fn new() -> Result<Self, String> {
         let client = build_http_client()?.clone();
-        let (base_v1, base_v2) = build_base_urls();
+        let (base_v1, base_v2) = build_base_urls()?;
         Ok(Self {
             client,
             base_v1,
@@ -183,21 +183,13 @@ impl CurseForgeClient {
         let response = match self.get::<GetVersionsV2Response>(url_primary).await {
             Ok(response) => response,
             Err(err) => {
-                // Some mirrors do not implement the v2 versions endpoint.
-                // Fall back to the official API for this list only.
+                // Mirrors and custom endpoints may omit v2 game versions; use an
+                // unfiltered catalog instead. Never issue a hidden request to
+                // a different API source.
                 if err.contains("Status 404") {
-                    let url_official = Url::parse(&format!(
-                        "{}/v2/games/{}/versions",
-                        CURSEFORGE_OFFICIAL_BASE, GAME_ID
-                    ))
-                    .map_err(|e| e.to_string())?;
-                    match self.get::<GetVersionsV2Response>(url_official).await {
-                        Ok(response) => response,
-                        Err(_) => return Ok(Vec::new()),
-                    }
-                } else {
-                    return Err(err);
+                    return Ok(Vec::new());
                 }
+                return Err(err);
             }
         };
 
@@ -368,37 +360,68 @@ fn should_retry_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-fn build_base_urls() -> (String, String) {
-    static BASE_URLS: OnceLock<(String, String)> = OnceLock::new();
-    BASE_URLS.get_or_init(build_base_urls_uncached).clone()
-}
-
-fn build_base_urls_uncached() -> (String, String) {
+// Resolve at client construction rather than pinning the first launch setting for
+// the process lifetime. HTTP connection pooling remains shared by build_http_client().
+fn build_base_urls() -> Result<(String, String), String> {
     let (source, custom_base) = read_config()
         .ok()
-        .map(|cfg| {
-            (
-                cfg.launcher.download.curseforge_api_source,
-                cfg.launcher.download.curseforge_api_base,
-            )
-        })
+        .map(|config| (
+            config.launcher.download.curseforge_api_source,
+            config.launcher.download.curseforge_api_base,
+        ))
         .unwrap_or_default();
+    resolve_base_urls(&source, &custom_base)
+}
 
-    let source = source.trim().to_lowercase();
-    let base = match source.as_str() {
+fn resolve_base_urls(source: &str, custom_base: &str) -> Result<(String, String), String> {
+    let base = match source.trim().to_ascii_lowercase().as_str() {
         "official" => CURSEFORGE_OFFICIAL_BASE,
-        "mirror" => CURSEFORGE_MIRROR_BASE,
         "custom" => {
-            let trimmed = custom_base.trim().trim_end_matches('/');
-            if trimmed.is_empty() {
-                CURSEFORGE_MIRROR_BASE
-            } else {
-                trimmed
+            let base = custom_base.trim().trim_end_matches('/');
+            let parsed = Url::parse(base)
+                .map_err(|_| "CurseForge 自定义 API 源必须是有效的 HTTP(S) 地址".to_string())?;
+            if !matches!(parsed.scheme(), "http" | "https")
+                || parsed.host_str().is_none()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err("CurseForge 自定义 API 源必须是不含凭据、查询或片段的 HTTP(S) 基础地址".to_string());
             }
+            base
         }
         _ => CURSEFORGE_MIRROR_BASE,
     };
-    (format!("{}/v1", base), format!("{}/v2", base))
+    Ok((format!("{base}/v1"), format!("{base}/v2")))
+}
+
+#[cfg(test)]
+mod api_source_tests {
+    use super::{CURSEFORGE_MIRROR_BASE, resolve_base_urls};
+
+    #[test]
+    fn custom_source_keeps_its_prefix_and_trims_trailing_slash() {
+        assert_eq!(
+            resolve_base_urls("custom", " https://example.com/cf/ ").unwrap(),
+            ("https://example.com/cf/v1".to_string(), "https://example.com/cf/v2".to_string()),
+        );
+        assert_eq!(
+            resolve_base_urls("official", "https://ignored.example").unwrap().0,
+            "https://api.curseforge.com/v1"
+        );
+        assert_eq!(
+            resolve_base_urls("mirror", "").unwrap().0,
+            format!("{CURSEFORGE_MIRROR_BASE}/v1")
+        );
+    }
+
+    #[test]
+    fn custom_source_rejects_invalid_or_ambiguous_base_urls() {
+        for bad in ["", "file:///etc/passwd", "https://a.test/?key=x", "https://a.test/#x", "https://user:pass@a.test", "not a url"] {
+            assert!(resolve_base_urls("custom", bad).is_err(), "{bad}");
+        }
+    }
 }
 
 fn version_compare(v1: &str, v2: &str) -> std::cmp::Ordering {

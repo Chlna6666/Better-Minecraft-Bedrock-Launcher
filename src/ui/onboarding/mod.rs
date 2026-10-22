@@ -15,6 +15,44 @@ use state::{OnboardingScene, OnboardingTourState};
 
 pub use presentation::render_onboarding_tour;
 
+/// The guide and Launcher settings edit the same persisted CurseForge source.
+/// Keep filesystem writes on the IO worker and never block the GPUI click path.
+pub(crate) fn select_curseforge_source(source: &'static str, cx: &mut App) {
+    if !matches!(source, "official" | "mirror" | "custom") {
+        return;
+    }
+    cx.update_global(
+        |settings: &mut crate::ui::views::settings::state::SettingsPageState, _| {
+            settings.download_curseforge_api_source = SharedString::from(source);
+        },
+    );
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            let mut changed = false;
+            crate::config::config::update_config(|config| {
+                changed = config.launcher.download.curseforge_api_source != source;
+                config.launcher.download.curseforge_api_source = source.to_string();
+            })?;
+            Ok::<bool, std::io::Error>(changed)
+        }).await;
+        match result {
+            Ok(Ok(true)) => {
+                cx.update(crate::ui::views::download::curseforge::on_api_source_changed)?;
+            }
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "保存引导页 CurseForge API 源失败");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "引导页 CurseForge API 源保存任务失败");
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }).detach();
+}
+
+
+
 pub fn reopen(cx: &mut App) {
     cx.update_default_global(|state: &mut OnboardingTourState, _cx| state.reopen());
     apply_scene_route(OnboardingScene::Welcome, cx);
