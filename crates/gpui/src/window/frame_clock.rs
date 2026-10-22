@@ -56,7 +56,28 @@ impl FrameClock {
     }
 }
 
+/// Only one owner should wait for an identical FixedFps deadline.
+/// The native Immediate scheduler already paces the UI callback at that
+/// interval; retain the window timer whenever the native pace differs.
+fn window_frame_clock_interval(
+    requested: Option<Duration>,
+    native_paced: Option<Duration>,
+) -> Option<Duration> {
+    if requested.is_some() && requested == native_paced {
+        None
+    } else {
+        requested
+    }
+}
+
 impl Window {
+    pub(super) fn effective_frame_clock_interval(&self) -> Option<Duration> {
+        window_frame_clock_interval(
+            self.frame_clock.interval(),
+            self.platform_window.native_frame_clock_interval(),
+        )
+    }
+
     /// Returns this window's frame pacing configuration.
     pub fn frame_clock(&self) -> FrameClock {
         self.frame_clock
@@ -234,5 +255,20 @@ mod unpaced_tests {
             state.queue_unpaced_request(PlatformFrameRequest::animation_tick()),
             FrameClockRequest::Dispatch(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod native_clock_tests {
+    use super::*;
+
+    #[test]
+    fn native_immediate_clock_owns_identical_fixed_fps_deadline() {
+        let hz1000 = FrameClock::fixed_fps(1000).unwrap().interval();
+        let hz120 = FrameClock::fixed_fps(120).unwrap().interval();
+        assert_eq!(window_frame_clock_interval(hz1000, hz1000), None);
+        assert_eq!(window_frame_clock_interval(hz1000, None), hz1000);
+        assert_eq!(window_frame_clock_interval(hz120, hz1000), hz120);
+        assert_eq!(window_frame_clock_interval(None, hz1000), None);
     }
 }

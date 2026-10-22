@@ -562,7 +562,7 @@ impl Window {
                 .or_else(|| self.invalidator.pending_dirty_started_at()),
         );
 
-        let Some(frame_interval) = self.frame_clock.interval() else {
+        let Some(frame_interval) = self.effective_frame_clock_interval() else {
             // Drop RefCell's mutable borrow before dispatch_platform_frame
             // reacquires the same clock state to track the outstanding request.
             let action = self
@@ -626,7 +626,7 @@ impl Window {
     fn dispatch_frame_clock_timer(&self, generation: u64) {
         let request = {
             let mut state = self.frame_clock_state.borrow_mut();
-            if state.timer_generation != generation || self.frame_clock.interval().is_none() {
+            if state.timer_generation != generation || self.effective_frame_clock_interval().is_none() {
                 return;
             }
             drop(state.timer.take());
@@ -655,7 +655,7 @@ impl Window {
             if native_resize {
                 None
             } else {
-                self.frame_clock.interval()
+                self.effective_frame_clock_interval()
             },
         );
         match frame {

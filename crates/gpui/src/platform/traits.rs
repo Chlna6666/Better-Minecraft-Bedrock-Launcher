@@ -268,6 +268,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
     /// Updates the cadence limit on an active renderer-owned animation packet.
     fn set_frame_interval(&self, _interval: Option<Duration>) {}
+    /// Native UI-frame cadence, if the platform itself enforces a fixed interval.
+    /// A matching per-window FrameClock must not schedule a *second* timer before
+    /// entering this same cadence. Platforms that do not own fixed-rate UI
+    /// scheduling, including VSync-only backends, return None.
+    fn native_frame_clock_interval(&self) -> Option<Duration> {
+        None
+    }
     fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender);
     /// Registers an opportunistic UI-owner callback during native live resizing.
     /// Returning false retains delivery through the coalesced frame-request sender.

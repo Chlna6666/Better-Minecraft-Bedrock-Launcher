@@ -27,6 +27,11 @@ use super::WindowsUserEvent;
 const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_667);
 const BACKGROUND_FRAME_INTERVAL: Duration = Duration::from_micros(66_667);
 const EARLY_VSYNC_RETURN_THRESHOLD: Duration = Duration::from_millis(1);
+/// Only the final fraction of an Immediate frame is actively aligned to its
+/// deadline. Parking across that last fraction produces quantized 1ms wake
+/// times on some Windows timer configurations; spinning the whole interval
+/// would waste a core, so keep this margin small.
+const UNPACED_FINE_WAIT_MARGIN: Duration = Duration::from_micros(125);
 const MAX_REASONABLE_VSYNC_INTERVAL: Duration = Duration::from_secs(1);
 pub(super) const WM_MODAL_VSYNC: u32 = WM_APP + 0x475;
 pub(super) const WM_MODAL_UI_TASKS: u32 = WM_APP + 0x476;
@@ -96,6 +101,11 @@ impl VSyncScheduler {
 
     pub(super) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire) && !self.shutdown.load(Ordering::Acquire)
+    }
+
+    pub(super) fn native_unpaced_interval(&self) -> Option<Duration> {
+        (self.is_active() && self.unpaced.load(Ordering::Acquire))
+            .then(native_unpaced_interval)
     }
 
     pub(super) fn refresh_interval(&self) -> Duration {
@@ -308,31 +318,62 @@ pub(super) fn spawn_vsync_thread(
 // Explicit Immediate mode is clocked independently from DWM. The per-window
 // FrameClock still coalesces work and enforces the requested frame cap.
 // System clock in Immediate mode uses a 1ms ceiling (not a busy spin).
+fn native_unpaced_interval() -> Duration {
+    crate::window::default_frame_clock()
+        .interval()
+        .unwrap_or(Duration::from_millis(1))
+}
+
+/// Keep the native frame phase on the requested timeline, even if one native
+/// callback wakes late. Resetting to Instant::now() after every late wake
+/// accumulates OS timer latency and makes a 1ms cap drift toward 1.5-2ms.
+fn unpaced_next_deadline(
+    previous_tick: Option<Instant>,
+    now: Instant,
+    interval: Duration,
+) -> Instant {
+    let Some(previous_tick) = previous_tick else {
+        return now;
+    };
+    if interval.is_zero() {
+        return now;
+    }
+    let elapsed = now.saturating_duration_since(previous_tick);
+    let ticks = (elapsed.as_nanos() / interval.as_nanos()).max(1);
+    let ticks = ticks.min(u128::from(u32::MAX)) as u32;
+    previous_tick
+        .checked_add(interval.saturating_mul(ticks))
+        .unwrap_or(now)
+}
+
 fn wait_for_unpaced_tick(
     scheduler: &VSyncScheduler,
     last_tick: &mut Option<Instant>,
 ) -> VSyncPacing {
     let started = Instant::now();
-    let interval = crate::window::default_frame_clock()
-        .interval()
-        .unwrap_or(Duration::from_millis(1));
-    if let Some(previous) = *last_tick {
-        let deadline = previous + interval;
-        loop {
-            if scheduler.shutdown.load(Ordering::Acquire)
-                || !scheduler.unpaced.load(Ordering::Acquire)
-                || !process_owns_foreground_window()
-            {
-                break;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            std::thread::park_timeout(deadline - now);
+    let interval = native_unpaced_interval();
+    let deadline = unpaced_next_deadline(*last_tick, started, interval);
+    loop {
+        if scheduler.shutdown.load(Ordering::Acquire)
+            || !scheduler.unpaced.load(Ordering::Acquire)
+            || !process_owns_foreground_window()
+        {
+            // Do not preserve a stale clock phase when the mode changes.
+            *last_tick = None;
+            break;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            *last_tick = Some(deadline);
+            break;
+        }
+        let remaining = deadline - now;
+        if remaining > UNPACED_FINE_WAIT_MARGIN {
+            std::thread::park_timeout(remaining - UNPACED_FINE_WAIT_MARGIN);
+        } else {
+            std::hint::spin_loop();
         }
     }
-    *last_tick = Some(Instant::now());
     VSyncPacing {
         elapsed: started.elapsed(),
         reported_refresh_period: None,
@@ -486,6 +527,36 @@ fn refresh_interval(numerator: u64, denominator: u64) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpaced_deadline_keeps_phase_after_late_native_wake() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        assert_eq!(unpaced_next_deadline(None, start, interval), start);
+        assert_eq!(
+            unpaced_next_deadline(Some(start), start + Duration::from_micros(700), interval),
+            start + interval,
+        );
+        // A 600us late callback must not reset the next 1ms interval to
+        // 2.6ms. The next slot remains on the 2ms absolute phase.
+        assert_eq!(
+            unpaced_next_deadline(Some(start), start + Duration::from_micros(1600), interval),
+            start + interval,
+        );
+        assert_eq!(
+            unpaced_next_deadline(
+                Some(start + interval),
+                start + Duration::from_micros(1750),
+                interval,
+            ),
+            start + Duration::from_millis(2),
+        );
+        // Missed several slots: drop overdue samples, not the original phase.
+        assert_eq!(
+            unpaced_next_deadline(Some(start), start + Duration::from_micros(5200), interval),
+            start + Duration::from_millis(5),
+        );
+    }
 
     #[test]
     fn refresh_phase_skips_missed_ticks_without_drifting() {

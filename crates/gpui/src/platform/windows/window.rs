@@ -2984,6 +2984,10 @@ impl PlatformWindow for WindowsWindow {
         WindowsWindow::set_frame_interval(self, interval);
     }
 
+    fn native_frame_clock_interval(&self) -> Option<Duration> {
+        self.0.vsync_scheduler.native_unpaced_interval()
+    }
+
     fn on_live_resize_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {
         self.0.state.borrow_mut().callbacks.live_resize_frame = Some(callback);
     }
