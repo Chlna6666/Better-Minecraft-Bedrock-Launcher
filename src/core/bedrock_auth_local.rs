@@ -276,29 +276,61 @@ fn publish_with_local_account(mut snapshot: AuthSnapshot) {
     {
         let select_system = system_account_is_selected(&snapshot);
         let local = local_account_snapshot();
-        snapshot
-            .accounts
-            .retain(|profile| !is_system_local_account(&profile.xuid));
-        snapshot.accounts.insert(0, local.profile.clone());
-
-        if select_system {
-            snapshot.profile = Some(local.profile.clone());
-            snapshot.active_account_id = Some(SYSTEM_LOCAL_ACCOUNT_ID.to_string());
-            snapshot.phase = AuthPhase::SignedIn;
-            snapshot.user_code = None;
-            snapshot.verification_url = None;
-            snapshot.error = None;
-        }
+        snapshot = merge_local_account_snapshot(snapshot, select_system, &local);
     }
     AUTH_STATE.0.send_replace(snapshot);
 }
 
+// Local account selection is an explicit user preference, not a probe result.
+// Never let an in-flight managed authentication overwrite the selected identity
+// or reuse its avatar while Windows is still discovering the local gamer picture.
+#[cfg(any(target_os = "windows", test))]
+fn merge_local_account_snapshot(
+    mut snapshot: AuthSnapshot,
+    selected: bool,
+    local: &LocalAccountState,
+) -> AuthSnapshot {
+    snapshot
+        .accounts
+        .retain(|profile| !is_system_local_account(&profile.xuid));
+    snapshot.accounts.insert(0, local.profile.clone());
+
+    if selected {
+        snapshot.profile = Some(local.profile.clone());
+        snapshot.active_account_id = Some(SYSTEM_LOCAL_ACCOUNT_ID.to_string());
+        snapshot.phase = if local.signed_in {
+            AuthPhase::SignedIn
+        } else {
+            AuthPhase::SignedOut
+        };
+        snapshot.user_code = None;
+        snapshot.verification_url = None;
+        snapshot.error = None;
+    }
+    snapshot
+}
+
 fn system_account_is_selected(snapshot: &AuthSnapshot) -> bool {
-    match SELECTION.load(Ordering::Acquire) {
-        SELECTION_SYSTEM => system_account_is_available(),
+    system_account_is_selected_for_mode(
+        snapshot,
+        SELECTION.load(Ordering::Acquire),
+        system_account_is_available(),
+    )
+}
+
+fn system_account_is_selected_for_mode(
+    snapshot: &AuthSnapshot,
+    selection: u8,
+    system_available: bool,
+) -> bool {
+    match selection {
+        SELECTION_SYSTEM => true,
         SELECTION_MANAGED => false,
         _ => {
-            snapshot.profile.is_none()
+            system_available
+                && snapshot.phase == AuthPhase::SignedOut
+                && snapshot.profile.is_none()
+                && snapshot.active_account_id.is_none()
                 && snapshot
                     .accounts
                     .iter()
@@ -466,12 +498,71 @@ mod tests {
     }
 
     #[test]
-    fn automatic_selection_ignores_the_synthetic_local_row() {
-        SELECTION.store(SELECTION_AUTO, Ordering::Release);
+    fn explicit_local_selection_survives_an_inflight_managed_login() {
         let mut snapshot = managed::AuthSnapshot::signed_out();
-        snapshot
-            .accounts
-            .push(LocalAccountState::signed_out("test").profile);
-        assert!(system_account_is_selected(&snapshot));
+        snapshot.phase = AuthPhase::AuthenticatingXbox;
+        snapshot.active_account_id = Some("123456".to_owned());
+        snapshot.profile = Some(XboxProfile {
+            xuid: "123456".to_owned(),
+            gamertag: "managed".to_owned(),
+            display_name: "Managed".to_owned(),
+            gamerscore: None,
+            avatar_url: Some("managed-avatar.png".to_owned()),
+        });
+        assert!(system_account_is_selected_for_mode(
+            &snapshot,
+            SELECTION_SYSTEM,
+            false
+        ));
+        assert!(!system_account_is_selected_for_mode(
+            &snapshot,
+            SELECTION_MANAGED,
+            true
+        ));
+        let local = LocalAccountState::checking();
+        let merged = merge_local_account_snapshot(snapshot, true, &local);
+        assert_eq!(merged.active_account_id.as_deref(), Some(SYSTEM_LOCAL_ACCOUNT_ID));
+        assert_eq!(
+            merged.profile.as_ref().map(|profile| profile.xuid.as_str()),
+            Some(SYSTEM_LOCAL_ACCOUNT_ID)
+        );
+        assert_eq!(merged.profile.unwrap().avatar_url, None);
+        assert_eq!(merged.phase, AuthPhase::SignedOut);
+    }
+
+    #[test]
+    fn selected_local_account_preserves_only_its_own_cached_avatar() {
+        let mut snapshot = managed::AuthSnapshot::signed_out();
+        snapshot.profile = Some(XboxProfile {
+            xuid: "123456".to_owned(),
+            gamertag: "managed".to_owned(),
+            display_name: "Managed".to_owned(),
+            gamerscore: None,
+            avatar_url: Some("managed-avatar.png".to_owned()),
+        });
+        let mut local = LocalAccountState::checking();
+        local.signed_in = true;
+        local.profile.avatar_url = Some("local-avatar.png".to_owned());
+        let merged = merge_local_account_snapshot(snapshot, true, &local);
+        assert_eq!(merged.phase, AuthPhase::SignedIn);
+        assert_eq!(
+            merged.profile.and_then(|profile| profile.avatar_url),
+            Some("local-avatar.png".to_owned())
+        );
+    }
+
+    #[test]
+    fn automatic_selection_waits_for_managed_auth_to_finish() {
+        let mut snapshot = managed::AuthSnapshot::signed_out();
+        snapshot.phase = AuthPhase::Restoring;
+        assert!(!system_account_is_selected_for_mode(&snapshot, SELECTION_AUTO, true));
+        snapshot.phase = AuthPhase::AuthenticatingXbox;
+        assert!(!system_account_is_selected_for_mode(&snapshot, SELECTION_AUTO, true));
+        snapshot.phase = AuthPhase::SignedOut;
+        assert!(system_account_is_selected_for_mode(&snapshot, SELECTION_AUTO, true));
+        snapshot.active_account_id = Some("123456".to_owned());
+        assert!(!system_account_is_selected_for_mode(&snapshot, SELECTION_AUTO, true));
+        snapshot.active_account_id = None;
+        assert!(!system_account_is_selected_for_mode(&snapshot, SELECTION_AUTO, false));
     }
 }

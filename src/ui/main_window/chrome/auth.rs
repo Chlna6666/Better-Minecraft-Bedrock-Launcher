@@ -156,9 +156,20 @@ fn avatar(profile: Option<&XboxProfile>, color: Hsla, size: f32) -> AnyElement {
     }
 }
 
+// Prefer the configured active XUID over a profile left in a transient auth snapshot.
+// Never borrow a cached avatar from a different account during restore or switching.
+fn active_profile(snapshot: &AuthSnapshot) -> Option<&XboxProfile> {
+    let active_id = snapshot.active_account_id.as_deref()?;
+    snapshot
+        .profile
+        .as_ref()
+        .filter(|profile| profile.xuid == active_id)
+        .or_else(|| snapshot.accounts.iter().find(|profile| profile.xuid == active_id))
+}
+
 fn status_label(snapshot: &AuthSnapshot) -> SharedString {
     match snapshot.phase {
-        AuthPhase::SignedIn => snapshot.profile.as_ref().map_or_else(
+        AuthPhase::SignedIn => active_profile(snapshot).map_or_else(
             || t!("Auth.xbox"),
             |profile| profile.gamertag.clone().into(),
         ),
@@ -223,7 +234,7 @@ pub(in crate::ui::main_window) fn trigger(state: &RenderState, colors: &ThemeCol
         .opacity(if state.open { 0.07 } else { 0.035 }))
     .window_control_area(WindowControlArea::Client)
     .child(avatar(
-        state.snapshot.profile.as_ref(),
+        active_profile(&state.snapshot),
         colors.text_primary,
         28.,
     ))
@@ -250,11 +261,12 @@ pub(in crate::ui::main_window) fn trigger(state: &RenderState, colors: &ThemeCol
 }
 
 fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
-    let title = state.snapshot.profile.as_ref().map_or_else(
+    let selected_profile = active_profile(&state.snapshot);
+    let title = selected_profile.map_or_else(
         || t!("Auth.microsoft_xbox"),
         |profile| profile.display_name.clone().into(),
     );
-    let subtitle = state.snapshot.profile.as_ref().map_or_else(
+    let subtitle = selected_profile.map_or_else(
         || status_hint(state.snapshot.phase),
         |profile| {
             profile
@@ -272,7 +284,7 @@ fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .items_center()
         .gap(px(12.))
         .child(avatar(
-            state.snapshot.profile.as_ref(),
+            selected_profile,
             colors.text_primary,
             40.,
         ))
@@ -426,7 +438,58 @@ pub(in crate::ui::main_window) fn panel(
 
 #[cfg(test)]
 mod panel_state_tests {
-    use super::popover_should_render;
+    use super::{active_profile, popover_should_render};
+    use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
+
+    fn profile(xuid: &str, avatar: &str) -> XboxProfile {
+        XboxProfile {
+            xuid: xuid.to_owned(),
+            gamertag: xuid.to_owned(),
+            display_name: xuid.to_owned(),
+            gamerscore: None,
+            avatar_url: Some(avatar.to_owned()),
+        }
+    }
+
+    #[test]
+    fn restoring_uses_configured_account_avatar_not_stale_profile() {
+        let mut snapshot = AuthSnapshot::signed_out();
+        snapshot.phase = AuthPhase::AuthenticatingXbox;
+        snapshot.profile = Some(profile("111", "old-account.png"));
+        snapshot.accounts = vec![
+            profile("111", "old-account.png"),
+            profile("222", "selected-account.png"),
+        ];
+        snapshot.active_account_id = Some("222".to_owned());
+        assert_eq!(
+            active_profile(&snapshot).and_then(|profile| profile.avatar_url.as_deref()),
+            Some("selected-account.png"),
+        );
+    }
+
+    #[test]
+    fn missing_active_account_never_falls_back_to_another_avatar() {
+        let mut snapshot = AuthSnapshot::signed_out();
+        snapshot.profile = Some(profile("111", "other-account.png"));
+        snapshot.accounts.push(profile("111", "other-account.png"));
+        snapshot.active_account_id = Some("222".to_owned());
+        assert!(active_profile(&snapshot).is_none());
+        snapshot.active_account_id = None;
+        assert!(active_profile(&snapshot).is_none());
+    }
+
+    #[test]
+    fn active_profile_takes_updated_profile_over_saved_catalog() {
+        let mut snapshot = AuthSnapshot::signed_out();
+        snapshot.profile = Some(profile("222", "new-avatar.png"));
+        snapshot.accounts.push(profile("222", "old-avatar.png"));
+        snapshot.active_account_id = Some("222".to_owned());
+        assert_eq!(
+            active_profile(&snapshot).and_then(|profile| profile.avatar_url.as_deref()),
+            Some("new-avatar.png"),
+        );
+    }
+
 
     #[test]
     fn closing_popover_remains_mounted_during_negative_spring_overshoot() {
