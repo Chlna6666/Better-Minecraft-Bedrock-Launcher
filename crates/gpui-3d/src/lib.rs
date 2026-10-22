@@ -73,6 +73,8 @@ pub use animation::{
     AnimationError, AnimationScratch, Interpolation, Keyframe, RotationTrack, TransformTrack,
     Vec3Track, blend_transform,
 };
+#[cfg(feature = "asset-import")]
+pub use asset::{ImportError, ImportLimits, ImportedScene, import_scene_path};
 pub use asset::{
     EnvironmentError, EnvironmentMap, GltfAnimation, GltfCamera, GltfError, GltfLoadOptions,
     GltfScene, GltfStatistics, load_bytes, load_path,

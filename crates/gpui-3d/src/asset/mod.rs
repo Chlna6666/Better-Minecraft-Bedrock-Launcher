@@ -20,6 +20,10 @@
 mod environment;
 mod gltf;
 mod image;
+#[cfg(feature = "asset-import")]
+mod unified;
+#[cfg(feature = "asset-import")]
+pub use unified::{ImportError, ImportLimits, ImportedScene, import_scene_path};
 
 pub use environment::{EnvironmentError, EnvironmentMap};
 pub use gltf::GltfError;

@@ -12,6 +12,8 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Optional CPU-only importers, without pulling them into every GPUI-3D consumer.
+asset-import = ["dep:three-d-asset"]
 nova-gfx-opengl = ["gpui/nova-gfx-opengl"]
 nova-gfx-dx11 = ["gpui/nova-gfx-dx11"]
 nova-gfx-dx12 = ["gpui/nova-gfx-dx12"]
@@ -28,6 +30,7 @@ gpui = { path = "../gpui", default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
+three-d-asset = { version = "=0.10.0", default-features = false, features = ["obj", "stl", "png", "jpeg", "tga", "webp"], optional = true }
 
 # Compiles the scene-view and offscreen-renderer WGSL into embedded backend artifacts, so
 # creating a renderer never runs the WGSL frontend or the Direct3D compiler.
