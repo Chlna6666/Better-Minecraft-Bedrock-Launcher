@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use bedrock_voxel::{ObjModel, SourceTexture, load_obj_textures};
 use gpui_3d::{
-    AlphaMode, Camera, ImportedScene, Material, Mesh, MeshPart, Node, ProjectionRegion, Scene, SceneView,
+    AlphaMode, Camera, ImportedScene, Mat4, Material, Mesh, MeshPart, Node, ProjectionRegion, Scene, SceneView,
     ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
 };
 
@@ -18,6 +18,8 @@ pub struct ObjSourcePreview {
     /// The exact GPUI-3D source assets backing the rendered preview.
     /// Retained by Arc; no second mesh or texture decode is necessary.
     pub imported_scene: Arc<ImportedScene>,
+    /// Source coordinates → the normalized [-1, 1] preview space.
+    pub source_normalization: Mat4,
     pub total_triangles: usize,
     pub displayed_triangles: usize,
     /// Materials that actually use a decoded MTL map_Kd image.
@@ -193,8 +195,59 @@ pub fn build_obj_source_preview_with_textures(
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),
         imported_scene,
+        source_normalization: Mat4::IDENTITY,
         total_triangles,
         displayed_triangles,
+        textured_materials,
+    }))
+}
+
+
+/// Reuses a glTF/GLB GPUI-3D scene directly. Unlike rebuilding a preview mesh
+/// from voxel triangles, this retains the source's node hierarchy, materials
+/// and texture handles, with no redundant model decoding.
+pub fn source_preview_from_imported(
+    scene: Arc<ImportedScene>,
+    model: &ObjModel,
+) -> Result<Arc<ObjSourcePreview>, String> {
+    if model.triangles.is_empty() {
+        return Err("模型没有可显示的三角形".to_owned());
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for tri in &model.triangles {
+        for v in tri.vertices {
+            for i in 0..3 {
+                min[i] = min[i].min(v.position[i]);
+                max[i] = max[i].max(v.position[i]);
+            }
+        }
+    }
+    let center = [0, 1, 2].map(|i| (min[i] + max[i]) * 0.5);
+    let span = (0..3).map(|i| max[i] - min[i])
+        .fold(0.0_f32, f32::max).max(1.0e-5);
+    let scale = 2.0 / span;
+    let normalization = Mat4::from_columns([
+        [scale, 0.0, 0.0, 0.0],
+        [0.0, scale, 0.0, 0.0],
+        [0.0, 0.0, scale, 0.0],
+        [-center[0] * scale, -center[1] * scale, -center[2] * scale, 1.0],
+    ]);
+    let view = scene.view(Camera::perspective(
+        Vec3::new(2.5, 1.5, 2.6),
+        Vec3::ZERO, Vec3::Y,
+        50.0_f32.to_radians(), 0.05, 64.0,
+    )).map_err(|error| error.to_string())?
+        .with_projection_region(ProjectionRegion::VisibleContent)
+        .with_projection_inset(4.0, 0.06)
+        .map_err(|error| error.to_string())?;
+    let textured_materials = scene.textures().len();
+    Ok(Arc::new(ObjSourcePreview {
+        scene_view: Arc::new(view),
+        imported_scene: scene,
+        source_normalization: normalization,
+        total_triangles: model.triangles.len(),
+        displayed_triangles: model.triangles.len(),
         textured_materials,
     }))
 }

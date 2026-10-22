@@ -185,7 +185,7 @@ impl MapViewerWindowView {
                     let entity = cx.entity();
                     move |cx| entity.update(cx, |this, cx| this.exact_selection_stats(cx))
                 })),
-                ContextMenuEntry::item(ContextMenuItem::new("导出选中区块 OBJ").on_click({
+                ContextMenuEntry::item(ContextMenuItem::new("导出选中区块 3D 模型…").on_click({
                     let entity = cx.entity();
                     move |cx| entity.update(cx, |this, cx| this.export_selection_as_obj_exact(cx))
                 })),

@@ -211,95 +211,152 @@ impl MapViewerWindowView {
         let bounds = exact_selection.bounds();
         let default_file_name = format!(
             "chunk-selection-{}-{}-{}-{}.obj",
-            bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z
+            bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z,
         );
-        let Some(path) = pick_save_path_with_filter("Wavefront OBJ", &["obj"], &default_file_name)
-        else {
-            self.status = SharedString::from("已取消导出 OBJ");
+        let Some(path) = pick_save_path_with_filter(
+            "3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"],
+            &default_file_name,
+        ) else {
+            self.status = SharedString::from("已取消导出模型");
             cx.notify();
             return;
         };
-        let path = PathBuf::from(path);
+        let output = PathBuf::from(path);
+        let extension = output.extension().and_then(|s| s.to_str())
+            .unwrap_or_default().to_ascii_lowercase();
+        if !matches!(extension.as_str(), "obj" | "gltf" | "glb") {
+            self.status = SharedString::from("请选择 .obj、.gltf 或 .glb 文件名");
+            cx.notify();
+            return;
+        }
         let world_path = self.world_path.clone();
         let package_paths = exact_preview_3d_resource_package_paths(&world_path, cx);
         let query_budget = self.map_query_budget.clone();
         let chunk_count = exact_selection.len();
         self.context_menu = None;
-        self.status = SharedString::from(format!("正在导出精确选区 OBJ · {chunk_count} chunks..."));
-        cx.notify();
 
-        cx.spawn(async move |handle, cx| {
-            let _query_permit = query_budget.acquire().await;
-            let result = cx
-                .background_spawn(async move {
-                    let mut resolved_package_paths =
-                        bedrock_block_model::world_resource_pack_paths(&world_path);
-                    for package_path in package_paths {
-                        bedrock_block_model::push_unique_resource_pack_path(
-                            &mut resolved_package_paths,
-                            package_path,
-                        );
-                    }
-                    for package_path in
-                        crate::core::minecraft::paths::discover_local_package_roots_with_vanilla()
-                    {
-                        bedrock_block_model::push_unique_resource_pack_path(
-                            &mut resolved_package_paths,
-                            package_path,
-                        );
-                    }
-                    let block_models = BlockModelRepository::load_packs(
-                        resolved_package_paths.iter().map(PathBuf::as_path),
-                    )
-                    .map(Arc::new)
+        // All persistent exports must be owned by TaskManager, not a UI future.
+        let task_id = task_manager::create_task_with_details(
+            None, "精确选区导出 3D 模型",
+            output.file_name().map(|name|name.to_string_lossy().into_owned()),
+            "读取区块与资源包", None, false,
+        );
+        task_manager::register_task_cooperative_cancel(task_id.clone());
+        let cancel = CancelFlag::new();
+        task_manager::register_task_cancel_hook(task_id.clone(), {
+            let cancel = cancel.clone();
+            move ||cancel.cancel()
+        });
+        let worker_id = task_id.clone();
+        let submitted = crate::tasks::runtime::spawn_io(async move {
+            let _permit = query_budget.acquire().await;
+            let background_id = worker_id.clone();
+            let result = crate::tasks::runtime::run_cpu(move || {
+                let mut resolved_package_paths =
+                    bedrock_block_model::world_resource_pack_paths(&world_path);
+                for path in package_paths {
+                    bedrock_block_model::push_unique_resource_pack_path(
+                        &mut resolved_package_paths, path,
+                    );
+                }
+                for path in crate::core::minecraft::paths::discover_local_package_roots_with_vanilla() {
+                    bedrock_block_model::push_unique_resource_pack_path(
+                        &mut resolved_package_paths, path,
+                    );
+                }
+                if cancel.is_cancelled() {return Err("模型导出已取消".to_owned());}
+                task_manager::reset_progress(
+                    &background_id, Some(chunk_count as u64),
+                    Some("构建方块网格"),
+                );
+                let block_models = BlockModelRepository::load_packs(
+                    resolved_package_paths.iter().map(PathBuf::as_path),
+                ).map(Arc::new)
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
-                    let mesh = load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
-                        &world_path,
-                        exact_selection,
-                        Some(block_models),
-                        None,
-                        |_mesh, _status| {},
-                    )?;
-                    let export_target = bedrock_block_model::ObjExportTarget::from_obj_path(&path)
+                let mesh = load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
+                    &world_path,
+                    exact_selection,
+                    Some(block_models),
+                    Some(cancel.clone()),
+                    |_mesh, _status| {},
+                )?;
+                if cancel.is_cancelled() {return Err("模型导出已取消".to_owned());}
+                task_manager::reset_progress(&background_id, Some(1), Some("输出模型与材质"));
+                let requested_ext = output.extension().and_then(|s|s.to_str())
+                    .unwrap_or("obj").to_ascii_lowercase();
+                let temp_dir = if requested_ext == "obj" {
+                    None
+                } else {
+                    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+                    let tmp = parent.join(format!(
+                        ".bmcbl-chunk-model-{}-{}",
+                        std::process::id(),
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|err|err.to_string())?.as_nanos(),
+                    ));
+                    std::fs::create_dir(&tmp).map_err(|error|error.to_string())?;
+                    Some(tmp)
+                };
+                let obj_path = temp_dir.as_ref()
+                    .map_or_else(|| output.clone(), |root|root.join("selection.obj"));
+                let result = (|| -> Result<(),String> {
+                    let target = bedrock_block_model::ObjExportTarget::from_obj_path(&obj_path)
                         .map_err(|error| error.to_string())?;
                     let export = export_preview_3d_obj_with_materials_with_progress(
                         &mesh,
-                        &export_target.material_library_name,
+                        &target.material_library_name,
                         "textures",
                         &resolved_package_paths,
                         |_completed, _total| {},
                     );
+                    if cancel.is_cancelled() {return Err("模型导出已取消".into());}
                     bedrock_block_model::write_obj_export_files(
-                        &export,
-                        &export_target.obj_path,
-                        &export_target.material_library_path,
-                        &export_target.export_root,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok::<_, String>((export_target.export_root, mesh.chunk_count))
-                })
-                .await;
-            let Some(view) = handle.upgrade() else {
-                return Ok(());
-            };
-            view.update(cx, move |this, cx| {
-                match result {
-                    Ok((export_root, exact_chunk_count)) => {
-                        this.status = SharedString::from(format!(
-                            "精确选区 OBJ 导出完成 · {exact_chunk_count} chunks · {}",
-                            export_root.display()
-                        ));
+                        &export, &target.obj_path, &target.material_library_path,
+                        &target.export_root,
+                    ).map_err(|error|error.to_string())?;
+                    if requested_ext != "obj" {
+                        task_manager::reset_progress(&background_id, Some(1), Some("编码 glTF/GLB"));
+                        crate::core::minecraft::map::generator::convert_local_model_file(
+                            &target.obj_path, &output, &cancel,
+                        )?;
                     }
-                    Err(error) => {
-                        this.status = SharedString::from(format!("精确选区 OBJ 导出失败: {error}"));
-                    }
+                    Ok(())
+                })();
+                if let Some(temp_dir) = temp_dir {
+                    let _ = std::fs::remove_dir_all(temp_dir);
                 }
-                cx.notify();
-            })?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+                result?;
+                task_manager::update_progress(&background_id,1,Some(1),Some("已完成"));
+                Ok::<_,String>(format!(
+                    "精确选区模型已导出 · {chunk_count} chunks · {}",
+                    output.display(),
+                ))
+            }).await;
+            match result {
+                Ok(Ok(message)) => task_manager::finish_task(&worker_id,"completed",Some(message)),
+                Ok(Err(err)) => {
+                    let status = if err.contains("已取消") { "cancelled" } else {"error"};
+                    task_manager::finish_task(&worker_id,status,Some(err));
+                }
+                Err(err) => task_manager::finish_task(
+                    &worker_id,"error",Some(err.to_string()),
+                ),
+            }
+        });
+        match submitted {
+            Ok(()) => {
+                self.status = SharedString::from(format!(
+                    "已提交精确选区模型导出任务 · {chunk_count} chunks"
+                ));
+            }
+            Err(error) => {
+                task_manager::finish_task(&task_id,"error",Some(error.clone()));
+                self.status = SharedString::from(error);
+            }
+        }
+        cx.notify();
     }
+
 }
 
 pub(super) fn load_preview_3d_mesh_exact_blocking_incremental(

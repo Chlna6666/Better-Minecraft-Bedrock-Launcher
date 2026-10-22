@@ -26,7 +26,7 @@ impl MapViewerWindowView {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "obj-workspace-import",
-                    if self.generator.source.is_some() { "更换 OBJ" } else { "导入 OBJ" },
+                    if self.generator.source.is_some() { "更换模型" } else { "导入模型" },
                 )
                 .px(px(12.0))
                 .py(px(7.0))
@@ -72,6 +72,22 @@ impl MapViewerWindowView {
                     )
                 }),
             )
+            .child(
+                crate::ui::components::button::secondary_button(
+                    colors,
+                    "model-workspace-export",
+                    "导出模型…",
+                )
+                .px(px(12.0))
+                .py(px(7.0))
+                .opacity(if self.generator.source.is_some() && !busy { 1.0 } else { 0.45 })
+                .when(self.generator.source.is_some() && !busy, |button| {
+                    button.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.export_generator_model_file(cx)),
+                    )
+                }),
+            )
     }
 
     pub(in super::super) fn render_generator_panel(
@@ -100,9 +116,9 @@ impl MapViewerWindowView {
                     .child(generator_section_title(colors, "01  素材"))
                     .child(crate::ui::components::inspector::inspector_source_card(
                         colors,
-                        "OBJ / MTL",
+                        "OBJ / MTL · glTF / GLB",
                         self.generator.source.as_deref(),
-                        "支持拖入 OBJ",
+                        "支持拖入 OBJ、glTF、GLB；MTL 随 OBJ 加载",
                         crate::ui::components::button::secondary_button(
                             colors, "obj-inspector-source", "选择模型…",
                         )

@@ -8,12 +8,12 @@ use std::{
 };
 
 use bedrock_voxel::{
-    ObjVoxelOptions, default_block_candidates, load_obj_model, load_obj_textures,
-    voxelize_obj_with_textures_and_progress,
+    ObjVoxelOptions, default_block_candidates, voxelize_obj_with_textures_and_progress,
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
-use super::source_obj_preview::{ObjSourcePreview, build_obj_source_preview_with_textures};
+use super::model_import::prepare_map_model;
+use super::source_obj_preview::ObjSourcePreview;
 use super::image::{
     ImageBlockHeight, ImageBlockOptions, decode_image, image_block_plan_with_progress,
 };
@@ -240,11 +240,10 @@ async fn generate_preview(
         }
         StructurePreviewKind::Obj(options) => {
             let source = request.source;
-            let (model, decoded) = runtime::run_io_blocking(move || {
-                let model = load_obj_model(&source)?;
-                let decoded = load_obj_textures(&model).map_err(|error| error.to_string())?;
-                Ok::<_, String>((model, decoded))
+            let prepared = runtime::run_io_blocking(move || {
+                prepare_map_model(&source)
             }).await??;
+            let super::model_import::PreparedMapModel { model, decoded, preview, .. } = prepared;
             if cancel.is_cancelled() {
                 return Err("OBJ 预览已取消".to_owned());
             }
@@ -256,7 +255,7 @@ async fn generate_preview(
             let result = runtime::run_cpu(move || {
                 // Reuse the already parsed source; do not read OBJ/MTL twice.
                 // Failure to construct a secondary visual scene must not stop conversion.
-                let original = build_obj_source_preview_with_textures(&model, &decoded).ok();
+                let original = preview;
                 // Publish the actual source mesh before the expensive voxelization phase.
                 // A discarded/cancelled task cannot resurrect the old scene.
                 if let Some(scene) = original.as_ref()

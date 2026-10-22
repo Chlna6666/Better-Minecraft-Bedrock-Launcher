@@ -378,7 +378,7 @@ impl MapViewerWindowView {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(import_preview_label(colors, "原始 OBJ · 三角形与材质色"))
+                    .child(import_preview_label(colors, "源模型 · OBJ / glTF / GLB"))
                     .when_some(self.generator.original_preview.as_ref(), |panel, original| {
                         // Both panes share the same camera orientation, zoom/FOV,
                         // scene rotation and mirror flags. The source mesh was
@@ -393,7 +393,7 @@ impl MapViewerWindowView {
                                 self.preview_3d.model_rotation,
                             );
                         let source = original.scene_view.with_camera(camera);
-                        let scene = source.with_scene_transform(transform)
+                        let scene = source.with_scene_transform(transform * original.source_normalization)
                             .unwrap_or(source);
                         panel
                             .child(
@@ -830,7 +830,9 @@ pub(super) fn is_import_source_path_for_panel(
         return false;
     };
     match panel {
-        MapViewerRightPanel::Generator => extension.eq_ignore_ascii_case("obj"),
+        MapViewerRightPanel::Generator => matches!(
+            extension.to_ascii_lowercase().as_str(), "obj" | "gltf" | "glb"
+        ),
         MapViewerRightPanel::ImageGenerator | MapViewerRightPanel::MapImage => {
             ["png", "jpg", "jpeg", "tga", "webp"]
                 .into_iter()

@@ -5,8 +5,8 @@ use bedrock_voxel::{ObjFill, ObjVoxelOptions};
 use super::model::MapViewerWindowView;
 use super::prelude::*;
 use crate::core::minecraft::map::generator::{
-    ObjExportRequest, StructurePreviewKind, StructurePreviewRequest, release_structure_preview,
-    start_obj_export, start_structure_preview,
+    ModelFileExportRequest, ObjExportRequest, StructurePreviewKind, StructurePreviewRequest,
+    release_structure_preview, start_model_file_export, start_obj_export, start_structure_preview,
 };
 use crate::ui::components::slider::Slider;
 
@@ -75,7 +75,7 @@ impl MapViewerWindowView {
         if self.generator_busy() {
             return;
         }
-        if let Some(path) = pick_file_path_with_filter("Wavefront OBJ", &["obj"]) {
+        if let Some(path) = pick_file_path_with_filter("3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"]) {
             self.set_generator_obj_source(PathBuf::from(path), cx);
         }
     }
@@ -83,6 +83,12 @@ impl MapViewerWindowView {
     /// Shared by the file picker and the external file-drop workflow.
     pub(super) fn set_generator_obj_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.generator_busy() {
+            return;
+        }
+        if !crate::core::minecraft::map::generator::is_supported_model(&path) {
+            self.status = SharedString::from("支持导入 OBJ、glTF、GLB；MTL 与 OBJ 自动关联");
+            toast::error(cx, self.status.clone());
+            cx.notify();
             return;
         }
         self.generator.source = Some(path);
@@ -214,7 +220,7 @@ impl MapViewerWindowView {
             return;
         }
         let Some(source) = self.generator.source.clone() else {
-            self.status = SharedString::from("请先选择 OBJ 模型");
+            self.status = SharedString::from("请先选择 OBJ、glTF 或 GLB 模型");
             cx.notify();
             return;
         };
@@ -243,7 +249,35 @@ impl MapViewerWindowView {
                 }
                 self.generator.output = Some(output);
                 self.generator.task_id = Some(task_id);
-                self.status = SharedString::from("OBJ 转方块任务已开始");
+                self.status = SharedString::from("模型转方块任务已开始");
+            }
+            Err(error) => {
+                self.status = SharedString::from(error.clone());
+                toast::error(cx, SharedString::from(error));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Exports the *source* model as a model asset, not a .mcstructure.
+    /// OBJ generates MTL and PNG sidecars; glTF embeds resources; GLB is a
+    /// self-contained binary. Conversion and writing stay in TaskManager.
+    fn export_generator_model_file(&mut self, cx: &mut Context<Self>) {
+        if self.generator_busy() { return; }
+        let Some(source) = self.generator.source.clone() else { return };
+        let name = format!("{}.glb", source.file_stem().and_then(|s|s.to_str()).unwrap_or("model"));
+        let Some(path) = pick_save_path_with_filter(
+            "OBJ / glTF / GLB model", &["obj", "gltf", "glb"], &name,
+        ) else { return };
+        let output = PathBuf::from(path);
+        match start_model_file_export(ModelFileExportRequest { source, output: output.clone() }) {
+            Ok(id) => {
+                if let Some(snapshot) = task_manager::get_snapshot(&id) {
+                    self.task_snapshots.insert(snapshot.id.clone(), Arc::new(snapshot));
+                }
+                self.generator.output = Some(output);
+                self.generator.task_id = Some(id);
+                self.status = SharedString::from("模型格式导出已提交后台任务");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());

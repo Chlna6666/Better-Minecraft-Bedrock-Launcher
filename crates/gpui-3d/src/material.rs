@@ -302,6 +302,19 @@ impl TextureAsset {
         &self.rgba8
     }
 
+    /// Borrow the same decoded RGBA allocation for CPU model conversion.
+    /// Cloning this Arc does not copy image data or initiate GPU work.
+    #[must_use]
+    pub fn shared_pixels(&self) -> Arc<[u8]> {
+        Arc::clone(&self.rgba8)
+    }
+
+    /// Source dimensions used by CPU exporters and texture samplers.
+    #[must_use]
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     /// Packed RGBA8 bytes for a mip level, or `None` when the level is not present.
     #[must_use]
     pub fn mip_pixels(&self, level: u32) -> Option<&[u8]> {
