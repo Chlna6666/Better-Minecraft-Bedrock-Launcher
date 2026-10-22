@@ -3,7 +3,9 @@
 //! same already-decoded tobj/glTF raster input; no second file parser.
 //! Heavy serialization runs on TaskManager workers, not GPUI Paint.
 
-use std::{collections::HashMap, io::Cursor, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
+
+use image::ImageEncoder as _;
 
 use base64::Engine as _;
 use bedrock_voxel::{ObjModel, SourceTexture};
@@ -55,14 +57,18 @@ pub(super) fn write_model(
 }
 
 fn texture_png(image: &SourceTexture) -> Result<Vec<u8>, String> {
-    let rgba = image::RgbaImage::from_raw(
-        image.width, image.height, image.pixels.to_vec(),
-    ).ok_or_else(|| "模型贴图像素长度不正确".to_owned())?;
-    let mut buf = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(rgba)
-        .write_to(&mut buf, image::ImageFormat::Png)
+    // Encode directly from the shared RGBA allocation. Building an RgbaImage
+    // here would copy every decoded pixel solely for serialization.
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(
+            image.pixels.as_ref(),
+            image.width,
+            image.height,
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|error| error.to_string())?;
-    Ok(buf.into_inner())
+    Ok(encoded)
 }
 
 fn write_wavefront(
@@ -331,13 +337,13 @@ fn atomic_write(output: &Path, bytes: &[u8], cancel: &CancelFlag) -> Result<(), 
         let _=std::fs::remove_file(&tmp);
         return Err("模型导出已取消".into());
     }
-    // Windows rename does not replace an existing destination: remove only
-    // after a successful temp write. A rename failure leaves no temp file.
-    let outcome=(||{
-        if output.exists(){std::fs::remove_file(output).map_err(|e|e.to_string())?;}
-        std::fs::rename(&tmp,output).map_err(|e|e.to_string())
-    })();
-    if outcome.is_err(){let _=std::fs::remove_file(&tmp);}
+    // std::fs::rename replaces an existing file on supported filesystems.
+    // Never pre-delete the destination: failure must preserve the user's
+    // previous export, whether caused by locks, permissions or I/O errors.
+    let outcome = std::fs::rename(&tmp, output).map_err(|error| error.to_string());
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
     outcome
 }
 
@@ -407,6 +413,48 @@ mod tests {
         let mtl=std::fs::read_to_string(folder.join("source.mtl")).unwrap();
         assert!(mtl.contains("map_Kd source_material_0.png"));
         assert!(folder.join("source_material_0.png").exists());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+
+    #[test]
+    fn png_encoding_round_trips_shared_rgba_without_a_staging_image() {
+        let source = SourceTexture {
+            width: 2,
+            height: 1,
+            has_alpha: true,
+            pixels: Arc::<[u8]>::from([255, 32, 0, 255, 0, 64, 255, 127]),
+        };
+        let png = texture_png(&source).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (2, 1));
+        assert_eq!(decoded.as_raw().as_slice(), source.pixels.as_ref());
+    }
+
+    #[test]
+    fn atomic_model_write_can_replace_a_file_without_predeleting_it() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("bmcbl-atomic-replace-{stamp}"));
+        std::fs::create_dir(&folder).unwrap();
+        let output = folder.join("model.glb");
+        std::fs::write(&output, b"old model").unwrap();
+        atomic_write(&output, b"new model", &CancelFlag::new()).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"new model");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn failed_atomic_model_write_preserves_existing_destination() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("bmcbl-atomic-failure-{stamp}"));
+        std::fs::create_dir(&folder).unwrap();
+        let destination = folder.join("cannot_replace_directory.glb");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(atomic_write(&destination, b"new model", &CancelFlag::new()).is_err());
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
         std::fs::remove_dir_all(folder).unwrap();
     }
 
