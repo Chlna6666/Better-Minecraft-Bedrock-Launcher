@@ -1,0 +1,32 @@
+name: Bedrock Block Model
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'crates/bedrock-block-model/**'
+      - 'crates/bedrock-world/**'
+      - 'crates/bedrock-brarchive/**'
+      - 'crates/bedrock-leveldb/**'
+      - '.github/workflows/bedrock-block-model.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: block-model-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-tests:
+    name: Bedrock Block Model library tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bedrock-block-model
+      - name: Test runtime model-state and face-UV resolution
+        run: cargo test --locked -p bedrock-block-model --lib
