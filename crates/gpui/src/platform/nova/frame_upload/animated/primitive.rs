@@ -1,6 +1,10 @@
-use super::values::{ResolvedAnimationValue, ResolvedAnimationValues, resolve_animation_values};
+#[cfg(test)]
+use super::values::resolve_animation_values;
+use super::values::{ResolvedAnimationValue, ResolvedAnimationValues};
 use super::*;
-use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty};
+#[cfg(test)]
+use crate::SceneAnimationValue;
+use crate::{Primitive, SceneAnimationId, TransitionProperty};
 
 pub(super) const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
 pub(super) const BLUR_ROTATION_METADATA_OFFSET: usize = 80;

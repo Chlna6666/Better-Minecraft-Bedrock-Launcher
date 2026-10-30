@@ -74,6 +74,31 @@ impl NovaBackendInfo {
 }
 
 impl NovaBackend {
+    /// Waits for proven queue completion before allowing extension suballocation reuse.
+    pub(super) fn wait_extension_gpu_completion(&mut self) -> Result<bool> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => {
+                gfx_core::SubmissionDevice::wait_queue_idle(device)?;
+                Ok(true)
+            }
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => {
+                gfx_core::SubmissionDevice::wait_queue_idle(device)?;
+                Ok(true)
+            }
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => {
+                gfx_core::SubmissionDevice::wait_queue_idle(device)?;
+                Ok(true)
+            }
+            #[allow(unreachable_patterns)]
+            _ => Ok(false),
+        }
+    }
     /// Captures the metadata a renderer needs without borrowing the device again.
     pub(super) fn info(&self) -> NovaBackendInfo {
         NovaBackendInfo {

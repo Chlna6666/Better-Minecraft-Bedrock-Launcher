@@ -2,6 +2,62 @@ use super::*;
 use gfx_core::BufferWriteDescriptor;
 
 #[test]
+#[ignore = "requires Vulkan hardware; verifies grouped retirement and invalid-batch atomicity"]
+fn native_buffer_retirement_validates_before_invalidating_handles() {
+    let mut device = VulkanDevice::new(&DeviceDescriptor::default()).unwrap();
+    let first = buffer(&mut device, MemoryLocation::GpuOnly);
+    let second = buffer(&mut device, MemoryLocation::GpuOnly);
+    let before = device.deferred_destroys.len();
+    assert!(ResourceDevice::destroy_buffer_batch(&mut device, &[first, first]).is_err());
+    assert!(device.buffers.get(first).is_ok());
+    assert_eq!(device.deferred_destroys.len(), before);
+    ResourceDevice::destroy_buffer_batch(&mut device, &[first, second]).unwrap();
+    assert!(device.buffers.get(first).is_err());
+    assert!(device.buffers.get(second).is_err());
+    assert!(device.deferred_destroys.len() <= before + 1);
+    let next = buffer(&mut device, MemoryLocation::GpuOnly);
+    assert!(ResourceDevice::destroy_buffer_batch(&mut device, &[next, first]).is_err());
+    assert!(device.buffers.get(next).is_ok());
+    ResourceDevice::destroy_buffer_batch(&mut device, &[next]).unwrap();
+    ResourceDevice::destroy_buffer_batch(&mut device, &[]).unwrap();
+    device.wait_for_pending_work().unwrap();
+    assert!(device.deferred_destroys.is_empty());
+}
+
+#[test]
+#[ignore = "requires Vulkan hardware; verifies command reuse and explicit memory trimming"]
+fn native_buffer_upload_reuses_completed_command_pool() {
+    let mut device = VulkanDevice::new(&DeviceDescriptor::default()).unwrap();
+    let target = buffer(&mut device, MemoryLocation::GpuOnly);
+    ResourceDevice::write_buffer_batch(&mut device, [write(target, 0, &[1; 16])]).unwrap();
+    gfx_core::SubmissionDevice::wait_queue_idle(&mut device).unwrap();
+    device.poll_cleanup();
+    let pool = device
+        .upload_command_pool
+        .iter()
+        .find(|commands| commands.timestamp_queries.is_none())
+        .unwrap()
+        .command_pool;
+    for value in 2..8 {
+        ResourceDevice::write_buffer_batch(&mut device, [write(target, 0, &[value; 16])]).unwrap();
+        gfx_core::SubmissionDevice::wait_queue_idle(&mut device).unwrap();
+        device.poll_cleanup();
+        assert!(
+            device
+                .upload_command_pool
+                .iter()
+                .any(|commands| commands.command_pool == pool)
+        );
+    }
+    assert_eq!(read(&mut device, target), [7; 16]);
+    device
+        .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
+        .unwrap();
+    assert_eq!(device.upload_ring.stats().reserved_bytes, 0);
+    assert!(device.upload_command_pool.is_empty());
+}
+
+#[test]
 fn native_batch_preserves_overlap_and_retires_one_submission() {
     let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
         Ok(device) => device,

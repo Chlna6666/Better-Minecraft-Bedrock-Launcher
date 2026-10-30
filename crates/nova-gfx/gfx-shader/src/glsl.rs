@@ -4,7 +4,8 @@ use gfx_core::{ShaderBinary, ShaderStage};
 impl WgslModule {
     /// Translates one WGSL entry point to desktop GLSL 4.50 and resource reflection.
     ///
-    /// Only group-zero read-only buffers and sampled textures are supported. Reflection
+    /// Group-zero buffers and sampled textures are supported. Writable storage is allowed
+    /// only for compute entry points; graphics buffers remain read-only. Reflection
     /// preserves logical resource slots while the runtime assigns compact native slots.
     /// GL4.5 clip control retains WGSL coordinates; instance offsets use Naga's
     /// dedicated first-instance uniform, without requiring a GL 4.6 extension.
@@ -17,10 +18,11 @@ impl WgslModule {
         use naga::back::glsl;
         for (_, variable) in self.module.global_variables.iter() {
             if variable.binding.is_some_and(|binding| binding.group != 0)
-                || matches!(variable.space, naga::AddressSpace::Storage { access } if access != naga::StorageAccess::LOAD)
+                || (stage != ShaderStage::Compute
+                    && matches!(variable.space, naga::AddressSpace::Storage { access } if access != naga::StorageAccess::LOAD))
             {
                 return Err(ShaderError::Glsl(
-                    "OpenGL supports group-zero read-only resources".into(),
+                    "OpenGL graphics supports group-zero read-only resources".into(),
                 ));
             }
             if variable.space == naga::AddressSpace::Handle {

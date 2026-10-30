@@ -171,7 +171,7 @@ fn virtual_text_keystroke(text: &str, modifiers: Modifiers) -> Option<Keystroke>
 mod virtual_text_tests {
     use super::*;
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn remote_unicode_text_requires_no_physical_key() {
         let value = virtual_text_keystroke("😀中文", Modifiers::default()).unwrap();
         assert_eq!(value.key_char.as_deref(), Some("😀中文"));
@@ -179,7 +179,7 @@ mod virtual_text_tests {
         assert!(virtual_text_keystroke("246", Modifiers::default()).is_some());
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn shortcut_and_control_events_do_not_insert_text() {
         assert!(virtual_text_keystroke("", Modifiers::default()).is_none());
         assert!(virtual_text_keystroke("\\r", Modifiers::default()).is_none());

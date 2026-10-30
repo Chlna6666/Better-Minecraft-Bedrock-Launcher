@@ -5,12 +5,16 @@ use windows::Win32::{
     Graphics::{Direct3D::*, Direct3D11::*, Dxgi::Common::*},
 };
 
+mod bindings;
+pub(crate) mod indirect;
+
 // Only cache state within one immediate-context render pass. Other D3D11
 // operations and target switches can mutate the context between passes.
 #[derive(Default)]
 struct Dx11PassState {
     pipeline: Option<u64>,
     scissor: Option<(i32, i32, i32, i32)>,
+    bindings: bindings::Bindings,
 }
 
 impl CommandDevice for Dx11Device {
@@ -231,8 +235,15 @@ impl Dx11Device {
                 }
             }
         }
+        self.indirect_constants
+            .stage(&self.native, &self.context, &self.buffers, commands)?;
         let mut state = Dx11PassState::default();
+        let mut indirect_count = 0;
         for command in commands {
+            let indirect_index = indirect_count;
+            if matches!(command, RenderCommand::DrawIndirect(_)) {
+                indirect_count += 1;
+            }
             let scissor = match (viewport, command.scissor()) {
                 (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
                 (_, scissor) => scissor,
@@ -247,6 +258,7 @@ impl Dx11Device {
                 target_format,
                 dsv.is_some(),
                 &mut state,
+                indirect_index,
             )?;
         }
         // SAFETY: remove output bindings before these targets are sampled by another pass.
@@ -263,6 +275,7 @@ impl Dx11Device {
         target_format: Format,
         has_depth: bool,
         state: &mut Dx11PassState,
+        indirect_index: usize,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(command.pipeline())?;
         if pipeline.desc.color_format != target_format
@@ -298,8 +311,7 @@ impl Dx11Device {
                 as i32,
         };
         // SAFETY: native state objects are retained by this pipeline; all slices
-        // remain live through calls. Shader/resource bindings still update for
-        // every draw; only unchanged pass-local pipeline/scissor state is skipped.
+        // remain live through calls. Unchanged state is skipped only within this pass.
         unsafe {
             let pipeline_key = command.pipeline().raw();
             if state.pipeline != Some(pipeline_key) {
@@ -329,27 +341,78 @@ impl Dx11Device {
                 return Err(Error::InvalidInput("bind group layout mismatch".into()));
             }
             for (slot, stages, binding) in &set.bindings {
-                self.bind(*slot, *stages, binding);
+                let changed = state.bindings.changed_stages(*slot, *stages, binding);
+                if !changed.is_empty() {
+                    self.bind(*slot, changed, binding);
+                }
             }
         }
         let (vertex_offset, instance_offset) = match command {
             RenderCommand::Draw(draw) => (draw.first_vertex, draw.first_instance),
             RenderCommand::DrawIndexed(draw) => (draw.base_vertex as u32, draw.first_instance),
+            RenderCommand::DrawIndirect(_) => (0, 0),
         };
         let constants = [vertex_offset, instance_offset, 0, 0];
         // SAFETY: constants contain 16 initialized bytes and match the reserved NagaConstants ABI.
         unsafe {
-            self.context.UpdateSubresource(
-                &self.draw_constants,
-                0,
-                None,
-                constants.as_ptr().cast(),
-                0,
-                0,
-            );
-            self.context
-                .VSSetConstantBuffers(13, Some(&[Some(self.draw_constants.clone())]));
+            if matches!(command, RenderCommand::DrawIndirect(_))
+                && self.indirect_constants.is_active()
+            {
+                self.indirect_constants
+                    .bind(&self.context, indirect_index)?;
+            } else {
+                if let RenderCommand::DrawIndirect(draw) = command {
+                    let buffer = self.buffers.get(draw.arguments)?;
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || draw.offset % 4 != 0
+                        || draw
+                            .offset
+                            .checked_add(16)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "indirect argument range/usage mismatch".into(),
+                        ));
+                    }
+                    // Naga's DX11 ABI takes base offsets through b13 because native SV_*ID
+                    // excludes them. Copy these GPU-generated fields without CPU readback.
+                    let region = D3D11_BOX {
+                        left: (draw.offset + 8) as u32,
+                        right: (draw.offset + 16) as u32,
+                        top: 0,
+                        bottom: 1,
+                        front: 0,
+                        back: 1,
+                    };
+                    self.context.CopySubresourceRegion(
+                        &self.draw_constants,
+                        0,
+                        0,
+                        0,
+                        0,
+                        &buffer.native,
+                        0,
+                        Some(&region),
+                    );
+                } else {
+                    self.context.UpdateSubresource(
+                        &self.draw_constants,
+                        0,
+                        None,
+                        constants.as_ptr().cast(),
+                        0,
+                        0,
+                    );
+                }
+                self.context
+                    .VSSetConstantBuffers(13, Some(&[Some(self.draw_constants.clone())]));
+            }
             match command {
+                RenderCommand::DrawIndirect(draw) => {
+                    let buffer = self.buffers.get(draw.arguments)?;
+                    self.context
+                        .DrawInstancedIndirect(&buffer.native, draw.offset as u32);
+                }
                 RenderCommand::Draw(draw) => {
                     self.context
                         .DrawInstanced(draw.vertex_count, draw.instance_count, 0, 0)
@@ -460,7 +523,7 @@ impl PresentationDevice for Dx11Device {
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
     ) -> Result<Option<PresentedFrame>> {
-        let submission = self.present_steps(
+        let (submission, timings) = self.present_steps(
             frame.swapchain,
             frame.render_pass,
             frame.commands,
@@ -469,7 +532,7 @@ impl PresentationDevice for Dx11Device {
         )?;
         Ok(Some(PresentedFrame {
             submission: Some(submission),
-            timings: None,
+            timings: Some(timings),
         }))
     }
 

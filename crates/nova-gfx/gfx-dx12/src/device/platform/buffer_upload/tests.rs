@@ -2,6 +2,49 @@ use super::*;
 use gfx_core::BufferWriteDescriptor;
 
 #[test]
+#[ignore = "requires D3D12 hardware; verifies upload reuse and explicit memory trimming"]
+fn native_buffer_upload_reuses_completed_pages_and_commands() {
+    let mut device = Dx12Device::new(&gfx_core::DeviceDescriptor::default()).unwrap();
+    let target = buffer(&mut device, MemoryLocation::GpuOnly);
+    ResourceDevice::write_buffer_batch(&mut device, [write(target, 0, &[1; 16])]).unwrap();
+    gfx_core::SubmissionDevice::wait_queue_idle(&mut device).unwrap();
+    device.poll_cleanup();
+    let page = windows::core::Interface::as_raw(&device.upload_pages[0].as_ref().unwrap().resource);
+    let command = windows::core::Interface::as_raw(
+        &device
+            .upload_command_pool
+            .iter()
+            .find(|command| command.timestamps.is_none())
+            .unwrap()
+            .graphics_command_list,
+    );
+    for value in 2..8 {
+        ResourceDevice::write_buffer_batch(&mut device, [write(target, 0, &[value; 16])]).unwrap();
+        gfx_core::SubmissionDevice::wait_queue_idle(&mut device).unwrap();
+        device.poll_cleanup();
+        assert_eq!(
+            windows::core::Interface::as_raw(&device.upload_pages[0].as_ref().unwrap().resource),
+            page
+        );
+        assert!(
+            device
+                .upload_command_pool
+                .iter()
+                .any(
+                    |entry| windows::core::Interface::as_raw(&entry.graphics_command_list)
+                        == command
+                )
+        );
+    }
+    assert_eq!(read(&mut device, target), [7; 16]);
+    device
+        .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
+        .unwrap();
+    assert_eq!(device.upload_ring.stats().reserved_bytes, 0);
+    assert!(device.upload_command_pool.is_empty());
+}
+
+#[test]
 fn native_batch_preserves_overlap_and_signals_once() {
     let mut device = match Dx12Device::new(&gfx_core::DeviceDescriptor::default()) {
         Ok(device) => device,

@@ -114,6 +114,7 @@ impl FrameLatencyWait {
             .ready = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) {
         self.consume_ready();
     }

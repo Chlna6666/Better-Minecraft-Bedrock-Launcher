@@ -1,4 +1,5 @@
 use crate::{
+    commands::indirect::IndirectConstants,
     pipelines::{Pipeline, Shader},
     registry::Registry,
     resources::{BindGroup, Buffer, Texture, View},
@@ -41,6 +42,7 @@ pub struct Dx11Device {
     pub(crate) surfaces: Registry<windows::Win32::Foundation::HWND>,
     pub(crate) swapchains: Registry<Swapchain>,
     pub(crate) draw_constants: ID3D11Buffer,
+    pub(crate) indirect_constants: IndirectConstants,
     // Exact SRV register masks for the current immediate context. Explicitly unbind
     // only registers that were populated instead of clearing all 128 on each blur pass.
     pub(crate) vs_srv_slots: Cell<u128>,
@@ -54,6 +56,20 @@ pub struct Dx11Device {
 
 pub(crate) fn backend(error: windows::core::Error) -> Error {
     Error::Backend(format!("D3D11: {error}"))
+}
+pub(crate) fn backend_with_device_reason(
+    device: &ID3D11Device,
+    operation: &str,
+    error: windows::core::Error,
+) -> Error {
+    // SAFETY: The device is a live COM object owned by this backend.
+    let reason = match unsafe { device.GetDeviceRemovedReason() } {
+        Ok(()) => "S_OK".to_string(),
+        Err(reason) => reason.to_string(),
+    };
+    Error::Backend(format!(
+        "D3D11 {operation}: {error}; device_removed_reason={reason}"
+    ))
 }
 pub(crate) fn required<T>(value: Option<T>) -> Result<T> {
     value.ok_or_else(|| Error::Backend("D3D11 returned no object".into()))
@@ -92,6 +108,7 @@ impl Dx11Device {
             "created native D3D11 device: adapter={} feature_level=11_0",
             info.name
         );
+        let indirect_constants = IndirectConstants::new(&native);
         Ok(Self {
             native,
             context,
@@ -111,6 +128,7 @@ impl Dx11Device {
             surfaces: Registry::default(),
             swapchains: Registry::default(),
             draw_constants: required(constants)?,
+            indirect_constants,
             vs_srv_slots: Cell::new(0),
             ps_srv_slots: Cell::new(0),
             pending: VecDeque::new(),
@@ -147,6 +165,7 @@ impl Dx11Device {
         if level == MemoryTrimLevel::Light {
             return Ok(());
         }
+        self.indirect_constants.trim(level);
         self.queries
             .truncate(usize::from(level == MemoryTrimLevel::Moderate));
         for commands in self.encoders.values_mut() {
@@ -219,7 +238,7 @@ impl Dx11Device {
                     D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
                 )
             }
-            .map_err(backend)?;
+            .map_err(|error| backend_with_device_reason(&self.native, "GetData", error))?;
             if done == 0 {
                 break;
             }
@@ -365,6 +384,11 @@ impl Backend for Dx11Device {
     }
 }
 impl SubmissionDevice for Dx11Device {
+    fn wait_queue_idle(&mut self) -> Result<()> {
+        let submission = self.signal()?;
+        SubmissionDevice::wait_submission(self, submission)
+    }
+
     fn async_capabilities(&self) -> AsyncCapabilities {
         AsyncCapabilities {
             threading_mode: ThreadingMode::OwnerThreadOnly,

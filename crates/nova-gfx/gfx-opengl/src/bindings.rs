@@ -6,6 +6,93 @@ use crate::{
 use gfx_core::*;
 use glow::HasContext as _;
 
+#[derive(Default)]
+pub(crate) struct Cache {
+    buffers: Vec<(u32, u32, glow::NativeBuffer, i32, i32)>,
+    textures: Vec<(u32, glow::NativeTexture)>,
+    samplers: Vec<(u32, Option<glow::NativeSampler>)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU32;
+    #[test]
+    fn ranges_targets_units_and_pass_resets_preserve_binding_changes() {
+        let mut cache = Cache::default();
+        let buffer = glow::NativeBuffer(NonZeroU32::new(1).unwrap());
+        let texture = glow::NativeTexture(NonZeroU32::new(2).unwrap());
+        let sampler = glow::NativeSampler(NonZeroU32::new(3).unwrap());
+        assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 0, 32));
+        assert!(!cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 0, 32));
+        assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 16, 32));
+        assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 16, 64));
+        assert!(cache.buffer(glow::SHADER_STORAGE_BUFFER, 0, buffer, 16, 64));
+        assert!(cache.texture(0, texture));
+        assert!(!cache.texture(0, texture));
+        assert!(cache.texture(1, texture));
+        assert!(cache.sampler(0, None));
+        assert!(!cache.sampler(0, None));
+        assert!(cache.sampler(0, Some(sampler)));
+        let capacity = cache.buffers.capacity();
+        cache.reset();
+        assert_eq!(cache.buffers.capacity(), capacity);
+        assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 0, 32));
+        assert!(cache.texture(0, texture));
+        assert!(cache.sampler(0, None));
+    }
+}
+
+impl Cache {
+    pub(crate) fn reset(&mut self) {
+        self.buffers.clear();
+        self.textures.clear();
+        self.samplers.clear();
+    }
+    fn buffer(
+        &mut self,
+        target: u32,
+        slot: u32,
+        native: glow::NativeBuffer,
+        offset: i32,
+        size: i32,
+    ) -> bool {
+        let key = (target, slot, native, offset, size);
+        if let Some(previous) = self
+            .buffers
+            .iter_mut()
+            .find(|value| value.0 == target && value.1 == slot)
+        {
+            let changed = *previous != key;
+            *previous = key;
+            changed
+        } else {
+            self.buffers.push(key);
+            true
+        }
+    }
+    fn texture(&mut self, unit: u32, native: glow::NativeTexture) -> bool {
+        if let Some((_, previous)) = self.textures.iter_mut().find(|value| value.0 == unit) {
+            let changed = *previous != native;
+            *previous = native;
+            changed
+        } else {
+            self.textures.push((unit, native));
+            true
+        }
+    }
+    fn sampler(&mut self, unit: u32, native: Option<glow::NativeSampler>) -> bool {
+        if let Some((_, previous)) = self.samplers.iter_mut().find(|value| value.0 == unit) {
+            let changed = *previous != native;
+            *previous = native;
+            changed
+        } else {
+            self.samplers.push((unit, native));
+            true
+        }
+    }
+}
+
 impl OpenGlDevice {
     fn binding(set: &BindGroup, logical: u32) -> Result<BindingResource> {
         set.desc
@@ -20,6 +107,7 @@ impl OpenGlDevice {
         &self,
         pipeline: &Pipeline,
         set: Option<&BindGroup>,
+        cache: &mut Cache,
     ) -> Result<()> {
         let Some(set) = set else {
             return if pipeline.buffers.is_empty() && pipeline.textures.is_empty() {
@@ -31,15 +119,20 @@ impl OpenGlDevice {
             };
         };
         for binding in &pipeline.buffers {
-            self.bind_buffer_range(set, binding)?;
+            self.bind_buffer_range(set, binding, cache)?;
         }
         for binding in &pipeline.textures {
-            self.bind_sampled_texture(set, binding)?;
+            self.bind_sampled_texture(set, binding, cache)?;
         }
         Ok(())
     }
 
-    fn bind_buffer_range(&self, set: &BindGroup, binding: &BufferSlot) -> Result<()> {
+    fn bind_buffer_range(
+        &self,
+        set: &BindGroup,
+        binding: &BufferSlot,
+        cache: &mut Cache,
+    ) -> Result<()> {
         let BindingResource::Buffer(range) = Self::binding(set, binding.logical)? else {
             return Err(Error::InvalidInput(
                 "OpenGL shader buffer bound to a non-buffer".into(),
@@ -86,22 +179,25 @@ impl OpenGlDevice {
                 }
                 (buffer.native, source_offset)
             };
-            self.gl.bind_buffer_range(
-                if uniform {
-                    glow::UNIFORM_BUFFER
-                } else {
-                    glow::SHADER_STORAGE_BUFFER
-                },
-                binding.slot,
-                Some(native),
-                offset,
-                native_size,
-            );
+            let target = if uniform {
+                glow::UNIFORM_BUFFER
+            } else {
+                glow::SHADER_STORAGE_BUFFER
+            };
+            if cache.buffer(target, binding.slot, native, offset, native_size) {
+                self.gl
+                    .bind_buffer_range(target, binding.slot, Some(native), offset, native_size);
+            }
         }
         Ok(())
     }
 
-    fn bind_sampled_texture(&self, set: &BindGroup, binding: &TextureSlot) -> Result<()> {
+    fn bind_sampled_texture(
+        &self,
+        set: &BindGroup,
+        binding: &TextureSlot,
+        cache: &mut Cache,
+    ) -> Result<()> {
         let BindingResource::Texture(texture) = Self::binding(set, binding.logical)? else {
             return Err(Error::InvalidInput(
                 "OpenGL shader texture bound to a non-texture".into(),
@@ -126,9 +222,13 @@ impl OpenGlDevice {
         // SAFETY: the view and sampler belong to this current owner context. Native units
         // were allocated within the driver's limit during pipeline reflection.
         unsafe {
-            self.gl.active_texture(glow::TEXTURE0 + binding.unit);
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(view.native));
-            self.gl.bind_sampler(binding.unit, sampler);
+            if cache.texture(binding.unit, view.native) {
+                self.gl.active_texture(glow::TEXTURE0 + binding.unit);
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(view.native));
+            }
+            if cache.sampler(binding.unit, sampler) {
+                self.gl.bind_sampler(binding.unit, sampler);
+            }
         }
         Ok(())
     }

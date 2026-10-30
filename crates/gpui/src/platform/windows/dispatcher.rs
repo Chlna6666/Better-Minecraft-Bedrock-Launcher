@@ -41,10 +41,7 @@ pub(crate) struct WindowsDispatcher {
 /// The outer winit event is coalesced for throughput, but a native-modal HWND
 /// must still be notified for *each* newly enqueued runnable. An existing outer
 /// wake may remain unconsumed for the entire interactive resize session.
-fn claim_foreground_wakeup(
-    outer_pending: &AtomicBool,
-    wake_modal: impl FnOnce() -> bool,
-) -> bool {
+fn claim_foreground_wakeup(outer_pending: &AtomicBool, wake_modal: impl FnOnce() -> bool) -> bool {
     // The modal HWND owns delivery while WM_ENTERSIZEMOVE is active. Never add
     // RunMainThreadTasks user events that winit cannot dispatch until mouse-up:
     // draining the queue would otherwise reset outer_pending on each native wake
@@ -56,7 +53,7 @@ fn claim_foreground_wakeup(
 }
 
 impl WindowsDispatcher {
-    pub(crate) fn new(
+    pub(super) fn new(
         main_sender: Sender<Runnable>,
         main_thread_wakeup_pending: Arc<AtomicBool>,
         event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,

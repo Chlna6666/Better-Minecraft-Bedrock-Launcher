@@ -34,8 +34,6 @@ enum TaskState<T> {
     Spawned(async_task::Task<T>),
 }
 
-pub(super) type AnyLocalFuture<R> = Pin<Box<dyn 'static + Future<Output = R>>>;
-
 pub(super) type AnyFuture<R> = Pin<Box<dyn 'static + Send + Future<Output = R>>>;
 
 impl<T> Task<T> {

@@ -196,6 +196,7 @@ fn pipeline(
                 color_format: Format::Rgba8Unorm,
                 blend_mode: blend,
                 primitive_topology: PrimitiveTopology::TriangleList,
+                raster: Default::default(),
                 depth_state: depth.then_some(DepthState {
                     compare: CompareFunction::Less,
                     write_enabled: true,

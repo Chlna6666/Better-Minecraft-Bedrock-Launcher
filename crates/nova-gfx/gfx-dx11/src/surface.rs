@@ -1,5 +1,5 @@
 use crate::{
-    device::{Dx11Device, backend, required},
+    device::{Dx11Device, backend, backend_with_device_reason, required},
     frame_pacing::FrameLatencyWait,
     resources::format,
 };
@@ -375,9 +375,10 @@ impl Dx11Device {
         commands: &[RenderCommand],
         load: LoadOp<ClearColor>,
         depth: Option<DepthAttachment>,
-    ) -> Result<SubmissionId> {
+    ) -> Result<(SubmissionId, PresentTimings)> {
         // D3D11 rotates the identity of buffer zero at Present. Its retained view always
         // targets the next writable image; D3D12's physical image indexing does not apply.
+        let record_started = std::time::Instant::now();
         self.render_target(
             RenderTarget::Swapchain {
                 swapchain: id,
@@ -388,6 +389,7 @@ impl Dx11Device {
             load,
             depth,
         )?;
+        let command_record = record_started.elapsed();
         let chain = self.swapchains.get_mut(id)?;
         let source: IDXGISwapChain2 = chain.native.cast().map_err(backend)?;
         // Apply the source rectangle only after drawing the matching new-size scene. Before this
@@ -399,17 +401,24 @@ impl Dx11Device {
         } else {
             0
         };
+        let present_started = std::time::Instant::now();
         // SAFETY: immediate rendering has been recorded and output bindings removed. No tearing.
         unsafe { chain.native.Present(interval, DXGI_PRESENT(0)) }
             .ok()
-            .map_err(backend)?;
+            .map_err(|error| backend_with_device_reason(&self.native, "Present", error))?;
+        let queue_present = present_started.elapsed();
+        let cleanup_started = std::time::Instant::now();
         chain.pacing.consume_ready();
         let publication = if let Some(composition) = &mut chain.composition {
             composition.publish(&chain.native)
         } else {
             Ok(())
         };
+        let publication_time = cleanup_started.elapsed();
+        let signal_started = std::time::Instant::now();
         let submission = self.signal()?;
+        let queue_submit = signal_started.elapsed();
+        let cleanup_started = std::time::Instant::now();
         // This query follows Present, unlike an arbitrary device-wide pending count.
         self.swapchains.get_mut(id)?.resize_retirement = Some(submission);
         if let Err(error) = publication {
@@ -418,7 +427,16 @@ impl Dx11Device {
             SubmissionDevice::wait_submission(self, submission)?;
             return Err(error);
         }
-        Ok(submission)
+        Ok((
+            submission,
+            PresentTimings {
+                command_record,
+                queue_present,
+                queue_submit,
+                post_present_cleanup: publication_time + cleanup_started.elapsed(),
+                ..PresentTimings::default()
+            },
+        ))
     }
 }
 

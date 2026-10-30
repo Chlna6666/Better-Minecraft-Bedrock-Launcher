@@ -50,6 +50,12 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
 }
 
 impl ResourceDevice for OpenGlDevice {
+    fn compute_capabilities(&self) -> ComputeCapabilities {
+        self.compute.capabilities
+    }
+    fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
+        self.dispatch_buffers(dispatch)
+    }
     fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
         for copy in copies {
             copy.validate(

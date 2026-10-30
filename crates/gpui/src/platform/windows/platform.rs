@@ -58,7 +58,6 @@ use super::{
     apply_cursor_style_to_window, keystroke_from_winit, modifiers_from_winit,
     mouse_button_from_winit, spawn_sta_dialog,
 };
-use crate::window::Decorations;
 use crate::*;
 
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
@@ -72,10 +71,6 @@ const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[
     #[cfg(feature = "nova-gfx-opengl")]
     RendererBackend::NovaOpenGl,
 ];
-
-pub(super) fn windows_auto_renderer_backend_order() -> &'static [RendererBackend] {
-    WINDOWS_AUTO_RENDERER_BACKEND_ORDER
-}
 
 thread_local! {
     static ACTIVE_CONTEXT: RefCell<Option<(*const ActiveEventLoop, *mut WindowsApplication)>> = const { RefCell::new(None) };
@@ -1819,14 +1814,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::Ime(ime) => {
                 let input = match ime {
                     winit::event::Ime::Commit(text) => Some(PlatformInput::TextInput(text)),
-                    winit::event::Ime::Preedit(text, _) => {
-                        Some(PlatformInput::TextPreedit(text))
-                    }
+                    winit::event::Ime::Preedit(text, _) => Some(PlatformInput::TextPreedit(text)),
                     // Cancelling an IME session must also discard provisional
                     // text; otherwise it can linger in an RDP-disconnected field.
-                    winit::event::Ime::Disabled => {
-                        Some(PlatformInput::TextPreedit(String::new()))
-                    }
+                    winit::event::Ime::Disabled => Some(PlatformInput::TextPreedit(String::new())),
                     winit::event::Ime::Enabled => None,
                 };
                 if let Some(input) = input {

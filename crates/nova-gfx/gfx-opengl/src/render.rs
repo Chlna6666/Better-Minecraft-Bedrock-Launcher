@@ -204,6 +204,8 @@ impl OpenGlDevice {
         }
         let result = (|| {
             let mut state = GlPassState::default();
+            let mut bindings = self.binding_cache.borrow_mut();
+            bindings.reset();
             for step in steps.iter() {
                 let scissor = match (viewport, step.scissor()) {
                     (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
@@ -223,6 +225,7 @@ impl OpenGlDevice {
                     format,
                     depth_view.is_some(),
                     &mut state,
+                    &mut bindings,
                 )?;
             }
             // A blur frame executes many short offscreen passes. glGetError after each
@@ -268,6 +271,7 @@ impl OpenGlDevice {
         format: Format,
         depth: bool,
         state: &mut GlPassState,
+        bindings: &mut crate::bindings::Cache,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
         if pipeline.desc.color_format != format || (pipeline.desc.depth_state.is_some() && !depth) {
@@ -309,16 +313,28 @@ impl OpenGlDevice {
         let height = scissor.height.min(scissor_extent.height() - y);
         // SAFETY: the graphics owner holds the current context throughout this pass.
         // Reuse program/VAO/depth/blend state between successive draws of one pipeline.
-        // Resource bindings still run for every draw (they may include GPU mirror copies).
+        // Mirror copies still run for every draw; unchanged native bindings can be skipped.
         unsafe {
             let pipeline_key = step.pipeline().raw();
             if state.pipeline.is_none() {
                 self.gl.bind_vertex_array(Some(self.vao));
-                self.gl.disable(glow::CULL_FACE);
                 self.gl.enable(glow::SCISSOR_TEST);
             }
             if state.pipeline != Some(pipeline_key) {
                 self.gl.use_program(Some(pipeline.native));
+                self.gl.front_face(match pipeline.desc.raster.front_face {
+                    FrontFace::Ccw => glow::CCW,
+                    FrontFace::Cw => glow::CW,
+                });
+                if let Some(face) = pipeline.desc.raster.cull_mode {
+                    self.gl.enable(glow::CULL_FACE);
+                    self.gl.cull_face(match face {
+                        Face::Front => glow::FRONT,
+                        Face::Back => glow::BACK,
+                    });
+                } else {
+                    self.gl.disable(glow::CULL_FACE);
+                }
                 if let Some(depth) = pipeline.desc.depth_state {
                     self.gl.enable(glow::DEPTH_TEST);
                     self.gl.depth_func(comparison(depth.compare));
@@ -370,22 +386,58 @@ impl OpenGlDevice {
                 );
                 state.scissor = Some(clamped_scissor);
             }
-            self.bind_resources(pipeline, set)?;
+            self.bind_resources(pipeline, set, bindings)?;
             let topology = if pipeline.desc.primitive_topology == PrimitiveTopology::TriangleList {
                 glow::TRIANGLES
             } else {
                 glow::TRIANGLE_STRIP
             };
             match step {
+                RenderCommand::DrawIndirect(draw) => {
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "OpenGL indirect draws require ARB_shader_draw_parameters".into(),
+                        ));
+                    }
+                    let buffer = self.buffers.get(draw.arguments)?;
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || draw.offset % 4 != 0
+                        || draw
+                            .offset
+                            .checked_add(16)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid OpenGL indirect argument range or usage".into(),
+                        ));
+                    }
+                    self.gl
+                        .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(buffer.native));
+                    self.gl.draw_arrays_indirect_offset(
+                        topology,
+                        i32::try_from(draw.offset).map_err(native)?,
+                    );
+                    self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+                }
                 RenderCommand::Draw(draw) => {
                     self.gl
                         .uniform_1_u32(pipeline.first_instance.as_ref(), draw.first_instance);
-                    self.gl.draw_arrays_instanced(
-                        topology,
-                        i32::try_from(draw.first_vertex).map_err(native)?,
-                        i32::try_from(draw.vertex_count).map_err(native)?,
-                        i32::try_from(draw.instance_count).map_err(native)?,
-                    );
+                    if self.compute.capabilities.indirect_draw {
+                        self.gl.draw_arrays_instanced_base_instance(
+                            topology,
+                            i32::try_from(draw.first_vertex).map_err(native)?,
+                            i32::try_from(draw.vertex_count).map_err(native)?,
+                            i32::try_from(draw.instance_count).map_err(native)?,
+                            draw.first_instance,
+                        );
+                    } else {
+                        self.gl.draw_arrays_instanced(
+                            topology,
+                            i32::try_from(draw.first_vertex).map_err(native)?,
+                            i32::try_from(draw.vertex_count).map_err(native)?,
+                            i32::try_from(draw.instance_count).map_err(native)?,
+                        );
+                    }
                 }
                 RenderCommand::DrawIndexed(draw) => {
                     let buffer = self.buffers.get(draw.index_buffer.buffer)?;
@@ -415,14 +467,26 @@ impl OpenGlDevice {
                         .uniform_1_u32(pipeline.first_instance.as_ref(), draw.first_instance);
                     self.gl
                         .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.native));
-                    self.gl.draw_elements_instanced_base_vertex(
-                        topology,
-                        i32::try_from(draw.index_count).map_err(native)?,
-                        kind,
-                        i32::try_from(offset).map_err(native)?,
-                        i32::try_from(draw.instance_count).map_err(native)?,
-                        draw.base_vertex,
-                    );
+                    if self.compute.capabilities.indirect_draw {
+                        self.gl.draw_elements_instanced_base_vertex_base_instance(
+                            topology,
+                            i32::try_from(draw.index_count).map_err(native)?,
+                            kind,
+                            i32::try_from(offset).map_err(native)?,
+                            i32::try_from(draw.instance_count).map_err(native)?,
+                            draw.base_vertex,
+                            draw.first_instance,
+                        );
+                    } else {
+                        self.gl.draw_elements_instanced_base_vertex(
+                            topology,
+                            i32::try_from(draw.index_count).map_err(native)?,
+                            kind,
+                            i32::try_from(offset).map_err(native)?,
+                            i32::try_from(draw.instance_count).map_err(native)?,
+                            draw.base_vertex,
+                        );
+                    }
                 }
             }
         }

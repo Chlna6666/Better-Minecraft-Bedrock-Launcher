@@ -15,6 +15,7 @@ The crate is split into focused modules:
 - common allocation descriptors, errors, and statistics.
 - upload-ring allocation for staging uploads.
 - deferred-free queues keyed by completed GPU fence values.
+  Polling reuses pending queue capacity and preserves retirement order.
 - backend allocator wrappers selected by Cargo features.
 
 ## Backends

@@ -1,5 +1,8 @@
 # gfx-metal
 
+当前 `render_and_present` 仍返回 `Error::Unavailable`；其他可运行后端的图形绑定复用和呈现
+计时实现不代表 Metal 呈现路径已经完成。
+
 [English](README.md)
 
 `gfx-metal` 是 `gfx-core` 设备 trait 的 Metal 实现。Apple 目标上创建 Metal device、资源、

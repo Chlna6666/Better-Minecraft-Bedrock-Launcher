@@ -1,5 +1,4 @@
 use super::*;
-use std::hash::Hasher;
 use std::sync::Arc;
 
 impl FrameUpload {

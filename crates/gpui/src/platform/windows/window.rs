@@ -3319,9 +3319,9 @@ mod tests {
     }
     use super::{
         ClickState, NativeWindowVisibilityAction, SIZE_MOVE_LOOP_TIMER_ID, SizeMoveLoopAction,
-        WindowsWindowPresentationState, clear_pending_frame_request_after_timeout,
-        merge_frame_request, modal_size_move_watchdog_period, renderer_backend_candidates,
-        should_use_native_decorations, should_use_no_redirection_bitmap, size_move_loop_action,
+        WindowsWindowPresentationState, merge_frame_request, modal_size_move_watchdog_period,
+        renderer_backend_candidates, should_use_native_decorations,
+        should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
         DevicePixels, MouseButton, PlatformFrameRequest, RendererBackend, RendererFallback,
@@ -3542,12 +3542,7 @@ mod tests {
 
         let now = Instant::now();
         assert!(allow_unpaced_native_frame(true, now, None, None));
-        assert!(!allow_unpaced_native_frame(
-            true,
-            now,
-            None,
-            Some(now)
-        ));
+        assert!(!allow_unpaced_native_frame(true, now, None, Some(now)));
         assert!(!allow_unpaced_native_frame(
             true,
             now + Duration::from_millis(32),
@@ -3560,12 +3555,7 @@ mod tests {
             None,
             Some(now),
         ));
-        assert!(allow_unpaced_native_frame(
-            false,
-            now,
-            None,
-            Some(now)
-        ));
+        assert!(allow_unpaced_native_frame(false, now, None, Some(now)));
     }
 
     #[test]
@@ -3574,21 +3564,35 @@ mod tests {
 
         // A held WM_ENTERSIZEMOVE gesture with already-matched Scene geometry
         // must NOT synchronously invoke unrelated UI StateNotify work.
-        assert!(!needs_inline_resize_commit(true, true, false, false, false, 12, 12));
-        assert!(!needs_inline_resize_commit(true, false, false, false, false, 12, 12));
+        assert!(!needs_inline_resize_commit(
+            true, true, false, false, false, 12, 12
+        ));
+        assert!(!needs_inline_resize_commit(
+            true, false, false, false, false, 12, 12
+        ));
 
         // A newly queued Win32 size or a size newer than the committed Scene
         // must still use the prompt geometry path while live resizing.
-        assert!(needs_inline_resize_commit(true, true, false, true, false, 13, 12));
-        assert!(needs_inline_resize_commit(true, true, false, false, true, 13, 12));
-        assert!(needs_inline_resize_commit(true, true, false, false, false, 13, 12));
+        assert!(needs_inline_resize_commit(
+            true, true, false, true, false, 13, 12
+        ));
+        assert!(needs_inline_resize_commit(
+            true, true, false, false, true, 13, 12
+        ));
+        assert!(needs_inline_resize_commit(
+            true, true, false, false, false, 13, 12
+        ));
 
         // The renderer may still have to consume the resize even if the native
         // gesture ended before the corresponding UI Scene was published.
-        assert!(needs_inline_resize_commit(true, false, true, false, false, 13, 13));
+        assert!(needs_inline_resize_commit(
+            true, false, true, false, false, 13, 13
+        ));
 
         // Presentation-only animation frames must never invoke the UI callback.
-        assert!(!needs_inline_resize_commit(false, true, true, true, true, 13, 12));
+        assert!(!needs_inline_resize_commit(
+            false, true, true, true, true, 13, 12
+        ));
     }
 
     #[test]

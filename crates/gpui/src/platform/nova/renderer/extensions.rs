@@ -10,6 +10,17 @@ pub(super) struct RendererRegistry {
 }
 
 impl RendererRegistry {
+    pub(super) fn needs_gpu_completion(&self) -> bool {
+        self.renderers
+            .values()
+            .any(|renderer| renderer.needs_gpu_completion())
+    }
+
+    pub(super) fn gpu_work_completed(&mut self) {
+        for renderer in self.renderers.values_mut() {
+            renderer.gpu_work_completed();
+        }
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.renderers.is_empty()
     }
@@ -60,5 +71,47 @@ impl RendererRegistry {
 
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) {
         self.retain(&[], device);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PendingRenderer {
+        pending: bool,
+    }
+
+    impl crate::RendererExtensionRenderer for PendingRenderer {
+        fn needs_gpu_completion(&self) -> bool {
+            self.pending
+        }
+        fn gpu_work_completed(&mut self) {
+            self.pending = false;
+        }
+        fn render(
+            &mut self,
+            _extension: &dyn crate::RendererExtension,
+            _device: &mut dyn ExtensionDevice,
+            _context: crate::RendererExtensionContext,
+            _steps: &mut Vec<RenderCommand>,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+        fn destroy(&mut self, _device: &mut dyn ExtensionDevice) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn completion_notification_retires_pending_extension_work() {
+        let mut registry = RendererRegistry::default();
+        registry.renderers.insert(
+            TypeId::of::<PendingRenderer>(),
+            Box::new(PendingRenderer { pending: true }),
+        );
+        assert!(registry.needs_gpu_completion());
+        registry.gpu_work_completed();
+        assert!(!registry.needs_gpu_completion());
     }
 }

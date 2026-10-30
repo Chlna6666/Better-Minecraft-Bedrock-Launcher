@@ -26,8 +26,12 @@
 
 mod backend;
 mod buffer_upload;
+mod compute;
 mod memory;
 mod texture_copy;
+pub use compute::{
+    ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
+};
 pub use texture_copy::TextureCopy;
 
 pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
@@ -596,6 +600,10 @@ bitflags! {
         const UNIFORM = 1 << 4;
         /// Storage buffer.
         const STORAGE = 1 << 5;
+        /// Writable storage, in addition to `STORAGE`.
+        const STORAGE_WRITE = 1 << 6;
+        /// GPU-generated indirect draw arguments.
+        const INDIRECT = 1 << 7;
     }
 
     /// Texture usage flags.
@@ -901,6 +909,14 @@ impl BufferDescriptor {
                 "buffer usage must not be empty".to_string(),
             ));
         }
+        if self.usage.contains(BufferUsage::STORAGE_WRITE)
+            && (!self.usage.contains(BufferUsage::STORAGE)
+                || self.usage.contains(BufferUsage::UNIFORM))
+        {
+            return Err(Error::InvalidInput(
+                "writable storage requires STORAGE without UNIFORM".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -1121,6 +1137,8 @@ pub enum ShaderStage {
     Vertex,
     /// Fragment stage.
     Fragment,
+    /// Compute stage.
+    Compute,
 }
 
 impl fmt::Display for ShaderStage {
@@ -1128,6 +1146,7 @@ impl fmt::Display for ShaderStage {
         match self {
             Self::Vertex => output.write_str("vertex"),
             Self::Fragment => output.write_str("fragment"),
+            Self::Compute => output.write_str("compute"),
         }
     }
 }
@@ -1505,6 +1524,34 @@ pub enum PrimitiveTopology {
     TriangleStrip,
 }
 
+/// Triangle winding considered front-facing after projection, in a Y-up coordinate system.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FrontFace {
+    /// Counter-clockwise winding.
+    #[default]
+    Ccw,
+    /// Clockwise winding.
+    Cw,
+}
+
+/// Triangle face rejected by the rasterizer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Face {
+    /// Front-facing triangles.
+    Front,
+    /// Back-facing triangles.
+    Back,
+}
+
+/// Rasterizer winding and face culling. Defaults to drawing both faces.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RasterState {
+    /// Winding considered front-facing.
+    pub front_face: FrontFace,
+    /// Faces to reject; `None` draws both sides.
+    pub cull_mode: Option<Face>,
+}
+
 /// Color attachment descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ColorAttachmentDescriptor {
@@ -1595,6 +1642,8 @@ pub struct RenderPipelineDescriptor {
     pub blend_mode: BlendMode,
     /// Primitive topology.
     pub primitive_topology: PrimitiveTopology,
+    /// Rasterizer winding and face culling.
+    pub raster: RasterState,
     /// Optional depth state.
     pub depth_state: Option<DepthState>,
 }
@@ -1786,6 +1835,23 @@ pub struct DrawIndexedCommand {
     pub scissor: Option<ScissorRect>,
 }
 
+/// A non-indexed draw whose four little-endian `u32` arguments are GPU-resident:
+/// vertex count, instance count, first vertex, first instance (16 bytes total).
+/// GPU-written counts and offsets are consumed without CPU readback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawIndirectCommand {
+    /// Render pipeline.
+    pub pipeline: RenderPipelineId,
+    /// Bind groups bound before drawing.
+    pub bind_groups: BindGroupList,
+    /// Buffer created with `INDIRECT` usage.
+    pub arguments: BufferId,
+    /// Four-byte aligned byte offset of the argument record.
+    pub offset: u64,
+    /// Optional scissor rectangle in target pixels.
+    pub scissor: Option<ScissorRect>,
+}
+
 /// One recorded render command.
 ///
 /// Commands execute in recording order inside their render pass.
@@ -1795,6 +1861,8 @@ pub enum RenderCommand {
     Draw(DrawCommand),
     /// Indexed draw.
     DrawIndexed(DrawIndexedCommand),
+    /// GPU-generated non-indexed draw; requires advertised indirect-draw support.
+    DrawIndirect(DrawIndirectCommand),
 }
 
 impl RenderCommand {
@@ -1804,6 +1872,7 @@ impl RenderCommand {
         match self {
             Self::Draw(command) => command.pipeline,
             Self::DrawIndexed(command) => command.pipeline,
+            Self::DrawIndirect(command) => command.pipeline,
         }
     }
 
@@ -1813,6 +1882,7 @@ impl RenderCommand {
         match self {
             Self::Draw(command) => command.bind_groups.as_slice(),
             Self::DrawIndexed(command) => command.bind_groups.as_slice(),
+            Self::DrawIndirect(command) => command.bind_groups.as_slice(),
         }
     }
 
@@ -1822,6 +1892,7 @@ impl RenderCommand {
         match self {
             Self::Draw(command) => command.scissor,
             Self::DrawIndexed(command) => command.scissor,
+            Self::DrawIndirect(command) => command.scissor,
         }
     }
 
@@ -1830,15 +1901,17 @@ impl RenderCommand {
         match self {
             Self::Draw(command) => command.scissor = scissor,
             Self::DrawIndexed(command) => command.scissor = scissor,
+            Self::DrawIndirect(command) => command.scissor = scissor,
         }
     }
 
-    /// Returns the instance count for this command.
+    /// Returns the CPU-known instance count, or `None` for GPU-generated indirect arguments.
     #[must_use]
-    pub fn instance_count(&self) -> u32 {
+    pub fn instance_count(&self) -> Option<u32> {
         match self {
-            Self::Draw(command) => command.instance_count,
-            Self::DrawIndexed(command) => command.instance_count,
+            Self::Draw(command) => Some(command.instance_count),
+            Self::DrawIndexed(command) => Some(command.instance_count),
+            Self::DrawIndirect(_) => None,
         }
     }
 }
@@ -2632,6 +2705,7 @@ mod tests {
             color_format: Format::Bgra8Unorm,
             blend_mode: BlendMode::Replace,
             primitive_topology: PrimitiveTopology::TriangleList,
+            raster: Default::default(),
             depth_state: None,
         };
 

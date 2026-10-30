@@ -61,7 +61,7 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
         .create_bind_group(&BindGroupDescriptor {
             label: None,
             layout,
-            bindings: vec![
+            entries: vec![
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::Texture(TextureBinding {

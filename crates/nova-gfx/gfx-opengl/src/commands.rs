@@ -59,7 +59,7 @@ impl PresentationDevice for OpenGlDevice {
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
     ) -> Result<Option<PresentedFrame>> {
-        let submission = self.present(
+        let (submission, timings) = self.present(
             frame.swapchain,
             frame.render_pass,
             frame.commands,
@@ -68,7 +68,7 @@ impl PresentationDevice for OpenGlDevice {
         )?;
         Ok(Some(PresentedFrame {
             submission: Some(submission),
-            timings: None,
+            timings: Some(timings),
         }))
     }
 

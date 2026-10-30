@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 pub(crate) struct Shader {
     pub(crate) native: glow::NativeShader,
-    stage: ShaderStage,
+    pub(crate) stage: ShaderStage,
     entry: String,
-    reflection: GlslShader,
+    pub(crate) reflection: GlslShader,
 }
 pub(crate) struct BufferSlot {
     pub(crate) logical: u32,
@@ -56,11 +56,20 @@ impl PipelineDevice for OpenGlDevice {
                 .gl
                 .create_shader(if desc.binary.stage == ShaderStage::Vertex {
                     glow::VERTEX_SHADER
+                } else if desc.binary.stage == ShaderStage::Compute {
+                    glow::COMPUTE_SHADER
                 } else {
                     glow::FRAGMENT_SHADER
                 })
                 .map_err(native)?;
-            self.gl.shader_source(shader, &reflection.source);
+            let source = if desc.binary.stage == ShaderStage::Vertex
+                && self.compute.capabilities.indirect_draw
+            {
+                crate::compute::native_instance_source(&reflection.source)
+            } else {
+                std::borrow::Cow::Borrowed(reflection.source.as_ref())
+            };
+            self.gl.shader_source(shader, &source);
             self.gl.compile_shader(shader);
             if !self.gl.get_shader_compile_status(shader) {
                 let error = self.gl.get_shader_info_log(shader);
@@ -147,6 +156,7 @@ impl PipelineDevice for OpenGlDevice {
     }
     fn destroy_shader_module(&mut self, id: ShaderModuleId) -> Result<()> {
         self.park()?;
+        self.compute.remove(&self.gl, id);
         let shader = self.shaders.take(id)?;
         unsafe {
             self.gl.delete_shader(shader.native);
@@ -167,20 +177,16 @@ impl PipelineDevice for OpenGlDevice {
     }
 }
 impl OpenGlDevice {
-    fn reflect_program(
+    pub(crate) fn reflect_buffers(
         &self,
         program: glow::NativeProgram,
-        desc: &RenderPipelineDescriptor,
         shaders: &[&GlslShader],
-    ) -> Result<Pipeline> {
+    ) -> Result<Vec<BufferSlot>> {
         let mut uniform_slots = HashMap::new();
         let mut storage_slots = HashMap::new();
         let mut buffers = Vec::new();
-        let mut textures = Vec::new();
-        let mut texture_names = HashMap::new();
-        // SAFETY: reflection queries and assignments address this live linked native program.
+        // SAFETY: the context is current and reflection addresses this linked program.
         unsafe {
-            self.gl.use_program(Some(program));
             for shader in shaders {
                 for binding in &shader.buffers {
                     let uniform = binding.kind == BindingType::UniformBuffer;
@@ -223,6 +229,24 @@ impl OpenGlDevice {
                         });
                     }
                 }
+            }
+        }
+        self.check()?;
+        Ok(buffers)
+    }
+    fn reflect_program(
+        &self,
+        program: glow::NativeProgram,
+        desc: &RenderPipelineDescriptor,
+        shaders: &[&GlslShader],
+    ) -> Result<Pipeline> {
+        let buffers = self.reflect_buffers(program, shaders)?;
+        let mut textures = Vec::new();
+        let mut texture_names = HashMap::new();
+        // SAFETY: reflection queries and assignments address this live linked native program.
+        unsafe {
+            self.gl.use_program(Some(program));
+            for shader in shaders {
                 for binding in &shader.textures {
                     let Some(location) = self.gl.get_uniform_location(program, &binding.name)
                     else {

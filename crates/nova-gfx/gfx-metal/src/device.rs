@@ -416,6 +416,7 @@ mod platform {
                 color_format: desc.color_format,
                 blend_mode: desc.blend_mode,
                 primitive_topology: desc.primitive_topology,
+                raster: desc.raster,
                 pipeline_state,
                 pipeline_layout: desc.pipeline_layout,
             }))
@@ -530,6 +531,11 @@ mod platform {
                 .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.clone()))
                 .collect::<Result<Vec<_>>>()?;
             let draw = match step {
+                RenderCommand::DrawIndirect(_) => {
+                    return Err(Error::Unavailable(
+                        "indirect draws are not implemented by this backend".into(),
+                    ));
+                }
                 RenderCommand::Draw(step) => PreparedMetalDraw::NonIndexed {
                     vertex_start: step.first_vertex,
                     vertex_count: step.vertex_count,
@@ -1008,6 +1014,7 @@ mod platform {
         color_format: Format,
         blend_mode: BlendMode,
         primitive_topology: PrimitiveTopology,
+        raster: gfx_core::RasterState,
         pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
         pipeline_layout: Option<PipelineLayoutId>,
     }
@@ -1206,6 +1213,15 @@ mod platform {
             let pipeline = &step.pipeline;
             let _ = (pipeline.blend_mode, pipeline.pipeline_layout);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
+            encoder.setFrontFacingWinding(match pipeline.raster.front_face {
+                gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
+                gfx_core::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
+            });
+            encoder.setCullMode(match pipeline.raster.cull_mode {
+                None => objc2_metal::MTLCullMode::None,
+                Some(gfx_core::Face::Front) => objc2_metal::MTLCullMode::Front,
+                Some(gfx_core::Face::Back) => objc2_metal::MTLCullMode::Back,
+            });
             encoder.setScissorRect(metal_scissor_rect(step.scissor, config.size));
             for bind_group in &step.bind_groups {
                 let _ = (bind_group.layout, bind_group.bindings.len());

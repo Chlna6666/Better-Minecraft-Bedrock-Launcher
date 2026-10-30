@@ -2,7 +2,6 @@ use super::*;
 
 use etagere::{AllocId, BucketedAtlasAllocator};
 mod compact;
-pub(super) use compact::AtlasCompactPlan;
 use std::sync::{
     Weak,
     atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},

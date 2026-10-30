@@ -185,7 +185,10 @@ mod tests {
                 scratch.path_mask_cache_hit,
                 "rotating frame slot rebuilt its path mask"
             );
-            assert_eq!(scratch.path_commands()[0].instance_count(), slot as u32 + 1);
+            assert_eq!(
+                scratch.path_commands()[0].instance_count(),
+                Some(slot as u32 + 1)
+            );
             assert_eq!(
                 scratch.path_commands().as_ptr(),
                 scratch.path_mask_cache[slot].steps.as_ptr()
@@ -209,7 +212,7 @@ mod tests {
             assert!(!scratch.path_mask_cache_hit);
             assert_eq!(
                 scratch.path_commands()[0].instance_count(),
-                revision as u32 + 2
+                Some(revision as u32 + 2)
             );
         }
         key.scene_revision = 2;
@@ -217,7 +220,7 @@ mod tests {
             panic!("uncached scene replaced retained cache")
         });
         assert!(scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_commands()[0].instance_count(), 4);
+        assert_eq!(scratch.path_commands()[0].instance_count(), Some(4));
     }
 
     #[test]
@@ -235,11 +238,11 @@ mod tests {
                 steps.push(path_step(2));
             });
             assert!(!scratch.path_mask_cache_hit);
-            assert_eq!(scratch.path_commands()[0].instance_count(), 2);
+            assert_eq!(scratch.path_commands()[0].instance_count(), Some(2));
         }
         scratch.prepare_path_steps(path_key(1, 1), 1, 0, |steps| steps.push(path_step(3)));
         assert!(!scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_commands()[0].instance_count(), 3);
+        assert_eq!(scratch.path_commands()[0].instance_count(), Some(3));
     }
 
     #[test]
@@ -370,7 +373,7 @@ mod tests {
             steps.push(path_step(2));
         });
         assert!(!scratch.path_mask_cache_hit);
-        assert_eq!(scratch.path_commands()[0].instance_count(), 2);
+        assert_eq!(scratch.path_commands()[0].instance_count(), Some(2));
         scratch.prepare_path_steps(reencoded, 0, 2, |_| panic!("sample-only path rebuilt"));
         assert!(scratch.path_mask_cache_hit);
     }

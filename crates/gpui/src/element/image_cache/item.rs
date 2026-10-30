@@ -51,6 +51,7 @@ impl ImageCacheItem {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ready(result: Result<Arc<RenderImage>, ImageCacheError>) -> Self {
         Self(Ownership::Owned(AssetLease::ready(result)))
     }

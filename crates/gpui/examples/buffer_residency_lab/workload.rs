@@ -295,6 +295,7 @@ fn pipeline<D: Device>(
             color_format: Format::Rgba8Unorm,
             blend_mode: BlendMode::Replace,
             primitive_topology: PrimitiveTopology::TriangleList,
+            raster: Default::default(),
             depth_state: None,
         },
         Extent2d::new(SIDE, SIDE)?,

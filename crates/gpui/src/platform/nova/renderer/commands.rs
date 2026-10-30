@@ -1093,23 +1093,13 @@ fn direct_backdrop_barriers(upload: &FrameUpload, start: usize, end: usize) -> V
 
 fn apply_scissor_to_steps(steps: &mut Vec<RenderCommand>, scissor: ScissorRect) {
     for step in steps.iter_mut() {
-        match step {
-            RenderCommand::Draw(step) => {
-                step.scissor = Some(clip_scissor(step.scissor, scissor));
-            }
-            RenderCommand::DrawIndexed(step) => {
-                step.scissor = Some(clip_scissor(step.scissor, scissor));
-            }
-        }
+        step.set_scissor(Some(clip_scissor(step.scissor(), scissor)));
     }
     // Vulkan and D3D may still incur descriptor/pipeline bookkeeping for
     // a submitted zero-area draw even though the rasterizer produces no
     // fragments. A retained layer with tiny damage should not replay those
     // entirely clipped commands at 240 Hz.
-    steps.retain(|step| match step {
-        RenderCommand::Draw(step) => step.scissor.is_none_or(|scissor| !scissor.is_empty()),
-        RenderCommand::DrawIndexed(step) => step.scissor.is_none_or(|scissor| !scissor.is_empty()),
-    });
+    steps.retain(|step| step.scissor().is_none_or(|scissor| !scissor.is_empty()));
 }
 
 fn clip_scissor(previous: Option<ScissorRect>, scissor: ScissorRect) -> ScissorRect {

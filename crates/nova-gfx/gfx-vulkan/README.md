@@ -1,8 +1,26 @@
 # gfx-vulkan
 
+Graphics command recording skips unchanged pipelines, scissors, and descriptor sets within a pass.
+Descriptor reuse requires the same pipeline layout. Draw descriptors share one flat temporary
+array rather than allocating a separate descriptor-set vector for each draw.
+
+Buffer retirement batches share one cleanup fence/queue submission. Handles are validated before
+invalidation, and native buffers remain alive until the cleanup fence completes.
+
 [中文文档](README.zh-CN.md)
 
 `gfx-vulkan` is the Vulkan implementation of the `gfx-core` device traits.
+
+The shared buffer compute API is available when the selected graphics queue supports compute.
+Compute batches share one command buffer/fence and reuse compatible descriptor sets for
+identical bindings. Buffer uploads recycle fence-completed upload command pools.
+Non-indexed indirect drawing requires `drawIndirectFirstInstance`. Compute pipelines are cached;
+descriptor pools stay alive through submission fences. Compute and draw commands use the same
+ordered queue with memory barriers, without CPU readback or per-dispatch completion waits.
+
+Device-local buffer writes use ordered uploads with destination barriers and fence-retained
+staging, without waiting on the CPU. CPU-visible mapped writes still require caller-owned
+resource slots that are no longer being read by earlier submissions.
 
 The crate owns Vulkan instance, device, queue, swapchain, resource, pipeline,
 and command encoder state. It uses `raw-window-handle` only inside this backend

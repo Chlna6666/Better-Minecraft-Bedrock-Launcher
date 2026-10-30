@@ -51,6 +51,7 @@ use gfx_memory::{
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 mod buffer_upload;
 mod compact;
+mod compute;
 mod descriptors;
 mod presentation;
 mod relocation;
@@ -143,6 +144,7 @@ pub struct VulkanDevice {
     bind_groups: ResourceRegistry<VulkanResourceSet>,
     pipeline_layouts: ResourceRegistry<VulkanPipelineLayout>,
     shader_modules: ResourceRegistry<VulkanShaderModule>,
+    compute: compute::State,
     render_passes: ResourceRegistry<VulkanRenderPass>,
     render_pipelines: ResourceRegistry<VulkanRenderPipeline>,
     command_encoders: ResourceRegistry<VulkanCommandEncoder>,
@@ -278,6 +280,19 @@ impl VulkanDevice {
                 period_ns: f64::from(adapter_properties.limits.timestamp_period),
                 valid_bits: properties.timestamp_valid_bits,
             });
+        // SAFETY: feature and queue information belong to the selected physical device.
+        let native_features = unsafe { instance.get_physical_device_features(physical_device) };
+        let compute_capabilities = gfx_core::ComputeCapabilities {
+            max_workgroups: if queue_properties[queue_families.graphics as usize]
+                .queue_flags
+                .contains(vk::QueueFlags::COMPUTE)
+            {
+                adapter_properties.limits.max_compute_work_group_count
+            } else {
+                [0; 3]
+            },
+            indirect_draw: native_features.draw_indirect_first_instance == vk::TRUE,
+        };
         let (
             device,
             graphics_queue,
@@ -347,6 +362,7 @@ impl VulkanDevice {
             bind_groups: ResourceRegistry::new("bind group"),
             pipeline_layouts: ResourceRegistry::new("pipeline layout"),
             shader_modules: ResourceRegistry::new("shader module"),
+            compute: compute::State::new(compute_capabilities),
             render_passes: ResourceRegistry::new("render pass"),
             render_pipelines: ResourceRegistry::new("render pipeline"),
             command_encoders: ResourceRegistry::new("command encoder"),
@@ -668,18 +684,14 @@ impl VulkanDevice {
             return Ok(());
         }
 
-        let upload = self.write_upload_data(data)?;
-        let staging_buffer = self.upload_page_buffer(upload.page_index)?;
-        let target_buffer = self.buffers.get(buffer_id)?.buffer;
-        self.copy_buffer_once(
-            staging_buffer,
-            target_buffer,
-            upload.offset,
-            offset,
-            upload.size,
-        )?;
-        self.complete_synchronous_upload()?;
-        Ok(())
+        self.upload_buffer_batch([BufferWrite {
+            descriptor: gfx_core::BufferWriteDescriptor {
+                buffer: buffer_id,
+                offset,
+            },
+            data,
+        }])
+        .map(|_| ())
     }
 
     /// Creates a 2D texture.
@@ -1374,6 +1386,7 @@ impl VulkanDevice {
             fence: vk::Fence::null(),
             owns_fence: false,
             gpu_trace_query_pool,
+            compute_resources: Vec::new(),
         }))
     }
 
@@ -1613,7 +1626,9 @@ impl VulkanDevice {
                 )
             }
         };
-        let mut draw_steps = Vec::new();
+        let mut draw_steps = Vec::with_capacity(steps.len());
+        let mut descriptor_sets =
+            Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
         for step in steps.iter() {
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
@@ -1625,13 +1640,35 @@ impl VulkanDevice {
                 continue;
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
-            let descriptor_sets = step
-                .bind_groups()
-                .iter()
-                .copied()
-                .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.descriptor_set))
-                .collect::<Result<Vec<_>>>()?;
+            let first_set = descriptor_sets.len();
+            for &bind_group in step.bind_groups() {
+                descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
+            }
+            let set_range = first_set..descriptor_sets.len();
             let draw = match step {
+                RenderCommand::DrawIndirect(step) => {
+                    let buffer = self.buffers.get(step.arguments)?;
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "Vulkan indirect first-instance is unsupported".into(),
+                        ));
+                    }
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || step.offset % 4 != 0
+                        || step
+                            .offset
+                            .checked_add(16)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid Vulkan indirect argument range or usage".into(),
+                        ));
+                    }
+                    CommandDrawStepKind::Indirect {
+                        buffer: buffer.buffer,
+                        offset: step.offset,
+                    }
+                }
                 RenderCommand::Draw(step) => CommandDrawStepKind::NonIndexed {
                     vertex_count: step.vertex_count,
                     first_vertex: step.first_vertex,
@@ -1662,7 +1699,7 @@ impl VulkanDevice {
             draw_steps.push(CommandDrawStepInfo {
                 pipeline: pipeline_record.pipeline,
                 pipeline_layout: pipeline_record.pipeline_layout,
-                descriptor_sets,
+                descriptor_sets: set_range,
                 draw,
                 scissor,
             });
@@ -1673,6 +1710,7 @@ impl VulkanDevice {
             render_pass: native_render_pass,
             framebuffer,
             steps: &draw_steps,
+            descriptor_sets: &descriptor_sets,
             extent,
             viewport_extent,
             viewport_origin,
@@ -2204,10 +2242,38 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid or memory free fails.
     fn destroy_buffer(&mut self, buffer_id: BufferId) -> Result<()> {
-        let buffer = self.buffers.take(buffer_id)?;
+        self.buffers.get(buffer_id)?;
         let fence = self.signal_cleanup_fence()?;
+        let buffer = self.buffers.take(buffer_id)?;
         self.deferred_destroys
             .retire(0, DeferredResource::Buffer { fence, buffer });
+        self.poll_cleanup();
+        Ok(())
+    }
+
+    fn destroy_buffer_batch(&mut self, ids: &[BufferId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if ids.len() == 1 {
+            return self.destroy_buffer(ids[0]);
+        }
+        let mut unique = std::collections::HashSet::with_capacity(ids.len());
+        for &id in ids {
+            self.buffers.get(id)?;
+            if !unique.insert(id) {
+                return Err(Error::InvalidInput(
+                    "duplicate buffer retirement handle".into(),
+                ));
+            }
+        }
+        let fence = self.signal_cleanup_fence()?;
+        let buffers = ids
+            .iter()
+            .map(|&id| self.buffers.take(id))
+            .collect::<Result<Vec<_>>>()?;
+        self.deferred_destroys
+            .retire(0, DeferredResource::Buffers { fence, buffers });
         self.poll_cleanup();
         Ok(())
     }
@@ -2308,6 +2374,7 @@ impl VulkanDevice {
     fn destroy_shader_module(&mut self, shader_id: ShaderModuleId) -> Result<()> {
         self.wait_for_pending_work()?;
         let shader = self.shader_modules.take(shader_id)?;
+        self.compute.remove_shader(shader_id);
         self.destroy_shader_module_now(&shader);
         Ok(())
     }
@@ -2628,15 +2695,6 @@ impl VulkanDevice {
         Ok(submit_started.elapsed())
     }
 
-    fn complete_synchronous_upload(&mut self) -> Result<()> {
-        let fence_value = self.next_upload_fence_value;
-        self.next_upload_fence_value = self.next_upload_fence_value.saturating_add(1);
-        self.upload_ring.retire_used_pages(fence_value);
-        self.upload_ring.complete_fence(fence_value);
-        let retained_page_count = self.upload_ring.trim_idle_pages();
-        self.trim_upload_pages(retained_page_count)
-    }
-
     fn trim_upload_pages(&mut self, retained_page_count: usize) -> Result<()> {
         let released_pages = self.upload_pages.split_off(retained_page_count);
         let mut first_error = None;
@@ -2837,6 +2895,7 @@ impl VulkanDevice {
         })
     }
 
+    #[cfg(test)]
     fn copy_buffer_once(
         &self,
         source: vk::Buffer,
@@ -3073,6 +3132,16 @@ impl VulkanDevice {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_buffer_now(buffer)
             }
+            DeferredResource::Buffers { fence, buffers } => {
+                destroy_fence_if_needed(&self.device, fence);
+                let mut result = Ok(());
+                for buffer in buffers {
+                    if let Err(error) = self.destroy_buffer_now(buffer) {
+                        result = Err(error);
+                    }
+                }
+                result
+            }
             DeferredResource::Texture { fence, texture } => {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_texture_now(texture)
@@ -3224,6 +3293,7 @@ impl VulkanDevice {
     }
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
+        encoder.compute_resources.clear();
         // The deferred-queue completion predicate verified the submission fence.
         // Read native GPU timestamps only AFTER completion; never stall the rendering lane.
         if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
@@ -3444,6 +3514,18 @@ impl SurfaceDevice for VulkanDevice {
 }
 
 impl ResourceDevice for VulkanDevice {
+    fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
+        self.compute.capabilities
+    }
+    fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
+        self.dispatch_buffers(dispatch)
+    }
+    fn dispatch_compute_batch(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<()> {
+        self.dispatch_buffer_batch(dispatches)
+    }
     fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
         self.copy_texture_regions(copies)
     }
@@ -3498,6 +3580,10 @@ impl ResourceDevice for VulkanDevice {
 
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
         Self::destroy_buffer(self, buffer)
+    }
+
+    fn destroy_buffer_batch(&mut self, buffers: &[BufferId]) -> Result<()> {
+        Self::destroy_buffer_batch(self, buffers)
     }
 
     fn destroy_texture(&mut self, texture: TextureId) -> Result<()> {
@@ -3584,6 +3670,10 @@ impl CommandDevice for VulkanDevice {
 }
 
 impl SubmissionDevice for VulkanDevice {
+    fn wait_queue_idle(&mut self) -> Result<()> {
+        self.drain_unpresented_graphics_work()
+    }
+
     fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
         gfx_core::AsyncCapabilities {
             threading_mode: ThreadingMode::MultiThreadDeviceProxy,
@@ -3768,6 +3858,7 @@ impl Drop for VulkanDevice {
             self.destroy_surface_now(surface);
         }
         self.descriptor_pools.destroy(&self.device);
+        self.compute.clear();
         // SAFETY: Pipeline cache belongs to this device and no pipelines remain live.
         unsafe {
             self.device
@@ -3864,6 +3955,7 @@ impl VulkanTriangle {
                 color_format: config.surface_config.format,
                 blend_mode: BlendMode::Replace,
                 primitive_topology: PrimitiveTopology::TriangleList,
+                raster: Default::default(),
                 depth_state: None,
             },
             config.surface_config.size,
@@ -4218,6 +4310,7 @@ struct VulkanRenderPipeline {
 
 #[derive(Clone)]
 struct VulkanCommandEncoder {
+    compute_resources: Vec<Arc<compute::Call>>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     transient_framebuffers: Vec<vk::Framebuffer>,
@@ -4364,6 +4457,10 @@ enum DeferredResource {
         fence: vk::Fence,
         buffer: VulkanBuffer,
     },
+    Buffers {
+        fence: vk::Fence,
+        buffers: Vec<VulkanBuffer>,
+    },
     Texture {
         fence: vk::Fence,
         texture: VulkanTexture,
@@ -4388,6 +4485,7 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
     let fence = match resource {
         DeferredResource::HeapReplacement { fence, .. }
         | DeferredResource::Buffer { fence, .. }
+        | DeferredResource::Buffers { fence, .. }
         | DeferredResource::Texture { fence, .. }
         | DeferredResource::TextureView { fence, .. }
         | DeferredResource::BindGroup { fence, .. }
@@ -4576,8 +4674,13 @@ fn queue_family_indices_without_surface(
         .find_map(|(index, family)| {
             family
                 .queue_flags
-                .contains(vk::QueueFlags::GRAPHICS)
+                .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
                 .then_some(index)
+        })
+        .or_else(|| {
+            families
+                .iter()
+                .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
         })
         .ok_or_else(|| VulkanError::Unavailable("no graphics queue family".to_string()))?;
     let graphics = u32::try_from(graphics)
@@ -4633,6 +4736,7 @@ fn create_device(
     }
     let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
     let mut enabled_features = vk::PhysicalDeviceFeatures::default();
+    enabled_features.draw_indirect_first_instance = supported_features.draw_indirect_first_instance;
     let supports_sampler_anisotropy = supported_features.sampler_anisotropy == vk::TRUE;
     enabled_features.sampler_anisotropy = supported_features.sampler_anisotropy;
     #[cfg(target_os = "windows")]
@@ -5019,8 +5123,15 @@ fn create_graphics_pipeline(
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::NONE)
-        .front_face(vk::FrontFace::CLOCKWISE)
+        .cull_mode(match build.desc.raster.cull_mode {
+            None => vk::CullModeFlags::NONE,
+            Some(gfx_core::Face::Front) => vk::CullModeFlags::FRONT,
+            Some(gfx_core::Face::Back) => vk::CullModeFlags::BACK,
+        })
+        .front_face(match build.desc.raster.front_face {
+            gfx_core::FrontFace::Ccw => vk::FrontFace::COUNTER_CLOCKWISE,
+            gfx_core::FrontFace::Cw => vk::FrontFace::CLOCKWISE,
+        })
         .depth_bias_enable(false);
     let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
         .sample_shading_enable(false)
@@ -5274,6 +5385,7 @@ struct CommandRecordInfo<'a> {
     render_pass: vk::RenderPass,
     framebuffer: vk::Framebuffer,
     steps: &'a [CommandDrawStepInfo],
+    descriptor_sets: &'a [vk::DescriptorSet],
     extent: vk::Extent2D,
     viewport_extent: vk::Extent2D,
     viewport_origin: gfx_core::SignedOrigin2d,
@@ -5298,12 +5410,16 @@ struct CommandRenderTargetTransition {
 struct CommandDrawStepInfo {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_sets: std::ops::Range<usize>,
     draw: CommandDrawStepKind,
     scissor: Option<gfx_core::ScissorRect>,
 }
 
 enum CommandDrawStepKind {
+    Indirect {
+        buffer: vk::Buffer,
+        offset: u64,
+    },
     NonIndexed {
         vertex_count: u32,
         first_vertex: u32,
@@ -5625,29 +5741,44 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         );
         info.device
             .cmd_set_viewport(info.command_buffer, 0, &[viewport]);
+        let mut previous_pipeline = None;
+        let mut previous_scissor = None;
+        let mut previous_bindings = None;
         for step in info.steps {
             let scissor = step
                 .scissor
                 .and_then(|scissor| vk_rect_for_scissor(scissor, info.scissor_extent).ok())
                 .unwrap_or(full_scissor);
-            info.device
-                .cmd_set_scissor(info.command_buffer, 0, &[scissor]);
-            info.device.cmd_bind_pipeline(
-                info.command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                step.pipeline,
-            );
-            if !step.descriptor_sets.is_empty() {
+            if previous_scissor != Some(scissor) {
+                info.device
+                    .cmd_set_scissor(info.command_buffer, 0, &[scissor]);
+                previous_scissor = Some(scissor);
+            }
+            if previous_pipeline != Some(step.pipeline) {
+                info.device.cmd_bind_pipeline(
+                    info.command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    step.pipeline,
+                );
+                previous_pipeline = Some(step.pipeline);
+            }
+            let sets = &info.descriptor_sets[step.descriptor_sets.clone()];
+            if !sets.is_empty() && previous_bindings != Some((step.pipeline_layout, sets)) {
                 info.device.cmd_bind_descriptor_sets(
                     info.command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
                     step.pipeline_layout,
                     0,
-                    &step.descriptor_sets,
+                    sets,
                     &[],
                 );
             }
+            previous_bindings = Some((step.pipeline_layout, sets));
             match step.draw {
+                CommandDrawStepKind::Indirect { buffer, offset } => {
+                    info.device
+                        .cmd_draw_indirect(info.command_buffer, buffer, offset, 1, 16);
+                }
                 CommandDrawStepKind::NonIndexed {
                     vertex_count,
                     first_vertex,
@@ -5928,6 +6059,9 @@ fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
 
 fn buffer_usage_to_vk(usage: BufferUsage) -> vk::BufferUsageFlags {
     let mut flags = vk::BufferUsageFlags::empty();
+    if usage.contains(BufferUsage::INDIRECT) {
+        flags |= vk::BufferUsageFlags::INDIRECT_BUFFER;
+    }
     if usage.contains(BufferUsage::COPY_SRC) {
         flags |= vk::BufferUsageFlags::TRANSFER_SRC;
     }

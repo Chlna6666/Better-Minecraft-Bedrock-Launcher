@@ -11,8 +11,8 @@ mod values;
 #[cfg(test)]
 pub(in crate::platform::nova) use primitive::apply_value;
 
+pub(super) use primitive::AnimatedUpload;
 use primitive::BackdropBlurAnimationSample;
-pub(super) use primitive::{AnimatedByteMetadata, AnimatedUpload};
 
 #[derive(Default)]
 struct AnimatedPrimitiveSamples {

@@ -9,6 +9,9 @@
 - Metal：MSL。
 
 生成结果以 `gfx_core::ShaderBinary` 返回，可直接传入 `PipelineDevice` 的 shader module API。
+`ShaderStage::Compute` 支持缓冲计算内核翻译。DX11 SM5.0 路径允许计算阶段的 group-zero
+raw 可写缓冲（最多八个 UAV 槽）；图形阶段 storage 仍为只读。翻译成功不代表运行时后端支持
+派发；使用内核前需查询 `ResourceDevice::compute_capabilities`。
 `compile_wgsl_to_msl`/`compile_wgsl_to_backend` 默认目标 MSL 1.0；需要更新语言特性时显式
 选择版本，例如 `compile_wgsl_to_msl_versioned`。
 

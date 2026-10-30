@@ -763,6 +763,8 @@ fn compile_hlsl_to_dxbc(
         (ShaderStage::Fragment, true) => b"ps_5_0\0",
         (ShaderStage::Vertex, false) => b"vs_5_1\0",
         (ShaderStage::Fragment, false) => b"ps_5_1\0",
+        (ShaderStage::Compute, true) => b"cs_5_0\0",
+        (ShaderStage::Compute, false) => b"cs_5_1\0",
     };
     let entry_point = std::ffi::CString::new(entry_point)
         .map_err(|error| format!("entry point contains a NUL byte: {error}"))?;

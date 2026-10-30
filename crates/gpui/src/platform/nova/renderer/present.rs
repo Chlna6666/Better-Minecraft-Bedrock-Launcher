@@ -399,10 +399,7 @@ fn scissor_pixel_area(scissor: ScissorRect) -> usize {
 }
 
 fn render_step_scissor(step: &RenderCommand) -> Option<ScissorRect> {
-    match step {
-        RenderCommand::Draw(step) => step.scissor,
-        RenderCommand::DrawIndexed(step) => step.scissor,
-    }
+    step.scissor()
 }
 
 impl NovaRenderer {
@@ -1136,7 +1133,7 @@ impl NovaRenderer {
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
                             backend_label,
@@ -1145,6 +1142,14 @@ impl NovaRenderer {
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
                             present_elapsed_ms,
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.command_record.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_present.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_submit.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.post_present_cleanup.as_micros()),
                             submission_mode,
                             atlas_stats.upload_count,
                             atlas_stats.uploaded_bytes,
@@ -1249,7 +1254,7 @@ impl NovaRenderer {
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
                             backend_label,
@@ -1258,6 +1263,14 @@ impl NovaRenderer {
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
                             present_elapsed_ms,
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.command_record.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_present.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_submit.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.post_present_cleanup.as_micros()),
                             submission_mode,
                             atlas_stats.upload_count,
                             atlas_stats.uploaded_bytes,
@@ -1362,7 +1375,7 @@ impl NovaRenderer {
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
                             backend_label,
@@ -1371,6 +1384,14 @@ impl NovaRenderer {
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
                             present_elapsed_ms,
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.command_record.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_present.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_submit.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.post_present_cleanup.as_micros()),
                             submission_mode,
                             atlas_stats.upload_count,
                             atlas_stats.uploaded_bytes,
@@ -1549,7 +1570,7 @@ impl NovaRenderer {
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
                                 "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
                             backend_label,
@@ -1558,6 +1579,14 @@ impl NovaRenderer {
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
                             present_elapsed_ms,
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.command_record.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_present.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.queue_submit.as_micros()),
+                            backend_presentation_timings
+                                .map_or(0, |timing| timing.post_present_cleanup.as_micros()),
                             submission_mode,
                             atlas_stats.upload_count,
                             atlas_stats.uploaded_bytes,

@@ -4075,10 +4075,7 @@ fn test_buffer_id(index: u32) -> BufferId {
 }
 
 fn render_step_pipeline(step: &RenderCommand) -> RenderPipelineId {
-    match step {
-        RenderCommand::Draw(step) => step.pipeline,
-        RenderCommand::DrawIndexed(step) => step.pipeline,
-    }
+    step.pipeline()
 }
 
 fn test_texture_id(index: u32) -> TextureId {

@@ -4,6 +4,8 @@
 //! implementations. It deliberately excludes window surfaces, command submission,
 //! and presentation: the host window renderer owns those operations and calls the
 //! extension back with resources it can create and destroy.
+//! Optional ordered buffer compute is queued before subsequent host draws; it does not
+//! grant extensions ownership of frame submission or presentation.
 
 use gfx_core::{
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
@@ -20,6 +22,33 @@ use gfx_core::{
 /// [`PipelineDevice`], so a renderer can pass `&mut dyn ExtensionDevice` without
 /// knowing the concrete nova-gfx backend type.
 pub trait ExtensionDevice {
+    /// Returns the device's optional ordered compute/indirect capabilities.
+    fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
+        gfx_core::ComputeCapabilities::default()
+    }
+
+    /// Queues GPU buffer compute before subsequent extension draws, without waiting.
+    ///
+    /// # Errors
+    /// Returns `Unavailable` when unsupported, or the backend's validation/dispatch error.
+    fn dispatch_compute(&mut self, _dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
+        Err(gfx_core::Error::Unavailable(
+            "ordered buffer compute is unsupported".into(),
+        ))
+    }
+    /// Queues ordered compute stages; backends may combine their native submissions.
+    /// # Errors
+    /// Returns the first backend error; preceding stages may already be queued.
+    fn dispatch_compute_batch(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<()> {
+        for dispatch in dispatches {
+            self.dispatch_compute(dispatch)?;
+        }
+        Ok(())
+    }
+
     /// Creates a GPU buffer.
     ///
     /// # Errors
@@ -135,6 +164,16 @@ pub trait ExtensionDevice {
     /// Returns [`gfx_core::Error`] if the handle is stale or cannot be retired safely.
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()>;
 
+    /// Retires buffers together when the backend supports shared cleanup submissions.
+    /// # Errors
+    /// Returns the first retirement error; earlier handles may already be invalidated.
+    fn destroy_buffer_batch(&mut self, buffers: &[BufferId]) -> Result<()> {
+        for &buffer in buffers {
+            self.destroy_buffer(buffer)?;
+        }
+        Ok(())
+    }
+
     /// Destroys a texture.
     ///
     /// # Errors
@@ -203,6 +242,19 @@ impl<T> ExtensionDevice for T
 where
     T: ResourceDevice + PipelineDevice,
 {
+    fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
+        ResourceDevice::compute_capabilities(self)
+    }
+
+    fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
+        ResourceDevice::dispatch_compute(self, dispatch)
+    }
+    fn dispatch_compute_batch(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<()> {
+        ResourceDevice::dispatch_compute_batch(self, dispatches)
+    }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         ResourceDevice::create_buffer(self, desc)
     }
@@ -271,6 +323,10 @@ where
 
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
         ResourceDevice::destroy_buffer(self, buffer)
+    }
+
+    fn destroy_buffer_batch(&mut self, buffers: &[BufferId]) -> Result<()> {
+        ResourceDevice::destroy_buffer_batch(self, buffers)
     }
 
     fn destroy_texture(&mut self, texture: TextureId) -> Result<()> {

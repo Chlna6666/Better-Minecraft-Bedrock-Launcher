@@ -1355,6 +1355,16 @@ impl NovaRenderer {
             }
         }
 
+        if submissions_drained
+            && matches!(level, GpuiMemoryTrimLevel::Moderate)
+            && self.renderer_registry.needs_gpu_completion()
+        {
+            match lock_backend(&self.backend).wait_extension_gpu_completion() {
+                Ok(true) => self.renderer_registry.gpu_work_completed(),
+                Ok(false) => {}
+                Err(error) => log::debug!("extension GPU completion fence failed: {error}"),
+            }
+        }
         if submissions_drained && !self.renderer_registry.is_empty() {
             let renderer_registry = &mut self.renderer_registry;
             if let Err(error) = lock_backend(&self.backend).with_extension_device(|device| {

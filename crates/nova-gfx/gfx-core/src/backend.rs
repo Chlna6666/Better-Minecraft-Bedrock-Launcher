@@ -237,6 +237,34 @@ pub trait SurfaceDevice {
 /// should validate descriptors before creating native resources and report bad
 /// inputs with [`Error::InvalidInput`].
 pub trait ResourceDevice {
+    /// Returns optional ordered buffer-compute and indirect-draw support.
+    fn compute_capabilities(&self) -> crate::ComputeCapabilities {
+        crate::ComputeCapabilities::default()
+    }
+
+    /// Queues buffer compute in device order without waiting or reading results to the CPU.
+    /// Writes must be visible to subsequent device operations, including indirect draws.
+    ///
+    /// # Errors
+    /// Returns `Unavailable` when unsupported, `InvalidInput` for invalid bindings/dispatch
+    /// sizes, or a backend error. A failed dispatch must not be treated as completed work.
+    fn dispatch_compute(&mut self, _dispatch: &crate::ComputeDispatch<'_>) -> Result<()> {
+        Err(Error::Unavailable(
+            "ordered buffer compute is unsupported".into(),
+        ))
+    }
+
+    /// Queues ordered compute stages; each stage observes preceding writes.
+    /// Backends may record the stages in one native submission. No CPU wait is implied.
+    /// # Errors
+    /// Returns a validation or backend error; earlier stages may already have been queued.
+    fn dispatch_compute_batch(&mut self, dispatches: &[crate::ComputeDispatch<'_>]) -> Result<()> {
+        for dispatch in dispatches {
+            self.dispatch_compute(dispatch)?;
+        }
+        Ok(())
+    }
+
     /// Queues GPU pixel copies, ordered before subsequent draws on this device.
     /// Source/destination lifetimes must cover completion; destruction obeys normal submission
     /// retirement. This method does not imply GPU completion and never reads pixels to the CPU.
@@ -376,6 +404,17 @@ pub trait ResourceDevice {
     /// Returns [`Error`] if the handle is stale, invalid, or cannot be safely
     /// retired yet.
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()>;
+
+    /// Retires buffers after their preceding GPU uses. Backends may share cleanup submissions.
+    ///
+    /// # Errors
+    /// Returns the first retirement error; preceding handles may already be invalidated.
+    fn destroy_buffer_batch(&mut self, buffers: &[BufferId]) -> Result<()> {
+        for &buffer in buffers {
+            self.destroy_buffer(buffer)?;
+        }
+        Ok(())
+    }
 
     /// Destroys a texture.
     ///
@@ -564,6 +603,21 @@ pub trait CommandDevice {
 
 /// Tracks deferred GPU submissions.
 pub trait SubmissionDevice {
+    /// Blocks until all earlier work on this device's graphics queue has completed on the GPU.
+    ///
+    /// This is a coarse synchronization point for rare operations such as memory reclamation;
+    /// normal frame pacing should use submission polling instead. Returning `Ok` must prove GPU
+    /// completion, not merely that commands were submitted.
+    ///
+    /// # Errors
+    /// Returns [`Error::Unavailable`] when the backend cannot prove queue completion, or an error
+    /// if the native queue or device fails.
+    fn wait_queue_idle(&mut self) -> Result<()> {
+        Err(Error::Unavailable(
+            "GPU queue completion is not implemented".into(),
+        ))
+    }
+
     /// Returns async and threading capabilities for this device.
     #[must_use]
     fn async_capabilities(&self) -> AsyncCapabilities {
@@ -614,6 +668,23 @@ pub trait SubmissionDevice {
             )),
             SubmissionStatus::Failed(error) => Err(Error::Backend(error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::SubmissionDevice;
+    use crate::Error;
+
+    struct UnsupportedQueue;
+    impl SubmissionDevice for UnsupportedQueue {}
+
+    #[test]
+    fn queue_idle_requires_an_explicit_backend_implementation() {
+        assert!(matches!(
+            UnsupportedQueue.wait_queue_idle(),
+            Err(Error::Unavailable(_))
+        ));
     }
 }
 

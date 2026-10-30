@@ -12,3 +12,6 @@ non-target builds to compile.
 Offscreen `render_to_texture` is currently reported as
 `Error::Unavailable`; this crate keeps that behavior explicit until the Metal
 offscreen path is implemented.
+
+The `render_and_present` entry point also returns `Error::Unavailable`; graphics binding reuse
+and presentation timings in the runnable backends do not imply a completed Metal presentation path.

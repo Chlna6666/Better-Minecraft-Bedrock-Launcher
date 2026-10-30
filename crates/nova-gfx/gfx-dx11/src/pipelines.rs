@@ -3,6 +3,7 @@ use gfx_core::*;
 use windows::Win32::Graphics::Direct3D11::*;
 
 pub(crate) enum Shader {
+    Compute(ID3D11ComputeShader),
     Vertex {
         native: ID3D11VertexShader,
         entry: String,
@@ -49,6 +50,16 @@ impl PipelineDevice for Dx11Device {
         };
         let entry = desc.binary.entry_point.clone();
         let shader = match desc.binary.stage {
+            ShaderStage::Compute => {
+                let mut native = None;
+                // SAFETY: CreateComputeShader validates and copies the live bytecode slice.
+                unsafe {
+                    self.native
+                        .CreateComputeShader(bytes, None, Some(&mut native))
+                }
+                .map_err(backend)?;
+                Shader::Compute(required(native)?)
+            }
             ShaderStage::Vertex => {
                 let mut native = None;
                 // SAFETY: CreateVertexShader validates and copies this live bytecode slice.
@@ -189,7 +200,13 @@ impl Dx11Device {
                 .CreateRasterizerState(
                     &D3D11_RASTERIZER_DESC {
                         FillMode: D3D11_FILL_SOLID,
-                        CullMode: D3D11_CULL_NONE,
+                        CullMode: match desc.raster.cull_mode {
+                            None => D3D11_CULL_NONE,
+                            Some(gfx_core::Face::Front) => D3D11_CULL_FRONT,
+                            Some(gfx_core::Face::Back) => D3D11_CULL_BACK,
+                        },
+                        FrontCounterClockwise: (desc.raster.front_face == gfx_core::FrontFace::Ccw)
+                            .into(),
                         DepthClipEnable: true.into(),
                         ScissorEnable: true.into(),
                         ..Default::default()

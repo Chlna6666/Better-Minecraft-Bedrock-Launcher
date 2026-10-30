@@ -1,6 +1,20 @@
 # gfx-vulkan
 
+图形命令在每个 pass 内跳过不变的 pipeline、scissor 与描述符集合；描述符复用要求 pipeline
+layout 相同。各 draw 的描述符共享一份连续临时存储，避免逐 draw 分配描述符向量。
+
 [English](README.md)
+
+计算批次共用一份命令缓冲和完成信号，并为相同绑定复用兼容的描述符集。
+缓冲上传回收并复用 fence 已完成的上传命令池。
+缓冲批量回收共用一次清理 fence 与队列提交；句柄先验证再失效，原生资源保留到 fence 完成。
+
+所选 graphics queue 支持 compute 时，提供统一缓冲计算接口。非索引间接绘制要求
+`drawIndirectFirstInstance` 特性。计算 pipeline 可复用，descriptor pool 保留到提交 fence 完成。
+计算与绘制使用同一有序队列及内存屏障，无需 CPU 回读或每次派发等待完成。
+
+设备本地缓冲写入通过目的缓冲屏障与有序上传同步，暂存资源保留到 fence 完成，CPU 不逐批等待。
+CPU 可见的映射写入仍要求调用方使用已不再被前序提交读取的资源槽位。
 
 `gfx-vulkan` 是 `gfx-core` 设备 trait 的 Vulkan 实现，持有 Vulkan instance、device、
 queue、swapchain、资源、pipeline 与 command encoder 状态。

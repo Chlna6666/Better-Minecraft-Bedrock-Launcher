@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 /// Payload retired until a GPU fence reaches `fence_value`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeferredFree<T> {
@@ -10,7 +12,7 @@ pub struct DeferredFree<T> {
 /// FIFO queue for GPU resources that cannot be freed until a fence completes.
 #[derive(Clone, Debug, Default)]
 pub struct DeferredFreeQueue<T> {
-    pending: Vec<DeferredFree<T>>,
+    pending: VecDeque<DeferredFree<T>>,
 }
 
 impl<T> DeferredFreeQueue<T> {
@@ -18,13 +20,13 @@ impl<T> DeferredFreeQueue<T> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            pending: VecDeque::new(),
         }
     }
 
     /// Retires `payload` until `fence_value` has completed.
     pub fn retire(&mut self, fence_value: u64, payload: T) {
-        self.pending.push(DeferredFree {
+        self.pending.push_back(DeferredFree {
             fence_value,
             payload,
         });
@@ -40,15 +42,15 @@ impl<T> DeferredFreeQueue<T> {
     #[must_use]
     pub fn collect_ready(&mut self, mut ready: impl FnMut(u64, &T) -> bool) -> Vec<T> {
         let mut completed = Vec::new();
-        let mut pending = Vec::with_capacity(self.pending.len());
-        for item in self.pending.drain(..) {
-            if ready(item.fence_value, &item.payload) {
-                completed.push(item.payload);
-            } else {
-                pending.push(item);
+        for _ in 0..self.pending.len() {
+            if let Some(item) = self.pending.pop_front() {
+                if ready(item.fence_value, &item.payload) {
+                    completed.push(item.payload);
+                } else {
+                    self.pending.push_back(item);
+                }
             }
         }
-        self.pending = pending;
         completed
     }
 
@@ -110,5 +112,24 @@ mod tests {
         assert_eq!(queue.pending_bytes(|size| *size), 12);
         assert_eq!(queue.drain_all(), vec![4, 8]);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn polling_reuses_pending_capacity_and_preserves_both_orders() {
+        let mut queue = DeferredFreeQueue::new();
+        for value in 0..129 {
+            queue.retire(value, value);
+        }
+        let capacity = queue.pending.capacity();
+        for _ in 0..16 {
+            assert!(queue.collect_ready(|_, _| false).is_empty());
+            assert_eq!(queue.pending.capacity(), capacity);
+        }
+        assert_eq!(
+            queue.collect_ready(|fence, _| fence % 2 == 0),
+            (0..129).step_by(2).collect::<Vec<_>>()
+        );
+        assert_eq!(queue.pending.capacity(), capacity);
+        assert_eq!(queue.drain_all(), (1..129).step_by(2).collect::<Vec<_>>());
     }
 }

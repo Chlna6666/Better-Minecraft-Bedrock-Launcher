@@ -12,6 +12,7 @@
 - 通用 allocation 描述、错误与统计；
 - upload-ring staging 分配；
 - 按已完成 GPU fence 值回收的 deferred-free 队列；
+  轮询复用待回收队列容量，并保留回收顺序；
 - 由 Cargo feature 选择的 backend allocator 包装。
 
 ## Feature

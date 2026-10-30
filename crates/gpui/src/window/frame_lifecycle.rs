@@ -631,7 +631,9 @@ impl Window {
     fn dispatch_frame_clock_timer(&self, generation: u64) {
         let request = {
             let mut state = self.frame_clock_state.borrow_mut();
-            if state.timer_generation != generation || self.effective_frame_clock_interval().is_none() {
+            if state.timer_generation != generation
+                || self.effective_frame_clock_interval().is_none()
+            {
                 return;
             }
             drop(state.timer.take());

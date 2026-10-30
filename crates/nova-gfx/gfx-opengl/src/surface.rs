@@ -380,7 +380,8 @@ impl OpenGlDevice {
         commands: &[RenderCommand],
         load: LoadOp<ClearColor>,
         depth: Option<DepthAttachment>,
-    ) -> Result<SubmissionId> {
+    ) -> Result<(SubmissionId, PresentTimings)> {
+        let record_started = std::time::Instant::now();
         self.render_target(
             RenderTarget::Swapchain {
                 swapchain: id,
@@ -407,9 +408,25 @@ impl OpenGlDevice {
             LoadOp::Load => None,
         };
         self.blit_retained_to_window(chain, native_size, clear)?;
+        let command_record = record_started.elapsed();
+        let present_started = std::time::Instant::now();
         chain.window.swap_buffers(&self.context).map_err(native)?;
+        let queue_present = present_started.elapsed();
+        let cleanup_started = std::time::Instant::now();
         self.park()?;
-        self.signal()
+        let post_present_cleanup = cleanup_started.elapsed();
+        let signal_started = std::time::Instant::now();
+        let submission = self.signal()?;
+        Ok((
+            submission,
+            PresentTimings {
+                command_record,
+                queue_present,
+                queue_submit: signal_started.elapsed(),
+                post_present_cleanup,
+                ..PresentTimings::default()
+            },
+        ))
     }
 
     /// Presents the retained scene target over a native client extent that grew ahead

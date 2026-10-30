@@ -14,6 +14,11 @@ It uses Naga to parse and validate WGSL, then generates:
 The generated payloads are returned as `gfx_core::ShaderBinary` values so they
 can be passed directly into the `PipelineDevice` shader module API.
 
+`ShaderStage::Compute` translates buffer kernels as well as graphics entry points. The DX11
+SM5.0 lowering supports group-zero writable raw buffers for compute (up to eight UAV slots);
+graphics storage bindings remain read-only. Shader translation does not imply that a runtime
+backend supports dispatch; query `ResourceDevice::compute_capabilities` before using a kernel.
+
 `compile_wgsl_to_msl` and `compile_wgsl_to_backend` target MSL 1.0 by default.
 When a shader needs a later language feature, select the version explicitly:
 

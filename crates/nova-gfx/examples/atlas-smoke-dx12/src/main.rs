@@ -340,6 +340,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     color_format: surface_config.format,
                     blend_mode: BlendMode::Replace,
                     primitive_topology: gfx_core::PrimitiveTopology::TriangleList,
+                    raster: Default::default(),
                     depth_state: None,
                 },
                 surface_config.size,

@@ -15,6 +15,8 @@ GPUI 是 Rust 桌面应用的 GPU 加速 UI 框架，混合即时模式与保留
 - 合成默认事件驱动，连续渲染只用于显式 `RenderPolicy::Continuous`。
 - 自定义 GPU 内容使用场景图元、图片/SVG 元素或 `RendererExtension`；通用 3D 场景与
   viewport 位于 `gpui-3d`。
+  扩展可申请 GPU 完成回调；中等内存整理时，宿主仅在 DX11、DX12 或 Vulkan 确认图形队列完成后通知。
+  `ExtensionDevice` 也提供可选的有序缓冲计算；扩展需先查询能力，再派发计算或追加 GPU 生成的间接绘制命令。
 
 ## 快速开始
 

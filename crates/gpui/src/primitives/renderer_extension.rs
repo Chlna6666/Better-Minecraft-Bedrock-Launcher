@@ -142,6 +142,16 @@ impl dyn RendererExtension {
 /// Creation, encoding, trimming and destruction all run on the GPU owner. This state does not
 /// need to be `Send`; only the immutable [`RendererExtension`] inputs cross the UI boundary.
 pub trait RendererExtensionRenderer {
+    /// Whether this renderer has retired suballocations awaiting a GPU completion proof.
+    fn needs_gpu_completion(&self) -> bool {
+        false
+    }
+
+    /// Notifies this renderer that the host has verified completion of all GPU work submitted
+    /// before this callback. The host must not invoke this for an untracked or failed submission.
+    /// Implementations may make previously retired suballocations available for reuse.
+    fn gpu_work_completed(&mut self) {}
+
     /// Encodes the current extension input into ordered draw steps.
     ///
     /// The host applies the element scissor to every returned step. The `frame_time` in `context`

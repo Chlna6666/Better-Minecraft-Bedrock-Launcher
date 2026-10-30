@@ -451,11 +451,7 @@ fn verify(backend: RendererBackend) {
                         .iter()
                         .flat_map(|group| &group.source_steps)
                     {
-                        let scissor = match step {
-                            RenderCommand::Draw(step) => step.scissor,
-                            RenderCommand::DrawIndexed(step) => step.scissor,
-                        }
-                        .expect("local page capture needs a scissor");
+                        let scissor = step.scissor().expect("local page capture needs a scissor");
                         source_draws += 1;
                         assert!(scissor.x >= initialized.x && scissor.y >= initialized.y);
                         assert!(scissor.x + scissor.width <= initialized.x + initialized.width);

@@ -239,11 +239,6 @@ pub struct AnyWeakView {
 }
 
 impl AnyWeakView {
-    #[inline]
-    pub(super) fn entity_id(&self) -> EntityId {
-        self.entity.entity_id()
-    }
-
     /// Upgrade to a strong type-erased view handle.
     pub fn upgrade(&self) -> Option<AnyView> {
         Some(AnyView {

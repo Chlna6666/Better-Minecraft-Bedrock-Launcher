@@ -21,6 +21,10 @@ Zed distribution. The current renderer direction is nova-gfx:
 - Custom GPU rendering should use GPUI scene primitives and image elements or
   the generic `RendererExtension` API. `WgslShaderSource` validates extension-
   owned WGSL; reusable 3D scenes and viewports live in `gpui-3d`.
+  Extensions may request a completion callback; during moderate memory trim the host issues it
+  only after DX11, DX12, or Vulkan verifies graphics queue completion.
+  `ExtensionDevice` also exposes optional ordered buffer compute; extensions must query its
+  capabilities before dispatching or appending GPU-generated indirect draw commands.
 - WGSL shaders can be validated at build time for built-in renderer shaders or
   validated at runtime by extension implementations.
 - The examples use the current `App`, `Context<T>`, explicit `Window`, and

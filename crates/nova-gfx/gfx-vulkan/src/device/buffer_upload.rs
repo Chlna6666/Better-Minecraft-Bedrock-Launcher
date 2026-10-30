@@ -38,6 +38,7 @@ impl VulkanDevice {
         if copies.is_empty() {
             return Ok(stats);
         }
+        self.poll_cleanup();
         let staged = match self.stage_buffer_copies(copies) {
             Ok(staged) => staged,
             Err(error) => {
@@ -52,11 +53,7 @@ impl VulkanDevice {
                 return Err(error);
             }
         };
-        // Register without polling so a fast completion cannot destroy the fence before wait.
         self.enqueue_deferred_upload(commands, fence);
-        // SAFETY: The registered fence belongs to this submission and stays live during the wait.
-        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
-            .map_err(VulkanError::from)?;
         self.poll_cleanup();
         Ok(stats)
     }
@@ -84,15 +81,59 @@ impl VulkanDevice {
     }
 
     fn submit_buffer_copies(
-        &self,
+        &mut self,
         staged: &[StagedBufferCopy<'_>],
     ) -> Result<(VulkanUploadCommands, vk::Fence)> {
         // No timestamp queries: buffer copies must not overwrite texture-transfer timing.
-        let commands =
-            create_upload_commands(&self.device, self.graphics_queue_family_index, false)?;
+        let commands = if let Some(index) = self
+            .upload_command_pool
+            .iter()
+            .position(|commands| commands.timestamp_queries.is_none())
+        {
+            let commands = self.upload_command_pool.swap_remove(index);
+            // SAFETY: command pools are recycled only after their upload fence completes.
+            if let Err(error) = unsafe {
+                self.device
+                    .reset_command_pool(commands.command_pool, vk::CommandPoolResetFlags::empty())
+            } {
+                destroy_upload_commands(&self.device, &commands);
+                return Err(VulkanError::from(error).into());
+            }
+            commands
+        } else {
+            create_upload_commands(&self.device, self.graphics_queue_family_index, false)?
+        };
         if let Err(error) = begin_one_time_commands(&self.device, commands.command_buffer) {
             destroy_upload_commands(&self.device, &commands);
             return Err(error);
+        }
+        // Order earlier shader/indirect reads and writes before reusing destinations.
+        let mut unique = std::collections::HashSet::new();
+        let destinations = staged
+            .iter()
+            .filter(|copy| unique.insert(copy.destination))
+            .map(|copy| {
+                vk::BufferMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .buffer(copy.destination)
+                    .offset(0)
+                    .size(vk::WHOLE_SIZE)
+            })
+            .collect::<Vec<_>>();
+        // SAFETY: destinations are live buffers on this same ordered graphics queue.
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                commands.command_buffer,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &destinations,
+                &[],
+            );
         }
         let mut synchronized = 0;
         for (index, copy) in staged.iter().enumerate() {

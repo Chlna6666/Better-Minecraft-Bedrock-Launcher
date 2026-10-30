@@ -1,15 +1,27 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
+use std::cell::RefCell;
 use windows::Win32::Graphics::Direct3D::{D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
 mod buffer_upload;
+mod compute;
 
 pub(crate) struct Buffer {
     pub(crate) native: ID3D11Buffer,
     pub(crate) desc: BufferDescriptor,
     pub(crate) native_size: u32,
     uniform_bytes: Option<Vec<u8>>,
+    // Keep one range per view type. Graphics and compute share raw SRVs; changing
+    // ranges replace the cached view without invalidating views retained by bind groups.
+    srv: RefCell<Option<BufferView<ID3D11ShaderResourceView>>>,
+    compute_uav: RefCell<Option<BufferView<ID3D11UnorderedAccessView>>>,
+}
+
+struct BufferView<T> {
+    offset: u64,
+    size: u64,
+    native: T,
 }
 impl Buffer {
     pub(crate) fn cpu_shadow_bytes(&self) -> u64 {
@@ -67,6 +79,16 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
 }
 
 impl ResourceDevice for Dx11Device {
+    fn compute_capabilities(&self) -> ComputeCapabilities {
+        ComputeCapabilities {
+            max_workgroups: [65535; 3],
+            indirect_draw: true,
+        }
+    }
+
+    fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
+        self.dispatch_buffers(dispatch)
+    }
     fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
         for copy in copies {
             copy.validate(
@@ -136,17 +158,23 @@ impl ResourceDevice for Dx11Device {
         if desc.usage.contains(BufferUsage::STORAGE) {
             bind |= D3D11_BIND_SHADER_RESOURCE.0 as u32;
         }
+        if desc.usage.contains(BufferUsage::STORAGE_WRITE) {
+            bind |= D3D11_BIND_UNORDERED_ACCESS.0 as u32;
+        }
         if desc.usage.contains(BufferUsage::INDEX) {
             bind |= D3D11_BIND_INDEX_BUFFER.0 as u32;
         }
         if desc.usage.contains(BufferUsage::VERTEX) {
             bind |= D3D11_BIND_VERTEX_BUFFER.0 as u32;
         }
-        let misc = if desc.usage.contains(BufferUsage::STORAGE) {
+        let mut misc = if desc.usage.contains(BufferUsage::STORAGE) {
             D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS.0 as u32
         } else {
             0
         };
+        if desc.usage.contains(BufferUsage::INDIRECT) {
+            misc |= D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS.0 as u32;
+        }
         let mut native = None;
         // SAFETY: valid fully initialized descriptor and writable owned output.
         unsafe {
@@ -168,6 +196,8 @@ impl ResourceDevice for Dx11Device {
             desc: desc.clone(),
             native_size,
             uniform_bytes: uniform.then(|| vec![0; native_size as usize]),
+            srv: RefCell::new(None),
+            compute_uav: RefCell::new(None),
         }))
     }
     fn write_buffer(&mut self, id: BufferId, offset: u64, data: &[u8]) -> Result<()> {
@@ -499,7 +529,11 @@ impl ResourceDevice for Dx11Device {
 }
 
 impl Dx11Device {
-    fn bind_resource(&self, resource: &BindingResource, kind: BindingType) -> Result<Bound> {
+    pub(crate) fn bind_resource(
+        &self,
+        resource: &BindingResource,
+        kind: BindingType,
+    ) -> Result<Bound> {
         match resource {
             BindingResource::Buffer(binding) => {
                 let buffer = self.buffers.get(binding.buffer)?;
@@ -527,6 +561,13 @@ impl Dx11Device {
                             "D3D11 raw SRV requires STORAGE and 4-byte aligned range".into(),
                         ));
                     }
+                    if let Some(cached) =
+                        buffer.srv.borrow().as_ref().filter(|view| {
+                            view.offset == binding.offset && view.size == binding.size
+                        })
+                    {
+                        return Ok(Bound::Srv(cached.native.clone()));
+                    }
                     let mut srv = None;
                     // SAFETY: native buffer allows raw views; range validated above.
                     unsafe {
@@ -547,7 +588,13 @@ impl Dx11Device {
                         )
                     }
                     .map_err(backend)?;
-                    Ok(Bound::Srv(required(srv)?))
+                    let view = required(srv)?;
+                    *buffer.srv.borrow_mut() = Some(BufferView {
+                        offset: binding.offset,
+                        size: binding.size,
+                        native: view.clone(),
+                    });
+                    Ok(Bound::Srv(view))
                 }
             }
             BindingResource::Texture(binding) => Ok(Bound::Srv(

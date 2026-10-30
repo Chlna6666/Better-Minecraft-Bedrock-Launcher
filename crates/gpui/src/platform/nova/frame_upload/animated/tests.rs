@@ -329,7 +329,10 @@ fn rounded_clip_reveal_tracks_both_animated_popup_edges() {
         assert_eq!(quad.bounds, bounds, "reveal must not relayout child");
         assert_eq!(quad.content_mask.corner_bounds, quad.content_mask.bounds);
         assert_eq!(quad.content_mask.corner_radii, crate::Corners::all(radius));
-        assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(start));
+        assert_eq!(
+            quad.content_mask.bounds.origin.y,
+            crate::ScaledPixels(start)
+        );
         assert_eq!(
             quad.content_mask.bounds.size.height,
             crate::ScaledPixels(40.0)

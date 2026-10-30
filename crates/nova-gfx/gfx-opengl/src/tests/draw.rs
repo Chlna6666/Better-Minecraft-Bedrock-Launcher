@@ -220,7 +220,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         .create_bind_group(&BindGroupDescriptor {
             label: None,
             layout,
-            bindings: vec![
+            entries: vec![
                 BindGroupEntry {
                     binding: 119,
                     resource: BindingResource::Buffer(BufferBinding {

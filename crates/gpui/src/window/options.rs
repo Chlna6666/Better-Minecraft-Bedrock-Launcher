@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use anyhow::Result;
 
@@ -15,8 +18,7 @@ pub fn set_default_frame_clock(clock: FrameClock) {
 
 /// Returns the default frame clock for new windows.
 pub fn default_frame_clock() -> FrameClock {
-    FrameClock::fixed_fps(DEFAULT_WINDOW_FPS.load(Ordering::Acquire))
-        .unwrap_or(FrameClock::System)
+    FrameClock::fixed_fps(DEFAULT_WINDOW_FPS.load(Ordering::Acquire)).unwrap_or(FrameClock::System)
 }
 
 use crate::{App, Bounds, DisplayId, Pixels, Point, Rgba, SharedString, Size};

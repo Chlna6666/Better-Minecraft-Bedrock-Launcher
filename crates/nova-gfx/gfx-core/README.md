@@ -1,5 +1,10 @@
 # gfx-core
 
+`RenderPipelineDescriptor::raster` specifies projected front-face winding and face culling through
+`RasterState`. The default is `FrontFace::Ccw` with `cull_mode: None` (two-sided rendering).
+Use `Some(Face::Back)` for rasterizer back-face culling. DX11, DX12, Vulkan, OpenGL and Metal map
+this state; WebGL still has no render-pipeline implementation.
+
 [中文文档](README.zh-CN.md)
 
 `gfx-core` defines the canonical backend-neutral API for `nova-gfx`.
@@ -23,6 +28,22 @@ UI-framework policy in this crate.
 `raw-window-handle`, Vulkan, Direct3D 12, or Metal. Native window targets are
 expressed through `SurfaceDevice::SurfaceTarget`, an associated type selected by
 each backend crate.
+
+`SubmissionDevice::wait_queue_idle` is a blocking completion proof for infrequent maintenance;
+backends that cannot provide it return `Unavailable`.
+
+`ResourceDevice::compute_capabilities` advertises optional buffer compute and indirect drawing.
+`dispatch_compute` orders a compute-stage shader and group-zero buffer bindings before subsequent
+device operations, without waiting or CPU readback. Writable buffers require `STORAGE_WRITE` in
+addition to `STORAGE`. `RenderCommand::DrawIndirect` consumes four GPU-resident `u32` arguments:
+vertex count, instance count, first vertex and first instance; its buffer requires `INDIRECT`.
+The default capability set is empty and unsupported dispatches return `Unavailable`.
+`dispatch_compute_batch` preserves stage order and visibility; backends may record the stages
+in one native submission. Its default implementation queues individual dispatches.
+`destroy_buffer_batch` retires buffers together when supported; other backends use ordered
+individual destruction. Earlier handles may already be invalidated if a batch returns an error.
+`RenderCommand::instance_count` returns `None` for indirect draws; an unknown GPU count must
+not be mistaken for an empty draw or a measured CPU-side count.
 
 ## Recommended Use
 

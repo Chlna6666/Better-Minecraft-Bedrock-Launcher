@@ -1,8 +1,18 @@
 # gfx-opengl
 
+Graphics passes skip unchanged uniform/storage buffer ranges, textures, and samplers. Binding-cache
+storage is reused between passes but its entries reset at every pass boundary. Required mirror
+copies still execute before each draw. Presentation reports host command, swap, signal, and
+cleanup timings through `PresentTimings`.
+
 [中文文档](README.zh-CN.md)
 
 OpenGL backend crate for nova-gfx.
+
+The shared buffer compute API uses cached compute programs and memory barriers before subsequent
+consumers. Non-indexed indirect drawing is advertised only with `GL_ARB_shader_draw_parameters`,
+which preserves the shared first-instance semantics. Explicit queue completion uses `glFinish`;
+ordinary dispatch and draw submission does not wait for completion.
 
 The native backend requires desktop OpenGL 4.5 core. It uses WGL on Windows and
 EGL on Linux (X11 or Wayland), with a context and GPU resources owned by the

@@ -242,11 +242,9 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
                 .iter()
                 .flat_map(|group| &group.source_steps)
             {
-                let scissor = match step {
-                    RenderCommand::Draw(step) => step.scissor,
-                    RenderCommand::DrawIndexed(step) => step.scissor,
-                }
-                .expect("retained root source must be clipped");
+                let scissor = step
+                    .scissor()
+                    .expect("retained root source must be clipped");
                 assert!(scissor.width < 32 && scissor.height < 32);
             }
         }

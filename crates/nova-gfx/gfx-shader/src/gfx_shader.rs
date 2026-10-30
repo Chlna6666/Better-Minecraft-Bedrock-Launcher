@@ -181,6 +181,12 @@ impl WgslModule {
                 naga::AddressSpace::Storage { access } if access == naga::StorageAccess::LOAD => {
                     128
                 }
+                naga::AddressSpace::Storage { access }
+                    if stage == ShaderStage::Compute
+                        && access.contains(naga::StorageAccess::STORE) =>
+                {
+                    8
+                }
                 naga::AddressSpace::Handle => match self.module.types[variable.ty].inner {
                     naga::TypeInner::Sampler { .. } => 16,
                     naga::TypeInner::Image {
@@ -350,6 +356,7 @@ fn shader_stage_to_naga(stage: ShaderStage) -> NagaShaderStage {
     match stage {
         ShaderStage::Vertex => NagaShaderStage::Vertex,
         ShaderStage::Fragment => NagaShaderStage::Fragment,
+        ShaderStage::Compute => NagaShaderStage::Compute,
     }
 }
 

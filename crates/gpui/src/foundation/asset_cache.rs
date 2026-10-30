@@ -176,10 +176,6 @@ where
         self.lease.use_by(window, view, retained_id)
     }
 
-    pub(crate) fn pin_count(&self) -> usize {
-        self.lease.pin_count()
-    }
-
     pub(crate) fn shares_load(&self, lease: &AssetLease<T>) -> bool {
         self.lease.shares_load(lease)
     }
@@ -253,6 +249,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ready(value: T) -> Self {
         let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Ready {
             value,

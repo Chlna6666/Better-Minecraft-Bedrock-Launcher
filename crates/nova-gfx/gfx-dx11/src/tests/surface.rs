@@ -79,7 +79,8 @@ fn verify_window_retirement(
 ) {
     let first = device
         .present_steps(chains[0], pass, &[], LoadOp::Clear(CLEAR), None)
-        .expect("first Present");
+        .expect("first Present")
+        .0;
     device.wait_submission(first).expect("first retirement");
     assert!(device.prepare_swapchain_resize(chains[0]).expect("ready"));
     for _ in 0..8 {

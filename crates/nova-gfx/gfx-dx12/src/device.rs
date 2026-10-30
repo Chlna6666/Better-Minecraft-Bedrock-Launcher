@@ -28,7 +28,9 @@ mod frame_pacing;
 
 #[cfg(windows)]
 mod platform {
+    mod bindings;
     mod buffer_upload;
+    mod compute;
     mod relocation;
     mod surface;
     use std::{
@@ -208,6 +210,7 @@ mod platform {
         bind_groups: ResourceRegistry<Dx12ResourceSet>,
         pipeline_layouts: ResourceRegistry<Dx12PipelineLayout>,
         shader_modules: ResourceRegistry<Dx12ShaderModule>,
+        compute: compute::State,
         render_passes: ResourceRegistry<Dx12RenderPass>,
         render_pipelines: ResourceRegistry<Dx12RenderPipeline>,
         command_encoders: ResourceRegistry<Dx12CommandEncoder>,
@@ -297,6 +300,7 @@ mod platform {
                 heaps_elapsed.as_millis(),
                 upload_started_at.elapsed().as_millis(),
             );
+            let compute = compute::State::new(&device)?;
             Ok(Self {
                 fence,
                 fence_event,
@@ -314,6 +318,7 @@ mod platform {
                 bind_groups: ResourceRegistry::new("bind group"),
                 pipeline_layouts: ResourceRegistry::new("pipeline layout"),
                 shader_modules: ResourceRegistry::new("shader module"),
+                compute,
                 render_passes: ResourceRegistry::new("render pass"),
                 render_pipelines: ResourceRegistry::new("render pipeline"),
                 command_encoders: ResourceRegistry::new("command encoder"),
@@ -689,61 +694,11 @@ mod platform {
         /// Returns [`Error`] when the handle or write range is invalid, or when the buffer lives
         /// in memory the CPU cannot fill.
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
-            let offset = usize::try_from(offset)
-                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
-            let (resource, state, memory_location) = {
-                let buffer = self.buffers.get(buffer)?;
-                let end = offset.checked_add(data.len()).ok_or_else(|| {
-                    Error::InvalidInput("buffer write range overflow".to_string())
-                })?;
-                let size = usize::try_from(buffer.desc.size).map_err(|error| {
-                    Error::InvalidInput(format!("buffer size overflow: {error}"))
-                })?;
-                if end > size {
-                    return Err(Error::InvalidInput(
-                        "buffer write range is out of bounds".to_string(),
-                    ));
-                }
-                let resource = buffer.resource.clone().ok_or_else(|| {
-                    Error::Backend("DX12 buffer has no native resource".to_string())
-                })?;
-                (resource, buffer.state, buffer.desc.memory_location)
-            };
-            match memory_location {
-                MemoryLocation::CpuToGpu => upload_to_mapped_buffer(&resource, offset, data)?,
-                MemoryLocation::GpuToCpu => {
-                    return Err(Error::Unavailable(
-                        "DX12 readback buffers are written by the GPU, not the CPU".to_string(),
-                    ));
-                }
-                MemoryLocation::GpuOnly => {
-                    let length = u64::try_from(data.len()).map_err(|error| {
-                        Error::InvalidInput(format!("buffer write length overflow: {error}"))
-                    })?;
-                    let staging_desc = BufferDescriptor {
-                        label: Some("nova-gfx DX12 buffer staging".to_string()),
-                        size: length,
-                        usage: BufferUsage::COPY_SRC,
-                        memory_location: MemoryLocation::CpuToGpu,
-                    };
-                    let staging = create_buffer_resource(&self.device, &staging_desc)?;
-                    upload_to_mapped_buffer(&staging, 0, data)?;
-                    self.copy_buffer_region(BufferRegionCopy {
-                        source: &staging,
-                        source_state: D3D12_RESOURCE_STATE_GENERIC_READ,
-                        source_offset: 0,
-                        destination: &resource,
-                        destination_state: state,
-                        destination_final_state: D3D12_RESOURCE_STATE_GENERIC_READ,
-                        destination_offset: u64::try_from(offset).map_err(|error| {
-                            Error::InvalidInput(format!("buffer write offset overflow: {error}"))
-                        })?,
-                        len: length,
-                    })?;
-                }
-            }
-            self.buffers.get_mut(buffer)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
-            Ok(())
+            self.upload_buffer_batch([BufferWrite {
+                descriptor: gfx_core::BufferWriteDescriptor { buffer, offset },
+                data,
+            }])
+            .map(|_| ())
         }
 
         /// Creates a 2D texture record.
@@ -1314,6 +1269,7 @@ mod platform {
                             binding: binding.binding,
                             gpu_handle: slot.gpu_handle,
                             descriptor_index: slot.index,
+                            resource: Some(binding.resource),
                         });
                     }
                     BindingResource::Texture(texture_binding) => {
@@ -1348,6 +1304,7 @@ mod platform {
                             binding: binding.binding,
                             gpu_handle: slot.gpu_handle,
                             descriptor_index: slot.index,
+                            resource: Some(binding.resource),
                         });
                     }
                     BindingResource::Sampler(sampler_binding) => {
@@ -1363,6 +1320,7 @@ mod platform {
                             binding: binding.binding,
                             gpu_handle: self.sampler_heap.gpu_start(),
                             descriptor_index: slot.index,
+                            resource: Some(binding.resource),
                         });
                     }
                 }
@@ -1405,6 +1363,7 @@ mod platform {
                     binding: NAGA_HLSL_SAMPLER_INDEX_SPACE,
                     gpu_handle: slot.gpu_handle,
                     descriptor_index: slot.index,
+                    resource: None,
                 })
             };
             Ok(self.bind_groups.insert(Dx12ResourceSet {
@@ -1544,9 +1503,15 @@ mod platform {
                 desc.blend_mode,
                 render_pass.depth_format,
                 desc.depth_state,
+                desc.raster,
                 pipeline_layout_cache_key,
                 self.pipeline_cache_dir.as_deref(),
             )?;
+            let indirect_signature = Some(compute::create_indirect_signature(
+                &self.device,
+                &root_signature,
+                draw_step_constants_root_index,
+            )?);
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
                 color_format: desc.color_format,
                 blend_mode: desc.blend_mode,
@@ -1555,6 +1520,7 @@ mod platform {
                 root_signature: Some(root_signature),
                 bind_group_layouts,
                 draw_step_constants_root_index,
+                indirect_signature,
             }))
         }
 
@@ -1603,6 +1569,9 @@ mod platform {
                 command_list: Some(command_list),
                 submitted: false,
                 swapchain: None,
+                compute_resources: Vec::new(),
+                indirect_resources: Vec::new(),
+                buffer_states: Default::default(),
             }))
         }
 
@@ -1820,7 +1789,12 @@ mod platform {
                     Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
             // SAFETY: The batch command list is open and has finished recording all passes.
-            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))
+            unsafe { command_list.Close() }.map_err(|error| {
+                Error::Backend(format!(
+                    "DX12 command close: {error}; {}",
+                    d3d12_messages(&self.device)
+                ))
+            })
         }
 
         fn render_step_list_and_present_deferred_timed(
@@ -1909,7 +1883,8 @@ mod platform {
         ) -> Result<()> {
             match result {
                 Ok(()) => {
-                    let _encoder = self.command_encoders.take(encoder)?;
+                    let encoder = self.command_encoders.take(encoder)?;
+                    self.release_encoder_resources(encoder);
                     Ok(())
                 }
                 Err(error) => {
@@ -1925,7 +1900,17 @@ mod platform {
             encoder: CommandEncoderId,
         ) -> Result<()> {
             if !self.command_encoders.get(encoder)?.submitted {
-                let _encoder = self.command_encoders.take(encoder)?;
+                let encoder = self.command_encoders.take(encoder)?;
+                self.release_encoder_resources(encoder);
+            } else {
+                // Execute may succeed before Signal fails. Retain ownership until a later
+                // ordered fence proves completion, or device teardown releases the queue.
+                let encoder = self.command_encoders.take(encoder)?;
+                self.deferred_command_encoders
+                    .push(DeferredDx12CommandEncoder {
+                        fence_value: self.next_fence_value,
+                        _encoder: encoder,
+                    });
             }
             Ok(())
         }
@@ -2121,6 +2106,7 @@ mod platform {
 
         /// Destroys a shader module.
         fn destroy_shader_module(&mut self, shader: ShaderModuleId) -> Result<()> {
+            self.compute.remove_shader(shader);
             let _shader = self.shader_modules.take(shader)?;
             Ok(())
         }
@@ -2235,9 +2221,17 @@ mod platform {
             // their fence has completed. Recycle both native COM objects as a
             // unit, with bounded residency under GPU memory pressure.
             let free_encoders = &mut self.free_command_encoders;
+            let resource_heap = &mut self.resource_heap;
+            let compute = &mut self.compute;
             self.deferred_command_encoders.retain_mut(|pending| {
                 if pending.fence_value > completed_fence {
                     return true;
+                }
+                for resources in pending._encoder.compute_resources.drain(..) {
+                    resources.release(resource_heap);
+                }
+                for resource in pending._encoder.indirect_resources.drain(..) {
+                    compute.recycle_indirect(resource, true);
                 }
                 if free_encoders.len() < DX12_FRAME_COMMAND_POOL_CAPACITY {
                     free_encoders.push(Dx12CommandEncoder {
@@ -2245,6 +2239,9 @@ mod platform {
                         command_list: pending._encoder.command_list.take(),
                         submitted: false,
                         swapchain: None,
+                        compute_resources: Vec::new(),
+                        indirect_resources: Vec::new(),
+                        buffer_states: Default::default(),
                     });
                 }
                 false
@@ -2284,6 +2281,7 @@ mod platform {
             }
 
             self.wait_for_pending_work()?;
+            self.compute.trim_indirect();
             let target_idle_pages = if matches!(level, MemoryTrimLevel::Moderate) {
                 1
             } else {
@@ -2347,9 +2345,26 @@ mod platform {
                     self.release_resource_set_descriptors(&bind_group);
                 }
                 DeferredDx12Release::Swapchain(swapchain) => drop(swapchain),
-                DeferredDx12Release::Buffer(_)
-                | DeferredDx12Release::Texture(_)
-                | DeferredDx12Release::CommandEncoder(_) => {}
+                DeferredDx12Release::CommandEncoder(encoder) => {
+                    self.release_encoder_resources(encoder)
+                }
+                DeferredDx12Release::Buffer(_) | DeferredDx12Release::Texture(_) => {}
+            }
+        }
+
+        fn release_encoder_resources(&mut self, mut encoder: Dx12CommandEncoder) {
+            if !encoder.submitted {
+                for (id, state) in encoder.buffer_states.drain() {
+                    if let Ok(buffer) = self.buffers.get_mut(id) {
+                        buffer.state = state;
+                    }
+                }
+            }
+            for resources in encoder.compute_resources.drain(..) {
+                resources.release(&mut self.resource_heap);
+            }
+            for resource in encoder.indirect_resources.drain(..) {
+                self.compute.recycle_indirect(resource, encoder.submitted);
             }
         }
 
@@ -2373,6 +2388,7 @@ mod platform {
                             .map(|texture| texture.desc.byte_size())
                             .sum::<u64>(),
                     )
+                    .saturating_add(self.compute.indirect_bytes())
                     .saturating_add(self.deferred_releases.pending_bytes(
                         |resource| match resource {
                             DeferredDx12Release::Buffer(buffer) => buffer.desc.size,
@@ -2645,9 +2661,10 @@ mod platform {
                 (allocator, command_list)
             };
             let swapchain = self.swapchains.get(swapchain_id)?;
-            let render_pass = self.render_passes.get(render_pass_id)?;
+            let source_extent = swapchain.source_extent;
+            let render_pass = *self.render_passes.get(render_pass_id)?;
             let depth_handle =
-                self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
+                self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
                 Error::InvalidInput("DX12 render command list must not be empty".to_string())
             })?;
@@ -2674,9 +2691,13 @@ mod platform {
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
                 Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
-            let render_target = swapchain.render_targets.get(frame_index).ok_or_else(|| {
-                Error::Backend("DX12 swapchain frame index is out of bounds".to_string())
-            })?;
+            let render_target = swapchain
+                .render_targets
+                .get(frame_index)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Backend("DX12 swapchain frame index is out of bounds".to_string())
+                })?;
             let rtv_heap = swapchain
                 .rtv_heap
                 .as_ref()
@@ -2695,7 +2716,7 @@ mod platform {
                 .map_err(|error| Error::Backend(error.to_string()))?;
             record_transition_barrier(
                 &command_list,
-                render_target,
+                &render_target,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             );
@@ -2706,18 +2727,18 @@ mod platform {
             let viewport = D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: swapchain.source_extent.width() as f32,
-                Height: swapchain.source_extent.height() as f32,
+                Width: source_extent.width() as f32,
+                Height: source_extent.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
             let scissor = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
-                right: i32::try_from(swapchain.source_extent.width()).map_err(|error| {
+                right: i32::try_from(source_extent.width()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain width overflow: {error}"))
                 })?,
-                bottom: i32::try_from(swapchain.source_extent.height()).map_err(|error| {
+                bottom: i32::try_from(source_extent.height()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
@@ -2774,7 +2795,15 @@ mod platform {
                 }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
+            let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let mut binding_state = bindings::State::default();
+            let mut indirect_count = 0;
             for step in steps.iter() {
+                let indirect_index = indirect_count;
+                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    indirect_count += 1;
+                }
+
                 let step_scissor = match (step.scissor(), frame_damage) {
                     (Some(step_scissor), Some(frame_damage)) => {
                         intersect_scissor_rects(step_scissor, frame_damage)
@@ -2784,14 +2813,14 @@ mod platform {
                     (None, None) => ScissorRect {
                         x: 0,
                         y: 0,
-                        width: swapchain.source_extent.width(),
-                        height: swapchain.source_extent.height(),
+                        width: source_extent.width(),
+                        height: source_extent.height(),
                     },
                 };
                 if step_scissor.is_empty() {
                     continue;
                 }
-                let step_scissor = dx12_rect_for_scissor(step_scissor, swapchain.source_extent)?;
+                let step_scissor = dx12_rect_for_scissor(step_scissor, source_extent)?;
                 let (
                     pipeline_state,
                     root_signature,
@@ -2800,10 +2829,10 @@ mod platform {
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
-                    let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
+                    let pipeline_state = pipeline.pipeline_state.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
-                    let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
+                    let root_signature = pipeline.root_signature.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
                     if render_pass.color_format != pipeline.color_format {
@@ -2815,24 +2844,59 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
-                        pipeline.bind_group_layouts.clone(),
+                        pipeline.bind_group_layouts.as_ref(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
                 // SAFETY: Command list is open and the pipeline/root signature are live objects.
                 unsafe {
-                    command_list.SetPipelineState(&pipeline_state);
-                    command_list.SetGraphicsRootSignature(&root_signature);
-                    command_list.RSSetScissorRects(&[step_scissor]);
-                    command_list
-                        .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
+                    if binding_state.pipeline != Some(step.pipeline()) {
+                        command_list.SetPipelineState(pipeline_state);
+                        command_list
+                            .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
+                        binding_state.pipeline = Some(step.pipeline());
+                    }
+                    if binding_state.set_root(root_signature.as_raw() as usize) {
+                        command_list.SetGraphicsRootSignature(root_signature);
+                    }
+                    let scissor_key = (
+                        step_scissor.left,
+                        step_scissor.top,
+                        step_scissor.right,
+                        step_scissor.bottom,
+                    );
+                    if binding_state.scissor != Some(scissor_key) {
+                        command_list.RSSetScissorRects(&[step_scissor]);
+                        binding_state.scissor = Some(scissor_key);
+                    }
                 }
-                bind_resource_sets(&command_list, self, &bind_group_layouts, step.bind_groups())?;
-                self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
+                bind_resource_sets(
+                    &command_list,
+                    self,
+                    bind_group_layouts,
+                    step.bind_groups(),
+                    &mut binding_state,
+                )?;
+                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    self.execute_indirect(
+                        &command_list,
+                        encoder_id,
+                        staged.ok_or_else(|| {
+                            Error::Backend("indirect arguments were not staged".into())
+                        })?,
+                        indirect_index,
+                    )?;
+                } else {
+                    self.record_render_step_draw(
+                        &command_list,
+                        draw_step_constants_root_index,
+                        step,
+                    )?;
+                }
             }
             record_transition_barrier(
                 &command_list,
-                render_target,
+                &render_target,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
@@ -2868,9 +2932,9 @@ mod platform {
                     Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
             let texture_view = *self.texture_views.get(texture_view_id)?;
-            let render_pass = self.render_passes.get(render_pass_id)?;
+            let render_pass = *self.render_passes.get(render_pass_id)?;
             let depth_handle =
-                self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
+                self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
             let (texture_resource, texture_state, texture_desc) = {
                 let texture = self.textures.get(texture_view.texture)?;
                 let resource = texture.resource.clone().ok_or_else(|| {
@@ -2996,7 +3060,15 @@ mod platform {
                     }
                 }
             }
+            let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let mut binding_state = bindings::State::default();
+            let mut indirect_count = 0;
             for step in steps.iter() {
+                let indirect_index = indirect_count;
+                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    indirect_count += 1;
+                }
+
                 let step_scissor = if let Some(region) = step.scissor() {
                     let region = match viewport {
                         Some(viewport) => viewport.map_scissor(region, texture_desc.size)?,
@@ -3022,10 +3094,10 @@ mod platform {
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
-                    let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
+                    let pipeline_state = pipeline.pipeline_state.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
-                    let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
+                    let root_signature = pipeline.root_signature.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
                     if render_pass.color_format != pipeline.color_format {
@@ -3037,20 +3109,55 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
-                        pipeline.bind_group_layouts.clone(),
+                        pipeline.bind_group_layouts.as_ref(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
                 // SAFETY: Command list is open and the pipeline/root signature are live objects.
                 unsafe {
-                    command_list.SetPipelineState(&pipeline_state);
-                    command_list.SetGraphicsRootSignature(&root_signature);
-                    command_list.RSSetScissorRects(&[step_scissor]);
-                    command_list
-                        .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
+                    if binding_state.pipeline != Some(step.pipeline()) {
+                        command_list.SetPipelineState(pipeline_state);
+                        command_list
+                            .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
+                        binding_state.pipeline = Some(step.pipeline());
+                    }
+                    if binding_state.set_root(root_signature.as_raw() as usize) {
+                        command_list.SetGraphicsRootSignature(root_signature);
+                    }
+                    let scissor_key = (
+                        step_scissor.left,
+                        step_scissor.top,
+                        step_scissor.right,
+                        step_scissor.bottom,
+                    );
+                    if binding_state.scissor != Some(scissor_key) {
+                        command_list.RSSetScissorRects(&[step_scissor]);
+                        binding_state.scissor = Some(scissor_key);
+                    }
                 }
-                bind_resource_sets(&command_list, self, &bind_group_layouts, step.bind_groups())?;
-                self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
+                bind_resource_sets(
+                    &command_list,
+                    self,
+                    bind_group_layouts,
+                    step.bind_groups(),
+                    &mut binding_state,
+                )?;
+                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    self.execute_indirect(
+                        &command_list,
+                        encoder_id,
+                        staged.ok_or_else(|| {
+                            Error::Backend("indirect arguments were not staged".into())
+                        })?,
+                        indirect_index,
+                    )?;
+                } else {
+                    self.record_render_step_draw(
+                        &command_list,
+                        draw_step_constants_root_index,
+                        step,
+                    )?;
+                }
             }
             record_transition_barrier(
                 &command_list,
@@ -3109,6 +3216,9 @@ mod platform {
             step: &RenderCommand,
         ) -> Result<()> {
             match step {
+                RenderCommand::DrawIndirect(_) => Err(Error::Unavailable(
+                    "indirect draws are not implemented by this backend".into(),
+                )),
                 RenderCommand::Draw(step) => {
                     let offsets = non_indexed_draw_offsets(step.first_vertex, step.first_instance);
                     // SAFETY: Command list is open and pipeline/root signature are bound.
@@ -3679,6 +3789,7 @@ mod platform {
             &[match stage {
                 ShaderStage::Vertex => 0,
                 ShaderStage::Fragment => 1,
+                ShaderStage::Compute => 2,
             }],
         );
         extend_stable_hash(&mut hash, entry_point.as_bytes());
@@ -3747,6 +3858,7 @@ mod platform {
         blend_mode: BlendMode,
         depth_format: Option<Format>,
         depth_state: Option<DepthState>,
+        raster: gfx_core::RasterState,
         pipeline_layout_cache_key: u64,
         pipeline_cache_dir: Option<&Path>,
     ) -> Result<ID3D12PipelineState> {
@@ -3757,8 +3869,16 @@ mod platform {
         };
         let rasterizer_desc = D3D12_RASTERIZER_DESC {
             FillMode: D3D12_FILL_MODE_SOLID,
-            CullMode: D3D12_CULL_MODE_NONE,
-            FrontCounterClockwise: false.into(),
+            CullMode: match raster.cull_mode {
+                None => D3D12_CULL_MODE_NONE,
+                Some(gfx_core::Face::Front) => {
+                    windows::Win32::Graphics::Direct3D12::D3D12_CULL_MODE_FRONT
+                }
+                Some(gfx_core::Face::Back) => {
+                    windows::Win32::Graphics::Direct3D12::D3D12_CULL_MODE_BACK
+                }
+            },
+            FrontCounterClockwise: (raster.front_face == gfx_core::FrontFace::Ccw).into(),
             DepthBias: D3D12_DEFAULT_DEPTH_BIAS,
             DepthBiasClamp: D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
             SlopeScaledDepthBias: D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
@@ -3807,7 +3927,7 @@ mod platform {
 
         let cache_path = pipeline_cache_dir.map(|dir| {
             dir.join(format!(
-                "{:016x}.pso",
+                "{:016x}-{:?}-{:?}.pso",
                 pipeline_cache_key(
                     pipeline_layout_cache_key,
                     vertex_shader,
@@ -3816,7 +3936,9 @@ mod platform {
                     blend_mode,
                     depth_format,
                     depth_state,
-                )
+                ),
+                raster.front_face,
+                raster.cull_mode
             ))
         });
         let cached_blob = cache_path.as_deref().and_then(read_pipeline_cache_blob);
@@ -4217,6 +4339,18 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
+            compute::capabilities()
+        }
+        fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
+            self.dispatch_buffers(dispatch)
+        }
+        fn dispatch_compute_batch(
+            &mut self,
+            dispatches: &[gfx_core::ComputeDispatch<'_>],
+        ) -> Result<()> {
+            self.dispatch_buffer_batch(dispatches)
+        }
         fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
             self.copy_texture_regions(copies)
         }
@@ -4365,6 +4499,10 @@ mod platform {
     }
 
     impl SubmissionDevice for Dx12Device {
+        fn wait_queue_idle(&mut self) -> Result<()> {
+            self.wait_for_gpu()
+        }
+
         fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
             gfx_core::AsyncCapabilities {
                 threading_mode: ThreadingMode::MultiThreadDeviceProxy,
@@ -4591,6 +4729,7 @@ mod platform {
         let target = match stage {
             ShaderStage::Vertex => b"vs_5_1\0",
             ShaderStage::Fragment => b"ps_5_1\0",
+            ShaderStage::Compute => b"cs_5_1\0",
         };
         let entry_point = std::ffi::CString::new(entry_point)
             .map_err(|error| Error::InvalidInput(error.to_string()))?;
@@ -4882,6 +5021,13 @@ mod platform {
         device: &ID3D12Device,
         desc: &BufferDescriptor,
     ) -> Result<ID3D12Resource> {
+        if desc.usage.contains(BufferUsage::STORAGE_WRITE)
+            && desc.memory_location != MemoryLocation::GpuOnly
+        {
+            return Err(Error::InvalidInput(
+                "DX12 writable storage requires GPU-only memory".into(),
+            ));
+        }
         let heap_type = match desc.memory_location {
             MemoryLocation::CpuToGpu => D3D12_HEAP_TYPE_UPLOAD,
             MemoryLocation::GpuToCpu => D3D12_HEAP_TYPE_READBACK,
@@ -4904,7 +5050,11 @@ mod platform {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
+            Flags: if desc.usage.contains(BufferUsage::STORAGE_WRITE) {
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+            } else {
+                D3D12_RESOURCE_FLAG_NONE
+            },
         };
         let initial_state = initial_buffer_state(desc);
         let mut resource = None;
@@ -5536,11 +5686,30 @@ mod platform {
         Ok(())
     }
 
+    fn bind_root_table(
+        command: &ID3D12GraphicsCommandList,
+        state: &mut bindings::State,
+        slot: u32,
+        table: &Dx12DescriptorTable,
+    ) {
+        let key = table.resource.map_or(
+            bindings::TableKey::Native(table.gpu_handle.ptr),
+            bindings::TableKey::Resource,
+        );
+        if state.set_table(slot, key) {
+            // SAFETY: root order is validated against the active root signature; descriptor heaps remain bound throughout the pass.
+            unsafe {
+                command.SetGraphicsRootDescriptorTable(slot, table.gpu_handle);
+            }
+        }
+    }
+
     fn bind_resource_sets(
         command_list: &ID3D12GraphicsCommandList,
         device: &Dx12Device,
         expected_layouts: &[BindGroupLayoutId],
         bind_groups: &[BindGroupId],
+        state: &mut bindings::State,
     ) -> Result<()> {
         validate_resource_set_layout_count(expected_layouts.len(), bind_groups.len())?;
         let mut root_index = 0;
@@ -5567,10 +5736,7 @@ mod platform {
                                 ))
                             })?;
                         // SAFETY: Root parameter index follows create_root_signature order.
-                        unsafe {
-                            command_list
-                                .SetGraphicsRootDescriptorTable(root_index, table.gpu_handle);
-                        }
+                        bind_root_table(command_list, state, root_index, table);
                         root_index += 1;
                     }
                     BindingType::Sampler => {
@@ -5592,10 +5758,7 @@ mod platform {
                                 ))
                             })?;
                         // SAFETY: Root parameter index follows create_root_signature order.
-                        unsafe {
-                            command_list
-                                .SetGraphicsRootDescriptorTable(root_index, table.gpu_handle);
-                        }
+                        bind_root_table(command_list, state, root_index, table);
                         root_index += 1;
                         let index_table = set.sampler_index_table.as_ref().ok_or_else(|| {
                             Error::InvalidInput(
@@ -5603,10 +5766,7 @@ mod platform {
                             )
                         })?;
                         // SAFETY: Root parameter index follows create_root_signature order.
-                        unsafe {
-                            command_list
-                                .SetGraphicsRootDescriptorTable(root_index, index_table.gpu_handle);
-                        }
+                        bind_root_table(command_list, state, root_index, index_table);
                         root_index += 1;
                     }
                 }
@@ -5907,6 +6067,7 @@ mod platform {
         binding: u32,
         gpu_handle: D3D12_GPU_DESCRIPTOR_HANDLE,
         descriptor_index: u32,
+        resource: Option<BindingResource>,
     }
 
     #[derive(Clone, Copy)]
@@ -6045,6 +6206,7 @@ mod platform {
 
     #[derive(Clone)]
     struct Dx12RenderPipeline {
+        indirect_signature: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
         color_format: Format,
         blend_mode: BlendMode,
         primitive_topology: PrimitiveTopology,
@@ -6054,8 +6216,10 @@ mod platform {
         draw_step_constants_root_index: u32,
     }
 
-    #[derive(Clone)]
     struct Dx12CommandEncoder {
+        buffer_states: std::collections::HashMap<BufferId, D3D12_RESOURCE_STATES>,
+        compute_resources: Vec<compute::Resources>,
+        indirect_resources: Vec<compute::Indirect>,
         allocator: Option<ID3D12CommandAllocator>,
         command_list: Option<ID3D12GraphicsCommandList>,
         submitted: bool,

@@ -15,7 +15,7 @@ use glutin::{
 };
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     ffi::CString,
     num::NonZeroU32,
@@ -74,6 +74,8 @@ pub struct OpenGlDevice {
     generation: u32,
     pub(crate) uniform_alignment: u64,
     pub(crate) storage_alignment: u64,
+    pub(crate) compute: crate::compute::State,
+    pub(crate) binding_cache: RefCell<crate::bindings::Cache>,
     // Last field: the config's native DC must outlive every GL/glutin object.
     #[cfg(target_os = "windows")]
     _bootstrap: crate::bootstrap::Bootstrap,
@@ -192,8 +194,10 @@ impl OpenGlDevice {
                 "OpenGL renderer {name} does not match requested adapter"
             )));
         }
+        let compute = crate::compute::State::new(&gl);
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
+            binding_cache: RefCell::new(crate::bindings::Cache::default()),
             gl,
             context,
             parking,
@@ -233,6 +237,7 @@ impl OpenGlDevice {
             generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
             uniform_alignment,
             storage_alignment,
+            compute,
             #[cfg(target_os = "windows")]
             _bootstrap: bootstrap,
         })
@@ -356,6 +361,16 @@ impl Backend for OpenGlDevice {
     }
 }
 impl SubmissionDevice for OpenGlDevice {
+    fn wait_queue_idle(&mut self) -> Result<()> {
+        self.park()?;
+        // SAFETY: explicit queue completion runs on the owner context; ordinary dispatch
+        // and drawing remain asynchronous and never call this completion gate.
+        unsafe {
+            self.gl.finish();
+        }
+        self.retire()?;
+        self.check()
+    }
     fn async_capabilities(&self) -> AsyncCapabilities {
         AsyncCapabilities {
             threading_mode: ThreadingMode::OwnerThreadOnly,
@@ -467,6 +482,7 @@ impl Drop for OpenGlDevice {
         // SAFETY: context is current; release each remaining owned GL object once.
         unsafe {
             self.gl.finish();
+            self.compute.clear(&self.gl);
             for (_, fence) in &self.pending {
                 self.gl.delete_sync(*fence);
             }

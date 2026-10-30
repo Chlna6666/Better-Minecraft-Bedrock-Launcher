@@ -164,7 +164,7 @@ impl Interactivity {
             }
         }
 
-        let current_view = window.current_view();
+        let current_view = window.rendered_entity_stack.last().copied();
         let descendants_dirty = self.interaction_affects_descendants();
         for group_hitbox in group_hitboxes {
             let was_hovered = group_hitbox.is_hovered(window);
@@ -174,13 +174,17 @@ impl Interactivity {
                 let exit_retained_path = retained_path.clone();
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            exit_retained_path.as_ref(),
-                            bounds,
-                            descendants_dirty,
-                            cx,
-                        );
+                        if let Some(current_view) = current_view {
+                            window.notify_interactive_region_scoped(
+                                current_view,
+                                exit_retained_path.as_ref(),
+                                bounds,
+                                descendants_dirty,
+                                cx,
+                            );
+                        } else {
+                            window.refresh();
+                        }
                     }
                 });
             }
@@ -188,13 +192,17 @@ impl Interactivity {
             window.on_mouse_hit_test_transition(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.notify_interactive_region_scoped(
-                        current_view,
-                        retained_path.as_ref(),
-                        bounds,
-                        descendants_dirty,
-                        cx,
-                    );
+                    if let Some(current_view) = current_view {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            retained_path.as_ref(),
+                            bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    } else {
+                        window.refresh();
+                    }
                 }
             });
         }

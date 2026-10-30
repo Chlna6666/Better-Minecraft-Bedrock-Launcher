@@ -104,8 +104,7 @@ impl VSyncScheduler {
     }
 
     pub(super) fn native_unpaced_interval(&self) -> Option<Duration> {
-        (self.is_active() && self.unpaced.load(Ordering::Acquire))
-            .then(native_unpaced_interval)
+        (self.is_active() && self.unpaced.load(Ordering::Acquire)).then(native_unpaced_interval)
     }
 
     pub(super) fn refresh_interval(&self) -> Duration {

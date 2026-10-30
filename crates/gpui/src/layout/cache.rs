@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use taffy::TraversePartialTree as _;
 
 use super::{
-    engine::{EXPECT_MESSAGE, TaffyLayoutEngine},
+    engine::TaffyLayoutEngine,
     metrics::{LayoutId, RetainedLayoutNode, RetainedViewLayout},
 };
 

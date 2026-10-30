@@ -17,11 +17,13 @@ mod bindings;
 )]
 mod bootstrap;
 #[cfg(any(windows, target_os = "linux"))]
+mod commands;
+#[cfg(any(windows, target_os = "linux"))]
 #[expect(
     unsafe_code,
-    reason = "OpenGL context and glow driver calls require audited unsafe FFI boundaries"
+    reason = "OpenGL compute requires audited owner-context FFI calls"
 )]
-mod commands;
+mod compute;
 #[cfg(any(windows, target_os = "linux"))]
 #[expect(
     unsafe_code,
