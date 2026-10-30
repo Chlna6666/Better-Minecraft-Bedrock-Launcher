@@ -11,6 +11,12 @@ primitive and Nova upload/cache/draw path have been removed without compatibilit
 
 Two rendering paths share one scene/asset model:
 
+The GPUI scene view selects rasterizer culling from `Material::double_sided` and `front_face`.
+Single-sided materials cull back faces; double-sided materials render both sides. Mirrored
+transforms reverse front-face winding and are batched separately. The authored winding defaults
+to `FrontFace::Ccw`; clockwise meshes must explicitly use `FrontFace::Cw`. This selection currently
+applies to the scene view; the offscreen PBR path retains its previous behavior.
+
 - **GPUI scene view**: renders inside the host compositor pass through `RendererExtension`.
 - **Offscreen renderer**: `OffscreenRenderer` renders a directional shadow pass, a linear PBR scene
   pass with optional image-based lighting and sky, and a display-referred post pass into an offscreen
@@ -18,6 +24,64 @@ Two rendering paths share one scene/asset model:
   statistics. It uses an application-owned Nova device and adds no second window renderer, swapchain,
   cache owner, or render queue. Distance-selected `LodLevel` chains are resolved during scene
   preparation.
+
+`Mesh::from_voxel_quads_without_raycast` builds compact voxel geometry from ordered quad vertices
+and material parts without a temporary full vertex or index buffer. It preserves the implicit
+two-triangle topology and skips mesh raycasts. The GPUI scene view uploads its compact vertices
+without an index buffer and expands each quad into two triangles in the vertex shader; other
+mesh topologies keep indexed draws.
+`Mesh::same_voxel_quad_geometry` compares this packed representation exactly for update reuse.
+
+On devices advertising buffer compute and indirect draws (DX11, DX12, Vulkan and eligible OpenGL drivers), voxel scene views
+retain camera-independent opaque draw records. Compatible opaque quad ranges share indirect
+instanced batches by resident page, material and vertex-count class. A compute shader tests bounds
+and compacts visible instance indices. Each workgroup shares its frustum planes and accumulates
+counts in workgroup memory before publishing one indirect record. Single-instance batches skip
+workgroup barriers. GPU-generated meshes feed their actual counts into the same culling output;
+they no longer repeat frustum tests on the CPU. Indirect vertex counts use the largest visible part, so hidden
+larger parts do not add padding work. The voxel vertex shader expands quads and clips padding for
+variable-size ranges. Camera changes update frame uniforms and dispatch compute; they do not
+rebuild an opaque CPU visible list. Blended draws keep CPU depth ordering and individual batches.
+DX11/DX12/Vulkan scene parameter buffers use device-local ordered writes so pending GPU frames
+cannot observe later CPU mapped updates. Unchanged culling bounds skip their uniform upload.
+Camera-only blended sorting orders compact indices and reorders retained bindings and draw
+addresses only when depth order changes; already ordered draws keep an identity permutation.
+Material, instance and culling input tables remain resident; only frame uniforms and
+compute outputs change. Indexed fallbacks retain their original instance addresses as well.
+Other backends retain CPU culling/direct draws. Non-procedural mesh ranges retain their CPU
+frustum test before direct indexed submission.
+
+`Mesh::from_gpu_voxels` accepts a padded `VoxelMeshSource` grid and shared six-face templates.
+On compute/indirect-capable DX11, DX12, Vulkan and OpenGL devices, compute workgroups remove
+neighbor-occluded faces and emit compact face descriptors and per-material vertex counts. The
+vertex shader expands these descriptors directly; production rendering does not read counts
+back to the CPU. Generation runs when mesh geometry changes, not on camera movement. Optional
+static faces retain their order within each material after the generated cube faces.
+`VoxelMeshSource::with_instances` accepts reusable arbitrary face templates, cell positions,
+vertical scales and neighbor-class masks. Parallel count, per-material prefix-scan and emit
+passes compact visible model/fluid faces while retaining instance order for blended materials. Mesh
+generation uploads immutable parameters once and queues its stages through the ordered compute
+batch API. Generated face descriptors use 16 bytes; common 8-bit neighbor masks are packed four
+per word on the CPU and GPU, while wider masks retain the full 32-bit representation.
+Retained cell model indices use bytes for IDs below 255, with a reserved halo sentinel; larger
+IDs retain 32-bit storage. Upload encoding and CPU fallback preserve the original values.
+Scene and culling input tables use batched uploads when updated.
+Draw mappings keep bounded per-source buffers and skip unchanged mappings; output-buffer
+replacement invalidates the cached copy even when mapping entries are unchanged. Mesh
+counts and parts describe output capacities, rather than the GPU's final visible face counts.
+Other render paths lazily generate padded CPU geometry. Voxel meshes do not support raycasts.
+World decoding, cell/template extraction, connected-model state resolution, LOD selection and
+material resolution remain CPU work. Applications may retain CPU generation for entity geometry;
+this does not provide GPU Hi-Z occlusion culling or an independent asynchronous compute queue.
+`GPUI_3D_TRACE_TIMINGS` reports `gpu_cull_batches_max` and `gpu_resident_draws_max` alongside draws.
+
+`SceneView::with_culling_bounds` updates an optional world-space culling region without replacing
+the scene. Nodes opt in with `Node::with_culling_origin`; the region uses inclusive minimum and
+exclusive maximum coordinates. Ray queries and other nodes are unaffected.
+
+The voxel mesh arena keeps retired ranges unavailable while GPU work may still read them. During
+host memory trim, DX11, DX12 and Vulkan wait for queue completion before releasing
+those ranges for reuse; this does not provide per-frame recycling or a GPU memory budget.
 
 `load_path` / `load_bytes` import glTF 2.0 and GLB documents into the same scene types, including
 PBR materials, decoded textures with mip chains, node hierarchies, punctual lights, cameras, and

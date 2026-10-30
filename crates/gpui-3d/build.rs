@@ -23,6 +23,40 @@ fn main() {
                 .entry("fs_main", ShaderStage::Fragment),
         )
         .shader(
+            Shader::new("cull")
+                .wgsl_file("src/scene_view/cull.wgsl")
+                .entry("cs_cull", ShaderStage::Compute),
+        )
+        .shader(
+            Shader::new("mesher")
+                .wgsl_file("src/scene_view/mesher.wgsl")
+                .entry("cs_mesh", ShaderStage::Compute)
+                .entry("cs_mesh_static_counts", ShaderStage::Compute)
+                .entry("cs_mesh_static_emit", ShaderStage::Compute)
+                .entry("cs_mesh_instance_counts", ShaderStage::Compute)
+                .entry("cs_mesh_instance_scan", ShaderStage::Compute)
+                .entry("cs_mesh_instance_emit", ShaderStage::Compute),
+        )
+        .shader(
+            Shader::new("mesher_draws")
+                .wgsl_file("src/scene_view/mesher_draws.wgsl")
+                .entry("cs_mesh_draws", ShaderStage::Compute),
+        )
+        .shader(
+            Shader::new("mesher_check")
+                .wgsl_file("src/scene_view/mesher_check.wgsl")
+                .entry("vs_mesh_check", ShaderStage::Vertex)
+                .entry("fs_mesh_check", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("voxel")
+                .wgsl_file("src/scene_view/voxel.wgsl")
+                .entry("vs_voxel", ShaderStage::Vertex)
+                .entry("vs_voxel_gpu", ShaderStage::Vertex)
+                .entry("vs_generated_voxel", ShaderStage::Vertex)
+                .entry("fs_voxel", ShaderStage::Fragment),
+        )
+        .shader(
             Shader::new("offscreen_shadow")
                 .wgsl_file("src/render/shadow.wgsl")
                 .msl_version(MslVersion::V1_2)

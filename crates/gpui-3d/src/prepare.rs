@@ -9,6 +9,22 @@ use std::{
 
 static DEFAULT_MATERIAL: OnceLock<Arc<Material>> = OnceLock::new();
 
+/// Applies a new-position -> previous-position permutation using reusable cycle storage.
+pub(crate) fn apply_order<T>(values: &mut [T], order: &[usize], positions: &mut Vec<usize>) {
+    debug_assert_eq!(values.len(), order.len());
+    positions.resize(order.len(), 0);
+    for (next, &previous) in order.iter().enumerate() {
+        positions[previous] = next;
+    }
+    for index in 0..order.len() {
+        while positions[index] != index {
+            let target = positions[index];
+            values.swap(index, target);
+            positions.swap(index, target);
+        }
+    }
+}
+
 /// Shared default material used when a mesh part has no material slot on its node.
 fn default_material() -> Arc<Material> {
     DEFAULT_MATERIAL
@@ -31,12 +47,35 @@ pub struct PreparedDraw {
     pub world: Mat4,
     /// World-space bounds.
     pub bounds: Aabb,
+    /// World-space node origin when optional scene-view bounds apply to this draw.
+    pub culling_origin: Option<Vec3>,
     /// Distance along the camera's forward axis to the bounds center.
     pub view_depth: f32,
     /// Post-projection offset in render-target pixels.
     pub pixel_offset: Vec2,
     /// Signed post-projection depth adjustment in zero-to-one depth units.
     pub depth_bias: f32,
+}
+
+impl PreparedDraw {
+    pub(crate) fn is_mirrored(&self) -> bool {
+        let x = self.world.transform_vector(Vec3::X);
+        let y = self.world.transform_vector(Vec3::Y);
+        let z = self.world.transform_vector(Vec3::Z);
+        x.cross(y).dot(z) < 0.0
+    }
+
+    pub(crate) fn raster_front_face(&self) -> Option<gfx_core::FrontFace> {
+        if self.material.double_sided {
+            return None;
+        }
+        Some(match (self.material.front_face, self.is_mirrored()) {
+            (gfx_core::FrontFace::Ccw, false) | (gfx_core::FrontFace::Cw, true) => {
+                gfx_core::FrontFace::Ccw
+            }
+            _ => gfx_core::FrontFace::Cw,
+        })
+    }
 }
 
 /// Consecutive prepared draws that can share one indexed instanced submission.
@@ -93,6 +132,7 @@ fn same_instance_draw(left: &PreparedDraw, right: &PreparedDraw) -> bool {
         && left.mesh.generation() == right.mesh.generation()
         && left.part == right.part
         && left.material.as_ref() == right.material.as_ref()
+        && (left.material.double_sided || left.is_mirrored() == right.is_mirrored())
 }
 
 /// Camera-culled immutable scene snapshot ready for a renderer.
@@ -110,12 +150,31 @@ pub struct PreparedScene {
     /// A camera move keeps this list and only re-culls and re-sorts it, so dragging an orbit camera
     /// does not re-walk the scene graph or rebuild world transforms for every node.
     candidates: Vec<PreparedDraw>,
+    candidate_groups: Vec<CandidateGroup>,
+    visible_candidates: Vec<usize>,
+    next_visible_candidates: Vec<usize>,
     camera: Option<Camera>,
     aspect: Option<f32>,
     lod_active: bool,
+    culling_bounds: Option<Aabb>,
+    gpu_culling: bool,
+    gpu_candidates_dirty: bool,
+    blend_order: Vec<usize>,
+    blend_positions: Vec<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct CandidateGroup {
+    start: usize,
+    end: usize,
+    bounds: Aabb,
+    culling_origin: Option<Vec3>,
 }
 
 impl PreparedScene {
+    pub(crate) fn blended_order(&self) -> &[usize] {
+        &self.blend_order
+    }
     /// Iterates adjacent draws that can be submitted together with one instance draw.
     ///
     /// The batch records a base index into this prepared scene's draw and instance arrays. The
@@ -243,10 +302,39 @@ impl PreparedScene {
         Ok(true)
     }
 
+    pub(crate) fn set_culling_bounds(&mut self, bounds: Option<Aabb>) {
+        self.gpu_candidates_dirty |= !self.gpu_culling && self.culling_bounds != bounds;
+        self.culling_bounds = bounds;
+    }
+
+    pub(crate) fn set_gpu_culling(&mut self, enabled: bool) -> bool {
+        let changed = self.gpu_culling != enabled;
+        self.gpu_culling = enabled;
+        self.gpu_candidates_dirty |= changed;
+        changed
+    }
+
     /// Camera used by the retained draw list, when one has been applied.
     #[must_use]
     pub const fn camera(&self) -> Option<Camera> {
         self.camera
+    }
+
+    #[cfg(test)]
+    fn is_bounds_visible(&self, bounds: Aabb) -> bool {
+        self.bounds_visibility()(bounds)
+    }
+
+    pub(crate) fn bounds_visibility(&self) -> impl Fn(Aabb) -> bool {
+        let planes = frustum_planes(self.view_projection);
+        move |bounds| visible(bounds, &planes)
+    }
+
+    pub(crate) fn is_draw_in_culling_bounds(&self, draw: &PreparedDraw) -> bool {
+        !draw
+            .culling_origin
+            .zip(self.culling_bounds)
+            .is_some_and(|(origin, bounds)| !contains_origin(bounds, origin))
     }
 
     fn update_with(
@@ -270,6 +358,12 @@ impl PreparedScene {
         camera: Camera,
     ) -> Result<(), CameraError> {
         self.candidates.clear();
+        self.blend_order.clear();
+        self.blend_positions.clear();
+        self.gpu_candidates_dirty = true;
+        self.candidate_groups.clear();
+        self.draws.clear();
+        self.visible_candidates.clear();
         self.lights.clear();
         self.walk_stack.clear();
         self.lod_active = false;
@@ -280,10 +374,6 @@ impl PreparedScene {
                 .copied()
                 .map(|id| (id, scene_transform, true)),
         );
-        let (cull_planes, cull_ready) = match self.aspect {
-            Some(aspect) => (Some(frustum_planes(camera.view_projection(aspect)?)), true),
-            None => (None, false),
-        };
         while let Some((id, parent_world, parent_visible)) = self.walk_stack.pop() {
             let Some(node) = scene.node(id) else { continue };
             // Hidden nodes hide their whole subtree; skip traversal instead of emitting draws and
@@ -317,6 +407,7 @@ impl PreparedScene {
                 Some(level.mesh.clone())
             };
             if let Some(mesh) = selected_mesh {
+                let group_start = self.candidates.len();
                 for (part_index, part) in mesh.parts().iter().copied().enumerate() {
                     let Some(bounds) = mesh
                         .part_bounds(part_index)
@@ -324,12 +415,6 @@ impl PreparedScene {
                     else {
                         continue;
                     };
-                    if cull_ready
-                        && let Some(planes) = &cull_planes
-                        && !visible(bounds, planes)
-                    {
-                        continue;
-                    }
                     let center = (bounds.min + bounds.max) * 0.5;
                     self.candidates.push(PreparedDraw {
                         node: id,
@@ -342,9 +427,24 @@ impl PreparedScene {
                             .unwrap_or_else(default_material),
                         world,
                         bounds,
+                        culling_origin: node
+                            .cull_by_origin
+                            .then(|| world.transform_point(Vec3::ZERO)),
                         view_depth: (center - camera.eye).dot(Vec3::ZERO),
                         pixel_offset: node.pixel_offset(),
                         depth_bias: node.depth_bias(),
+                    });
+                }
+                if group_start < self.candidates.len()
+                    && let Some(bounds) = mesh.bounds()
+                {
+                    self.candidate_groups.push(CandidateGroup {
+                        start: group_start,
+                        end: self.candidates.len(),
+                        bounds: bounds.transformed(world),
+                        culling_origin: node
+                            .cull_by_origin
+                            .then(|| world.transform_point(Vec3::ZERO)),
                     });
                 }
             }
@@ -367,36 +467,113 @@ impl PreparedScene {
         let view_direction = (camera.target - camera.eye)
             .normalized()
             .ok_or(CameraError::InvalidPose)?;
+        if self.gpu_culling && !self.gpu_candidates_dirty {
+            self.sort_blended_draws(camera, view_direction);
+            self.view_projection = view_projection;
+            self.camera = Some(camera);
+            self.aspect = Some(aspect);
+            return Ok(());
+        }
         let planes = frustum_planes(view_projection);
-        self.draws.clear();
-        self.draws.extend(self.candidates.iter().filter_map(|draw| {
-            if !visible(draw.bounds, &planes) {
-                return None;
+        self.next_visible_candidates.clear();
+        for group in &self.candidate_groups {
+            if (!self.gpu_culling && !visible(group.bounds, &planes))
+                || (!self.gpu_culling
+                    && group
+                        .culling_origin
+                        .zip(self.culling_bounds)
+                        .is_some_and(|(origin, bounds)| !contains_origin(bounds, origin)))
+            {
+                continue;
             }
-            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
-            Some(PreparedDraw {
-                view_depth: (center - camera.eye).dot(view_direction),
-                ..draw.clone()
-            })
-        }));
-        self.draws.sort_by(|left, right| {
-            let left_blended = left.material.alpha_mode == crate::AlphaMode::Blend;
-            let right_blended = right.material.alpha_mode == crate::AlphaMode::Blend;
-            match (left_blended, right_blended) {
-                (false, true) => Ordering::Less,
-                (true, false) => Ordering::Greater,
-                (true, true) => right.view_depth.total_cmp(&left.view_depth),
-                (false, false) => left
-                    .material
-                    .id()
-                    .cmp(&right.material.id())
-                    .then_with(|| left.mesh.id().cmp(&right.mesh.id())),
+            for index in group.start..group.end {
+                if self.gpu_culling || visible(self.candidates[index].bounds, &planes) {
+                    self.next_visible_candidates.push(index);
+                }
             }
-        });
+        }
+        if self.next_visible_candidates == self.visible_candidates
+            && self.draws.len() == self.visible_candidates.len()
+        {
+            for draw in &mut self.draws {
+                if self.gpu_culling && draw.material.alpha_mode != AlphaMode::Blend {
+                    continue;
+                }
+                let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+                draw.view_depth = (center - camera.eye).dot(view_direction);
+            }
+            let blended_start = self
+                .draws
+                .partition_point(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend);
+            self.draws[blended_start..]
+                .sort_by(|left, right| right.view_depth.total_cmp(&left.view_depth));
+        } else {
+            self.draws.clear();
+            self.draws
+                .extend(self.next_visible_candidates.iter().map(|&index| {
+                    let draw = &self.candidates[index];
+                    let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+                    PreparedDraw {
+                        view_depth: (center - camera.eye).dot(view_direction),
+                        ..draw.clone()
+                    }
+                }));
+            let gpu_culling = self.gpu_culling;
+            self.draws.sort_by(|left, right| {
+                let left_blended = left.material.alpha_mode == crate::AlphaMode::Blend;
+                let right_blended = right.material.alpha_mode == crate::AlphaMode::Blend;
+                match (left_blended, right_blended) {
+                    (false, true) => Ordering::Less,
+                    (true, false) => Ordering::Greater,
+                    (true, true) => right.view_depth.total_cmp(&left.view_depth),
+                    // GPU batching sorts opaque draws by its resident page and material
+                    // key later; sorting them here by a different key only repeats work.
+                    (false, false) if gpu_culling => Ordering::Equal,
+                    (false, false) => left
+                        .material
+                        .id()
+                        .cmp(&right.material.id())
+                        .then_with(|| left.mesh.id().cmp(&right.mesh.id())),
+                }
+            });
+            std::mem::swap(
+                &mut self.visible_candidates,
+                &mut self.next_visible_candidates,
+            );
+        }
         self.view_projection = view_projection;
         self.camera = Some(camera);
         self.aspect = Some(aspect);
+        self.gpu_candidates_dirty = false;
         Ok(())
+    }
+
+    fn sort_blended_draws(&mut self, camera: Camera, direction: Vec3) {
+        let start = self
+            .draws
+            .partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
+        for draw in &mut self.draws[start..] {
+            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+            draw.view_depth = (center - camera.eye).dot(direction);
+        }
+        let draws = &mut self.draws[start..];
+        self.blend_order.clear();
+        self.blend_order.extend(0..draws.len());
+        // Small camera changes often preserve depth order. Keep the identity
+        // mapping without sorting or touching the draw permutation workspace.
+        if draws
+            .windows(2)
+            .all(|pair| pair[0].view_depth.total_cmp(&pair[1].view_depth) != Ordering::Less)
+        {
+            return;
+        }
+        self.blend_order.sort_unstable_by(|&left, &right| {
+            draws[right]
+                .view_depth
+                .total_cmp(&draws[left].view_depth)
+                .then(left.cmp(&right))
+        });
+        apply_order(draws, &self.blend_order, &mut self.blend_positions);
     }
 
     /// Releases retained traversal and output capacity after a large scene is no longer needed.
@@ -404,7 +581,21 @@ impl PreparedScene {
         self.draws.shrink_to_fit();
         self.lights.shrink_to_fit();
         self.walk_stack.shrink_to_fit();
+        self.candidate_groups.shrink_to_fit();
+        self.visible_candidates.shrink_to_fit();
+        self.next_visible_candidates.shrink_to_fit();
+        self.blend_order.shrink_to_fit();
+        self.blend_positions.shrink_to_fit();
     }
+}
+
+fn contains_origin(bounds: Aabb, origin: Vec3) -> bool {
+    origin.x >= bounds.min.x
+        && origin.x < bounds.max.x
+        && origin.y >= bounds.min.y
+        && origin.y < bounds.max.y
+        && origin.z >= bounds.min.z
+        && origin.z < bounds.max.z
 }
 
 #[derive(Clone, Copy)]
@@ -584,6 +775,156 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn gpu_camera_retains_candidates_and_refreshes_changed_culling_bounds() {
+        let mut scene = Scene::new();
+        for x in [0.0, 100.0] {
+            let origin = Vec3::new(x, 0.0, -3.0);
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh())
+                        .with_culling_origin()
+                        .with_transform(Transform {
+                            translation: origin,
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let camera = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.0, 0.1, 200.0);
+        let mut prepared = PreparedScene::default();
+        prepared.set_gpu_culling(true);
+        prepared.update(&scene, camera, 1.0).unwrap();
+        assert_eq!(
+            prepared.draws.len(),
+            2,
+            "GPU culling must retain offscreen candidates"
+        );
+        assert_eq!(
+            prepared
+                .draws
+                .iter()
+                .filter(|draw| prepared.is_bounds_visible(draw.bounds))
+                .count(),
+            1,
+            "direct indexed fallbacks still need a valid CPU frustum test"
+        );
+        let nodes = prepared
+            .draws
+            .iter()
+            .map(|draw| draw.node)
+            .collect::<Vec<_>>();
+        let turned = Camera::perspective(Vec3::ZERO, Vec3::Z, Vec3::Y, 1.0, 0.1, 200.0);
+        prepared.update_camera(turned, 1.0).unwrap();
+        assert!(
+            prepared
+                .draws
+                .iter()
+                .all(|draw| !prepared.is_bounds_visible(draw.bounds))
+        );
+        assert_eq!(
+            prepared
+                .draws
+                .iter()
+                .map(|draw| draw.node)
+                .collect::<Vec<_>>(),
+            nodes
+        );
+        prepared.set_culling_bounds(Aabb::new(
+            Vec3::new(-16.0, -16.0, -16.0),
+            Vec3::new(16.0, 16.0, 16.0),
+        ));
+        prepared.update_camera(turned, 1.0).unwrap();
+        assert_eq!(
+            prepared.draws.len(),
+            2,
+            "GPU range changes must preserve resident candidates"
+        );
+        assert_eq!(
+            prepared
+                .draws
+                .iter()
+                .filter(|draw| prepared.is_draw_in_culling_bounds(draw))
+                .count(),
+            1
+        );
+        prepared.set_gpu_culling(false);
+        prepared.update_camera(camera, 1.0).unwrap();
+        assert_eq!(
+            prepared.draws.len(),
+            1,
+            "CPU fallback must restore normal frustum culling"
+        );
+        prepared.set_culling_bounds(None);
+        prepared.update_camera(turned, 1.0).unwrap();
+        assert!(prepared.draws.is_empty());
+    }
+
+    #[test]
+    fn gpu_blend_permutation_replays_camera_order_and_keeps_equal_depth_stable() {
+        let mut scene = Scene::new();
+        let mut material = Material::new();
+        material.alpha_mode = AlphaMode::Blend;
+        let material = Arc::new(material);
+        scene.insert(None, Node::new().with_mesh(mesh())).unwrap();
+        for z in [-2.0, -4.0, -4.0, -6.0] {
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh())
+                        .with_materials([material.clone()])
+                        .with_transform(Transform {
+                            translation: Vec3::new(0.0, 0.0, z),
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let front = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.0, 0.1, 100.0);
+        let back = Camera::perspective(Vec3::ZERO, Vec3::Z, Vec3::Y, 1.0, 0.1, 100.0);
+        let mut prepared = PreparedScene::default();
+        prepared.set_gpu_culling(true);
+        prepared.update(&scene, front, 1.0).unwrap();
+        prepared
+            .update_camera(
+                Camera {
+                    target: Vec3::new(0.01, 0.0, -1.0),
+                    ..front
+                },
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(prepared.blended_order(), [0, 1, 2, 3]);
+        assert!(prepared.blend_positions.is_empty());
+        let opaque = prepared.draws[0].node;
+        let mut positions = Vec::new();
+        for camera in [back, front, front] {
+            let mut previous = prepared.draws[1..]
+                .iter()
+                .map(|draw| draw.node)
+                .collect::<Vec<_>>();
+            prepared.update_camera(camera, 1.0).unwrap();
+            assert_eq!(prepared.draws[0].node, opaque);
+            apply_order(&mut previous, prepared.blended_order(), &mut positions);
+            assert_eq!(
+                previous,
+                prepared.draws[1..]
+                    .iter()
+                    .map(|draw| draw.node)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                prepared.draws[1..]
+                    .windows(2)
+                    .all(|pair| pair[0].view_depth >= pair[1].view_depth)
+            );
+        }
+        assert_eq!(prepared.blended_order(), [0, 1, 2, 3]);
     }
 
     #[test]
@@ -822,6 +1163,60 @@ mod tests {
     }
 
     #[test]
+    fn gpu_preparation_preserves_opaque_order_and_sorts_blended_depth() {
+        let low = Arc::new(Material::new());
+        let high = Arc::new(Material::new());
+        let mut transparent = Material::new();
+        transparent.alpha_mode = AlphaMode::Blend;
+        let transparent = Arc::new(transparent);
+        let mut scene = Scene::new();
+        for (material, z) in [
+            (low.clone(), -4.0),
+            (high.clone(), -5.0),
+            (transparent.clone(), -6.0),
+            (transparent, -9.0),
+        ] {
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh())
+                        .with_materials([material])
+                        .with_transform(Transform {
+                            translation: Vec3::new(0.0, 0.0, z),
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let camera = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.0, 0.1, 100.0);
+        let mut prepared = PreparedScene::default();
+        prepared.set_gpu_culling(true);
+        prepared.update(&scene, camera, 1.0).unwrap();
+        assert_eq!(
+            prepared
+                .draws
+                .iter()
+                .map(|draw| draw.material.id())
+                .take(2)
+                .collect::<Vec<_>>(),
+            [high.id(), low.id()]
+        );
+        assert!(prepared.draws[2].view_depth > prepared.draws[3].view_depth);
+        prepared.set_gpu_culling(false);
+        prepared.update(&scene, camera, 1.0).unwrap();
+        assert_eq!(
+            prepared
+                .draws
+                .iter()
+                .map(|draw| draw.material.id())
+                .take(2)
+                .collect::<Vec<_>>(),
+            [low.id(), high.id()]
+        );
+    }
+
+    #[test]
     fn sorts_blended_draws_by_camera_depth() {
         let mut material = Material::new();
         material.alpha_mode = crate::AlphaMode::Blend;
@@ -860,6 +1255,123 @@ mod tests {
         assert!((prepared.draws[0].view_depth - 12.0).abs() < f32::EPSILON);
         assert_eq!(prepared.draws[1].node, nearer_but_laterally_far);
         assert!((prepared.draws[1].view_depth - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn camera_update_reuses_visible_draws_and_resorts_blended_depth() {
+        let mut material = Material::new();
+        material.alpha_mode = AlphaMode::Blend;
+        let material = Arc::new(material);
+        let mut scene = Scene::new();
+        for x in [-2.0, 2.0] {
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh())
+                        .with_materials([material.clone()])
+                        .with_transform(Transform {
+                            translation: Vec3::new(x, 0.0, -10.0),
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let left_camera = Camera::perspective(
+            Vec3::ZERO,
+            Vec3::new(-1.0, 0.0, -10.0),
+            Vec3::Y,
+            1.5,
+            0.1,
+            100.0,
+        );
+        let right_camera = Camera::perspective(
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, -10.0),
+            Vec3::Y,
+            1.5,
+            0.1,
+            100.0,
+        );
+        let mut prepared = PreparedScene::new(&scene, left_camera, 2.0).unwrap();
+        let before = prepared
+            .draws
+            .iter()
+            .map(|draw| draw.node)
+            .collect::<Vec<_>>();
+        assert_eq!(prepared.visible_candidates.len(), 2);
+        assert!(prepared.update_camera(right_camera, 2.0).unwrap());
+        let after = prepared
+            .draws
+            .iter()
+            .map(|draw| draw.node)
+            .collect::<Vec<_>>();
+        assert_eq!(after, before.into_iter().rev().collect::<Vec<_>>());
+        let rebuilt = PreparedScene::new(&scene, right_camera, 2.0).unwrap();
+        assert_eq!(
+            after,
+            rebuilt
+                .draws
+                .iter()
+                .map(|draw| draw.node)
+                .collect::<Vec<_>>()
+        );
+        prepared.draws.clear();
+        assert!(prepared.update_camera(right_camera, 2.0).unwrap());
+        assert_eq!(prepared.draws.len(), 2);
+    }
+
+    #[test]
+    fn changing_culling_bounds_reculls_retained_scene() {
+        let mut scene = Scene::new();
+        let mut nodes = Vec::new();
+        for x in [-2.0, 2.0] {
+            nodes.push(
+                scene
+                    .insert(
+                        None,
+                        Node::new()
+                            .with_mesh(mesh())
+                            .with_culling_origin()
+                            .with_transform(Transform {
+                                translation: Vec3::new(x, 0.0, -10.0),
+                                ..Transform::IDENTITY
+                            }),
+                    )
+                    .unwrap(),
+            );
+        }
+        let unbounded = scene
+            .insert(
+                None,
+                Node::new().with_mesh(mesh()).with_transform(Transform {
+                    translation: Vec3::new(0.0, 0.0, -10.0),
+                    ..Transform::IDENTITY
+                }),
+            )
+            .unwrap();
+        let camera = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.5, 0.1, 100.0);
+        let mut prepared = PreparedScene::new(&scene, camera, 2.0).unwrap();
+        assert_eq!(prepared.draws.len(), 3);
+        let left_bounds =
+            Aabb::new(Vec3::new(-4.0, -2.0, -12.0), Vec3::new(0.0, 2.0, -8.0)).unwrap();
+        assert!(contains_origin(left_bounds, Vec3::new(-4.0, 0.0, -10.0)));
+        assert!(!contains_origin(left_bounds, Vec3::new(0.0, 0.0, -10.0)));
+        prepared.set_culling_bounds(Some(left_bounds));
+        prepared.update_camera(camera, 2.0).unwrap();
+        assert_eq!(prepared.draws.len(), 2);
+        assert!(prepared.draws.iter().any(|draw| draw.node == nodes[0]));
+        assert!(prepared.draws.iter().any(|draw| draw.node == unbounded));
+        prepared.set_culling_bounds(Some(
+            Aabb::new(Vec3::new(0.0, -2.0, -12.0), Vec3::new(4.0, 2.0, -8.0)).unwrap(),
+        ));
+        prepared.update_camera(camera, 2.0).unwrap();
+        assert_eq!(prepared.draws.len(), 2);
+        assert!(prepared.draws.iter().any(|draw| draw.node == nodes[1]));
+        assert!(prepared.draws.iter().any(|draw| draw.node == unbounded));
+        prepared.set_culling_bounds(None);
+        prepared.update_camera(camera, 2.0).unwrap();
+        assert_eq!(prepared.draws.len(), 3);
     }
 
     #[test]

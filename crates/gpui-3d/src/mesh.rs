@@ -2,6 +2,7 @@ use crate::{Aabb, Vec2, Vec3};
 use std::{
     fmt,
     sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, OnceLock},
 };
 
 mod tangents;
@@ -77,6 +78,8 @@ pub enum MeshError {
     IncompleteTriangles,
     /// A vertex contains a non-finite attribute.
     NonFiniteVertex,
+    /// A compact voxel vertex color is outside the zero-to-one range.
+    InvalidVoxelColor,
     /// An index addresses a missing vertex.
     IndexOutOfBounds,
     /// Parts do not form contiguous, triangle-aligned coverage of the index buffer.
@@ -100,6 +103,9 @@ impl fmt::Display for MeshError {
             Self::VertexCountMismatch => "updated mesh vertex count does not match the source mesh",
             Self::IncompleteTriangles => "index count is not a multiple of three",
             Self::NonFiniteVertex => "vertex contains a non-finite attribute",
+            Self::InvalidVoxelColor => {
+                "compact voxel vertex color is outside the zero-to-one range"
+            }
             Self::IndexOutOfBounds => "mesh index refers to a missing vertex",
             Self::InvalidParts => "mesh parts do not cover the index buffer with triangle ranges",
             Self::InvalidTriangleEdgeMasks => {
@@ -124,18 +130,25 @@ impl std::error::Error for MeshError {}
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Mesh {
+    gpu_voxels: Option<Arc<crate::VoxelMeshSource>>,
     id: MeshId,
     generation: u64,
     vertices: Box<[Vertex]>,
+    voxel_vertices: Option<Box<[[u8; 27]]>>,
+    decoded_vertices: OnceLock<Box<[Vertex]>>,
     tangents: Option<Box<[[f32; 4]]>>,
     indices: Box<[u32]>,
+    voxel_quad_count: Option<usize>,
+    decoded_indices: OnceLock<Box<[u32]>>,
     edge_masks: Option<Box<[TriangleEdgeMask]>>,
     parts: Box<[MeshPart]>,
     part_bounds: Box<[Aabb]>,
     bounds: Option<Aabb>,
     bvh: Box<[BvhNode]>,
     triangle_order: Box<[u32]>,
+    raycast_enabled: bool,
     uses_uv: bool,
+    unorm_colors: bool,
 }
 
 /// A contiguous triangle range using one scene-node material slot.
@@ -199,6 +212,32 @@ impl BvhNode {
 }
 
 impl Mesh {
+    /// Defers voxel face visibility and mesh generation to the scene-view GPU path.
+    /// Unsupported render paths lazily materialize equivalent padded CPU geometry.
+    pub fn from_gpu_voxels(source: crate::VoxelMeshSource) -> Self {
+        let mut mesh = Self::from_voxel_quads_without_raycast(std::iter::empty(), vec![])
+            .expect("empty compact mesh is valid");
+        mesh.parts = source.parts.clone();
+        mesh.part_bounds = source
+            .parts
+            .iter()
+            .map(|part| source.part_bounds(part.material_slot()))
+            .collect();
+        mesh.bounds = Some(source.bounds);
+        mesh.voxel_quad_count = Some(source.capacity());
+        mesh.voxel_vertices = None;
+        mesh.uses_uv = source
+            .templates
+            .iter()
+            .flat_map(|face| &face.vertices)
+            .any(|vertex| vertex.uv.x != 0.0 || vertex.uv.y != 0.0);
+        mesh.gpu_voxels = Some(Arc::new(source));
+        mesh
+    }
+
+    pub(crate) fn gpu_voxels(&self) -> Option<&Arc<crate::VoxelMeshSource>> {
+        self.gpu_voxels.as_ref()
+    }
     /// Creates a unit cube centered at the origin with face normals and UVs.
     #[must_use]
     pub fn cube() -> Self {
@@ -552,9 +591,136 @@ impl Mesh {
         indices: impl Into<Box<[u32]>>,
         parts: impl Into<Box<[MeshPart]>>,
     ) -> Result<Self, MeshError> {
-        let vertices = vertices.into();
-        let indices = indices.into();
+        Self::with_parts_impl(vertices.into(), indices.into(), parts.into(), true)
+    }
+
+    /// Creates renderable geometry without building a CPU triangle raycast index.
+    ///
+    /// Use this for geometry queried through a separate spatial index. Scene raycasts skip this
+    /// mesh, while its bounds and material parts remain available for culling and rendering.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Mesh::with_parts`].
+    pub fn with_parts_without_raycast(
+        vertices: impl Into<Box<[Vertex]>>,
+        indices: impl Into<Box<[u32]>>,
+        parts: impl Into<Box<[MeshPart]>>,
+    ) -> Result<Self, MeshError> {
+        Self::with_parts_impl(vertices.into(), indices.into(), parts.into(), false)
+    }
+
+    /// Builds compact voxel geometry directly from ordered quads without allocating a temporary
+    /// index buffer or full vertex array. Each part covers complete quads in the input order.
+    /// Scene raycasts skip this mesh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeshError`] when parts do not cover the quads, the mesh exceeds the draw range,
+    /// or a vertex is non-finite or has a color outside the representable zero-to-one range.
+    pub fn from_voxel_quads_without_raycast(
+        quads: impl IntoIterator<Item = [Vertex; 4]>,
+        parts: impl Into<Box<[MeshPart]>>,
+    ) -> Result<Self, MeshError> {
         let parts = parts.into();
+        let mut index_count = 0_u32;
+        for part in &parts {
+            if part.first_index != index_count || part.index_count == 0 || part.index_count % 6 != 0
+            {
+                return Err(MeshError::InvalidParts);
+            }
+            index_count = index_count
+                .checked_add(part.index_count)
+                .ok_or(MeshError::TooLarge)?;
+        }
+        let quad_count = usize::try_from(index_count / 6).map_err(|_| MeshError::TooLarge)?;
+        let vertex_count = quad_count.checked_mul(4).ok_or(MeshError::TooLarge)?;
+        if u32::try_from(vertex_count).is_err() {
+            return Err(MeshError::TooLarge);
+        }
+        let mut packed = Vec::with_capacity(vertex_count);
+        let mut part_bounds = vec![None::<Aabb>; parts.len()];
+        let mut bounds = None::<Aabb>;
+        let mut uses_uv = false;
+        let mut part_index = 0;
+        for (quad_index, quad) in quads.into_iter().enumerate() {
+            if quad_index >= quad_count {
+                return Err(MeshError::InvalidParts);
+            }
+            while quad_index
+                >= (parts[part_index].first_index + parts[part_index].index_count) as usize / 6
+            {
+                part_index += 1;
+            }
+            let mut quad_bounds = None::<Aabb>;
+            for vertex in quad {
+                if !vertex.position.is_finite()
+                    || !vertex.normal.is_finite()
+                    || !vertex.uv.x.is_finite()
+                    || !vertex.uv.y.is_finite()
+                    || vertex.color.iter().any(|value| !value.is_finite())
+                {
+                    return Err(MeshError::NonFiniteVertex);
+                }
+                if vertex
+                    .color
+                    .iter()
+                    .any(|value| !(0.0..=1.0).contains(value))
+                {
+                    return Err(MeshError::InvalidVoxelColor);
+                }
+                uses_uv |= vertex.uv.x != 0.0 || vertex.uv.y != 0.0;
+                let point = Aabb {
+                    min: vertex.position,
+                    max: vertex.position,
+                };
+                quad_bounds =
+                    Some(quad_bounds.map_or(point, |current| union_bounds(current, point)));
+                packed.push(encode_compact_voxel_vertex(&vertex));
+            }
+            let quad_bounds = quad_bounds.ok_or(MeshError::InvalidParts)?;
+            part_bounds[part_index] = Some(
+                part_bounds[part_index]
+                    .map_or(quad_bounds, |current| union_bounds(current, quad_bounds)),
+            );
+            bounds = Some(bounds.map_or(quad_bounds, |current| union_bounds(current, quad_bounds)));
+        }
+        if packed.len() != vertex_count {
+            return Err(MeshError::InvalidParts);
+        }
+        let part_bounds = part_bounds
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(MeshError::InvalidParts)?;
+        Ok(Self {
+            gpu_voxels: None,
+            id: MeshId(NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed)),
+            generation: 0,
+            vertices: Box::new([]),
+            voxel_vertices: Some(packed.into_boxed_slice()),
+            decoded_vertices: OnceLock::new(),
+            tangents: None,
+            indices: Box::new([]),
+            voxel_quad_count: Some(quad_count),
+            decoded_indices: OnceLock::new(),
+            edge_masks: None,
+            parts,
+            part_bounds: part_bounds.into_boxed_slice(),
+            bounds,
+            bvh: Box::new([]),
+            triangle_order: Box::new([]),
+            raycast_enabled: false,
+            uses_uv,
+            unorm_colors: true,
+        })
+    }
+
+    fn with_parts_impl(
+        vertices: Box<[Vertex]>,
+        indices: Box<[u32]>,
+        parts: Box<[MeshPart]>,
+        raycast_enabled: bool,
+    ) -> Result<Self, MeshError> {
         if u32::try_from(vertices.len()).is_err() || u32::try_from(indices.len()).is_err() {
             return Err(MeshError::TooLarge);
         }
@@ -618,37 +784,181 @@ impl Mesh {
                         },
                     })
                 });
-        let mut triangle_order = Vec::with_capacity(indices.len() / 3);
-        for triangle in 0..indices.len() / 3 {
-            triangle_order.push(u32::try_from(triangle).map_err(|_| MeshError::TooLarge)?);
-        }
+        let mut triangle_order = Vec::new();
         let mut bvh = Vec::new();
+        if raycast_enabled {
+            triangle_order.reserve(indices.len() / 3);
+            for triangle in 0..indices.len() / 3 {
+                triangle_order.push(u32::try_from(triangle).map_err(|_| MeshError::TooLarge)?);
+            }
+        }
         if !triangle_order.is_empty() {
             build_bvh(&vertices, &indices, &mut triangle_order, 0, &mut bvh)?;
         }
         let uses_uv = mesh_uses_uv_regions(&vertices);
+        let unorm_colors = vertices.iter().all(|vertex| {
+            vertex
+                .color
+                .iter()
+                .all(|channel| (0.0..=1.0).contains(channel))
+        });
 
         Ok(Self {
+            gpu_voxels: None,
             id: MeshId(NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed)),
             generation: 0,
             vertices,
+            voxel_vertices: None,
+            decoded_vertices: OnceLock::new(),
             tangents: None,
             indices,
+            voxel_quad_count: None,
+            decoded_indices: OnceLock::new(),
             edge_masks: None,
             parts,
             part_bounds: part_bounds.into_boxed_slice(),
             bounds,
             bvh: bvh.into_boxed_slice(),
             triangle_order: triangle_order.into_boxed_slice(),
+            raycast_enabled,
             uses_uv,
+            unorm_colors,
         })
+    }
+
+    /// Packs unlit quad geometry for long-lived voxel scenes.
+    ///
+    /// Vertex colors use the same 8-bit conversion as the voxel GPU shader. Normals are quantized
+    /// to signed 8-bit values; the voxel shader does not read them. Meshes that do not match the
+    /// quad index pattern retain their original representation.
+    #[must_use]
+    pub fn compact_voxel(mut self) -> Self {
+        if self.raycast_enabled
+            || self.tangents.is_some()
+            || self.edge_masks.is_some()
+            || !self.unorm_colors
+            || self.vertices.is_empty()
+            || self.vertices.len() % 4 != 0
+            || self.indices.len() != self.vertices.len() / 4 * 6
+        {
+            return self;
+        }
+        for (quad, indices) in self.indices.chunks_exact(6).enumerate() {
+            let Ok(base) = u32::try_from(quad * 4) else {
+                return self;
+            };
+            if indices != [base, base + 1, base + 2, base, base + 2, base + 3] {
+                return self;
+            }
+        }
+        let mut packed = Vec::with_capacity(self.vertices.len());
+        for vertex in &self.vertices {
+            packed.push(encode_compact_voxel_vertex(vertex));
+        }
+        self.voxel_quad_count = Some(self.vertices.len() / 4);
+        self.voxel_vertices = Some(packed.into_boxed_slice());
+        self.vertices = Box::new([]);
+        self.indices = Box::new([]);
+        self
+    }
+
+    fn expand_compact(&mut self) {
+        if self.voxel_vertices.is_none() && self.gpu_voxels.is_none() {
+            return;
+        }
+        self.vertices = self.vertices().to_vec().into_boxed_slice();
+        self.indices = self.indices().to_vec().into_boxed_slice();
+        self.gpu_voxels = None;
+        self.voxel_vertices = None;
+        self.voxel_quad_count = None;
+        self.decoded_vertices = OnceLock::new();
+        self.decoded_indices = OnceLock::new();
+    }
+
+    /// Number of vertices without expanding compact voxel storage.
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        if let Some(source) = &self.gpu_voxels {
+            return source.capacity() * 4;
+        }
+        self.voxel_vertices
+            .as_ref()
+            .map_or(self.vertices.len(), |vertices| vertices.len())
+    }
+
+    /// Number of triangle indices without expanding compact voxel storage.
+    #[must_use]
+    pub fn index_count(&self) -> usize {
+        self.voxel_quad_count
+            .map_or(self.indices.len(), |quads| quads * 6)
+    }
+
+    /// Bytes retained for vertices and indices, including any expanded compact snapshot.
+    #[must_use]
+    pub fn geometry_storage_bytes(&self) -> usize {
+        self.gpu_voxels
+            .as_ref()
+            .map_or(0, |source| source.storage_bytes())
+            + self.vertices.len() * std::mem::size_of::<Vertex>()
+            + self.indices.len() * std::mem::size_of::<u32>()
+            + self
+                .voxel_vertices
+                .as_ref()
+                .map_or(0, |vertices| vertices.len() * 27)
+            + self
+                .decoded_vertices
+                .get()
+                .map_or(0, |vertices| vertices.len() * std::mem::size_of::<Vertex>())
+            + self
+                .decoded_indices
+                .get()
+                .map_or(0, |indices| indices.len() * std::mem::size_of::<u32>())
+    }
+
+    /// Compares two procedural voxel-quad meshes by their exact packed vertices and parts.
+    /// Returns false for other mesh representations, even if they happen to draw similarly.
+    #[must_use]
+    pub fn same_voxel_quad_geometry(&self, other: &Self) -> bool {
+        if self.gpu_voxels.is_some() || other.gpu_voxels.is_some() {
+            return self
+                .gpu_voxels
+                .as_ref()
+                .zip(other.gpu_voxels.as_ref())
+                .is_some_and(|(a, b)| {
+                    Arc::ptr_eq(a, b)
+                        || (a.size == b.size
+                            && a.origin == b.origin
+                            && a.clip_y == b.clip_y
+                            && a.model_faces == b.model_faces
+                            && a.static_start == b.static_start
+                            && a.instances == b.instances
+                            && a.cells == b.cells
+                            && a.templates == b.templates)
+                });
+        }
+        self.voxel_quad_count.is_some()
+            && self.voxel_quad_count == other.voxel_quad_count
+            && self.voxel_vertices == other.voxel_vertices
+            && self.parts == other.parts
+    }
+
+    pub(crate) fn compact_voxel_vertices(&self) -> Option<&[[u8; 27]]> {
+        if let Some(source) = &self.gpu_voxels {
+            return source.fallback().compact_voxel_vertices();
+        }
+        self.voxel_vertices.as_deref()
+    }
+
+    pub(crate) fn compact_voxel_quad_count(&self) -> Option<usize> {
+        self.voxel_quad_count
     }
 
     /// Returns a new immutable snapshot with updated vertex attributes and unchanged topology.
     ///
     /// The vertex count must remain fixed. Indices, material parts, and triangle edge masks are
-    /// preserved; mesh and part bounds plus the ray-query BVH are rebuilt. Tangent frames are
-    /// cleared because changed positions, normals, or texture coordinates can invalidate them.
+    /// preserved; mesh and part bounds are rebuilt, along with the ray-query BVH when enabled.
+    /// Tangent frames are cleared because changed positions, normals, or texture coordinates can
+    /// invalidate them.
     /// The returned mesh receives a fresh render-resource identity, so existing snapshots remain
     /// usable and the renderer uploads the new geometry as a whole.
     ///
@@ -658,11 +968,16 @@ impl Mesh {
     /// [`MeshError::NonFiniteVertex`] when an updated attribute is not finite.
     pub fn with_vertices(&self, vertices: impl Into<Box<[Vertex]>>) -> Result<Self, MeshError> {
         let vertices = vertices.into();
-        if vertices.len() != self.vertices.len() {
+        if vertices.len() != self.vertex_count() {
             return Err(MeshError::VertexCountMismatch);
         }
 
-        let mut mesh = Self::with_parts(vertices, self.indices.clone(), self.parts.clone())?;
+        let mut mesh = Self::with_parts_impl(
+            vertices,
+            self.indices().to_vec().into_boxed_slice(),
+            self.parts.clone(),
+            self.raycast_enabled,
+        )?;
         mesh.edge_masks.clone_from(&self.edge_masks);
         Ok(mesh)
     }
@@ -694,7 +1009,7 @@ impl Mesh {
     /// scene view binds an albedo asset.
     #[must_use]
     pub fn with_uv_regions(mut self, uses_uv: bool) -> Self {
-        self.uses_uv = uses_uv && mesh_uses_uv_regions(&self.vertices);
+        self.uses_uv = uses_uv && mesh_uses_uv_regions(self.vertices());
         self
     }
 
@@ -702,6 +1017,10 @@ impl Mesh {
     #[must_use]
     pub const fn uses_uv_regions(&self) -> bool {
         self.uses_uv
+    }
+
+    pub(crate) const fn has_unorm_colors(&self) -> bool {
+        self.unorm_colors
     }
 
     /// Replaces vertex normals with area-weighted normals from the indexed triangles.
@@ -716,6 +1035,7 @@ impl Mesh {
     /// Returns [`MeshError::InvalidGeneratedNormals`] when a triangle has zero, negligible, or
     /// non-finite area, or a vertex has no usable accumulated normal.
     pub fn generate_normals(mut self) -> Result<Self, MeshError> {
+        self.expand_compact();
         if self.indices.is_empty() {
             return Ok(self);
         }
@@ -764,9 +1084,10 @@ impl Mesh {
         masks: impl Into<Box<[TriangleEdgeMask]>>,
     ) -> Result<Self, MeshError> {
         let masks = masks.into();
-        if masks.len() != self.indices.len() / 3 {
+        if masks.len() != self.index_count() / 3 {
             return Err(MeshError::InvalidTriangleEdgeMasks);
         }
+        self.expand_compact();
         self.id = MeshId(NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed));
         self.generation = 0;
         self.edge_masks = Some(masks);
@@ -775,7 +1096,37 @@ impl Mesh {
 
     /// Vertices in mesh-local coordinates.
     pub fn vertices(&self) -> &[Vertex] {
-        &self.vertices
+        if let Some(source) = &self.gpu_voxels {
+            return source.fallback().vertices();
+        }
+        if let Some(packed) = &self.voxel_vertices {
+            self.decoded_vertices.get_or_init(|| {
+                packed
+                    .iter()
+                    .map(|bytes| Vertex {
+                        position: Vec3::new(
+                            f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+                            f32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+                            f32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+                        ),
+                        normal: Vec3::new(
+                            f32::from(bytes[24] as i8) / 127.0,
+                            f32::from(bytes[25] as i8) / 127.0,
+                            f32::from(bytes[26] as i8) / 127.0,
+                        ),
+                        uv: Vec2::new(
+                            f32::from_ne_bytes(bytes[16..20].try_into().unwrap()),
+                            f32::from_ne_bytes(bytes[20..24].try_into().unwrap()),
+                        ),
+                        color: [bytes[12], bytes[13], bytes[14], bytes[15]]
+                            .map(|channel| f32::from(channel) / 255.0),
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+        } else {
+            &self.vertices
+        }
     }
 
     /// Returns tangent frames aligned with [`Mesh::vertices`], when present.
@@ -791,7 +1142,21 @@ impl Mesh {
 
     /// Triangle indices.
     pub fn indices(&self) -> &[u32] {
-        &self.indices
+        if let Some(source) = &self.gpu_voxels {
+            return source.fallback().indices();
+        }
+        if let Some(quads) = self.voxel_quad_count {
+            self.decoded_indices.get_or_init(|| {
+                let mut indices = Vec::with_capacity(quads * 6);
+                for quad in 0..quads {
+                    let base = (quad * 4) as u32;
+                    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+                indices.into_boxed_slice()
+            })
+        } else {
+            &self.indices
+        }
     }
 
     /// Per-triangle edge coverage masks in index-buffer order, when enabled.
@@ -1052,6 +1417,25 @@ fn triangle_bounds(vertices: &[Vertex], indices: &[u32], triangle: u32) -> Aabb 
     }
 }
 
+fn encode_compact_voxel_vertex(vertex: &Vertex) -> [u8; 27] {
+    let normal = [vertex.normal.x, vertex.normal.y, vertex.normal.z]
+        .map(|source| (source.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+    let mut bytes = [0u8; 27];
+    for (index, value) in [vertex.position.x, vertex.position.y, vertex.position.z]
+        .into_iter()
+        .enumerate()
+    {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    for (index, channel) in vertex.color.iter().enumerate() {
+        bytes[12 + index] = (*channel * 255.0).round() as u8;
+    }
+    bytes[16..20].copy_from_slice(&vertex.uv.x.to_ne_bytes());
+    bytes[20..24].copy_from_slice(&vertex.uv.y.to_ne_bytes());
+    bytes[24..27].copy_from_slice(&normal);
+    bytes
+}
+
 fn range_bounds(vertices: &[Vertex], indices: &[u32], first_index: u32, index_count: u32) -> Aabb {
     let first = usize::try_from(first_index).expect("validated mesh part start fits usize");
     let end = first + usize::try_from(index_count).expect("validated mesh part count fits usize");
@@ -1097,6 +1481,127 @@ mod tests {
     }
 
     #[test]
+    fn compact_voxel_quads_keep_bounds_and_reconstruct_topology_on_demand() {
+        let source = Mesh::with_parts_without_raycast(
+            [
+                vertex(Vec3::ZERO),
+                vertex(Vec3::X),
+                vertex(Vec3::new(1.0, 0.0, 1.0)),
+                vertex(Vec3::Z),
+            ],
+            [0, 1, 2, 0, 2, 3],
+            [MeshPart::new(0, 6, 0)],
+        )
+        .unwrap();
+        let compact = source.clone().compact_voxel();
+        assert_eq!(compact.geometry_storage_bytes(), 4 * 27);
+        assert_eq!(compact.vertex_count(), 4);
+        assert_eq!(compact.index_count(), 6);
+        assert_eq!(compact.bounds(), source.bounds());
+        assert!(compact.decoded_vertices.get().is_none());
+        assert!(compact.decoded_indices.get().is_none());
+        assert_eq!(compact.indices(), source.indices());
+        assert_eq!(compact.vertices(), source.vertices());
+    }
+
+    #[test]
+    fn direct_voxel_quads_match_compacted_indexed_mesh() {
+        let first = [
+            vertex(Vec3::ZERO),
+            vertex(Vec3::X),
+            vertex(Vec3::new(1.0, 0.0, 1.0)),
+            vertex(Vec3::Z),
+        ];
+        let second = first.map(|mut vertex| {
+            vertex.position.y = 2.0;
+            vertex.uv = Vec2::new(0.5, 0.75);
+            vertex.color = [0.25, 0.5, 0.75, 1.0];
+            vertex
+        });
+        let parts = [MeshPart::new(0, 6, 0), MeshPart::new(6, 6, 1)];
+        let indexed = Mesh::with_parts_without_raycast(
+            first.into_iter().chain(second).collect::<Vec<_>>(),
+            [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+            parts,
+        )
+        .unwrap()
+        .compact_voxel();
+        let direct = Mesh::from_voxel_quads_without_raycast([first, second], parts).unwrap();
+        assert_eq!(
+            direct.compact_voxel_vertices(),
+            indexed.compact_voxel_vertices()
+        );
+        assert_eq!(direct.indices(), indexed.indices());
+        assert_eq!(direct.parts, indexed.parts);
+        assert_eq!(direct.part_bounds, indexed.part_bounds);
+        assert_eq!(direct.bounds(), indexed.bounds());
+        assert_eq!(direct.uses_uv_regions(), indexed.uses_uv_regions());
+        assert_eq!(
+            direct.geometry_storage_bytes(),
+            indexed.geometry_storage_bytes()
+        );
+    }
+
+    #[test]
+    fn voxel_geometry_comparison_requires_exact_vertices_and_parts() {
+        let quad = [
+            vertex(Vec3::ZERO),
+            vertex(Vec3::X),
+            vertex(Vec3::new(1.0, 0.0, 1.0)),
+            vertex(Vec3::Z),
+        ];
+        let a = Mesh::from_voxel_quads_without_raycast([quad], [MeshPart::new(0, 6, 0)]).unwrap();
+        let same =
+            Mesh::from_voxel_quads_without_raycast([quad], [MeshPart::new(0, 6, 0)]).unwrap();
+        let mut changed_quad = quad;
+        changed_quad[0].position.y = 1.0;
+        let changed =
+            Mesh::from_voxel_quads_without_raycast([changed_quad], [MeshPart::new(0, 6, 0)])
+                .unwrap();
+        let other_material =
+            Mesh::from_voxel_quads_without_raycast([quad], [MeshPart::new(0, 6, 1)]).unwrap();
+        assert!(a.same_voxel_quad_geometry(&same));
+        assert!(!a.same_voxel_quad_geometry(&changed));
+        assert!(!a.same_voxel_quad_geometry(&other_material));
+        assert!(!a.same_voxel_quad_geometry(&Mesh::cube()));
+    }
+
+    #[test]
+    fn compact_voxel_keeps_non_quad_meshes_unmodified() {
+        let source = Mesh::with_parts_without_raycast(
+            [vertex(Vec3::ZERO), vertex(Vec3::X), vertex(Vec3::Y)],
+            [0, 1, 2],
+            [MeshPart::new(0, 3, 0)],
+        )
+        .unwrap();
+        let compact = source.clone().compact_voxel();
+        assert!(compact.compact_voxel_vertices().is_none());
+        assert_eq!(
+            compact.geometry_storage_bytes(),
+            source.geometry_storage_bytes()
+        );
+    }
+
+    #[test]
+    fn compact_voxel_accepts_diagonal_normals() {
+        let normal = Vec3::new(0.70710677, 0.70710677, 0.0);
+        let vertices =
+            [Vec3::ZERO, Vec3::X, Vec3::new(1.0, 0.0, 1.0), Vec3::Z].map(|position| Vertex {
+                normal,
+                ..vertex(position)
+            });
+        let compact = Mesh::with_parts_without_raycast(
+            vertices,
+            [0, 1, 2, 0, 2, 3],
+            [MeshPart::new(0, 6, 0)],
+        )
+        .unwrap()
+        .compact_voxel();
+        assert_eq!(compact.geometry_storage_bytes(), 4 * 27);
+        assert!((compact.vertices()[0].normal.x - normal.x).abs() < 0.005);
+    }
+
+    #[test]
     fn validates_indices_and_computes_bounds() {
         let mesh = Mesh::new(
             vec![
@@ -1114,6 +1619,36 @@ mod tests {
         assert_eq!(
             Mesh::new(vec![vertex(Vec3::ZERO)], vec![1, 0, 0]).unwrap_err(),
             MeshError::IndexOutOfBounds
+        );
+    }
+
+    #[test]
+    fn render_only_mesh_keeps_culling_bounds_without_triangle_query_data() {
+        let mesh = Mesh::with_parts_without_raycast(
+            [vertex(Vec3::ZERO), vertex(Vec3::X), vertex(Vec3::Y)],
+            [0, 1, 2],
+            [MeshPart::new(0, 3, 0)],
+        )
+        .unwrap();
+        assert!(mesh.bvh().is_empty());
+        assert!(mesh.triangle_order().is_empty());
+        assert_eq!(
+            mesh.part_bounds(0),
+            Aabb::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0))
+        );
+
+        let updated = mesh.with_vertices(mesh.vertices().to_vec()).unwrap();
+        assert!(updated.bvh().is_empty());
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(Arc::new(updated)))
+            .unwrap();
+        let ray = Ray::new(Vec3::new(0.25, 0.25, 1.0), -Vec3::Z).unwrap();
+        assert!(
+            scene
+                .raycast(ray, &mut RaycastScratch::new())
+                .unwrap()
+                .is_none()
         );
     }
 

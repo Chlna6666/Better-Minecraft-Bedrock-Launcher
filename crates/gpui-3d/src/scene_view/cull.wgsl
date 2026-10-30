@@ -1,0 +1,89 @@
+// One workgroup per resident batch. Opaque draws sharing page/material/size class
+// are compacted into one indirect instance list; blended draws remain singletons.
+struct Bounds {
+    bounds_min: vec3<f32>,
+    vertex_count: u32,
+    bounds_max: vec4<f32>,
+    origin: vec4<f32>,
+};
+struct Arguments { vertex_count: atomic<u32>, instance_count: atomic<u32>, first_vertex: u32, first_instance: u32 };
+struct Frame { view_projection: mat4x4<f32> };
+struct CullRange { minimum: vec4<f32>, maximum: vec4<f32> };
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var<storage, read> bounds: array<Bounds>;
+@group(0) @binding(2) var<storage, read_write> arguments: array<Arguments>;
+@group(0) @binding(3) var<storage, read_write> visible_instances: array<u32>;
+@group(0) @binding(4) var<storage, read> batches: array<vec4<u32>>;
+@group(0) @binding(5) var<uniform> range: CullRange;
+@group(0) @binding(6) var<storage, read> generated: array<vec4<u32>>;
+var<workgroup> planes: array<vec4<f32>, 6>;
+var<workgroup> visible_count: atomic<u32>;
+var<workgroup> largest_mesh: atomic<u32>;
+
+fn is_visible(box: Bounds) -> bool {
+    if (box.origin.w != 0.0 &&
+        (any(box.origin.xyz < range.minimum.xyz) || any(box.origin.xyz >= range.maximum.xyz))) {
+        return false;
+    }
+    for (var plane = 0u; plane < 6u; plane++) {
+        let normal = planes[plane];
+        let positive = select(box.bounds_min.xyz, box.bounds_max.xyz, normal.xyz >= vec3<f32>(0.0));
+        if (dot(normal.xyz, positive) + normal.w < 0.0) { return false; }
+    }
+    return true;
+}
+
+@compute @workgroup_size(64)
+fn cs_cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32,
+    @builtin(num_workgroups) grid: vec3<u32>) {
+    let index = group.x + group.y * grid.x;
+    if (index >= arrayLength(&batches)) { return; }
+    let batch = batches[index];
+    if (lane == 0u) {
+        atomicStore(&visible_count, 0u);
+        atomicStore(&largest_mesh, 0u);
+        let matrix = frame.view_projection;
+        let row0 = vec4<f32>(matrix[0].x, matrix[1].x, matrix[2].x, matrix[3].x);
+        let row1 = vec4<f32>(matrix[0].y, matrix[1].y, matrix[2].y, matrix[3].y);
+        let row2 = vec4<f32>(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
+        let row3 = vec4<f32>(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
+        planes = array<vec4<f32>, 6>(row3 + row0, row3 - row0, row3 + row1,
+            row3 - row1, row2, row3 - row2);
+    }
+    // Generated meshes and blended ranges are singletons: one lane can publish
+    // their result without workgroup synchronization or an instance-list atomic.
+    if (batch.y == 1u) {
+        if (lane == 0u) {
+            var source = vec4<u32>(bounds[batch.w].vertex_count, 1u, batch.z, batch.w);
+            if (batch.x != 0u) { source = generated[index]; }
+            let visible = is_visible(bounds[batch.w]);
+            if (visible && batch.x == 0u) { visible_instances[batch.w] = batch.w; }
+            atomicStore(&arguments[index].vertex_count, select(0u, source.x, visible));
+            atomicStore(&arguments[index].instance_count, select(0u, source.y, visible));
+            arguments[index].first_vertex = source.z;
+            arguments[index].first_instance = source.w;
+        }
+        return;
+    }
+    workgroupBarrier();
+    var vertex_count = 0u;
+    for (var local = lane; local < batch.y; local += 64u) {
+        let instance = batch.w + local;
+        if (is_visible(bounds[instance])) {
+            vertex_count = max(vertex_count, bounds[instance].vertex_count);
+            let slot = atomicAdd(&visible_count, 1u);
+            visible_instances[batch.w + slot] = instance;
+        }
+    }
+    // Reduce in workgroup memory; only one lane publishes the indirect record.
+    if (vertex_count != 0u) {
+        atomicMax(&largest_mesh, vertex_count);
+    }
+    workgroupBarrier();
+    if (lane == 0u) {
+        atomicStore(&arguments[index].vertex_count, atomicLoad(&largest_mesh));
+        atomicStore(&arguments[index].instance_count, atomicLoad(&visible_count));
+        arguments[index].first_vertex = batch.z;
+        arguments[index].first_instance = batch.w;
+    }
+}

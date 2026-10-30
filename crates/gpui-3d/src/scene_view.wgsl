@@ -64,6 +64,7 @@ struct VertexOutput {
     @location(4) barycentrics: vec3<f32>,
     @location(5) @interpolate(flat) edge_mask: u32,
     @location(6) world_tangent: vec4<f32>,
+    @location(7) @interpolate(flat) draw_index: u32,
 };
 
 const ALPHA_MODE_OPAQUE: u32 = 0u;
@@ -99,7 +100,7 @@ fn vs_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOutput {
     let vertex = vertices[vertex_index];
-    let draw_params = draws[0u];
+    let draw_params = draws[instance_index];
     let instance = instances[instance_index];
     let world_position_homogeneous = instance.model * vec4<f32>(vertex.position, 1.0);
     let clip_position = frame.view_projection * world_position_homogeneous;
@@ -116,6 +117,7 @@ fn vs_main(
         / max(frame.render_target_size, vec2<f32>(1.0));
 
     var output: VertexOutput;
+    output.draw_index = instance_index;
     output.position = vec4<f32>(
         (normalized_target_position * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0))
             * clip_position.w,
@@ -266,7 +268,7 @@ fn triangle_edge_coverage(barycentrics: vec3<f32>, edge_mask: u32) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let draw_params = draws[0u];
+    let draw_params = draws[input.draw_index];
     var base_color = draw_params.base_color * input.vertex_color;
     if ((draw_params.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u
         && (draw_params.texture_flags & TEXTURE_FLAG_UV) != 0u) {

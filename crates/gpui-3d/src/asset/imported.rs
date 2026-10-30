@@ -5,10 +5,12 @@
 
 use std::{path::Path, sync::Arc};
 
-use super::{GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, load_bytes, load_path};
+use super::{
+    GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, load_bytes, load_path,
+};
 use crate::{
-    Camera, Mat4, Material, NodeId, Scene, SceneView, SceneViewTextureError,
-    TextureAsset, Vec2, Vec3,
+    Camera, Mat4, Material, NodeId, Scene, SceneView, SceneViewTextureError, TextureAsset, Vec2,
+    Vec3,
 };
 
 /// Canonical owned asset snapshot, independent of rendering and file handles.
@@ -28,10 +30,15 @@ pub struct ImportedScene {
 
 /// Borrowed CPU triangle in world coordinates; no additional vertex buffers.
 pub struct ImportedTriangle<'a> {
+    /// World-space positions of the triangle's vertices.
     pub positions: [Vec3; 3],
+    /// Texture coordinates corresponding to the vertices.
     pub uvs: [Vec2; 3],
+    /// RGBA colors corresponding to the vertices.
     pub colors: [[f32; 4]; 3],
+    /// Material assigned to the triangle, if present.
     pub material: Option<&'a Material>,
+    /// Albedo texture resolved for the material, if present.
     pub albedo: Option<&'a TextureAsset>,
 }
 
@@ -82,8 +89,7 @@ impl ImportedScene {
 
     /// Creates a lightweight scene view without duplicating model buffers.
     pub fn view(&self, camera: Camera) -> Result<SceneView, SceneViewTextureError> {
-        SceneView::new(self.scene.clone(), camera)
-            .with_textures(self.textures.iter().cloned())
+        SceneView::new(self.scene.clone(), camera).with_textures(self.textures.iter().cloned())
     }
 
     /// Iterates shared mesh data and resolves hierarchical transforms. The
@@ -96,14 +102,13 @@ impl ImportedScene {
         }
     }
 
-    fn visit_node(
-        &self,
-        id: NodeId,
-        parent: Mat4,
-        visitor: &mut impl FnMut(ImportedTriangle<'_>),
-    ) {
-        let Some(node) = self.scene.node(id) else { return };
-        if !node.visible { return; }
+    fn visit_node(&self, id: NodeId, parent: Mat4, visitor: &mut impl FnMut(ImportedTriangle<'_>)) {
+        let Some(node) = self.scene.node(id) else {
+            return;
+        };
+        if !node.visible {
+            return;
+        }
         let world = parent * node.transform.matrix();
         if let Some(mesh) = &node.mesh {
             for part in mesh.parts() {
@@ -113,14 +118,22 @@ impl ImportedScene {
                     .and_then(|id| self.textures.iter().find(|asset| asset.id() == id))
                     .map(Arc::as_ref);
                 let begin = part.first_index() as usize;
-                let Some(end) = begin.checked_add(part.index_count() as usize) else { continue; };
-                let Some(indices) = mesh.indices().get(begin..end) else { continue; };
+                let Some(end) = begin.checked_add(part.index_count() as usize) else {
+                    continue;
+                };
+                let Some(indices) = mesh.indices().get(begin..end) else {
+                    continue;
+                };
                 for face in indices.chunks_exact(3) {
-                    let Some((a, b, c)) = mesh.vertices().get(face[0] as usize)
+                    let Some((a, b, c)) = mesh
+                        .vertices()
+                        .get(face[0] as usize)
                         .zip(mesh.vertices().get(face[1] as usize))
                         .zip(mesh.vertices().get(face[2] as usize))
                         .map(|((a, b), c)| (a, b, c))
-                    else { continue };
+                    else {
+                        continue;
+                    };
                     let vertices = [a, b, c];
                     visitor(ImportedTriangle {
                         positions: vertices.map(|v| world.transform_point(v.position)),
@@ -153,22 +166,44 @@ pub fn load_imported_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Material, Mesh, Node, Vertex, Vec2, Vec3};
+    use crate::{Material, Mesh, Node, Vec2, Vec3, Vertex};
 
     #[test]
     fn imported_mesh_is_shared_by_view_and_cpu_rasterization() {
         let vertices = vec![
-            Vertex { position: Vec3::new(0.0,0.0,0.0), normal: Vec3::Z, uv: Vec2::ZERO, color: [1.0; 4] },
-            Vertex { position: Vec3::new(1.0,0.0,0.0), normal: Vec3::Z, uv: Vec2::ZERO, color: [1.0; 4] },
-            Vertex { position: Vec3::new(0.0,1.0,0.0), normal: Vec3::Z, uv: Vec2::ZERO, color: [1.0; 4] },
+            Vertex {
+                position: Vec3::new(0.0, 0.0, 0.0),
+                normal: Vec3::Z,
+                uv: Vec2::ZERO,
+                color: [1.0; 4],
+            },
+            Vertex {
+                position: Vec3::new(1.0, 0.0, 0.0),
+                normal: Vec3::Z,
+                uv: Vec2::ZERO,
+                color: [1.0; 4],
+            },
+            Vertex {
+                position: Vec3::new(0.0, 1.0, 0.0),
+                normal: Vec3::Z,
+                uv: Vec2::ZERO,
+                color: [1.0; 4],
+            },
         ];
-        let mesh = Arc::new(Mesh::new(vertices, vec![0,1,2]).unwrap());
+        let mesh = Arc::new(Mesh::new(vertices, vec![0, 1, 2]).unwrap());
         let mut graph = Scene::new();
-        graph.insert(None, Node::new().with_mesh(mesh).with_materials([Arc::new(Material::new())])).unwrap();
+        graph
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh)
+                    .with_materials([Arc::new(Material::new())]),
+            )
+            .unwrap();
         let imported = ImportedScene::from_parts(graph, [], 1);
         let mut seen = 0;
         imported.for_each_triangle(|triangle| {
-            assert_eq!(triangle.positions[1], Vec3::new(1.0,0.0,0.0));
+            assert_eq!(triangle.positions[1], Vec3::new(1.0, 0.0, 0.0));
             seen += 1;
         });
         assert_eq!(seen, 1);

@@ -23,7 +23,7 @@ use crate::scene_view::{
 };
 use crate::{
     Aabb, AlphaMode, Camera, EnvironmentMap, Mat4, Mesh, MeshId, PreparedLight, PreparedScene,
-    TextureAsset, TextureAssetId, TextureColorSpace, Vec3,
+    TextureAsset, TextureAssetId, TextureColorSpace, TextureSampling, Vec3,
 };
 use gfx_core::{
     AddressMode, BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId,
@@ -233,7 +233,7 @@ impl GpuState {
         height: u32,
     ) -> Result<Self, RenderError> {
         let backend = D::BACKEND_KIND;
-        let pipelines = Pipelines::new(device, backend, width, height)?;
+        let pipelines = Pipelines::new(device, backend, width, height, TextureSampling::Linear)?;
         let targets = match Targets::new(device, width, height, DEFAULT_SHADOW_RESOLUTION, 1.0) {
             Ok(targets) => targets,
             Err(error) => {
@@ -304,13 +304,25 @@ impl GpuState {
         height: u32,
     ) -> Result<(), RenderError> {
         self.ensure_idle(device)?;
+        let material_sampling = self
+            .pipelines
+            .as_ref()
+            .map_or(TextureSampling::Linear, |pipelines| {
+                pipelines.material_sampling
+            });
         if let Some(pipelines) = self.pipelines.take() {
             pipelines.destroy(device)?;
         }
         if let Some(targets) = self.targets.as_mut() {
             targets.resize_scene(device, width, height, self.render_scale)?;
         }
-        self.pipelines = Some(Pipelines::new(device, self.backend, width, height)?);
+        self.pipelines = Some(Pipelines::new(
+            device,
+            self.backend,
+            width,
+            height,
+            material_sampling,
+        )?);
         self.width = width;
         self.height = height;
         self.invalidate_sets(device)?;
@@ -382,6 +394,32 @@ impl GpuState {
         Ok(())
     }
 
+    /// Recreates the scene-pass material sampler when the requested filtering changes.
+    fn ensure_material_sampler<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+        sampling: TextureSampling,
+    ) -> Result<(), RenderError> {
+        let needs_update = self
+            .pipelines
+            .as_ref()
+            .is_some_and(|pipelines| pipelines.material_sampling != sampling);
+        if !needs_update {
+            return Ok(());
+        }
+        let new_sampler = create_material_sampler(device, sampling)?;
+        let Some(pipelines) = self.pipelines.as_mut() else {
+            device.destroy_sampler(new_sampler)?;
+            return Err(RenderError::Destroyed);
+        };
+        let old_sampler = std::mem::replace(&mut pipelines.material_sampler, new_sampler);
+        pipelines.material_sampling = sampling;
+        device.destroy_sampler(old_sampler)?;
+        self.invalidate_sets(device)?;
+        self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        Ok(())
+    }
+
     /// Renders one frame into the offscreen targets.
     pub(crate) fn render<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
@@ -398,6 +436,7 @@ impl GpuState {
         self.ensure_idle(device)?;
         self.frame_index = self.frame_index.wrapping_add(1);
         self.ensure_environment(device, environment)?;
+        self.ensure_material_sampler(device, options.material_sampling)?;
         let mut statistics = FrameStatistics::default();
         let render_target = self.targets.as_ref().map_or(target, Targets::render_target);
 
@@ -1123,11 +1162,10 @@ impl GpuState {
             sets
         };
         self.used_batch_keys.push(key);
-        let indices = self
+        let mesh_resources = self
             .meshes
             .get(&mesh_key)
-            .ok_or_else(|| RenderError::Preparation("mesh GPU resources are missing".into()))?
-            .indices;
+            .ok_or_else(|| RenderError::Preparation("mesh GPU resources are missing".into()))?;
         let instance_count = key.instance_count;
         let pipelines = self.pipelines()?;
         let scene_pipeline = if material.alpha_mode == AlphaMode::Blend {
@@ -1141,8 +1179,8 @@ impl GpuState {
                 pipeline: pipelines.shadow_pipeline,
                 bind_groups: gfx_core::bind_group_list([sets.shadow]),
                 index_buffer: IndexBufferBinding {
-                    buffer: indices,
-                    format: IndexFormat::Uint32,
+                    buffer: mesh_resources.indices,
+                    format: mesh_resources.index_format,
                     offset: 0,
                 },
                 index_count,
@@ -1156,8 +1194,8 @@ impl GpuState {
                 pipeline: scene_pipeline,
                 bind_groups: gfx_core::bind_group_list([sets.scene]),
                 index_buffer: IndexBufferBinding {
-                    buffer: indices,
-                    format: IndexFormat::Uint32,
+                    buffer: mesh_resources.indices,
+                    format: mesh_resources.index_format,
                     offset: 0,
                 },
                 index_count,
@@ -1582,6 +1620,7 @@ struct MeshResources {
     tangent_bytes: u64,
     tangent_capacity: u64,
     indices: BufferId,
+    index_format: IndexFormat,
     index_capacity: u64,
     /// Allocated (aligned) buffer bytes.
     bytes: u64,
@@ -1832,6 +1871,7 @@ fn create_mesh<D: Device + ?Sized>(
         tangent_bytes,
         tangent_capacity: tangents.map_or(0, |(_, capacity)| capacity),
         indices,
+        index_format: encoded.index_format,
         index_capacity,
         bytes,
         requested_bytes: vertex_bytes + index_bytes + tangent_bytes,
@@ -2037,6 +2077,34 @@ impl HandleScratch {
     }
 }
 
+/// Magnification and minification filters for one offscreen material sampling mode.
+fn material_sampler_filters(sampling: TextureSampling) -> (FilterMode, FilterMode) {
+    match sampling {
+        TextureSampling::Linear => (FilterMode::Linear, FilterMode::Linear),
+        TextureSampling::Nearest => (FilterMode::Nearest, FilterMode::Nearest),
+        TextureSampling::PixelArt => (FilterMode::Nearest, FilterMode::Linear),
+    }
+}
+
+/// Creates the scene-pass material sampler for one sampling mode.
+fn create_material_sampler<D: Device + ?Sized>(
+    device: &mut D,
+    sampling: TextureSampling,
+) -> Result<SamplerId, RenderError> {
+    let (mag_filter, min_filter) = material_sampler_filters(sampling);
+    Ok(device.create_sampler(&SamplerDescriptor {
+        label: Some("gpui-3d offscreen material sampler".into()),
+        mag_filter,
+        min_filter,
+        mipmap_filter: FilterMode::Linear,
+        // DX11 maps anisotropic=true to D3D11_FILTER_ANISOTROPIC and ignores the discrete
+        // min/mag filters, which silently blurs nearest-sampled pixel art.
+        anisotropic: sampling == TextureSampling::Linear,
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+    })?)
+}
+
 struct Pipelines {
     shadow_layout: BindGroupLayoutId,
     scene_layout: BindGroupLayoutId,
@@ -2059,6 +2127,7 @@ struct Pipelines {
     bloom_pipeline_layout: PipelineLayoutId,
     sky_pipeline_layout: PipelineLayoutId,
     material_sampler: SamplerId,
+    material_sampling: TextureSampling,
     post_sampler: SamplerId,
     environment_sampler: SamplerId,
     shaders: Vec<ShaderModuleId>,
@@ -2070,9 +2139,17 @@ impl Pipelines {
         backend: BackendKind,
         width: u32,
         height: u32,
+        material_sampling: TextureSampling,
     ) -> Result<Self, RenderError> {
         let mut scratch = HandleScratch::default();
-        match Self::build(device, backend, width, height, &mut scratch) {
+        match Self::build(
+            device,
+            backend,
+            width,
+            height,
+            material_sampling,
+            &mut scratch,
+        ) {
             Ok(pipelines) => Ok(pipelines),
             Err(error) => {
                 scratch.destroy(device);
@@ -2086,6 +2163,7 @@ impl Pipelines {
         backend: BackendKind,
         width: u32,
         height: u32,
+        material_sampling: TextureSampling,
         scratch: &mut HandleScratch,
     ) -> Result<Self, RenderError> {
         let extent = Extent2d::new(width, height)?;
@@ -2370,6 +2448,7 @@ impl Pipelines {
                         color_format,
                         blend_mode,
                         primitive_topology: PrimitiveTopology::TriangleList,
+                        raster: Default::default(),
                         depth_state,
                     },
                     extent,
@@ -2476,15 +2555,7 @@ impl Pipelines {
         )?;
         scratch.pipelines.push(sky_pipeline);
 
-        let material_sampler = device.create_sampler(&SamplerDescriptor {
-            label: Some("gpui-3d offscreen material sampler".into()),
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
-            mipmap_filter: FilterMode::Linear,
-            anisotropic: true,
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-        })?;
+        let material_sampler = create_material_sampler(device, material_sampling)?;
         scratch.samplers.push(material_sampler);
         let post_sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("gpui-3d offscreen post sampler".into()),
@@ -2529,6 +2600,7 @@ impl Pipelines {
             bloom_pipeline_layout,
             sky_pipeline_layout,
             material_sampler,
+            material_sampling,
             post_sampler,
             environment_sampler,
             shaders: vec![

@@ -2,7 +2,8 @@ use super::{
     ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_BINDING,
     FRAME_PARAMS_STRIDE, INSTANCE_BINDING, INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE,
     METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE,
-    SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING,
+    SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING, VISIBLE_INSTANCE_BINDING,
+    VOXEL_VERTEX_STRIDE,
 };
 use crate::{
     AlphaMode, Camera, Mat4, Mesh, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
@@ -12,12 +13,13 @@ use anyhow::{Context as _, anyhow};
 use gfx_core::{
     BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId, BindGroupLayoutId,
     BindingResource, BufferBinding, BufferDescriptor, BufferId, BufferUsage, Extent2d, Format,
-    MemoryLocation, Origin2d, SamplerBinding, SamplerId, TextureBinding, TextureDataLayout,
-    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
-    TextureViewId, TextureWrite, TextureWriteDescriptor,
+    IndexFormat, MemoryLocation, Origin2d, SamplerBinding, SamplerId, TextureBinding,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
+    TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
 };
 use gpui::Bounds;
 use gpui::ExtensionDevice;
+use std::collections::BTreeSet;
 use std::convert::TryFrom;
 
 const ALPHA_MODE_OPAQUE: u32 = 0;
@@ -35,12 +37,264 @@ const LIGHT_KIND_POINT: u32 = 2;
 const LIGHT_KIND_SPOT: u32 = 3;
 
 pub(super) struct MeshResources {
+    pub(super) generated: Option<super::generated::GeneratedMesh>,
     pub(super) generation: u64,
     pub(super) vertices: BufferId,
-    pub(super) vertex_bytes: usize,
+    pub(super) vertex_binding_bytes: usize,
+    pub(super) vertex_stride: u32,
+    pub(super) vertex_base: u32,
     pub(super) tangents: Option<BufferId>,
     pub(super) tangent_bytes: usize,
     pub(super) indices: BufferId,
+    pub(super) index_format: IndexFormat,
+    pub(super) index_offset: u64,
+    pub(super) procedural_quads: bool,
+    pub(super) allocation: Option<ArenaAllocation>,
+}
+
+pub(super) struct PendingMeshUpload {
+    pub(super) buffer: BufferId,
+    pub(super) offset: u64,
+    pub(super) bytes: Vec<u8>,
+}
+
+const VOXEL_ARENA_PAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+pub(super) struct ArenaAllocation {
+    page: usize,
+    offset: u64,
+    bytes: u64,
+}
+
+struct ArenaPage {
+    buffer: BufferId,
+    capacity: u64,
+    used: u64,
+    live: usize,
+    live_bytes: u64,
+    free_ranges: Vec<(u64, u64)>,
+    retired_ranges: Vec<(u64, u64)>,
+}
+
+impl ArenaPage {
+    fn available_bytes(&self) -> u64 {
+        self.free_ranges
+            .iter()
+            .map(|(_, len)| *len)
+            .fold(self.capacity - self.used, u64::max)
+    }
+    fn reserve(&mut self, bytes: u64) -> Option<u64> {
+        if let Some(index) = self.free_ranges.iter().position(|(_, len)| *len >= bytes) {
+            let (offset, len) = self.free_ranges[index];
+            if len == bytes {
+                self.free_ranges.swap_remove(index);
+            } else {
+                self.free_ranges[index] = (offset + bytes, len - bytes);
+            }
+            self.live += 1;
+            self.live_bytes += bytes;
+            return Some(offset);
+        }
+        if self.capacity.checked_sub(self.used)? < bytes {
+            return None;
+        }
+        let offset = self.used;
+        self.used += bytes;
+        self.live += 1;
+        self.live_bytes += bytes;
+        Some(offset)
+    }
+
+    fn retire(&mut self, offset: u64, bytes: u64) -> gpui::Result<()> {
+        let remaining = self
+            .live_bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| anyhow!("voxel arena allocation exceeds live page bytes"))?;
+        self.live -= 1;
+        self.live_bytes = remaining;
+        self.retired_ranges.push((offset, bytes));
+        Ok(())
+    }
+
+    fn reclaim_retired(&mut self) {
+        self.free_ranges.append(&mut self.retired_ranges);
+        self.free_ranges.sort_unstable_by_key(|range| range.0);
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.free_ranges.len());
+        for (offset, len) in self.free_ranges.drain(..) {
+            if let Some((start, previous_len)) = merged.last_mut()
+                && *start + *previous_len == offset
+            {
+                *previous_len += len;
+            } else {
+                merged.push((offset, len));
+            }
+        }
+        self.free_ranges = merged;
+    }
+}
+
+#[derive(Default)]
+pub(super) struct MeshArena {
+    pages: Vec<Option<ArenaPage>>,
+    available_pages: BTreeSet<(u64, usize)>,
+    free_pages: Vec<usize>,
+}
+
+impl MeshArena {
+    fn allocate(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        bytes: u64,
+    ) -> gpui::Result<(ArenaAllocation, BufferId, u64, u64)> {
+        let stride = u64::from(VOXEL_VERTEX_STRIDE);
+        let aligned = bytes
+            .max(1)
+            .checked_add(stride - 1)
+            .ok_or_else(|| anyhow!("voxel mesh exceeds arena address range"))?
+            / stride
+            * stride;
+        if let Some(reserved) = self.reserve_page(aligned)? {
+            return Ok(reserved);
+        }
+        let capacity = VOXEL_ARENA_PAGE_BYTES.max(
+            aligned
+                .checked_next_power_of_two()
+                .ok_or_else(|| anyhow!("voxel arena page size overflow"))?,
+        );
+        let memory_location = buffer_memory_location(backend);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("gpui-3d voxel mesh arena".into()),
+            size: capacity,
+            usage: BufferUsage::STORAGE | BufferUsage::INDEX | BufferUsage::COPY_DST,
+            memory_location,
+        })?;
+        let page = ArenaPage {
+            buffer,
+            capacity,
+            used: aligned,
+            live: 1,
+            live_bytes: aligned,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        let available = page.available_bytes();
+        let index = if let Some(index) = self.free_pages.pop() {
+            self.pages[index] = Some(page);
+            index
+        } else {
+            let index = self.pages.len();
+            self.pages.push(Some(page));
+            index
+        };
+        if available > 0 {
+            self.available_pages.insert((available, index));
+        }
+        Ok((
+            ArenaAllocation {
+                page: index,
+                offset: 0,
+                bytes: aligned,
+            },
+            buffer,
+            0,
+            capacity,
+        ))
+    }
+
+    fn reserve_page(
+        &mut self,
+        bytes: u64,
+    ) -> gpui::Result<Option<(ArenaAllocation, BufferId, u64, u64)>> {
+        let Some(&(available, index)) = self.available_pages.range((bytes, 0)..).next() else {
+            return Ok(None);
+        };
+        let page = self.pages[index]
+            .as_mut()
+            .ok_or_else(|| anyhow!("voxel arena available page is missing"))?;
+        let offset = page
+            .reserve(bytes)
+            .ok_or_else(|| anyhow!("voxel arena available range is too small"))?;
+        self.available_pages.remove(&(available, index));
+        let remaining = page.available_bytes();
+        if remaining > 0 {
+            self.available_pages.insert((remaining, index));
+        }
+        Ok(Some((
+            ArenaAllocation {
+                page: index,
+                offset,
+                bytes,
+            },
+            page.buffer,
+            offset,
+            page.capacity,
+        )))
+    }
+
+    fn release(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        allocation: ArenaAllocation,
+    ) -> gpui::Result<()> {
+        let Some(page) = self.pages.get_mut(allocation.page).and_then(Option::as_mut) else {
+            return Err(anyhow!("voxel arena allocation refers to a missing page").into());
+        };
+        if page.live == 0 {
+            return Err(anyhow!("voxel arena page has no live allocations").into());
+        }
+        if page.live == 1 {
+            if page.live_bytes != allocation.bytes {
+                return Err(anyhow!("voxel arena final allocation size mismatch").into());
+            }
+            device.destroy_buffer(page.buffer)?;
+            self.available_pages
+                .remove(&(page.available_bytes(), allocation.page));
+            self.pages[allocation.page] = None;
+            self.free_pages.push(allocation.page);
+        } else {
+            page.retire(allocation.offset, allocation.bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Called only after the host has confirmed all prior GPU submissions completed.
+    pub(super) fn reclaim_after_gpu_idle(&mut self) {
+        for (index, page) in self.pages.iter_mut().enumerate() {
+            let Some(page) = page else { continue };
+            if page.retired_ranges.is_empty() {
+                continue;
+            }
+            self.available_pages
+                .remove(&(page.available_bytes(), index));
+            page.reclaim_retired();
+            let available = page.available_bytes();
+            if available > 0 {
+                self.available_pages.insert((available, index));
+            }
+        }
+    }
+
+    pub(super) fn has_retired_ranges(&self) -> bool {
+        self.pages
+            .iter()
+            .flatten()
+            .any(|page| !page.retired_ranges.is_empty())
+    }
+
+    pub(super) fn stats(&self) -> (usize, u64, u64, u64) {
+        self.pages
+            .iter()
+            .flatten()
+            .fold((0, 0, 0, 0), |(count, capacity, live, dead), page| {
+                (
+                    count + 1,
+                    capacity + page.capacity,
+                    live + page.live_bytes,
+                    dead + page.used.saturating_sub(page.live_bytes),
+                )
+            })
+    }
 }
 
 pub(super) struct TextureResources {
@@ -52,7 +306,7 @@ pub(super) struct DrawBindingResources<'a> {
     pub(super) bind_group_layout: BindGroupLayoutId,
     pub(super) mesh: &'a MeshResources,
     pub(super) draw_buffer: BufferId,
-    pub(super) draw_index: usize,
+    pub(super) draw_capacity: usize,
     pub(super) instance_buffer: BufferId,
     pub(super) instance_count: usize,
     pub(super) light_buffer: BufferId,
@@ -63,12 +317,14 @@ pub(super) struct DrawBindingResources<'a> {
     pub(super) metallic_roughness_view: TextureViewId,
     pub(super) material_sampler: SamplerId,
     pub(super) frame_buffer: BufferId,
+    pub(super) visible_instances: Option<(BufferId, u64)>,
 }
 
 pub(crate) struct EncodedMesh {
     pub(crate) vertices: Vec<u8>,
     pub(crate) tangents: Option<Vec<u8>>,
     pub(crate) indices: Vec<u8>,
+    pub(crate) index_format: IndexFormat,
 }
 
 pub(super) fn create_texture(
@@ -157,26 +413,72 @@ pub(super) fn create_mesh(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
     backend: BackendKind,
-) -> gpui::Result<MeshResources> {
-    let encoded = encode_mesh(mesh)?;
+    compact_voxel: bool,
+    arena: &mut MeshArena,
+) -> gpui::Result<(MeshResources, Option<PendingMeshUpload>)> {
+    let encoded = if compact_voxel {
+        encode_voxel_mesh(mesh)?
+    } else {
+        encode_mesh(mesh)?
+    };
     let EncodedMesh {
-        vertices: vertex_data,
+        vertices: mut vertex_data,
         tangents: tangent_data,
         indices: index_data,
+        index_format,
     } = encoded;
+    if compact_voxel {
+        let procedural_quads = mesh.compact_voxel_quad_count().is_some();
+        let vertex_bytes = vertex_data.len();
+        let index_bytes = index_data.len();
+        let requested = u64::try_from(
+            vertex_bytes
+                .checked_add(index_bytes)
+                .ok_or_else(|| anyhow!("voxel mesh size overflow"))?,
+        )
+        .context("voxel mesh exceeds address range")?;
+        let (allocation, buffer, offset, capacity) = arena.allocate(device, backend, requested)?;
+        let vertex_base = u32::try_from(offset / u64::from(VOXEL_VERTEX_STRIDE));
+        let binding_bytes = usize::try_from(capacity);
+        let (Ok(vertex_base), Ok(vertex_binding_bytes)) = (vertex_base, binding_bytes) else {
+            arena.release(device, allocation)?;
+            return Err(anyhow!("voxel arena exceeds shader or host address range").into());
+        };
+        let index_offset = offset + vertex_bytes as u64;
+        vertex_data.extend_from_slice(&index_data);
+        return Ok((
+            MeshResources {
+                generated: None,
+                generation: mesh.generation(),
+                vertices: buffer,
+                vertex_binding_bytes,
+                vertex_stride: VOXEL_VERTEX_STRIDE,
+                vertex_base,
+                tangents: None,
+                tangent_bytes: 0,
+                indices: buffer,
+                index_format,
+                index_offset,
+                procedural_quads,
+                allocation: Some(allocation),
+            },
+            Some(PendingMeshUpload {
+                buffer,
+                offset,
+                bytes: vertex_data,
+            }),
+        ));
+    }
     // Mesh geometry is written once when the mesh is built and only read afterwards, so it
     // belongs in device-local memory instead of consuming host-visible space. Metal and the
     // stub backends have no staging path for device-local buffers yet, so their geometry stays
     // host visible.
-    let mesh_memory_location = match backend {
-        BackendKind::Dx11 | BackendKind::Dx12 | BackendKind::Vulkan => MemoryLocation::GpuOnly,
-        BackendKind::Metal | BackendKind::OpenGl | BackendKind::WebGl => MemoryLocation::CpuToGpu,
-    };
+    let buffer_memory_location = buffer_memory_location(backend);
     let vertex_buffer = create_storage_buffer(
         device,
         "gpui-3d vertices",
         vertex_data.len(),
-        mesh_memory_location,
+        buffer_memory_location,
     )?;
     if let Err(error) = device.write_buffer(vertex_buffer, 0, &vertex_data) {
         device.destroy_buffer(vertex_buffer)?;
@@ -186,7 +488,7 @@ pub(super) fn create_mesh(
         label: Some("gpui-3d indices".into()),
         size: u64::try_from(index_data.len()).context("3D index buffer exceeds address range")?,
         usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
-        memory_location: mesh_memory_location,
+        memory_location: buffer_memory_location,
     }) {
         Ok(buffer) => buffer,
         Err(error) => {
@@ -204,7 +506,7 @@ pub(super) fn create_mesh(
             device,
             "gpui-3d tangents",
             tangent_data.len(),
-            mesh_memory_location,
+            buffer_memory_location,
         ) {
             Ok(buffer) => buffer,
             Err(error) => {
@@ -223,13 +525,90 @@ pub(super) fn create_mesh(
     } else {
         (None, 0)
     };
-    Ok(MeshResources {
-        generation: mesh.generation(),
-        vertices: vertex_buffer,
-        vertex_bytes: vertex_data.len(),
-        tangents: tangent_buffer,
-        tangent_bytes,
-        indices: index_buffer,
+    Ok((
+        MeshResources {
+            generated: None,
+            generation: mesh.generation(),
+            vertices: vertex_buffer,
+            vertex_binding_bytes: vertex_data.len(),
+            vertex_stride: PACKED_VERTEX_STRIDE,
+            vertex_base: 0,
+            tangents: tangent_buffer,
+            tangent_bytes,
+            indices: index_buffer,
+            index_format,
+            index_offset: 0,
+            procedural_quads: false,
+            allocation: None,
+        },
+        None,
+    ))
+}
+
+pub(super) fn buffer_memory_location(backend: BackendKind) -> MemoryLocation {
+    match backend {
+        BackendKind::Dx11 | BackendKind::Dx12 | BackendKind::Vulkan => MemoryLocation::GpuOnly,
+        BackendKind::Metal | BackendKind::OpenGl | BackendKind::WebGl => MemoryLocation::CpuToGpu,
+    }
+}
+
+pub(super) fn can_encode_voxel_mesh(mesh: &Mesh) -> bool {
+    mesh.edge_masks().is_none() && mesh.has_unorm_colors()
+}
+
+fn encode_voxel_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
+    let vertex_count = mesh.vertex_count();
+    let use_u16_indices = vertex_count <= u16::MAX as usize + 1;
+    let mut vertices = Vec::with_capacity(vertex_count * VOXEL_VERTEX_STRIDE as usize);
+    if let Some(packed) = mesh.compact_voxel_vertices() {
+        for vertex in packed {
+            vertices.extend_from_slice(&vertex[..VOXEL_VERTEX_STRIDE as usize]);
+        }
+    } else {
+        for vertex in mesh.vertices() {
+            for position in [vertex.position.x, vertex.position.y, vertex.position.z] {
+                vertices.extend_from_slice(&position.to_ne_bytes());
+            }
+            let color = vertex
+                .color
+                .iter()
+                .enumerate()
+                .fold(0u32, |packed, (index, channel)| {
+                    packed | ((*channel * 255.0).round() as u32) << (index * 8)
+                });
+            vertices.extend_from_slice(&color.to_ne_bytes());
+            for uv in [vertex.uv.x, vertex.uv.y] {
+                vertices.extend_from_slice(&uv.to_ne_bytes());
+            }
+        }
+    }
+    let procedural_quads = mesh.compact_voxel_quad_count().is_some();
+    let mut indices = Vec::with_capacity(if procedural_quads {
+        0
+    } else {
+        mesh.index_count() * if use_u16_indices { 2 } else { 4 }
+    });
+    if !procedural_quads {
+        for &index in mesh.indices() {
+            if index as usize >= vertex_count {
+                return Err(anyhow!("GPUI 3D mesh index refers to a missing vertex").into());
+            }
+            if use_u16_indices {
+                indices.extend_from_slice(&(index as u16).to_ne_bytes());
+            } else {
+                indices.extend_from_slice(&index.to_ne_bytes());
+            }
+        }
+    }
+    Ok(EncodedMesh {
+        vertices,
+        tangents: None,
+        indices,
+        index_format: if use_u16_indices {
+            IndexFormat::Uint16
+        } else {
+            IndexFormat::Uint32
+        },
     })
 }
 
@@ -240,13 +619,19 @@ pub(crate) fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
     let edge_masks = mesh
         .edge_masks()
         .filter(|masks| masks.iter().any(|mask| mask.bits() != 0));
+    let use_u16_indices = if edge_masks.is_some() {
+        mesh.indices().len() <= u16::MAX as usize + 1
+    } else {
+        mesh.vertices().len() <= u16::MAX as usize + 1
+    };
+    let index_width = if use_u16_indices { 2 } else { 4 };
 
     if let Some(edge_masks) = edge_masks {
         if edge_masks.len() != mesh.indices().len() / 3 {
             return Err(anyhow!("GPUI 3D mesh edge mask count is invalid").into());
         }
         vertices.reserve(mesh.indices().len() * PACKED_VERTEX_STRIDE as usize);
-        indices.reserve(mesh.indices().len() * 4);
+        indices.reserve(mesh.indices().len() * index_width);
         for (triangle, (triangle_indices, mask)) in mesh
             .indices()
             .chunks_exact(3)
@@ -273,7 +658,11 @@ pub(crate) fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
                 }
                 let expanded_index = u32::try_from(triangle * 3 + corner)
                     .context("GPUI 3D expanded mesh exceeds u32 draw range")?;
-                indices.extend_from_slice(&expanded_index.to_ne_bytes());
+                if use_u16_indices {
+                    indices.extend_from_slice(&(expanded_index as u16).to_ne_bytes());
+                } else {
+                    indices.extend_from_slice(&expanded_index.to_ne_bytes());
+                }
             }
         }
     } else {
@@ -293,9 +682,13 @@ pub(crate) fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
                 write_vec4(encoded_tangents, *tangent);
             }
         }
-        indices.reserve(mesh.indices().len() * 4);
+        indices.reserve(mesh.indices().len() * index_width);
         for index in mesh.indices() {
-            indices.extend_from_slice(&index.to_ne_bytes());
+            if use_u16_indices {
+                indices.extend_from_slice(&(*index as u16).to_ne_bytes());
+            } else {
+                indices.extend_from_slice(&index.to_ne_bytes());
+            }
         }
     }
 
@@ -303,6 +696,11 @@ pub(crate) fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
         vertices,
         tangents,
         indices,
+        index_format: if use_u16_indices {
+            IndexFormat::Uint16
+        } else {
+            IndexFormat::Uint32
+        },
     })
 }
 
@@ -345,7 +743,7 @@ pub(super) fn create_draw_resource_set(
         bind_group_layout,
         mesh,
         draw_buffer,
-        draw_index,
+        draw_capacity,
         instance_buffer,
         instance_count,
         light_buffer,
@@ -356,9 +754,11 @@ pub(super) fn create_draw_resource_set(
         metallic_roughness_view,
         material_sampler,
         frame_buffer,
+        visible_instances,
     } = bindings;
-    let draw_offset = u64::try_from(draw_index * DRAW_SLOT_STRIDE)
-        .context("3D draw offset exceeds address range")?;
+    let draw_bytes = draw_capacity
+        .checked_mul(DRAW_PARAMS_STRIDE as usize)
+        .ok_or_else(|| anyhow!("3D draw buffer size overflow"))?;
     let instance_bytes = instance_count
         .max(1)
         .checked_mul(INSTANCE_STRIDE as usize)
@@ -370,28 +770,70 @@ pub(super) fn create_draw_resource_set(
             u64::try_from(mesh.tangent_bytes.max(16)).context("3D tangent buffer size overflow")?,
         )
     } else {
-        (draw_buffer, draw_offset, 16)
+        (draw_buffer, 0, 16)
     };
     Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some("gpui-3d mesh draw resource set".into()),
         layout: bind_group_layout,
         entries: vec![
             BindGroupEntry {
+                binding: 13,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: if mesh.generated.is_some() {
+                        mesh.vertices
+                    } else {
+                        draw_buffer
+                    },
+                    offset: 0,
+                    size: if mesh.generated.is_some() {
+                        mesh.vertex_binding_bytes as u64
+                    } else {
+                        16
+                    },
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: 12,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: mesh
+                        .generated
+                        .as_ref()
+                        .map_or(draw_buffer, |mesh| mesh.templates),
+                    offset: 0,
+                    size: mesh
+                        .generated
+                        .as_ref()
+                        .map_or(16, |mesh| mesh.template_bytes),
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: VISIBLE_INSTANCE_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: visible_instances.map_or(draw_buffer, |(buffer, _)| buffer),
+                    offset: 0,
+                    size: visible_instances.map_or(4, |(_, size)| size),
+                    stride: Some(4),
+                }),
+            },
+            BindGroupEntry {
                 binding: VERTEX_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: mesh.vertices,
                     offset: 0,
-                    size: u64::try_from(mesh.vertex_bytes)
+                    size: u64::try_from(mesh.vertex_binding_bytes)
                         .context("3D vertex buffer size overflow")?,
-                    stride: Some(PACKED_VERTEX_STRIDE),
+                    stride: Some(mesh.vertex_stride),
                 }),
             },
             BindGroupEntry {
                 binding: DRAW_BINDING,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: draw_buffer,
-                    offset: draw_offset,
-                    size: u64::from(DRAW_PARAMS_STRIDE),
+                    offset: 0,
+                    size: u64::try_from(draw_bytes)
+                        .context("3D draw buffer size exceeds address range")?,
                     stride: Some(DRAW_PARAMS_STRIDE),
                 }),
             },
@@ -486,12 +928,27 @@ pub(super) fn create_storage_buffer(
 pub(super) fn destroy_mesh(
     device: &mut dyn ExtensionDevice,
     mesh: MeshResources,
+    arena: &mut MeshArena,
 ) -> gpui::Result<()> {
-    device.destroy_buffer(mesh.indices)?;
-    if let Some(tangents) = mesh.tangents {
-        device.destroy_buffer(tangents)?;
+    if let Some(allocation) = mesh.allocation {
+        if let Some(generated) = &mesh.generated {
+            device.destroy_buffer(generated.templates)?;
+        }
+        return arena.release(device, allocation);
     }
-    device.destroy_buffer(mesh.vertices)?;
+    let mut buffers = [mesh.indices, mesh.vertices, mesh.indices, mesh.indices];
+    let mut count = 2;
+    for buffer in [
+        mesh.tangents,
+        mesh.generated.as_ref().map(|generated| generated.templates),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        buffers[count] = buffer;
+        count += 1;
+    }
+    device.destroy_buffer_batch(&buffers[..count])?;
     Ok(())
 }
 
@@ -544,14 +1001,21 @@ pub(super) fn encode_frame_params(
 
 /// Encodes per-draw material state that is independent of the camera and viewport.
 pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * DRAW_SLOT_STRIDE);
-    let light_count =
-        u32::try_from(scene.lights.len()).context("GPUI 3D light count exceeds u32")?;
-    for draw in &scene.draws {
-        encode_draw_slot(draw, light_count, &mut bytes)?;
+    encode_draw_records(&scene.draws, scene.lights.len())
+}
+
+pub(super) fn encode_draw_records(
+    draws: &[crate::PreparedDraw],
+    lights: usize,
+) -> gpui::Result<Vec<u8>> {
+    let stride = DRAW_PARAMS_STRIDE as usize;
+    let mut bytes = Vec::with_capacity(draws.len().max(1) * stride);
+    let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
+    for draw in draws {
+        encode_draw_record(draw, light_count, &mut bytes, stride)?;
     }
-    if scene.draws.is_empty() {
-        bytes.resize(DRAW_SLOT_STRIDE, 0);
+    if draws.is_empty() {
+        bytes.resize(stride, 0);
     }
     Ok(bytes)
 }
@@ -564,6 +1028,15 @@ pub(crate) fn encode_draw_slot(
     draw: &crate::PreparedDraw,
     light_count: u32,
     bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    encode_draw_record(draw, light_count, bytes, DRAW_SLOT_STRIDE)
+}
+
+fn encode_draw_record(
+    draw: &crate::PreparedDraw,
+    light_count: u32,
+    bytes: &mut Vec<u8>,
+    stride: usize,
 ) -> gpui::Result<()> {
     let slot_start = bytes.len();
     write_vec4(bytes, draw.material.base_color);
@@ -605,12 +1078,13 @@ pub(crate) fn encode_draw_slot(
             .into());
     }
     let slot_end = slot_start
-        .checked_add(DRAW_SLOT_STRIDE)
+        .checked_add(stride)
         .ok_or_else(|| anyhow!("GPUI 3D draw slot size overflow"))?;
     bytes.resize(slot_end, 0);
 
     Ok(())
 }
+#[cfg(test)]
 pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * INSTANCE_STRIDE as usize);
     encode_instances_into(scene, &mut bytes)?;
@@ -625,8 +1099,15 @@ pub(crate) fn encode_instances_into(
     scene: &PreparedScene,
     bytes: &mut Vec<u8>,
 ) -> gpui::Result<()> {
+    encode_instance_records(&scene.draws, bytes)
+}
+
+pub(super) fn encode_instance_records(
+    draws: &[crate::PreparedDraw],
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
     let start_len = bytes.len();
-    for draw in &scene.draws {
+    for draw in draws {
         let inverse = draw
             .world
             .inverse()
@@ -643,7 +1124,7 @@ pub(crate) fn encode_instances_into(
             ],
         );
     }
-    if scene.draws.is_empty() && bytes.len() == start_len {
+    if draws.is_empty() && bytes.len() == start_len {
         bytes.resize(INSTANCE_STRIDE as usize, 0);
     }
     debug_assert_eq!((bytes.len() - start_len) % INSTANCE_STRIDE as usize, 0);
@@ -767,7 +1248,7 @@ pub(super) fn write_u32(bytes: &mut Vec<u8>, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_mesh;
+    use super::{ArenaPage, MeshArena, can_encode_voxel_mesh, encode_mesh, encode_voxel_mesh};
     use crate::{Mesh, TriangleEdgeMask, Vec2, Vec3, Vertex};
 
     fn vertices() -> Vec<Vertex> {
@@ -787,19 +1268,240 @@ mod tests {
     }
 
     #[test]
+    fn arena_page_reserves_disjoint_ranges_without_reusing_live_space() {
+        let mut page = ArenaPage {
+            buffer: gfx_core::BufferId::from_parts(1, 1),
+            capacity: 96,
+            used: 0,
+            live: 0,
+            live_bytes: 0,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        assert_eq!(page.reserve(32), Some(0));
+        assert_eq!(page.reserve(32), Some(32));
+        assert_eq!(page.reserve(64), None);
+        assert_eq!(page.reserve(32), Some(64));
+        assert_eq!(page.live, 3);
+        assert_eq!(page.live_bytes, 96);
+    }
+
+    #[test]
+    fn arena_stats_distinguish_live_and_retired_ranges() {
+        let arena = MeshArena {
+            pages: vec![
+                Some(ArenaPage {
+                    buffer: gfx_core::BufferId::from_parts(1, 1),
+                    capacity: 128,
+                    used: 96,
+                    live: 2,
+                    live_bytes: 64,
+                    free_ranges: Vec::new(),
+                    retired_ranges: vec![(32, 32)],
+                }),
+                None,
+            ],
+            ..Default::default()
+        };
+        assert_eq!(arena.stats(), (1, 128, 64, 32));
+    }
+
+    #[test]
+    fn arena_index_skips_full_pages_and_waits_for_retirement() {
+        let mut arena = MeshArena::default();
+        for index in 0..4096 {
+            arena.pages.push(Some(ArenaPage {
+                buffer: gfx_core::BufferId::from_parts(index as u32 + 1, 1),
+                capacity: 72,
+                used: 72,
+                live: 2,
+                live_bytes: 48,
+                free_ranges: Vec::new(),
+                retired_ranges: vec![(0, 24)],
+            }));
+        }
+        assert!(arena.reserve_page(24).unwrap().is_none());
+        arena.reclaim_after_gpu_idle();
+        assert_eq!(arena.available_pages.len(), 4096);
+        for index in 0..4096 {
+            let (allocation, _, offset, _) = arena.reserve_page(24).unwrap().unwrap();
+            assert_eq!((allocation.page, offset), (index, 0));
+        }
+        assert!(arena.available_pages.is_empty());
+        assert!(arena.reserve_page(24).unwrap().is_none());
+    }
+
+    #[test]
+    fn arena_reuses_retired_ranges_only_after_gpu_drain() {
+        let mut page = ArenaPage {
+            buffer: gfx_core::BufferId::from_parts(1, 1),
+            capacity: 96,
+            used: 0,
+            live: 0,
+            live_bytes: 0,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        assert_eq!(page.reserve(32), Some(0));
+        assert_eq!(page.reserve(32), Some(32));
+        assert_eq!(page.reserve(32), Some(64));
+        page.retire(0, 32).unwrap();
+        page.retire(32, 32).unwrap();
+        assert_eq!(page.reserve(48), None);
+        page.reclaim_retired();
+        assert_eq!(page.reserve(48), Some(0));
+        assert_eq!(page.reserve(16), Some(48));
+        assert_eq!(page.live_bytes, 96);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires a Windows D3D11 hardware adapter"]
+    fn native_arena_reuses_a_range_only_after_queue_completion() {
+        use gfx_core::{
+            CommandDevice, CommandEncoderDescriptor, DeviceDescriptor, SubmissionDevice,
+        };
+        let mut device = gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap();
+        let mut arena = MeshArena::default();
+        let (first, buffer, first_offset, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        let (second, _, _, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        let encoder = device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None })
+            .unwrap();
+        let submission = device.submit_deferred(encoder).unwrap();
+        arena.release(&mut device, first).unwrap();
+        let (third, _, before_completion, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_ne!(before_completion, first_offset);
+        device.wait_queue_idle().unwrap();
+        assert!(matches!(
+            device.poll_submission(submission),
+            Ok(gfx_core::SubmissionStatus::Complete)
+        ));
+        arena.reclaim_after_gpu_idle();
+        let (fourth, reused_buffer, after_completion, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_eq!((reused_buffer, after_completion), (buffer, first_offset));
+        arena.release(&mut device, second).unwrap();
+        arena.release(&mut device, third).unwrap();
+        arena.release(&mut device, fourth).unwrap();
+        assert!(arena.available_pages.is_empty());
+        assert_eq!(arena.free_pages, [0]);
+        let (next, _, _, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_eq!(next.page, 0);
+        assert_eq!(arena.pages.len(), 1);
+        arena.release(&mut device, next).unwrap();
+        device.destroy_command_encoder(encoder).unwrap();
+    }
+
+    #[test]
+    fn compact_voxel_encoding_uses_24_byte_stride_and_preserves_indices() {
+        let mut source = vertices();
+        source[0].uv = Vec2::new(0.25, 0.75);
+        source[0].color = [0.0, 0.5, 1.0, 1.0];
+        let mesh = Mesh::new(source, [0, 1, 2]).unwrap();
+        assert!(can_encode_voxel_mesh(&mesh));
+        let encoded = encode_voxel_mesh(&mesh).unwrap();
+
+        assert_eq!(encoded.vertices.len(), mesh.vertices().len() * 24);
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
+        assert_eq!(
+            encoded.indices,
+            [0u16, 1, 2]
+                .iter()
+                .flat_map(|index| index.to_ne_bytes())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(float(&encoded.vertices, 0), 0.0);
+        assert_eq!(float(&encoded.vertices, 16), 0.25);
+        assert_eq!(float(&encoded.vertices, 20), 0.75);
+        assert_eq!(
+            u32::from_ne_bytes(encoded.vertices[12..16].try_into().unwrap()),
+            0xffff8000
+        );
+    }
+
+    #[test]
+    fn compact_cpu_quads_upload_vertices_without_an_index_buffer() {
+        let source = Mesh::with_parts_without_raycast(
+            vertices(),
+            [0, 1, 2, 0, 2, 3],
+            [crate::MeshPart::new(0, 6, 0)],
+        )
+        .unwrap();
+        let expected = encode_voxel_mesh(&source).unwrap();
+        let compact = source.compact_voxel();
+        let encoded = encode_voxel_mesh(&compact).unwrap();
+
+        assert!(encoded.indices.is_empty());
+        assert_eq!(compact.index_count(), expected.indices.len() / 2);
+        for (actual, expected) in encoded
+            .vertices
+            .chunks_exact(24)
+            .zip(expected.vertices.chunks_exact(24))
+        {
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(
+            compact.geometry_storage_bytes(),
+            compact.vertex_count() * 27
+        );
+    }
+
+    #[test]
+    fn compact_voxel_encoding_excludes_out_of_range_colors_and_edge_masks() {
+        let mut source = vertices();
+        source[0].color[0] = 1.5;
+        let mesh = Mesh::new(source, [0, 1, 2]).unwrap();
+        assert!(!can_encode_voxel_mesh(&mesh));
+        let masked = Mesh::new(vertices(), [0, 1, 2])
+            .unwrap()
+            .with_edge_masks([TriangleEdgeMask::ALL])
+            .unwrap();
+        assert!(!can_encode_voxel_mesh(&masked));
+    }
+
+    #[test]
     fn mesh_without_edge_masks_keeps_shared_vertices_and_indices() {
         let mesh = Mesh::new(vertices(), vec![0, 1, 2, 0, 2, 3]).unwrap();
         let encoded = encode_mesh(&mesh).unwrap();
 
         assert_eq!(encoded.vertices.len(), 4 * 64);
-        assert_eq!(encoded.indices.len(), 6 * 4);
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
+        assert_eq!(encoded.indices.len(), 6 * 2);
         assert!(encoded.tangents.is_none());
+        let indices = encoded
+            .indices
+            .chunks_exact(2)
+            .map(|bytes| u16::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices, [0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn mesh_with_more_than_u16_vertices_keeps_u32_indices() {
+        let mesh = Mesh::new(
+            vec![vertices()[0]; u16::MAX as usize + 2],
+            vec![u16::MAX as u32 - 1, u16::MAX as u32, u16::MAX as u32 + 1],
+        )
+        .unwrap();
+        let encoded = encode_mesh(&mesh).unwrap();
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint32);
+        assert_eq!(encoded.indices.len(), 3 * 4);
         let indices = encoded
             .indices
             .chunks_exact(4)
             .map(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()))
             .collect::<Vec<_>>();
-        assert_eq!(indices, [0, 1, 2, 0, 2, 3]);
+        assert_eq!(indices, [65534, 65535, 65536]);
     }
 
     #[test]
@@ -815,10 +1517,11 @@ mod tests {
 
         assert_eq!(encoded.vertices.len(), 6 * 64);
         assert!(encoded.tangents.is_none());
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
         let indices = encoded
             .indices
-            .chunks_exact(4)
-            .map(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()))
+            .chunks_exact(2)
+            .map(|bytes| u16::from_ne_bytes(bytes.try_into().unwrap()))
             .collect::<Vec<_>>();
         assert_eq!(indices, [0, 1, 2, 3, 4, 5]);
         for (corner, expected) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]

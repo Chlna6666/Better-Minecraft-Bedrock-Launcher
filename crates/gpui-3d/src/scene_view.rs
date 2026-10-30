@@ -14,8 +14,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[cfg(test)]
 pub(crate) const SHADER: &str = include_str!("scene_view.wgsl");
 pub(crate) const PACKED_VERTEX_STRIDE: u32 = 64;
+pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
 // WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
 // stride is 80 bytes. Keeping this smaller makes DX12/Vulkan expose only a prefix of the
 // record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
@@ -35,10 +37,14 @@ pub(crate) const TANGENT_BINDING: u32 = 7;
 pub(crate) const INSTANCE_BINDING: u32 = 8;
 pub(crate) const FRAME_BINDING: u32 = 9;
 pub(crate) const METALLIC_ROUGHNESS_BINDING: u32 = 10;
+pub(crate) const VISIBLE_INSTANCE_BINDING: u32 = 11;
 
 static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 mod artifacts;
+mod batching;
+mod culling;
+mod generated;
 pub(crate) mod gpu;
 mod projection;
 mod renderer;
@@ -65,6 +71,8 @@ pub struct SceneView {
     pub(super) blend_edge_feather: f32,
     pub(super) anisotropy_enabled: bool,
     pub(super) sampling: crate::TextureSampling,
+    pub(super) voxel_shader: bool,
+    pub(super) culling_bounds: Option<crate::Aabb>,
 }
 
 /// Selects the rectangle used for the viewport's camera projection.
@@ -121,6 +129,8 @@ impl SceneView {
             blend_edge_feather: 0.0,
             anisotropy_enabled: false,
             sampling: crate::TextureSampling::Linear,
+            voxel_shader: false,
+            culling_bounds: None,
         }
     }
 
@@ -144,6 +154,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         }
     }
 
@@ -164,7 +176,28 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         }
+    }
+
+    /// Restricts nodes configured with [`crate::Node::with_culling_origin`] to a world-space
+    /// region. The minimum is inclusive and the maximum is exclusive. Other nodes are unaffected.
+    /// Changing this region preserves the scene view's GPU resources.
+    ///
+    /// # Errors
+    /// Returns [`SceneViewConfigError::InvalidCullingBounds`] for non-finite or unordered bounds.
+    pub fn with_culling_bounds(
+        &self,
+        bounds: Option<crate::Aabb>,
+    ) -> Result<Self, SceneViewConfigError> {
+        if bounds.is_some_and(|bounds| crate::Aabb::new(bounds.min, bounds.max).is_none()) {
+            return Err(SceneViewConfigError::InvalidCullingBounds);
+        }
+        Ok(Self {
+            culling_bounds: bounds,
+            ..self.clone()
+        })
     }
 
     /// Returns a snapshot with a transform applied to the complete scene.
@@ -197,6 +230,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         })
     }
 
@@ -217,6 +252,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         }
     }
 
@@ -257,6 +294,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         })
     }
 
@@ -286,6 +325,8 @@ impl SceneView {
             blend_edge_feather: pixels,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         })
     }
 
@@ -310,6 +351,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         }
     }
 
@@ -334,6 +377,20 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
+        }
+    }
+
+    /// Uses the lightweight fragment shader for unlit scene draws.
+    ///
+    /// It preserves albedo textures, vertex colors, alpha masking, and premultiplied blending.
+    /// Draws with lit materials continue through the general scene shader.
+    #[must_use]
+    pub fn with_voxel_shader(&self) -> Self {
+        Self {
+            voxel_shader: true,
+            ..self.clone()
         }
     }
 
@@ -369,6 +426,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         })
     }
 
@@ -391,6 +450,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         }
     }
 
@@ -413,12 +474,22 @@ impl SceneView {
                 return Err(SceneViewTextureError::DuplicateId);
             }
         }
+        let textures = if table.len() == self.textures.len()
+            && table.iter().all(|(id, asset)| {
+                self.textures
+                    .get(id)
+                    .is_some_and(|old| Arc::ptr_eq(old, asset))
+            }) {
+            self.textures.clone()
+        } else {
+            Arc::new(table)
+        };
         Ok(Self {
             id: self.id,
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
-            textures: Arc::new(table),
+            textures,
             animation: self.animation.clone(),
             animation_time: self.animation_time,
             projection_region: self.projection_region,
@@ -427,6 +498,8 @@ impl SceneView {
             blend_edge_feather: self.blend_edge_feather,
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
+            voxel_shader: self.voxel_shader,
+            culling_bounds: self.culling_bounds,
         })
     }
 
@@ -532,6 +605,9 @@ pub enum SceneViewConfigError {
     /// Scene transform matrix must be finite and invertible.
     #[error("scene-view transform must be finite and invertible")]
     InvalidSceneTransform,
+    /// Culling bounds must contain finite, ordered corners.
+    #[error("scene-view culling bounds must be finite and ordered")]
+    InvalidCullingBounds,
 }
 
 /// Errors produced while resolving scene-view texture assets.
@@ -630,10 +706,26 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_texture_assets_reuse_table_identity() {
+        let camera = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.0, 0.1, 10.0);
+        let texture =
+            Arc::new(TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([255, 0, 0, 255])).unwrap());
+        let view = SceneView::new(Arc::new(Scene::new()), camera)
+            .with_textures([texture.clone()])
+            .unwrap();
+        let same = view.with_textures([texture.clone()]).unwrap();
+        assert!(Arc::ptr_eq(&view.textures, &same.textures));
+        let replacement = Arc::new(texture.as_ref().clone());
+        let changed = view.with_textures([replacement]).unwrap();
+        assert!(!Arc::ptr_eq(&view.textures, &changed.textures));
+        assert!(view.with_textures([texture.clone(), texture]).is_err());
+    }
+
+    #[test]
     fn empty_scene_encodes_minimum_draw_and_light_slots() {
         let draw = PreparedScene::default();
         let bytes = encode_draws(&draw).unwrap();
-        assert_eq!(bytes.len(), DRAW_SLOT_STRIDE);
+        assert_eq!(bytes.len(), DRAW_PARAMS_STRIDE as usize);
         assert_eq!(encode_lights(&[]).len(), LIGHT_STRIDE as usize);
         assert_eq!(
             encode_frame_params(
@@ -705,7 +797,7 @@ mod tests {
         );
         let prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
         let bytes = encode_draws(&prepared).unwrap();
-        assert_eq!(bytes.len(), DRAW_SLOT_STRIDE);
+        assert_eq!(bytes.len(), DRAW_PARAMS_STRIDE as usize);
         assert_eq!(DRAW_PARAMS_STRIDE, 80);
         // DrawParams: base_color(0), emissive(16), metallic(32), roughness(36), alpha_cutoff(40),
         // normal_mapping_enabled(44), occlusion_strength(48), alpha_mode(52), light_count(56),
@@ -763,8 +855,8 @@ mod tests {
         assert_eq!(prepared.draws.len(), 2);
 
         let bytes = encode_draws(&prepared).unwrap();
-        assert_eq!(bytes.len(), DRAW_SLOT_STRIDE * 2);
-        for slot in [0, DRAW_SLOT_STRIDE] {
+        assert_eq!(bytes.len(), DRAW_PARAMS_STRIDE as usize * 2);
+        for slot in [0, DRAW_PARAMS_STRIDE as usize] {
             assert_eq!(
                 u32::from_ne_bytes(bytes[slot + 60..slot + 64].try_into().unwrap()),
                 1,
@@ -899,6 +991,11 @@ mod tests {
 
         assert_eq!(bytes.len(), 2 * INSTANCE_STRIDE as usize);
         assert_eq!(translations, [-1.0, 1.0]);
+        assert!(
+            bytes
+                .chunks_exact(INSTANCE_STRIDE as usize)
+                .all(|record| record[140..144] == [0; 4])
+        );
     }
 
     #[test]
@@ -916,6 +1013,43 @@ mod tests {
         });
         assert_eq!(scene_view.id, updated.id);
         assert!(Arc::ptr_eq(scene_view.scene(), updated.scene()));
+    }
+
+    #[test]
+    fn culling_bounds_keep_scene_identity_and_reject_invalid_regions() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let view = SceneView::new(scene.clone(), camera);
+        let bounds =
+            crate::Aabb::new(Vec3::new(-4.0, -4.0, -4.0), Vec3::new(4.0, 4.0, 4.0)).unwrap();
+        let updated = view
+            .with_culling_bounds(Some(bounds))
+            .unwrap()
+            .with_camera(camera);
+        assert_eq!(view.id, updated.id);
+        assert!(Arc::ptr_eq(&scene, updated.scene()));
+        assert_eq!(updated.culling_bounds, Some(bounds));
+        assert!(matches!(
+            view.with_culling_bounds(Some(crate::Aabb {
+                min: Vec3::ZERO,
+                max: Vec3::new(f32::NAN, 0.0, 0.0)
+            })),
+            Err(SceneViewConfigError::InvalidCullingBounds)
+        ));
+    }
+
+    #[test]
+    fn voxel_shader_is_opt_in_and_survives_camera_and_scene_updates() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let view = SceneView::new(scene, camera);
+        assert!(!view.voxel_shader);
+        let updated = view
+            .with_voxel_shader()
+            .with_camera(camera)
+            .with_scene(Arc::new(Scene::new()));
+        assert!(updated.voxel_shader);
+        assert_eq!(view.id, updated.id);
     }
 
     #[test]

@@ -61,8 +61,11 @@ mod asset;
 mod camera;
 mod light;
 mod material;
+pub use gfx_core::FrontFace;
 mod math;
 mod mesh;
+mod voxel_mesh;
+pub use voxel_mesh::{VOXEL_OCCLUDER, VoxelFaceTemplate, VoxelMeshInstance, VoxelMeshSource};
 mod prepare;
 mod raycast;
 mod render;
@@ -73,11 +76,11 @@ pub use animation::{
     AnimationError, AnimationScratch, Interpolation, Keyframe, RotationTrack, TransformTrack,
     Vec3Track, blend_transform,
 };
-pub use asset::{ImportedScene, ImportedTriangle, load_imported_bytes, load_imported_path};
 pub use asset::{
     EnvironmentError, EnvironmentMap, GltfAnimation, GltfCamera, GltfError, GltfLoadOptions,
     GltfScene, GltfStatistics, load_bytes, load_path,
 };
+pub use asset::{ImportedScene, ImportedTriangle, load_imported_bytes, load_imported_path};
 pub use camera::{Camera, CameraError, OrbitCamera, Projection};
 pub use light::{Light, LightError, PreparedLight, SpotCone, SpotLight};
 pub use material::{

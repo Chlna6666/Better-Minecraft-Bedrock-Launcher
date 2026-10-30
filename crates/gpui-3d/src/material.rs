@@ -46,6 +46,11 @@ pub enum TextureSampling {
     Linear,
     /// Reads the nearest texel; required for atlas images whose regions must not bleed together.
     Nearest,
+    /// Magnifies with the nearest texel while minifying with linear mip filtering.
+    ///
+    /// Pixel-art block and item textures stay crisp when the camera is close, while distant
+    /// surfaces keep smooth mip transitions instead of shimmering.
+    PixelArt,
 }
 
 /// Invalid RGBA8 texture data.
@@ -388,6 +393,8 @@ pub struct Material {
     pub shading_model: ShadingModel,
     /// Whether back-facing triangles remain visible.
     pub double_sided: bool,
+    /// Winding of front-facing triangles before applying the node transform.
+    pub front_face: gfx_core::FrontFace,
     /// Optional renderer-neutral albedo asset key.
     pub albedo_texture: Option<TextureAssetId>,
     /// Optional renderer-neutral normal-map asset key.
@@ -429,6 +436,7 @@ impl Material {
             alpha_cutoff: 0.5,
             shading_model: ShadingModel::MetallicRoughness,
             double_sided: false,
+            front_face: gfx_core::FrontFace::Ccw,
             albedo_texture: None,
             normal_texture: None,
             occlusion_texture: None,

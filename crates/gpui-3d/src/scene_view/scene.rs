@@ -1,22 +1,25 @@
 use super::{
-    DRAW_SLOT_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, SceneView,
+    DRAW_PARAMS_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, SceneView,
+    culling::{ARGUMENT_STRIDE, CullResources},
     gpu::{
-        DrawBindingResources, MeshResources, TextureResources, create_draw_resource_set,
-        create_mesh, create_storage_buffer, create_texture, destroy_mesh, destroy_texture,
-        encode_draws, encode_frame_params, encode_instances, encode_lights, grow_capacity,
+        DrawBindingResources, MeshArena, MeshResources, PendingMeshUpload, TextureResources,
+        buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set, create_mesh,
+        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, encode_draws,
+        encode_frame_params, encode_lights, grow_capacity,
     },
     projection::FrameProjection,
+    renderer::trace_timings,
     resources::RendererResources,
 };
 use crate::{
-    AlphaMode, AnimationScratch, Camera, Mat4, MeshId, PreparedScene, Scene, ShadingModel,
-    TextureAssetId,
+    Aabb, AlphaMode, AnimationScratch, Camera, Mat4, MaterialId, MeshId, MeshPart, NodeId,
+    PreparedDraw, PreparedScene, Scene, ShadingModel, TextureAssetId,
 };
 use anyhow::{Context as _, anyhow, bail};
 use gfx_core::{
     BackendKind, BindGroupId, BindGroupLayoutId, BufferDescriptor, BufferId, BufferUsage,
-    DrawIndexedCommand, IndexBufferBinding, IndexFormat, MemoryLocation, RenderCommand, SamplerId,
-    bind_group_list,
+    BufferWrite, BufferWriteDescriptor, DrawCommand, DrawIndexedCommand, DrawIndirectCommand,
+    IndexBufferBinding, RenderCommand, SamplerId, bind_group_list,
 };
 use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
@@ -27,16 +30,24 @@ use std::{
 };
 
 pub(super) struct SceneResources {
+    backend: BackendKind,
+    culling: Option<CullResources>,
+    mesh_shader: Option<super::generated::Shaders>,
+    mesh_draw_shader: Option<gfx_core::ShaderModuleId>,
+    generated_arguments: Option<(BufferId, usize)>,
+    generated_mappings: HashMap<BufferId, generated::Mapping>,
     scene: Option<Arc<Scene>>,
     texture_table: Option<Arc<HashMap<TextureAssetId, Arc<crate::TextureAsset>>>>,
     animation: Option<Arc<[crate::TransformTrack]>>,
     animation_time: Option<Duration>,
     animation_scratch: AnimationScratch,
     camera: Option<Camera>,
+    culling_bounds: Option<Aabb>,
     scene_transform: Option<Mat4>,
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     batches: Vec<DrawBatchRange>,
+    previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
     draw_buffer: BufferId,
     draw_capacity: usize,
     instance_buffer: BufferId,
@@ -45,15 +56,27 @@ pub(super) struct SceneResources {
     light_capacity: usize,
     frame_buffer: BufferId,
     frame_state: Option<FrameState>,
-    sampling: crate::TextureSampling,
-    meshes: HashMap<MeshId, MeshResources>,
+    meshes: HashMap<(MeshId, bool), MeshResources>,
+    arena: MeshArena,
+    retired_meshes: Vec<MeshResources>,
+    voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
-    draw_resources: Vec<DrawResources>,
+    draw_resources: Vec<BindGroupId>,
+    draw_resource_keys: Vec<DrawResourceKey>,
+    draw_addresses: Vec<DrawAddress>,
+    reorder_positions: Vec<usize>,
+    binding_cache: HashMap<DrawResourceKey, BindGroupId>,
+    last_binding_report: Option<Instant>,
     sampler: Option<SamplerId>,
     // Resource-cache age only; frame-visible output samples the extension frame time.
     pub(super) last_used_at: Instant,
     pub(super) last_used_frame: u64,
 }
+
+const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
+
+mod generated;
+mod reorder;
 
 /// Values that only affect the frame-wide uniform buffer, not the prepared draw list.
 #[derive(Clone, Copy, PartialEq)]
@@ -63,38 +86,98 @@ struct FrameState {
 }
 
 #[derive(Clone, Copy)]
-struct DrawBatchRange {
-    first_instance: usize,
-    instance_count: usize,
+pub(super) struct DrawBatchRange {
+    pub(super) first_instance: usize,
+    pub(super) instance_count: usize,
 }
 
-struct DrawResources {
-    draw_index: usize,
-    instance_count: usize,
-    mesh_id: MeshId,
-    generation: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DrawAddress {
+    arguments_offset: u64,
+    first_instance: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum DrawMeshKey {
+    Mesh { id: MeshId, generation: u64 },
+    VoxelPage(BufferId),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DrawResourceKey {
+    mesh: DrawMeshKey,
+    visible_instances: Option<BufferId>,
     albedo_id: Option<TextureAssetId>,
     normal_id: Option<TextureAssetId>,
     occlusion_id: Option<TextureAssetId>,
     metallic_roughness_id: Option<TextureAssetId>,
-    bind_group: BindGroupId,
+}
+
+impl DrawResourceKey {
+    fn uses_active_assets(
+        self,
+        meshes: &HashSet<MeshId>,
+        voxel_pages: &HashSet<BufferId>,
+        textures: &HashSet<TextureAssetId>,
+    ) -> bool {
+        (match self.mesh {
+            DrawMeshKey::Mesh { id, .. } => meshes.contains(&id),
+            DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
+        }) && [
+            self.albedo_id,
+            self.normal_id,
+            self.occlusion_id,
+            self.metallic_roughness_id,
+        ]
+        .into_iter()
+        .flatten()
+        .all(|id| textures.contains(&id))
+    }
+
+    fn is_resident(
+        self,
+        meshes: &HashMap<(MeshId, bool), MeshResources>,
+        voxel_pages: &HashSet<BufferId>,
+        visible_instances: Option<BufferId>,
+    ) -> bool {
+        self.visible_instances == visible_instances
+            && match self.mesh {
+                DrawMeshKey::Mesh { id, generation } => meshes
+                    .get(&(id, false))
+                    .is_some_and(|mesh| mesh.generation == generation),
+                DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
+            }
+    }
 }
 
 impl SceneResources {
-    pub(super) fn new(device: &mut dyn ExtensionDevice) -> gpui::Result<Self> {
+    pub(super) fn gpu_culling_counts(&self) -> (usize, usize) {
+        self.culling.as_ref().map_or((0, 0), CullResources::counts)
+    }
+    pub(super) fn has_retired_arena_ranges(&self) -> bool {
+        self.arena.has_retired_ranges()
+    }
+
+    pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
+        self.arena.reclaim_after_gpu_idle();
+    }
+    pub(super) fn new(
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+    ) -> gpui::Result<Self> {
         let draw_capacity = 1;
         let light_capacity = 1;
         let draw_buffer = create_storage_buffer(
             device,
             "gpui-3d draw data",
-            draw_capacity * DRAW_SLOT_STRIDE,
-            MemoryLocation::CpuToGpu,
+            draw_capacity * DRAW_PARAMS_STRIDE as usize,
+            buffer_memory_location(backend),
         )?;
         let light_buffer = match create_storage_buffer(
             device,
             "gpui-3d lights",
             light_capacity * LIGHT_STRIDE as usize,
-            MemoryLocation::CpuToGpu,
+            buffer_memory_location(backend),
         ) {
             Ok(buffer) => buffer,
             Err(error) => {
@@ -107,7 +190,7 @@ impl SceneResources {
             device,
             "gpui-3d instance data",
             instance_capacity * INSTANCE_STRIDE as usize,
-            MemoryLocation::CpuToGpu,
+            buffer_memory_location(backend),
         ) {
             Ok(buffer) => buffer,
             Err(error) => {
@@ -120,7 +203,7 @@ impl SceneResources {
             label: Some("gpui-3d frame params".into()),
             size: FRAME_PARAMS_STRIDE as u64,
             usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
-            memory_location: MemoryLocation::CpuToGpu,
+            memory_location: buffer_memory_location(backend),
         }) {
             Ok(buffer) => buffer,
             Err(error) => {
@@ -131,16 +214,24 @@ impl SceneResources {
             }
         };
         Ok(Self {
+            backend,
+            culling: None,
+            mesh_shader: None,
+            mesh_draw_shader: None,
+            generated_arguments: None,
+            generated_mappings: HashMap::new(),
             scene: None,
             texture_table: None,
             animation: None,
             animation_time: None,
             animation_scratch: AnimationScratch::new(),
             camera: None,
+            culling_bounds: None,
             scene_transform: None,
             projection: None,
             prepared: PreparedScene::default(),
             batches: Vec::new(),
+            previous_draws: Vec::new(),
             draw_buffer,
             draw_capacity,
             instance_buffer,
@@ -149,10 +240,17 @@ impl SceneResources {
             light_capacity,
             frame_buffer,
             frame_state: None,
-            sampling: crate::TextureSampling::Linear,
             meshes: HashMap::new(),
+            arena: MeshArena::default(),
+            retired_meshes: Vec::new(),
+            voxel_shader: false,
             textures: HashMap::new(),
             draw_resources: Vec::new(),
+            draw_resource_keys: Vec::new(),
+            draw_addresses: Vec::new(),
+            reorder_positions: Vec::new(),
+            binding_cache: HashMap::new(),
+            last_binding_report: None,
             sampler: None,
             last_used_at: Instant::now(),
             last_used_frame: 0,
@@ -166,57 +264,174 @@ impl SceneResources {
         scene_view: &SceneView,
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
+        let trace_started = trace_timings().then(Instant::now);
+        let mut camera_ms = 0.0;
+        let mut buffer_ms = 0.0;
+        let mut walk_ms = 0.0;
+        let mut assets_ms = 0.0;
+        let mut batch_ms = 0.0;
         let projection = FrameProjection::new(scene_view, context)?;
         let sampler =
             renderer.sampler(device, scene_view.sampling, scene_view.anisotropy_enabled)?;
         let assets_changed =
             scene_assets_changed(self.scene.as_ref(), self.texture_table.as_ref(), scene_view);
+        let camera_changed = self.camera != Some(scene_view.camera)
+            || self.projection.map(FrameProjection::aspect) != Some(projection.aspect());
+        let culling_bounds_changed = self.culling_bounds != scene_view.culling_bounds;
+        // A camera-only update can reuse the retained draw list unless distance-based LOD may
+        // select a different mesh. In that case re-walk the scene before uploading draw state.
+        let gpu_culling = scene_view.voxel_shader && renderer.cull_shader.is_some();
+        let culling_mode_changed = self.prepared.set_gpu_culling(gpu_culling);
         let draw_state_changed = assets_changed
+            || culling_mode_changed
+            || (camera_changed && self.prepared.uses_lod())
             || self.scene_transform != Some(scene_view.scene_transform)
             || self
                 .animation
                 .as_ref()
                 .is_none_or(|animation| !Arc::ptr_eq(animation, &scene_view.animation))
             || self.animation_time != Some(scene_view.animation_time);
-        // A camera or viewport change only re-culls, re-sorts, and rewrites the frame parameters.
-        // It must not re-walk the scene graph or rebuild the per-draw material records.
-        let camera_changed = self.camera != Some(scene_view.camera)
-            || self.projection.map(FrameProjection::aspect) != Some(projection.aspect());
         let frame_changed = camera_changed
             || self.frame_state.is_none_or(|state| {
                 state.camera != scene_view.camera || state.projection != projection
             });
         let sampler_changed = self.sampler != Some(sampler);
-        if !draw_state_changed && !frame_changed && !sampler_changed {
+        let voxel_shader_changed = self.voxel_shader != scene_view.voxel_shader;
+        if !draw_state_changed
+            && !frame_changed
+            && !culling_bounds_changed
+            && !sampler_changed
+            && !voxel_shader_changed
+        {
             return Ok(());
         }
+        self.prepared.set_culling_bounds(scene_view.culling_bounds);
+        let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
+        let mut reordered_blends = None;
         if draw_state_changed {
+            let stage_started = trace_timings().then(Instant::now);
             update_prepared(
                 &mut self.prepared,
                 &mut self.animation_scratch,
                 scene_view,
                 projection.aspect(),
             )?;
-            self.batches.clear();
-            self.batches
-                .extend(self.prepared.draw_batches().map(|batch| DrawBatchRange {
-                    first_instance: batch.first_instance(),
-                    instance_count: batch.draws().len(),
-                }));
+            if let Some(started) = stage_started {
+                walk_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+            let stage_started = trace_timings().then(Instant::now);
             validate_textures(&self.prepared, scene_view)?;
             self.ensure_textures(device, scene_view)?;
-            self.ensure_meshes(device, context.backend_kind())?;
-        } else if camera_changed
-            && self
+            self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
+            if let Some(started) = stage_started {
+                assets_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+        } else if camera_changed || culling_bounds_changed {
+            let camera_started = trace_timings().then(Instant::now);
+            let tracked_start = if gpu_culling {
+                self.prepared
+                    .draws
+                    .partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend)
+            } else {
+                0
+            };
+            self.previous_draws.clear();
+            if !gpu_culling {
+                self.previous_draws.extend(
+                    self.prepared
+                        .draws
+                        .iter()
+                        .skip(tracked_start)
+                        .map(draw_identity),
+                );
+            }
+            if self
                 .prepared
                 .update_camera(scene_view.camera, projection.aspect())?
+            {
+                draw_list_changed = voxel_shader_changed
+                    || if gpu_culling {
+                        self.prepared
+                            .blended_order()
+                            .iter()
+                            .enumerate()
+                            .any(|(index, &previous)| index != previous)
+                    } else {
+                        self.previous_draws.len()
+                            != self.prepared.draws.len().saturating_sub(tracked_start)
+                            || self.previous_draws.iter().copied().ne(self
+                                .prepared
+                                .draws
+                                .iter()
+                                .skip(tracked_start)
+                                .map(draw_identity))
+                    };
+                if draw_list_changed {
+                    if gpu_culling && !voxel_shader_changed && !sampler_changed {
+                        reordered_blends = Some(tracked_start);
+                    }
+                    if reordered_blends.is_none() {
+                        // CPU re-culling can reveal assets not uploaded by earlier frames.
+                        self.ensure_textures(device, scene_view)?;
+                        self.ensure_meshes(
+                            device,
+                            context.backend_kind(),
+                            scene_view.voxel_shader,
+                        )?;
+                    }
+                }
+            }
+            if let Some(started) = camera_started {
+                camera_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
+        if voxel_shader_changed && !draw_state_changed {
+            self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
+        }
+        if draw_list_changed && reordered_blends.is_none() {
+            let batch_started = trace_timings().then(Instant::now);
+            self.batches = if gpu_culling {
+                super::batching::group_voxel_batches(&mut self.prepared.draws, &self.meshes)
+            } else {
+                self.prepared
+                    .draw_batches()
+                    .map(|batch| DrawBatchRange {
+                        first_instance: batch.first_instance(),
+                        instance_count: batch.draws().len(),
+                    })
+                    .collect()
+            };
+            if let Some(started) = batch_started {
+                batch_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
+        if reordered_blends.is_some() {
+            // The CPU order is already changed. A failed binding remap must rebuild
+            // draw state next frame instead of accepting partially reordered bindings.
+            self.scene = None;
+        }
+        if gpu_culling
+            && reordered_blends.is_none()
+            && (draw_list_changed || self.culling.is_none())
         {
-            self.batches.clear();
-            self.batches
-                .extend(self.prepared.draw_batches().map(|batch| DrawBatchRange {
-                    first_instance: batch.first_instance(),
-                    instance_count: batch.draws().len(),
-                }));
+            if let Some(culling) = &mut self.culling {
+                culling.update(
+                    device,
+                    &self.prepared.draws,
+                    &self.batches,
+                    Some(&self.meshes),
+                )?;
+            } else {
+                self.culling = Some(CullResources::create(
+                    device,
+                    &self.prepared.draws,
+                    &self.batches,
+                    self.backend,
+                    Some(&self.meshes),
+                )?);
+            }
+        } else if !gpu_culling && let Some(previous) = self.culling.take() {
+            previous.destroy(device)?;
         }
         if frame_changed {
             self.sync_frame_params(device, projection, scene_view.camera)?;
@@ -225,39 +440,86 @@ impl SceneResources {
                 projection,
             });
         }
-        if draw_state_changed {
+        if draw_list_changed {
+            let buffer_started = trace_timings().then(Instant::now);
             let bind_group_layout = renderer.bind_group_layout()?;
-            self.sync_buffers(
-                device,
-                renderer,
-                bind_group_layout,
-                projection,
-                scene_view.camera,
-                sampler,
-                sampler_changed,
-            )?;
-        } else {
+            if let Some(start) = reordered_blends {
+                self.sync_reordered_blends(start)?;
+            } else {
+                self.sync_buffers(
+                    device,
+                    renderer,
+                    bind_group_layout,
+                    sampler,
+                    sampler_changed,
+                    scene_view.voxel_shader,
+                )?;
+            }
+            if let Some(started) = buffer_started {
+                buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+        } else if sampler_changed {
             self.sync_draw_resources(
                 device,
                 renderer,
                 renderer.bind_group_layout()?,
                 sampler,
                 sampler_changed,
+                scene_view.voxel_shader,
             )?;
         }
         if assets_changed {
-            // Frustum culling is transient during camera motion; keep those GPU resources resident.
-            self.retire_textures(device)?;
-            self.retire_meshes(device)?;
+            // Keep scene-owned meshes resident across camera culling and hidden warm-cache nodes.
+            let (active_meshes, active_textures) = scene_asset_ids(scene_view.scene());
+            self.retire_bindings(device, &active_meshes, &active_textures)?;
+            self.retire_textures(device, &active_textures)?;
+            self.retire_meshes(&active_meshes);
+        }
+        for mesh in self.retired_meshes.drain(..) {
+            destroy_mesh(device, mesh, &mut self.arena)?;
+        }
+        if gpu_culling {
+            if frame_changed || draw_list_changed || culling_bounds_changed {
+                self.culling
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("GPU culling resources missing"))?
+                    .dispatch(
+                        device,
+                        renderer
+                            .cull_shader
+                            .ok_or_else(|| anyhow!("GPU culling shader missing"))?,
+                        self.frame_buffer,
+                        scene_view.culling_bounds,
+                        self.generated_arguments,
+                    )?;
+            }
         }
         self.scene = Some(scene_view.scene.clone());
         self.texture_table = Some(scene_view.textures.clone());
         self.animation = Some(scene_view.animation.clone());
         self.animation_time = Some(scene_view.animation_time);
         self.camera = Some(scene_view.camera);
+        self.culling_bounds = scene_view.culling_bounds;
         self.scene_transform = Some(scene_view.scene_transform);
         self.projection = Some(projection);
         self.sampler = Some(sampler);
+        self.voxel_shader = scene_view.voxel_shader;
+        if let Some(started) = trace_started {
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if total_ms >= 16.0 {
+                eprintln!(
+                    "gpui3d prepare_detail draws={} assets_changed={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2}",
+                    self.prepared.draws.len(),
+                    assets_changed,
+                    camera_ms,
+                    walk_ms,
+                    assets_ms,
+                    batch_ms,
+                    buffer_ms,
+                    total_ms,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -284,11 +546,11 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         renderer: &RendererResources,
         bind_group_layout: BindGroupLayoutId,
-        projection: FrameProjection,
-        camera: Camera,
         sampler: SamplerId,
         sampler_changed: bool,
+        voxel_shader: bool,
     ) -> gpui::Result<()> {
+        let trace_started = trace_timings().then(Instant::now);
         let draw_count = self.prepared.draws.len().max(1);
         let instance_count = draw_count;
         let light_count = self.prepared.lights.len().max(1);
@@ -299,14 +561,15 @@ impl SceneResources {
         let replace_instances = next_instance_capacity != self.instance_capacity;
         let replace_lights = next_light_capacity != self.light_capacity;
         let draw_bytes = encode_draws(&self.prepared)?;
-        let instance_bytes = encode_instances(&self.prepared)?;
+        let instance_bytes = self.encode_draw_instances(&self.prepared.draws, voxel_shader)?;
         let light_bytes = encode_lights(&self.prepared.lights);
+        let encode_ms = trace_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         let new_draw = if replace_draw {
             Some(create_storage_buffer(
                 device,
                 "gpui-3d draw data",
-                next_draw_capacity * DRAW_SLOT_STRIDE,
-                MemoryLocation::CpuToGpu,
+                next_draw_capacity * DRAW_PARAMS_STRIDE as usize,
+                buffer_memory_location(self.backend),
             )?)
         } else {
             None
@@ -316,7 +579,7 @@ impl SceneResources {
                 device,
                 "gpui-3d lights",
                 next_light_capacity * LIGHT_STRIDE as usize,
-                MemoryLocation::CpuToGpu,
+                buffer_memory_location(self.backend),
             ) {
                 Ok(buffer) => Some(buffer),
                 Err(error) => {
@@ -334,7 +597,7 @@ impl SceneResources {
                 device,
                 "gpui-3d instance data",
                 next_instance_capacity * INSTANCE_STRIDE as usize,
-                MemoryLocation::CpuToGpu,
+                buffer_memory_location(self.backend),
             ) {
                 Ok(buffer) => Some(buffer),
                 Err(error) => {
@@ -353,10 +616,17 @@ impl SceneResources {
         let draw_buffer = new_draw.unwrap_or(self.draw_buffer);
         let instance_buffer = new_instances.unwrap_or(self.instance_buffer);
         let light_buffer = new_lights.unwrap_or(self.light_buffer);
-        let write_result = device
-            .write_buffer(draw_buffer, 0, &draw_bytes)
-            .and_then(|()| device.write_buffer(instance_buffer, 0, &instance_bytes))
-            .and_then(|()| device.write_buffer(light_buffer, 0, &light_bytes));
+        let write_started = trace_started.map(|_| Instant::now());
+        let writes = [
+            (draw_buffer, draw_bytes.as_slice()),
+            (instance_buffer, instance_bytes.as_slice()),
+            (light_buffer, light_bytes.as_slice()),
+        ]
+        .map(|(buffer, data)| gfx_core::BufferWrite {
+            descriptor: gfx_core::BufferWriteDescriptor { buffer, offset: 0 },
+            data,
+        });
+        let write_result = device.write_buffer_batch(&writes);
         if let Err(error) = write_result {
             if let Some(buffer) = new_draw {
                 device.destroy_buffer(buffer)?;
@@ -369,6 +639,7 @@ impl SceneResources {
             }
             return Err(error.into());
         }
+        let write_ms = write_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         let old_draw = self.draw_buffer;
         let old_draw_capacity = self.draw_capacity;
         let old_instances = self.instance_buffer;
@@ -381,12 +652,14 @@ impl SceneResources {
         self.instance_capacity = next_instance_capacity;
         self.light_buffer = light_buffer;
         self.light_capacity = next_light_capacity;
+        let bind_started = trace_started.map(|_| Instant::now());
         if let Err(error) = self.sync_draw_resources(
             device,
             renderer,
             bind_group_layout,
             sampler,
             sampler_changed || replace_draw || replace_instances || replace_lights,
+            voxel_shader,
         ) {
             self.draw_buffer = old_draw;
             self.draw_capacity = old_draw_capacity;
@@ -405,6 +678,17 @@ impl SceneResources {
             }
             return Err(error);
         }
+        self.draw_addresses = self
+            .batches
+            .iter()
+            .enumerate()
+            .map(|(index, batch)| DrawAddress {
+                arguments_offset: index as u64 * ARGUMENT_STRIDE,
+                first_instance: batch.first_instance,
+            })
+            .collect();
+        self.sync_generated_draws(device, voxel_shader)?;
+        let bind_ms = bind_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         if replace_draw {
             device.destroy_buffer(old_draw)?;
         }
@@ -414,6 +698,19 @@ impl SceneResources {
         if replace_instances {
             device.destroy_buffer(old_instances)?;
         }
+        if let Some(started) = trace_started
+            && started.elapsed() >= std::time::Duration::from_millis(16)
+        {
+            eprintln!(
+                "gpui3d buffer_detail draws={} bytes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
+                draw_count,
+                draw_bytes.len() + instance_bytes.len() + light_bytes.len(),
+                encode_ms.unwrap_or_default(),
+                write_ms.unwrap_or_default(),
+                bind_ms.unwrap_or_default(),
+                replace_draw || replace_instances || replace_lights,
+            );
+        }
         Ok(())
     }
 
@@ -422,11 +719,16 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         scene_view: &SceneView,
     ) -> gpui::Result<()> {
+        let mut seen = HashSet::new();
         for draw in &self.prepared.draws {
+            if !seen.insert(Arc::as_ptr(&draw.material)) {
+                continue;
+            }
             for id in [
                 draw.material.albedo_texture,
                 draw.material.normal_texture,
                 draw.material.occlusion_texture,
+                draw.material.metallic_roughness_texture,
             ]
             .into_iter()
             .flatten()
@@ -444,20 +746,11 @@ impl SceneResources {
         Ok(())
     }
 
-    fn retire_textures(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        let active = self
-            .prepared
-            .draws
-            .iter()
-            .flat_map(|draw| {
-                [
-                    draw.material.albedo_texture,
-                    draw.material.normal_texture,
-                    draw.material.occlusion_texture,
-                ]
-            })
-            .flatten()
-            .collect::<HashSet<_>>();
+    fn retire_textures(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        active: &HashSet<TextureAssetId>,
+    ) -> gpui::Result<()> {
         let stale = self
             .textures
             .keys()
@@ -476,9 +769,13 @@ impl SceneResources {
         &mut self,
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
+        voxel_shader: bool,
     ) -> gpui::Result<()> {
+        let mut pending = Vec::new();
+        let mut pending_ids = HashSet::new();
+        let mut pending_bytes = 0usize;
         for draw in &self.prepared.draws {
-            let id = draw.mesh.id();
+            let id = mesh_key(draw, voxel_shader);
             let generation = draw.mesh.generation();
             if self
                 .meshes
@@ -487,32 +784,106 @@ impl SceneResources {
             {
                 continue;
             }
-            if let Some(old) = self.meshes.remove(&id) {
-                destroy_mesh(device, old)?;
+            if !pending_ids.insert((id, generation)) {
+                continue;
             }
-            let mesh = create_mesh(device, &draw.mesh, backend)?;
-            self.meshes.insert(id, mesh);
+            let caps = device.compute_capabilities();
+            let creation = (|| {
+                if id.1
+                    && draw.mesh.gpu_voxels().is_some()
+                    && caps.indirect_draw
+                    && !caps.max_workgroups.contains(&0)
+                {
+                    if self.mesh_shader.is_none() {
+                        self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);
+                    }
+                    super::generated::create(
+                        device,
+                        &draw.mesh,
+                        self.mesh_shader
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("missing meshing shader"))?,
+                    )
+                    .map(|mesh| (mesh, None))
+                } else {
+                    create_mesh(device, &draw.mesh, backend, id.1, &mut self.arena)
+                }
+            })();
+            let (mesh, upload) = match creation {
+                Ok(created) => created,
+                Err(error) => {
+                    discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+                    return Err(error);
+                }
+            };
+            pending_bytes = pending_bytes
+                .saturating_add(upload.as_ref().map_or(0, |upload| upload.bytes.len()));
+            pending.push((id, mesh, upload));
+            if pending_bytes >= MESH_UPLOAD_BATCH_BYTES || pending.len() >= 256 {
+                upload_pending_meshes(
+                    device,
+                    &mut pending,
+                    &mut self.meshes,
+                    &mut self.retired_meshes,
+                    &mut self.arena,
+                )?;
+                pending_ids.clear();
+                pending_bytes = 0;
+            }
         }
-        Ok(())
+        upload_pending_meshes(
+            device,
+            &mut pending,
+            &mut self.meshes,
+            &mut self.retired_meshes,
+            &mut self.arena,
+        )
     }
 
-    fn retire_meshes(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        let active = self
-            .prepared
-            .draws
-            .iter()
-            .map(|draw| draw.mesh.id())
-            .collect::<HashSet<_>>();
+    fn retire_meshes(&mut self, active: &HashSet<MeshId>) {
         let stale = self
             .meshes
             .keys()
-            .filter(|id| !active.contains(id))
+            .filter(|(id, _)| !active.contains(id))
             .copied()
             .collect::<Vec<_>>();
         for id in stale {
             if let Some(mesh) = self.meshes.remove(&id) {
-                destroy_mesh(device, mesh)?;
+                self.retired_meshes.push(mesh);
             }
+        }
+    }
+
+    fn retire_bindings(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        active_meshes: &HashSet<MeshId>,
+        active_textures: &HashSet<TextureAssetId>,
+    ) -> gpui::Result<()> {
+        let active_voxel_pages = self
+            .meshes
+            .iter()
+            .filter(|((id, compact), _)| *compact && active_meshes.contains(id))
+            .map(|(_, mesh)| mesh.vertices)
+            .collect::<HashSet<_>>();
+        let stale = self
+            .binding_cache
+            .iter()
+            .filter_map(|(key, &binding)| {
+                (!key.uses_active_assets(active_meshes, &active_voxel_pages, active_textures)
+                    || !key.is_resident(
+                        &self.meshes,
+                        &active_voxel_pages,
+                        self.culling
+                            .as_ref()
+                            .map(|culling| culling.visible_instances),
+                    ))
+                .then_some((*key, binding))
+            })
+            .collect::<Vec<_>>();
+        for (key, binding) in stale {
+            device.destroy_bind_group(binding)?;
+            self.binding_cache.remove(&key);
         }
         Ok(())
     }
@@ -524,10 +895,17 @@ impl SceneResources {
         bind_group_layout: BindGroupLayoutId,
         sampler: SamplerId,
         force: bool,
+        voxel_shader: bool,
     ) -> gpui::Result<()> {
         let mut next = Vec::with_capacity(self.batches.len());
-        let mut created = Vec::new();
-        let instance_count = self.prepared.draws.len();
+        let mut next_keys = Vec::with_capacity(self.batches.len());
+        let mut created = HashMap::new();
+        // Bind the allocated range so culling alone does not invalidate every bind group.
+        let instance_count = self.instance_capacity;
+        let trace_started = trace_timings().then(Instant::now);
+        let mut reused = 0usize;
+        let mut positional_reused = 0usize;
+        let mut created_count = 0usize;
         for (batch_index, batch) in self.batches.iter().enumerate() {
             let index = batch.first_instance;
             let draw = self
@@ -536,39 +914,56 @@ impl SceneResources {
                 .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
             let mesh_id = draw.mesh.id();
+            let compact_voxel = mesh_key(draw, voxel_shader).1;
             let generation = draw.mesh.generation();
+            let mesh = self
+                .meshes
+                .get(&(mesh_id, compact_voxel))
+                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             let albedo_id = draw.material.albedo_texture;
             let normal_id = draw.material.normal_texture;
             let occlusion_id = draw.material.occlusion_texture;
             let metallic_roughness_id = draw.material.metallic_roughness_texture;
+            let key = DrawResourceKey {
+                visible_instances: self
+                    .culling
+                    .as_ref()
+                    .map(|culling| culling.visible_instances),
+                mesh: if compact_voxel {
+                    DrawMeshKey::VoxelPage(mesh.vertices)
+                } else {
+                    DrawMeshKey::Mesh {
+                        id: mesh_id,
+                        generation,
+                    }
+                },
+                albedo_id,
+                normal_id,
+                occlusion_id,
+                metallic_roughness_id,
+            };
             if !force
-                && let Some(previous) = self.draw_resources.get(batch_index)
-                && previous.draw_index == index
-                && previous.instance_count == instance_count
-                && previous.mesh_id == mesh_id
-                && previous.generation == generation
-                && previous.albedo_id == albedo_id
-                && previous.normal_id == normal_id
-                && previous.occlusion_id == occlusion_id
-                && previous.metallic_roughness_id == metallic_roughness_id
+                && self.draw_resource_keys.get(batch_index) == Some(&key)
+                && let Some(&bind_group) = self.draw_resources.get(batch_index)
             {
-                next.push(DrawResources {
-                    draw_index: index,
-                    instance_count,
-                    mesh_id,
-                    generation,
-                    albedo_id,
-                    normal_id,
-                    occlusion_id,
-                    metallic_roughness_id,
-                    bind_group: previous.bind_group,
-                });
+                reused += 1;
+                positional_reused += 1;
+                next.push(bind_group);
+                next_keys.push(key);
                 continue;
             }
-            let mesh = self
-                .meshes
-                .get(&mesh_id)
-                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+            if let Some(&bind_group) = created.get(&key).or_else(|| {
+                if force {
+                    None
+                } else {
+                    self.binding_cache.get(&key)
+                }
+            }) {
+                reused += 1;
+                next.push(bind_group);
+                next_keys.push(key);
+                continue;
+            }
             let albedo_view = if let Some(id) = albedo_id {
                 self.textures
                     .get(&id)
@@ -607,7 +1002,7 @@ impl SceneResources {
                     bind_group_layout,
                     mesh,
                     draw_buffer: self.draw_buffer,
-                    draw_index: index,
+                    draw_capacity: self.draw_capacity,
                     instance_buffer: self.instance_buffer,
                     instance_count,
                     light_buffer: self.light_buffer,
@@ -618,38 +1013,85 @@ impl SceneResources {
                     metallic_roughness_view,
                     material_sampler: sampler,
                     frame_buffer: self.frame_buffer,
+                    visible_instances: self.culling.as_ref().map(|culling| {
+                        (
+                            culling.visible_instances,
+                            culling.instance_capacity as u64 * 4,
+                        )
+                    }),
                 },
             ) {
                 Ok(bind_group) => {
-                    created.push(bind_group);
-                    next.push(DrawResources {
-                        draw_index: index,
-                        instance_count,
-                        mesh_id,
-                        generation,
-                        albedo_id,
-                        normal_id,
-                        occlusion_id,
-                        metallic_roughness_id,
-                        bind_group,
-                    });
+                    created_count += 1;
+                    created.insert(key, bind_group);
+                    next.push(bind_group);
+                    next_keys.push(key);
                 }
                 Err(error) => {
-                    for bind_group in created {
+                    for bind_group in created.into_values() {
                         device.destroy_bind_group(bind_group)?;
                     }
                     return Err(error);
                 }
             }
         }
-        let old = std::mem::replace(&mut self.draw_resources, next);
-        for previous in old {
-            if !self
-                .draw_resources
-                .iter()
-                .any(|current| current.bind_group == previous.bind_group)
+        self.draw_resources = next;
+        self.draw_resource_keys = next_keys;
+        if force {
+            for bind_group in self.binding_cache.values().copied() {
+                device.destroy_bind_group(bind_group)?;
+            }
+            self.binding_cache = created;
+        } else {
+            self.binding_cache.extend(created);
+        }
+        let resident_voxel_pages = self
+            .meshes
+            .iter()
+            .filter(|((_, compact), _)| *compact)
+            .map(|(_, mesh)| mesh.vertices)
+            .collect::<HashSet<_>>();
+        let stale = self
+            .binding_cache
+            .iter()
+            .filter_map(|(key, &binding)| {
+                (!key.is_resident(
+                    &self.meshes,
+                    &resident_voxel_pages,
+                    self.culling
+                        .as_ref()
+                        .map(|culling| culling.visible_instances),
+                ))
+                .then_some((*key, binding))
+            })
+            .collect::<Vec<_>>();
+        for (key, binding) in stale {
+            device.destroy_bind_group(binding)?;
+            self.binding_cache.remove(&key);
+        }
+        if let Some(started) = trace_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let now = Instant::now();
+            if elapsed_ms >= 16.0
+                || self
+                    .last_binding_report
+                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
             {
-                device.destroy_bind_group(previous.bind_group)?;
+                let (arena_pages, arena_capacity, arena_live, arena_dead) = self.arena.stats();
+                eprintln!(
+                    "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={}",
+                    self.batches.len(),
+                    reused,
+                    positional_reused,
+                    created_count,
+                    self.binding_cache.len(),
+                    elapsed_ms,
+                    arena_pages,
+                    arena_capacity,
+                    arena_live,
+                    arena_dead,
+                );
+                self.last_binding_report = Some(now);
             }
         }
         Ok(())
@@ -658,8 +1100,11 @@ impl SceneResources {
     pub(super) fn append_steps(
         &self,
         renderer: &RendererResources,
+        voxel_shader: bool,
         steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
+        steps.reserve(self.batches.len());
+        let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
             let index = batch.first_instance;
             let draw = self
@@ -669,48 +1114,123 @@ impl SceneResources {
                 .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
             let mesh = self
                 .meshes
-                .get(&draw.mesh.id())
+                .get(&mesh_key(draw, voxel_shader))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+            // Indexed ranges still use direct draws, so retain their CPU frustum test.
+            if self.culling.is_some()
+                && !mesh.procedural_quads
+                && (!bounds_visible(draw.bounds) || !self.prepared.is_draw_in_culling_bounds(draw))
+            {
+                continue;
+            }
             let draw_resources = self
                 .draw_resources
                 .get(batch_index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
-            let pipeline = if draw.material.alpha_mode == AlphaMode::Blend {
-                renderer
-                    .blended_pipeline
-                    .ok_or_else(|| anyhow!("GPUI 3D blended pipeline is unavailable"))?
+            let voxel = mesh_key(draw, voxel_shader).1;
+            let pipeline = if mesh.generated.is_some() {
+                renderer.generated_pipeline(
+                    draw.material.alpha_mode == AlphaMode::Blend,
+                    draw.raster_front_face(),
+                )?
             } else {
-                renderer
-                    .opaque_pipeline
-                    .ok_or_else(|| anyhow!("GPUI 3D opaque pipeline is unavailable"))?
+                renderer.pipeline(
+                    voxel,
+                    draw.material.alpha_mode == AlphaMode::Blend,
+                    draw.raster_front_face(),
+                )?
             };
-            steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
-                pipeline,
-                bind_groups: bind_group_list([draw_resources.bind_group]),
-                index_buffer: IndexBufferBinding {
-                    buffer: mesh.indices,
-                    format: IndexFormat::Uint32,
-                    offset: 0,
-                },
-                index_count: draw.part.index_count(),
-                first_index: draw.part.first_index(),
-                base_vertex: 0,
-                instance_count: u32::try_from(batch.instance_count)
-                    .context("GPUI 3D instance count exceeds u32")?,
-                first_instance: u32::try_from(batch.first_instance)
-                    .context("GPUI 3D first instance exceeds u32")?,
-                scissor: None,
-            }));
+            let instance_count = u32::try_from(batch.instance_count)
+                .context("GPUI 3D instance count exceeds u32")?;
+            let address = self
+                .draw_addresses
+                .get(batch_index)
+                .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
+            let first_instance = u32::try_from(address.first_instance)
+                .context("GPUI 3D first instance exceeds u32")?;
+            if mesh.generated.is_some() {
+                steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                    pipeline,
+                    bind_groups: bind_group_list([*draw_resources]),
+                    arguments: self
+                        .culling
+                        .as_ref()
+                        .map(|culling| culling.arguments)
+                        .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer))
+                        .ok_or_else(|| anyhow!("missing generated mesh arguments"))?,
+                    offset: address.arguments_offset,
+                    scissor: None,
+                }));
+            } else if mesh.procedural_quads {
+                if let Some(culling) = &self.culling {
+                    steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                        pipeline,
+                        bind_groups: bind_group_list([*draw_resources]),
+                        arguments: culling.arguments,
+                        offset: address.arguments_offset,
+                        scissor: None,
+                    }));
+                } else {
+                    steps.push(RenderCommand::Draw(DrawCommand {
+                        pipeline,
+                        bind_groups: bind_group_list([*draw_resources]),
+                        vertex_count: draw.part.index_count(),
+                        first_vertex: 0,
+                        instance_count,
+                        first_instance,
+                        scissor: None,
+                    }));
+                }
+            } else {
+                steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
+                    pipeline,
+                    bind_groups: bind_group_list([*draw_resources]),
+                    index_buffer: IndexBufferBinding {
+                        buffer: mesh.indices,
+                        format: mesh.index_format,
+                        offset: mesh.index_offset,
+                    },
+                    index_count: draw.part.index_count(),
+                    first_index: draw.part.first_index(),
+                    base_vertex: 0,
+                    instance_count,
+                    first_instance,
+                    scissor: None,
+                }));
+            }
         }
         Ok(())
     }
 
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        for draw in self.draw_resources.drain(..) {
-            device.destroy_bind_group(draw.bind_group)?;
+        if let Some((buffer, _)) = self.generated_arguments.take() {
+            device.destroy_buffer(buffer)?;
+        }
+        for mapping in self.generated_mappings.drain().map(|(_, mapping)| mapping) {
+            device.destroy_buffer(mapping.buffer)?;
+        }
+        if let Some(shaders) = self.mesh_shader.take() {
+            for shader in shaders.0 {
+                device.destroy_shader_module(shader)?;
+            }
+        }
+        if let Some(shader) = self.mesh_draw_shader.take() {
+            device.destroy_shader_module(shader)?;
+        }
+        if let Some(culling) = self.culling.take() {
+            culling.destroy(device)?;
+        }
+        self.draw_resources.clear();
+        self.draw_resource_keys.clear();
+        self.draw_addresses.clear();
+        for bind_group in self.binding_cache.drain().map(|(_, binding)| binding) {
+            device.destroy_bind_group(bind_group)?;
         }
         for (_, mesh) in self.meshes.drain() {
-            destroy_mesh(device, mesh)?;
+            destroy_mesh(device, mesh, &mut self.arena)?;
+        }
+        for mesh in self.retired_meshes.drain(..) {
+            destroy_mesh(device, mesh, &mut self.arena)?;
         }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
@@ -723,14 +1243,177 @@ impl SceneResources {
     }
 }
 
+type StagedMesh = ((MeshId, bool), MeshResources, Option<PendingMeshUpload>);
+
+fn discard_pending_meshes(
+    device: &mut dyn ExtensionDevice,
+    pending: &mut Vec<StagedMesh>,
+    arena: &mut MeshArena,
+) -> gpui::Result<()> {
+    for (_, mesh, _) in pending.drain(..) {
+        destroy_mesh(device, mesh, arena)?;
+    }
+    Ok(())
+}
+
+fn upload_pending_meshes(
+    device: &mut dyn ExtensionDevice,
+    pending: &mut Vec<StagedMesh>,
+    meshes: &mut HashMap<(MeshId, bool), MeshResources>,
+    retired_meshes: &mut Vec<MeshResources>,
+    arena: &mut MeshArena,
+) -> gpui::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let writes = pending
+        .iter()
+        .filter_map(|(_, _, upload)| upload.as_ref())
+        .map(|upload| BufferWrite {
+            descriptor: BufferWriteDescriptor {
+                buffer: upload.buffer,
+                offset: upload.offset,
+            },
+            data: &upload.bytes,
+        })
+        .collect::<Vec<_>>();
+    if let Err(error) = device.write_buffer_batch(&writes) {
+        discard_pending_meshes(device, pending, arena)?;
+        return Err(error.into());
+    }
+    for (id, mesh, _) in pending.drain(..) {
+        if let Some(old) = meshes.insert(id, mesh) {
+            retired_meshes.push(old);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{scene_assets_changed, update_prepared, validate_textures};
-    use crate::{
-        AnimationScratch, Camera, Material, Mesh, Node, PreparedScene, Scene, SceneView,
-        TextureAsset, TextureAssetId, TransformTrack, Vec3, Vec3Track,
+    use super::{
+        DrawMeshKey, DrawResourceKey, mesh_key, scene_asset_ids, scene_assets_changed,
+        update_prepared, validate_textures,
     };
-    use std::{sync::Arc, time::Duration};
+    use crate::{
+        AnimationScratch, Camera, Material, Mesh, MeshId, Node, PreparedScene, Scene, SceneView,
+        ShadingModel, TextureAsset, TextureAssetId, TransformTrack, Vec3, Vec3Track,
+    };
+    use std::{collections::HashSet, sync::Arc, time::Duration};
+
+    #[test]
+    fn cached_binding_remains_valid_while_mesh_and_texture_belong_to_scene() {
+        let mesh = MeshId(7);
+        let texture = TextureAssetId(11);
+        let key = DrawResourceKey {
+            visible_instances: None,
+            mesh: DrawMeshKey::Mesh {
+                id: mesh,
+                generation: 2,
+            },
+            albedo_id: Some(texture),
+            normal_id: None,
+            occlusion_id: None,
+            metallic_roughness_id: None,
+        };
+        let meshes = HashSet::from([mesh]);
+        let textures = HashSet::from([texture]);
+
+        assert!(key.uses_active_assets(&meshes, &HashSet::new(), &textures));
+        assert!(!key.uses_active_assets(&HashSet::new(), &HashSet::new(), &textures));
+        assert!(!key.uses_active_assets(&meshes, &HashSet::new(), &HashSet::new()));
+        let page = gfx_core::BufferId::from_parts(7, 9);
+        let voxel_key = DrawResourceKey {
+            mesh: DrawMeshKey::VoxelPage(page),
+            ..key
+        };
+        assert!(voxel_key.uses_active_assets(&HashSet::new(), &HashSet::from([page]), &textures));
+        let visible = gfx_core::BufferId::from_parts(9, 1);
+        let culling_key = DrawResourceKey {
+            visible_instances: Some(visible),
+            ..voxel_key
+        };
+        let pages = HashSet::from([page]);
+        assert!(culling_key.is_resident(&std::collections::HashMap::new(), &pages, Some(visible)));
+        assert!(
+            !culling_key.is_resident(
+                &std::collections::HashMap::new(),
+                &pages,
+                Some(gfx_core::BufferId::from_parts(9, 2))
+            ),
+            "resized visible-instance buffers must invalidate cached bindings"
+        );
+    }
+
+    #[test]
+    fn shared_mesh_uses_separate_voxel_and_regular_cache_keys() {
+        let mesh = Arc::new(Mesh::cube());
+        let mut unlit = Material::new();
+        unlit.shading_model = ShadingModel::Unlit;
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([Arc::new(unlit)]),
+            )
+            .unwrap();
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([Arc::new(Material::new())]),
+            )
+            .unwrap();
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            1.0,
+            0.1,
+            10.0,
+        );
+        let view = SceneView::new(Arc::new(scene), camera).with_voxel_shader();
+        let mut prepared = PreparedScene::default();
+        update_prepared(&mut prepared, &mut AnimationScratch::new(), &view, 1.0).unwrap();
+
+        let keys = prepared
+            .draws
+            .iter()
+            .map(|draw| mesh_key(draw, true))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(keys.contains(&(mesh.id(), true)));
+        assert!(keys.contains(&(mesh.id(), false)));
+        assert!(prepared.draws.iter().all(|draw| !mesh_key(draw, false).1));
+    }
+
+    #[test]
+    fn scene_asset_ids_keep_offscreen_resources_until_nodes_are_removed() {
+        let mesh = Arc::new(Mesh::cube());
+        let mut material = Material::new();
+        material.albedo_texture = Some(TextureAssetId(42));
+        let mut scene = Scene::new();
+        let node = scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([Arc::new(material)])
+                    .with_visible(false),
+            )
+            .unwrap();
+
+        let (meshes, textures) = scene_asset_ids(&scene);
+        assert!(meshes.contains(&mesh.id()));
+        assert!(textures.contains(&TextureAssetId(42)));
+
+        scene.remove(node).unwrap();
+        let (meshes, textures) = scene_asset_ids(&scene);
+        assert!(meshes.is_empty());
+        assert!(textures.is_empty());
+    }
 
     #[test]
     fn camera_changes_keep_scene_assets_reusable() {
@@ -755,6 +1438,35 @@ mod tests {
             Some(&scene_view.textures),
             &rotated,
         ));
+        // A failed suffix upload clears the committed scene identity, forcing a full resync
+        // even if the CPU has already sorted this same camera's transparent draws.
+        assert!(scene_assets_changed(
+            None,
+            Some(&scene_view.textures),
+            &rotated
+        ));
+    }
+
+    #[test]
+    fn camera_recull_can_reveal_a_previously_hidden_mesh() {
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(Arc::new(Mesh::cube())))
+            .unwrap();
+        let away = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::Y,
+            1.0,
+            0.1,
+            10.0,
+        );
+        let mut prepared = PreparedScene::new(&scene, away, 1.0).unwrap();
+        assert!(prepared.draws.is_empty());
+
+        let toward = Camera::perspective(away.eye, Vec3::ZERO, Vec3::Y, 1.0, 0.1, 10.0);
+        assert!(prepared.update_camera(toward, 1.0).unwrap());
+        assert_eq!(prepared.draws.len(), 1);
     }
 
     #[test]
@@ -827,6 +1539,66 @@ mod tests {
         let error = validate_textures(&prepared, &scene_view).unwrap_err();
 
         assert!(error.to_string().contains("texture asset 19"));
+    }
+
+    #[test]
+    fn texture_validation_checks_distinct_material_snapshots_with_same_id() {
+        let material = Material::new();
+        let mut changed = material.clone();
+        changed.occlusion_texture = Some(TextureAssetId(19));
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(Arc::new(Mesh::cube()))
+                    .with_materials([Arc::new(material)]),
+            )
+            .unwrap();
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            1.0,
+            0.1,
+            10.0,
+        );
+        let view = SceneView::new(Arc::new(scene), camera);
+        let mut prepared = PreparedScene::new(view.scene(), camera, 1.0).unwrap();
+        let mut other = prepared.draws[0].clone();
+        other.material = Arc::new(changed);
+        prepared.draws.push(other);
+        let error = validate_textures(&prepared, &view).unwrap_err();
+        assert!(error.to_string().contains("texture asset 19"));
+    }
+
+    #[test]
+    fn scene_view_rejects_missing_metallic_roughness_texture_assets() {
+        let mut material = Material::new();
+        material.metallic_roughness_texture = Some(TextureAssetId(23));
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(Arc::new(Mesh::cube()))
+                    .with_materials([Arc::new(material)]),
+            )
+            .unwrap();
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            1.0,
+            0.1,
+            10.0,
+        );
+        let scene_view = SceneView::new(Arc::new(scene), camera);
+        let prepared = PreparedScene::new(scene_view.scene(), camera, 1.0).unwrap();
+
+        let error = validate_textures(&prepared, &scene_view).unwrap_err();
+
+        assert!(error.to_string().contains("texture asset 23"));
     }
 
     #[test]
@@ -933,6 +1705,56 @@ mod tests {
     }
 }
 
+fn scene_asset_ids(scene: &Scene) -> (HashSet<MeshId>, HashSet<TextureAssetId>) {
+    let mut meshes = HashSet::new();
+    let mut textures = HashSet::new();
+    let mut pending = scene.roots().to_vec();
+    while let Some(id) = pending.pop() {
+        let Some(node) = scene.node(id) else {
+            continue;
+        };
+        if let Some(mesh) = &node.mesh {
+            meshes.insert(mesh.id());
+        }
+        for level in &node.lod {
+            meshes.insert(level.mesh.id());
+        }
+        for material in node
+            .materials
+            .iter()
+            .chain(node.lod.iter().flat_map(|level| level.materials.iter()))
+        {
+            textures.extend(
+                [
+                    material.albedo_texture,
+                    material.normal_texture,
+                    material.occlusion_texture,
+                    material.metallic_roughness_texture,
+                ]
+                .into_iter()
+                .flatten(),
+            );
+        }
+        if let Some(children) = scene.children(id) {
+            pending.extend_from_slice(children);
+        }
+    }
+    (meshes, textures)
+}
+
+pub(super) fn mesh_key(draw: &PreparedDraw, voxel_shader: bool) -> (MeshId, bool) {
+    (
+        draw.mesh.id(),
+        voxel_shader
+            && draw.material.shading_model == ShadingModel::Unlit
+            && can_encode_voxel_mesh(&draw.mesh),
+    )
+}
+
+fn draw_identity(draw: &PreparedDraw) -> (NodeId, MeshId, MeshPart, MaterialId) {
+    (draw.node, draw.mesh.id(), draw.part, draw.material.id())
+}
+
 fn scene_assets_changed(
     scene: Option<&Arc<Scene>>,
     texture_table: Option<&Arc<HashMap<TextureAssetId, Arc<crate::TextureAsset>>>>,
@@ -943,6 +1765,7 @@ fn scene_assets_changed(
 }
 
 fn validate_textures(prepared: &PreparedScene, scene_view: &SceneView) -> anyhow::Result<()> {
+    let mut seen = HashSet::new();
     for draw in &prepared.draws {
         if draw.material.shading_model == ShadingModel::MetallicRoughness
             && draw.material.normal_texture.is_some()
@@ -953,10 +1776,14 @@ fn validate_textures(prepared: &PreparedScene, scene_view: &SceneView) -> anyhow
         {
             bail!("GPUI 3D normal maps require generated or supplied mesh tangents")
         }
+        if !seen.insert(Arc::as_ptr(&draw.material)) {
+            continue;
+        }
         for texture_id in [
             draw.material.albedo_texture,
             draw.material.normal_texture,
             draw.material.occlusion_texture,
+            draw.material.metallic_roughness_texture,
         ]
         .into_iter()
         .flatten()
@@ -977,6 +1804,14 @@ fn validate_textures(prepared: &PreparedScene, scene_view: &SceneView) -> anyhow
             {
                 bail!(
                     "GPUI 3D normal texture {} must use linear color space",
+                    texture_id.0
+                )
+            }
+            if draw.material.metallic_roughness_texture == Some(texture_id)
+                && asset.color_space() != crate::TextureColorSpace::Linear
+            {
+                bail!(
+                    "GPUI 3D metallic-roughness texture {} must use linear color space",
                     texture_id.0
                 )
             }

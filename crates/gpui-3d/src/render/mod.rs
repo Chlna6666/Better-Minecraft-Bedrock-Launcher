@@ -50,7 +50,8 @@ mod gpu;
 
 use crate::{
     AnimationScratch, Camera, CameraError, EvaluatedScene, MeshId, MeshPart, NodeId, RaycastError,
-    RaycastHit, RaycastScratch, Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2,
+    RaycastHit, RaycastScratch, Scene, TextureAsset, TextureAssetId, TextureSampling,
+    TransformTrack, Vec2,
 };
 use gfx_core::{BackendKind, Device, MemoryTrimLevel, TextureTransferDevice};
 use std::collections::HashMap;
@@ -278,6 +279,8 @@ pub struct RenderOptions {
     pub post_effects: PostEffects,
     /// Post-pass edge antialiasing.
     pub antialias: AntialiasMode,
+    /// Texel filtering used for material textures in the scene pass.
+    pub material_sampling: TextureSampling,
 }
 
 impl Default for RenderOptions {
@@ -292,6 +295,7 @@ impl Default for RenderOptions {
             bloom: BloomOptions::default(),
             post_effects: PostEffects::default(),
             antialias: AntialiasMode::default(),
+            material_sampling: TextureSampling::Linear,
         }
     }
 }

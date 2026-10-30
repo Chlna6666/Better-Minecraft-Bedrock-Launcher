@@ -1981,4 +1981,3 @@ fn float_array(value: Option<&Value>, expected: usize) -> Option<Vec<f32>> {
         .map(|value| value.as_f64().map(|value| value as f32))
         .collect()
 }
-

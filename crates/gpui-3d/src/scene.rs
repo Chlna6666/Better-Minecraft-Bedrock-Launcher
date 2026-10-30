@@ -114,6 +114,7 @@ impl LodLevel {
     }
 }
 
+/// A scene hierarchy node with an optional mesh, light, and child nodes.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Node {
@@ -138,6 +139,7 @@ pub struct Node {
     pub lod: Vec<LodLevel>,
     pixel_offset: Vec2,
     depth_bias: f32,
+    pub(crate) cull_by_origin: bool,
 }
 
 impl Default for Node {
@@ -151,6 +153,7 @@ impl Default for Node {
             lod: Vec::new(),
             pixel_offset: Vec2::ZERO,
             depth_bias: 0.0,
+            cull_by_origin: false,
         }
     }
 }
@@ -164,6 +167,13 @@ impl Node {
     /// Sets whether this node and its subtree are rendered, shadowed, picked, and included in bounds.
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
+        self
+    }
+
+    /// Applies a scene view's optional culling bounds to this node's transformed origin.
+    /// This affects rendering only; ray queries and authored scene bounds are unchanged.
+    pub fn with_culling_origin(mut self) -> Self {
+        self.cull_by_origin = true;
         self
     }
 

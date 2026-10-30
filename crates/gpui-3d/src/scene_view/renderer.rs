@@ -5,10 +5,75 @@ use gpui::ExtensionDevice;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    sync::OnceLock,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const SCENE_MEMORY_TRIM_IDLE: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct RendererTimingTrace {
+    last_report: Option<Instant>,
+    samples: u64,
+    prepare_total_us: u128,
+    prepare_max_us: u128,
+    commands_total_us: u128,
+    commands_max_us: u128,
+    draw_calls_max: usize,
+    gpu_cull_batches_max: usize,
+    gpu_resident_draws_max: usize,
+}
+
+impl RendererTimingTrace {
+    fn record(
+        &mut self,
+        prepare: Duration,
+        commands: Duration,
+        draw_calls: usize,
+        gpu_culling: (usize, usize),
+    ) {
+        let now = Instant::now();
+        self.samples += 1;
+        self.prepare_total_us += prepare.as_micros();
+        self.prepare_max_us = self.prepare_max_us.max(prepare.as_micros());
+        self.commands_total_us += commands.as_micros();
+        self.commands_max_us = self.commands_max_us.max(commands.as_micros());
+        self.draw_calls_max = self.draw_calls_max.max(draw_calls);
+        self.gpu_cull_batches_max = self.gpu_cull_batches_max.max(gpu_culling.0);
+        self.gpu_resident_draws_max = self.gpu_resident_draws_max.max(gpu_culling.1);
+        if self
+            .last_report
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+        {
+            return;
+        }
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        eprintln!(
+            "gpui3d render ts={} samples={} prepare_avg_ms={:.2} prepare_max_ms={:.2} commands_avg_ms={:.2} commands_max_ms={:.2} draw_calls_max={} gpu_cull_batches_max={} gpu_resident_draws_max={}",
+            timestamp,
+            self.samples,
+            self.prepare_total_us as f64 / self.samples as f64 / 1000.0,
+            self.prepare_max_us as f64 / 1000.0,
+            self.commands_total_us as f64 / self.samples as f64 / 1000.0,
+            self.commands_max_us as f64 / 1000.0,
+            self.draw_calls_max,
+            self.gpu_cull_batches_max,
+            self.gpu_resident_draws_max,
+        );
+        *self = Self {
+            last_report: Some(now),
+            ..Self::default()
+        };
+    }
+}
+
+pub(super) fn trace_timings() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
+}
 
 fn should_trim_scene(level: MemoryTrimLevel, last_used_at: Instant, now: Instant) -> bool {
     match level {
@@ -28,6 +93,7 @@ pub(super) struct Renderer {
     scenes: HashMap<SceneViewId, SceneResources>,
     frame_time: Option<Instant>,
     frame_index: u64,
+    timing_trace: RendererTimingTrace,
 }
 
 impl Renderer {
@@ -45,6 +111,7 @@ impl Renderer {
             scenes: HashMap::new(),
             frame_time: None,
             frame_index: 0,
+            timing_trace: RendererTimingTrace::default(),
         })
     }
 
@@ -147,6 +214,18 @@ mod tests {
 }
 
 impl RendererExtensionRenderer for Renderer {
+    fn needs_gpu_completion(&self) -> bool {
+        self.scenes
+            .values()
+            .any(SceneResources::has_retired_arena_ranges)
+    }
+
+    fn gpu_work_completed(&mut self) {
+        for scene in self.scenes.values_mut() {
+            scene.reclaim_arena_after_gpu_idle();
+        }
+    }
+
     fn render(
         &mut self,
         extension: &dyn RendererExtension,
@@ -161,8 +240,10 @@ impl RendererExtensionRenderer for Renderer {
         self.begin_frame(context.frame_time());
         self.retire_idle_scenes(device)?;
         if !self.scenes.contains_key(&scene_view.id) {
-            self.scenes
-                .insert(scene_view.id, SceneResources::new(device)?);
+            self.scenes.insert(
+                scene_view.id,
+                SceneResources::new(device, context.backend_kind())?,
+            );
         }
         let scene = self
             .scenes
@@ -170,8 +251,19 @@ impl RendererExtensionRenderer for Renderer {
             .ok_or_else(|| anyhow!("GPUI 3D scene-view state was not initialized"))?;
         scene.last_used_frame = self.frame_index;
         scene.last_used_at = Instant::now();
+        let prepare_started = trace_timings().then(Instant::now);
         scene.prepare(device, &mut self.resources, scene_view, &context)?;
-        scene.append_steps(&self.resources, steps)?;
+        let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
+        let first_step = steps.len();
+        scene.append_steps(&self.resources, scene_view.voxel_shader, steps)?;
+        if let Some((prepare, started)) = commands_started {
+            self.timing_trace.record(
+                prepare,
+                started.elapsed(),
+                steps.len() - first_step,
+                scene.gpu_culling_counts(),
+            );
+        }
         Ok(())
     }
 

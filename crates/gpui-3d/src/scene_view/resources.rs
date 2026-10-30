@@ -1,7 +1,7 @@
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, FRAME_BINDING, INSTANCE_BINDING, LIGHT_BINDING,
     METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING,
-    TANGENT_BINDING, VERTEX_BINDING,
+    TANGENT_BINDING, VERTEX_BINDING, VISIBLE_INSTANCE_BINDING,
 };
 use crate::TextureSampling;
 use anyhow::anyhow;
@@ -17,40 +17,103 @@ use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 
 pub(super) struct RendererResources {
+    pub(super) cull_shader: Option<ShaderModuleId>,
     bind_group_layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
     vertex_shader: Option<ShaderModuleId>,
+    voxel_vertex_shader: Option<ShaderModuleId>,
+    generated_vertex_shader: Option<ShaderModuleId>,
     fragment_shader: Option<ShaderModuleId>,
-    pub(super) opaque_pipeline: Option<RenderPipelineId>,
-    pub(super) blended_pipeline: Option<RenderPipelineId>,
+    voxel_fragment_shader: Option<ShaderModuleId>,
+    pipelines: [Option<RenderPipelineId>; 18],
     fallback_texture: Option<TextureId>,
     fallback_texture_view: Option<TextureViewId>,
-    samplers: [Option<SamplerId>; 4],
+    samplers: [Option<SamplerId>; 6],
 }
 
 impl RendererResources {
+    #[cfg(test)]
+    pub(super) fn test_pipeline(
+        layout: BindGroupLayoutId,
+        pipeline: RenderPipelineId,
+        fallback: TextureViewId,
+    ) -> Self {
+        Self {
+            cull_shader: None,
+            bind_group_layout: Some(layout),
+            pipeline_layout: None,
+            vertex_shader: None,
+            voxel_vertex_shader: None,
+            generated_vertex_shader: None,
+            fragment_shader: None,
+            voxel_fragment_shader: None,
+            pipelines: [Some(pipeline); 18],
+            fallback_texture: None,
+            fallback_texture_view: Some(fallback),
+            samplers: [None; 6],
+        }
+    }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
     ) -> gpui::Result<Self> {
         let vertex_binary = embedded_shader(context, ShaderStage::Vertex, "vs_main")?;
+        let compute = device.compute_capabilities();
+        let voxel_entry = if compute.indirect_draw && !compute.max_workgroups.contains(&0) {
+            "vs_voxel_gpu"
+        } else {
+            "vs_voxel"
+        };
+        let voxel_vertex_binary = embedded_shader(context, ShaderStage::Vertex, voxel_entry)?;
         let fragment_binary = embedded_shader(context, ShaderStage::Fragment, "fs_main")?;
+        let voxel_fragment_binary = embedded_shader(context, ShaderStage::Fragment, "fs_voxel")?;
         let mut resources = Self {
+            cull_shader: None,
             bind_group_layout: None,
             pipeline_layout: None,
             vertex_shader: None,
+            voxel_vertex_shader: None,
+            generated_vertex_shader: None,
             fragment_shader: None,
-            opaque_pipeline: None,
-            blended_pipeline: None,
+            voxel_fragment_shader: None,
+            pipelines: [None; 18],
             fallback_texture: None,
             fallback_texture_view: None,
-            samplers: [None; 4],
+            samplers: [None; 6],
         };
         let result = (|| {
+            resources.generated_vertex_shader =
+                Some(device.create_shader_module(&ShaderModuleDescriptor {
+                    label: None,
+                    binary: embedded_shader(context, ShaderStage::Vertex, "vs_generated_voxel")?,
+                })?);
+            let compute = device.compute_capabilities();
+            if compute.indirect_draw && !compute.max_workgroups.contains(&0) {
+                resources.cull_shader =
+                    Some(device.create_shader_module(&ShaderModuleDescriptor {
+                        label: Some("gpui-3d GPU batch culling".into()),
+                        binary: embedded_shader(context, ShaderStage::Compute, "cs_cull")?,
+                    })?);
+            }
             resources.bind_group_layout =
                 Some(device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d scene-view resource-set layout".into()),
                     entries: vec![
+                        BindGroupLayoutEntry {
+                            binding: 13,
+                            binding_type: BindingType::StorageBuffer,
+                            stages: ShaderStages::VERTEX,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 12,
+                            binding_type: BindingType::StorageBuffer,
+                            stages: ShaderStages::VERTEX,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: VISIBLE_INSTANCE_BINDING,
+                            binding_type: BindingType::StorageBuffer,
+                            stages: ShaderStages::VERTEX,
+                        },
                         BindGroupLayoutEntry {
                             binding: VERTEX_BINDING,
                             binding_type: BindingType::StorageBuffer,
@@ -118,10 +181,20 @@ impl RendererResources {
                     label: Some("gpui-3d vertex shader".into()),
                     binary: vertex_binary,
                 })?);
+            resources.voxel_vertex_shader =
+                Some(device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("gpui-3d voxel vertex shader".into()),
+                    binary: voxel_vertex_binary,
+                })?);
             resources.fragment_shader =
                 Some(device.create_shader_module(&ShaderModuleDescriptor {
                     label: Some("gpui-3d fragment shader".into()),
                     binary: fragment_binary,
+                })?);
+            resources.voxel_fragment_shader =
+                Some(device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("gpui-3d voxel fragment shader".into()),
+                    binary: voxel_fragment_binary,
                 })?);
             let fallback_texture = device.create_texture(&TextureDescriptor {
                 label: Some("gpui-3d fallback texture".into()),
@@ -167,26 +240,23 @@ impl RendererResources {
     /// Returns a shared sampler for the requested texel filtering and anisotropy.
     ///
     /// Atlas images request nearest-texel filtering so neighbouring skin or map regions cannot
-    /// bleed into each other; other images keep linear filtering.
+    /// bleed into each other; pixel-art scenes use nearest magnification with linear
+    /// minification; other images keep linear filtering.
     pub(super) fn sampler(
         &mut self,
         device: &mut dyn ExtensionDevice,
         sampling: TextureSampling,
         anisotropy_enabled: bool,
     ) -> gpui::Result<SamplerId> {
-        let sampler_index =
-            usize::from(sampling == TextureSampling::Nearest) + 2 * usize::from(anisotropy_enabled);
+        let sampler_index = sampler_slot(sampling) + 3 * usize::from(anisotropy_enabled);
         if let Some(sampler) = self.samplers[sampler_index] {
             return Ok(sampler);
         }
-        let filter = match sampling {
-            TextureSampling::Linear => FilterMode::Linear,
-            TextureSampling::Nearest => FilterMode::Nearest,
-        };
+        let (mag_filter, min_filter) = sampler_filters(sampling);
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("gpui-3d material sampler".into()),
-            mag_filter: filter,
-            min_filter: filter,
+            mag_filter,
+            min_filter,
             mipmap_filter: FilterMode::Linear,
             anisotropic: anisotropy_enabled,
             address_mode_u: AddressMode::ClampToEdge,
@@ -201,36 +271,91 @@ impl RendererResources {
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
-        if let Some(pipeline) = self.opaque_pipeline.take() {
-            device.destroy_render_pipeline(pipeline)?;
-        }
-        if let Some(pipeline) = self.blended_pipeline.take() {
-            device.destroy_render_pipeline(pipeline)?;
-        }
-        let opaque = create_pipeline(device, self, context, PipelineMode::Opaque)?;
-        let blended = match create_pipeline(device, self, context, PipelineMode::Blend) {
-            Ok(pipeline) => pipeline,
-            Err(error) => {
-                device.destroy_render_pipeline(opaque)?;
-                return Err(error);
+        let mut next = [None; 18];
+        for (index, slot) in next.iter_mut().enumerate() {
+            if index >= 12 && self.cull_shader.is_none() {
+                continue;
             }
-        };
-        self.opaque_pipeline = Some(opaque);
-        self.blended_pipeline = Some(blended);
+            let mode = if (index / 3) % 2 == 0 {
+                PipelineMode::Opaque
+            } else {
+                PipelineMode::Blend
+            };
+            let face = match index % 3 {
+                0 => None,
+                1 => Some(gfx_core::FrontFace::Ccw),
+                _ => Some(gfx_core::FrontFace::Cw),
+            };
+            match create_pipeline(device, self, context, mode, index / 6, face) {
+                Ok(pipeline) => *slot = Some(pipeline),
+                Err(error) => {
+                    for pipeline in next.into_iter().flatten() {
+                        device.destroy_render_pipeline(pipeline)?;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        for pipeline in std::mem::replace(&mut self.pipelines, next)
+            .into_iter()
+            .flatten()
+        {
+            device.destroy_render_pipeline(pipeline)?;
+        }
         Ok(())
     }
 
+    pub(super) fn pipeline(
+        &self,
+        voxel: bool,
+        blended: bool,
+        front_face: Option<gfx_core::FrontFace>,
+    ) -> gpui::Result<RenderPipelineId> {
+        self.pipeline_variant(usize::from(voxel), blended, front_face)
+    }
+    pub(super) fn generated_pipeline(
+        &self,
+        blended: bool,
+        front_face: Option<gfx_core::FrontFace>,
+    ) -> gpui::Result<RenderPipelineId> {
+        self.pipeline_variant(2, blended, front_face)
+    }
+    fn pipeline_variant(
+        &self,
+        variant: usize,
+        blended: bool,
+        front_face: Option<gfx_core::FrontFace>,
+    ) -> gpui::Result<RenderPipelineId> {
+        let face = match front_face {
+            None => 0,
+            Some(gfx_core::FrontFace::Ccw) => 1,
+            Some(gfx_core::FrontFace::Cw) => 2,
+        };
+        self.pipelines[variant * 6 + usize::from(blended) * 3 + face]
+            .ok_or_else(|| anyhow!("GPUI 3D draw pipeline is unavailable"))
+    }
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        if let Some(pipeline) = self.opaque_pipeline.take() {
-            device.destroy_render_pipeline(pipeline)?;
+        if let Some(shader) = self.cull_shader.take() {
+            device.destroy_shader_module(shader)?;
         }
-        if let Some(pipeline) = self.blended_pipeline.take() {
-            device.destroy_render_pipeline(pipeline)?;
+        for pipeline in &mut self.pipelines {
+            if let Some(pipeline) = pipeline.take() {
+                device.destroy_render_pipeline(pipeline)?;
+            }
+        }
+        if let Some(shader) = self.generated_vertex_shader.take() {
+            device.destroy_shader_module(shader)?;
+        }
+        if let Some(shader) = self.voxel_fragment_shader.take() {
+            device.destroy_shader_module(shader)?;
         }
         if let Some(shader) = self.fragment_shader.take() {
             device.destroy_shader_module(shader)?;
         }
         if let Some(shader) = self.vertex_shader.take() {
+            device.destroy_shader_module(shader)?;
+        }
+        if let Some(shader) = self.voxel_vertex_shader.take() {
             device.destroy_shader_module(shader)?;
         }
         if let Some(view) = self.fallback_texture_view.take() {
@@ -251,6 +376,26 @@ impl RendererResources {
             device.destroy_bind_group_layout(layout)?;
         }
         Ok(())
+    }
+}
+
+/// Stable slot index for one material sampling mode inside the sampler cache.
+const fn sampler_slot(sampling: TextureSampling) -> usize {
+    match sampling {
+        TextureSampling::Linear => 0,
+        TextureSampling::Nearest => 1,
+        TextureSampling::PixelArt => 2,
+    }
+}
+
+/// Magnification and minification filters for one material sampling mode.
+const fn sampler_filters(sampling: TextureSampling) -> (FilterMode, FilterMode) {
+    match sampling {
+        TextureSampling::Linear => (FilterMode::Linear, FilterMode::Linear),
+        TextureSampling::Nearest => (FilterMode::Nearest, FilterMode::Nearest),
+        // Nearest magnification keeps pixel-art texels sharp up close; linear minification with
+        // mip blending avoids distant shimmer and moire without re-blurring magnified texels.
+        TextureSampling::PixelArt => (FilterMode::Nearest, FilterMode::Linear),
     }
 }
 
@@ -300,22 +445,46 @@ fn create_pipeline(
     resources: &RendererResources,
     context: &RendererExtensionContext,
     mode: PipelineMode,
+    variant: usize,
+    front_face: Option<gfx_core::FrontFace>,
 ) -> gpui::Result<RenderPipelineId> {
-    let (label, blend, depth_write) = match mode {
-        PipelineMode::Opaque => ("gpui-3d opaque pipeline", false, true),
-        PipelineMode::Blend => ("gpui-3d blended pipeline", true, false),
+    let voxel = variant != 0;
+    let (label, blend, depth_write) = match (mode, voxel) {
+        (PipelineMode::Opaque, false) => ("gpui-3d opaque pipeline", false, true),
+        (PipelineMode::Blend, false) => ("gpui-3d blended pipeline", true, false),
+        (PipelineMode::Opaque, true) => ("gpui-3d voxel opaque pipeline", false, true),
+        (PipelineMode::Blend, true) => ("gpui-3d voxel blended pipeline", true, false),
     };
     Ok(device.create_render_pipeline(
         &RenderPipelineDescriptor {
             label: Some(label.into()),
-            vertex_shader: resources
-                .vertex_shader
-                .ok_or_else(|| anyhow!("GPUI 3D vertex shader is unavailable"))?,
-            vertex_entry_point: "vs_main".into(),
-            fragment_shader: resources
-                .fragment_shader
-                .ok_or_else(|| anyhow!("GPUI 3D fragment shader is unavailable"))?,
-            fragment_entry_point: "fs_main".into(),
+            vertex_shader: if variant == 2 {
+                resources.generated_vertex_shader
+            } else if voxel {
+                resources.voxel_vertex_shader
+            } else {
+                resources.vertex_shader
+            }
+            .ok_or_else(|| anyhow!("GPUI 3D vertex shader is unavailable"))?,
+            vertex_entry_point: if variant == 2 {
+                "vs_generated_voxel"
+            } else if voxel {
+                if resources.cull_shader.is_some() {
+                    "vs_voxel_gpu"
+                } else {
+                    "vs_voxel"
+                }
+            } else {
+                "vs_main"
+            }
+            .into(),
+            fragment_shader: if voxel {
+                resources.voxel_fragment_shader
+            } else {
+                resources.fragment_shader
+            }
+            .ok_or_else(|| anyhow!("GPUI 3D fragment shader is unavailable"))?,
+            fragment_entry_point: if voxel { "fs_voxel" } else { "fs_main" }.into(),
             vertex_buffers: Vec::new(),
             render_pass: context.render_pass(),
             pipeline_layout: resources.pipeline_layout,
@@ -326,6 +495,10 @@ fn create_pipeline(
                 BlendMode::Replace
             },
             primitive_topology: PrimitiveTopology::TriangleList,
+            raster: gfx_core::RasterState {
+                front_face: front_face.unwrap_or_default(),
+                cull_mode: front_face.map(|_| gfx_core::Face::Back),
+            },
             depth_state: Some(DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: depth_write,
