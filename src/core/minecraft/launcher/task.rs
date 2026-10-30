@@ -42,6 +42,10 @@ const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
 const LEGACY_UWP_RUNTIME_INJECTION_CUTOFF: &str = "1.21.0.0";
 
+#[cfg(test)]
+#[path = "task_tests.rs"]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct LaunchRequest {
     pub folder_name: Arc<str>,
@@ -76,6 +80,7 @@ impl LaunchRequest {
 pub(crate) struct LaunchTask {
     task_id: String,
     completion: tokio::sync::oneshot::Receiver<Result<Option<u32>, String>>,
+    session_monitor: tokio::sync::oneshot::Receiver<Option<JoinHandle<()>>>,
     spawn_error: Option<String>,
 }
 
@@ -84,13 +89,26 @@ impl LaunchTask {
         &self.task_id
     }
 
-    pub(crate) async fn wait(self) -> Result<Option<u32>, String> {
-        if let Some(error) = self.spawn_error {
+    pub(crate) async fn wait(&mut self) -> Result<Option<u32>, String> {
+        if let Some(error) = self.spawn_error.take() {
             return Err(error);
         }
-        self.completion
+        (&mut self.completion)
             .await
             .map_err(|_| "启动任务未返回结果".to_string())?
+    }
+
+    pub(crate) async fn wait_for_session(self) -> Result<(), String> {
+        if let Some(monitor) = self
+            .session_monitor
+            .await
+            .map_err(|_| "启动任务未返回计时任务".to_string())?
+        {
+            monitor
+                .await
+                .map_err(|error| format!("游戏计时任务失败：{error}"))?;
+        }
+        Ok(())
     }
 }
 
@@ -118,6 +136,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     );
 
     let (completion_tx, completion) = tokio::sync::oneshot::channel();
+    let (session_monitor_tx, session_monitor) = tokio::sync::oneshot::channel();
     let task_id_for_task = task_id.clone();
     let join_handle = match crate::tasks::runtime::spawn_io(async move {
         info!(
@@ -127,6 +146,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
             "游戏启动任务开始执行"
         );
         let result = launch_game(&request, &task_id_for_task).await;
+        let mut monitor = None;
         match &result {
             Ok(Some(pid)) => {
                 let session = crate::core::version::game_info::GameSession::start(
@@ -144,7 +164,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                 if let Some(mut session) = session {
                     let pid = *pid;
                     let monitor_task_id = task_id_for_task.clone();
-                    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+                    match crate::tasks::runtime::spawn_io(async move {
                         let process_exit = wait_for_process_exit(pid);
                         tokio::pin!(process_exit);
                         let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
@@ -169,7 +189,10 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                             append_log(&monitor_task_id, format!("保存游戏时间失败：{error}"));
                         }
                     }) {
-                        append_log(&task_id_for_task, format!("无法调度游戏时间统计：{error}"));
+                        Ok(handle) => monitor = Some(handle),
+                        Err(error) => {
+                            append_log(&task_id_for_task, format!("无法调度游戏时间统计：{error}"));
+                        }
                     }
                 }
                 info!(
@@ -205,6 +228,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                 finish_task(&task_id_for_task, "error", Some(error.clone()));
             }
         }
+        let _ = session_monitor_tx.send(monitor);
         let _ = completion_tx.send(result);
     }) {
         Ok(join_handle) => join_handle,
@@ -214,6 +238,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
             return LaunchTask {
                 task_id,
                 completion,
+                session_monitor,
                 spawn_error: Some(error),
             };
         }
@@ -222,6 +247,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     LaunchTask {
         task_id,
         completion,
+        session_monitor,
         spawn_error: None,
     }
 }

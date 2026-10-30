@@ -401,7 +401,7 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
             target.package_folder.clone(),
         )
     };
-    let launch = crate::core::minecraft::launcher::start_launch_task_observed(request);
+    let mut launch = crate::core::minecraft::launcher::start_launch_task_observed(request);
     let task_id = launch.task_id().to_string();
     let outcome = runtime.block_on(launch.wait());
 
@@ -462,6 +462,14 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
             Err(anyhow::anyhow!(message))
         }
     };
+
+    // Keep the headless process alive until the monitor has saved the final duration.
+    #[cfg(target_os = "windows")]
+    if result.is_ok() {
+        runtime
+            .block_on(launch.wait_for_session())
+            .map_err(anyhow::Error::msg)?;
+    }
 
     crate::config::config::flush_config_now();
     crate::utils::log_manager::flush_async_logs_now();

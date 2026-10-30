@@ -507,11 +507,11 @@ impl LaunchTask {
         &self.task_id
     }
 
-    pub(crate) async fn wait(self) -> Result<Option<u32>, String> {
-        if let Some(error) = self.spawn_error {
+    pub(crate) async fn wait(&mut self) -> Result<Option<u32>, String> {
+        if let Some(error) = self.spawn_error.take() {
             return Err(error);
         }
-        self.completion
+        (&mut self.completion)
             .await
             .map_err(|_| "启动任务未返回结果".to_string())?
     }
