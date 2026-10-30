@@ -21,7 +21,10 @@ impl MapViewerWindowView {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(import_preview_label(colors, "源图片 · 原始比例（右侧显示转换结果）"))
+                    .child(import_preview_label(
+                        colors,
+                        "源图片 · 原始比例（右侧显示转换结果）",
+                    ))
                     .when_some(self.image_generator.source.as_ref(), |pane, source| {
                         pane.child(
                             div()

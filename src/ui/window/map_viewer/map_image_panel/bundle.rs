@@ -11,7 +11,8 @@ use ::bedrock_world::block::BlockState;
 impl MapViewerWindowView {
     /// Explicit read-only check: the write path rechecks world state atomically.
     pub(super) fn check_map_frame_grid(&mut self, cx: &mut Context<Self>) {
-        if self.map_image_operation_busy() || self.map_image.source.is_none()
+        if self.map_image_operation_busy()
+            || self.map_image.source.is_none()
             || self.map_image.placement_preview.is_none()
             || self.map_frame_confirmed_center().is_none()
             || self.map_image.picking_frame_center
@@ -22,9 +23,9 @@ impl MapViewerWindowView {
             return;
         };
         if self.map_image.frame_check_key.as_deref() == Some(key.as_str())
-            && self.map_frame_preflight_snapshot().is_some_and(|task| {
-                matches!(task.status.as_ref(), "running" | "completed")
-            })
+            && self
+                .map_frame_preflight_snapshot()
+                .is_some_and(|task| matches!(task.status.as_ref(), "running" | "completed"))
         {
             return;
         }
@@ -34,7 +35,11 @@ impl MapViewerWindowView {
         let Some((x, z)) = self.map_frame_confirmed_center() else {
             return;
         };
-        let center = BlockPos { x, y: self.y_layer, z };
+        let center = BlockPos {
+            x,
+            y: self.y_layer,
+            z,
+        };
         let support = BlockState {
             name: self.map_image.frame_support.to_owned(),
             states: BTreeMap::new(),
@@ -52,7 +57,8 @@ impl MapViewerWindowView {
                 self.map_image.frame_check_key = Some(key);
                 self.map_image.frame_check_task_id = Some(task_id.clone());
                 if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
-                    self.task_snapshots.insert(snapshot.id.clone(), Arc::new(snapshot));
+                    self.task_snapshots
+                        .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
                 self.status = SharedString::from("正在后台检查展示框与支撑位置，不修改世界");
             }
@@ -82,9 +88,8 @@ impl MapViewerWindowView {
         if let Some(path) = pick_file_path_with_filter("地图包或 Bedrock 容器 NBT", &["nbt"])
         {
             self.map_image.pending_bundle = Some(PathBuf::from(path));
-            self.status = SharedString::from(
-                "已暂存外部地图包，检查写入目标后在中央操作栏确认导入",
-            );
+            self.status =
+                SharedString::from("已暂存外部地图包，检查写入目标后在中央操作栏确认导入");
             self.set_import_workspace_mode(super::super::state::ImportWorkspaceMode::Placement, cx);
             cx.notify();
         }

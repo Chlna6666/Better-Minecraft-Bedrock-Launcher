@@ -26,7 +26,11 @@ impl MapViewerWindowView {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "obj-workspace-import",
-                    if self.generator.source.is_some() { "更换模型" } else { "导入模型" },
+                    if self.generator.source.is_some() {
+                        "更换模型"
+                    } else {
+                        "导入模型"
+                    },
                 )
                 .px(px(12.0))
                 .py(px(7.0))
@@ -41,7 +45,9 @@ impl MapViewerWindowView {
             .when(self.generator.preview_result_active && !busy, |bar| {
                 bar.child(
                     crate::ui::components::button::primary_button(
-                        colors, "obj-workspace-place", "放置到世界",
+                        colors,
+                        "obj-workspace-place",
+                        "放置到世界",
                     )
                     .px(px(12.0))
                     .py(px(7.0))
@@ -60,11 +66,19 @@ impl MapViewerWindowView {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "obj-workspace-export",
-                    if busy { "转换中…" } else { "导出结构…" },
+                    if busy {
+                        "转换中…"
+                    } else {
+                        "导出结构…"
+                    },
                 )
                 .px(px(12.0))
                 .py(px(7.0))
-                .opacity(if self.generator.source.is_some() && !busy { 1.0 } else { 0.45 })
+                .opacity(if self.generator.source.is_some() && !busy {
+                    1.0
+                } else {
+                    0.45
+                })
                 .when(self.generator.source.is_some() && !busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
@@ -80,7 +94,11 @@ impl MapViewerWindowView {
                 )
                 .px(px(12.0))
                 .py(px(7.0))
-                .opacity(if self.generator.source.is_some() && !busy { 1.0 } else { 0.45 })
+                .opacity(if self.generator.source.is_some() && !busy {
+                    1.0
+                } else {
+                    0.45
+                })
                 .when(self.generator.source.is_some() && !busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
@@ -120,7 +138,9 @@ impl MapViewerWindowView {
                         self.generator.source.as_deref(),
                         "支持拖入 OBJ、glTF、GLB；MTL 随 OBJ 加载",
                         crate::ui::components::button::secondary_button(
-                            colors, "obj-inspector-source", "选择模型…",
+                            colors,
+                            "obj-inspector-source",
+                            "选择模型…",
                         )
                         .when(!busy, |button| {
                             button.on_mouse_down(
@@ -130,20 +150,25 @@ impl MapViewerWindowView {
                         })
                         .opacity(if busy { 0.45 } else { 1.0 }),
                     ))
-                    .when(busy, |panel| panel.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_secondary)
-                            .child("后台转换中 · 可以在任务面板取消"),
-                    ))
+                    .when(busy, |panel| {
+                        panel.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(colors.text_secondary)
+                                .child("后台转换中 · 可以在任务面板取消"),
+                        )
+                    })
                     .when_some(self.generator.preview_size, |panel, size| {
                         panel.child(crate::ui::components::inspector::inspector_result_summary(
-                            colors, "方块化结果",
+                            colors,
+                            "方块化结果",
                             format!("{} × {} × {} 方块", size[0], size[1], size[2]),
                         ))
                     })
-                    .child(crate::ui::components::inspector::inspector_field_group(colors)
-                        .child(self.render_obj_parameters(colors, cx))),
+                    .child(
+                        crate::ui::components::inspector::inspector_field_group(colors)
+                            .child(self.render_obj_parameters(colors, cx)),
+                    ),
             )
             .into_any_element()
     }

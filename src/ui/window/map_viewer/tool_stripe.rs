@@ -10,6 +10,7 @@ use gpui::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MapToolStripeSnapshot {
+    pub world3d_editor_open: bool,
     pub left_panel_open: bool,
     pub right_panel_open: bool,
     pub bottom_panel_open: bool,
@@ -40,6 +41,7 @@ impl Render for MapToolStripeView {
         let colors = theme_colors(window.animation_time(), cx);
         let _i18n = cx.global::<I18n>().clone();
         let snapshot = self.snapshot.unwrap_or(MapToolStripeSnapshot {
+            world3d_editor_open: false,
             left_panel_open: true,
             right_panel_open: false,
             bottom_panel_open: false,
@@ -113,10 +115,20 @@ impl Render for MapToolStripeView {
             ))
             .child(stripe_separator(&colors))
             .child(stripe_button(
+                "stripe-3d-editor",
+                &colors,
+                lucide_gpui::icon!(boxes),
+                "3D 编辑",
+                snapshot.world3d_editor_open,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ShowWorld3dEditor);
+                }),
+            ))
+            .child(stripe_button(
                 "stripe-3d",
                 &colors,
                 lucide_gpui::icon!(box),
-                "3D",
+                "3D 预览",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Preview3d,
                 cx.listener(|_this, _event, _window, cx| {

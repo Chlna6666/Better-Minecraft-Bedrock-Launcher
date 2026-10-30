@@ -1,4 +1,3 @@
-use crate::ui::components::numeric_field::NumericField;
 use super::editor::*;
 use super::generator_panel::GeneratorPanelState;
 use super::helpers::*;
@@ -11,6 +10,7 @@ use super::prelude::*;
 pub(super) use super::query_cache::MapQueryBudget;
 use super::tile_state::*;
 use super::viewport::*;
+use crate::ui::components::numeric_field::NumericField;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) const CHUNKS_PER_REGION: u32 = 32;
@@ -1217,6 +1217,7 @@ pub(super) struct ProfessionalQueryState {
     pub(super) slime_farm_candidates_request_mode: Option<SlimeFarmSearchMode>,
     pub(super) slime_farm_candidates_request_max_results: Option<usize>,
     pub(super) selection: Option<ChunkSelection>,
+    pub(super) volume_selection: Option<super::world3d::World3dSelection>,
     pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) selection_stats: Option<SelectionStats>,
     pub(super) detail: Option<ProfessionalDetail>,
@@ -1239,8 +1240,18 @@ pub(super) struct ProfessionalQueryState {
 impl ProfessionalQueryState {
     pub(super) fn reset_for_dimension_change(&mut self) {
         let entity_avatar_pool = self.entity_avatar_pool.clone();
+        // Clipboard content belongs to the document; only its placement is local
+        // to the currently displayed dimension.
+        let copied_chunk = self.copied_chunk.take();
+        let imported_structure = self.imported_structure.take();
+        let imported_region_package = self.imported_region_package;
+        let copied_chunk_preview_images = std::mem::take(&mut self.copied_chunk_preview_images);
         *self = Self {
             entity_avatar_pool,
+            copied_chunk,
+            imported_structure,
+            imported_region_package,
+            copied_chunk_preview_images,
             ..Self::default()
         };
     }
@@ -1673,6 +1684,9 @@ pub(super) enum MapInputField {
     CenterZ,
     ZoomPercent,
     DimensionId,
+    SelectionMinY,
+    SelectionMaxY,
+    PasteOriginY,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1686,6 +1700,10 @@ pub(super) struct MapInputFields {
     pub(super) center_z: Entity<InputState>,
     pub(super) zoom_percent: Entity<InputState>,
     pub(super) dimension_id: Entity<InputState>,
+    pub(super) selection_min_y: Entity<InputState>,
+    pub(super) selection_max_y: Entity<InputState>,
+    pub(super) paste_origin_y: Entity<InputState>,
+    pub(super) height_fill_block: Entity<InputState>,
     pub(super) focused_field: Option<MapInputField>,
     pub(super) dirty_fields: BTreeSet<MapInputField>,
     pub(super) validation: InputValidationState,
@@ -1698,6 +1716,10 @@ impl MapInputFields {
             center_z: map_input_state(window, cx, "Z"),
             zoom_percent: map_input_state(window, cx, "Zoom %"),
             dimension_id: map_input_state(window, cx, "Dim ID"),
+            selection_min_y: map_input_state(window, cx, "Y min"),
+            selection_max_y: map_input_state(window, cx, "Y max"),
+            paste_origin_y: map_input_state(window, cx, "Paste Y"),
+            height_fill_block: map_input_state(window, cx, "minecraft:stone"),
             focused_field: None,
             dirty_fields: BTreeSet::new(),
             validation: InputValidationState::default(),
@@ -1710,6 +1732,9 @@ impl MapInputFields {
             MapInputField::CenterZ => &self.center_z,
             MapInputField::ZoomPercent => &self.zoom_percent,
             MapInputField::DimensionId => &self.dimension_id,
+            MapInputField::SelectionMinY => &self.selection_min_y,
+            MapInputField::SelectionMaxY => &self.selection_max_y,
+            MapInputField::PasteOriginY => &self.paste_origin_y,
         }
     }
 }
@@ -1843,6 +1868,7 @@ pub struct MapViewerWindowView {
     pub(super) player_item_catalog_loading: bool,
     pub(super) player_item_catalog_loaded: bool,
     pub(super) preview_3d: Preview3dState,
+    pub(super) world3d: super::world3d::World3dMapLink,
     pub(super) generator: GeneratorPanelState,
     pub(super) image_generator: ImageGeneratorPanelState,
     pub(super) map_image: MapImagePanelState,

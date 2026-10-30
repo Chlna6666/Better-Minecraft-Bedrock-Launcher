@@ -68,21 +68,28 @@ impl MapViewerWindowView {
             MapViewerRightPanel::ImageGenerator => self.image_generator.preview_result_active,
             _ => false,
         };
-        let can_position = valid_source && preview.is_some_and(|preview| !preview.is_writing())
+        let can_position = valid_source
+            && preview.is_some_and(|preview| !preview.is_writing())
             && !self.map_write_busy();
         let can_commit = can_position && self.converter_target_selected() == Some(true);
-        let footprint = preview.map(|preview| preview.targets.len()).unwrap_or_default();
+        let footprint = preview
+            .map(|preview| preview.targets.len())
+            .unwrap_or_default();
         let anchor_text = preview.map_or_else(
             || "预览尚未准备，完成转换后再选择放置位置".to_owned(),
-            |preview| format!(
-                "预览锚点：区块 X {} · Z {}，占用 {} 个区块 · {}",
-                preview.target_anchor.x, preview.target_anchor.z, footprint,
-                if self.converter_target_selected() == Some(true) {
-                    "已选择放置位置"
-                } else {
-                    "待确认位置：请在地图中拖动预览或选择当前视野中心"
-                },
-            ),
+            |preview| {
+                format!(
+                    "预览锚点：区块 X {} · Z {}，占用 {} 个区块 · {}",
+                    preview.target_anchor.x,
+                    preview.target_anchor.z,
+                    footprint,
+                    if self.converter_target_selected() == Some(true) {
+                        "已选择放置位置"
+                    } else {
+                        "待确认位置：请在地图中拖动预览或选择当前视野中心"
+                    },
+                )
+            },
         );
 
         div()
@@ -150,16 +157,20 @@ impl MapViewerWindowView {
                             .opacity(if can_position { 1.0 } else { 0.45 }),
                     )
                     .child(
-                        primary_button(colors, "map-structure-confirm-placement", "确认写入当前世界")
-                            .when(can_commit, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.confirm_paste_preview(cx);
-                                    }),
-                                )
-                            })
-                            .opacity(if can_commit { 1.0 } else { 0.45 }),
+                        primary_button(
+                            colors,
+                            "map-structure-confirm-placement",
+                            "确认写入当前世界",
+                        )
+                        .when(can_commit, |button| {
+                            button.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.confirm_paste_preview(cx);
+                                }),
+                            )
+                        })
+                        .opacity(if can_commit { 1.0 } else { 0.45 }),
                     ),
             )
             .child(
@@ -202,7 +213,9 @@ impl MapViewerWindowView {
                     // Avoid constructing hidden conversion actions (and their event
                     // handlers) on every world-placement render.
                     let actions = match self.ui_state.active_right_panel {
-                        MapViewerRightPanel::Generator => self.render_obj_import_actions(colors, cx),
+                        MapViewerRightPanel::Generator => {
+                            self.render_obj_import_actions(colors, cx)
+                        }
                         MapViewerRightPanel::ImageGenerator => {
                             self.render_image_import_actions(colors, cx)
                         }

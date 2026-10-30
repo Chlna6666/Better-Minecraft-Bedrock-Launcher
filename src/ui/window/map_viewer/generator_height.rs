@@ -1,4 +1,3 @@
-use super::generator_panel::generator_choice;
 use super::model::MapViewerWindowView;
 use super::prelude::*;
 
@@ -50,23 +49,25 @@ impl MapViewerWindowView {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .child(crate::ui::components::numeric_field::numeric_step_button(
-                colors, "Y −1", true,
-            ).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.step_generator_y(-1, cx)),
-            ))
+            .child(
+                crate::ui::components::numeric_field::numeric_step_button(colors, "Y −1", true)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.step_generator_y(-1, cx)),
+                    ),
+            )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(colors.text_primary)
                     .child(format!("预览/放置底部 Y {}", self.y_layer)),
             )
-            .child(crate::ui::components::numeric_field::numeric_step_button(
-                colors, "Y +1", true,
-            ).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.step_generator_y(1, cx)),
-            ))
+            .child(
+                crate::ui::components::numeric_field::numeric_step_button(colors, "Y +1", true)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.step_generator_y(1, cx)),
+                    ),
+            )
     }
 }

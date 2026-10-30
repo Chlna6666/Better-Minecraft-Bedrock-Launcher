@@ -247,7 +247,11 @@ impl MapViewerWindowView {
         let changed_view = cx.entity().downgrade();
         let committed_view = changed_view.clone();
         let slider = Slider::new(
-            slider_id, colors, 1.0, 512.0, value as f32,
+            slider_id,
+            colors,
+            1.0,
+            512.0,
+            value as f32,
             move |size, app| {
                 let next = size.round().clamp(1.0, 512.0) as u32;
                 if let Err(error) = changed_view.update(app, |this, cx| {
@@ -273,32 +277,40 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(6.0))
             .child(generator_section_title(colors, title))
-            .child(crate::ui::components::numeric_field::numeric_dimension_editor(
-                field,
-                colors,
-                "方块",
-                crate::ui::components::numeric_field::numeric_step_button(
-                    colors, "−", !busy && value > 1,
-                ).when(!busy && value > 1, |button| {
-                    button.on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.set_image_dimension(axis, value - 1, cx)
-                        }),
+            .child(
+                crate::ui::components::numeric_field::numeric_dimension_editor(
+                    field,
+                    colors,
+                    "方块",
+                    crate::ui::components::numeric_field::numeric_step_button(
+                        colors,
+                        "−",
+                        !busy && value > 1,
                     )
-                }),
-                crate::ui::components::numeric_field::numeric_step_button(
-                    colors, "+", !busy && value < 512,
-                ).when(!busy && value < 512, |button| {
-                    button.on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.set_image_dimension(axis, value + 1, cx)
-                        }),
+                    .when(!busy && value > 1, |button| {
+                        button.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.set_image_dimension(axis, value - 1, cx)
+                            }),
+                        )
+                    }),
+                    crate::ui::components::numeric_field::numeric_step_button(
+                        colors,
+                        "+",
+                        !busy && value < 512,
                     )
-                }),
-                slider,
-            ))
+                    .when(!busy && value < 512, |button| {
+                        button.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.set_image_dimension(axis, value + 1, cx)
+                            }),
+                        )
+                    }),
+                    slider,
+                ),
+            )
             .child(
                 div()
                     .flex()
@@ -312,19 +324,19 @@ impl MapViewerWindowView {
                             .child("常用尺寸"),
                     )
                     .child(div().flex_1())
-                    .children(
-                        [64_u32, 128, 256, 512].into_iter().map(|size| {
-                            generator_choice(colors, format!("{size}"), value == size)
-                                .when(!busy, |button| {
-                                    button.on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.set_image_dimension(axis, size, cx)
-                                        }),
-                                    )
-                                })
-                        }),
-                    ),
+                    .children([64_u32, 128, 256, 512].into_iter().map(|size| {
+                        generator_choice(colors, format!("{size}"), value == size).when(
+                            !busy,
+                            |button| {
+                                button.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.set_image_dimension(axis, size, cx)
+                                    }),
+                                )
+                            },
+                        )
+                    })),
             )
     }
 }

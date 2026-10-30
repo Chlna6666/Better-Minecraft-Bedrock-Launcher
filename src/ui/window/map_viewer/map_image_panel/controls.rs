@@ -49,24 +49,27 @@ impl MapViewerWindowView {
             }
         });
         let decrease = crate::ui::components::numeric_field::numeric_step_button(
-            colors, "−", !busy && count > 1,
-        ).when(!busy && count > 1, |button| {
+            colors,
+            "−",
+            !busy && count > 1,
+        )
+        .when(!busy && count > 1, |button| {
             button.on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.set_grid_size(axis, count - 1, cx)),
             )
         });
         let increase = crate::ui::components::numeric_field::numeric_step_button(
-            colors, "+", !busy && count < max_count,
-        ).when(
+            colors,
+            "+",
             !busy && count < max_count,
-            |button| {
-                button.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.set_grid_size(axis, count + 1, cx)),
-                )
-            },
-        );
+        )
+        .when(!busy && count < max_count, |button| {
+            button.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| this.set_grid_size(axis, count + 1, cx)),
+            )
+        });
 
         div()
             .flex()
@@ -74,12 +77,7 @@ impl MapViewerWindowView {
             .gap(px(6.0))
             .child(generator_section_title(colors, label))
             .child(numeric_dimension_editor(
-                field,
-                colors,
-                "张",
-                decrease,
-                increase,
-                slider,
+                field, colors, "张", decrease, increase, slider,
             ))
             .child(
                 div()
@@ -92,7 +90,9 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
                             .child(if self.map_image.options.auto_fit {
-                                if !self.map_image.grid_estimated && self.map_image.preview_done == 0 {
+                                if !self.map_image.grid_estimated
+                                    && self.map_image.preview_done == 0
+                                {
                                     "自动匹配中".to_owned()
                                 } else {
                                     format!("自动匹配 · {count} 张")
@@ -107,15 +107,17 @@ impl MapViewerWindowView {
                             .into_iter()
                             .filter(|size| *size <= max_count)
                             .map(|size| {
-                                generator_choice(colors, format!("{size}"), count == size)
-                                    .when(!busy, |button| {
+                                generator_choice(colors, format!("{size}"), count == size).when(
+                                    !busy,
+                                    |button| {
                                         button.on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
                                                 this.set_grid_size(axis, size, cx)
                                             }),
                                         )
-                                    })
+                                    },
+                                )
                             }),
                     ),
             )

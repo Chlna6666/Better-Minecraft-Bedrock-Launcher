@@ -388,6 +388,18 @@ pub(super) fn map_input_subscriptions(
             MapInputField::DimensionId,
             input_fields.dimension_id.clone(),
         ),
+        (
+            MapInputField::SelectionMinY,
+            input_fields.selection_min_y.clone(),
+        ),
+        (
+            MapInputField::SelectionMaxY,
+            input_fields.selection_max_y.clone(),
+        ),
+        (
+            MapInputField::PasteOriginY,
+            input_fields.paste_origin_y.clone(),
+        ),
     ]
     .into_iter()
     .map(|(field, input)| {
@@ -400,7 +412,7 @@ pub(super) fn map_input_subscriptions(
 
 pub(super) fn initialize_map_input_values(
     input_fields: &MapInputFields,
-    values: [(MapInputField, String); 4],
+    values: [(MapInputField, String); 7],
     window: &mut Window,
     cx: &mut Context<MapViewerWindowView>,
 ) {

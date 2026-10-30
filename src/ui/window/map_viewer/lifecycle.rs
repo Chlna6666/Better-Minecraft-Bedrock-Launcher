@@ -318,10 +318,16 @@ impl MapViewerWindowView {
                     MapInputField::DimensionId,
                     Dimension::Overworld.id().to_string(),
                 ),
+                (MapInputField::SelectionMinY, "64".to_string()),
+                (MapInputField::SelectionMaxY, "64".to_string()),
+                (MapInputField::PasteOriginY, "64".to_string()),
             ],
             window,
             cx,
         );
+        input_fields.height_fill_block.update(cx, |input, cx| {
+            input.set_value(SharedString::from("minecraft:stone"), window, cx);
+        });
         let editor_state = cx.new(|cx| {
             let mut editor = CodeEditorState::new(cx);
             editor.set_language(CodeEditorLanguage::JsonNbt, cx);
@@ -333,19 +339,26 @@ impl MapViewerWindowView {
         let image_defaults = crate::core::minecraft::map::generator::ImageBlockOptions::default();
         let obj_defaults = bedrock_voxel::ObjVoxelOptions::default();
         let num_map_columns = crate::ui::components::numeric_field::NumericField::new(
-            window, cx, map_defaults.columns,
+            window,
+            cx,
+            map_defaults.columns,
         );
-        let num_map_rows = crate::ui::components::numeric_field::NumericField::new(
-            window, cx, map_defaults.rows,
-        );
+        let num_map_rows =
+            crate::ui::components::numeric_field::NumericField::new(window, cx, map_defaults.rows);
         let num_image_width = crate::ui::components::numeric_field::NumericField::new(
-            window, cx, image_defaults.width,
+            window,
+            cx,
+            image_defaults.width,
         );
         let num_image_height = crate::ui::components::numeric_field::NumericField::new(
-            window, cx, image_defaults.height,
+            window,
+            cx,
+            image_defaults.height,
         );
         let num_obj_size = crate::ui::components::numeric_field::NumericField::new(
-            window, cx, u32::from(obj_defaults.longest_side_blocks),
+            window,
+            cx,
+            u32::from(obj_defaults.longest_side_blocks),
         );
         let player_item_catalog_root = PathBuf::from(init.version.path.as_ref());
         let cached_player_item_catalog = cached_item_catalog_snapshot(&player_item_catalog_root);
@@ -392,14 +405,13 @@ impl MapViewerWindowView {
             (&num_image_height.state, ImportNumericAxis::ImageHeight),
             (&num_obj_size.state, ImportNumericAxis::ObjSize),
         ] {
-            subscriptions.push(cx.subscribe(
-                input,
-                move |this, _input, event: &InputEvent, cx| {
+            subscriptions.push(
+                cx.subscribe(input, move |this, _input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                         this.commit_import_numeric_axis(axis, cx);
                     }
-                },
-            ));
+                }),
+            );
         }
         let top_bar_view = cx.new(|_cx| MapTopBarView::default());
         let tool_stripe_view = cx.new(|_cx| MapToolStripeView::default());
@@ -474,6 +486,7 @@ impl MapViewerWindowView {
             player_item_catalog_loading: false,
             player_item_catalog_loaded,
             preview_3d: Preview3dState::default(),
+            world3d: super::world3d::World3dMapLink::default(),
             generator: super::generator_panel::GeneratorPanelState::default(),
             image_generator: super::image_generator_panel::ImageGeneratorPanelState::default(),
             map_image,
@@ -600,8 +613,7 @@ impl MapViewerWindowView {
 
     pub(super) fn import_canvas_stage_active(&self) -> bool {
         self.import_workspace_active()
-            && self.ui_state.import_workspace_mode
-                == super::state::ImportWorkspaceMode::Placement
+            && self.ui_state.import_workspace_mode == super::state::ImportWorkspaceMode::Placement
             && !(self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                 && self.map_image_installing_to_player())
     }

@@ -21,6 +21,7 @@ impl MapViewerWindowView {
 
     pub(super) fn tool_stripe_snapshot(&self) -> MapToolStripeSnapshot {
         MapToolStripeSnapshot {
+            world3d_editor_open: self.world3d_editor_is_open(),
             left_panel_open: self.ui_state.left_panel_open,
             right_panel_open: self.ui_state.right_panel_open,
             bottom_panel_open: self.ui_state.bottom_panel_open,
@@ -687,7 +688,7 @@ impl MapViewerWindowView {
                 )
             },
         );
-        panel_section_body(colors)
+        let mut panel = panel_section_body(colors)
             .child(panel_section_header(
                 colors,
                 lucide_gpui::icon!(box),
@@ -713,7 +714,280 @@ impl MapViewerWindowView {
                             }),
                         ),
                     ),
-            )
+            );
+        if let Some(volume) = self.professional.volume_selection {
+            let (world_min, world_max) = ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: volume.dimension,
+            }
+            .y_range(ChunkVersion::New);
+            let span = (world_max - world_min + 1).max(1) as f32;
+            let track_top = ((world_max - volume.max[1]) as f32 / span * 112.0).clamp(0.0, 112.0);
+            let track_height = ((volume.max[1] - volume.min[1] + 1) as f32 / span * 112.0).max(2.0);
+            let layer_top = ((world_max - self.y_layer) as f32 / span * 112.0).clamp(0.0, 112.0);
+            panel = panel
+                .child(status_badge(
+                    colors,
+                    format!(
+                        "高度 Y {} 至 {} · {} 层",
+                        volume.min[1],
+                        volume.max[1],
+                        volume.size()[1]
+                    ),
+                ))
+                .child(status_badge(
+                    colors,
+                    format!(
+                        "方块 X {}..{} · Z {}..{}",
+                        volume.min[0], volume.max[0], volume.min[2], volume.max[2]
+                    ),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(self.render_map_input(
+                            colors,
+                            MapInputField::SelectionMinY,
+                            "下界 Y",
+                            px(108.0),
+                        ))
+                        .child(self.render_map_input(
+                            colors,
+                            MapInputField::SelectionMaxY,
+                            "上界 Y",
+                            px(108.0),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .child(
+                            div()
+                                .relative()
+                                .w(px(18.0))
+                                .h(px(112.0))
+                                .rounded(px(4.0))
+                                .bg(colors.border)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(track_top))
+                                        .left(px(2.0))
+                                        .w(px(14.0))
+                                        .h(px(track_height))
+                                        .rounded(px(3.0))
+                                        .bg(colors.accent),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(layer_top))
+                                        .left(px(0.0))
+                                        .w(px(18.0))
+                                        .h(px(2.0))
+                                        .bg(colors.text_primary),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(format!("世界顶部 Y {world_max}"))
+                                .child(format!("选中 Y {}..{}", volume.min[1], volume.max[1]))
+                                .child(format!("当前剖面 Y {}", self.y_layer))
+                                .child(format!("世界底部 Y {world_min}")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(toolbar_button(colors, "下界 −16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(false, -16, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "下界 −1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(false, -1, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "下界 +1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(false, 1, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "下界 +16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(false, 16, cx)
+                            }),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(toolbar_button(colors, "上界 −16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(true, -16, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "上界 −1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(true, -1, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "上界 +1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(true, 1, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "上界 +16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.adjust_2d_selection_height(true, 16, cx)
+                            }),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(toolbar_button(colors, "当前层→下界").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.use_current_layer_for_selection_height(false, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "当前层→上界").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.use_current_layer_for_selection_height(true, cx)
+                            }),
+                        ))
+                        .child(toolbar_button(colors, "查看下界").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.show_2d_selection_height(false, cx)),
+                        ))
+                        .child(toolbar_button(colors, "查看上界").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.show_2d_selection_height(true, cx)),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(toolbar_button(colors, "复制高度选区").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.copy_2d_height_selection(cx)),
+                        ))
+                        .child(toolbar_button(colors, "清空高度选区").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.clear_2d_height_selection(cx)),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .w(px(170.0))
+                                .h(px(30.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .child(
+                                    Input::new(&self.input_fields.height_fill_block)
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .w_full()
+                                        .h_full(),
+                                ),
+                        )
+                        .child(toolbar_button(colors, "填充高度选区").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.fill_2d_height_selection(cx)),
+                        )),
+                );
+        }
+        if let (Some(import), Some(preview)) = (
+            self.professional.imported_structure.as_ref(),
+            self.professional.paste_preview.as_ref(),
+        ) {
+            panel = panel
+                .child(status_badge(
+                    colors,
+                    format!(
+                        "粘贴预览 · 区块 {},{} · 底部 Y {} · 顶部 Y {}",
+                        preview.target_anchor.x,
+                        preview.target_anchor.z,
+                        import.origin_y,
+                        import
+                            .origin_y
+                            .saturating_add(import.structure.size.y)
+                            .saturating_sub(1),
+                    ),
+                ))
+                .child(self.render_map_input(
+                    colors,
+                    MapInputField::PasteOriginY,
+                    "粘贴底部 Y",
+                    px(132.0),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(toolbar_button(colors, "粘贴 −16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-16, cx)),
+                        ))
+                        .child(toolbar_button(colors, "粘贴 −1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-1, cx)),
+                        ))
+                        .child(toolbar_button(colors, "粘贴 +1").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(1, cx)),
+                        ))
+                        .child(toolbar_button(colors, "粘贴 +16").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(16, cx)),
+                        ))
+                        .child(toolbar_button(colors, "底部设为当前层").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                let target_y = this.y_layer;
+                                if let Err(message) = this.set_2d_paste_height(target_y, cx) {
+                                    this.status = SharedString::from(message);
+                                    cx.notify();
+                                }
+                            }),
+                        )),
+                );
+        }
+        panel
     }
 
     pub(super) fn slime_farm_candidate_buttons(

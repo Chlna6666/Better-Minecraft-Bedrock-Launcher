@@ -50,6 +50,11 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn load_edit_detail(&mut self, target: EditTarget, cx: &mut Context<Self>) {
+        if self.editor_document.saving {
+            self.status = "编辑记录正在写入，请等待完成后再切换记录".into();
+            cx.notify();
+            return;
+        }
         self.context_menu = None;
         self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
         self.ui_state.set_right_panel_open(true);
@@ -168,11 +173,14 @@ impl MapViewerWindowView {
         action: EditAction,
         cx: &mut Context<Self>,
     ) {
+        if self.map_write_busy() {
+            self.status = "地图已有写入或历史操作，编辑未提交".into();
+            cx.notify();
+            return;
+        }
         self.editor_document.saving = true;
         self.professional.edit_loading = true;
         self.professional.edit_generation = self.professional.edit_generation.saturating_add(1);
-        let edit_generation = self.professional.edit_generation;
-        let metadata_generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let target_for_task = target.clone();
         let action_for_task = action.clone();
@@ -234,11 +242,7 @@ impl MapViewerWindowView {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                if this.metadata_generation != metadata_generation
-                    || this.professional.edit_generation != edit_generation
-                {
-                    return;
-                }
+                // Metadata refresh does not cancel a write already sent to disk.
                 this.professional.edit_loading = false;
                 this.editor_document.saving = false;
                 match result {
@@ -312,6 +316,7 @@ impl MapViewerWindowView {
         }
         self.set_professional_detail(None, cx);
         self.refresh_chunk_tree_if_selected();
+        self.notify_world3d_mutation(invalidation.affected_chunks(), cx);
     }
 
     pub(super) fn invalidate_tiles_for_chunks_with_options(
@@ -783,7 +788,9 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn map_write_busy(&self) -> bool {
-        self.map_bundle_write_busy()
+        self.editor_document.saving
+            || self.history.applying
+            || self.map_bundle_write_busy()
             || self
                 .professional
                 .active_write_task_id
@@ -856,6 +863,7 @@ impl MapViewerWindowView {
             self.task_snapshots
                 .insert(snapshot.id.clone(), Arc::new(snapshot));
         }
+        self.sync_world3d_import_preview(cx);
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -1110,6 +1118,7 @@ impl MapViewerWindowView {
                                 if let Some(preview) = this.professional.paste_preview.as_mut() {
                                     preview.write_progress = None;
                                 }
+                                this.sync_world3d_import_preview(cx);
                                 if is_map_operation_cancelled_error(&error) {
                                     let message = SharedString::from("地图写入已取消");
                                     this.status = message.clone();

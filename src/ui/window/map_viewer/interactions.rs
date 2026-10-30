@@ -13,6 +13,7 @@ use super::tile_render::{
 };
 use super::tile_state::ReadyTile;
 use super::viewport::{coordinate_text, viewport_screen_for_block};
+use crate::core::version::launch_versions::LaunchVersionEntry;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;
@@ -95,6 +96,9 @@ impl MapViewerWindowView {
         self.cancel_slime_farm_candidate_query();
         self.professional.reset_for_dimension_change();
         self.replace_paste_preview_images(Vec::new(), cx);
+        self.sync_2d_volume_selection(cx);
+        self.sync_world3d_import_preview(cx);
+        self.sync_world3d_chunk_clipboard(cx);
         self.set_professional_detail(None, cx);
         self.db_tree = DbTreeState::default();
         self.recenter_on_next_metadata = true;
@@ -102,7 +106,16 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn step_y(&mut self, delta: i32, cx: &mut Context<Self>) {
-        self.y_layer = self.y_layer.saturating_add(delta).clamp(-64, 320);
+        let (min_y, max_y) = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: self.dimension,
+        }
+        .y_range(ChunkVersion::New);
+        if min_y > max_y {
+            return;
+        }
+        self.y_layer = self.y_layer.saturating_add(delta).clamp(min_y, max_y);
         if matches!(
             self.mode,
             ViewerMode::Biome | ViewerMode::Layer | ViewerMode::Cave
@@ -224,6 +237,7 @@ impl MapViewerWindowView {
             MapViewerAction::StepY(delta) => self.step_y(delta, cx),
             MapViewerAction::ZoomBy(factor) => self.zoom_by_center(factor, cx),
             MapViewerAction::ImportStructureFile => self.open_import_structure_dialog(cx),
+            MapViewerAction::ShowWorld3dEditor => self.show_world3d_editor_window(cx),
             MapViewerAction::ToggleTopMore => self.toggle_top_more(cx),
             MapViewerAction::ToggleLeftPanel => self.toggle_left_panel(cx),
             MapViewerAction::ToggleLeftPanelKind(panel) => self.toggle_left_panel_kind(panel, cx),
@@ -928,6 +942,7 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         self.professional.selection = Some(drag.selection());
+        self.sync_2d_volume_selection(cx);
         self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
         self.cancel_slime_farm_candidate_query();
         self.professional.slime_farm_candidates = None;
@@ -1094,6 +1109,9 @@ impl MapViewerWindowView {
             MapInputField::CenterZ,
             MapInputField::ZoomPercent,
             MapInputField::DimensionId,
+            MapInputField::SelectionMinY,
+            MapInputField::SelectionMaxY,
+            MapInputField::PasteOriginY,
         ] {
             let value = self.map_input_display_value(field);
             self.sync_input_value(field, value, window, cx);
@@ -1107,6 +1125,22 @@ impl MapViewerWindowView {
             MapInputField::CenterZ => center_z.to_string(),
             MapInputField::ZoomPercent => format!("{:.0}", self.viewport.scale * 100.0),
             MapInputField::DimensionId => self.dimension.id().to_string(),
+            MapInputField::SelectionMinY => self
+                .professional
+                .volume_selection
+                .map_or(self.y_layer, |volume| volume.min[1])
+                .to_string(),
+            MapInputField::SelectionMaxY => self
+                .professional
+                .volume_selection
+                .map_or(self.y_layer, |volume| volume.max[1])
+                .to_string(),
+            MapInputField::PasteOriginY => self
+                .professional
+                .imported_structure
+                .as_ref()
+                .map_or(self.y_layer, |import| import.origin_y)
+                .to_string(),
         }
     }
 
@@ -1205,6 +1239,53 @@ impl MapViewerWindowView {
                     format!("维度已设为 {}", dimension_label(dimension))
                 })
                 .map_err(|message| (field, message)),
+            MapInputField::SelectionMinY | MapInputField::SelectionMaxY => {
+                parse_i32_input(trimmed, "选区高度")
+                    .map_err(|message| (field, message))
+                    .and_then(|value| {
+                        let Some(volume) = self.professional.volume_selection else {
+                            return Err((field, SharedString::from("请先建立地图选区")));
+                        };
+                        let (world_min, world_max) = ChunkPos {
+                            x: 0,
+                            z: 0,
+                            dimension: volume.dimension,
+                        }
+                        .y_range(ChunkVersion::New);
+                        let upper = field == MapInputField::SelectionMaxY;
+                        let valid = (world_min..=world_max).contains(&value)
+                            && if upper {
+                                value >= volume.min[1]
+                            } else {
+                                value <= volume.max[1]
+                            };
+                        if !valid {
+                            return Err((
+                                field,
+                                SharedString::from(format!(
+                                    "高度须在 {world_min}..{world_max} 内，且下界不大于上界"
+                                )),
+                            ));
+                        }
+                        self.set_2d_selection_height_bound(upper, value, cx);
+                        Ok(format!(
+                            "选区高度已设为 Y {}..{}",
+                            self.professional
+                                .volume_selection
+                                .map_or(value, |volume| volume.min[1]),
+                            self.professional
+                                .volume_selection
+                                .map_or(value, |volume| volume.max[1])
+                        ))
+                    })
+            }
+            MapInputField::PasteOriginY => parse_i32_input(trimmed, "粘贴高度")
+                .map_err(|message| (field, message))
+                .and_then(|value| {
+                    self.set_2d_paste_height(value, cx)
+                        .map_err(|message| (field, SharedString::from(message)))?;
+                    Ok(format!("粘贴目标高度已设为 Y {value}"))
+                }),
         };
 
         match result {
@@ -1256,7 +1337,12 @@ impl MapViewerWindowView {
         Ok(format!("已跳转到 X {block_x} · Z {block_z}"))
     }
 
-    pub(super) fn center_viewport_on_block(&mut self, block_x: i32, block_z: i32, cx: &mut Context<Self>) {
+    pub(super) fn center_viewport_on_block(
+        &mut self,
+        block_x: i32,
+        block_z: i32,
+        cx: &mut Context<Self>,
+    ) {
         self.mark_viewport_interaction();
         self.viewport
             .center_on_block(block_x, block_z, self.active_layout);
@@ -1382,6 +1468,8 @@ impl MapViewerWindowView {
     pub(super) fn clear_paste_preview_state(&mut self, cx: &mut Context<Self>) {
         self.professional.paste_preview = None;
         self.replace_paste_preview_images(Vec::new(), cx);
+        self.sync_world3d_import_preview(cx);
+        self.sync_world3d_chunk_clipboard(cx);
     }
 
     fn build_paste_preview_images(&self) -> Vec<PastePreviewImage> {
@@ -1477,6 +1565,17 @@ impl MapViewerWindowView {
         drag: Option<PastePreviewDrag>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.map_write_busy()
+            || self
+                .professional
+                .paste_preview
+                .as_ref()
+                .is_some_and(|preview| preview.is_writing())
+        {
+            self.status = "地图正在写入，暂不能移动或变换粘贴预览".into();
+            cx.notify();
+            return false;
+        }
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
             self.status = SharedString::from("没有已复制的 chunk");
             toast::error(cx, self.status.clone());
@@ -1528,6 +1627,9 @@ impl MapViewerWindowView {
         self.ui_state.context_paste_open = false;
         self.rebuild_paste_preview_images(cx);
         self.sync_import_preview_3d_transform(transform);
+        self.sync_world3d_import_preview(cx);
+        self.sync_world3d_chunk_clipboard(cx);
+        self.ensure_world3d_import_preview(cx);
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         true
@@ -1626,9 +1728,8 @@ impl MapViewerWindowView {
         // Automatically suggested targets remain read-only until the user explicitly
         // picks a position. This guard also protects keyboard/overlay confirmation.
         if self.converter_target_selected() == Some(false) {
-            self.status = SharedString::from(
-                "请先在地图中拖动预览，或点击“放到当前视野中心”明确选择位置",
-            );
+            self.status =
+                SharedString::from("请先在地图中拖动预览，或点击“放到当前视野中心”明确选择位置");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -1671,6 +1772,16 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn cancel_paste_preview(&mut self, cx: &mut Context<Self>) -> bool {
+        if self
+            .professional
+            .paste_preview
+            .as_ref()
+            .is_some_and(|preview| preview.is_writing())
+        {
+            self.status = "粘贴写入已经开始；请在任务中取消，等待结束后再关闭预览".into();
+            cx.notify();
+            return false;
+        }
         let changed =
             self.professional.paste_preview.is_some() || !self.paste_preview_images.is_empty();
         self.clear_paste_preview_state(cx);
@@ -1927,6 +2038,7 @@ impl MapViewerWindowView {
                 start: chunk,
                 end: chunk,
             });
+            self.sync_2d_volume_selection(cx);
             self.professional.selection_stats = None;
         }
         cx.notify();
@@ -1947,9 +2059,7 @@ impl MapViewerWindowView {
     pub(super) fn handle_canvas_action(&mut self, action: MapCanvasAction, cx: &mut Context<Self>) {
         match action {
             MapCanvasAction::BeginDrag(position) => {
-                if self.map_image.picking_frame_center
-                    && self.map_image_positioning_frames()
-                {
+                if self.map_image.picking_frame_center && self.map_image_positioning_frames() {
                     let local = self.stage_local_position(position);
                     let (x, z) = self.viewport.screen_to_block(local, self.active_layout);
                     self.set_map_frame_anchor((x, z), cx);
@@ -3362,6 +3472,10 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         }
+        if !self.world3d.try_start_copy() {
+            self.report_clipboard_busy(cx);
+            return;
+        }
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
         let task_id = task_manager::create_task_with_details(
@@ -3397,7 +3511,6 @@ impl MapViewerWindowView {
         } else {
             SharedString::from(format!("正在复制 {chunk_count} 个 chunk..."))
         };
-        let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let mode = self.current_render_mode();
         let dimension = self.dimension;
@@ -3519,8 +3632,8 @@ impl MapViewerWindowView {
                 let is_complete = matches!(&event, CopyChunkEvent::Complete(_));
                 let task_id_for_ui = task_id.clone();
                 view.update(cx, move |this, cx| {
-                    if this.metadata_generation != generation {
-                        return;
+                    if is_complete {
+                        this.world3d.finish_copy();
                     }
                     match event {
                         CopyChunkEvent::Progress(progress) => {
@@ -3543,6 +3656,7 @@ impl MapViewerWindowView {
                                 this.image_generator.preview_result_active = false;
                                 this.professional.copied_chunk_preview_images = preview_images;
                                 this.clear_paste_preview_state(cx);
+                                this.invalidate_preview_3d_mesh();
                                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
                                     "bmcbl-chunks {} {} {} {}",
                                     source.dimension.id(),
@@ -3768,6 +3882,7 @@ impl MapViewerWindowView {
                 .selection
                 .map_or(chunk, |selection| selection.end),
         });
+        self.sync_2d_volume_selection(cx);
         self.invalidate_preview_3d_mesh();
         self.refresh_professional_render_caches(cx);
         self.context_menu = None;
@@ -3788,6 +3903,7 @@ impl MapViewerWindowView {
                 .map_or(chunk, |selection| selection.start),
             end: chunk,
         });
+        self.sync_2d_volume_selection(cx);
         self.invalidate_preview_3d_mesh();
         self.refresh_professional_render_caches(cx);
         self.context_menu = None;
@@ -3797,6 +3913,8 @@ impl MapViewerWindowView {
 
     pub(super) fn clear_professional_selection(&mut self, cx: &mut Context<Self>) {
         self.professional.selection = None;
+        self.professional.volume_selection = None;
+        self.sync_2d_volume_selection(cx);
         self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
         self.cancel_slime_farm_candidate_query();
         self.professional.slime_farm_candidates = None;
@@ -3945,7 +4063,92 @@ pub(super) fn canvas_pointer_move_action(
     }
 }
 
-fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
+fn world_version_stamp(world_path: &Path) -> Vec<u32> {
+    let Ok(document) =
+        ::bedrock_world::level::read_level_dat_document(&world_path.join("level.dat"))
+    else {
+        return Vec::new();
+    };
+    let bedrock_world::NbtTag::Compound(root) = &document.root else {
+        return Vec::new();
+    };
+    let Some(bedrock_world::NbtTag::List(values)) = root.get("lastOpenedWithVersion") else {
+        return Vec::new();
+    };
+    values
+        .iter()
+        .filter_map(|tag| match tag {
+            bedrock_world::NbtTag::Int(value) => u32::try_from(*value).ok(),
+            bedrock_world::NbtTag::Short(value) => u32::try_from(*value).ok(),
+            bedrock_world::NbtTag::Byte(value) => u32::try_from(*value).ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn version_package_numbers(entry: &LaunchVersionEntry) -> Vec<u32> {
+    for text in [
+        entry.folder.as_ref(),
+        entry.version.as_ref(),
+        entry.name.as_ref(),
+    ] {
+        let numbers = text
+            .split(|character: char| !character.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse::<u32>().ok())
+            .collect::<Vec<_>>();
+        if numbers.len() >= 2 {
+            return numbers;
+        }
+    }
+    Vec::new()
+}
+
+/// Scores how well an installed version's numbers appear in the world's saved version stamp.
+fn version_stamp_score(numbers: &[u32], stamp: &[u32]) -> usize {
+    let mut best = 0;
+    for start in 0..stamp.len() {
+        let mut cursor = start;
+        let mut matched = 0;
+        for number in numbers {
+            let Some(offset) = stamp[cursor..].iter().position(|value| value == number) else {
+                break;
+            };
+            cursor += offset + 1;
+            matched += 1;
+        }
+        best = best.max(matched);
+    }
+    best
+}
+
+fn select_world_package_version(versions: &[LaunchVersionEntry], stamp: &[u32]) -> Option<PathBuf> {
+    let mut best: Option<(usize, Vec<u32>, PathBuf)> = None;
+    let mut newest: Option<(Vec<u32>, PathBuf)> = None;
+    for entry in versions {
+        let numbers = version_package_numbers(entry);
+        let path = PathBuf::from(entry.path.as_ref());
+        if newest
+            .as_ref()
+            .is_none_or(|(best_numbers, _)| numbers > *best_numbers)
+        {
+            newest = Some((numbers.clone(), path.clone()));
+        }
+        let score = version_stamp_score(&numbers, stamp);
+        if score == 0 {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(best_score, best_numbers, _)| {
+            score > *best_score || (score == *best_score && numbers > *best_numbers)
+        }) {
+            best = Some((score, numbers, path));
+        }
+    }
+    best.map(|(_, _, path)| path)
+        .or_else(|| newest.map(|(_, path)| path))
+}
+
+pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
     let mut package_paths = Vec::new();
     let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
         let package_path = state.package_path.to_string();
@@ -3955,14 +4158,16 @@ fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf
         bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
     }
 
-    cx.read_global(|state: &LocalVersionsState, _cx| {
-        for version in state.versions.iter() {
-            bedrock_block_model::push_unique_resource_pack_path(
-                &mut package_paths,
-                PathBuf::from(version.path.as_ref()),
-            );
-        }
+    // Select the installed version that matches the version stamp saved in level.dat. Appending
+    // every installed version here let later (unrelated) versions override the matching one,
+    // which mixed textures and models from different game versions.
+    let version_stamp = world_version_stamp(world_path);
+    let selected = cx.read_global(|state: &LocalVersionsState, _cx| {
+        select_world_package_version(state.versions.as_ref(), &version_stamp)
     });
+    if let Some(package_path) = selected {
+        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
+    }
 
     for package_path in
         crate::core::minecraft::paths::infer_package_roots_from_world_path(world_path)

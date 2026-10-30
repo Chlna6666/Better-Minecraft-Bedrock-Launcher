@@ -110,7 +110,12 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn set_image_dimension(&mut self, axis: ImageAxis, size: u32, cx: &mut Context<Self>) {
+    pub(super) fn set_image_dimension(
+        &mut self,
+        axis: ImageAxis,
+        size: u32,
+        cx: &mut Context<Self>,
+    ) {
         if self.image_generator_busy() {
             return;
         }
@@ -119,8 +124,10 @@ impl MapViewerWindowView {
             ImageAxis::Height => &mut self.image_generator.options.height,
         };
         *target = size.clamp(1, 512);
-        self.num_image_width.sync(self.image_generator.options.width, cx);
-        self.num_image_height.sync(self.image_generator.options.height, cx);
+        self.num_image_width
+            .sync(self.image_generator.options.width, cx);
+        self.num_image_height
+            .sync(self.image_generator.options.height, cx);
         self.clamp_image_relief_height();
         self.start_image_live_preview(cx);
         cx.notify();
@@ -140,8 +147,10 @@ impl MapViewerWindowView {
             ImageAxis::Height => &mut self.image_generator.options.height,
         };
         *target = size.clamp(1, 512);
-        self.num_image_width.sync(self.image_generator.options.width, cx);
-        self.num_image_height.sync(self.image_generator.options.height, cx);
+        self.num_image_width
+            .sync(self.image_generator.options.width, cx);
+        self.num_image_height
+            .sync(self.image_generator.options.height, cx);
         self.clamp_image_relief_height();
         self.schedule_image_live_preview(cx);
     }

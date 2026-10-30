@@ -15,13 +15,14 @@ use super::selection::{
     selection_chunks_are_rectangular, selection_contains_chunk,
     set_right_selection_modifier_requested,
 };
-use super::state::MIN_CENTER_HEIGHT;
 use super::tile_state::{MapRenderRange, PaintTile};
 use super::viewport::{
     TileBounds, region_render_range_for_viewport, ruler_blocks, screen_x_for_block,
     screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order, tile_paint_rect,
     tile_paint_sort_key, viewport_screen_for_block,
 };
+use super::world3d::camera_overlay::{CameraOverlayContext, MapCameraOverlayView};
+use super::world3d::types::{CameraOverlayMode, World3dCameraSnapshot};
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
@@ -251,6 +252,7 @@ pub(super) struct MapCanvasView {
     overlay_layer: Entity<MapOverlayLayerView>,
     marker_layer: Entity<MapMarkerLayerView>,
     hud_layer: Entity<MapHudView>,
+    camera_overlay_layer: Entity<MapCameraOverlayView>,
     paste_controls_layer: Entity<MapPasteControlsView>,
     frame_revision: u64,
     tile_revision: u64,
@@ -260,6 +262,9 @@ pub(super) struct MapCanvasView {
     last_pointer_position: Option<Point<Pixels>>,
     last_pressed_button: Option<MouseButton>,
     interaction_cursor: CursorStyle,
+    map_dimension: Dimension,
+    world3d_camera: Option<World3dCameraSnapshot>,
+    world3d_mode: CameraOverlayMode,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -294,6 +299,7 @@ impl MapCanvasView {
             overlay_layer: cx.new(|_cx| MapOverlayLayerView::default()),
             marker_layer,
             hud_layer: cx.new(|_cx| MapHudView::default()),
+            camera_overlay_layer: cx.new(|_cx| MapCameraOverlayView::default()),
             paste_controls_layer,
             frame_revision: 0,
             tile_revision: 0,
@@ -303,11 +309,15 @@ impl MapCanvasView {
             last_pointer_position: None,
             last_pressed_button: None,
             interaction_cursor: CursorStyle::Arrow,
+            map_dimension: Dimension::Overworld,
+            world3d_camera: None,
+            world3d_mode: CameraOverlayMode::Hidden,
             _subscriptions: subscriptions,
         }
     }
 
     pub(super) fn set_snapshot(&mut self, snapshot: MapCanvasSnapshot, cx: &mut Context<Self>) {
+        self.map_dimension = snapshot.dimension;
         self.selection_hit_snapshot = snapshot.selection.map(|selection| SelectionHitSnapshot {
             stage_origin: snapshot.stage_origin,
             viewport: snapshot.viewport,
@@ -327,6 +337,18 @@ impl MapCanvasView {
         });
         self.hud_layer.update(cx, |view, cx| {
             view.set_snapshot(HudSnapshot::from_canvas(&snapshot), cx)
+        });
+        self.camera_overlay_layer.update(cx, |view, cx| {
+            view.set_context(
+                CameraOverlayContext {
+                    stage_origin: snapshot.stage_origin,
+                    viewport: snapshot.viewport,
+                    layout: snapshot.layout,
+                    colors: snapshot.colors,
+                    dimension: snapshot.dimension,
+                },
+                cx,
+            );
         });
         self.paste_controls_layer.update(cx, |view, cx| {
             view.set_snapshot(PasteControlsSnapshot::from_canvas(&snapshot), cx)
@@ -389,6 +411,22 @@ impl MapCanvasView {
         }
     }
 
+    pub(super) fn set_world3d_camera(
+        &mut self,
+        camera: Option<World3dCameraSnapshot>,
+        mode: CameraOverlayMode,
+        map_dimension: Dimension,
+        cx: &mut Context<Self>,
+    ) {
+        self.map_dimension = map_dimension;
+        self.world3d_camera = camera;
+        self.world3d_mode = mode;
+        self.camera_overlay_layer.update(cx, |view, cx| {
+            view.set_camera(camera, mode, cx);
+        });
+        cx.notify();
+    }
+
     pub(super) fn set_hover_label(&mut self, hover_label: SharedString, cx: &mut Context<Self>) {
         self.hud_layer
             .update(cx, |view, cx| view.set_hover_label(hover_label, cx));
@@ -402,9 +440,44 @@ impl EventEmitter<MapCanvasAction> for MapCanvasView {}
 impl Render for MapCanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(window.animation_time(), cx);
-        let frame_revision = self.frame_revision;
-        let tile_revision = self.tile_revision;
-        let hud_revision = (frame_revision, self.hud_revision);
+        let camera_chip = match (self.world3d_camera, self.world3d_mode) {
+            (Some(camera), mode)
+                if mode != CameraOverlayMode::Hidden
+                    && camera.dimension == self.map_dimension =>
+            {
+                Some(
+                    div()
+                        .absolute()
+                        .top(px(8.0))
+                        .right(px(8.0))
+                        .px(px(7.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(Hsla {
+                            a: 0.45,
+                            ..colors.accent
+                        })
+                        .bg(Hsla {
+                            a: 0.82,
+                            ..colors.surface
+                        })
+                        .text_size(px(10.0))
+                        .text_color(colors.text_secondary)
+                        .child(SharedString::from(format!(
+                            "3D 摄像机 · X {:.1} Y {:.1} Z {:.1} · yaw {:.0}° pitch {:.0}° · FOV {:.0}° · {}",
+                            camera.position[0],
+                            camera.position[1],
+                            camera.position[2],
+                            camera.yaw.to_degrees(),
+                            camera.pitch.to_degrees(),
+                            camera.horizontal_fov_radians().to_degrees(),
+                            mode.label()
+                        ))),
+                )
+            }
+            _ => None,
+        };
         div()
             .relative()
             .flex_1()
@@ -416,6 +489,7 @@ impl Render for MapCanvasView {
             .bg(colors.surface)
             .child(cached_absolute_layer(&self.tile_layer))
             .child(cached_absolute_layer(&self.overlay_layer))
+            .child(cached_absolute_layer(&self.camera_overlay_layer))
             .child(cached_absolute_layer(&self.hud_layer))
             .child(render_interaction_layer(
                 &self.map_focus_handle,
@@ -424,13 +498,12 @@ impl Render for MapCanvasView {
             ))
             .child(cached_absolute_layer(&self.marker_layer))
             .child(cached_absolute_layer(&self.paste_controls_layer))
+            .when_some(camera_chip, |this, chip| this.child(chip))
             .into_any_element()
     }
 }
 
-fn cached_absolute_layer<V: Render + 'static>(
-    layer: &Entity<V>,
-) -> AnyElement {
+fn cached_absolute_layer<V: Render + 'static>(layer: &Entity<V>) -> AnyElement {
     div()
         .absolute()
         .inset_0()

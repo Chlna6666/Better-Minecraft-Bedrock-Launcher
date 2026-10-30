@@ -24,7 +24,10 @@ fn nearest_block_entity_positions(
             }
         }
         total = total.saturating_add(1);
-        if nearest.iter().any(|(_, old_x, old_z)| *old_x == x && *old_z == z) {
+        if nearest
+            .iter()
+            .any(|(_, old_x, old_z)| *old_x == x && *old_z == z)
+        {
             continue;
         }
         let dx = u64::from(x.abs_diff(center.0));
@@ -32,7 +35,9 @@ fn nearest_block_entity_positions(
         let distance = dx.saturating_mul(dx).saturating_add(dz.saturating_mul(dz));
         let candidate = (distance, x, z);
         if nearest.len() == MAX_VISIBLE_CANDIDATES
-            && nearest.last().is_some_and(|furthest| candidate >= *furthest)
+            && nearest
+                .last()
+                .is_some_and(|furthest| candidate >= *furthest)
         {
             continue;
         }
@@ -57,18 +62,19 @@ impl MapViewerWindowView {
         let query = query.trim().to_lowercase();
         let center = self.viewport.center_block(self.active_layout);
         let (matches, positions) = if overlay_ready {
-            self.professional.overlay_paint.as_ref().map_or(
-                (0, Vec::new()),
-                |overlay| {
+            self.professional
+                .overlay_paint
+                .as_ref()
+                .map_or((0, Vec::new()), |overlay| {
                     nearest_block_entity_positions(
-                        overlay.block_entity_points.iter().map(|p| {
-                            (p.block_x as i32, p.block_z as i32)
-                        }),
+                        overlay
+                            .block_entity_points
+                            .iter()
+                            .map(|p| (p.block_x as i32, p.block_z as i32)),
                         center,
                         &query,
                     )
-                },
-            )
+                })
         } else {
             (0, Vec::new())
         };

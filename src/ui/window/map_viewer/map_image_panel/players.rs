@@ -1,7 +1,7 @@
 use super::super::players::player_id_label;
 use super::*;
-use crate::ui::components::scroll::Scrollbar;
 use crate::ui::components::button::ghost_button;
+use crate::ui::components::scroll::Scrollbar;
 
 impl MapViewerWindowView {
     pub(in super::super) fn reset_map_player_search_scroll(&self) {
@@ -129,14 +129,17 @@ impl MapViewerWindowView {
                     .truncate()
                     .child(format!("已选：{selected_label}")),
             )
-            .when(self.map_image.selected_player.storage_key().is_none(), |panel| {
-                panel.child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(colors.text_secondary)
-                        .child("当前玩家不可原子写入。请搜索并选择下方可写入的玩家。"),
-                )
-            })
+            .when(
+                self.map_image.selected_player.storage_key().is_none(),
+                |panel| {
+                    panel.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child("当前玩家不可原子写入。请搜索并选择下方可写入的玩家。"),
+                    )
+                },
+            )
             .child(
                 Input::new(&self.map_image.player_search)
                     .cleanable(true)
@@ -165,9 +168,9 @@ impl MapViewerWindowView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
-                                        this.map_image.player_scroll.scroll_to_item_strict(
-                                            index, ScrollStrategy::Center,
-                                        );
+                                        this.map_image
+                                            .player_scroll
+                                            .scroll_to_item_strict(index, ScrollStrategy::Center);
                                         cx.notify();
                                     }),
                                 ),
@@ -184,16 +187,12 @@ impl MapViewerWindowView {
                     .border_color(colors.border)
                     .flex()
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .h_full()
-                            .child(list),
-                    )
-                    .child(
-                        Scrollbar::new("map-import-player-scrollbar", &scrollbar_handle, colors),
-                    ),
+                    .child(div().flex_1().min_w(px(0.0)).h_full().child(list))
+                    .child(Scrollbar::new(
+                        "map-import-player-scrollbar",
+                        &scrollbar_handle,
+                        colors,
+                    )),
             )
             .when(count == 0, |panel| {
                 panel.child(
@@ -213,7 +212,9 @@ fn matches_player_query(label: &str, id: &PlayerId, query: &str) -> bool {
     // All search terms must match, but may span the friendly name and storage identifier.
     // Keep the query source-independent: the virtual list still only builds visible rows.
     let searchable = format!("{label} {}", player_id_label(id)).to_lowercase();
-    query.split_whitespace().all(|word| searchable.contains(&word.to_lowercase()))
+    query
+        .split_whitespace()
+        .all(|word| searchable.contains(&word.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -230,9 +231,21 @@ mod tests {
             "player_430db2e0"
         ));
         assert!(!matches_player_query("服务器玩家", &player, "missing"));
-        assert!(matches_player_query("服务器玩家", &player, "服务器玩家 8790"));
-        assert!(matches_player_query("服务器玩家", &player, "PLAYER_430db2e0"));
-        assert!(!matches_player_query("服务器玩家", &player, "服务器玩家 missing"));
+        assert!(matches_player_query(
+            "服务器玩家",
+            &player,
+            "服务器玩家 8790"
+        ));
+        assert!(matches_player_query(
+            "服务器玩家",
+            &player,
+            "PLAYER_430db2e0"
+        ));
+        assert!(!matches_player_query(
+            "服务器玩家",
+            &player,
+            "服务器玩家 missing"
+        ));
     }
 
     #[test]

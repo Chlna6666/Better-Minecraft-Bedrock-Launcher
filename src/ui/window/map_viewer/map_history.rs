@@ -34,6 +34,8 @@ pub(crate) enum MapHistoryEntryKind {
     PlayerEdit,
     LevelDatSave,
     RestorePoint,
+    /// A 3D world editor block edit routed through the shared map document history.
+    BlockEdit,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -514,6 +516,7 @@ impl MapHistoryEntry {
             MapHistoryEntryKind::PlayerEdit => "玩家编辑",
             MapHistoryEntryKind::LevelDatSave => "level.dat",
             MapHistoryEntryKind::RestorePoint => "回档保护点",
+            MapHistoryEntryKind::BlockEdit => "3D 方块编辑",
         }
     }
 }

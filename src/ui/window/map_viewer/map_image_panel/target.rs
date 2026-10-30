@@ -32,27 +32,19 @@ impl MapViewerWindowView {
     }
 
     /// Reuse the map viewer's existing viewport navigation and tile scheduling.
-    pub(in super::super) fn focus_selected_map_image_block(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) {
+    pub(in super::super) fn focus_selected_map_image_block(&mut self, cx: &mut Context<Self>) {
         if let Some((chunk, block)) = self.map_image.selected_block {
             if chunk.dimension == self.dimension {
                 self.center_viewport_on_block(block.x, block.z, cx);
                 cx.notify();
             } else {
-                self.status = SharedString::from(
-                    "当前选中的容器属于其他维度，请重新选择目标",
-                );
+                self.status = SharedString::from("当前选中的容器属于其他维度，请重新选择目标");
                 cx.notify();
             }
         }
     }
 
-    pub(in super::super) fn clear_selected_map_image_block(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) {
+    pub(in super::super) fn clear_selected_map_image_block(&mut self, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
         }

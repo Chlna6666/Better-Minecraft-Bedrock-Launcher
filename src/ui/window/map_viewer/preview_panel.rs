@@ -1,6 +1,8 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
+use futures::channel::mpsc::channel;
+use futures_util::SinkExt as _;
 
 impl MapViewerWindowView {
     pub(super) fn invalidate_preview_3d_mesh(&mut self) {
@@ -66,28 +68,27 @@ impl MapViewerWindowView {
         let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
-            let (event_sender, mut event_receiver) = unbounded::<Preview3dLoadEvent>();
-            let complete_sender = event_sender.clone();
+            let (event_sender, mut event_receiver) = channel::<Preview3dLoadEvent>(1);
+            let mut complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {
                 let result = load_preview_3d_mesh_blocking_incremental(
                     &world_path,
                     signature.bounds,
                     Some(preview_cancel_for_load),
                     {
-                        let event_sender = event_sender.clone();
+                        let mut event_sender = event_sender.clone();
                         move |mesh, status| {
-                            if event_sender
-                                .unbounded_send(Preview3dLoadEvent::Chunk { mesh, status })
-                                .is_err()
-                            {
-                                tracing::debug!("preview 3d incremental receiver was dropped");
-                            }
+                            // A newer full snapshot can be skipped while the UI still owns one.
+                            // The final result is sent separately and must always be delivered.
+                            let _ =
+                                event_sender.try_send(Preview3dLoadEvent::Chunk { mesh, status });
                         }
                     },
                 )
                 .map(Arc::new);
                 if complete_sender
-                    .unbounded_send(Preview3dLoadEvent::Complete(result))
+                    .send(Preview3dLoadEvent::Complete(result))
+                    .await
                     .is_err()
                 {
                     tracing::debug!("preview 3d completion receiver was dropped");
@@ -132,18 +133,16 @@ impl MapViewerWindowView {
 
     pub(super) fn refresh_import_preview_3d(&mut self, cx: &mut Context<Self>) {
         let imported_structure = self.professional.imported_structure.clone();
-        let imported_region = self
-            .professional
-            .imported_region_package
-            .then(|| self.professional.copied_chunk.clone())
-            .flatten();
-        if imported_structure.is_none() && imported_region.is_none() {
+        let copied_chunk = self.professional.copied_chunk.clone();
+        if imported_structure.is_none() && copied_chunk.is_none() {
             self.status = SharedString::from("没有可加载的导入预览");
             cx.notify();
             return;
         }
+        let import_already_loading = self.preview_3d.source == Preview3dSource::ImportPreview
+            && self.preview_3d.render_in_flight;
         self.preview_3d.source = Preview3dSource::ImportPreview;
-        if self.preview_3d.render_in_flight {
+        if import_already_loading {
             self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
                 "加载中",
                 "已有导入预览任务正在运行",
@@ -161,6 +160,8 @@ impl MapViewerWindowView {
         self.preview_3d.status =
             Preview3dStatus::Loading(Preview3dBuildStatus::new("准备", "导入模型"));
         self.preview_3d.mesh = None;
+        self.world3d.import_mesh_origin_y = imported_structure.as_ref().map(|data| data.origin_y);
+        self.sync_world3d_import_preview(cx);
         self.preview_3d.signature = None;
         #[cfg(target_os = "windows")]
         self.preview_3d.clear_surface();
@@ -178,9 +179,8 @@ impl MapViewerWindowView {
                             imported_structure.origin_y,
                         )
                         .map(Arc::new)
-                    } else if let Some(imported_region) = imported_region {
-                        load_preview_3d_mesh_from_copied_chunk_blocking(&imported_region)
-                            .map(Arc::new)
+                    } else if let Some(copied_chunk) = copied_chunk {
+                        load_preview_3d_mesh_from_copied_chunk_blocking(&copied_chunk).map(Arc::new)
                     } else {
                         Err("没有可加载的导入预览".to_string())
                     }
@@ -201,6 +201,7 @@ impl MapViewerWindowView {
                     .as_ref()
                     .map_or(PasteTransform::default(), |preview| preview.transform);
                 this.sync_import_preview_3d_transform(transform);
+                this.sync_world3d_import_preview(cx);
                 cx.notify();
             })?;
             Ok::<(), anyhow::Error>(())

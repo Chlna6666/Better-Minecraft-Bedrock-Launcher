@@ -1,12 +1,12 @@
 //! Import previews and placement controls owned by the central workspace.
 
 use super::generator_panel::generator_choice;
-use crate::ui::components::button::{primary_button, secondary_button};
-use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
-use super::map_image_panel::{GridAxis, MapImageInstallDestination};
 use super::image_generator_panel::ImageAxis;
+use super::map_image_panel::GridAxis;
+use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
 use super::prelude::*;
 use super::state::ImportWorkspaceMode;
+use crate::ui::components::button::{primary_button, secondary_button};
 
 impl MapViewerWindowView {
     /// An open import editor owns the central preview while keeping its parameters visible.
@@ -57,9 +57,7 @@ impl MapViewerWindowView {
             MapViewerRightPanel::Generator if self.generator.preview_result_active => {
                 Some(self.generator.target_selected_by_user)
             }
-            MapViewerRightPanel::ImageGenerator
-                if self.image_generator.preview_result_active =>
-            {
+            MapViewerRightPanel::ImageGenerator if self.image_generator.preview_result_active => {
                 Some(self.image_generator.target_selected_by_user)
             }
             _ => None,
@@ -74,9 +72,7 @@ impl MapViewerWindowView {
             MapViewerRightPanel::Generator if self.generator.preview_result_active => {
                 self.generator.target_selected_by_user = true;
             }
-            MapViewerRightPanel::ImageGenerator
-                if self.image_generator.preview_result_active =>
-            {
+            MapViewerRightPanel::ImageGenerator if self.image_generator.preview_result_active => {
                 self.image_generator.target_selected_by_user = true;
             }
             _ => {}
@@ -127,11 +123,13 @@ impl MapViewerWindowView {
         };
         let shows_world_canvas = !source_missing && !preview && !inventory_target;
         let body = if source_missing {
-            self.render_import_source_empty_state(colors, cx).into_any_element()
+            self.render_import_source_empty_state(colors, cx)
+                .into_any_element()
         } else if preview {
             self.render_import_result(colors, cx).into_any_element()
         } else if inventory_target {
-            self.render_map_image_inventory_workspace(colors).into_any_element()
+            self.render_map_image_inventory_workspace(colors)
+                .into_any_element()
         } else {
             self.canvas_view.clone().into_any_element()
         };
@@ -276,13 +274,32 @@ impl MapViewerWindowView {
             .child(div().w(px(1.0)).h(px(28.0)).bg(colors.border))
             .children(
                 [
-                    (ImportWorkspaceMode::Preview, "01", if is_map_image { "分片预览" } else { "转换预览" }),
-                    (ImportWorkspaceMode::Placement, "02", if is_map_image { "选择写入目标" } else { "世界放置" }),
+                    (
+                        ImportWorkspaceMode::Preview,
+                        "01",
+                        if is_map_image {
+                            "分片预览"
+                        } else {
+                            "转换预览"
+                        },
+                    ),
+                    (
+                        ImportWorkspaceMode::Placement,
+                        "02",
+                        if is_map_image {
+                            "选择写入目标"
+                        } else {
+                            "世界放置"
+                        },
+                    ),
                 ]
                 .into_iter()
                 .map(|(mode, number, label)| {
                     crate::ui::components::inspector::inspector_stage_tab(
-                        colors, number, label, self.ui_state.import_workspace_mode == mode,
+                        colors,
+                        number,
+                        label,
+                        self.ui_state.import_workspace_mode == mode,
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -308,27 +325,31 @@ impl MapViewerWindowView {
                         .child(self.map_image_workflow_status_label()),
                 )
             })
-            .when(is_map_image && !preview && !self.map_image_installing_to_player(), |bar| {
-                bar.child(
-                    generator_choice(
-                        colors,
-                        if self.map_image_placement_inspector_visible() {
-                            "收起缩略图"
-                        } else {
-                            "显示缩略图"
-                        },
-                        false,
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_map_image_placement_inspector(cx)
-                        }),
-                    ),
-                )
-            })
             .when(
-                preview && source_available
+                is_map_image && !preview && !self.map_image_installing_to_player(),
+                |bar| {
+                    bar.child(
+                        generator_choice(
+                            colors,
+                            if self.map_image_placement_inspector_visible() {
+                                "收起缩略图"
+                            } else {
+                                "显示缩略图"
+                            },
+                            false,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_map_image_placement_inspector(cx)
+                            }),
+                        ),
+                    )
+                },
+            )
+            .when(
+                preview
+                    && source_available
                     && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
                 |bar| {
                     bar.child(generator_choice(colors, "重置视角", false).on_mouse_down(
@@ -359,11 +380,7 @@ impl MapViewerWindowView {
 
     /// Real OBJ source geometry versus the generated block mesh. Both consume
     /// immutable GPU scene snapshots; no triangulation or file IO occurs in Paint.
-    fn render_obj_source_comparison(
-        &self,
-        colors: &ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_obj_source_comparison(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let narrow = self.viewport.width < 680.0;
         div()
             .flex_1()
@@ -379,111 +396,136 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .child(import_preview_label(colors, "源模型 · OBJ / glTF / GLB"))
-                    .when_some(self.generator.original_preview.as_ref(), |panel, original| {
-                        // Both panes share the same camera orientation, zoom/FOV,
-                        // scene rotation and mirror flags. The source mesh was
-                        // normalized to [-1, 1] and has its own fit scale,
-                        // but the viewing transform is otherwise identical
-                        // to the voxel result (no independent orbit camera).
-                        let (camera, transform) =
-                            super::preview_3d_source::preview_3d_viewport_parameters(
-                                [0.0; 3],
-                                0.91,
-                                self.preview_3d.camera,
-                                self.preview_3d.model_rotation,
-                            );
-                        let source = original.scene_view.with_camera(camera);
-                        let scene = source.with_scene_transform(transform * original.source_normalization)
-                            .unwrap_or(source);
-                        panel
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(colors.text_secondary)
-                                    .child(format!(
-                                        "源模型 {} 三角形 · 预览 {} · {}",
-                                        original.total_triangles,
-                                        original.displayed_triangles,
-                                        if original.textured_materials > 0 {
-                                            format!("已加载 {} 个贴图材质", original.textured_materials)
-                                        } else {
-                                            "MTL 漫反射材质色（无贴图）".to_owned()
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_1()
-                                    .min_h(px(0.0))
-                                    .rounded(px(7.0))
-                                    .overflow_hidden()
-                                    .child(gpui_3d::scene_view(Arc::new(scene)))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                            this.preview_3d_begin_drag(
-                                                Preview3dDragMode::RotateModel, event.position, cx
-                                            );
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                            this.preview_3d_begin_drag(
-                                                Preview3dDragMode::OrbitCamera, event.position, cx
-                                            );
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .on_mouse_move(
-                                        cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                                            match event.pressed_button {
-                                                Some(MouseButton::Left) => {
-                                                    this.preview_3d_rotate_model_to(event.position, cx);
-                                                }
-                                                Some(MouseButton::Right) => {
-                                                    this.preview_3d_orbit_camera_to(event.position, cx);
-                                                }
-                                                _ => {
-                                                    this.release_preview_3d_pointer_capture(
-                                                        "source obj mouse leave", cx
+                    .when_some(
+                        self.generator.original_preview.as_ref(),
+                        |panel, original| {
+                            // Both panes share the same camera orientation, zoom/FOV,
+                            // scene rotation and mirror flags. The source mesh was
+                            // normalized to [-1, 1] and has its own fit scale,
+                            // but the viewing transform is otherwise identical
+                            // to the voxel result (no independent orbit camera).
+                            let (camera, transform) =
+                                super::preview_3d_source::preview_3d_viewport_parameters(
+                                    [0.0; 3],
+                                    0.91,
+                                    self.preview_3d.camera,
+                                    self.preview_3d.model_rotation,
+                                );
+                            let source = original.scene_view.with_camera(camera);
+                            let scene = source
+                                .with_scene_transform(transform * original.source_normalization)
+                                .unwrap_or(source);
+                            panel
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(colors.text_secondary)
+                                        .child(format!(
+                                            "源模型 {} 三角形 · 预览 {} · {}",
+                                            original.total_triangles,
+                                            original.displayed_triangles,
+                                            if original.textured_materials > 0 {
+                                                format!(
+                                                    "已加载 {} 个贴图材质",
+                                                    original.textured_materials
+                                                )
+                                            } else {
+                                                "MTL 漫反射材质色（无贴图）".to_owned()
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h(px(0.0))
+                                        .rounded(px(7.0))
+                                        .overflow_hidden()
+                                        .child(gpui_3d::scene_view(Arc::new(scene)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(
+                                                |this, event: &MouseDownEvent, _window, cx| {
+                                                    this.preview_3d_begin_drag(
+                                                        Preview3dDragMode::RotateModel,
+                                                        event.position,
+                                                        cx,
                                                     );
+                                                    cx.stop_propagation();
+                                                },
+                                            ),
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                |this, event: &MouseDownEvent, _window, cx| {
+                                                    this.preview_3d_begin_drag(
+                                                        Preview3dDragMode::OrbitCamera,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                    cx.stop_propagation();
+                                                },
+                                            ),
+                                        )
+                                        .on_mouse_move(cx.listener(
+                                            |this, event: &MouseMoveEvent, _window, cx| {
+                                                match event.pressed_button {
+                                                    Some(MouseButton::Left) => {
+                                                        this.preview_3d_rotate_model_to(
+                                                            event.position,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    Some(MouseButton::Right) => {
+                                                        this.preview_3d_orbit_camera_to(
+                                                            event.position,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    _ => {
+                                                        this.release_preview_3d_pointer_capture(
+                                                            "source obj mouse leave",
+                                                            cx,
+                                                        );
+                                                    }
                                                 }
-                                            }
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.release_preview_3d_pointer_capture(
-                                                "source obj mouse up", cx
-                                            );
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Right,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.release_preview_3d_pointer_capture(
-                                                "source obj right mouse up", cx
-                                            );
-                                            cx.stop_propagation();
-                                        }),
-                                    )
-                                    .on_scroll_wheel(
-                                        cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                                            let delta = event.delta.pixel_delta(px(48.0));
-                                            this.preview_3d_zoom_by(
-                                                if delta.y > px(0.0) { 1.12 } else { 0.90 }, cx
-                                            );
-                                            cx.stop_propagation();
-                                        }),
-                                    ),
-                            )
-                    })
+                                                cx.stop_propagation();
+                                            },
+                                        ))
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.release_preview_3d_pointer_capture(
+                                                    "source obj mouse up",
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .on_mouse_up(
+                                            MouseButton::Right,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.release_preview_3d_pointer_capture(
+                                                    "source obj right mouse up",
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .on_scroll_wheel(cx.listener(
+                                            |this, event: &ScrollWheelEvent, _, cx| {
+                                                let delta = event.delta.pixel_delta(px(48.0));
+                                                this.preview_3d_zoom_by(
+                                                    if delta.y > px(0.0) { 1.12 } else { 0.90 },
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        )),
+                                )
+                        },
+                    )
                     .when(self.generator.original_preview.is_none(), |panel| {
                         panel.child(import_preview_label(
                             colors,
@@ -516,26 +558,40 @@ impl MapViewerWindowView {
             ImportNumericAxis::MapColumns => {
                 let other = self.map_image.options.rows.max(1);
                 let max = (1024 / other).min(64);
-                (self.num_map_columns.parse(cx, 1, max),
-                    self.map_image.options.columns, 1, max)
+                (
+                    self.num_map_columns.parse(cx, 1, max),
+                    self.map_image.options.columns,
+                    1,
+                    max,
+                )
             }
             ImportNumericAxis::MapRows => {
                 let other = self.map_image.options.columns.max(1);
                 let max = (1024 / other).min(64);
-                (self.num_map_rows.parse(cx, 1, max),
-                    self.map_image.options.rows, 1, max)
+                (
+                    self.num_map_rows.parse(cx, 1, max),
+                    self.map_image.options.rows,
+                    1,
+                    max,
+                )
             }
             ImportNumericAxis::ImageWidth => (
                 self.num_image_width.parse(cx, 1, 512),
-                self.image_generator.options.width, 1, 512,
+                self.image_generator.options.width,
+                1,
+                512,
             ),
             ImportNumericAxis::ImageHeight => (
                 self.num_image_height.parse(cx, 1, 512),
-                self.image_generator.options.height, 1, 512,
+                self.image_generator.options.height,
+                1,
+                512,
             ),
             ImportNumericAxis::ObjSize => (
                 self.num_obj_size.parse(cx, 1, 384),
-                u32::from(self.generator.options.longest_side_blocks), 1, 384,
+                u32::from(self.generator.options.longest_side_blocks),
+                1,
+                384,
             ),
         };
         if let Some(value) = parsed {
@@ -565,21 +621,19 @@ impl MapViewerWindowView {
         }
         // Normalize leading zeros and restore invalid edits without forcing a new task.
         match axis {
-            ImportNumericAxis::MapColumns => self.num_map_columns.sync(
-                self.map_image.options.columns, cx,
-            ),
-            ImportNumericAxis::MapRows => self.num_map_rows.sync(
-                self.map_image.options.rows, cx,
-            ),
-            ImportNumericAxis::ImageWidth => self.num_image_width.sync(
-                self.image_generator.options.width, cx,
-            ),
-            ImportNumericAxis::ImageHeight => self.num_image_height.sync(
-                self.image_generator.options.height, cx,
-            ),
-            ImportNumericAxis::ObjSize => self.num_obj_size.sync(
-                u32::from(self.generator.options.longest_side_blocks), cx,
-            ),
+            ImportNumericAxis::MapColumns => self
+                .num_map_columns
+                .sync(self.map_image.options.columns, cx),
+            ImportNumericAxis::MapRows => self.num_map_rows.sync(self.map_image.options.rows, cx),
+            ImportNumericAxis::ImageWidth => self
+                .num_image_width
+                .sync(self.image_generator.options.width, cx),
+            ImportNumericAxis::ImageHeight => self
+                .num_image_height
+                .sync(self.image_generator.options.height, cx),
+            ImportNumericAxis::ObjSize => self
+                .num_obj_size
+                .sync(u32::from(self.generator.options.longest_side_blocks), cx),
         }
         cx.notify();
     }
@@ -647,7 +701,12 @@ impl MapViewerWindowView {
                 "选择图片…",
                 "也可直接拖入 PNG / JPEG / TGA / WebP 图片",
             ),
-            _ => ("选择源素材", "选择素材以开始转换。", "选择素材…", "拖入受支持的文件"),
+            _ => (
+                "选择源素材",
+                "选择素材以开始转换。",
+                "选择素材…",
+                "拖入受支持的文件",
+            ),
         };
         div()
             .size_full()
@@ -699,12 +758,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child(description),
                     )
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(1.0))
-                            .bg(colors.border),
-                    )
+                    .child(div().w_full().h(px(1.0)).bg(colors.border))
                     .child(
                         div()
                             .flex()
@@ -712,12 +766,13 @@ impl MapViewerWindowView {
                             .items_center()
                             .gap(px(10.0))
                             .child(
-                                primary_button(colors, "map-import-choose-source", action).on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.choose_import_source_from_workspace(cx);
-                                    }),
-                                ),
+                                primary_button(colors, "map-import-choose-source", action)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.choose_import_source_from_workspace(cx);
+                                        }),
+                                    ),
                             )
                             .child(
                                 div()
@@ -762,8 +817,7 @@ impl MapViewerWindowView {
                         .gap(px(8.0))
                         .child(import_preview_label(colors, self.preview_3d_status_label()))
                         .when(
-                            self.preview_3d.mesh.is_none()
-                                && !self.preview_3d.render_in_flight,
+                            self.preview_3d.mesh.is_none() && !self.preview_3d.render_in_flight,
                             |row| {
                                 row.child(
                                     secondary_button(
@@ -831,7 +885,8 @@ pub(super) fn is_import_source_path_for_panel(
     };
     match panel {
         MapViewerRightPanel::Generator => matches!(
-            extension.to_ascii_lowercase().as_str(), "obj" | "gltf" | "glb"
+            extension.to_ascii_lowercase().as_str(),
+            "obj" | "gltf" | "glb"
         ),
         MapViewerRightPanel::ImageGenerator | MapViewerRightPanel::MapImage => {
             ["png", "jpg", "jpeg", "tga", "webp"]
@@ -844,18 +899,39 @@ pub(super) fn is_import_source_path_for_panel(
 
 #[cfg(test)]
 mod import_drop_tests {
-    use super::{is_import_source_path_for_panel, MapViewerRightPanel};
+    use super::{MapViewerRightPanel, is_import_source_path_for_panel};
     use std::path::Path;
 
     #[test]
     fn each_import_tool_accepts_only_its_own_source_format() {
-        assert!(is_import_source_path_for_panel(Path::new("avatar.OBJ"), MapViewerRightPanel::Generator));
-        assert!(!is_import_source_path_for_panel(Path::new("avatar.png"), MapViewerRightPanel::Generator));
-        for panel in [MapViewerRightPanel::MapImage, MapViewerRightPanel::ImageGenerator] {
-            assert!(is_import_source_path_for_panel(Path::new("image.PNG"), panel));
-            assert!(is_import_source_path_for_panel(Path::new("image.webp"), panel));
-            assert!(!is_import_source_path_for_panel(Path::new("image.obj"), panel));
-            assert!(!is_import_source_path_for_panel(Path::new("data.mcstructure"), panel));
+        assert!(is_import_source_path_for_panel(
+            Path::new("avatar.OBJ"),
+            MapViewerRightPanel::Generator
+        ));
+        assert!(!is_import_source_path_for_panel(
+            Path::new("avatar.png"),
+            MapViewerRightPanel::Generator
+        ));
+        for panel in [
+            MapViewerRightPanel::MapImage,
+            MapViewerRightPanel::ImageGenerator,
+        ] {
+            assert!(is_import_source_path_for_panel(
+                Path::new("image.PNG"),
+                panel
+            ));
+            assert!(is_import_source_path_for_panel(
+                Path::new("image.webp"),
+                panel
+            ));
+            assert!(!is_import_source_path_for_panel(
+                Path::new("image.obj"),
+                panel
+            ));
+            assert!(!is_import_source_path_for_panel(
+                Path::new("data.mcstructure"),
+                panel
+            ));
         }
     }
 }

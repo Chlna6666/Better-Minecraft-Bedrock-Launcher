@@ -4,10 +4,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use bedrock_voxel::{ObjModel, SourceTexture, load_obj_textures};
+#[cfg(test)]
+use bedrock_voxel::load_obj_textures;
+use bedrock_voxel::{ObjModel, SourceTexture};
 use gpui_3d::{
-    AlphaMode, Camera, ImportedScene, Mat4, Material, Mesh, MeshPart, Node, ProjectionRegion, Scene, SceneView,
-    ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
+    AlphaMode, Camera, ImportedScene, Mat4, Material, Mesh, MeshPart, Node, ProjectionRegion,
+    Scene, SceneView, ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
 };
 
 /// Limit CPU/GPU retention while preserving a deterministic overview of huge models.
@@ -28,6 +30,7 @@ pub struct ObjSourcePreview {
 
 /// Builds an immutable, centered source mesh, on the TaskManager CPU worker.
 /// This intentionally does not open a world or create GPUI-owned futures.
+#[cfg(test)]
 pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview>, String> {
     let textures = load_obj_textures(model).map_err(|error| error.to_string())?;
     build_obj_source_preview_with_textures(model, &textures)
@@ -56,7 +59,11 @@ pub fn build_obj_source_preview_with_textures(
             }
         }
     }
-    if !min.iter().chain(max.iter()).all(|coordinate| coordinate.is_finite()) {
+    if !min
+        .iter()
+        .chain(max.iter())
+        .all(|coordinate| coordinate.is_finite())
+    {
         return Err("OBJ 模型包含无效坐标".to_owned());
     }
     let center = [
@@ -64,15 +71,20 @@ pub fn build_obj_source_preview_with_textures(
         (min[1] + max[1]) * 0.5,
         (min[2] + max[2]) * 0.5,
     ];
-    let span = (0..3).map(|axis| max[axis] - min[axis])
-        .fold(0.0_f32, f32::max).max(1.0e-5);
+    let span = (0..3)
+        .map(|axis| max[axis] - min[axis])
+        .fold(0.0_f32, f32::max)
+        .max(1.0e-5);
     let stride = total_triangles.div_ceil(MAX_PREVIEW_TRIANGLES);
     let count = total_triangles.div_ceil(stride);
     let fallback_slot = model.materials.len();
     let mut groups = vec![Vec::new(); fallback_slot + 1];
     for triangle in model.triangles.iter().step_by(stride) {
-        groups[triangle.material.filter(|index| *index < fallback_slot).unwrap_or(fallback_slot)]
-            .push(triangle);
+        groups[triangle
+            .material
+            .filter(|index| *index < fallback_slot)
+            .unwrap_or(fallback_slot)]
+        .push(triangle);
     }
     let mut vertices = Vec::<Vertex>::with_capacity(count * 3);
     let mut indices = Vec::<u32>::with_capacity(count * 3);
@@ -93,22 +105,23 @@ pub fn build_obj_source_preview_with_textures(
         let mut rgb = [0.79, 0.81, 0.86];
         let mut opacity = 1.0;
         if let Some(source) = source_material {
-            rgb = source.diffuse.unwrap_or(if source.diffuse_texture.is_some() {
-                [1.0; 3]
-            } else {
-                [0.79, 0.81, 0.86]
-            });
+            rgb = source
+                .diffuse
+                .unwrap_or(if source.diffuse_texture.is_some() {
+                    [1.0; 3]
+                } else {
+                    [0.79, 0.81, 0.86]
+                });
             opacity = source.opacity;
             if let Some(decoded) = decoded_textures.get(slot).and_then(Option::as_ref) {
                 let key = Arc::as_ptr(decoded) as usize;
                 let texture = if let Some(asset) = texture_by_source.get(&key) {
                     asset.clone()
                 } else {
-                    let asset = Arc::new(TextureAsset::rgba8(
-                        decoded.width,
-                        decoded.height,
-                        decoded.pixels.clone(),
-                    ).map_err(|error| error.to_string())?);
+                    let asset = Arc::new(
+                        TextureAsset::rgba8(decoded.width, decoded.height, decoded.pixels.clone())
+                            .map_err(|error| error.to_string())?,
+                    );
                     textures.push(asset.clone());
                     texture_by_source.insert(key, asset.clone());
                     asset
@@ -141,8 +154,7 @@ pub fn build_obj_source_preview_with_textures(
                 ab[2] * ac[0] - ab[0] * ac[2],
                 ab[0] * ac[1] - ab[1] * ac[0],
             ];
-            let length = (cross[0] * cross[0] + cross[1] * cross[1]
-                + cross[2] * cross[2]).sqrt();
+            let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
             if !length.is_finite() || length < 1.0e-10 {
                 continue;
             }
@@ -173,25 +185,30 @@ pub fn build_obj_source_preview_with_textures(
         }
     }
     let displayed_triangles = indices.len() / 3;
-    let mesh = Arc::new(Mesh::with_parts(vertices, indices, parts)
-        .map_err(|error| error.to_string())?);
+    let mesh =
+        Arc::new(Mesh::with_parts(vertices, indices, parts).map_err(|error| error.to_string())?);
     let mut scene = Scene::new();
-    scene.insert(None, Node::new().with_mesh(mesh).with_materials(materials))
+    scene
+        .insert(None, Node::new().with_mesh(mesh).with_materials(materials))
         .map_err(|error| error.to_string())?;
     let imported_scene = Arc::new(ImportedScene::from_parts(
-        scene, textures, displayed_triangles,
+        scene,
+        textures,
+        displayed_triangles,
     ));
-    let view = imported_scene.view(
-        Camera::perspective(
+    let view = imported_scene
+        .view(Camera::perspective(
             Vec3::new(2.5, 1.5, 2.6),
-            Vec3::ZERO, Vec3::Y,
-            50.0_f32.to_radians(), 0.05, 64.0,
-        ),
-    )
-    .map_err(|error| error.to_string())?
-    .with_projection_region(ProjectionRegion::VisibleContent)
-    .with_projection_inset(4.0, 0.06)
-    .map_err(|e| e.to_string())?;
+            Vec3::ZERO,
+            Vec3::Y,
+            50.0_f32.to_radians(),
+            0.05,
+            64.0,
+        ))
+        .map_err(|error| error.to_string())?
+        .with_projection_region(ProjectionRegion::VisibleContent)
+        .with_projection_inset(4.0, 0.06)
+        .map_err(|e| e.to_string())?;
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),
         imported_scene,
@@ -201,7 +218,6 @@ pub fn build_obj_source_preview_with_textures(
         textured_materials,
     }))
 }
-
 
 /// Reuses a glTF/GLB GPUI-3D scene directly. Unlike rebuilding a preview mesh
 /// from voxel triangles, this retains the source's node hierarchy, materials
@@ -224,20 +240,32 @@ pub fn source_preview_from_imported(
         }
     }
     let center = [0, 1, 2].map(|i| (min[i] + max[i]) * 0.5);
-    let span = (0..3).map(|i| max[i] - min[i])
-        .fold(0.0_f32, f32::max).max(1.0e-5);
+    let span = (0..3)
+        .map(|i| max[i] - min[i])
+        .fold(0.0_f32, f32::max)
+        .max(1.0e-5);
     let scale = 2.0 / span;
     let normalization = Mat4::from_columns([
         [scale, 0.0, 0.0, 0.0],
         [0.0, scale, 0.0, 0.0],
         [0.0, 0.0, scale, 0.0],
-        [-center[0] * scale, -center[1] * scale, -center[2] * scale, 1.0],
+        [
+            -center[0] * scale,
+            -center[1] * scale,
+            -center[2] * scale,
+            1.0,
+        ],
     ]);
-    let view = scene.view(Camera::perspective(
-        Vec3::new(2.5, 1.5, 2.6),
-        Vec3::ZERO, Vec3::Y,
-        50.0_f32.to_radians(), 0.05, 64.0,
-    )).map_err(|error| error.to_string())?
+    let view = scene
+        .view(Camera::perspective(
+            Vec3::new(2.5, 1.5, 2.6),
+            Vec3::ZERO,
+            Vec3::Y,
+            50.0_f32.to_radians(),
+            0.05,
+            64.0,
+        ))
+        .map_err(|error| error.to_string())?
         .with_projection_region(ProjectionRegion::VisibleContent)
         .with_projection_inset(4.0, 0.06)
         .map_err(|error| error.to_string())?;
@@ -261,20 +289,33 @@ mod tests {
     fn loads_original_mtl_texture_into_gpu_scene() {
         use bedrock_voxel::ObjMaterial;
         let path = std::env::temp_dir().join(format!(
-            "bmcbl-obj-source-preview-{}.png", std::process::id()
+            "bmcbl-obj-source-preview-{}.png",
+            std::process::id()
         ));
         let image = image::RgbaImage::from_raw(
-            2, 2,
-            vec![255, 0, 0, 255, 0, 255, 0, 255,
-                 0, 0, 255, 255, 255, 255, 0, 255],
-        ).expect("valid RGBA");
+            2,
+            2,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+            ],
+        )
+        .expect("valid RGBA");
         image.save(&path).expect("write texture fixture");
         let model = ObjModel {
             triangles: vec![ObjTriangle {
                 vertices: [
-                    ObjVertex { position: [0.0, 0.0, 0.0], uv: Some([0.0, 0.0]) },
-                    ObjVertex { position: [1.0, 0.0, 0.0], uv: Some([1.0, 0.0]) },
-                    ObjVertex { position: [0.0, 1.0, 0.0], uv: Some([0.0, 1.0]) },
+                    ObjVertex {
+                        position: [0.0, 0.0, 0.0],
+                        uv: Some([0.0, 0.0]),
+                    },
+                    ObjVertex {
+                        position: [1.0, 0.0, 0.0],
+                        uv: Some([1.0, 0.0]),
+                    },
+                    ObjVertex {
+                        position: [0.0, 1.0, 0.0],
+                        uv: Some([0.0, 1.0]),
+                    },
                 ],
                 material: Some(0),
             }],
@@ -296,9 +337,18 @@ mod tests {
         let model = ObjModel {
             triangles: vec![ObjTriangle {
                 vertices: [
-                    ObjVertex { position: [0.0, 0.0, 0.0], uv: None },
-                    ObjVertex { position: [1.0, 0.0, 0.0], uv: None },
-                    ObjVertex { position: [0.0, 1.0, 0.0], uv: None },
+                    ObjVertex {
+                        position: [0.0, 0.0, 0.0],
+                        uv: None,
+                    },
+                    ObjVertex {
+                        position: [1.0, 0.0, 0.0],
+                        uv: None,
+                    },
+                    ObjVertex {
+                        position: [0.0, 1.0, 0.0],
+                        uv: None,
+                    },
                 ],
                 material: None,
             }],

@@ -14,8 +14,11 @@ impl MapViewerWindowView {
             .when(self.image_generator.preview_result_active && !busy, |bar| {
                 bar.child(
                     crate::ui::components::button::primary_button(
-                        colors, "image-workspace-place", "选择放置位置",
-                    ).on_mouse_down(
+                        colors,
+                        "image-workspace-place",
+                        "选择放置位置",
+                    )
+                    .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.set_import_workspace_mode(
@@ -30,9 +33,17 @@ impl MapViewerWindowView {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "image-workspace-export",
-                    if busy { "处理中…" } else { "导出 .mcstructure…" },
+                    if busy {
+                        "处理中…"
+                    } else {
+                        "导出 .mcstructure…"
+                    },
                 )
-                .opacity(if self.image_generator.source.is_some() && !busy { 1.0 } else { 0.45 })
+                .opacity(if self.image_generator.source.is_some() && !busy {
+                    1.0
+                } else {
+                    0.45
+                })
                 .when(self.image_generator.source.is_some() && !busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
@@ -72,7 +83,9 @@ impl MapViewerWindowView {
                         self.image_generator.source.as_deref(),
                         "PNG / JPG / TGA / WebP · 可拖入",
                         crate::ui::components::button::secondary_button(
-                            colors, "image-block-source", "更换图片…",
+                            colors,
+                            "image-block-source",
+                            "更换图片…",
                         )
                         .when(!busy, |button| {
                             button.on_mouse_down(
@@ -92,7 +105,8 @@ impl MapViewerWindowView {
                     })
                     .when_some(self.image_generator.preview_size, |panel, size| {
                         panel.child(crate::ui::components::inspector::inspector_result_summary(
-                            colors, "方块化结果",
+                            colors,
+                            "方块化结果",
                             format!("{} × {} × {} 方块", size[0], size[1], size[2]),
                         ))
                     })
@@ -106,16 +120,18 @@ impl MapViewerWindowView {
                             .child(self.render_image_depth_controls(colors, cx)),
                     )
                     .child(crate::ui::components::inspector::inspector_result_summary(
-                        colors, "当前画布",
+                        colors,
+                        "当前画布",
                         format!(
                             "{} × {} 方块 · 无 128 倍数限制",
-                            self.image_generator.options.width,
-                            self.image_generator.options.height,
+                            self.image_generator.options.width, self.image_generator.options.height,
                         ),
                     ))
                     .child(generator_section_title(colors, "03  画面与材质"))
-                    .child(crate::ui::components::inspector::inspector_field_group(colors)
-                        .child(self.render_image_appearance(colors, cx))),
+                    .child(
+                        crate::ui::components::inspector::inspector_field_group(colors)
+                            .child(self.render_image_appearance(colors, cx)),
+                    ),
             )
             .into_any_element()
     }

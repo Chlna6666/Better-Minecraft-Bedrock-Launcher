@@ -16,9 +16,9 @@ use crate::ui::components::slider::Slider;
 mod actions;
 mod bundle;
 mod comparison;
+mod container_candidates;
 mod controls;
 mod players;
-mod container_candidates;
 mod render;
 mod target;
 
@@ -138,8 +138,11 @@ impl MapViewerWindowView {
         Some(format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.dimension.id(),
-            x, self.y_layer, z,
-            self.map_image.options.columns, self.map_image.options.rows,
+            x,
+            self.y_layer,
+            z,
+            self.map_image.options.columns,
+            self.map_image.options.rows,
             self.map_image.frame_support,
             self.map_image.task_id.as_deref().unwrap_or_default(),
             self.professional.map_info_invalidation_generation,
@@ -152,13 +155,14 @@ impl MapViewerWindowView {
             return None;
         }
         let task_id = self.map_image.frame_check_task_id.as_deref()?;
-        self.task_snapshots.get(task_id).map(|snapshot| snapshot.as_ref())
+        self.task_snapshots
+            .get(task_id)
+            .map(|snapshot| snapshot.as_ref())
     }
 
     pub(super) fn map_frame_preflight_passed(&self) -> bool {
-        self.map_frame_preflight_snapshot().is_some_and(|snapshot| {
-            snapshot.status.as_ref() == "completed"
-        })
+        self.map_frame_preflight_snapshot()
+            .is_some_and(|snapshot| snapshot.status.as_ref() == "completed")
     }
 
     pub(super) fn map_image_can_place_world_grid(&self) -> bool {
@@ -172,9 +176,9 @@ impl MapViewerWindowView {
             && !self.map_write_busy()
             && self.map_frame_preflight_passed()
             && self.map_image.task_id.as_deref().is_some_and(|id| {
-                self.task_snapshots.get(id).is_some_and(|task| {
-                    task.status.as_ref() == "completed"
-                })
+                self.task_snapshots
+                    .get(id)
+                    .is_some_and(|task| task.status.as_ref() == "completed")
             })
     }
 
@@ -230,9 +234,8 @@ impl MapViewerWindowView {
             return;
         }
         self.map_image.picking_frame_center = true;
-        self.status = SharedString::from(
-            "在中央世界地图上左键单击要放置的中心方块（也可右键选择）",
-        );
+        self.status =
+            SharedString::from("在中央世界地图上左键单击要放置的中心方块（也可右键选择）");
         cx.notify();
     }
 
@@ -283,8 +286,7 @@ impl MapViewerWindowView {
     pub(super) fn map_frame_grid_preview(&self) -> Option<super::model::MapFrameGridPreview> {
         if !self.ui_state.right_panel_open
             || self.ui_state.active_right_panel != MapViewerRightPanel::MapImage
-            || self.ui_state.import_workspace_mode
-                != super::state::ImportWorkspaceMode::Placement
+            || self.ui_state.import_workspace_mode != super::state::ImportWorkspaceMode::Placement
         {
             return None;
         }
@@ -311,7 +313,8 @@ impl MapViewerWindowView {
                 }
                 let (center_x, center_z) = self.map_frame_confirmed_center()?;
                 Some(super::model::MapFrameGridPreview {
-                    min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
+                    min_block_x: center_x
+                        .saturating_sub((self.map_image.options.columns / 2) as i32),
                     min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
                     columns: self.map_image.options.columns,
                     rows: self.map_image.options.rows,
@@ -339,9 +342,7 @@ impl MapViewerWindowView {
                     let reason = snapshot.message.as_deref().unwrap_or("未知写入错误");
                     let reason = reason.strip_prefix("validation failed: ").unwrap_or(reason);
                     self.status = SharedString::from(format!("地图写入未执行：{reason}"));
-                    toast::error(cx, SharedString::from(format!(
-                        "地图未写入：{reason}"
-                    )));
+                    toast::error(cx, SharedString::from(format!("地图未写入：{reason}")));
                 }
                 return;
             }
@@ -566,7 +567,8 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn sync_map_grid_numeric_fields(&self, cx: &mut Context<Self>) {
-        self.num_map_columns.sync(self.map_image.options.columns, cx);
+        self.num_map_columns
+            .sync(self.map_image.options.columns, cx);
         self.num_map_rows.sync(self.map_image.options.rows, cx);
     }
 

@@ -19,8 +19,7 @@ impl MapViewerWindowView {
             });
         let selected = self.map_image.install_destination;
         let pending = self.map_image.pending_bundle.as_ref();
-        let frame_preview = selected == MapImageInstallDestination::NewUpFrame
-            && pending.is_none();
+        let frame_preview = selected == MapImageInstallDestination::NewUpFrame && pending.is_none();
         let needs_target_review = frame_preview
             && self.ui_state.import_workspace_mode
                 == super::super::state::ImportWorkspaceMode::Preview;
@@ -34,7 +33,9 @@ impl MapViewerWindowView {
             && (self.map_frame_confirmed_center().is_none() || self.map_image.picking_frame_center);
         let check_running = check.is_some_and(|task| !task.is_terminal());
         let check_passed = self.map_frame_preflight_passed();
-        let action_enabled = (ready || pending.is_some()) && !busy && !check_running
+        let action_enabled = (ready || pending.is_some())
+            && !busy
+            && !check_running
             && (!frame_preview || self.map_image.placement_preview.is_some());
         let (primary, target, tip, target_ready) = match selected {
             MapImageInstallDestination::Player => (
@@ -63,9 +64,9 @@ impl MapViewerWindowView {
                     },
                 ),
                 "在地图上右键目标方块，选择首项「设为地图写入目标」；选中后会在世界画布高亮位置。",
-                self.map_image.selected_block.is_some_and(|(chunk, _)| {
-                    chunk.dimension == self.dimension
-                }),
+                self.map_image
+                    .selected_block
+                    .is_some_and(|(chunk, _)| chunk.dimension == self.dimension),
             ),
             MapImageInstallDestination::NewUpFrame => {
                 let target = if let Some((x, z)) = self.map_frame_confirmed_center() {
@@ -136,7 +137,8 @@ impl MapViewerWindowView {
                     ),
             )
             .when_some(
-                check.filter(|task| task.status.as_ref() == "error")
+                check
+                    .filter(|task| task.status.as_ref() == "error")
                     .and_then(|task| task.message.as_deref()),
                 |bar, error| {
                     let reason = error.strip_prefix("validation failed: ").unwrap_or(error);
@@ -154,7 +156,8 @@ impl MapViewerWindowView {
                             )
                             .child(
                                 secondary_button(
-                                    colors, "map-frame-raise-and-recheck",
+                                    colors,
+                                    "map-frame-raise-and-recheck",
                                     "展示框 Y +1 并重新检查",
                                 )
                                 .on_mouse_down(
@@ -169,29 +172,30 @@ impl MapViewerWindowView {
                 },
             )
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.0))
-                    .children(
-                        [
-                            (MapImageInstallDestination::Player, "玩家背包"),
-                            (MapImageInstallDestination::SelectedBlock, "现有容器／展示框"),
-                            (MapImageInstallDestination::NewUpFrame, "新建展示框网格"),
-                        ]
-                        .into_iter()
-                        .map(|(destination, label)| {
-                            generator_choice(colors, label, selected == destination)
-                                .when(!busy, |button| {
-                                    button.on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            this.set_map_install_destination(destination, cx)
-                                        }),
-                                    )
-                                })
-                        }),
-                    ),
+                div().flex().flex_wrap().gap(px(6.0)).children(
+                    [
+                        (MapImageInstallDestination::Player, "玩家背包"),
+                        (
+                            MapImageInstallDestination::SelectedBlock,
+                            "现有容器／展示框",
+                        ),
+                        (MapImageInstallDestination::NewUpFrame, "新建展示框网格"),
+                    ]
+                    .into_iter()
+                    .map(|(destination, label)| {
+                        generator_choice(colors, label, selected == destination).when(
+                            !busy,
+                            |button| {
+                                button.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.set_map_install_destination(destination, cx)
+                                    }),
+                                )
+                            },
+                        )
+                    }),
+                ),
             )
             .child(
                 div()
@@ -240,19 +244,28 @@ impl MapViewerWindowView {
                             } else if needs_target_review {
                                 "下一步 · 目标预览"
                             } else if frame_preview && !check_passed {
-                                if check_running { "检查中…" } else { "检查放置区域" }
+                                if check_running {
+                                    "检查中…"
+                                } else {
+                                    "检查放置区域"
+                                }
                             } else {
                                 primary
                             },
                         )
-                        .opacity(if action_enabled && target_ready { 1.0 } else { 0.45 })
+                        .opacity(if action_enabled && target_ready {
+                            1.0
+                        } else {
+                            0.45
+                        })
                         .when(action_enabled && target_ready, |button| {
                             button.on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     if needs_target_review {
                                         this.set_import_workspace_mode(
-                                            super::super::state::ImportWorkspaceMode::Placement, cx
+                                            super::super::state::ImportWorkspaceMode::Placement,
+                                            cx,
                                         );
                                     } else if needs_position {
                                         if this.map_image.picking_frame_center {
@@ -278,9 +291,9 @@ impl MapViewerWindowView {
                         bar.child(
                             secondary_button(colors, "map-import-export-bundle", "导出地图包…")
                                 .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.export_map_bundle(cx)),
-                            ),
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.export_map_bundle(cx)),
+                                ),
                         )
                     })
                     .when(!busy, |bar| {
@@ -294,34 +307,41 @@ impl MapViewerWindowView {
                                     "导入地图包／容器 NBT…"
                                 },
                             )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.import_map_bundle_file_selected(cx)
-                                    }),
-                                ),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.import_map_bundle_file_selected(cx)
+                                }),
+                            ),
                         )
                     })
                     .when(pending.is_some() && !busy, |bar| {
                         bar.child(
                             ghost_button(colors, "map-import-cancel-staged-nbt", "取消待导入")
                                 .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.cancel_pending_map_bundle(cx)),
-                            ),
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.cancel_pending_map_bundle(cx)
+                                    }),
+                                ),
                         )
                     })
                     .when(
-                        self.map_image.source.is_some() && pending.is_none() && !converting && !busy,
+                        self.map_image.source.is_some()
+                            && pending.is_none()
+                            && !converting
+                            && !busy,
                         |bar| {
-                            bar.child(ghost_button(colors, "map-import-regenerate-preview", "重新生成")
-                                .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.release_map_image_preview();
-                                    this.start_map_preview(cx);
-                                }),
-                            ))
+                            bar.child(
+                                ghost_button(colors, "map-import-regenerate-preview", "重新生成")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.release_map_image_preview();
+                                            this.start_map_preview(cx);
+                                        }),
+                                    ),
+                            )
                         },
                     ),
             )

@@ -4,6 +4,7 @@ use super::layout::top_toolbar_layout;
 use super::model::*;
 use super::prelude::*;
 use super::viewport::coordinate_text;
+use super::world3d::types::TeleportHeightMode;
 
 impl MapViewerWindowView {
     pub(super) fn paste_copied_chunk_context_label(
@@ -121,6 +122,122 @@ impl MapViewerWindowView {
                 .danger(true)
                 .on_click(move |cx| entity.update(cx, |this, cx| this.delete_selection_chunks(cx))),
         )
+    }
+
+    fn world3d_context_entries(
+        &self,
+        block_x: i32,
+        block_z: i32,
+        cx: &mut Context<Self>,
+    ) -> Vec<ContextMenuEntry> {
+        let editor_open = self.world3d_editor_is_open();
+        let dimension = super::world3d::types::dimension_label(self.dimension);
+        let y_layer = self.y_layer;
+        let description = format!("{dimension} · X {block_x} / Z {block_z}");
+        let mut entries = vec![
+            ContextMenuEntry::item(
+                ContextMenuItem::new(if editor_open {
+                    "3D 编辑器传送到这里（地表）"
+                } else {
+                    "在 3D 世界编辑器打开并传送到这里（地表）"
+                })
+                .description(description.clone())
+                .on_click({
+                    let entity = cx.entity();
+                    move |cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_context_menu(cx);
+                            this.teleport_world3d_editor(
+                                block_x,
+                                block_z,
+                                TeleportHeightMode::SurfaceSafe,
+                                None,
+                                cx,
+                            );
+                        })
+                    }
+                }),
+            ),
+            ContextMenuEntry::item(
+                ContextMenuItem::new(format!("按当前 Y 层传送（Y {y_layer}）"))
+                    .description(description)
+                    .on_click({
+                        let entity = cx.entity();
+                        move |cx| {
+                            entity.update(cx, |this, cx| {
+                                this.close_context_menu(cx);
+                                this.teleport_world3d_editor(
+                                    block_x,
+                                    block_z,
+                                    TeleportHeightMode::CurrentMapLayer,
+                                    Some(f64::from(y_layer) + 1.6),
+                                    cx,
+                                );
+                            })
+                        }
+                    }),
+            ),
+        ];
+        if editor_open {
+            let entity = cx.entity();
+            entries.push(ContextMenuEntry::item(
+                ContextMenuItem::new(format!(
+                    "2D 摄像机叠加：{}",
+                    self.world3d_overlay_mode_label()
+                ))
+                .description("切换 位置+箭头 / 位置+视角 / 包含视距 / 隐藏")
+                .on_click(move |cx| {
+                    entity.update(cx, |this, cx| {
+                        this.close_context_menu(cx);
+                        this.cycle_world3d_camera_overlay_mode(cx);
+                    })
+                }),
+            ));
+            let entity = cx.entity();
+            entries.push(ContextMenuEntry::item(
+                ContextMenuItem::new(if self.world3d.follow_3d {
+                    "停止 2D 跟随 3D 摄像机"
+                } else {
+                    "2D 跟随 3D 摄像机"
+                })
+                .checked(self.world3d.follow_3d)
+                .on_click(move |cx| {
+                    entity.update(cx, |this, cx| {
+                        this.close_context_menu(cx);
+                        this.toggle_world3d_follow(cx);
+                    })
+                }),
+            ));
+            let entity = cx.entity();
+            entries.push(ContextMenuEntry::item(
+                ContextMenuItem::new("定位到 3D 摄像机").on_click(move |cx| {
+                    entity.update(cx, |this, cx| {
+                        this.close_context_menu(cx);
+                        if let Some(camera) = this.world3d.camera {
+                            this.center_viewport_on_block(
+                                camera.position[0].floor() as i32,
+                                camera.position[2].floor() as i32,
+                                cx,
+                            );
+                            if camera.dimension == this.dimension {
+                                this.y_layer = camera.position[1].floor() as i32;
+                            }
+                        }
+                    })
+                }),
+            ));
+        } else {
+            let entity = cx.entity();
+            entries.push(ContextMenuEntry::item(
+                ContextMenuItem::new("打开 3D 世界编辑器窗口").on_click(move |cx| {
+                    entity.update(cx, |this, cx| {
+                        this.close_context_menu(cx);
+                        this.open_world3d_editor_at_map_center(cx);
+                    })
+                }),
+            ));
+        }
+        entries
     }
 
     pub(super) fn render_context_menu(
@@ -272,20 +389,20 @@ impl MapViewerWindowView {
                 0,
                 ContextMenuGroup::titled(
                     "地图物品 · 当前目标",
-                    vec![
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(format!(
-                                "设为地图写入目标 · {}, {}, {}",
-                                menu.block_x, self.y_layer, menu.block_z
-                            ))
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| entity.update(cx, |this, cx| {
+                    vec![ContextMenuEntry::item(
+                        ContextMenuItem::new(format!(
+                            "设为地图写入目标 · {}, {}, {}",
+                            menu.block_x, self.y_layer, menu.block_z
+                        ))
+                        .on_click({
+                            let entity = cx.entity();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
                                     this.open_context_block_entity_at_editor(cx)
                                 })
-                            }),
-                        ),
-                    ],
+                            }
+                        }),
+                    )],
                 ),
             );
         } else if self.map_image_positioning_frames() {
@@ -293,20 +410,20 @@ impl MapViewerWindowView {
                 0,
                 ContextMenuGroup::titled(
                     "地图物品 · 放置中心",
-                    vec![
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(format!(
-                                "将此处设为展示框中心 · X {} / Z {}",
-                                menu.block_x, menu.block_z,
-                            ))
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| entity.update(cx, |this, cx| {
+                    vec![ContextMenuEntry::item(
+                        ContextMenuItem::new(format!(
+                            "将此处设为展示框中心 · X {} / Z {}",
+                            menu.block_x, menu.block_z,
+                        ))
+                        .on_click({
+                            let entity = cx.entity();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
                                     this.select_map_frame_center_from_context(cx)
                                 })
-                            }),
-                        ),
-                    ],
+                            }
+                        }),
+                    )],
                 ),
             );
         }
@@ -452,6 +569,10 @@ impl MapViewerWindowView {
             }
             groups.push(ContextMenuGroup::titled("写入", write_entries));
         }
+        groups.push(ContextMenuGroup::titled(
+            "3D 世界编辑器",
+            self.world3d_context_entries(menu.block_x, menu.block_z, cx),
+        ));
         groups.push(ContextMenuGroup::new(vec![ContextMenuEntry::item(
             ContextMenuItem::new("关闭菜单").on_click({
                 let entity = cx.entity();
@@ -636,6 +757,56 @@ impl MapViewerWindowView {
                             })
                         }
                     })),
+                ],
+            ),
+            ContextMenuGroup::titled(
+                "3D 世界编辑器",
+                vec![
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new("打开 / 聚焦 3D 世界编辑器")
+                            .description("独立窗口 · 与只读 3D 预览无关")
+                            .on_click({
+                                let entity = cx.entity();
+                                move |cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.close_top_more();
+                                        this.show_world3d_editor_window(cx);
+                                    })
+                                }
+                            }),
+                    ),
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new(format!(
+                            "2D 摄像机叠加：{}",
+                            self.world3d_overlay_mode_label()
+                        ))
+                        .on_click({
+                            let entity = cx.entity();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.close_top_more();
+                                    this.cycle_world3d_camera_overlay_mode(cx);
+                                })
+                            }
+                        }),
+                    ),
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new(if self.world3d.follow_3d {
+                            "停止 2D 跟随 3D 摄像机"
+                        } else {
+                            "2D 跟随 3D 摄像机"
+                        })
+                        .checked(self.world3d.follow_3d)
+                        .on_click({
+                            let entity = cx.entity();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.close_top_more();
+                                    this.toggle_world3d_follow(cx);
+                                })
+                            }
+                        }),
+                    ),
                 ],
             ),
             ContextMenuGroup::titled(

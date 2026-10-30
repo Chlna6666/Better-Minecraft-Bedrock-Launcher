@@ -8,20 +8,17 @@ use super::mcstructure;
 use super::model::*;
 use super::overlays::*;
 use super::paint::*;
-use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use super::query_cache::*;
 use super::selection::{RightSelectionIntent, SelectionResizeHandle};
 use super::slime_scan_dialog::*;
 use super::tile_cache::*;
-use super::tile_occupancy::*;
 use super::tile_plan::*;
 use super::tile_render::*;
 use super::tile_state::*;
 use super::view::{MapLayerKind, map_render_layer_order, map_viewer_window_size_for_display};
 use super::viewport::*;
-use super::*;
 
 #[::core::prelude::v1::test]
 fn load_risk_queries_all_three_sources_without_enabling_other_markers() {
@@ -2231,6 +2228,65 @@ fn dimension_change_resets_queries_without_discarding_entity_avatars() {
 }
 
 #[::core::prelude::v1::test]
+fn dimension_change_preserves_copied_structure_but_clears_placement_and_selection() {
+    let source = ChunkPos {
+        x: -2,
+        z: 4,
+        dimension: Dimension::Overworld,
+    };
+    let structure = Arc::new(
+        bedrock_world::McStructureFile::new_air(
+            bedrock_world::McStructureSize::new(2, 3, 4).expect("valid size"),
+            [0, 64, 0],
+        )
+        .expect("air structure"),
+    );
+    let mut state = ProfessionalQueryState {
+        copied_chunk: Some(CopiedChunkData::from_single_chunk(
+            source,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )),
+        imported_structure: Some(ImportedStructureData {
+            structure: structure.clone(),
+            source_anchor: source,
+            origin_y: 64,
+        }),
+        imported_region_package: true,
+        selection: Some(ChunkSelection {
+            start: source,
+            end: source,
+        }),
+        paste_preview: Some(PastePreview {
+            source_anchor: source,
+            target_anchor: source,
+            rotation: PasteRotation::NoRotation,
+            transform: PasteTransform::default(),
+            display_degrees: 0.0,
+            drag: None,
+            targets: vec![source],
+            tools_expanded: false,
+            auto_pan: None,
+            write_progress: None,
+        }),
+        ..ProfessionalQueryState::default()
+    };
+
+    state.reset_for_dimension_change();
+
+    assert_eq!(state.copied_chunk.as_ref().unwrap().source, source);
+    let import = state.imported_structure.as_ref().unwrap();
+    assert!(Arc::ptr_eq(&import.structure, &structure));
+    assert_eq!(import.origin_y, 64);
+    assert_eq!(import.source_anchor, source);
+    assert!(state.imported_region_package);
+    assert!(state.paste_preview.is_none());
+    assert!(state.selection.is_none());
+    assert!(state.volume_selection.is_none());
+}
+
+#[::core::prelude::v1::test]
 fn interaction_layer_sync_requests_an_immediate_parent_refresh() {
     assert!(should_notify_parent_after_interaction_layer_sync());
 }
@@ -2301,8 +2357,8 @@ fn tile_event_sender_reports_receiver_drop_without_external_lock() {
         },
     ));
     assert!(matches!(
-        receiver.try_next(),
-        Ok(Some(TileRenderEvent::Empty { coord: (0, 0), .. }))
+        receiver.try_recv(),
+        Ok(TileRenderEvent::Empty { coord: (0, 0), .. })
     ));
     drop(receiver);
 

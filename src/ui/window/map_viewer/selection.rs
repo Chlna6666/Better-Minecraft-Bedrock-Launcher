@@ -390,16 +390,6 @@ impl ChunkSelection {
     }
 }
 
-pub(super) fn selection_chunks(
-    selection: Option<ChunkSelection>,
-    exact_chunks: Option<&[ChunkPos]>,
-) -> Vec<ChunkPos> {
-    if let Some(chunks) = exact_chunks {
-        return chunks.to_vec();
-    }
-    selection.map(ChunkSelection::chunks).unwrap_or_default()
-}
-
 pub(super) fn merged_selection_chunks(
     base_chunks: &[ChunkPos],
     addition: ChunkSelection,

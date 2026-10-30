@@ -214,7 +214,8 @@ impl MapViewerWindowView {
             bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z,
         );
         let Some(path) = pick_save_path_with_filter(
-            "3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"],
+            "3D Model (OBJ / glTF / GLB)",
+            &["obj", "gltf", "glb"],
             &default_file_name,
         ) else {
             self.status = SharedString::from("已取消导出模型");
@@ -222,8 +223,11 @@ impl MapViewerWindowView {
             return;
         };
         let output = PathBuf::from(path);
-        let extension = output.extension().and_then(|s| s.to_str())
-            .unwrap_or_default().to_ascii_lowercase();
+        let extension = output
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         if !matches!(extension.as_str(), "obj" | "gltf" | "glb") {
             self.status = SharedString::from("请选择 .obj、.gltf 或 .glb 文件名");
             cx.notify();
@@ -237,15 +241,20 @@ impl MapViewerWindowView {
 
         // All persistent exports must be owned by TaskManager, not a UI future.
         let task_id = task_manager::create_task_with_details(
-            None, "精确选区导出 3D 模型",
-            output.file_name().map(|name|name.to_string_lossy().into_owned()),
-            "读取区块与资源包", None, false,
+            None,
+            "精确选区导出 3D 模型",
+            output
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            "读取区块与资源包",
+            None,
+            false,
         );
         task_manager::register_task_cooperative_cancel(task_id.clone());
         let cancel = CancelFlag::new();
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
-            move ||cancel.cancel()
+            move || cancel.cancel()
         });
         let worker_id = task_id.clone();
         let submitted = crate::tasks::runtime::spawn_io(async move {
@@ -256,23 +265,31 @@ impl MapViewerWindowView {
                     bedrock_block_model::world_resource_pack_paths(&world_path);
                 for path in package_paths {
                     bedrock_block_model::push_unique_resource_pack_path(
-                        &mut resolved_package_paths, path,
+                        &mut resolved_package_paths,
+                        path,
                     );
                 }
-                for path in crate::core::minecraft::paths::discover_local_package_roots_with_vanilla() {
+                for path in
+                    crate::core::minecraft::paths::discover_local_package_roots_with_vanilla()
+                {
                     bedrock_block_model::push_unique_resource_pack_path(
-                        &mut resolved_package_paths, path,
+                        &mut resolved_package_paths,
+                        path,
                     );
                 }
-                if cancel.is_cancelled() {return Err("模型导出已取消".to_owned());}
+                if cancel.is_cancelled() {
+                    return Err("模型导出已取消".to_owned());
+                }
                 task_manager::reset_progress(
-                    &background_id, Some(chunk_count as u64),
+                    &background_id,
+                    Some(chunk_count as u64),
                     Some("构建方块网格"),
                 );
                 let block_models = BlockModelRepository::load_packs(
                     resolved_package_paths.iter().map(PathBuf::as_path),
-                ).map(Arc::new)
-                    .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
+                )
+                .map(Arc::new)
+                .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
                 let mesh = load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
                     &world_path,
                     exact_selection,
@@ -280,10 +297,15 @@ impl MapViewerWindowView {
                     Some(cancel.clone()),
                     |_mesh, _status| {},
                 )?;
-                if cancel.is_cancelled() {return Err("模型导出已取消".to_owned());}
+                if cancel.is_cancelled() {
+                    return Err("模型导出已取消".to_owned());
+                }
                 task_manager::reset_progress(&background_id, Some(1), Some("输出模型与材质"));
-                let requested_ext = output.extension().and_then(|s|s.to_str())
-                    .unwrap_or("obj").to_ascii_lowercase();
+                let requested_ext = output
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("obj")
+                    .to_ascii_lowercase();
                 let temp_dir = if requested_ext == "obj" {
                     None
                 } else {
@@ -291,15 +313,18 @@ impl MapViewerWindowView {
                     let tmp = parent.join(format!(
                         ".bmcbl-chunk-model-{}-{}",
                         std::process::id(),
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                            .map_err(|err|err.to_string())?.as_nanos(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|err| err.to_string())?
+                            .as_nanos(),
                     ));
-                    std::fs::create_dir(&tmp).map_err(|error|error.to_string())?;
+                    std::fs::create_dir(&tmp).map_err(|error| error.to_string())?;
                     Some(tmp)
                 };
-                let obj_path = temp_dir.as_ref()
-                    .map_or_else(|| output.clone(), |root|root.join("selection.obj"));
-                let result = (|| -> Result<(),String> {
+                let obj_path = temp_dir
+                    .as_ref()
+                    .map_or_else(|| output.clone(), |root| root.join("selection.obj"));
+                let result = (|| -> Result<(), String> {
                     let target = bedrock_block_model::ObjExportTarget::from_obj_path(&obj_path)
                         .map_err(|error| error.to_string())?;
                     let export = export_preview_3d_obj_with_materials_with_progress(
@@ -309,15 +334,26 @@ impl MapViewerWindowView {
                         &resolved_package_paths,
                         |_completed, _total| {},
                     );
-                    if cancel.is_cancelled() {return Err("模型导出已取消".into());}
+                    if cancel.is_cancelled() {
+                        return Err("模型导出已取消".into());
+                    }
                     bedrock_block_model::write_obj_export_files(
-                        &export, &target.obj_path, &target.material_library_path,
+                        &export,
+                        &target.obj_path,
+                        &target.material_library_path,
                         &target.export_root,
-                    ).map_err(|error|error.to_string())?;
+                    )
+                    .map_err(|error| error.to_string())?;
                     if requested_ext != "obj" {
-                        task_manager::reset_progress(&background_id, Some(1), Some("编码 glTF/GLB"));
+                        task_manager::reset_progress(
+                            &background_id,
+                            Some(1),
+                            Some("编码 glTF/GLB"),
+                        );
                         crate::core::minecraft::map::generator::convert_local_model_file(
-                            &target.obj_path, &output, &cancel,
+                            &target.obj_path,
+                            &output,
+                            &cancel,
                         )?;
                     }
                     Ok(())
@@ -326,21 +362,26 @@ impl MapViewerWindowView {
                     let _ = std::fs::remove_dir_all(temp_dir);
                 }
                 result?;
-                task_manager::update_progress(&background_id,1,Some(1),Some("已完成"));
-                Ok::<_,String>(format!(
+                task_manager::update_progress(&background_id, 1, Some(1), Some("已完成"));
+                Ok::<_, String>(format!(
                     "精确选区模型已导出 · {chunk_count} chunks · {}",
                     output.display(),
                 ))
-            }).await;
+            })
+            .await;
             match result {
-                Ok(Ok(message)) => task_manager::finish_task(&worker_id,"completed",Some(message)),
-                Ok(Err(err)) => {
-                    let status = if err.contains("已取消") { "cancelled" } else {"error"};
-                    task_manager::finish_task(&worker_id,status,Some(err));
+                Ok(Ok(message)) => {
+                    task_manager::finish_task(&worker_id, "completed", Some(message))
                 }
-                Err(err) => task_manager::finish_task(
-                    &worker_id,"error",Some(err.to_string()),
-                ),
+                Ok(Err(err)) => {
+                    let status = if err.contains("已取消") {
+                        "cancelled"
+                    } else {
+                        "error"
+                    };
+                    task_manager::finish_task(&worker_id, status, Some(err));
+                }
+                Err(err) => task_manager::finish_task(&worker_id, "error", Some(err.to_string())),
             }
         });
         match submitted {
@@ -350,13 +391,12 @@ impl MapViewerWindowView {
                 ));
             }
             Err(error) => {
-                task_manager::finish_task(&task_id,"error",Some(error.clone()));
+                task_manager::finish_task(&task_id, "error", Some(error.clone()));
                 self.status = SharedString::from(error);
             }
         }
         cx.notify();
     }
-
 }
 
 pub(super) fn load_preview_3d_mesh_exact_blocking_incremental(

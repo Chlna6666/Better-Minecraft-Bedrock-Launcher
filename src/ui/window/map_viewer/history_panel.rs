@@ -232,6 +232,10 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn clear_history(&mut self, cx: &mut Context<Self>) {
+        if self.map_write_busy() {
+            toast::error(cx, SharedString::from("地图正在写入，暂不能清理历史"));
+            return;
+        }
         let world_path = self.world_path.clone();
         self.history.loading = true;
         cx.notify();
@@ -561,6 +565,13 @@ impl MapViewerWindowView {
     ) {
         if self.history.applying {
             toast::error(cx, SharedString::from("已有历史操作正在执行"));
+            return;
+        }
+        if self.map_write_busy() {
+            toast::error(
+                cx,
+                SharedString::from("地图正在写入，请等待完成后再撤销、重做或回档"),
+            );
             return;
         }
         self.history.applying = true;

@@ -26,7 +26,8 @@ pub(super) struct GeneratorPanelState {
     /// Only explicit map interaction or positioning commands authorize confirmation.
     pub(super) target_selected_by_user: bool,
     /// Real OBJ triangle scene retained only while this source is current.
-    pub(super) original_preview: Option<Arc<crate::core::minecraft::map::generator::ObjSourcePreview>>,
+    pub(super) original_preview:
+        Option<Arc<crate::core::minecraft::map::generator::ObjSourcePreview>>,
     preview_options: Option<ObjVoxelOptions>,
     preview_refresh_task: Option<Task<anyhow::Result<()>>>,
     preview_generation: u64,
@@ -75,7 +76,9 @@ impl MapViewerWindowView {
         if self.generator_busy() {
             return;
         }
-        if let Some(path) = pick_file_path_with_filter("3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"]) {
+        if let Some(path) =
+            pick_file_path_with_filter("3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"])
+        {
             self.set_generator_obj_source(PathBuf::from(path), cx);
         }
     }
@@ -103,11 +106,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn set_obj_precision_size(
-        &mut self,
-        value: u16,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn set_obj_precision_size(&mut self, value: u16, cx: &mut Context<Self>) {
         if self.generator_busy() {
             return;
         }
@@ -263,17 +262,33 @@ impl MapViewerWindowView {
     /// OBJ generates MTL and PNG sidecars; glTF embeds resources; GLB is a
     /// self-contained binary. Conversion and writing stay in TaskManager.
     fn export_generator_model_file(&mut self, cx: &mut Context<Self>) {
-        if self.generator_busy() { return; }
-        let Some(source) = self.generator.source.clone() else { return };
-        let name = format!("{}.glb", source.file_stem().and_then(|s|s.to_str()).unwrap_or("model"));
-        let Some(path) = pick_save_path_with_filter(
-            "OBJ / glTF / GLB model", &["obj", "gltf", "glb"], &name,
-        ) else { return };
+        if self.generator_busy() {
+            return;
+        }
+        let Some(source) = self.generator.source.clone() else {
+            return;
+        };
+        let name = format!(
+            "{}.glb",
+            source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("model")
+        );
+        let Some(path) =
+            pick_save_path_with_filter("OBJ / glTF / GLB model", &["obj", "gltf", "glb"], &name)
+        else {
+            return;
+        };
         let output = PathBuf::from(path);
-        match start_model_file_export(ModelFileExportRequest { source, output: output.clone() }) {
+        match start_model_file_export(ModelFileExportRequest {
+            source,
+            output: output.clone(),
+        }) {
             Ok(id) => {
                 if let Some(snapshot) = task_manager::get_snapshot(&id) {
-                    self.task_snapshots.insert(snapshot.id.clone(), Arc::new(snapshot));
+                    self.task_snapshots
+                        .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
                 self.generator.output = Some(output);
                 self.generator.task_id = Some(id);

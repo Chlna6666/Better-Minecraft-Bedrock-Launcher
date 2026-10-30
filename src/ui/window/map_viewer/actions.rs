@@ -47,6 +47,7 @@ pub enum MapViewerAction {
     StepY(i32),
     ZoomBy(f32),
     ImportStructureFile,
+    ShowWorld3dEditor,
     ToggleTopMore,
     ToggleLeftPanel,
     ToggleLeftPanelKind(MapViewerLeftPanel),

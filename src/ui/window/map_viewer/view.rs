@@ -57,6 +57,7 @@ impl Drop for MapViewerWindowView {
 
 impl MapViewerWindowView {
     fn release_window_resources(&mut self, cx: &mut Context<Self>) {
+        self.release_world3d_link(cx);
         self.cancel_metadata_scan();
         self.cancel_active_render();
         self.cancel_professional_overlay_query();
@@ -171,7 +172,8 @@ impl MapViewerWindowView {
                     if import_active {
                         paths.paths().iter().any(|path| {
                             super::import_workspace::is_import_source_path_for_panel(
-                                path, import_panel,
+                                path,
+                                import_panel,
                             )
                         })
                     } else {

@@ -59,6 +59,35 @@ pub(super) struct Preview3dMesh {
 }
 
 impl Preview3dMesh {
+    pub(super) fn append_world_preview(
+        &self,
+        scene: &mut Scene,
+        transform: Transform,
+    ) -> Result<(), String> {
+        let root = scene
+            .insert(None, Node::new().with_transform(transform))
+            .map_err(|error| error.to_string())?;
+        for chunk in &self.chunk_meshes {
+            scene
+                .insert(
+                    Some(root),
+                    Node::new()
+                        .with_mesh(chunk.mesh.clone())
+                        .with_materials([import_preview_material()])
+                        .with_transform(Transform {
+                            translation: Vec3::new(
+                                chunk.world_origin[0] as f32,
+                                chunk.world_origin[1] as f32,
+                                chunk.world_origin[2] as f32,
+                            ),
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn scene_view_for(
         &self,
         camera: Preview3dCamera,
@@ -136,6 +165,20 @@ impl Preview3dMesh {
             .max(1) as f32;
         span_x.max(span_z)
     }
+}
+
+fn import_preview_material() -> Arc<Material> {
+    static MATERIAL: OnceLock<Arc<Material>> = OnceLock::new();
+    MATERIAL
+        .get_or_init(|| {
+            let mut material = Material::new();
+            material.alpha_mode = AlphaMode::Blend;
+            material.base_color[3] = 0.65;
+            material.shading_model = ShadingModel::Unlit;
+            material.double_sided = true;
+            Arc::new(material)
+        })
+        .clone()
 }
 
 #[derive(Clone, Debug)]
