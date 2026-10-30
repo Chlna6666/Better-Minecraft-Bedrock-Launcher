@@ -189,6 +189,8 @@ struct NavChromeView {
     revision: (u64, u64),
     signature: (usize, usize, usize, bool),
     last_pill_target: Option<usize>,
+    pill_epoch: u64,
+    was_minimized: bool,
 }
 
 impl NavChromeView {
@@ -227,7 +229,8 @@ impl NavChromeView {
                     cx.notify();
                 }
             }),
-            cx.observe_window_bounds(window, |_, window, cx| {
+            cx.observe_window_bounds(window, |this, window, cx| {
+                this.sync_minimized_pill(window, cx);
                 let width = window.bounds().size.width / px(1.0);
                 let now = window.animation_time();
                 let resizing = window.is_live_resizing();
@@ -251,6 +254,9 @@ impl NavChromeView {
                     cx.notify();
                 }
             }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.sync_minimized_pill(window, cx);
+            }),
         ];
         let show_labels = window.bounds().size.width >= px(NAV_LABEL_BREAKPOINT);
         cx.update_global(|state: &mut NavState, _| {
@@ -262,6 +268,8 @@ impl NavChromeView {
             revision,
             signature,
             last_pill_target: Some(signature.0),
+            pill_epoch: 0,
+            was_minimized: false,
         }
     }
 
@@ -275,6 +283,26 @@ impl NavChromeView {
         } else {
             nav.pill_from_index
         }
+    }
+
+    fn sync_minimized_pill(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let target = cx.global::<NavState>().visual_active_index();
+        if self.update_minimized_pill(window.is_minimized(), target) {
+            cx.notify();
+        }
+    }
+
+    fn update_minimized_pill(&mut self, minimized: bool, target: usize) -> bool {
+        if minimized {
+            self.was_minimized = true;
+            return false;
+        }
+        if !std::mem::take(&mut self.was_minimized) {
+            return false;
+        }
+        self.pill_epoch = self.pill_epoch.wrapping_add(1);
+        self.last_pill_target = Some(target);
+        true
     }
 
     fn nav_signature(cx: &App) -> (usize, usize, usize, bool) {
@@ -291,6 +319,7 @@ impl NavChromeView {
 impl Render for NavChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
+        self.sync_minimized_pill(window, cx);
         let (colors, theme_animating) = colors(window, cx);
         // Retained layout animation requests are coalesced with native VSync.
         // Do not pause them merely because WM_EXITSIZEMOVE has not fired: a
@@ -312,6 +341,7 @@ impl Render for NavChromeView {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
             pill_from_index: self.pill_from_index(nav),
+            pill_epoch: self.pill_epoch,
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
         };
@@ -504,6 +534,8 @@ mod nav_pill_tests {
             revision: (0, 0),
             signature: (0, 0, 0, true),
             last_pill_target: Some(0),
+            pill_epoch: 0,
+            was_minimized: false,
         };
         let mut nav = NavState::default();
         assert_eq!(view.pill_from_index(&nav), 0);
@@ -519,5 +551,24 @@ mod nav_pill_tests {
         for _ in 0..8 {
             assert_eq!(view.pill_from_index(&nav), 0);
         }
+    }
+
+    #[test]
+    fn restoring_minimized_window_resets_pill_to_current_route_once() {
+        let mut view = NavChromeView {
+            _subscriptions: Vec::new(),
+            items: Vec::new(),
+            revision: (0, 0),
+            signature: (0, 0, 0, true),
+            last_pill_target: Some(0),
+            pill_epoch: 0,
+            was_minimized: false,
+        };
+        assert!(!view.update_minimized_pill(true, 0));
+        assert!(view.update_minimized_pill(false, 5));
+        assert_eq!(view.pill_epoch, 1);
+        assert_eq!(view.last_pill_target, Some(5));
+        assert!(!view.update_minimized_pill(false, 5));
+        assert_eq!(view.pill_epoch, 1);
     }
 }

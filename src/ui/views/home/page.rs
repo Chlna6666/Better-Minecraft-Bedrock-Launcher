@@ -2,7 +2,7 @@ use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_vers
 use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
-use crate::ui::animation::{SpringValue, ease_out_back, spring_bouncy, spring_snappy};
+use crate::ui::animation::{SpringValue, spring_bouncy, spring_snappy};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
 use crate::ui::hooks::use_local_versions::{
@@ -69,6 +69,8 @@ pub(crate) struct HomePageView {
     /// 下拉展开进度弹簧：展开 Q 弹、收起干脆，中途切换目标不跳变。
     dropdown_spring: SpringValue,
     dropdown_animating: bool,
+    dropdown_motion_from: f32,
+    dropdown_motion_generation: u64,
     active: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -154,6 +156,8 @@ impl HomePageView {
             dropdown_open: false,
             dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
             dropdown_animating: false,
+            dropdown_motion_from: 0.0,
+            dropdown_motion_generation: 0,
             active: false,
             _subscriptions: subscriptions,
             __gpui_hooks: RefCell::new(Vec::new()),
@@ -180,6 +184,7 @@ impl HomePageView {
             self.dropdown_open = false;
             self.dropdown_spring.snap_to(0.0);
             self.dropdown_animating = false;
+            self.dropdown_motion_from = 0.0;
             return;
         }
 
@@ -210,10 +215,13 @@ impl HomePageView {
 
     fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
         let sample = self.dropdown_spring.sample(now);
+        if !self.dropdown_open && sample.value <= 0.01 {
+            self.dropdown_spring.snap_to(0.0);
+            self.dropdown_animating = false;
+            return 0.0;
+        }
         self.dropdown_animating = !sample.done;
-        // Geometry must never overshoot the final list height: the spring may
-        // have a velocity overshoot, but flex layout must keep one stable extent.
-        sample.value.clamp(0.0, 1.0)
+        sample.value.clamp(0.0, 1.08)
     }
 
     fn begin_dropdown_transition(&mut self, open: bool) {
@@ -222,6 +230,8 @@ impl HomePageView {
         }
 
         let now = Instant::now();
+        self.dropdown_motion_from = self.dropdown_spring.sample(now).value.clamp(0.0, 1.08);
+        self.dropdown_motion_generation = self.dropdown_motion_generation.wrapping_add(1);
         self.dropdown_open = open;
         let spring = if open {
             spring_bouncy()
@@ -240,7 +250,6 @@ impl HomePageView {
         list_bg: Hsla,
         list_border: Hsla,
         desired_list_h_px: f32,
-        dropdown_factor: f32,
         item_height_px: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -248,6 +257,8 @@ impl HomePageView {
         // including its zero-height first and last samples. Returning a different
         // empty element at an arbitrary epsilon discards retained list identity
         // and can produce a one-frame flash when rapidly reversing direction.
+        // Keep the list at its final viewport while the spring changes only the
+        // rounded card's height; its rows do not need a new viewport each frame.
         let version_count = self.versions.len();
         let theme_colors = theme_colors.clone();
         let versions = uniform_list(
@@ -259,12 +270,10 @@ impl HomePageView {
                         let version = this.versions.get(index)?.clone();
                         let kind_label = this.version_kind_labels.get(index)?.clone();
                         Some(this.render_dropdown_item(
-                            index,
                             &version,
                             kind_label,
                             &theme_colors,
                             accent,
-                            dropdown_factor,
                             item_height_px,
                             cx,
                         ))
@@ -273,11 +282,16 @@ impl HomePageView {
             }),
         )
         .h_full();
+        let from = self.dropdown_motion_from;
+        let target = if self.dropdown_open { 1.0 } else { 0.0 };
+        let spring = if self.dropdown_open {
+            spring_bouncy()
+        } else {
+            spring_snappy()
+        };
         div()
             .w_full()
-            .h(px(desired_list_h_px * dropdown_factor))
             .relative()
-            .top(px(10.0 * (1.0 - dropdown_factor)))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
@@ -288,35 +302,46 @@ impl HomePageView {
                     h: 0.0,
                     s: 0.0,
                     l: 0.0,
-                    a: 0.10 * dropdown_factor,
+                    a: 0.10,
                 },
                 blur_radius: px(40.0),
                 spread_radius: px(-5.0),
                 offset: point(px(0.0), px(20.0)),
             }])
-            .opacity(dropdown_factor.min(1.0))
-            .child(div().h_full().p(px(6.0)).child(versions))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .h(px(desired_list_h_px))
+                    .p(px(6.0))
+                    .child(versions),
+            )
+            .with_animation(
+                SharedString::from(format!(
+                    "home-version-list-motion-{}",
+                    self.dropdown_motion_generation
+                )),
+                Animation::spring(spring).fill_mode(FillMode::Both),
+                move |card, progress| {
+                    let reveal = (from + (target - from) * progress).clamp(0.0, 1.08);
+                    card.h(px(desired_list_h_px * reveal))
+                        .opacity((reveal / 0.04).min(1.0))
+                },
+            )
             .into_any_element()
     }
 
     fn render_dropdown_item(
         &self,
-        index: usize,
         version: &LaunchVersionEntry,
         kind_label_text: SharedString,
         theme_colors: &crate::ui::theme::colors::ThemeColors,
         accent: Hsla,
-        dropdown_factor: f32,
         item_height_px: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let delay = (index as f32 * 0.035).min(0.18);
-        let progress = ((dropdown_factor - delay) / (1.0 - delay).max(0.001)).clamp(0.0, 1.0);
-        let item_factor = if self.dropdown_open {
-            ease_out_back(progress, 0.35)
-        } else {
-            progress
-        };
         let selected = self
             .selected_folder
             .as_ref()
@@ -378,8 +403,6 @@ impl HomePageView {
         div()
             .id((ElementId::from("home-version-item"), folder.clone()))
             .relative()
-            .top(px(10.0 * (1.0 - item_factor)))
-            .opacity(item_factor)
             .w_full()
             .h(px(item_height_px))
             .px(px(12.0))
@@ -959,19 +982,15 @@ impl Render for HomePageView {
         };
 
         if !is_empty && dropdown_visible {
-            launcher_root = launcher_root.child(
-                self.render_dropdown(
-                    &theme_colors,
-                    accent,
-                    list_bg,
-                    list_border,
-                    desired_list_h_px,
-                    dropdown_factor,
-                    item_height_px,
-                    cx,
-                )
-                .with_layout_animation_target(self.dropdown_animating),
-            );
+            launcher_root = launcher_root.child(self.render_dropdown(
+                &theme_colors,
+                accent,
+                list_bg,
+                list_border,
+                desired_list_h_px,
+                item_height_px,
+                cx,
+            ));
         }
 
         launcher_root = launcher_root.child(launch_bar);

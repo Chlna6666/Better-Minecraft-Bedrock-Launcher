@@ -164,7 +164,12 @@ fn active_profile(snapshot: &AuthSnapshot) -> Option<&XboxProfile> {
         .profile
         .as_ref()
         .filter(|profile| profile.xuid == active_id)
-        .or_else(|| snapshot.accounts.iter().find(|profile| profile.xuid == active_id))
+        .or_else(|| {
+            snapshot
+                .accounts
+                .iter()
+                .find(|profile| profile.xuid == active_id)
+        })
 }
 
 fn status_label(snapshot: &AuthSnapshot) -> SharedString {
@@ -283,11 +288,7 @@ fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(12.))
-        .child(avatar(
-            selected_profile,
-            colors.text_primary,
-            40.,
-        ))
+        .child(avatar(selected_profile, colors.text_primary, 40.))
         .child(
             div()
                 .flex_1()
@@ -489,7 +490,6 @@ mod panel_state_tests {
             Some("new-avatar.png"),
         );
     }
-
 
     #[test]
     fn closing_popover_remains_mounted_during_negative_spring_overshoot() {

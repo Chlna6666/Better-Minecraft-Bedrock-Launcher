@@ -102,6 +102,7 @@ pub(super) struct NavRenderState {
     pub window_width: Pixels,
     pub visual_active_index: usize,
     pub pill_from_index: usize,
+    pub pill_epoch: u64,
     pub labels_layout_factor: f32,
     pub labels_opacity_factor: f32,
 }
@@ -157,7 +158,7 @@ pub(super) fn render_nav(
         .rounded(px(17.))
         .bg(colors.accent)
         .with_animation_group(
-            "chrome-nav-pill",
+            ("chrome-nav-pill", state.pill_epoch),
             AnimationGroup::horizontal_edges(
                 px(step_width_px * (previous_index as f32 - active_index as f32)),
                 px(0.),
