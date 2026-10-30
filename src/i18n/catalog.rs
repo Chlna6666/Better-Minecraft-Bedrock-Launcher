@@ -60,9 +60,9 @@ mod tests {
         let index = original.key_index("common.cancel").expect("embedded key");
         let mut bytes = EMBEDDED.to_vec();
         let key_count = u32::from_le_bytes(bytes[8..12].try_into().expect("key count")) as usize;
-        // Header (20), shared key index (8 per key), then locale-major values (16).
-        let record = 20 + key_count * 8 + index * 16;
-        bytes[record..record + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        // Header (32), shared key index (3 per key), then locale-major values (7).
+        let record = 32 + key_count * 3 + index * 7;
+        bytes[record..record + 3].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
         let catalog = Catalog::read(&bytes).expect("catalog with missing Chinese entry");
         assert_eq!(
             lookup_in(&catalog, Locale::ZhCn, "common.cancel")

@@ -1,18 +1,25 @@
-//! BMCLANG1: little-endian header, shared sorted keys, locale-major values,
-//! placeholder offsets, then a deduplicated UTF-8 pool. The encoder lives in
-//! `build/locales.rs`. No alignment, native layout, or pointer casts are used.
+//! BMCLANG2: little-endian header, shared sorted keys, locale-major values,
+//! placeholder records, then a deduplicated NUL-terminated UTF-8 pool. The
+//! encoder lives in `build/locales.rs`. No alignment, native layout, or pointer
+//! casts are used.
 //!
-//! After the 8-byte magic, all fields are u32: header (key count, locale count,
-//! pool offset), key (pool offset, length), value (pool offset, length, first
-//! part, part count), part (name byte offset within the value, length, argument
-//! index). A value pool offset of u32::MAX means that translation is absent.
+//! Header (32 bytes): magic, key count, locale count, part count, pool offset,
+//! pool length, reserved (zero). Keys are 3-byte pool offsets to NUL-terminated
+//! strings sorted by text. Values are 7 bytes: 3-byte text pool offset, 3-byte
+//! first part index, and a 1-byte part count; a text offset of 0x00FF_FFFF
+//! means the translation is absent. Parts are 6 bytes: 3-byte placeholder-name
+//! pool offset and 3-byte placeholder byte offset inside the value text. The
+//! runtime derives the positional argument index from the first occurrence of
+//! the name within the value, which is the order the encoder used.
 
 use super::super::TemplatePart;
 
-const HEADER_LEN: usize = 20;
-const KEY_LEN: usize = 8;
-const VALUE_LEN: usize = 16;
-const PART_LEN: usize = 12;
+const MAGIC: &[u8; 8] = b"BMCLANG2";
+const HEADER_LEN: usize = 32;
+const KEY_LEN: usize = 3;
+const VALUE_LEN: usize = 7;
+const PART_LEN: usize = 6;
+const MISSING_OFFSET: usize = 0x00FF_FFFF;
 
 pub(super) struct Catalog<'a> {
     keys: &'a [u8],
@@ -30,7 +37,9 @@ pub(crate) struct Translation<'a> {
 #[derive(Clone)]
 pub(crate) struct Parts<'a> {
     text: &'a str,
+    pool: &'a str,
     records: &'a [u8],
+    record_index: usize,
     cursor: usize,
     finished: bool,
 }
@@ -40,29 +49,65 @@ fn integer(bytes: &[u8], offset: usize) -> Option<usize> {
     Some(u32::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?) as usize)
 }
 
+fn offset24(bytes: &[u8], offset: usize) -> Option<usize> {
+    let end = offset.checked_add(3)?;
+    let raw = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes([raw[0], raw[1], raw[2], 0]) as usize)
+}
+
+fn pool_string(pool: &str, offset: usize) -> Option<&str> {
+    let bytes = pool.as_bytes();
+    let tail = bytes.get(offset..)?;
+    let length = tail.iter().position(|byte| *byte == 0)?;
+    pool.get(offset..offset.checked_add(length)?)
+}
+
 impl<'a> Catalog<'a> {
     pub(super) fn read(bytes: &'a [u8]) -> Option<Self> {
-        if bytes.get(..8)? != b"BMCLANG1" {
+        if bytes.get(..8)? != MAGIC {
             return None;
         }
         let key_count = integer(bytes, 8)?;
         let locale_count = integer(bytes, 12)?;
-        let pool_offset = integer(bytes, 16)?;
+        let part_count = integer(bytes, 16)?;
+        let pool_offset = integer(bytes, 20)?;
+        let pool_len = integer(bytes, 24)?;
+        if integer(bytes, 28)? != 0 {
+            return None;
+        }
         let keys_end = HEADER_LEN.checked_add(key_count.checked_mul(KEY_LEN)?)?;
         let values_end = keys_end.checked_add(
             key_count
                 .checked_mul(locale_count)?
                 .checked_mul(VALUE_LEN)?,
         )?;
-        let parts = bytes.get(values_end..pool_offset)?;
-        if parts.len() % PART_LEN != 0 {
+        let parts_end = values_end.checked_add(part_count.checked_mul(PART_LEN)?)?;
+        if pool_offset != parts_end {
             return None;
         }
+        let pool_end = pool_offset.checked_add(pool_len)?;
+        if pool_end != bytes.len() {
+            return None;
+        }
+        let pool_bytes = bytes.get(pool_offset..pool_end)?;
+        if pool_bytes.last().is_some_and(|last| *last != 0) {
+            return None;
+        }
+        let pool = std::str::from_utf8(pool_bytes).ok()?;
+        let keys = bytes.get(HEADER_LEN..keys_end)?;
+        let mut previous: Option<&str> = None;
+        for record in keys.chunks_exact(KEY_LEN) {
+            let key = pool_string(pool, offset24(record, 0)?)?;
+            if previous.is_some_and(|previous| previous >= key) {
+                return None;
+            }
+            previous = Some(key);
+        }
         Some(Self {
-            keys: bytes.get(HEADER_LEN..keys_end)?,
+            keys,
             values: bytes.get(keys_end..values_end)?,
-            parts,
-            pool: std::str::from_utf8(bytes.get(pool_offset..)?).ok()?,
+            parts: bytes.get(values_end..parts_end)?,
+            pool,
             locale_count,
         })
     }
@@ -72,8 +117,9 @@ impl<'a> Catalog<'a> {
         let mut high = self.keys.len() / KEY_LEN;
         while low < high {
             let middle = low + (high - low) / 2;
-            let record = self.keys.get(middle * KEY_LEN..)?;
-            let candidate = self.string(record)?;
+            let start = middle.checked_mul(KEY_LEN)?;
+            let record = self.keys.get(start..start.checked_add(KEY_LEN)?)?;
+            let candidate = self.string(offset24(record, 0)?)?;
             match candidate.cmp(key) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
@@ -88,52 +134,102 @@ impl<'a> Catalog<'a> {
         if locale >= self.locale_count || index >= key_count {
             return None;
         }
-        let offset = locale
-            .checked_mul(key_count)?
-            .checked_add(index)?
-            .checked_mul(VALUE_LEN)?;
-        let record = self.values.get(offset..offset.checked_add(VALUE_LEN)?)?;
-        if integer(record, 0)? == u32::MAX as usize {
+        let value_index = locale.checked_mul(key_count)?.checked_add(index)?;
+        let start = value_index.checked_mul(VALUE_LEN)?;
+        let record = self.values.get(start..start.checked_add(VALUE_LEN)?)?;
+        let text_offset = offset24(record, 0)?;
+        if text_offset == MISSING_OFFSET {
             return None;
         }
-        let text = self.string(record)?;
-        let start = integer(record, 8)?.checked_mul(PART_LEN)?;
-        let length = integer(record, 12)?.checked_mul(PART_LEN)?;
-        let records = self.parts.get(start..start.checked_add(length)?)?;
+        let text = self.string(text_offset)?;
+        let first_part = offset24(record, 3)?;
+        let part_count = usize::from(record[6]);
+        let parts_start = first_part.checked_mul(PART_LEN)?;
+        let parts_len = part_count.checked_mul(PART_LEN)?;
+        let records = self
+            .parts
+            .get(parts_start..parts_start.checked_add(parts_len)?)?;
         Some(Translation {
             text,
             parts: Parts {
                 text,
+                pool: self.pool,
                 records,
+                record_index: 0,
                 cursor: 0,
                 finished: false,
             },
         })
     }
 
-    fn string(&self, record: &[u8]) -> Option<&'a str> {
-        let start = integer(record, 0)?;
-        let length = integer(record, 4)?;
-        self.pool.get(start..start.checked_add(length)?)
+    fn string(&self, offset: usize) -> Option<&'a str> {
+        pool_string(self.pool, offset)
     }
 }
 
 impl<'a> Parts<'a> {
+    fn record(&self, index: usize) -> Option<&'a [u8]> {
+        let start = index.checked_mul(PART_LEN)?;
+        self.records.get(start..start.checked_add(PART_LEN)?)
+    }
+
+    fn name(&self, index: usize) -> Option<&'a str> {
+        let record = self.record(index)?;
+        pool_string(self.pool, offset24(record, 0)?)
+    }
+
+    fn name_start(&self, index: usize) -> Option<usize> {
+        let record = self.record(index)?;
+        offset24(record, 3)
+    }
+
+    /// Positional arguments follow the first occurrence of each placeholder
+    /// name inside the value, matching the encoder that used to store the
+    /// index explicitly.
+    fn argument_index(&self, name: &str, current: usize) -> Option<usize> {
+        let mut first = None;
+        for index in 0..=current {
+            if self.name(index)? == name {
+                first = Some(index);
+                break;
+            }
+        }
+        let first = first?;
+        let mut distinct = 0usize;
+        for index in 0..first {
+            let candidate = self.name(index)?;
+            let mut repeated = false;
+            for earlier in 0..index {
+                if self.name(earlier)? == candidate {
+                    repeated = true;
+                    break;
+                }
+            }
+            if !repeated {
+                distinct = distinct.checked_add(1)?;
+            }
+        }
+        Some(distinct)
+    }
+
     fn placeholder(&mut self) -> Option<TemplatePart<'a>> {
-        let record = self.records.get(..PART_LEN)?;
-        let start = integer(record, 0)?;
-        let end = start.checked_add(integer(record, 4)?)?;
+        let name = self.name(self.record_index)?;
+        let start = self.name_start(self.record_index)?;
+        let end = start.checked_add(name.len())?;
         let open = start.checked_sub(2)?;
         let close = end.checked_add(2)?;
-        if self.text.get(open..start)? != "{{" || self.text.get(end..close)? != "}}" {
+        if self.text.get(open..start)? != "{{"
+            || self.text.get(end..close)? != "}}"
+            || self.text.get(start..end)? != name
+        {
             return None;
         }
         let part = TemplatePart {
             literal: self.text.get(self.cursor..open)?,
-            placeholder: Some(self.text.get(start..end)?),
-            argument_index: Some(integer(record, 8)?),
+            placeholder: Some(name),
+            argument_index: Some(self.argument_index(name, self.record_index)?),
         };
-        self.records = self.records.get(PART_LEN..)?;
+        self.record_index = self.record_index.checked_add(1)?;
         self.cursor = close;
         Some(part)
     }
@@ -146,7 +242,7 @@ impl<'a> Iterator for Parts<'a> {
         if self.finished {
             return None;
         }
-        if self.records.is_empty() {
+        if self.record_index >= self.records.len() / PART_LEN {
             self.finished = true;
             return Some(TemplatePart {
                 literal: self.text.get(self.cursor..)?,
