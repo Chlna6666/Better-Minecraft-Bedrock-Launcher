@@ -87,3 +87,42 @@ impl AssetSource for AppAssets {
         Ok(Vec::new())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AppAssets;
+    use gpui::AssetSource;
+    use std::borrow::Cow;
+
+    #[test]
+    fn duplicate_embedded_assets_share_one_byte_slice() {
+        let assets = AppAssets;
+        let first = assets
+            .load("images/logo.png")
+            .expect("load logo")
+            .expect("embedded logo");
+        let second = assets
+            .load("images/logo_46.png")
+            .expect("load duplicate logo")
+            .expect("embedded duplicate logo");
+        let (Cow::Borrowed(first), Cow::Borrowed(second)) = (first, second) else {
+            panic!("embedded image assets must be borrowed");
+        };
+        assert_eq!(first.as_ptr(), second.as_ptr());
+        assert_eq!(first.len(), second.len());
+
+        let icon = assets
+            .load("icons/128x128.png")
+            .expect("load icon")
+            .expect("embedded icon");
+        let icon_alias = assets
+            .load("icons/logo.png")
+            .expect("load icon alias")
+            .expect("embedded icon alias");
+        let (Cow::Borrowed(icon), Cow::Borrowed(icon_alias)) = (icon, icon_alias) else {
+            panic!("embedded icon assets must be borrowed");
+        };
+        assert_eq!(icon.as_ptr(), icon_alias.as_ptr());
+        assert_eq!(icon.len(), icon_alias.len());
+    }
+}
