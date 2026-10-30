@@ -295,10 +295,10 @@ mod tests {
         let NbtTag::Compound(mut root)=
             NbtReader::new(&NbtWriter::write_root(&NbtTag::Compound(Default::default()))
                 .expect("root")).parse_root().expect("NBT") else {panic!("compound")};
-        let mut states=Default::default();
+        let mut states=std::collections::BTreeMap::new();
         states.insert("weirdo_direction".into(),NbtTag::Int(2));
         root.insert("name".into(),NbtTag::String("minecraft:oak_stairs".into()));
-        root.insert("states".into(),NbtTag::Compound(states));
+        root.insert("states".into(),NbtTag::Compound(states.into_iter().collect()));
         let bytes=NbtWriter::write_root(&NbtTag::Compound(root)).expect("write block state");
         let hex=bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
         let v=|x:f32,y:f32|serde_json::json!([x,y,0.,0.,0.,-1.,x,y,4294967295_u32]);
