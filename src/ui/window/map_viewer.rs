@@ -105,6 +105,7 @@ mod tool_stripe;
 mod top_bar;
 mod view;
 mod viewport;
+pub(crate) mod world3d;
 
 pub use actions::init;
 pub use model::MapViewerWindowInit;
