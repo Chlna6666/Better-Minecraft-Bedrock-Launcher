@@ -17,11 +17,12 @@ pub use query::{
     BlockStateBatchStats, BlockStateQueryControl, BlockStateQueryResult, BlockStateView,
 };
 pub use state::{
-    BlockFace, BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator,
-    BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
-    BlockStateValueRewrite, DoorBlockStates, HorizontalDirection, RedstoneBlockStates,
-    SlabBlockStates, StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
-    read_block_state_nbt,
+    BlockFace, BlockSchema, BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator,
+    BlockStateSchema, BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus,
+    BlockStateUpgrader, BlockStateValueRewrite, DoorBlockStates, HorizontalDirection,
+    RedstoneBlockStates, SlabBlockStates, StairBlockStates, StairCorner, StatePropertySchema,
+    TrapdoorBlockStates, VerticalHalf, block_schema, block_state_schema, fluid_level, is_fluid,
+    read_block_state_nbt, validate_state,
 };
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,

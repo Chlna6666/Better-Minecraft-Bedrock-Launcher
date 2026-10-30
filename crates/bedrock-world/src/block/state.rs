@@ -4,6 +4,7 @@ mod identity;
 mod migration;
 mod nbt;
 mod properties;
+mod schema;
 mod upgrade;
 
 use crate::block::BlockState;
@@ -15,6 +16,10 @@ pub use nbt::read_block_state_nbt;
 pub use properties::{
     BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,
     StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
+};
+pub use schema::{
+    BlockSchema, BlockStateSchema, StatePropertySchema, block_schema, block_state_schema,
+    fluid_level, is_fluid, validate_state,
 };
 pub use upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,

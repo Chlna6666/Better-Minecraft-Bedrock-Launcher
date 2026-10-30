@@ -4,9 +4,9 @@
 //! decoded BlockStates; exact downgrade writes additionally require the target game's real vanilla
 //! BlockState palette so unavailable old-game states are rejected rather than guessed.
 
-use crate::chunk::SubChunkVersion;
 #[cfg(test)]
 use crate::block::VanillaBlockStatePalette;
+use crate::chunk::SubChunkVersion;
 #[cfg(test)]
 use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunk, SubChunkDecodeMode, SubChunkFormat};
 #[cfg(test)]

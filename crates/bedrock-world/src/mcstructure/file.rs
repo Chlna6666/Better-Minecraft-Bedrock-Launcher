@@ -895,7 +895,7 @@ impl McStructureFile {
         Ok(Some(NbtTag::Compound(entity)))
     }
 
-    /// Builds a structure by sampling decoded blocks from a world.
+    /// Builds a structure from a block volume, including secondary layers and block entities.
     pub fn from_world_region(
         world: &World,
         dimension: crate::Dimension,
@@ -908,6 +908,8 @@ impl McStructureFile {
         let mut palette_indices = HashMap::new();
         palette_indices.insert(structure.palette[0].key(), 0_i32);
         let mut chunk_cache = HashMap::new();
+        let mut entity_cache = HashMap::new();
+        let mut subchunk_cache = HashMap::new();
 
         for x in 0..size.x {
             let world_x = min_x + x;
@@ -929,21 +931,53 @@ impl McStructureFile {
                 if let Entry::Vacant(entry) = chunk_cache.entry(chunk_pos) {
                     let chunk = world.chunk(chunk_pos)?;
                     entry.insert(chunk);
+                    entity_cache.insert(
+                        chunk_pos,
+                        world
+                            .block_entities(chunk_pos)?
+                            .into_iter()
+                            .filter_map(|record| {
+                                record
+                                    .entity
+                                    .position
+                                    .map(|position| (position, record.entity.nbt))
+                            })
+                            .collect::<HashMap<_, _>>(),
+                    );
                 }
                 let chunk = chunk_cache.get(&chunk_pos).ok_or_else(|| {
                     BedrockWorldError::CorruptWorld("chunk cache insert failed".to_string())
                 })?;
                 for y in 0..size.y {
                     let world_y = min_y + y;
-                    let state = match chunk.get_block(
-                        local_x,
-                        i16::try_from(world_y).map_err(|_| {
-                            BedrockWorldError::Validation(format!(
-                                "block y={world_y} cannot be represented as i16"
-                            ))
-                        })?,
-                        local_z,
-                    ) {
+                    let subchunk_y = i8::try_from(world_y.div_euclid(16)).map_err(|_| {
+                        BedrockWorldError::Validation(format!(
+                            "block y={world_y} cannot be represented as a subchunk"
+                        ))
+                    })?;
+                    if let Entry::Vacant(cache_entry) =
+                        subchunk_cache.entry((chunk_pos, subchunk_y))
+                    {
+                        cache_entry.insert(chunk.subchunk(subchunk_y)?);
+                    }
+                    let subchunk = subchunk_cache
+                        .get(&(chunk_pos, subchunk_y))
+                        .and_then(Option::as_ref);
+                    let local_y = world_y.rem_euclid(16) as u8;
+                    let primary = subchunk.and_then(|subchunk| {
+                        subchunk.block_state_at(local_x, local_y, local_z).cloned()
+                    });
+                    let state = match primary.map(Ok).unwrap_or_else(|| {
+                        chunk.get_block(
+                            local_x,
+                            i16::try_from(world_y).map_err(|_| {
+                                BedrockWorldError::Validation(format!(
+                                    "block y={world_y} cannot be represented as i16"
+                                ))
+                            })?,
+                            local_z,
+                        )
+                    }) {
                         Ok(state) => state,
                         Err(error)
                             if matches!(
@@ -975,6 +1009,50 @@ impl McStructureFile {
                     };
                     let block_index = size.index(x, y, z)?;
                     structure.primary_indices[block_index] = palette_index;
+                    if let Some(subchunk) = subchunk {
+                        if let SubChunkFormat::Paletted { storages, .. } = &subchunk.format {
+                            if let Some(state) = storages.get(1).and_then(|storage| {
+                                storage.block_state_at(
+                                    local_x,
+                                    world_y.rem_euclid(16) as u8,
+                                    local_z,
+                                )
+                            }) {
+                                if state.name != AIR_BLOCK_NAME {
+                                    let entry = McStructurePaletteEntry::from_block_state(state);
+                                    let key = entry.key();
+                                    let index = if let Some(existing) = palette_indices.get(&key) {
+                                        *existing
+                                    } else {
+                                        let next = i32::try_from(structure.palette.len()).map_err(
+                                            |_| {
+                                                BedrockWorldError::Validation(
+                                                    "mcstructure palette length exceeds i32"
+                                                        .to_string(),
+                                                )
+                                            },
+                                        )?;
+                                        structure.palette.push(entry);
+                                        palette_indices.insert(key, next);
+                                        next
+                                    };
+                                    structure.secondary_indices[block_index] = index;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(entity) = entity_cache
+                        .get(&chunk_pos)
+                        .and_then(|entities| entities.get(&[world_x, world_y, world_z]))
+                    {
+                        structure.block_position_data.insert(
+                            block_index.to_string(),
+                            NbtTag::Compound(IndexMap::from([(
+                                "block_entity_data".to_string(),
+                                entity.clone(),
+                            )])),
+                        );
+                    }
                 }
             }
         }
@@ -1962,6 +2040,103 @@ mod tests {
         assert_eq!(parsed.palette.len(), 2);
         assert_eq!(parsed.primary_index_at(1, 2, 3).expect("primary"), 1);
         assert_eq!(parsed.primary_index_at(0, 0, 0).expect("air"), 0);
+    }
+
+    #[test]
+    fn world_region_samples_only_selected_height_with_secondary_and_block_entity() {
+        let world = World::from_storage(
+            "memory",
+            Arc::new(MemoryStorage::new()),
+            OpenOptions {
+                read_only: false,
+                ..OpenOptions::default()
+            },
+        );
+        let chunk = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mut seed = world.transaction();
+        seed.put_raw(
+            &ChunkKey::new(chunk, ChunkRecordTag::Data3D),
+            Bytes::from(
+                Biome3d::new(vec![0; 256], Vec::new())
+                    .unwrap()
+                    .encode()
+                    .unwrap(),
+            ),
+        );
+        seed.commit().unwrap();
+        let size = McStructureSize::new(1, 2, 1).unwrap();
+        let mut source = McStructureFile::new_air(size, [0, 64, 0]).unwrap();
+        source.palette.push(McStructurePaletteEntry {
+            name: "minecraft:dirt".to_string(),
+            states: BTreeMap::new(),
+            version: Some(1),
+        });
+        source.palette.push(McStructurePaletteEntry {
+            name: "minecraft:stone".to_string(),
+            states: BTreeMap::new(),
+            version: Some(1),
+        });
+        source.palette.push(McStructurePaletteEntry {
+            name: "minecraft:water".to_string(),
+            states: BTreeMap::new(),
+            version: Some(1),
+        });
+        source.primary_indices[size.index(0, 0, 0).unwrap()] = 1;
+        let upper = size.index(0, 1, 0).unwrap();
+        source.primary_indices[upper] = 2;
+        source.secondary_indices[upper] = 3;
+        source.block_position_data.insert(
+            upper.to_string(),
+            NbtTag::Compound(IndexMap::from([(
+                "block_entity_data".to_string(),
+                NbtTag::Compound(IndexMap::from([(
+                    "id".to_string(),
+                    NbtTag::String("Test".to_string()),
+                )])),
+            )])),
+        );
+        source
+            .write_to_world(
+                &world,
+                McStructurePlacement {
+                    source_anchor: chunk,
+                    target_anchor: chunk,
+                    origin_y: 64,
+                    rotation: McStructureRotation::None,
+                    mirror_x: false,
+                    mirror_z: false,
+                },
+                &WriteGuard::confirmed("memory", "region copy test"),
+                |_| {},
+            )
+            .unwrap();
+        let sampled = McStructureFile::from_world_region(
+            &world,
+            Dimension::Overworld,
+            0,
+            65,
+            0,
+            McStructureSize::new(1, 1, 1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sampled.size.y, 1);
+        assert_eq!(
+            sampled
+                .palette_entry_or_air(sampled.primary_indices[0])
+                .name,
+            "minecraft:stone"
+        );
+        assert_eq!(
+            sampled
+                .palette_entry_or_air(sampled.secondary_indices[0])
+                .name,
+            "minecraft:water"
+        );
+        assert!(sampled.block_position_data.contains_key("0"));
     }
 
     #[test]

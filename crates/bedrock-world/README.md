@@ -11,6 +11,9 @@ The core rule is **preserve the representation that is actually persisted**.
 Normal reads and writes do not silently upgrade, downgrade, normalize, or invent
 historical fields. Generation-changing operations are explicit and preflighted.
 
+`SubChunk::estimated_cpu_bytes()` estimates decoded palette and index storage, including packed
+indices and nested block state values. It excludes allocator/map bookkeeping and is not process RSS.
+
 ## Quick start
 
 For normal read-only inspection, let the world layer detect the persisted format:

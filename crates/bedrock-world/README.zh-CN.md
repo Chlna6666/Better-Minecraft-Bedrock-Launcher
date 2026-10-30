@@ -9,6 +9,9 @@ Mojang LevelDB 的 WAL/SST/MANIFEST 机制。
 核心规则：**保留实际持久化的表示**。普通读写不会静默升级、降级、规范化或发明历史字段；
 会改变 generation 的操作必须显式请求并预检。
 
+`SubChunk::estimated_cpu_bytes()` 估算解码后的调色板与索引存储，包括压缩索引和嵌套方块状态。
+该估算不包含分配器及映射容器的管理开销，不等同于进程 RSS。
+
 ## 边界
 
 - 不依赖 UI/GPU；不负责渲染（渲染在 `bedrock-render`）。

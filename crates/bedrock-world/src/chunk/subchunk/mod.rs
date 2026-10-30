@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 mod heightmap;
 mod indices;
+mod memory;
 mod numeric_downgrade;
 mod numeric_storage;
 mod numeric_upgrade;
