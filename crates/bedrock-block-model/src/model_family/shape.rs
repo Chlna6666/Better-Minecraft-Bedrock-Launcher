@@ -172,17 +172,56 @@ pub fn full_texture_uv() -> [[f32; 2]; 4] {
     uv16(0.0, 0.0, 16.0, 16.0)
 }
 
+/// Full-texture UVs for an upright plane whose corners start at the bottom-left.
+///
+/// Vertical decorations such as flowers, vines and rails use this so the source texture is not
+/// flipped upside down.
+#[must_use]
+pub fn upright_full_texture_uv() -> [[f32; 2]; 4] {
+    [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
+}
+
+/// Derives per-face UVs for a cuboid from its block-space bounds.
+///
+/// The renderer builds each face from outside the block with a fixed corner order. These UVs
+/// follow that order: U grows to the image right and V grows down as the face is seen from
+/// outside, and V starts at the block top (1 - y). That keeps every texture upright and
+/// unmirrored on all six faces, including partially inset elements such as slabs and fences.
 #[must_use]
 pub(crate) fn detail_cuboid_with_local_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    let min = cuboid.min;
-    let max = cuboid.max;
+    let [x0, y0, z0] = cuboid.min;
+    let [x1, y1, z1] = cuboid.max;
+    let v_top = 1.0 - y1;
+    let v_bottom = 1.0 - y0;
     cuboid
-        .with_face_uv(BlockFace::Up, rect_uv(min[0], min[2], max[0], max[2]))
-        .with_face_uv(BlockFace::Down, rect_uv(min[0], min[2], max[0], max[2]))
-        .with_face_uv(BlockFace::North, rect_uv(min[0], min[1], max[0], max[1]))
-        .with_face_uv(BlockFace::South, rect_uv(min[0], min[1], max[0], max[1]))
-        .with_face_uv(BlockFace::West, rect_uv(min[2], min[1], max[2], max[1]))
-        .with_face_uv(BlockFace::East, rect_uv(min[2], min[1], max[2], max[1]))
+        .with_face_uv(BlockFace::Up, rect_uv(x0, z0, x1, z1))
+        .with_face_uv(BlockFace::Down, rect_uv(x0, 1.0 - z1, x1, 1.0 - z0))
+        .with_face_uv(
+            BlockFace::North,
+            [
+                [1.0 - x0, v_bottom],
+                [1.0 - x1, v_bottom],
+                [1.0 - x1, v_top],
+                [1.0 - x0, v_top],
+            ],
+        )
+        .with_face_uv(
+            BlockFace::South,
+            [[x1, v_bottom], [x0, v_bottom], [x0, v_top], [x1, v_top]],
+        )
+        .with_face_uv(
+            BlockFace::West,
+            [[z1, v_bottom], [z0, v_bottom], [z0, v_top], [z1, v_top]],
+        )
+        .with_face_uv(
+            BlockFace::East,
+            [
+                [1.0 - z0, v_bottom],
+                [1.0 - z1, v_bottom],
+                [1.0 - z1, v_top],
+                [1.0 - z0, v_top],
+            ],
+        )
 }
 
 #[must_use]

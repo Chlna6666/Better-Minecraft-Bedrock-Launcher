@@ -2,9 +2,10 @@ use super::{
     HashMap, ObjResolvedTexture, PackResources, Path, PathBuf, ResourceFile, Result, Value,
     block_definition, obj_normalize_texture_key, obj_texture_key_from_value, path_extension_eq,
     path_starts_with_directory, prefixed_relative_path, read_texture_data_maps,
-    relative_path_string, replace_path_extension, texture_candidate_relatives,
+    relative_path_string, replace_path_extension,
 };
 use crate::json::read_resource_json;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ObjResourcePack {
@@ -12,6 +13,8 @@ pub(super) struct ObjResourcePack {
     texture_root: PathBuf,
     blocks: Value,
     texture_data: HashMap<String, String>,
+    item_texture_data: HashMap<String, String>,
+    flipbook_textures: BTreeSet<String>,
     resources: PackResources,
 }
 
@@ -46,13 +49,50 @@ impl ObjResourcePack {
                 }
             }
         }
+        let mut item_texture_data = HashMap::new();
+        for path in ["item_texture.json", "textures/item_texture.json"] {
+            if let Some(file) = resources.get(Path::new(path)) {
+                let value = read_resource_json(&file)?;
+                if let Some(entries) = value.get("texture_data").and_then(Value::as_object) {
+                    for (key, value) in entries {
+                        if let Some(path) = super::terrain_texture_path(value) {
+                            item_texture_data.insert(key.clone(), path);
+                        }
+                    }
+                }
+            }
+        }
+        let mut flipbook_textures = BTreeSet::new();
+        for path in ["flipbook_textures.json", "textures/flipbook_textures.json"] {
+            let Some(file) = resources.get(Path::new(path)) else {
+                continue;
+            };
+            let value = read_resource_json(&file)?;
+            let Some(entries) = value.as_array() else {
+                continue;
+            };
+            for entry in entries {
+                let Some(texture) = entry.get("flipbook_texture").and_then(Value::as_str) else {
+                    continue;
+                };
+                flipbook_textures.insert(obj_normalize_texture_key(texture));
+            }
+        }
         Ok(Some(Self {
             root,
             texture_root,
             blocks,
             texture_data,
+            item_texture_data,
+            flipbook_textures,
             resources,
         }))
+    }
+
+    /// Whether the given texture path is declared as an animated flipbook strip.
+    pub(super) fn is_flipbook_texture(&self, relative_path: &str) -> bool {
+        self.flipbook_textures
+            .contains(&obj_normalize_texture_key(relative_path))
     }
 
     pub(super) fn block_texture_key_for(&self, block: &str, normal: [i32; 3]) -> Option<String> {
@@ -64,24 +104,19 @@ impl ObjResourcePack {
         obj_texture_key_from_value(textures, normal)
     }
 
-    pub(super) fn texture_path_for_key(&self, texture_key: &str) -> Option<ResourceFile> {
-        let normalized = self
-            .texture_data
-            .get(texture_key)
-            .map(String::as_str)
-            .unwrap_or(texture_key);
-        let normalized = obj_normalize_texture_key(normalized);
-        for relative in texture_candidate_relatives(&normalized) {
-            for path in [
-                PathBuf::from("textures").join(&relative),
-                PathBuf::from(&relative),
-            ] {
-                if let Some(file) = self.texture_file(&path) {
-                    return Some(file);
-                }
-            }
-        }
-        None
+    /// Returns the terrain-texture path registered for one key in this pack.
+    pub(super) fn texture_key_path(&self, texture_key: &str) -> Option<&str> {
+        self.texture_data.get(texture_key).map(String::as_str)
+    }
+
+    /// Returns the item-texture path registered for one item in this pack.
+    pub(super) fn item_texture_key_path(&self, item: &str) -> Option<&str> {
+        self.item_texture_data.get(item).map(String::as_str)
+    }
+
+    /// Looks up one texture file by its logical path inside this pack.
+    pub(super) fn texture_file_for_path(&self, path: &Path) -> Option<ResourceFile> {
+        self.texture_file(path)
     }
 
     fn texture_file(&self, path: &Path) -> Option<ResourceFile> {
@@ -133,6 +168,7 @@ impl ObjResourcePack {
         ObjResolvedTexture {
             source_path,
             relative_path,
+            pack_root: self.root.clone(),
         }
     }
 }

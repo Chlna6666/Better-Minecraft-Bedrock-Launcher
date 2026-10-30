@@ -62,6 +62,7 @@ pub struct RenderPalette {
     biome_foliage_colors: HashMap<u32, RgbaColor>,
     biome_dry_foliage_colors: HashMap<u32, RgbaColor>,
     biome_water_colors: HashMap<u32, RgbaColor>,
+    biome_names: HashMap<u32, String>,
     block_colors: HashMap<String, RgbaColor>,
     block_side_colors: HashMap<String, RgbaColor>,
     block_state_colors: HashMap<String, BlockStateColorRules>,
@@ -82,6 +83,18 @@ pub struct RenderPalette {
     cave_lava_color: RgbaColor,
     min_height_color: RgbaColor,
     max_height_color: RgbaColor,
+}
+
+fn java_water_rgb(biome_name: &str) -> (u8, u8, u8) {
+    match biome_name {
+        "swamp" => (97, 123, 100),
+        "mangrove_swamp" => (58, 122, 106),
+        "warm_ocean" => (67, 213, 238),
+        "lukewarm_ocean" | "deep_lukewarm_ocean" => (69, 173, 242),
+        "cold_ocean" | "deep_cold_ocean" => (61, 87, 214),
+        "frozen_ocean" | "deep_frozen_ocean" | "frozen_river" => (57, 56, 201),
+        _ => (63, 118, 228),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +223,7 @@ impl RenderPalette {
             biome_foliage_colors: HashMap::new(),
             biome_dry_foliage_colors: HashMap::new(),
             biome_water_colors: HashMap::new(),
+            biome_names: HashMap::new(),
             block_colors: HashMap::new(),
             block_side_colors: HashMap::new(),
             block_state_colors: HashMap::new(),
@@ -639,6 +653,38 @@ impl RenderPalette {
         biome_id.and_then(|id| self.biome_grass_colors.get(&id).copied())
     }
 
+    /// Returns the grass tint a 3D surface should multiply into grayscale grass textures.
+    ///
+    /// Falls back to the palette default grass color when the biome has no explicit tint.
+    #[must_use]
+    pub fn biome_grass_color(&self, biome_id: Option<u32>) -> RgbaColor {
+        self.biome_grass_tint(biome_id)
+            .unwrap_or(self.default_grass_color)
+    }
+
+    /// Returns the official biome water tint used by the game's water rendering.
+    ///
+    /// Falls back to the palette default water color for biomes without an explicit entry.
+    #[must_use]
+    pub fn biome_water_color(&self, biome_id: Option<u32>) -> RgbaColor {
+        self.biome_water_tint(biome_id)
+            .unwrap_or(self.default_water_color)
+    }
+
+    /// Returns the Java Edition water tint for the biome.
+    ///
+    /// The Bedrock client water tint is a bright universal blue; Java applies a darker,
+    /// per-biome color that players compare 3D previews against.
+    #[must_use]
+    pub fn java_water_color(&self, biome_id: Option<u32>) -> RgbaColor {
+        let biome_name = biome_id
+            .and_then(|id| self.biome_names.get(&id))
+            .map(String::as_str)
+            .unwrap_or_default();
+        let (red, green, blue) = java_water_rgb(biome_name);
+        RgbaColor::new(red, green, blue, 255)
+    }
+
     #[must_use]
     fn dry_foliage_color(
         &self,
@@ -859,8 +905,8 @@ impl RenderPalette {
     ) -> Result<()> {
         match value {
             Value::Object(map) => {
-                for (id, entry) in map {
-                    let parsed_id = id
+                for (biome_name, entry) in map {
+                    let parsed_id = biome_name
                         .parse::<u32>()
                         .ok()
                         .or_else(|| biome_id_from_entry(entry));
@@ -873,6 +919,9 @@ impl RenderPalette {
                         report.skipped_entries += 1;
                         continue;
                     };
+                    if biome_name.parse::<u32>().is_err() {
+                        self.biome_names.insert(id, biome_name.clone());
+                    }
                     self.biome_colors.insert(id, color);
                     self.merge_biome_tints(id, entry);
                     report.biome_colors += 1;

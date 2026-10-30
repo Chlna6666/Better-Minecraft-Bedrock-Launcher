@@ -3,6 +3,7 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::{state_bool, state_i64};
 use crate::model_family::shape::{
     ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv,
+    upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -231,7 +232,7 @@ fn vertical_plane_z(z: f32, material_slot: &'static str) -> ModelPlane {
         [0, 0, 1],
     )
     .with_material_slot(material_slot)
-    .with_uv(full_texture_uv())
+    .with_uv(upright_full_texture_uv())
 }
 
 fn vertical_plane_x(x: f32, material_slot: &'static str) -> ModelPlane {
@@ -240,7 +241,7 @@ fn vertical_plane_x(x: f32, material_slot: &'static str) -> ModelPlane {
         [1, 0, 0],
     )
     .with_material_slot(material_slot)
-    .with_uv(full_texture_uv())
+    .with_uv(upright_full_texture_uv())
 }
 
 fn diagonal_plane(forward: bool, material_slot: &'static str) -> ModelPlane {

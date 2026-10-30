@@ -1,6 +1,6 @@
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::state_string;
-use crate::model_family::shape::{ModelCuboid, ModelPlane, ModelShape, full_texture_uv};
+use crate::model_family::shape::{ModelCuboid, ModelPlane, ModelShape, upright_full_texture_uv};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -163,7 +163,7 @@ fn row_plant_shape(material_slot: Option<&str>) -> ModelShape {
             ),
         ]
         .map(|(corners, normal)| {
-            let plane = ModelPlane::new(corners, normal).with_uv(full_texture_uv());
+            let plane = ModelPlane::new(corners, normal).with_uv(upright_full_texture_uv());
             if let Some(material_slot) = material_slot {
                 plane.with_material_slot(material_slot)
             } else {
@@ -175,26 +175,32 @@ fn row_plant_shape(material_slot: Option<&str>) -> ModelShape {
 
 fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
     let inset = thickness.min(0.2);
-    let (offset_x, offset_z) = (0.0625, -0.0625);
+    // Two full-size planes rotated 45 degrees about the block centre. Their horizontal extent is
+    // 0.5 +/- 0.5*sin(45), matching the vanilla/holoprint cross model instead of sticking out of
+    // the cell.
+    let reach = 0.5_f32 * std::f32::consts::FRAC_1_SQRT_2;
+    let (lo, hi) = (0.5 - reach, 0.5 + reach);
     let mut shape = ModelShape::default().with_planes([
         ModelPlane::new(
             [
-                [offset_x, 0.0, offset_z],
-                [1.0 + offset_x, 0.0, 1.0 + offset_z],
-                [1.0 + offset_x, height, 1.0 + offset_z],
-                [offset_x, height, offset_z],
+                [lo, 0.0, lo],
+                [hi, 0.0, hi],
+                [hi, height, hi],
+                [lo, height, lo],
             ],
             [-1, 0, 1],
-        ),
+        )
+        .with_uv(upright_full_texture_uv()),
         ModelPlane::new(
             [
-                [1.0 + offset_x, 0.0, offset_z],
-                [offset_x, 0.0, 1.0 + offset_z],
-                [offset_x, height, 1.0 + offset_z],
-                [1.0 + offset_x, height, offset_z],
+                [hi, 0.0, lo],
+                [lo, 0.0, hi],
+                [lo, height, hi],
+                [hi, height, lo],
             ],
             [1, 0, 1],
-        ),
+        )
+        .with_uv(upright_full_texture_uv()),
     ]);
     if inset > 0.0 {
         shape.cuboids.push(ModelCuboid::new(

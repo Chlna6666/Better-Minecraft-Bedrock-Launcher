@@ -1,5 +1,5 @@
 use crate::model_family::direction::CardinalDirection;
-use crate::model_family::shape::{ModelPlane, ModelShape, full_texture_uv, ground_plane, uv16};
+use crate::model_family::shape::{ModelPlane, ModelShape, ground_plane, uv16};
 use crate::state::{BlockStateQuery, BlockStateValue};
 
 pub(crate) fn shape_for(state: &BlockStateQuery) -> ModelShape {
@@ -89,8 +89,10 @@ fn redstone_wire_dot_plane() -> ModelPlane {
 }
 
 fn redstone_wire_ground_plane_full(along_z: bool) -> ModelPlane {
+    // The dust textures draw the wire stripe horizontally. A north-south wire must rotate that
+    // stripe by a quarter turn, otherwise the line renders across the block instead of along it.
     let uv = if along_z {
-        full_texture_uv()
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
     } else {
         uv16(16.0, 0.0, 0.0, 16.0)
     };
@@ -115,7 +117,7 @@ fn redstone_wire_arm_plane(direction: CardinalDirection) -> ModelPlane {
                 [1.0, 0.011, 0.5],
                 [0.0, 0.011, 0.5],
             ],
-            uv16(0.0, 8.0, 16.0, 16.0),
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
         ),
         CardinalDirection::South => (
             [
@@ -124,7 +126,7 @@ fn redstone_wire_arm_plane(direction: CardinalDirection) -> ModelPlane {
                 [1.0, 0.012, 1.0],
                 [0.0, 0.012, 1.0],
             ],
-            uv16(0.0, 0.0, 16.0, 8.0),
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
         ),
         CardinalDirection::East => (
             [
@@ -175,7 +177,17 @@ fn redstone_wire_wall_plane(direction: CardinalDirection) -> ModelPlane {
             [0.01, 1.0, 1.0],
         ],
     };
+    // The dust texture draws a horizontal stripe, so wall-climb planes rotate it a quarter turn
+    // to run the stripe up the face instead of across it.
+    let uv = match direction {
+        CardinalDirection::North | CardinalDirection::East => {
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
+        }
+        CardinalDirection::South | CardinalDirection::West => {
+            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+        }
+    };
     ModelPlane::new(corners, direction.normal())
         .with_material_slot("down")
-        .with_uv(full_texture_uv())
+        .with_uv(uv)
 }

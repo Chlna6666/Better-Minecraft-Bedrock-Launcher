@@ -1,6 +1,6 @@
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, state_bool, state_i64, state_string};
-use crate::model_family::shape::{ModelPlane, ModelShape};
+use crate::model_family::shape::{ModelPlane, ModelShape, upright_full_texture_uv};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -127,5 +127,5 @@ fn vine_plane(direction: CardinalDirection) -> ModelPlane {
             [1, 0, 0],
         ),
     };
-    ModelPlane::new(corners, normal)
+    ModelPlane::new(corners, normal).with_uv(upright_full_texture_uv())
 }

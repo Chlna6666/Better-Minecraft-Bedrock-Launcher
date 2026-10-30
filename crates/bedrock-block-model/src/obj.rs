@@ -353,6 +353,8 @@ pub struct ObjResolvedTexture {
     /// Read-only source; archive bytes are read on demand by the export writer.
     pub source_path: ResourceFile,
     pub relative_path: String,
+    /// Pack root that owns the texture file, for provenance reports and fallback policy.
+    pub pack_root: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,6 +498,19 @@ impl ObjTextureResolver {
             .unwrap_or_else(|| obj_block_face_for_normal(normal));
         let lookup_normal = obj_normal_for_block_face(block_face);
 
+        if let Some(resolved) =
+            self.block_entity_texture_for(&lookup_block, material_slot.as_deref())
+        {
+            return Some(resolved);
+        }
+        if let Some(slot) = material_slot.as_deref()
+            && (slot.starts_with("door_") || slot.contains("_door_"))
+            && let Some((pack, source_path)) =
+                self.texture_path_for_key(&format!("textures/blocks/{slot}"))
+        {
+            return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+        }
+
         if is_full_grass_block(&block)
             && let Some(texture_key) = grass_block_texture_key_for_face(block_face)
             && let Some((pack, source_path)) = self.texture_path_for_key(&texture_key)
@@ -525,22 +540,86 @@ impl ObjTextureResolver {
             return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
         }
 
-        for pack in self.packs.iter().rev() {
+        for (priority, pack) in self.packs.iter().rev().enumerate() {
             if let Some(texture_key) = pack.block_texture_key_for(&lookup_block, lookup_normal)
-                && let Some(source_path) = pack.texture_path_for_key(&texture_key)
+                && let Some((texture_pack, source_path)) = self.texture_path_for_key(&texture_key)
             {
-                return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                return Some(
+                    texture_pack.resolved_texture(&self.texture_directory_name, source_path),
+                );
+            }
+            // Fallback lookup already searches the entire pack stack. After its first miss,
+            // repeating it for every overlay only multiplies identical file probes.
+            if priority != 0 {
+                continue;
             }
             for texture_key in
                 obj_fallback_texture_keys(&material_texture, &lookup_block, lookup_normal)
             {
-                if let Some(source_path) = pack.texture_path_for_key(&texture_key) {
-                    return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                if let Some((texture_pack, source_path)) = self.texture_path_for_key(&texture_key) {
+                    return Some(
+                        texture_pack.resolved_texture(&self.texture_directory_name, source_path),
+                    );
                 }
             }
         }
 
         None
+    }
+
+    /// Resolves an inventory icon from the active resource-pack stack.
+    ///
+    /// The embedded item-id mapping is applied first because Bedrock item ids do not always equal
+    /// their icon names (legacy dyes, wood_*/gold_* tools, music discs, ...).
+    #[must_use]
+    pub fn item_texture_for(&self, item: &str) -> Option<ObjResolvedTexture> {
+        let name = item.strip_prefix("minecraft:").unwrap_or(item);
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return None;
+        }
+        if let Some(icon) = crate::item_icons::item_icon_name(name)
+            && icon != name
+            && let Some(resolved) = self.item_texture_for_icon(icon)
+        {
+            return Some(resolved);
+        }
+        self.item_texture_for_icon(name)
+    }
+
+    fn item_texture_for_icon(&self, name: &str) -> Option<ObjResolvedTexture> {
+        // Item atlas entries and their PNG payloads can live in different packs, exactly like
+        // block terrain textures.
+        let mapped = self
+            .packs
+            .iter()
+            .rev()
+            .find_map(|pack| pack.item_texture_key_path(name))
+            .map(str::to_owned);
+        if let Some(path) = mapped
+            && let Some((texture_pack, source_path)) = self.texture_path_for_key(&path)
+        {
+            return Some(texture_pack.resolved_texture(&self.texture_directory_name, source_path));
+        }
+        // Bedrock renamed or dropped a few item icons; keep the canonical art reachable.
+        for path in item_texture_alias_paths(name) {
+            if let Some((texture_pack, source_path)) = self.texture_path_for_key(path) {
+                return Some(
+                    texture_pack.resolved_texture(&self.texture_directory_name, source_path),
+                );
+            }
+        }
+        let fallback = format!("textures/items/{name}");
+        let (texture_pack, source_path) = self.texture_path_for_key(&fallback)?;
+        Some(texture_pack.resolved_texture(&self.texture_directory_name, source_path))
+    }
+
+    /// Whether a resolved texture path is an animated flipbook strip in the pack stack.
+    #[must_use]
+    pub fn is_flipbook_texture(&self, relative_path: &str) -> bool {
+        self.packs
+            .iter()
+            .rev()
+            .any(|pack| pack.is_flipbook_texture(relative_path))
     }
 
     #[must_use]
@@ -551,6 +630,36 @@ impl ObjTextureResolver {
     #[must_use]
     pub fn models(&self) -> &BlockModelRepository {
         &self.models
+    }
+
+    /// Resolves hardcoded Bedrock block-entity art (signs, beds) that has no terrain key.
+    ///
+    /// Bedrock renders signs and beds with engine geometry and keeps their art in
+    /// `textures/entity/sign_*.png` and `textures/blocks/bed_*.png`; the Java block model only
+    /// supplies geometry and generic face slots. The slot remap happens in
+    /// `java_runtime::apply_block_entity_material_slots`.
+    fn block_entity_texture_for(
+        &self,
+        block: &str,
+        slot: Option<&str>,
+    ) -> Option<ObjResolvedTexture> {
+        if is_sign_texture_block(block) {
+            for texture_key in sign_texture_aliases(block) {
+                if let Some((pack, source_path)) = self.texture_path_for_key(&texture_key) {
+                    return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                }
+            }
+        }
+        if is_bed_texture_block(block) {
+            let slot = slot?;
+            if slot.starts_with("head_") || slot.starts_with("feet_") {
+                let texture_key = format!("textures/blocks/bed_{slot}");
+                if let Some((pack, source_path)) = self.texture_path_for_key(&texture_key) {
+                    return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                }
+            }
+        }
+        None
     }
 
     fn resolved_texture_key_for(&self, block: &str, face: BlockFace) -> Option<String> {
@@ -607,9 +716,32 @@ impl ObjTextureResolver {
     }
 
     fn texture_path_for_key(&self, texture_key: &str) -> Option<(&ObjResourcePack, ResourceFile)> {
-        for pack in self.packs.iter().rev() {
-            if let Some(source_path) = pack.texture_path_for_key(texture_key) {
-                return Some((pack, source_path));
+        // Key resolution and file lookup may live in different packs: 26.40 keeps modern
+        // blocks.json/terrain_texture mappings in versioned overlays while the PNG/TGA payload
+        // stays in the vanilla base pack. A high-priority override may also map the key to a
+        // missing texture, so every mapping is tried in priority order before giving up.
+        let mut mappings = self
+            .packs
+            .iter()
+            .rev()
+            .filter_map(|pack| pack.texture_key_path(texture_key))
+            .collect::<Vec<_>>();
+        if mappings.is_empty() {
+            mappings.push(texture_key);
+        }
+        for texture_path in mappings {
+            let normalized = obj_normalize_texture_key(texture_path);
+            for relative in texture_candidate_relatives(&normalized) {
+                for path in [
+                    PathBuf::from("textures").join(&relative),
+                    PathBuf::from(&relative),
+                ] {
+                    for pack in self.packs.iter().rev() {
+                        if let Some(file) = pack.texture_file_for_path(&path) {
+                            return Some((pack, file));
+                        }
+                    }
+                }
             }
         }
         None
@@ -1422,6 +1554,23 @@ pub fn obj_material_uses_texture_alpha(material_name: &str) -> bool {
         || is_lava_block(&block)
         || block.contains("banner")
         || block.contains("sign")
+}
+
+/// Relative texture paths used when Bedrock no longer stores an item icon under its item id.
+#[must_use]
+pub fn item_texture_alias_paths(item: &str) -> &'static [&'static str] {
+    match item {
+        "ink_sac" => &[
+            "textures/items/dye_powder_black",
+            "textures/items/dye_powder_black_new",
+        ],
+        "filled_map" => &["textures/map/map_background"],
+        "black_dye" => &[
+            "textures/items/dye_powder_black_new",
+            "textures/items/dye_powder_black",
+        ],
+        _ => &[],
+    }
 }
 
 #[must_use]
@@ -2261,11 +2410,14 @@ fn block_definition<'a>(blocks: &'a Value, block: &str) -> Option<&'a Value> {
 }
 
 fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir: &Path) {
+    // The base vanilla pack is authoritative. Overlay packs are appended first so the resolver
+    // (which walks later roots first) can still fill files that only exist in an overlay, but any
+    // file present in resource_packs/vanilla wins over an overlay copy.
     let vanilla = resource_packs_dir.join("vanilla");
-    push_unique_path(roots, vanilla.join("client"));
-    push_unique_path(roots, vanilla);
 
     let Ok(entries) = std::fs::read_dir(resource_packs_dir) else {
+        push_unique_path(roots, vanilla.join("client"));
+        push_unique_path(roots, vanilla);
         return;
     };
     let mut vanilla_overlay_roots = entries
@@ -2293,10 +2445,18 @@ fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir
             .then_with(|| left.cmp(right))
     });
 
-    for root in vanilla_overlay_roots {
-        push_unique_path(roots, root.join("client"));
-        push_unique_path(roots, root);
+    let ignore_overlays = std::env::var("BMCBL_VANILLA_OVERLAYS")
+        .is_ok_and(|value| matches!(value.as_str(), "ignore" | "none" | "0" | "false"));
+    if !ignore_overlays {
+        for root in vanilla_overlay_roots {
+            push_unique_path(roots, root.join("client"));
+            push_unique_path(roots, root);
+        }
     }
+
+    // Base pack last = highest priority after the resolver reverses the list.
+    push_unique_path(roots, vanilla.join("client"));
+    push_unique_path(roots, vanilla);
 }
 
 fn resource_pack_candidate_matches(path: &Path, pack_id: &str, allow_name_fallback: bool) -> bool {
@@ -4078,6 +4238,19 @@ fn chest_texture_aliases(block: &str, slot: ObjTextureSlot) -> Vec<String> {
     keys
 }
 
+fn is_sign_texture_block(block: &str) -> bool {
+    matches!(
+        block,
+        "sign" | "standing_sign" | "wall_sign" | "hanging_sign" | "wall_hanging_sign"
+    ) || block.ends_with("_standing_sign")
+        || block.ends_with("_wall_sign")
+        || block.ends_with("_hanging_sign")
+}
+
+fn is_bed_texture_block(block: &str) -> bool {
+    block == "bed" || block.ends_with("_bed")
+}
+
 fn sign_texture_aliases(block: &str) -> Vec<String> {
     let mut keys = Vec::with_capacity(24);
     if matches!(block, "standing_sign" | "wall_sign") {
@@ -4825,7 +4998,9 @@ mod tests {
             );
             package.write(
                 &format!("{root}/textures/terrain_texture.json"),
-                &format!(r#"{{"texture_data":{{"stone":{{"textures":"textures/blocks/{texture}"}}}}}}"#),
+                &format!(
+                    r#"{{"texture_data":{{"stone":{{"textures":"textures/blocks/{texture}"}}}}}}"#
+                ),
             );
             package.write_bytes(&format!("{root}/textures/blocks/{texture}.png"), b"png");
         }
@@ -4849,6 +5024,30 @@ mod tests {
     }
 
     #[test]
+    fn missing_overlay_texture_still_uses_lower_pack_mapping() {
+        let pack = TestPack::new();
+        pack.write("base/blocks.json", r#"{"probe":{"textures":"base_probe"}}"#);
+        pack.write(
+            "overlay/blocks.json",
+            r#"{"probe":{"textures":"absent_probe"}}"#,
+        );
+        pack.write_bytes("base/textures/blocks/base_probe.png", b"png");
+        let resolver = ObjTextureResolver::with_pack_roots(
+            [pack.path().join("base"), pack.path().join("overlay")],
+            "textures",
+        );
+        assert_eq!(
+            resolved_relative_path(&resolver, "minecraft_probe_up", [0, 1, 0]).as_deref(),
+            Some("textures/blocks/base_probe.png"),
+        );
+        assert!(
+            resolver
+                .texture_for("minecraft_absent_up", [0, 1, 0])
+                .is_none()
+        );
+    }
+
+    #[test]
     fn vanilla_resource_pack_roots_should_include_base_and_sorted_overlays() {
         let pack = TestPack::new();
         pack.write_bytes("data/resource_packs/vanilla/textures/.keep", b"");
@@ -4859,15 +5058,6 @@ mod tests {
 
         let expected = vec![
             pack.path(),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla"),
             pack.path()
                 .join("data")
                 .join("resource_packs")
@@ -4886,6 +5076,15 @@ mod tests {
                 .join("data")
                 .join("resource_packs")
                 .join("vanilla_1.21.40"),
+            pack.path()
+                .join("data")
+                .join("resource_packs")
+                .join("vanilla")
+                .join("client"),
+            pack.path()
+                .join("data")
+                .join("resource_packs")
+                .join("vanilla"),
             pack.path()
                 .join("data")
                 .join("resourcepacks")

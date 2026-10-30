@@ -96,6 +96,7 @@ impl Eq for ResourceFile {}
 pub(crate) struct PackResources {
     root: PathBuf,
     archived: BTreeMap<PathBuf, ResourceFile>,
+    loose: Option<BTreeMap<PathBuf, ResourceFile>>,
 }
 
 impl PackResources {
@@ -103,7 +104,38 @@ impl PackResources {
         let mut resources = Self {
             root: root.to_owned(),
             archived: BTreeMap::new(),
+            loose: None,
         };
+        // Texture lookups probe many candidates across version overlays. Index loose paths once.
+        if root.join("textures").is_dir() {
+            let mut loose = BTreeMap::new();
+            let mut complete = true;
+            let entries = WalkDir::new(root)
+                .into_iter()
+                .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != "__brarchive");
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    complete = false;
+                    break;
+                };
+                if entry.file_type().is_file()
+                    || (entry.file_type().is_symlink() && entry.path().is_file())
+                {
+                    let Ok(relative) = entry.path().strip_prefix(root) else {
+                        complete = false;
+                        break;
+                    };
+                    loose.insert(
+                        loose_path_key(relative),
+                        ResourceFile::file(entry.path().to_owned()),
+                    );
+                }
+            }
+            // Keep the filesystem lookup path if any directory could not be scanned.
+            if complete {
+                resources.loose = Some(loose);
+            }
+        }
         let archive_root = root.join("__brarchive");
         if !archive_root.is_dir() {
             return Ok(resources);
@@ -157,6 +189,9 @@ impl PackResources {
         // A non-empty archived payload wins within a pack; manifest stubs were
         // excluded so they never hide a loose file or fabricate an empty image.
         self.archived.get(relative).cloned().or_else(|| {
+            if let Some(loose) = &self.loose {
+                return loose.get(&loose_path_key(relative)).cloned();
+            }
             let path = self.root.join(relative);
             path.is_file().then(|| ResourceFile::file(path))
         })
@@ -189,6 +224,41 @@ impl PackResources {
             }
         }
         Ok(files)
+    }
+}
+
+fn loose_path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PackResources;
+    use std::{fs, path::Path};
+    use tempfile::TempDir;
+
+    #[test]
+    fn indexed_loose_pack_finds_texture_and_root_metadata() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("textures")).unwrap();
+        fs::write(root.path().join("textures/stone.png"), b"texture").unwrap();
+        fs::write(root.path().join("textures/UPPER.PNG"), b"texture").unwrap();
+        fs::write(root.path().join("blocks.json"), b"{}").unwrap();
+
+        let pack = PackResources::open(root.path()).unwrap();
+
+        assert!(pack.get(Path::new("textures/stone.png")).is_some());
+        #[cfg(windows)]
+        assert!(pack.get(Path::new("textures/upper.png")).is_some());
+        assert!(pack.get(Path::new("blocks.json")).is_some());
+        assert!(pack.get(Path::new("textures/missing.png")).is_none());
     }
 }
 

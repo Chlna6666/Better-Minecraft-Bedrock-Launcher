@@ -1539,7 +1539,36 @@ mod tests {
         assert!(shape.cuboids.is_empty());
         assert_eq!(shape.planes.len(), 2);
         assert_eq!(shape.planes[0].material_slot, None);
-        assert_eq!(shape.planes[0].uv, None);
+        assert_eq!(
+            shape.planes[0].uv,
+            Some([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
+        );
+    }
+
+    #[test]
+    fn double_plant_halves_use_up_down_textures() {
+        let lower = BlockStateQuery::new("minecraft:tall_grass");
+        let lower_shape = crate::model_shape_for_block_state(&lower)
+            .unwrap_or_else(|| panic!("missing lower tall grass shape"));
+        assert!(
+            lower_shape
+                .planes
+                .iter()
+                .any(|plane| plane.material_slot.as_deref() == Some("down")),
+            "lower half should use the bottom texture slot"
+        );
+
+        let upper =
+            BlockStateQuery::new("minecraft:tall_grass").with_state("upper_block_bit", true);
+        let upper_shape = crate::model_shape_for_block_state(&upper)
+            .unwrap_or_else(|| panic!("missing upper tall grass shape"));
+        assert!(
+            upper_shape
+                .planes
+                .iter()
+                .any(|plane| plane.material_slot.as_deref() == Some("up")),
+            "upper half should use the top texture slot"
+        );
     }
 
     #[test]
@@ -1576,7 +1605,11 @@ mod tests {
         assert!(shape.cuboids.is_empty());
         assert_eq!(shape.planes.len(), 1);
         assert_eq!(shape.planes[0].material_slot.as_deref(), Some("down"));
-        assert_eq!(shape.planes[0].uv, Some(shape::full_texture_uv()));
+        // North-south dust rotates the horizontal stripe texture a quarter turn.
+        assert_eq!(
+            shape.planes[0].uv,
+            Some([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
+        );
     }
 
     #[test]
@@ -1587,7 +1620,15 @@ mod tests {
             model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing redstone shape"));
 
         assert_eq!(shape.planes.len(), 3);
-        assert!(shape.planes.iter().any(|plane| plane.normal == [1, 0, 0]));
+        let wall = shape
+            .planes
+            .iter()
+            .find(|plane| plane.normal == [1, 0, 0])
+            .expect("east wall-climb plane");
+        assert_eq!(
+            wall.uv,
+            Some([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
+        );
     }
 
     #[test]
@@ -1879,7 +1920,32 @@ mod tests {
         let ladder_shape =
             model_shape_for_block_state(&ladder).unwrap_or_else(|| panic!("missing ladder shape"));
         assert_eq!(ladder_shape.planes.len(), 1);
-        assert_eq!(ladder_shape.planes[0].normal, [-1, 0, 0]);
+        assert_eq!(ladder_shape.planes[0].normal, [1, 0, 0]);
+    }
+
+    #[test]
+    fn item_frame_plate_hugs_the_support_side() {
+        fn frame_bounds(facing: i64) -> ([f32; 3], [f32; 3]) {
+            let state =
+                BlockStateQuery::new("minecraft:frame").with_state("facing_direction", facing);
+            let shape = model_shape_for_block_state(&state)
+                .unwrap_or_else(|| panic!("missing item frame shape"));
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for cuboid in &shape.cuboids {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(cuboid.min[axis]);
+                    max[axis] = max[axis].max(cuboid.max[axis]);
+                }
+            }
+            (min, max)
+        }
+
+        // A north-facing frame is mounted on a wall to its south, and so on.
+        assert!((frame_bounds(2).1[2] - 1.0).abs() < 0.001);
+        assert!(frame_bounds(3).0[2].abs() < 0.001);
+        assert!((frame_bounds(4).1[0] - 1.0).abs() < 0.001);
+        assert!(frame_bounds(5).0[0].abs() < 0.001);
     }
 
     #[test]
@@ -2084,12 +2150,33 @@ mod tests {
         assert_eq!(vine_shape.planes.len(), 1);
         assert_eq!(vine_shape.planes[0].normal, [0, 0, 1]);
 
-        let rail = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", "east_west");
+        let rail = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 1_i64);
         let rail_shape =
             model_shape_for_block_state(&rail).unwrap_or_else(|| panic!("missing rail shape"));
         assert!(rail_shape.cuboids.is_empty());
         assert_eq!(rail_shape.planes.len(), 1);
-        assert_eq!(rail_shape.planes[0].material_slot.as_deref(), Some("up"));
+        assert_eq!(rail_shape.planes[0].material_slot.as_deref(), Some("side"));
+        assert!(
+            rail_shape.planes[0]
+                .corners
+                .iter()
+                .all(|corner| (corner[1] - 0.0625).abs() < 1e-6)
+        );
+
+        let sloped = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 2_i64);
+        let sloped_shape =
+            model_shape_for_block_state(&sloped).unwrap_or_else(|| panic!("missing sloped rail"));
+        assert!(
+            sloped_shape.planes[0]
+                .corners
+                .iter()
+                .any(|corner| corner[1] > 1.0)
+        );
+
+        let curved = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 6_i64);
+        let curved_shape =
+            model_shape_for_block_state(&curved).unwrap_or_else(|| panic!("missing curved rail"));
+        assert_eq!(curved_shape.planes[0].material_slot.as_deref(), Some("up"));
     }
 
     #[test]

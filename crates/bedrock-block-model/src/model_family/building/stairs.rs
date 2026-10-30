@@ -1,10 +1,11 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, stair_direction, state_bool, state_string,
+    CardinalDirection, cardinal_direction, stair_direction, state_bool, state_i64, state_string,
 };
 use crate::model_family::shape::{
-    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv, ground_plane,
+    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv,
+    upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -29,17 +30,10 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 pub(crate) fn ladder_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
     let offset = 0.03125;
+    // facing_direction is the side the ladder's rungs face, so the board sits against the
+    // opposite (support) boundary and its normal points toward the facing direction.
     let plane = match direction {
         CardinalDirection::North => ModelPlane::new(
-            [
-                [1.0, 0.0, offset],
-                [0.0, 0.0, offset],
-                [0.0, 1.0, offset],
-                [1.0, 1.0, offset],
-            ],
-            [0, 0, 1],
-        ),
-        CardinalDirection::South => ModelPlane::new(
             [
                 [0.0, 0.0, 1.0 - offset],
                 [1.0, 0.0, 1.0 - offset],
@@ -48,16 +42,16 @@ pub(crate) fn ladder_shape(state: &BlockStateQuery) -> ModelShape {
             ],
             [0, 0, -1],
         ),
-        CardinalDirection::East => ModelPlane::new(
+        CardinalDirection::South => ModelPlane::new(
             [
-                [1.0 - offset, 0.0, 1.0],
-                [1.0 - offset, 0.0, 0.0],
-                [1.0 - offset, 1.0, 0.0],
-                [1.0 - offset, 1.0, 1.0],
+                [1.0, 0.0, offset],
+                [0.0, 0.0, offset],
+                [0.0, 1.0, offset],
+                [1.0, 1.0, offset],
             ],
-            [-1, 0, 0],
+            [0, 0, 1],
         ),
-        CardinalDirection::West => ModelPlane::new(
+        CardinalDirection::East => ModelPlane::new(
             [
                 [offset, 0.0, 0.0],
                 [offset, 0.0, 1.0],
@@ -66,8 +60,19 @@ pub(crate) fn ladder_shape(state: &BlockStateQuery) -> ModelShape {
             ],
             [1, 0, 0],
         ),
+        CardinalDirection::West => ModelPlane::new(
+            [
+                [1.0 - offset, 0.0, 1.0],
+                [1.0 - offset, 0.0, 0.0],
+                [1.0 - offset, 1.0, 0.0],
+                [1.0 - offset, 1.0, 1.0],
+            ],
+            [-1, 0, 0],
+        ),
     };
-    ModelShape::default().with_planes([plane.with_material_slot("side")])
+    ModelShape::default().with_planes([plane
+        .with_material_slot("side")
+        .with_uv(upright_full_texture_uv())])
 }
 
 pub(crate) fn carpet_shape(name: &str) -> ModelShape {
@@ -79,66 +84,57 @@ pub(crate) fn carpet_shape(name: &str) -> ModelShape {
 }
 
 pub(crate) fn rail_shape(state: &BlockStateQuery) -> ModelShape {
-    let shape_value = state_string(state, "rail_direction")
-        .or_else(|| state_string(state, "rail_shape"))
-        .unwrap_or("north_south");
-    let (corners, uv) = match shape_value {
-        "east_west" => (
-            [
-                [0.0, 0.01, 0.0],
-                [1.0, 0.01, 0.0],
-                [1.0, 0.01, 1.0],
-                [0.0, 0.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
-        "ascending_east" => (
-            [
-                [0.0, 0.01, 0.0],
-                [1.0, 1.01, 0.0],
-                [1.0, 1.01, 1.0],
-                [0.0, 0.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
-        "ascending_west" => (
-            [
-                [0.0, 1.01, 0.0],
-                [1.0, 0.01, 0.0],
-                [1.0, 0.01, 1.0],
-                [0.0, 1.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
-        "ascending_north" => (
-            [
-                [0.0, 1.01, 0.0],
-                [1.0, 1.01, 0.0],
-                [1.0, 0.01, 1.0],
-                [0.0, 0.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
-        "ascending_south" => (
-            [
-                [0.0, 0.01, 0.0],
-                [1.0, 0.01, 0.0],
-                [1.0, 1.01, 1.0],
-                [0.0, 1.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
-        _ => (
-            [
-                [0.0, 0.01, 0.0],
-                [1.0, 0.01, 0.0],
-                [1.0, 0.01, 1.0],
-                [0.0, 0.01, 1.0],
-            ],
-            full_texture_uv(),
-        ),
+    // Bedrock stores the six straight/sloped orientations and four curves in rail_direction.
+    // The rail plane sits 1 px above the block floor; slopes rise one full block over the run
+    // and curves use the turned texture.
+    let direction = state_i64(state, "rail_direction")
+        .or_else(|| state_i64(state, "rail_shape"))
+        .unwrap_or(0)
+        .clamp(0, 9);
+    let (y_rotation, sloped) = match direction {
+        0 => (0.0_f32, false),
+        1 => (90.0, false),
+        2 => (-90.0, true),
+        3 => (90.0, true),
+        4 => (180.0, true),
+        5 => (0.0, true),
+        6 => (90.0, false),
+        7 => (180.0, false),
+        8 => (-90.0, false),
+        _ => (0.0, false),
     };
-    ModelShape::default().with_planes([ground_plane(corners, Some("up"), uv)])
+    let curved = direction > 5;
+    let base = 1.0 / 16.0;
+    let mut corners = if sloped {
+        [
+            [0.0, base, 0.0],
+            [1.0, base, 0.0],
+            [1.0, base + 1.0, 1.0],
+            [0.0, base + 1.0, 1.0],
+        ]
+    } else {
+        [
+            [0.0, base, 0.0],
+            [1.0, base, 0.0],
+            [1.0, base, 1.0],
+            [0.0, base, 1.0],
+        ]
+    };
+    if y_rotation != 0.0 {
+        let (sin, cos) = y_rotation.to_radians().sin_cos();
+        for corner in &mut corners {
+            let x = corner[0] - 0.5;
+            let z = corner[2] - 0.5;
+            corner[0] = 0.5 + x * cos + z * sin;
+            corner[2] = 0.5 - x * sin + z * cos;
+        }
+    }
+    // blocks.json defines up=turned and down/side=straight for rails, mirroring how the
+    // client picks the straight or curved texture from the block state.
+    let slot = if curved { "up" } else { "side" };
+    ModelShape::default().with_planes([ModelPlane::new(corners, [0, 1, 0])
+        .with_material_slot(slot)
+        .with_uv(full_texture_uv())])
 }
 
 pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {

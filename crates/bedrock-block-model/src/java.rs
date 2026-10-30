@@ -186,6 +186,44 @@ impl JavaModelRepository {
 pub fn java_block_id_for_bedrock_state(state: &BlockStateQuery) -> String {
     let canonical = canonical_block_name_for_state(state);
     let name = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
+    // Signs, banners and beds use different block ids between the editions. Bedrock keeps the
+    // wood/color in the id or the state; Java uses one id per variant.
+    if name == "standing_sign" {
+        return "minecraft:oak_sign".to_owned();
+    }
+    if let Some(wood) = name.strip_suffix("_standing_sign") {
+        return format!("minecraft:{}_sign", sign_wood_alias(wood));
+    }
+    if name == "wall_sign" {
+        return "minecraft:oak_wall_sign".to_owned();
+    }
+    if let Some(wood) = name.strip_suffix("_wall_sign") {
+        return format!("minecraft:{}_wall_sign", sign_wood_alias(wood));
+    }
+    if let Some(wood) = name.strip_suffix("_wall_hanging_sign") {
+        return format!("minecraft:{}_wall_hanging_sign", sign_wood_alias(wood));
+    }
+    if let Some(wood) = name.strip_suffix("_hanging_sign") {
+        let wood = sign_wood_alias(wood);
+        let attached = state
+            .state("attached_bit")
+            .is_some_and(|value| value.is_truthy());
+        if attached && state.state("facing_direction").is_some() {
+            return format!("minecraft:{wood}_wall_hanging_sign");
+        }
+        return format!("minecraft:{wood}_hanging_sign");
+    }
+    if name == "standing_banner" {
+        return "minecraft:white_banner".to_owned();
+    }
+    if name == "wall_banner" {
+        return "minecraft:white_wall_banner".to_owned();
+    }
+    if name == "bed" {
+        // Bedrock stores the bed color on the block entity, so geometry only can use a neutral
+        // variant; every Java bed model is shaped identically.
+        return "minecraft:white_bed".to_owned();
+    }
     let java_name = match name {
         // Bedrock kept `grass` as the historical full grass block id. Java uses `grass_block`.
         "grass" => "grass_block",
@@ -199,6 +237,13 @@ pub fn java_block_id_for_bedrock_state(state: &BlockStateQuery) -> String {
         other => other,
     };
     format!("minecraft:{java_name}")
+}
+
+fn sign_wood_alias(wood: &str) -> &str {
+    match wood {
+        "darkoak" | "big_oak" => "dark_oak",
+        other => other,
+    }
 }
 
 /// Converts persisted Bedrock state properties into the Java blockstate vocabulary used by model
@@ -272,7 +317,73 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
                 );
             }
         }
+        ModelFamily::CrossPlant => {
+            // Double plants (tall_grass, large_fern, sunflower, ...) split into two block states
+            // in Java; Bedrock persists the split as upper_block_bit.
+            let upper = state_bool(state, "upper_block_bit").unwrap_or(false);
+            properties.insert(
+                "half".to_owned(),
+                if upper { "upper" } else { "lower" }.to_owned(),
+            );
+            if let Some(growth) = state_i64(state, "growth") {
+                properties.insert("age".to_owned(), growth.to_string());
+            }
+        }
+        ModelFamily::Sign => {
+            if let Some(direction) = state_i64(state, "ground_sign_direction") {
+                properties.insert("rotation".to_owned(), direction.rem_euclid(16).to_string());
+            }
+            if let Some(face) = state_i64(state, "facing_direction").and_then(facing_direction_0_5)
+            {
+                properties.insert("facing".to_owned(), face.to_owned());
+            } else if let Some(direction) = bedrock_cardinal_direction(state) {
+                properties.insert("facing".to_owned(), direction.to_owned());
+            }
+            if let Some(attached) = state_bool(state, "attached_bit") {
+                properties.insert("attached".to_owned(), attached.to_string());
+            }
+        }
+        ModelFamily::Bed => {
+            if let Some(direction) = bedrock_cardinal_direction(state) {
+                properties.insert("facing".to_owned(), direction.to_owned());
+            }
+            let head = state_bool(state, "head_piece_bit").unwrap_or(false);
+            properties.insert(
+                "part".to_owned(),
+                if head { "head" } else { "foot" }.to_owned(),
+            );
+        }
+        ModelFamily::Bell => {
+            if let Some(direction) = state_i64(state, "direction").and_then(cardinal_direction_0_3)
+            {
+                properties.insert("facing".to_owned(), direction.to_owned());
+            }
+            let attachment = match state_string(state, "attachment").unwrap_or("standing") {
+                "standing" => "floor",
+                "hanging" => "ceiling",
+                "side" => "single_wall",
+                "multiple" | "double_wall" => "double_wall",
+                other => other,
+            };
+            properties.insert("attachment".to_owned(), attachment.to_owned());
+        }
+        ModelFamily::Banner => {
+            if let Some(direction) = state_i64(state, "ground_sign_direction") {
+                properties.insert("rotation".to_owned(), direction.rem_euclid(16).to_string());
+            }
+            if let Some(face) = state_i64(state, "facing_direction").and_then(facing_direction_0_5)
+            {
+                properties.insert("facing".to_owned(), face.to_owned());
+            }
+        }
         _ => {
+            if canonical.strip_prefix("minecraft:").unwrap_or(&canonical) == "lectern" {
+                // Lectern blockstate selectors include has_book; without block-entity data the
+                // model/texture layout is the same, so resolve the empty lectern variant.
+                properties
+                    .entry("has_book".to_owned())
+                    .or_insert_with(|| "false".to_owned());
+            }
             if let Some(direction) = bedrock_cardinal_direction(state) {
                 properties.insert("facing".to_owned(), direction.to_owned());
             }

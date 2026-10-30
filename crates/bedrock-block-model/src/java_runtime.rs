@@ -3,8 +3,8 @@ use std::mem;
 use crate::{
     BlockFace, BlockStateQuery, JavaModelApplication, JavaModelAxis, JavaModelDatabase,
     JavaPackedElement, JavaPackedFace, ModelCuboid, ModelPlane, ModelShape,
-    java_block_id_for_bedrock_state, java_properties_for_bedrock_state,
-    vanilla_java_model_database,
+    canonical_block_name_for_state, java_block_id_for_bedrock_state,
+    java_properties_for_bedrock_state, vanilla_java_model_database,
 };
 
 /// Resolves a Bedrock block state through the embedded Java Edition model database and expands
@@ -41,7 +41,70 @@ fn java_model_shape_for_bedrock_state_in_database(
             }
         });
 
-    (block_exists && applied && !shape.is_empty()).then_some(shape)
+    if !(block_exists && applied && !shape.is_empty()) {
+        return None;
+    }
+    apply_double_plant_material_slots(state, &mut shape);
+    Some(shape)
+}
+
+/// Remaps the Java block-entity model's generic face slots to the Bedrock hardcoded art keys.
+///
+/// The Java sign and bed models only reference face names; Bedrock keeps the actual sign/bed
+/// textures outside the terrain atlas, so the renderer's texture resolver needs semantic slots.
+pub(crate) fn apply_block_entity_material_slots(state: &BlockStateQuery, shape: &mut ModelShape) {
+    let canonical = canonical_block_name_for_state(state);
+    let normalized = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
+    if normalized == "bed" || normalized.ends_with("_bed") {
+        let head = state
+            .state("head_piece_bit")
+            .is_some_and(|value| value.is_truthy());
+        let part = if head { "head" } else { "feet" };
+        for plane in &mut shape.planes {
+            plane.material_slot = Some(bed_slot_for_normal(part, plane.normal).to_owned());
+        }
+        for cuboid in &mut shape.cuboids {
+            cuboid.face_material_slots.clear();
+            cuboid.material_slot = Some(format!("{part}_side"));
+        }
+        return;
+    }
+}
+
+fn bed_slot_for_normal(part: &str, normal: [i32; 3]) -> String {
+    let face = match normal {
+        [0, 1, 0] | [0, -1, 0] => "top",
+        _ => "side",
+    };
+    format!("{part}_{face}")
+}
+
+/// Double plants use two block states in Java. Bedrock persists the split as upper_block_bit and
+/// keeps separate up/down textures in blocks.json, so each half must resolve its own texture.
+pub(crate) fn apply_double_plant_material_slots(state: &BlockStateQuery, shape: &mut ModelShape) {
+    let canonical = canonical_block_name_for_state(state);
+    let normalized = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
+    if !matches!(
+        normalized,
+        "tall_grass"
+            | "tallgrass"
+            | "large_fern"
+            | "sunflower"
+            | "lilac"
+            | "rose_bush"
+            | "peony"
+            | "pitcher_plant"
+            | "double_plant"
+    ) {
+        return;
+    }
+    let upper = state
+        .state("upper_block_bit")
+        .is_some_and(|value| value.is_truthy());
+    let slot = if upper { "up" } else { "down" };
+    for plane in &mut shape.planes {
+        plane.material_slot = Some(slot.to_owned());
+    }
 }
 
 fn push_packed_element(
@@ -69,7 +132,15 @@ fn push_packed_element(
 
     // Partial-face elements and rotated Java elements are emitted as explicit quads. ModelPlane
     // already carries arbitrary corners, so ±22.5°/±45° geometry does not need an AABB fallback.
+    // Zero-thickness elements are double-sided; keeping both opposing faces would draw two
+    // coplanar masked quads that union their silhouettes.
+    let zero_axis = (0..3).find(|axis| (max[*axis] - min[*axis]).abs() < 0.000_001);
     for face in element.faces() {
+        if let Some(axis) = zero_axis
+            && face_axis_sign(face.face, axis) > 0
+        {
+            continue;
+        }
         let Some((corners, normal)) = face_geometry(face.face, min, max) else {
             continue;
         };
@@ -80,6 +151,18 @@ fn push_packed_element(
                 .with_material_slot(face.material_slot)
                 .with_uv(packed_face_uv(face, min, max)),
         );
+    }
+}
+
+fn face_axis_sign(face: BlockFace, axis: usize) -> i32 {
+    match (face, axis) {
+        (BlockFace::Up, 1) => 1,
+        (BlockFace::Down, 1) => -1,
+        (BlockFace::East, 0) => 1,
+        (BlockFace::West, 0) => -1,
+        (BlockFace::South, 2) => 1,
+        (BlockFace::North, 2) => -1,
+        _ => 0,
     }
 }
 
@@ -94,10 +177,18 @@ fn packed_face_uv(face: JavaPackedFace<'_>, min: [f32; 3], max: [f32; 3]) -> [[f
     let [u0, v0, u1, v1] = face
         .uv_normalized()
         .unwrap_or_else(|| default_face_uv_rect(face.face, min, max));
-    rotate_uv_quarter_turns(
+    let uv = rotate_uv_quarter_turns(
         [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
         face.rotation_quarter_turns,
-    )
+    );
+    // Java's quad UV order is bottom-left first; the renderer's corner order starts at the
+    // bottom-left only for up/down. Side faces therefore need the 180 degree permutation.
+    match face.face {
+        BlockFace::North | BlockFace::South | BlockFace::East | BlockFace::West => {
+            [uv[2], uv[3], uv[0], uv[1]]
+        }
+        _ => uv,
+    }
 }
 
 fn default_face_uv_rect(face: BlockFace, min: [f32; 3], max: [f32; 3]) -> [f32; 4] {

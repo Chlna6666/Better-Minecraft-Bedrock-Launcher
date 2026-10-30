@@ -3,7 +3,9 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, state_i64, state_string,
 };
-use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv};
+use crate::model_family::shape::{
+    ModelCuboid, ModelShape, detail_cuboid_with_local_uv, full_texture_uv,
+};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -282,28 +284,52 @@ pub(crate) fn dragon_egg_shape() -> ModelShape {
 pub(crate) fn item_frame_shape(state: &BlockStateQuery) -> ModelShape {
     let facing = facing_from_state(state);
     let cuboids = match facing {
-        Facing::Up => vec![
-            ModelCuboid::new([px(2.0), 0.0, px(2.0)], [px(14.0), px(1.0), px(14.0)]),
-            ModelCuboid::new([px(3.0), px(1.0), px(3.0)], [px(13.0), px(1.5), px(13.0)]),
-        ],
-        Facing::Down => vec![
-            ModelCuboid::new([px(2.0), px(15.0), px(2.0)], [px(14.0), 1.0, px(14.0)]),
-            ModelCuboid::new([px(3.0), px(14.5), px(3.0)], [px(13.0), px(15.0), px(13.0)]),
-        ],
+        // Horizontal frames are the cardinal model rotated onto the floor/ceiling, so the border
+        // ring, backing plate and content recess keep exactly the same depth as wall frames.
+        Facing::Up => local_item_frame_cuboids()
+            .into_iter()
+            .map(|cuboid| rotate_cuboid_around_x(cuboid, 1))
+            .collect::<Vec<_>>(),
+        Facing::Down => local_item_frame_cuboids()
+            .into_iter()
+            .map(|cuboid| rotate_cuboid_around_x(cuboid, 3))
+            .collect::<Vec<_>>(),
         _ => {
+            // The authored cuboids sit on the block's +Z face. facing_direction is the side the
+            // frame's content faces, so the plate must be rotated toward the opposite (support)
+            // side and stay flush with the wall.
             let direction = cardinal_for_facing(facing).unwrap_or(CardinalDirection::South);
             local_item_frame_cuboids()
                 .into_iter()
-                .map(|cuboid| rotate_cuboid_from_south(cuboid, direction))
+                .map(|cuboid| rotate_cuboid_from_south(cuboid, direction.opposite()))
                 .collect::<Vec<_>>()
         }
     };
     ModelShape::from_cuboids(
         cuboids
             .into_iter()
-            .map(detail_cuboid_with_local_uv)
+            .map(item_frame_cuboid_uv)
             .collect::<Vec<_>>(),
     )
+}
+
+/// The item frame texture is a complete frame image (dark outer edge, wooden backing), so every
+/// part samples the whole texture instead of a cuboid-local crop. Cropping would cut the dark
+/// frame edge off and leave a flat copper plate.
+fn item_frame_cuboid_uv(cuboid: ModelCuboid) -> ModelCuboid {
+    let uv = full_texture_uv();
+    let mut cuboid = cuboid;
+    for face in [
+        BlockFace::Up,
+        BlockFace::Down,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ] {
+        cuboid.face_uvs.insert(face, uv);
+    }
+    cuboid
 }
 
 pub(crate) fn head_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
@@ -485,6 +511,28 @@ fn side_slot_cuboid(min: [f32; 3], max: [f32; 3]) -> ModelCuboid {
         .with_face_material_slot(BlockFace::South, "side")
         .with_face_material_slot(BlockFace::East, "side")
         .with_face_material_slot(BlockFace::West, "side")
+}
+
+fn rotate_cuboid_around_x(cuboid: ModelCuboid, quarter_turns: u8) -> ModelCuboid {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for x in [cuboid.min[0], cuboid.max[0]] {
+        for y in [cuboid.min[1], cuboid.max[1]] {
+            for z in [cuboid.min[2], cuboid.max[2]] {
+                let mut point = [x, y, z];
+                for _ in 0..quarter_turns.rem_euclid(4) {
+                    point = [point[0], 1.0 - point[2], point[1]];
+                }
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+        }
+    }
+    let mut rotated = ModelCuboid::new(min, max);
+    rotated.material_slot = cuboid.material_slot;
+    rotated
 }
 
 fn rotate_cuboid_from_south(cuboid: ModelCuboid, direction: CardinalDirection) -> ModelCuboid {
