@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use bedrock_world::{NbtReader, NbtTag};
 use serde::Deserialize;
 
-use crate::{BlockStateQuery, BlockStateValue, ModelPlane, ModelShape};
+use crate::{BlockFace, BlockStateQuery, BlockStateValue, ModelCuboid, ModelPlane, ModelShape};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum StateValueKey {
@@ -189,6 +189,12 @@ impl RuntimeCaptureCatalog {
             let Some(mut planes)=mesh_planes(&mesh,slots,&recipe.texture_aliases) else {continue};
             shape.planes.append(&mut planes);
         }
+        // Ordinary full-cube states belong to the 3D editor's greedy voxel
+        // mesher, not its unmerged per-block detail mesh path. Preserve their
+        // per-face material identifiers in a compact cuboid representation.
+        if let Some(cube)=standard_full_cube(&shape){
+            shape=ModelShape::from_cuboids(vec![cube]);
+        }
         let result=(!shape.is_empty()).then(||Arc::new(shape));
         if let Ok(mut cache)=self.shapes.lock(){cache.insert(key,result.clone());}
         result.as_ref().map(|s|(**s).clone())
@@ -207,6 +213,48 @@ impl RuntimeCaptureCatalog {
         cache.insert(hash.to_owned(),result.clone());
         result
     }
+}
+
+
+fn standard_full_cube(shape:&ModelShape)->Option<ModelCuboid> {
+    if !shape.cuboids.is_empty() || shape.planes.len()!=6 {return None}
+    let mut cube=ModelCuboid::new([0.,0.,0.],[1.,1.,1.]);
+    let mut mask=0u8;
+    for plane in &shape.planes {
+        let (face,bit,axis,coordinate)=match plane.normal {
+            [0,1,0] => (BlockFace::Up,0,1,1.),
+            [0,-1,0] => (BlockFace::Down,1,1,0.),
+            [0,0,-1] => (BlockFace::North,2,2,0.),
+            [0,0,1] => (BlockFace::South,3,2,1.),
+            [-1,0,0] => (BlockFace::West,4,0,0.),
+            [1,0,0] => (BlockFace::East,5,0,1.),
+            _ => return None,
+        };
+        if mask&(1<<bit)!=0{return None}
+        mask|=1<<bit;
+        // A plane must cover exactly its 1x1 boundary face. Partial
+        // quads, beveled geometry and offset models stay as detail meshes.
+        for corner in &plane.corners {
+            if (corner[axis]-coordinate).abs()>0.0001 ||
+                !corner.iter().all(|v|(*v-0.).abs()<0.0001 || (*v-1.).abs()<0.0001) {
+                return None;
+            }
+        }
+        for other_axis in 0..3 {
+            if other_axis==axis {continue}
+            if !plane.corners.iter().any(|p|p[other_axis].abs()<0.0001) ||
+               !plane.corners.iter().any(|p|(p[other_axis]-1.).abs()<0.0001) {
+                return None;
+            }
+        }
+        if let Some(slot)=&plane.material_slot {
+            cube=cube.with_face_material_slot(face,slot.clone());
+        }
+        if let Some(uv)=plane.uv {
+            cube=cube.with_face_uv(face,uv);
+        }
+    }
+    (mask==0b111111).then_some(cube)
 }
 
 /// Encodes an engine texture *alias*, never a version-specific file path.
@@ -328,6 +376,30 @@ mod tests {
             Some(capture_texture_slot("grass_side").as_str()));
         assert!(catalog.shape_for_state(
             &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",1)).is_none());
+    }
+    #[test]
+    fn complete_six_face_cube_preserves_slots_and_greedy_merge(){
+        let make=|normal:[i32;3],corners:[[f32;3];4],face:&str|{
+            ModelPlane::new(corners,normal).front_only()
+                .with_material_slot(capture_texture_slot(face))
+                .with_uv([[0.,0.],[0.,1.],[1.,1.],[1.,0.]])
+        };
+        let shape=ModelShape::default().with_planes(vec![
+            make([0,1,0],[[0.,1.,0.],[0.,1.,1.],[1.,1.,1.],[1.,1.,0.]],"top"),
+            make([0,-1,0],[[0.,0.,0.],[1.,0.,0.],[1.,0.,1.],[0.,0.,1.]],"bottom"),
+            make([0,0,-1],[[0.,0.,0.],[0.,1.,0.],[1.,1.,0.],[1.,0.,0.]],"north"),
+            make([0,0,1],[[0.,0.,1.],[1.,0.,1.],[1.,1.,1.],[0.,1.,1.]],"south"),
+            make([-1,0,0],[[0.,0.,0.],[0.,0.,1.],[0.,1.,1.],[0.,1.,0.]],"west"),
+            make([1,0,0],[[1.,0.,0.],[1.,1.,0.],[1.,1.,1.],[1.,0.,1.]],"east"),
+        ]);
+        let cube=standard_full_cube(&shape).expect("solid full cube");
+        assert_eq!(cube.face_material_slots.get(&BlockFace::Up).map(String::as_str),
+            Some(capture_texture_slot("top").as_str()));
+        assert_eq!(cube.face_material_slots.len(),6);
+        assert_eq!(cube.face_uvs.len(),6);
+        let mut broken=shape;
+        broken.planes[0].corners[0][1]=0.5;
+        assert!(standard_full_cube(&broken).is_none());
     }
     #[test]
     fn key_normalizes_namespace_without_erasing_state(){
