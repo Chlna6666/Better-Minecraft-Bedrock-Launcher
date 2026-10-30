@@ -3604,30 +3604,38 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
 /// paths, texture files or model blobs are bundled in BMCBL.
 fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
     if let Some(root)=std::env::var_os("BMCBL_CAPTURE_MODEL_DIR")
-        .filter(|p|!p.is_empty())
-        .map(PathBuf::from)
-    {
+        .filter(|p|!p.is_empty()).map(PathBuf::from) {
         return root.join("manifest.json").is_file().then_some(root);
     }
-    // Resource packs are already scoped to the selected game installation.
-    // Probe only a few fixed relative paths; no recursive filesystem walk.
+    // Ignore exports from unrelated installed game versions. A known
+    // package root is the only installation identity available to this worker.
+    let mut matches=std::collections::BTreeSet::<PathBuf>::new();
     for package in package_roots {
         for base in package.ancestors().take(5) {
             for rel in ["BedrockSceneCapture/export","mods/BedrockSceneCapture/export",
                         "plugins/BedrockSceneCapture/export"] {
-                let exports=base.join(rel);
-                let Ok(entries)=std::fs::read_dir(exports) else {continue;};
+                let Ok(entries)=std::fs::read_dir(base.join(rel)) else {continue;};
                 for entry in entries.flatten() {
                     let dir=entry.path();
-                    if dir.is_dir() && dir.join("manifest.json").is_file()
-                        && dir.join("blocks.json").is_file() {
-                        return Some(dir);
-                    }
+                    if !dir.join("manifest.json").is_file() ||
+                       !dir.join("blocks.json").is_file() {continue;}
+                    let Some(version)=dir.file_name().and_then(|name|name.to_str()) else{continue;};
+                    let version_tag=version.strip_prefix("1.").unwrap_or(version);
+                    let selected=package.ancestors().take(5).any(|part|{
+                        let Some(folder)=part.file_name().and_then(|s|s.to_str()) else{return false;};
+                        // BMCBL version directories may be named 26.51 while the
+                        // game's full version string is 1.26.51.1.
+                        version_tag==folder || version_tag.strip_prefix(folder)
+                            .is_some_and(|tail|tail.starts_with('.'))
+                    });
+                    if selected {matches.insert(dir);}
                 }
             }
         }
     }
-    None
+    // Multiple distinct matches are ambiguous. Require explicit selection
+    // rather than rendering the wrong release's directional geometry.
+    (matches.len()==1).then(||matches.into_iter().next()).flatten()
 }
 fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBuf> {
     vanilla_resource_pack_roots_from_packages(package_roots.iter())

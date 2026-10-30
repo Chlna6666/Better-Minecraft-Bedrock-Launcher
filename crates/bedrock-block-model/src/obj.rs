@@ -492,9 +492,11 @@ impl ObjTextureResolver {
         // The capture catalog stores engine texture aliases only. Resolve
         // them against local resource packs (never a version-indexed path).
         if let Some(alias)=material_slot.as_deref()
-            .and_then(crate::decode_capture_texture_slot)
-            && let Some((pack,path))=self.texture_path_for_key(&alias) {
-            return Some(pack.resolved_texture(&self.texture_directory_name,path));
+            .and_then(crate::decode_capture_texture_slot) {
+            // An explicit capture alias must never silently fall back to the
+            // block's generic north/top texture on a missing asset.
+            return self.texture_path_for_key(&alias)
+                .map(|(pack,path)|pack.resolved_texture(&self.texture_directory_name,path));
         }
         let slot_face = material_slot
             .as_deref()

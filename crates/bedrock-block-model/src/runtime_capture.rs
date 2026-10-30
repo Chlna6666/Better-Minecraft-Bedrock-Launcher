@@ -288,6 +288,48 @@ mod tests {
         assert!(mesh_planes(&mesh,&[Some(2),None],&aliases).is_none());
     }
     #[test]
+    fn catalog_matches_exact_nbt_states_and_keeps_face_aliases(){
+        use bedrock_world::NbtWriter;
+        let dir=tempfile::tempdir().expect("temp catalog");
+        std::fs::create_dir(dir.path().join("meshes")).expect("mesh folder");
+        let NbtTag::Compound(mut root)=
+            NbtReader::new(&NbtWriter::write_root(&NbtTag::Compound(Default::default()))
+                .expect("root")).parse_root().expect("NBT") else {panic!("compound")};
+        let mut states=Default::default();
+        states.insert("weirdo_direction".into(),NbtTag::Int(2));
+        root.insert("name".into(),NbtTag::String("minecraft:oak_stairs".into()));
+        root.insert("states".into(),NbtTag::Compound(states));
+        let bytes=NbtWriter::write_root(&NbtTag::Compound(root)).expect("write block state");
+        let hex=bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let v=|x:f32,y:f32|serde_json::json!([x,y,0.,0.,0.,-1.,x,y,4294967295_u32]);
+        let mesh=serde_json::json!({"topology":"triangles","uv_space":"block_face_local",
+            "geometry_source":"registry_visual_bounds",
+            "vertices":[v(0.,0.),v(0.,1.),v(1.,1.),v(1.,0.)],
+            "indices":[0,1,2,0,2,3],"face_index_per_triangle":[2,2]});
+        let digest="b".repeat(64);
+        std::fs::write(dir.path().join("meshes").join(format!("{digest}.json")),
+            serde_json::to_vec(&mesh).expect("mesh json")).expect("mesh");
+        std::fs::write(dir.path().join("manifest.json"),
+            r#"{"registry_only":true,"target_game_version":"1.26.51.1"}"#).expect("manifest");
+        let blocks=serde_json::json!({"blocks":[{"name":"minecraft:oak_stairs",
+            "state_nbt_hex":hex,"status":"partial","geometry_context":"none",
+            "texture_bindings":[{"slot":2,"resource_alias":"grass_side"}],
+            "variants":[{"neighborhood":"registry_visual_bounds",
+                "mesh_refs":[digest],"mesh_triangle_texture_slots":[[2,2]]}]}]});
+        std::fs::write(dir.path().join("blocks.json"),
+            serde_json::to_vec(&blocks).expect("block json")).expect("blocks");
+        let catalog=RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
+        assert_eq!(catalog.state_count(),1);
+        let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
+        let shape=catalog.shape_for_state(&state).expect("exact state");
+        assert_eq!(shape.planes.len(),1);
+        assert_eq!(shape.planes[0].normal,[0,0,-1]);
+        assert_eq!(shape.planes[0].material_slot.as_deref(),
+            Some(capture_texture_slot("grass_side").as_str()));
+        assert!(catalog.shape_for_state(
+            &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",1)).is_none());
+    }
+    #[test]
     fn key_normalizes_namespace_without_erasing_state(){
         let a=BlockStateQuery::new("minecraft:cobblestone_wall")
             .with_state("minecraft:wall_connection_type_north","tall");
