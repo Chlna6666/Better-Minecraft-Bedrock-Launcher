@@ -21,8 +21,6 @@ include = [
     "src/bin/**/*.rs",
     "tests/**/*.rs",
     "generated/item_texture_map.json",
-    "generated/native/captured_detail_models.bin",
-    "generated/native_models.json",
     "generated/vanilla_models.bin",
     "generated/vanilla_models.meta.json",
 ]

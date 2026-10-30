@@ -4,7 +4,6 @@
 //! terrain texture, material instance, permutation, and geometry JSON data, then returns a
 //! `ResolvedBlockModel` suitable for a renderer or OBJ exporter to consume.
 
-mod captured_detail;
 mod error;
 mod geometry;
 mod geometry_shape;
@@ -16,7 +15,6 @@ mod java_runtime;
 mod json;
 mod material;
 mod model_family;
-mod native_models;
 mod neighbor;
 mod obj;
 mod pack;
@@ -27,10 +25,6 @@ mod runtime_capture;
 mod state;
 mod texture;
 
-pub use captured_detail::{
-    captured_block_count, captured_shape_for_block_state, captured_variant_count,
-    use_captured_models,
-};
 pub use error::{BlockModelError, Result};
 pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, GeometryUv};
 pub use geometry_shape::shape_from_geometry;
@@ -53,11 +47,6 @@ pub use model_family::{
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, canonical_block_name_for_state,
     detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
     model_family_has_detail_shape,
-};
-pub use native_models::{
-    NativeBlockModel, NativeRenderSource, native_block_count, native_block_model,
-    native_block_model_for_state, native_model_shape_for_block_state, native_models_exe_sha256,
-    native_models_version, use_java_models, use_native_models, use_occlusion_shapes,
 };
 pub use neighbor::{
     DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,
@@ -110,52 +99,12 @@ pub fn is_java_block_entity_model_block(name: &str) -> bool {
     name == "bed" || name.ends_with("_bed")
 }
 
-/// Resolves a renderer-neutral model for a Bedrock block state.
-///
-/// Vanilla detail families prefer the baked Java Edition geometry database because it contains
-/// the authoritative vanilla element layout and blockstate rotations. Bedrock-specific/custom
-/// states that do not map to Java, plus full blocks, keep the existing family implementation as a
-/// fallback. Resource-pack `minecraft:geometry` remains a higher-level resolver concern and is
-/// therefore still authoritative in BMCBL before this function is called.
+/// Procedural Bedrock-only fallback for states without resource-pack/captured geometry.
+/// These shapes are not represented as authoritative native exports. Exact per-state
+/// geometry is resolved by BlockModelRepository::captured_shape or block pack geometry.
 #[must_use]
 pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
-    // Live-captured geometry is exact for the states that were captured, so it wins over every
-    // approximation source. BMCBL_BLOCK_MODEL_SOURCE=legacy disables this path.
-    if captured_detail::use_captured_models()
-        && let Some(shape) = captured_detail::captured_shape_for_block_state(state)
-    {
-        return Some(shape);
-    }
-    // Bedrock renders signs, beds, bells, banners and lecterns from hardcoded engine geometry and
-    // the vanilla resource pack has no models for them. Java block models are the authoritative
-    // replacement, so they win over the approximation catalog and family fallbacks.
-    if is_java_block_entity_model_block(&state.name)
-        && let Some(mut shape) = java_runtime::java_model_shape_for_bedrock_state(state, 0)
-    {
-        java_runtime::apply_block_entity_material_slots(state, &mut shape);
-        return Some(shape);
-    }
-    // The embedded native catalog is generated from the game itself (blocks.json + native voxel
-    // shapes + resource-pack block models). It is consulted first so the 3D editor never needs to
-    // scan Minecraft.Windows.exe; blocks without native render geometry keep the family/Java
-    // fallback. BMCBL_BLOCK_MODEL_SOURCE=legacy disables this path.
-    if native_models::use_native_models()
-        && let Some(shape) = native_models::native_model_shape_for_block_state(state)
-    {
-        return Some(shape);
-    }
-    // Java Edition models are opt-in only: the default stack is native catalog first, then the
-    // Bedrock family shapes (BMCBL_BLOCK_MODEL_SOURCE=java/legacy restores the old Java-first path).
-    let mut shape = if native_models::use_java_models()
-        && model_family::model_family_has_detail_shape(&state.name)
-    {
-        java_runtime::java_model_shape_for_bedrock_state(state, 0)
-    } else {
-        None
-    }
-    .or_else(|| model_family::model_shape_for_block_state(state))?;
-    // Double plants split into per-half textures in Bedrock blocks.json; apply the slot mapping
-    // to the Java shape and to the family fallback alike.
-    java_runtime::apply_double_plant_material_slots(state, &mut shape);
+    let mut shape=model_family::model_shape_for_block_state(state)?;
+    java_runtime::apply_double_plant_material_slots(state,&mut shape);
     Some(shape)
 }
