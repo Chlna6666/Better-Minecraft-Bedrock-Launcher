@@ -617,6 +617,15 @@ impl ManagePageView {
                             },
                         );
                         this._subscriptions.push(subscription);
+                        // The editor state is data, so its viewport changes must invalidate this view.
+                        let repaint_subscription = cx.observe(&json_editor, |this, editor, cx| {
+                            if this.level_dat_editor.as_ref().is_some_and(|current| {
+                                current.json_editor.entity_id() == editor.entity_id()
+                            }) {
+                                cx.notify();
+                            }
+                        });
+                        this._subscriptions.push(repaint_subscription);
                         this.level_dat_editor = Some(level_dat_editor::LevelDatEditorModalState {
                             version,
                             asset,

@@ -4,11 +4,13 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
-    Point, ScrollWheelEvent, ShapedLine, SharedString, Size, Style, Styled, TextRun,
-    UnderlineStyle, Utf16Selection, Window, actions, black, div, fill, hsla, point, px, relative,
-    size,
+    Point, ScrollWheelEvent, ShapedLine, SharedString, Size, StatefulInteractiveElement as _,
+    Style, Styled, TextRun, UnderlineStyle, Utf16Selection, Window, actions, black, div, fill,
+    hsla, point, px, relative, size,
 };
+use std::collections::BinaryHeap;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -22,6 +24,7 @@ const CURSOR_BLINK_PERIOD: Duration = Duration::from_millis(1000);
 const CURSOR_VISIBLE_WINDOW: Duration = Duration::from_millis(530);
 const MAX_EDIT_HISTORY: usize = 128;
 const FOLD_MARKER_WIDTH: f32 = 14.0;
+const FOLD_NUMBER_GAP: f32 = 8.0;
 const SCROLLBAR_THICKNESS: f32 = 10.0;
 const SCROLLBAR_MARGIN: f32 = 4.0;
 const SCROLLBAR_MIN_THUMB: f32 = 36.0;
@@ -152,9 +155,10 @@ pub struct CodeEditorState {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_bounds: Option<Bounds<Pixels>>,
-    last_line_ranges: Vec<LineRange>,
-    last_visual_lines: Vec<VisualLine>,
-    last_line_layouts: Vec<ShapedLine>,
+    last_line_ranges: Arc<Vec<LineRange>>,
+    last_visual_lines: Arc<Vec<VisualLine>>,
+    last_line_layouts: Arc<Vec<ShapedLine>>,
+    last_diagnostic_ranges: Arc<Vec<DiagnosticRange>>,
     layout_revision: u64,
     last_layout_revision: u64,
     last_layout_colors: Option<ThemeColors>,
@@ -175,6 +179,7 @@ pub struct CodeEditorState {
     scrollbar_visible_until: Option<Instant>,
     scrollbar_drag: Option<ScrollbarDrag>,
     mouse_over: bool,
+    hovered_gutter_line: Option<usize>,
 }
 
 impl EventEmitter<CodeEditorEvent> for CodeEditorState {}
@@ -218,9 +223,10 @@ impl CodeEditorState {
             selection_reversed: false,
             marked_range: None,
             last_bounds: None,
-            last_line_ranges: Vec::new(),
-            last_visual_lines: Vec::new(),
-            last_line_layouts: Vec::new(),
+            last_line_ranges: Arc::new(Vec::new()),
+            last_visual_lines: Arc::new(Vec::new()),
+            last_line_layouts: Arc::new(Vec::new()),
+            last_diagnostic_ranges: Arc::new(Vec::new()),
             layout_revision: 1,
             last_layout_revision: 0,
             last_layout_colors: None,
@@ -241,6 +247,7 @@ impl CodeEditorState {
             scrollbar_visible_until: None,
             scrollbar_drag: None,
             mouse_over: false,
+            hovered_gutter_line: None,
         }
     }
 
@@ -398,15 +405,16 @@ impl CodeEditorState {
         let mut target_x = current_offset.x;
         let mut target_y = current_offset.y;
         let max_offset = self.max_scroll_offset();
-        let horizontal_padding = px(36.0);
+        let text_left = self.last_gutter_width + px(GUTTER_GAP + HORIZONTAL_PADDING);
         let vertical_padding = px(28.0);
         let cursor_right = cursor_position.x + px(2.0);
         let cursor_bottom = cursor_position.y + self.last_line_height;
 
-        if cursor_position.x < target_x + horizontal_padding {
-            target_x = (cursor_position.x - horizontal_padding).max(px(0.0));
-        } else if cursor_right > target_x + viewport.width - horizontal_padding {
-            target_x = (cursor_right - viewport.width + horizontal_padding).max(px(0.0));
+        let revealed_x = reveal_cursor_left(cursor_position.x, target_x, text_left);
+        if revealed_x != target_x {
+            target_x = revealed_x;
+        } else if cursor_right > target_x + viewport.width - px(36.0) {
+            target_x = (cursor_right - viewport.width + px(36.0)).max(px(0.0));
         }
 
         if cursor_position.y < target_y + vertical_padding {
@@ -935,6 +943,7 @@ impl CodeEditorState {
         }
         self.is_selecting = true;
         if self.toggle_fold_for_mouse_position(event.position, cx) {
+            self.is_selecting = false;
             cx.stop_propagation();
             return;
         }
@@ -956,6 +965,23 @@ impl CodeEditorState {
         self.mouse_over = self
             .last_bounds
             .is_some_and(|bounds| bounds.contains(&event.position));
+        let hovered_gutter_line = self.last_bounds.and_then(|bounds| {
+            if !bounds.contains(&event.position)
+                || event.position.x
+                    >= bounds.left() + self.last_gutter_width + px(HORIZONTAL_PADDING)
+            {
+                return None;
+            }
+            let line_y =
+                event.position.y - bounds.top() + self.scroll_offset.y - px(VERTICAL_PADDING);
+            (line_y >= px(0.0))
+                .then(|| (line_y / self.last_line_height) as usize)
+                .filter(|line| *line < self.last_visual_lines.len())
+        });
+        if self.hovered_gutter_line != hovered_gutter_line {
+            self.hovered_gutter_line = hovered_gutter_line;
+            cx.notify();
+        }
         let release = release_stale_code_editor_pointer_interaction(
             &mut self.is_selecting,
             &mut self.scrollbar_drag,
@@ -986,13 +1012,15 @@ impl CodeEditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.is_selecting && self.scrollbar_drag.is_none() {
+            return;
+        }
         self.is_selecting = false;
         if self.scrollbar_drag.take().is_some() {
             self.show_scrollbars();
             cx.notify();
         }
         cx.emit(CodeEditorEvent::PointerInteractionEnded);
-        cx.stop_propagation();
     }
 
     fn handle_scroll_wheel(
@@ -1160,31 +1188,28 @@ impl CodeEditorState {
         let Some(bounds) = self.last_bounds else {
             return false;
         };
-        let local_x = position.x - bounds.left();
-        if local_x
-            > self
-                .last_gutter_width
-                .min(px(FOLD_MARKER_WIDTH + HORIZONTAL_PADDING))
-        {
-            return false;
-        }
-
         let local_y = position.y - bounds.top() + self.scroll_offset.y;
         let content_y = (local_y - px(VERTICAL_PADDING)).max(px(0.0));
         let line_index =
-            ((content_y / self.last_line_height) as usize).min(self.last_line_ranges.len());
-        let Some(line) = self.last_line_ranges.get(line_index).copied() else {
+            ((content_y / self.last_line_height) as usize).min(self.last_visual_lines.len());
+        let Some(visual_line) = self.last_visual_lines.get(line_index).copied() else {
             return false;
         };
-        let full_lines = collect_line_ranges(self.value.as_ref());
-        let source_line = line_index_for_offset(&full_lines, line.start);
-        let regions = collect_fold_regions(self.value.as_ref(), &full_lines);
-        if !regions
-            .iter()
-            .any(|region| region.start_line == source_line && region.end_line > source_line)
+        let line_top =
+            bounds.top() + px(VERTICAL_PADDING) + self.last_line_height * line_index as f32
+                - self.scroll_offset.y;
+        if !visual_line.foldable
+            || !fold_marker_bounds(
+                bounds,
+                self.last_gutter_width,
+                line_top,
+                self.last_line_height,
+            )
+            .contains(&position)
         {
             return false;
         }
+        let source_line = visual_line.source_line;
 
         if let Some(index) = self
             .collapsed_lines
@@ -1348,10 +1373,12 @@ struct PrepaintState {
     divider: Option<PaintQuad>,
     gutter_width: Pixels,
     line_height: Pixels,
-    line_ranges: Vec<LineRange>,
-    visual_lines: Vec<VisualLine>,
-    line_layouts: Vec<ShapedLine>,
+    line_ranges: Arc<Vec<LineRange>>,
+    visual_lines: Arc<Vec<VisualLine>>,
+    line_layouts: Arc<Vec<ShapedLine>>,
+    diagnostic_ranges: Arc<Vec<DiagnosticRange>>,
     line_numbers: Vec<(usize, ShapedLine)>,
+    fold_markers: Vec<(usize, ShapedLine)>,
     visible_lines: Range<usize>,
     layout_revision: u64,
     layout_colors: ThemeColors,
@@ -1361,10 +1388,10 @@ struct PrepaintState {
 }
 
 struct EditorLayoutSnapshot {
-    line_ranges: Vec<LineRange>,
-    visual_lines: Vec<VisualLine>,
-    line_layouts: Vec<ShapedLine>,
-    diagnostic_ranges: Vec<DiagnosticRange>,
+    line_ranges: Arc<Vec<LineRange>>,
+    visual_lines: Arc<Vec<VisualLine>>,
+    line_layouts: Arc<Vec<ShapedLine>>,
+    diagnostic_ranges: Arc<Vec<DiagnosticRange>>,
     gutter_width: Pixels,
     line_height: Pixels,
     content_width: Pixels,
@@ -1374,10 +1401,10 @@ struct EditorLayoutSnapshot {
 impl Default for EditorLayoutSnapshot {
     fn default() -> Self {
         Self {
-            line_ranges: Vec::new(),
-            visual_lines: Vec::new(),
-            line_layouts: Vec::new(),
-            diagnostic_ranges: Vec::new(),
+            line_ranges: Arc::new(Vec::new()),
+            visual_lines: Arc::new(Vec::new()),
+            line_layouts: Arc::new(Vec::new()),
+            diagnostic_ranges: Arc::new(Vec::new()),
             gutter_width: px(0.0),
             line_height: px(0.0),
             content_width: px(0.0),
@@ -1492,6 +1519,7 @@ impl Element for EditorElement {
         ));
 
         let mut line_numbers = Vec::with_capacity(visible_lines.len());
+        let mut fold_markers = Vec::new();
         let mut selection = Vec::new();
         let mut diagnostics = Vec::new();
         let cursor_line = line_index_for_offset(&line_ranges, editor.cursor_offset());
@@ -1528,7 +1556,7 @@ impl Element for EditorElement {
                 }
             }
 
-            for diagnostic in &diagnostic_ranges {
+            for diagnostic in diagnostic_ranges.iter() {
                 let overlap_start = diagnostic.start.max(line.start);
                 let overlap_end = diagnostic.end.min(line.end);
                 if overlap_start >= overlap_end {
@@ -1553,22 +1581,14 @@ impl Element for EditorElement {
                 ));
             }
 
-            let marker = if visual_line.folded {
-                "▸ "
-            } else if visual_line.foldable {
-                "⌄ "
-            } else {
-                ""
-            };
-            let number_text =
-                SharedString::from(format!("{}{}", marker, visual_line.source_line + 1));
+            let number_text = SharedString::from((visual_line.source_line + 1).to_string());
             line_numbers.push((
                 index,
                 window.text_system().shape_line(
                     number_text,
                     font_size,
                     &[TextRun {
-                        len: marker.len() + (visual_line.source_line + 1).to_string().len(),
+                        len: (visual_line.source_line + 1).to_string().len(),
                         font: text_style.font(),
                         color: if index == cursor_line {
                             self.colors.text_primary
@@ -1584,6 +1604,33 @@ impl Element for EditorElement {
                     None,
                 ),
             ));
+            if visual_line.foldable
+                && (editor.hovered_gutter_line == Some(index) || visual_line.folded)
+            {
+                let marker = if visual_line.folded { "▸" } else { "⌄" };
+                fold_markers.push((
+                    index,
+                    window.text_system().shape_line(
+                        SharedString::from(marker),
+                        font_size,
+                        &[TextRun {
+                            len: marker.len(),
+                            font: text_style.font(),
+                            color: if visual_line.folded {
+                                self.colors.accent
+                            } else {
+                                self.colors.text_muted
+                            },
+                            background_color: None,
+                            background_corner_radius: None,
+                            background_padding: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    ),
+                ));
+            }
         }
 
         let current_line = Some(fill(
@@ -1628,7 +1675,9 @@ impl Element for EditorElement {
             line_ranges,
             visual_lines,
             line_layouts,
+            diagnostic_ranges,
             line_numbers,
+            fold_markers,
             visible_lines,
             layout_revision: editor.layout_revision,
             layout_colors: self.colors,
@@ -1665,10 +1714,37 @@ impl Element for EditorElement {
         let content_x =
             bounds.left() + prepaint.gutter_width + px(GUTTER_GAP) + px(HORIZONTAL_PADDING)
                 - self.editor.read(cx).scroll_offset.x;
-        let content_y = bounds.top() + px(VERTICAL_PADDING) - self.editor.read(cx).scroll_offset.y;
-        let number_x = bounds.left() + prepaint.gutter_width - px(HORIZONTAL_PADDING * 0.5);
+        let scroll_y = self.editor.read(cx).scroll_offset.y;
+        let content_y = bounds.top() + px(VERTICAL_PADDING) - scroll_y;
+        let number_x = line_number_right(bounds, prepaint.gutter_width);
 
+        let text_bounds = editor_text_bounds(bounds, prepaint.gutter_width);
         window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
+            for (index, number) in &prepaint.line_numbers {
+                let origin_y = content_y + prepaint.line_height * *index as f32;
+                let _ = number.paint(
+                    point(number_x - number.width, origin_y),
+                    prepaint.line_height,
+                    window,
+                    cx,
+                );
+            }
+            for (index, marker) in &prepaint.fold_markers {
+                let marker_bounds = fold_marker_bounds(
+                    bounds,
+                    prepaint.gutter_width,
+                    content_y + prepaint.line_height * *index as f32,
+                    prepaint.line_height,
+                );
+                let _ = marker.paint(
+                    point(marker_bounds.left() + px(4.0), marker_bounds.top()),
+                    prepaint.line_height,
+                    window,
+                    cx,
+                );
+            }
+        });
+        window.with_content_mask(Some(ContentMask::new(text_bounds)), |window| {
             if let Some(current_line) = prepaint.current_line.take() {
                 window.paint_quad(current_line);
             }
@@ -1685,18 +1761,6 @@ impl Element for EditorElement {
                 let layout = &prepaint.line_layouts[index];
                 let origin_y = content_y + prepaint.line_height * index as f32;
                 let _ = layout.paint(point(content_x, origin_y), prepaint.line_height, window, cx);
-                if let Some((_, number)) = prepaint
-                    .line_numbers
-                    .iter()
-                    .find(|(line_index, _)| *line_index == index)
-                {
-                    let _ = number.paint(
-                        point(number_x - number.width, origin_y),
-                        prepaint.line_height,
-                        window,
-                        cx,
-                    );
-                }
             }
 
             if let Some(cursor) = prepaint.cursor.take() {
@@ -1706,15 +1770,12 @@ impl Element for EditorElement {
 
         self.paint_scrollbars(bounds, window, cx);
 
-        let line_ranges = std::mem::take(&mut prepaint.line_ranges);
-        let visual_lines = std::mem::take(&mut prepaint.visual_lines);
-        let line_layouts = std::mem::take(&mut prepaint.line_layouts);
-
         self.editor.update(cx, |editor, _cx| {
             editor.last_bounds = Some(bounds);
-            editor.last_line_ranges = line_ranges;
-            editor.last_visual_lines = visual_lines;
-            editor.last_line_layouts = line_layouts;
+            editor.last_line_ranges = prepaint.line_ranges.clone();
+            editor.last_visual_lines = prepaint.visual_lines.clone();
+            editor.last_line_layouts = prepaint.line_layouts.clone();
+            editor.last_diagnostic_ranges = prepaint.diagnostic_ranges.clone();
             editor.last_layout_revision = prepaint.layout_revision;
             editor.last_layout_colors = Some(prepaint.layout_colors);
             editor.last_layout_font = Some(prepaint.layout_font.clone());
@@ -1791,11 +1852,24 @@ impl gpui::RenderOnce for CodeEditor {
         let state_for_mouse_up = self.state.clone();
         let state_for_mouse_up_out = self.state.clone();
         let state_for_scroll = self.state.clone();
+        let state_for_hover = self.state.clone();
 
         self.base
+            .id(("code-editor", self.state.entity_id()))
             .key_context("CodeEditor")
             .track_focus(&focus_handle)
             .cursor(CursorStyle::IBeam)
+            .on_hover(move |hovered, _window, cx| {
+                if !*hovered {
+                    state_for_hover.update(cx, |editor, cx| {
+                        if editor.hovered_gutter_line.is_some() || editor.mouse_over {
+                            editor.hovered_gutter_line = None;
+                            editor.mouse_over = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .on_action({
                 let state = self.state.clone();
                 move |_: &EditorBackspace, _window, cx| {
@@ -1998,11 +2072,7 @@ fn build_layout_snapshot(
             line_ranges: editor.last_line_ranges.clone(),
             visual_lines: editor.last_visual_lines.clone(),
             line_layouts: editor.last_line_layouts.clone(),
-            diagnostic_ranges: format_diagnostics(
-                editor.value.as_ref(),
-                editor.language,
-                &syntax_palette(colors),
-            ),
+            diagnostic_ranges: editor.last_diagnostic_ranges.clone(),
             gutter_width: editor.last_gutter_width,
             line_height,
             content_width: editor.last_content_width,
@@ -2010,7 +2080,8 @@ fn build_layout_snapshot(
         };
     }
     let all_line_ranges = collect_line_ranges(editor.value.as_ref());
-    let fold_regions = collect_fold_regions(editor.value.as_ref(), &all_line_ranges);
+    let fold_regions =
+        collect_fold_regions(editor.value.as_ref(), &all_line_ranges, editor.language);
     let visual_lines =
         collect_visual_lines(&all_line_ranges, &fold_regions, &editor.collapsed_lines);
     let line_ranges = visual_lines
@@ -2019,16 +2090,31 @@ fn build_layout_snapshot(
         .collect::<Vec<_>>();
     let line_count = line_ranges.len().max(1);
     let digits = all_line_ranges.len().to_string().len().max(2);
-    let gutter_width =
-        px(18.0 + FOLD_MARKER_WIDTH + digits as f32 * MONO_ADVANCE_PX + HORIZONTAL_PADDING);
+    let gutter_width = px(18.0
+        + FOLD_MARKER_WIDTH
+        + FOLD_NUMBER_GAP
+        + digits as f32 * MONO_ADVANCE_PX
+        + HORIZONTAL_PADDING);
     let palette = syntax_palette(colors);
     let highlights = code_highlights(editor.value.as_ref(), editor.language, &palette);
     let diagnostic_ranges = format_diagnostics(editor.value.as_ref(), editor.language, &palette);
+    let mut next_highlight = 0;
+    let mut line_highlights = Vec::new();
     let line_layouts = line_ranges
         .iter()
         .zip(visual_lines.iter())
         .map(|line| {
             let (line, visual_line) = line;
+            line_highlights.retain(|highlight: &HighlightRange| highlight.end > line.start);
+            while let Some(highlight) = highlights.get(next_highlight).copied() {
+                if highlight.start >= line.end {
+                    break;
+                }
+                if highlight.end > line.start {
+                    line_highlights.push(highlight);
+                }
+                next_highlight += 1;
+            }
             let mut line_string = editor.value[line.start..line.end].to_string();
             if visual_line.folded {
                 line_string.push_str("  ...");
@@ -2038,7 +2124,7 @@ fn build_layout_snapshot(
                 &line_text,
                 line.start,
                 editor.marked_range.as_ref(),
-                &highlights,
+                &line_highlights,
                 font.clone(),
                 text_style.color,
             );
@@ -2054,10 +2140,10 @@ fn build_layout_snapshot(
         .unwrap_or(px(0.0));
 
     EditorLayoutSnapshot {
-        line_ranges,
-        visual_lines,
-        line_layouts,
-        diagnostic_ranges,
+        line_ranges: Arc::new(line_ranges),
+        visual_lines: Arc::new(visual_lines),
+        line_layouts: Arc::new(line_layouts),
+        diagnostic_ranges: Arc::new(diagnostic_ranges),
         gutter_width,
         line_height,
         content_width: (widest_line_width
@@ -2133,6 +2219,41 @@ fn clamp_scroll_offset(
     )
 }
 
+fn reveal_cursor_left(cursor_x: Pixels, scroll_x: Pixels, text_left: Pixels) -> Pixels {
+    if cursor_x < scroll_x + text_left {
+        (cursor_x - text_left).max(px(0.0))
+    } else {
+        scroll_x
+    }
+}
+
+fn editor_text_bounds(bounds: Bounds<Pixels>, gutter_width: Pixels) -> Bounds<Pixels> {
+    let left = bounds.left() + gutter_width + px(HORIZONTAL_PADDING);
+    Bounds::new(
+        point(left, bounds.top()),
+        size((bounds.right() - left).max(px(0.0)), bounds.size.height),
+    )
+}
+
+fn fold_marker_bounds(
+    bounds: Bounds<Pixels>,
+    gutter_width: Pixels,
+    line_top: Pixels,
+    line_height: Pixels,
+) -> Bounds<Pixels> {
+    Bounds::new(
+        point(
+            bounds.left() + gutter_width - px(FOLD_MARKER_WIDTH + 4.0),
+            line_top,
+        ),
+        size(px(FOLD_MARKER_WIDTH + 8.0), line_height),
+    )
+}
+
+fn line_number_right(bounds: Bounds<Pixels>, gutter_width: Pixels) -> Pixels {
+    bounds.left() + gutter_width - px(FOLD_MARKER_WIDTH + 4.0 + FOLD_NUMBER_GAP)
+}
+
 fn visible_line_range(
     scroll_y: Pixels,
     viewport_height: Pixels,
@@ -2182,15 +2303,22 @@ fn collect_visual_lines(
 ) -> Vec<VisualLine> {
     let mut visual_lines = Vec::with_capacity(line_ranges.len());
     let mut index = 0;
+    let mut region_index = 0;
     while index < line_ranges.len() {
-        let folded_region = fold_regions
-            .iter()
-            .find(|region| region.start_line == index && collapsed_lines.contains(&index));
-        let foldable = fold_regions.iter().any(|region| region.start_line == index);
+        while fold_regions
+            .get(region_index)
+            .is_some_and(|region| region.start_line < index)
+        {
+            region_index += 1;
+        }
+        let region = fold_regions
+            .get(region_index)
+            .filter(|region| region.start_line == index);
+        let folded_region = region.filter(|_| collapsed_lines.binary_search(&index).is_ok());
         visual_lines.push(VisualLine {
             range: line_ranges[index],
             source_line: index,
-            foldable,
+            foldable: region.is_some(),
             folded: folded_region.is_some(),
         });
         if let Some(region) = folded_region {
@@ -2202,50 +2330,60 @@ fn collect_visual_lines(
     visual_lines
 }
 
-fn collect_fold_regions(text: &str, line_ranges: &[LineRange]) -> Vec<FoldRegion> {
+fn collect_fold_regions(
+    text: &str,
+    line_ranges: &[LineRange],
+    language: CodeEditorLanguage,
+) -> Vec<FoldRegion> {
     let mut stack: Vec<(char, usize)> = Vec::new();
     let mut regions = Vec::new();
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, character) in text.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_string = false;
-            }
+    let generic = resolved_language(text, language) == CodeEditorLanguage::GenericCode;
+    let mut offset = 0;
+    while offset < text.len() {
+        if generic && text[offset..].starts_with("//") {
+            offset = text[offset..]
+                .find('\n')
+                .map_or(text.len(), |end| offset + end);
             continue;
         }
-
+        if generic && text[offset..].starts_with("/*") {
+            offset = text[offset + 2..]
+                .find("*/")
+                .map_or(text.len(), |end| offset + end + 4);
+            continue;
+        }
+        let Some(character) = text[offset..].chars().next() else {
+            break;
+        };
         if character == '"' {
-            in_string = true;
+            offset = string_end(text, offset).unwrap_or(text.len());
             continue;
         }
-
         if matches!(character, '{' | '[' | '(') {
             stack.push((character, offset));
         } else if matches!(character, '}' | ']' | ')') {
-            let Some((open, open_offset)) = stack.pop() else {
-                continue;
-            };
-            if !brackets_match(open, character) {
-                continue;
-            }
-            let start_line = line_index_for_offset(line_ranges, open_offset);
-            let end_line = line_index_for_offset(line_ranges, offset);
-            if end_line > start_line {
-                regions.push(FoldRegion {
-                    start_line,
-                    end_line,
-                });
+            if let Some(&(open, open_offset)) = stack.last()
+                && brackets_match(open, character)
+            {
+                stack.pop();
+                let start_line = line_index_for_offset(line_ranges, open_offset);
+                let end_line = line_index_for_offset(line_ranges, offset);
+                if end_line > start_line {
+                    regions.push(FoldRegion {
+                        start_line,
+                        end_line,
+                    });
+                }
             }
         }
+        offset += character.len_utf8();
     }
 
-    regions.sort_by_key(|region| (region.start_line, region.end_line));
+    regions.sort_by(|left, right| {
+        left.start_line
+            .cmp(&right.start_line)
+            .then_with(|| right.end_line.cmp(&left.end_line))
+    });
     regions
 }
 
@@ -2256,7 +2394,7 @@ fn brackets_match(open: char, close: char) -> bool {
 fn syntax_palette(colors: &ThemeColors) -> SyntaxPalette {
     if colors.bg.l < 0.5 {
         SyntaxPalette {
-            key: colors.accent,
+            key: hsla(0.56, 0.78, 0.72, 1.0),
             string: colors.badge_stable_text,
             number: colors.badge_beta_text,
             keyword: hsla(colors.accent.h + 0.16, 0.68, 0.74, 1.0),
@@ -2267,7 +2405,7 @@ fn syntax_palette(colors: &ThemeColors) -> SyntaxPalette {
         }
     } else {
         SyntaxPalette {
-            key: hsla(colors.accent.h, 0.72, 0.46, 1.0),
+            key: hsla(0.58, 0.72, 0.42, 1.0),
             string: hsla(colors.stat_green_text.h, 0.56, 0.36, 1.0),
             number: hsla(colors.stat_orange_text.h, 0.78, 0.46, 1.0),
             keyword: hsla(colors.accent.h + 0.18, 0.58, 0.52, 1.0),
@@ -2284,43 +2422,72 @@ fn code_highlights(
     language: CodeEditorLanguage,
     palette: &SyntaxPalette,
 ) -> Vec<HighlightRange> {
-    let language = match language {
-        CodeEditorLanguage::Auto if looks_like_json(text) => CodeEditorLanguage::JsonNbt,
-        CodeEditorLanguage::Auto => CodeEditorLanguage::GenericCode,
-        language => language,
-    };
-    let mut ranges = match language {
-        CodeEditorLanguage::JsonNbt => json_nbt_highlights(text, palette),
+    let mut ranges = match resolved_language(text, language) {
+        CodeEditorLanguage::JsonNbt => syntax_highlights(text, true, false, palette),
         CodeEditorLanguage::GenericCode | CodeEditorLanguage::Auto => {
-            generic_code_highlights(text, palette)
+            syntax_highlights(text, false, true, palette)
         }
     };
     ranges.sort_by_key(|range| (range.start, range.end));
     ranges
 }
 
+fn resolved_language(text: &str, language: CodeEditorLanguage) -> CodeEditorLanguage {
+    match language {
+        CodeEditorLanguage::Auto if looks_like_json(text) => CodeEditorLanguage::JsonNbt,
+        CodeEditorLanguage::Auto => CodeEditorLanguage::GenericCode,
+        language => language,
+    }
+}
+
 fn looks_like_json(text: &str) -> bool {
-    text.trim_start()
-        .chars()
-        .next()
-        .is_some_and(|character| matches!(character, '{' | '['))
+    let trimmed = text.trim_start();
+    if let Some(rest) = trimmed.strip_prefix('{') {
+        return matches!(rest.trim_start().chars().next(), None | Some('"' | '}'));
+    }
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        return matches!(
+            rest.trim_start().chars().next(),
+            None | Some(']' | '{' | '[' | '"' | '-' | '0'..='9' | 't' | 'f' | 'n')
+        );
+    }
+    false
 }
 
-fn json_nbt_highlights(text: &str, palette: &SyntaxPalette) -> Vec<HighlightRange> {
-    syntax_highlights(text, true, palette)
-}
-
-fn generic_code_highlights(text: &str, palette: &SyntaxPalette) -> Vec<HighlightRange> {
-    let mut ranges = syntax_highlights(text, false, palette);
-    ranges.extend(comment_highlights(text, palette));
-    ranges
-}
-
-fn syntax_highlights(text: &str, json_keys: bool, palette: &SyntaxPalette) -> Vec<HighlightRange> {
+fn syntax_highlights(
+    text: &str,
+    json_keys: bool,
+    comments: bool,
+    palette: &SyntaxPalette,
+) -> Vec<HighlightRange> {
     let mut ranges = Vec::new();
     let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
+        if comments && text[index..].starts_with("//") {
+            let end = text[index..]
+                .find('\n')
+                .map_or(text.len(), |offset| index + offset);
+            ranges.push(HighlightRange {
+                start: index,
+                end,
+                color: palette.comment,
+            });
+            index = end;
+            continue;
+        }
+        if comments && text[index..].starts_with("/*") {
+            let end = text[index + 2..]
+                .find("*/")
+                .map_or(text.len(), |offset| index + offset + 4);
+            ranges.push(HighlightRange {
+                start: index,
+                end,
+                color: palette.comment,
+            });
+            index = end;
+            continue;
+        }
         let Some(character) = text[index..].chars().next() else {
             break;
         };
@@ -2422,68 +2589,6 @@ fn syntax_highlights(text: &str, json_keys: bool, palette: &SyntaxPalette) -> Ve
     ranges
 }
 
-fn comment_highlights(text: &str, palette: &SyntaxPalette) -> Vec<HighlightRange> {
-    let mut ranges = Vec::new();
-    let mut index = 0;
-    let bytes = text.as_bytes();
-    let mut in_string = false;
-    let mut escaped = false;
-
-    while index < bytes.len() {
-        let Some(character) = text[index..].chars().next() else {
-            break;
-        };
-
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_string = false;
-            }
-            index += character.len_utf8();
-            continue;
-        }
-
-        if character == '"' {
-            in_string = true;
-            index += character.len_utf8();
-            continue;
-        }
-
-        if text[index..].starts_with("//") {
-            let end = text[index..]
-                .find('\n')
-                .map_or(text.len(), |offset| index + offset);
-            ranges.push(HighlightRange {
-                start: index,
-                end,
-                color: palette.comment,
-            });
-            index = end;
-            continue;
-        }
-
-        if text[index..].starts_with("/*") {
-            let end = text[index + 2..]
-                .find("*/")
-                .map_or(text.len(), |offset| index + 2 + offset + 2);
-            ranges.push(HighlightRange {
-                start: index,
-                end,
-                color: palette.comment,
-            });
-            index = end;
-            continue;
-        }
-
-        index += character.len_utf8();
-    }
-
-    ranges
-}
-
 fn format_diagnostics(
     text: &str,
     language: CodeEditorLanguage,
@@ -2491,45 +2596,49 @@ fn format_diagnostics(
 ) -> Vec<DiagnosticRange> {
     let mut ranges = Vec::new();
     let mut stack: Vec<(char, usize)> = Vec::new();
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut string_start = 0;
-
-    for (offset, character) in text.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_string = false;
-            }
+    let language = resolved_language(text, language);
+    let generic = language == CodeEditorLanguage::GenericCode;
+    let mut offset = 0;
+    while offset < text.len() {
+        if generic && text[offset..].starts_with("//") {
+            offset = text[offset..]
+                .find('\n')
+                .map_or(text.len(), |end| offset + end);
             continue;
         }
-
+        if generic && text[offset..].starts_with("/*") {
+            offset = text[offset + 2..]
+                .find("*/")
+                .map_or(text.len(), |end| offset + end + 4);
+            continue;
+        }
+        let Some(character) = text[offset..].chars().next() else {
+            break;
+        };
         if character == '"' {
-            in_string = true;
-            string_start = offset;
+            if let Some(end) = string_end(text, offset) {
+                offset = end;
+                continue;
+            }
+            ranges.push(diagnostic_range(offset, text.len(), palette));
+            break;
         } else if matches!(character, '{' | '[' | '(') {
             stack.push((character, offset));
         } else if matches!(character, '}' | ']' | ')') {
-            match stack.pop() {
-                Some((open, _)) if brackets_match(open, character) => {}
-                Some((_, open_offset)) => {
-                    ranges.push(diagnostic_range(open_offset, open_offset + 1, palette));
-                    ranges.push(diagnostic_range(
-                        offset,
-                        offset + character.len_utf8(),
-                        palette,
-                    ));
-                }
-                None => ranges.push(diagnostic_range(
+            if stack
+                .last()
+                .is_some_and(|(open, _)| brackets_match(*open, character))
+            {
+                stack.pop();
+            } else {
+                ranges.push(diagnostic_range(
                     offset,
                     offset + character.len_utf8(),
                     palette,
-                )),
+                ));
             }
         }
+        offset += character.len_utf8();
     }
 
     if language == CodeEditorLanguage::JsonNbt && !text.trim().is_empty() {
@@ -2539,13 +2648,6 @@ fn format_diagnostics(
         }
     }
 
-    if in_string {
-        ranges.push(diagnostic_range(
-            string_start,
-            text.len().max(string_start + 1),
-            palette,
-        ));
-    }
     for (_, offset) in stack {
         ranges.push(diagnostic_range(offset, offset + 1, palette));
     }
@@ -2585,16 +2687,29 @@ fn next_non_whitespace(text: &str, start: usize) -> Option<char> {
 }
 
 fn number_end(text: &str, start: usize) -> usize {
-    let mut end = start;
-    for (offset, character) in text[start..].char_indices() {
-        if offset == 0 && character == '-' {
-            end = start + character.len_utf8();
-            continue;
+    let bytes = text.as_bytes();
+    let mut end = start + usize::from(bytes[start] == b'-');
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end + 1 < bytes.len() && bytes[end] == b'.' && bytes[end + 1].is_ascii_digit() {
+        end += 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
         }
-        if character.is_ascii_digit() || matches!(character, '.' | 'e' | 'E' | '+' | '-') {
-            end = start + offset + character.len_utf8();
-        } else {
-            break;
+    }
+    if end < bytes.len() && matches!(bytes[end], b'e' | b'E') {
+        let exponent_start = end;
+        end += 1;
+        if end < bytes.len() && matches!(bytes[end], b'+' | b'-') {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == digits_start {
+            end = exponent_start;
         }
     }
     end
@@ -2664,24 +2779,33 @@ fn line_runs(
     boundaries.sort_unstable();
     boundaries.dedup();
 
-    if boundaries.len() <= 2 {
-        return vec![TextRun {
-            font: base_run.font.clone(),
-            ..base_run
-        }];
+    if line_text.is_empty() {
+        return vec![base_run];
     }
 
     let mut runs = Vec::new();
+    let mut active_highlights = BinaryHeap::new();
+    let mut next_highlight = 0;
     for range in boundaries.windows(2) {
         let start = range[0];
         let end = range[1];
         if start == end {
             continue;
         }
-        let highlight = highlights
-            .iter()
-            .rev()
-            .find(|highlight| highlight.start <= start && highlight.end >= end);
+        while highlights
+            .get(next_highlight)
+            .is_some_and(|highlight| highlight.start <= start)
+        {
+            active_highlights.push(next_highlight);
+            next_highlight += 1;
+        }
+        while active_highlights
+            .peek()
+            .is_some_and(|index| highlights[*index].end <= start)
+        {
+            active_highlights.pop();
+        }
+        let highlight = active_highlights.peek().map(|index| &highlights[*index]);
         let marked = marked_range
             .is_some_and(|marked_range| marked_range.start <= start && marked_range.end >= end);
         runs.push(TextRun {
@@ -2728,6 +2852,93 @@ mod tests {
                 .iter()
                 .any(|range| &text[range.start..range.end] == "3")
         );
+    }
+
+    #[test]
+    fn auto_language_distinguishes_json_from_code_blocks() {
+        assert_eq!(
+            resolved_language(" {\n  \"name\": 1\n}", CodeEditorLanguage::Auto),
+            CodeEditorLanguage::JsonNbt
+        );
+        assert_eq!(
+            resolved_language("{\n  let value = 1;\n}", CodeEditorLanguage::Auto),
+            CodeEditorLanguage::GenericCode
+        );
+    }
+
+    #[test]
+    fn comments_keep_their_color_and_do_not_create_folds() {
+        let text = "// fn hidden() {\nfn visible() {\n  /* } */\n}\n";
+        let palette = syntax_palette(&crate::ui::theme::colors::LightColors::colors());
+        let highlights = code_highlights(text, CodeEditorLanguage::GenericCode, &palette);
+        assert_eq!(highlights[0].color, palette.comment);
+        assert!(!highlights.iter().any(|range| {
+            range.start < text.find('\n').unwrap_or(text.len()) && range.color == palette.keyword
+        }));
+
+        let lines = collect_line_ranges(text);
+        let folds = collect_fold_regions(text, &lines, CodeEditorLanguage::GenericCode);
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_line, 1);
+        assert_eq!(folds[0].end_line, 3);
+        assert!(format_diagnostics(text, CodeEditorLanguage::GenericCode, &palette).is_empty());
+    }
+
+    #[test]
+    fn number_highlight_stops_at_operators() {
+        assert_eq!(number_end("1+2", 0), 1);
+        assert_eq!(number_end("-1.25e+3+2", 0), 8);
+        assert_eq!(number_end("1..2", 0), 1);
+    }
+
+    #[test]
+    fn line_runs_use_only_overlapping_highlights() {
+        let base = gpui::rgb(0x000000).into();
+        let outer = gpui::rgb(0xff0000).into();
+        let inner = gpui::rgb(0x00ff00).into();
+        let runs = line_runs(
+            &SharedString::from("abcdef"),
+            10,
+            None,
+            &[
+                HighlightRange {
+                    start: 10,
+                    end: 15,
+                    color: outer,
+                },
+                HighlightRange {
+                    start: 12,
+                    end: 14,
+                    color: inner,
+                },
+            ],
+            gpui::font("test"),
+            base,
+        );
+
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            [2, 2, 1, 1]
+        );
+        assert_eq!(
+            runs.iter().map(|run| run.color).collect::<Vec<_>>(),
+            [outer, inner, outer, base]
+        );
+
+        let full_line = line_runs(
+            &SharedString::from("abc"),
+            0,
+            None,
+            &[HighlightRange {
+                start: 0,
+                end: 3,
+                color: outer,
+            }],
+            gpui::font("test"),
+            base,
+        );
+        assert_eq!(full_line.len(), 1);
+        assert_eq!(full_line[0].color, outer);
     }
 
     #[test]
@@ -2781,7 +2992,7 @@ mod tests {
     fn fold_regions_cover_nested_multiline_blocks() {
         let text = "{\n  \"Outer\": {\n    \"Inner\": 1\n  }\n}";
         let lines = collect_line_ranges(text);
-        let regions = collect_fold_regions(text, &lines);
+        let regions = collect_fold_regions(text, &lines, CodeEditorLanguage::JsonNbt);
 
         assert!(
             regions
@@ -2796,15 +3007,48 @@ mod tests {
     }
 
     #[test]
+    fn fold_marker_uses_outer_region_when_blocks_start_on_same_line() {
+        let text = "{ [\n  1\n]\n}";
+        let lines = collect_line_ranges(text);
+        let regions = collect_fold_regions(text, &lines, CodeEditorLanguage::JsonNbt);
+        assert_eq!(regions[0].start_line, 0);
+        assert_eq!(regions[0].end_line, 3);
+    }
+
+    #[test]
     fn collapsed_visual_lines_skip_hidden_region() {
         let text = "{\n  \"Outer\": {\n    \"Inner\": 1\n  }\n}";
         let lines = collect_line_ranges(text);
-        let regions = collect_fold_regions(text, &lines);
+        let regions = collect_fold_regions(text, &lines, CodeEditorLanguage::JsonNbt);
         let visual_lines = collect_visual_lines(&lines, &regions, &[1]);
 
         assert_eq!(visual_lines.len(), 3);
         assert!(visual_lines[1].folded);
         assert_eq!(visual_lines[2].source_line, 4);
+    }
+
+    #[test]
+    fn visual_lines_are_expanded_by_default() {
+        let text = "{\n  \"Inner\": {\n    \"Value\": 1\n  }\n}";
+        let lines = collect_line_ranges(text);
+        let regions = collect_fold_regions(text, &lines, CodeEditorLanguage::JsonNbt);
+        let visual_lines = collect_visual_lines(&lines, &regions, &[]);
+
+        assert_eq!(visual_lines.len(), lines.len());
+        assert!(visual_lines[0].foldable);
+        assert!(!visual_lines.iter().any(|line| line.folded));
+    }
+
+    #[test]
+    fn fold_marker_hit_area_matches_gutter_position() {
+        let editor = Bounds::new(point(px(30.0), px(160.0)), size(px(900.0), px(400.0)));
+        let marker = fold_marker_bounds(editor, px(60.0), px(200.0), px(20.0));
+
+        assert_eq!(marker.left(), px(72.0));
+        assert_eq!(marker.left() - line_number_right(editor, px(60.0)), px(8.0));
+        assert_eq!(marker.top(), px(200.0));
+        assert!(marker.contains(&point(px(80.0), px(210.0))));
+        assert!(!marker.contains(&point(px(45.0), px(210.0))));
     }
 
     #[test]
@@ -2817,6 +3061,27 @@ mod tests {
             clamp_scroll_offset(offset, content, viewport),
             point(px(680.0), px(0.0))
         );
+    }
+
+    #[test]
+    fn horizontal_cursor_reveal_keeps_cursor_right_of_gutter() {
+        assert_eq!(
+            reveal_cursor_left(px(120.0), px(180.0), px(100.0)),
+            px(20.0)
+        );
+        assert_eq!(
+            reveal_cursor_left(px(300.0), px(180.0), px(100.0)),
+            px(180.0)
+        );
+    }
+
+    #[test]
+    fn horizontal_text_clip_excludes_gutter() {
+        let bounds = Bounds::new(point(px(30.0), px(160.0)), size(px(900.0), px(400.0)));
+        let text_bounds = editor_text_bounds(bounds, px(60.0));
+
+        assert_eq!(text_bounds.left(), px(104.0));
+        assert_eq!(text_bounds.right(), bounds.right());
     }
 
     #[test]
