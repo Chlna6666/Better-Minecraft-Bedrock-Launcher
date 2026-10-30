@@ -41,8 +41,6 @@ pub struct NativeBlockJson {
     #[serde(default)]
     pub occlusion_shape: Option<String>,
     #[serde(default)]
-    pub geometry: Option<String>,
-    #[serde(default)]
     pub cuboids: Vec<NativeCuboidJson>,
 }
 
@@ -50,8 +48,6 @@ pub struct NativeBlockJson {
 pub struct NativeCuboidJson {
     pub min: [f32; 3],
     pub max: [f32; 3],
-    #[serde(default)]
-    pub uv: Option<serde_json::Value>,
 }
 
 /// One native block entry; cuboids may come from a native voxel shape.
