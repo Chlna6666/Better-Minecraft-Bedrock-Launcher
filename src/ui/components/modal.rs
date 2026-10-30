@@ -8,6 +8,10 @@ use std::{
 
 mod motion;
 
+#[cfg(test)]
+#[path = "modal/close_tests.rs"]
+mod close_tests;
+
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
 const MODAL_MIN_SCALE: f32 = 0.94;
@@ -238,15 +242,16 @@ pub fn retained_modal_layer(
                 .expect("animation declares modal translation, scale, and opacity"),
         );
 
-    let backdrop = intercepting_backdrop(
-        div()
-            .absolute()
-            .inset_0()
-            .child(div().absolute().inset_0().background_blur(
-                crate::ui::theme::glass_backdrop_blur_style().saturation(1.05),
-            ))
-            .child(animated_backdrop),
-    );
+    let backdrop =
+        intercepting_backdrop(
+            div()
+                .absolute()
+                .inset_0()
+                .child(div().absolute().inset_0().background_blur(
+                    crate::ui::theme::glass_backdrop_blur_style().saturation(1.05),
+                ))
+                .child(animated_backdrop),
+        );
     div()
         .absolute()
         .inset_0()
@@ -562,8 +567,14 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             let layout_id = element.request_layout(window, cx);
 
             if state.take_close_completion(sample.close_completed) {
-                (self.on_cleanup)(cx);
-                (self.on_dismiss)(cx);
+                let on_cleanup = self.on_cleanup.clone();
+                let on_dismiss = self.on_dismiss.clone();
+                // Notifications during layout do not schedule another draw. Remove the modal
+                // after this frame so its owner can commit a scene without the backdrop blur.
+                cx.defer(move |cx| {
+                    on_cleanup(cx);
+                    on_dismiss(cx);
+                });
             }
 
             ((layout_id, element), state)
