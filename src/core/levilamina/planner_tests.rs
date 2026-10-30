@@ -2,6 +2,31 @@ use std::collections::HashMap;
 
 use super::*;
 
+#[test]
+fn github_tag_feed_provides_lip_versions() -> Result<(), String> {
+    let feed = r#"<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>v1.6.4</title></entry><entry><title>v1.5.4</title></entry></feed>"#;
+    assert_eq!(
+        parse_github_tags(feed)?,
+        ["1.6.4".to_string(), "1.5.4".to_string()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_dependency_version_does_not_request_version_list() -> Result<(), String> {
+    let package = PendingPackage {
+        id: PackageId::parse("github.com/LiteLDev/bedrock-runtime-data#client")?,
+        requirement: "26.20.4-client.7".to_string(),
+        explicit_version: None,
+        explicit: false,
+    };
+    assert_eq!(
+        select_package_version(&package, "1.26.20.4", &support_database()).await?,
+        "26.20.4-client.7"
+    );
+    Ok(())
+}
+
 fn support_database() -> super::super::LeviLaminaSupportDatabase {
     super::super::LeviLaminaSupportDatabase {
         format_version: 2,

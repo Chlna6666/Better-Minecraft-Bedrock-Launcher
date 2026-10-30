@@ -244,19 +244,6 @@ pub(super) fn go_proxy_path(package_path: &str) -> String {
     escaped
 }
 
-pub(super) fn go_proxy_version(version: &str) -> String {
-    parse_version(version).map_or_else(
-        || version.to_string(),
-        |parsed| {
-            if parsed.major >= 2 && !version.ends_with("+incompatible") {
-                format!("{version}+incompatible")
-            } else {
-                version.to_string()
-            }
-        },
-    )
-}
-
 #[cfg(test)]
 #[path = "lip_tests.rs"]
 mod tests;

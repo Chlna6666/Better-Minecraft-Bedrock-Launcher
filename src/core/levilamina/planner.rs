@@ -155,10 +155,16 @@ async fn select_package_version(
         return Ok(version.clone());
     }
 
+    if !package.id.path.eq_ignore_ascii_case(LEVILAMINA_PACKAGE)
+        && semver::Version::parse(&package.requirement).is_ok()
+    {
+        return Ok(package.requirement.clone());
+    }
+
     let candidates = if package.id.path.eq_ignore_ascii_case(LEVILAMINA_PACKAGE) {
         support.loader_versions(game_version)
     } else {
-        fetch_available_versions(&package.id.path).await?
+        fetch_available_versions(&package.id.path, &package.requirement).await?
     };
     candidates
         .into_iter()
@@ -177,7 +183,22 @@ async fn select_package_version(
         })
 }
 
-async fn fetch_available_versions(package_path: &str) -> Result<Vec<String>, String> {
+async fn fetch_available_versions(
+    package_path: &str,
+    requirement: &str,
+) -> Result<Vec<String>, String> {
+    let repository = github_repository(package_path)?;
+    let tags_url = format!("https://github.com/{repository}/tags.atom");
+    if let Ok(body) = fetch_text(&tags_url).await {
+        if let Ok(versions) = parse_github_tags(&body)
+            && versions
+                .iter()
+                .any(|version| version_matches(version, requirement))
+        {
+            return Ok(versions);
+        }
+    }
+
     let url = format!(
         "https://proxy.golang.org/{}/@v/list",
         go_proxy_path(package_path)
@@ -192,6 +213,20 @@ async fn fetch_available_versions(package_path: &str) -> Result<Vec<String>, Str
                 .trim_end_matches("+incompatible")
                 .to_string()
         })
+        .collect())
+}
+
+fn parse_github_tags(body: &str) -> Result<Vec<String>, String> {
+    let feed = xmltree::Element::parse(body.as_bytes())
+        .map_err(|error| format!("解析 GitHub 标签失败: {error}"))?;
+    Ok(feed
+        .children
+        .iter()
+        .filter_map(xmltree::XMLNode::as_element)
+        .filter(|entry| entry.name == "entry")
+        .filter_map(|entry| entry.get_child("title"))
+        .filter_map(xmltree::Element::get_text)
+        .filter_map(|title| title.strip_prefix('v').map(str::to_string))
         .collect())
 }
 
