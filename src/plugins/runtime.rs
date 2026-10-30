@@ -29,7 +29,7 @@ use tinywasm::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::plugins::services::{MAX_RPC_DEPTH, PluginRpcCallStack, PluginServiceRegistry};
+use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry};
 
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const RENDER_WARN_THRESHOLD: Duration = Duration::from_millis(16);

@@ -498,19 +498,6 @@ fn parse_server_index(value: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-#[cfg(test)]
-fn write_entries_to_file(file_path: &Path, entries: &[ExternalServerEntry]) -> Result<()> {
-    let lines = entries
-        .iter()
-        .cloned()
-        .map(|entry| ExternalServerLine::Parsed {
-            entry,
-            metadata: current_unix_seconds().to_string(),
-        })
-        .collect::<Vec<_>>();
-    write_lines_to_file(file_path, &lines)
-}
-
 fn validate_server_input<'a>(
     name: &'a str,
     address: &'a str,

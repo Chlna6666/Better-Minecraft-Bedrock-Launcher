@@ -43,7 +43,6 @@ pub struct DailyGameInfo {
 pub struct GameSession {
     instance_path: PathBuf,
     process_id: u32,
-    started_at: DateTime<Utc>,
     saved_through: DateTime<Utc>,
 }
 
@@ -80,7 +79,6 @@ impl GameSession {
         Ok(Some(Self {
             instance_path,
             process_id,
-            started_at,
             saved_through: started_at,
         }))
     }

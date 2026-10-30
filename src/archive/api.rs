@@ -351,7 +351,7 @@ mod tests {
     use super::extract_zip_appx;
     use crate::tasks::task_manager::{TaskSnapshot, get_snapshot_arc, remove_task};
     use crate::utils::file_ops;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::time::sleep;

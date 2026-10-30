@@ -1850,7 +1850,7 @@ mod tests {
         let data = Arc::new(build_test_payload(data_len));
         let mut context = md5::Context::new();
         context.consume(data.as_slice());
-        let expected_md5 = format!("{:x}", context.compute());
+        let expected_md5 = format!("{:x}", context.finalize());
 
         let (url, server_handle) = spawn_range_server(data.clone())
             .await
@@ -1970,7 +1970,7 @@ mod tests {
         let data = Arc::new(build_test_payload(data_len));
         let mut context = md5::Context::new();
         context.consume(data.as_slice());
-        let expected_md5 = format!("{:x}", context.compute());
+        let expected_md5 = format!("{:x}", context.finalize());
 
         let (url, server_handle) = spawn_malformed_range_server(data.clone())
             .await

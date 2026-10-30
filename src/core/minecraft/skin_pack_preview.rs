@@ -163,7 +163,7 @@ fn draw_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{GenericImageView as _, ImageBuffer, Rgb, Rgba};
+    use image::{ImageBuffer, Rgb, Rgba};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

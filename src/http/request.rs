@@ -19,7 +19,6 @@ pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         // 启用压缩支持
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         // 连接超时
@@ -63,7 +62,6 @@ fn no_redirect_client() -> Result<Client, String> {
 
     let builder = reqwest::Client::builder()
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         .redirect(reqwest::redirect::Policy::none())
@@ -88,7 +86,6 @@ fn no_redirect_blocking_client() -> Result<BlockingClient, String> {
 
     let builder = reqwest::blocking::Client::builder()
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         .redirect(reqwest::redirect::Policy::none())

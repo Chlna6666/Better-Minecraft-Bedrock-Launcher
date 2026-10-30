@@ -16,7 +16,7 @@ use crate::core::version::settings::{VersionConfig, get_version_config_blocking}
 use super::runtime::{BlockingTaskOptions, run_blocking};
 
 mod gdk_users;
-pub use gdk_users::{GdkUserDirectory, invalidate_gdk_users, load_gdk_users, prewarm_gdk_users};
+pub use gdk_users::{invalidate_gdk_users, load_gdk_users, prewarm_gdk_users};
 
 #[derive(Clone, Copy)]
 pub enum PackKind {

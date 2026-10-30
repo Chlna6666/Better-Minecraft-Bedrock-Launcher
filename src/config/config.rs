@@ -3,11 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
 
+#[cfg(target_os = "linux")]
+use super::defaults::default_proton_gdk_source;
 use super::defaults::{
     default_appx_api, default_config_version, default_error_report_sentry_enabled,
     default_log_active_size_mb, default_log_archive_files, default_log_compression_level,
-    default_log_retention_days, default_log_total_size_mb, default_proton_gdk_source,
-    default_renderer_backend, default_true, default_update_check_interval_minutes,
+    default_log_retention_days, default_log_total_size_mb, default_renderer_backend, default_true,
+    default_update_check_interval_minutes,
 };
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
@@ -319,7 +321,10 @@ impl std::fmt::Debug for DownloadConfig {
             .field("github", &self.github)
             .field("curseforge_api_source", &self.curseforge_api_source)
             .field("curseforge_api_base", &self.curseforge_api_base)
-            .field("curseforge_api_key_configured", &!self.curseforge_api_key.is_empty())
+            .field(
+                "curseforge_api_key_configured",
+                &!self.curseforge_api_key.is_empty(),
+            )
             .finish()
     }
 }
@@ -398,10 +403,14 @@ pub struct AppStateConfig {
 }
 
 /// Default UI pacing uses VSync with a 120 FPS ceiling.
-pub fn default_frame_rate_mode() -> String { "auto".to_owned() }
+pub fn default_frame_rate_mode() -> String {
+    "auto".to_owned()
+}
 
 /// Default manual FPS ceiling.
-pub const fn default_frame_rate_limit() -> u32 { 120 }
+pub const fn default_frame_rate_limit() -> u32 {
+    120
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Launcher {

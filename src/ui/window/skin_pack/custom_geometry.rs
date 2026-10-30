@@ -231,10 +231,8 @@ fn model_bounds(bones: &[Value]) -> GeometryBounds {
             continue;
         };
         for cube in cubes {
-            let (Some(origin), Some(size)) = (
-                array3(cube.get("origin")),
-                array3(cube.get("size")),
-            ) else {
+            let (Some(origin), Some(size)) = (array3(cube.get("origin")), array3(cube.get("size")))
+            else {
                 continue;
             };
             for corner in 0..8 {
@@ -379,7 +377,7 @@ fn transform_point_for_bone(
 ///
 /// Cube faces build their corners in preview space from an already-mapped center and pivot, then
 /// call this to share the authored bone chain behavior with poly meshes.
-pub(super) fn transform_point_for_bone_unmapped(
+fn transform_point_for_bone_unmapped(
     point: [f32; 3],
     bone_name: Option<&str>,
     poses: BonePoses<'_>,

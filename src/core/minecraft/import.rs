@@ -50,20 +50,6 @@ fn image_format_from_mime(mime: &str) -> PreviewImageFormat {
     }
 }
 
-fn image_format_from_bytes(bytes: &[u8]) -> PreviewImageFormat {
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        PreviewImageFormat::Jpeg
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        PreviewImageFormat::Gif
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        PreviewImageFormat::Webp
-    } else if bytes.starts_with(b"BM") {
-        PreviewImageFormat::Bmp
-    } else {
-        PreviewImageFormat::Png
-    }
-}
-
 fn normalize_preview_icon(bytes: Vec<u8>) -> Result<(PreviewIconData, u32, u32)> {
     let decoded =
         gpui::image::load_from_memory(&bytes).context("failed to decode preview icon bytes")?;

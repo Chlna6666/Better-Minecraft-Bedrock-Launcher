@@ -2,8 +2,8 @@ use super::config::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
     DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
     DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig, Launcher,
-    default_frame_rate_limit, default_frame_rate_mode,
-    LoginConfig, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
+    LoginConfig, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel, default_frame_rate_limit,
+    default_frame_rate_mode,
 };
 
 pub(super) fn default_true() -> bool {
@@ -47,6 +47,7 @@ pub(super) fn default_renderer_backend() -> String {
     .to_string()
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn default_proton_gdk_source() -> String {
     "roundmcdev".to_string()
 }

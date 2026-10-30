@@ -53,14 +53,9 @@ pub(super) fn push_poly_mesh(
             return Err("自定义皮肤 geometry.json 面片过多".to_string());
         }
 
-        let Some(polygon_vertices) = poly_mesh_polygon_vertices(
-            &polys[index],
-            &positions,
-            &normals,
-            &uvs,
-            bone_name,
-            poses,
-        ) else {
+        let Some(polygon_vertices) =
+            poly_mesh_polygon_vertices(&polys[index], &positions, &normals, &uvs, bone_name, poses)
+        else {
             index += 1;
             continue;
         };
@@ -76,9 +71,8 @@ pub(super) fn push_poly_mesh(
         }
 
         if let Some(next_poly) = polys.get(index + 1)
-            && let Some(next_vertices) = poly_mesh_polygon_vertices(
-                next_poly, &positions, &normals, &uvs, bone_name, poses,
-            )
+            && let Some(next_vertices) =
+                poly_mesh_polygon_vertices(next_poly, &positions, &normals, &uvs, bone_name, poses)
             && let Some(quad) = poly_mesh_quad_from_triangle_pair(&polygon_vertices, &next_vertices)
         {
             builder.polygon_count = builder.polygon_count.saturating_add(1);

@@ -45,7 +45,6 @@ fn build_optimized_client(
     let builder = reqwest::Client::builder()
         // 启用压缩支持，减少传输数据量
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         // 连接超时设置
@@ -77,7 +76,6 @@ fn build_optimized_blocking_client(
 ) -> BlockingClient {
     let builder = reqwest::blocking::Client::builder()
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         .connect_timeout(Duration::from_secs(10))
@@ -407,7 +405,6 @@ pub fn get_client_for_proxy() -> Result<Client, CoreError> {
     let client = {
         let mut builder = reqwest::Client::builder()
             .gzip(true)
-            .brotli(true)
             .deflate(true)
             .zstd(true)
             .connect_timeout(Duration::from_secs(10))
@@ -497,7 +494,6 @@ pub fn get_download_client_for_proxy() -> Result<Client, CoreError> {
 
     let mut builder = reqwest::Client::builder()
         .no_gzip()
-        .no_brotli()
         .no_deflate()
         .no_zstd()
         .http1_only()
@@ -565,7 +561,6 @@ pub fn get_blocking_client_for_proxy() -> Result<BlockingClient, CoreError> {
 
     let mut builder = reqwest::blocking::Client::builder()
         .gzip(true)
-        .brotli(true)
         .deflate(true)
         .zstd(true)
         .connect_timeout(Duration::from_secs(10))

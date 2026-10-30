@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 

@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 use tracing::debug;
+#[cfg(test)]
 use walkdir::WalkDir;
 
 const WORLD_SIZE_SCAN_FILE_LIMIT: usize = 512;
@@ -323,6 +324,7 @@ fn bytes_to_human(bytes: u64) -> String {
     format!("{:.2} {}", b, UNITS[i])
 }
 
+#[cfg(test)]
 fn get_dir_size_sync_limited(path: &Path, file_limit: usize) -> Option<u64> {
     let mut total: u64 = 0;
     let mut files_seen = 0usize;
@@ -342,22 +344,6 @@ fn get_dir_size_sync_limited(path: &Path, file_limit: usize) -> Option<u64> {
         }
     }
     Some(total)
-}
-
-fn count_packs(value: &Value) -> usize {
-    match value {
-        Value::Array(a) => a.len(),
-        Value::Object(o) => {
-            if let Some(Value::Array(a)) = o.get("entries") {
-                a.len()
-            } else if let Some(Value::Array(a)) = o.get("packs") {
-                a.len()
-            } else {
-                o.len()
-            }
-        }
-        _ => 0,
-    }
 }
 
 #[cfg(test)]

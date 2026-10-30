@@ -594,15 +594,3 @@ pub fn replace_header_with_lang(manifest_value: &mut Value, lang_map: &HashMap<S
         }
     }
 }
-
-fn short_desc_from_opt(raw: Option<String>, max_chars: usize) -> Option<String> {
-    raw.map(|desc| {
-        let cleaned: String = desc.chars().filter(|c| !c.is_control()).collect();
-        if cleaned.chars().count() > max_chars {
-            let s: String = cleaned.chars().take(max_chars).collect();
-            format!("{}...", s)
-        } else {
-            cleaned
-        }
-    })
-}

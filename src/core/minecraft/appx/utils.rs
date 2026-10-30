@@ -16,7 +16,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::debug;
-use xmltree::{AttributeMap, Element, EmitterConfig, Namespace, XMLNode};
+use xmltree::{Element, EmitterConfig, Namespace, XMLNode};
 
 const SCCD_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <CustomCapabilityDescriptor xmlns="http://schemas.microsoft.com/appx/2018/sccd" xmlns:s="http://schemas.microsoft.com/appx/2018/sccd">
@@ -39,11 +39,6 @@ pub fn write_sccd(dir: &Path) -> io::Result<()> {
 fn strip_bom(s: &str) -> &str {
     const BOM: &str = "\u{feff}";
     s.strip_prefix(BOM).unwrap_or(s)
-}
-
-fn has_xmlns_prefix(attrs: &AttributeMap<String, String>, prefix: &str) -> bool {
-    let key = format!("xmlns:{}", prefix);
-    attrs.contains_key(&key)
 }
 
 /// 补丁清单文件以支持 UWP 多开和脱离沙盒运行

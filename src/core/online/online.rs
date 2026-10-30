@@ -130,9 +130,6 @@ pub struct EasyTierStartRequest {
 
 #[derive(Debug, Clone)]
 struct EasyTierLastStart {
-    network_name: String,
-    network_secret: String,
-    peers: Vec<String>,
     hostname: Option<String>,
     resolved_hostname: Option<String>,
     resolved_ipv4: Option<String>,
@@ -634,9 +631,6 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         };
 
         *ONLINE_STATE.easytier_last_start.lock().unwrap() = Some(EasyTierLastStart {
-            network_name: network_name.clone(),
-            network_secret: network_secret.clone(),
-            peers: peers.clone(),
             hostname: hostname.clone(),
             resolved_hostname,
             resolved_ipv4,
