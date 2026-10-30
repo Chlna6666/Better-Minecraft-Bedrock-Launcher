@@ -3,9 +3,10 @@
     reason = "Windows version-resource APIs expose fixed file info through a native pointer"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, hash_map::DefaultHasher};
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -180,41 +181,158 @@ fn collect_assets_recursive(dir: &Path, base_dir: &Path, result: &mut Vec<(Strin
     }
 }
 
+#[derive(Default)]
+struct BundleReport {
+    name: &'static str,
+    source_files: usize,
+    source_bytes: u64,
+    unique_files: usize,
+    unique_source_bytes: u64,
+    embedded_bytes: u64,
+}
+
+fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn write_if_changed(path: &Path, bytes: &[u8]) {
+    if fs::read(path).ok().as_deref() == Some(bytes) {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("failed to create {}: {error}", parent.display()));
+    }
+    fs::write(path, bytes)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+}
+
+/// Re-encode a PNG losslessly when the result is smaller. This is only used
+/// for release builds so debug builds stay fast and keep the original bytes.
+fn optimize_png_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let mut options = oxipng::Options::from_preset(2);
+    options.strip = oxipng::StripChunks::None;
+    match oxipng::optimize_from_memory(bytes, &options) {
+        Ok(optimized) if optimized.len() < bytes.len() => Some(optimized),
+        Ok(_) => None,
+        Err(error) => {
+            println!("cargo:warning=oxipng skipped an asset: {error}");
+            None
+        }
+    }
+}
+
 fn generate_embedded_assets_rs(
     assets_root: &Path,
     virtual_prefix: &str,
+    bundle_name: &'static str,
     out_file_name: &str,
     load_fn_name: &str,
     list_fn_name: &str,
-) {
+    static_prefix: &str,
+    optimize_png: bool,
+) -> BundleReport {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let out_rs = out_dir.join(out_file_name);
+    let embedded_dir = out_dir.join("embedded_assets").join(virtual_prefix);
     let mut assets: Vec<(String, PathBuf)> = Vec::new();
     collect_assets_recursive(assets_root, assets_root, &mut assets);
 
     assets.sort_by(|left, right| left.0.cmp(&right.0));
 
+    struct UniqueAsset {
+        original: Vec<u8>,
+        embedded: Vec<u8>,
+        embedded_path: PathBuf,
+    }
+
+    let mut report = BundleReport {
+        name: bundle_name,
+        ..BundleReport::default()
+    };
+    let mut unique_assets: Vec<UniqueAsset> = Vec::new();
+    let mut hash_to_indices: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut asset_ids: Vec<usize> = Vec::with_capacity(assets.len());
+
+    for (_, full_path) in &assets {
+        let bytes = fs::read(full_path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", full_path.display()));
+        report.source_files += 1;
+        report.source_bytes += bytes.len() as u64;
+
+        let hash = content_hash(&bytes);
+        let mut matching_id = None;
+        if let Some(indices) = hash_to_indices.get(&hash) {
+            for &index in indices {
+                if unique_assets[index].original == bytes {
+                    matching_id = Some(index);
+                    break;
+                }
+            }
+        }
+
+        let id = match matching_id {
+            Some(index) => index,
+            None => {
+                let index = unique_assets.len();
+                unique_assets.push(UniqueAsset {
+                    original: bytes,
+                    embedded: Vec::new(),
+                    embedded_path: embedded_dir.join(format!("{index}.bin")),
+                });
+                hash_to_indices.entry(hash).or_default().push(index);
+                index
+            }
+        };
+        asset_ids.push(id);
+    }
+
+    for (index, asset) in unique_assets.iter_mut().enumerate() {
+        let optimized = if optimize_png {
+            optimize_png_bytes(&asset.original)
+        } else {
+            None
+        };
+        asset.embedded = optimized.unwrap_or_else(|| asset.original.clone());
+        report.unique_files += 1;
+        report.unique_source_bytes += asset.original.len() as u64;
+        report.embedded_bytes += asset.embedded.len() as u64;
+        let embedded_path = embedded_dir.join(format!("{index}.bin"));
+        write_if_changed(&embedded_path, &asset.embedded);
+        asset.embedded_path = embedded_path;
+    }
+
+    let mut statics = String::new();
+    for (index, asset) in unique_assets.iter().enumerate() {
+        let escaped = asset.embedded_path.to_string_lossy().replace('\\', "\\\\");
+        statics.push_str(&format!(
+            "static {static_prefix}_ASSET_{index}: &[u8] = include_bytes!(r\"{escaped}\");\n"
+        ));
+    }
+
     let mut match_arms = String::new();
     let mut list_items = String::new();
-
-    for (rel_path, full_path) in &assets {
+    for ((rel_path, _), id) in assets.iter().zip(asset_ids.iter()) {
         let path_str = format!("{virtual_prefix}/{rel_path}");
-        let escaped = full_path.to_string_lossy().replace('\\', "\\\\");
-
+        let static_name = format!("{static_prefix}_ASSET_{id}");
         match_arms.push_str(&format!(
-            r#"        "{path_str}" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(r"{escaped}")))),"#
+            "        \"{path_str}\" => Ok(Some(std::borrow::Cow::Borrowed({static_name}))),\n"
         ));
-        match_arms.push('\n');
-
-        list_items.push_str(&format!(r#"        "{path_str}".into(),"#));
-        list_items.push('\n');
+        list_items.push_str(&format!("        \"{path_str}\".into(),\n"));
     }
 
     let code = format!(
         r#"// Auto-generated by build.rs. Do not edit.
 // Generated at: {}
 // Total assets: {}
+// Unique embedded assets: {}
 
+{statics}
 pub fn {load_fn_name}(path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {{
     match path {{
 {match_arms}        _ => Ok(None),
@@ -227,36 +345,46 @@ pub fn {list_fn_name}() -> Vec<gpui::SharedString> {{
 }}
 "#,
         chrono::Utc::now().to_rfc3339(),
-        assets.len()
+        assets.len(),
+        unique_assets.len()
     );
 
-    fs::write(&out_rs, code).expect("write embedded assets file");
+    write_if_changed(&out_rs, code.as_bytes());
     println!("cargo:rerun-if-changed={}", assets_root.display());
+    report
 }
 
 /// 生成图片资源与图标资源的嵌入代码
-fn generate_asset_bundles_rs() {
+fn generate_asset_bundles_rs() -> (BundleReport, BundleReport) {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let images_dir = manifest_dir.join("assets").join("images");
     let icons_dir = manifest_dir.join("assets").join("icons");
+    let optimize_png = env::var("PROFILE").as_deref() == Ok("release");
 
-    generate_embedded_assets_rs(
+    let images = generate_embedded_assets_rs(
         &images_dir,
+        "images",
         "images",
         "image_assets.rs",
         "load_image_asset",
         "list_image_assets",
+        "IMAGE",
+        optimize_png,
     );
-    generate_embedded_assets_rs(
+    let icons = generate_embedded_assets_rs(
         &icons_dir,
+        "icons",
         "icons",
         "icon_assets.rs",
         "load_icon_asset",
         "list_icon_assets",
+        "ICON",
+        optimize_png,
     );
+    (images, icons)
 }
 
-fn generate_embedded_bloader() {
+fn generate_embedded_bloader() -> u64 {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source_path = manifest_dir.join("assets").join("bin").join("BLoader.dll");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -299,12 +427,160 @@ fn generate_embedded_bloader() {
 
     let compressed = zstd::stream::encode_all(source.as_slice(), 19)
         .unwrap_or_else(|error| panic!("failed to compress {}: {error}", source_path.display()));
+    let compressed_len = compressed.len() as u64;
     fs::write(&compressed_path, compressed).unwrap_or_else(|error| {
         panic!(
             "failed to write embedded BLoader payload {}: {error}",
             compressed_path.display()
         )
     });
+    compressed_len
+}
+
+fn file_bytes(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+fn locale_source_stats(manifest_dir: &Path) -> (usize, u64) {
+    let locale_root = manifest_dir.join("assets").join("locales");
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for code in ["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR"] {
+        for path in [
+            locale_root.join(format!("{code}.lang")),
+            locale_root.join("extra").join(format!("{code}.lang")),
+        ] {
+            if path.is_file() {
+                files += 1;
+                bytes += file_bytes(&path);
+            }
+        }
+    }
+    (files, bytes)
+}
+
+/// Write a machine-readable resource size report next to the generated assets.
+///
+/// The final executable is linked after this build script runs, so its size is
+/// measured by scripts/size-report.ps1 and is intentionally reported as null
+/// here. The report still records the complete embedded-resource contribution.
+fn write_resource_size_report(
+    out_dir: &Path,
+    manifest_dir: &Path,
+    images: &BundleReport,
+    icons: &BundleReport,
+    bloader_embedded: u64,
+) {
+    let (locale_source_files, locale_source_bytes) = locale_source_stats(manifest_dir);
+    let locales_embedded = file_bytes(&out_dir.join("locales.bin"));
+    let bloader_source_bytes =
+        file_bytes(&manifest_dir.join("assets").join("bin").join("BLoader.dll"));
+    let images_dedup_saved = images
+        .source_bytes
+        .saturating_sub(images.unique_source_bytes);
+    let icons_dedup_saved = icons.source_bytes.saturating_sub(icons.unique_source_bytes);
+    let images_optimized_saved = images
+        .unique_source_bytes
+        .saturating_sub(images.embedded_bytes);
+    let icons_optimized_saved = icons
+        .unique_source_bytes
+        .saturating_sub(icons.embedded_bytes);
+    let bloader_compressed_saved = bloader_source_bytes.saturating_sub(bloader_embedded);
+    let source_total = images
+        .source_bytes
+        .saturating_add(icons.source_bytes)
+        .saturating_add(locale_source_bytes)
+        .saturating_add(bloader_source_bytes);
+    let embedded_total = images
+        .embedded_bytes
+        .saturating_add(icons.embedded_bytes)
+        .saturating_add(locales_embedded)
+        .saturating_add(bloader_embedded);
+
+    let report = serde_json::json!({
+        "profile": env::var("PROFILE").unwrap_or_default(),
+        "assets": {
+            "images": {
+                "name": images.name,
+                "source_files": images.source_files,
+                "source_bytes": images.source_bytes,
+                "unique_files": images.unique_files,
+                "unique_source_bytes": images.unique_source_bytes,
+                "embedded_bytes": images.embedded_bytes,
+                "deduplicated_saved_bytes": images_dedup_saved,
+                "optimized_saved_bytes": images_optimized_saved,
+            },
+            "icons": {
+                "name": icons.name,
+                "source_files": icons.source_files,
+                "source_bytes": icons.source_bytes,
+                "unique_files": icons.unique_files,
+                "unique_source_bytes": icons.unique_source_bytes,
+                "embedded_bytes": icons.embedded_bytes,
+                "deduplicated_saved_bytes": icons_dedup_saved,
+                "optimized_saved_bytes": icons_optimized_saved,
+            }
+        },
+        "locales": {
+            "source_files": locale_source_files,
+            "source_bytes": locale_source_bytes,
+            "embedded_bytes": locales_embedded,
+        },
+        "bloader": {
+            "source_bytes": bloader_source_bytes,
+            "embedded_bytes": bloader_embedded,
+            "compressed_saved_bytes": bloader_compressed_saved,
+        },
+        "totals": {
+            "source_bytes": source_total,
+            "embedded_bytes": embedded_total,
+            "deduplicated_saved_bytes": images_dedup_saved.saturating_add(icons_dedup_saved),
+            "optimized_saved_bytes": images_optimized_saved.saturating_add(icons_optimized_saved),
+            "bloader_compressed_saved_bytes": bloader_compressed_saved,
+        },
+        "final_exe_bytes": null,
+        "final_exe_note": "Measured after link by scripts/size-report.ps1."
+    });
+
+    let json = serde_json::to_vec_pretty(&report).expect("serialize resource size report");
+    write_if_changed(&out_dir.join("resource_size_report.json"), &json);
+
+    let summary = format!(
+        "BMCBL resource size report ({})\n\
+         images: {} files -> {} unique, {} -> {} bytes (dedupe {}, optimize {})\n\
+         icons: {} files -> {} unique, {} -> {} bytes (dedupe {}, optimize {})\n\
+         locales: {} files, {} -> {} bytes\n\
+         bloader: {} -> {} bytes (compressed {})\n\
+         total: {} -> {} embedded bytes\n\
+         final EXE: measured after link by scripts/size-report.ps1\n",
+        env::var("PROFILE").unwrap_or_default(),
+        images.source_files,
+        images.unique_files,
+        images.source_bytes,
+        images.embedded_bytes,
+        images_dedup_saved,
+        images_optimized_saved,
+        icons.source_files,
+        icons.unique_files,
+        icons.source_bytes,
+        icons.embedded_bytes,
+        icons_dedup_saved,
+        icons_optimized_saved,
+        locale_source_files,
+        locale_source_bytes,
+        locales_embedded,
+        bloader_source_bytes,
+        bloader_embedded,
+        bloader_compressed_saved,
+        source_total,
+        embedded_total,
+    );
+    write_if_changed(
+        &out_dir.join("resource_size_report.txt"),
+        summary.as_bytes(),
+    );
 }
 
 fn escape_rust_string(text: &str) -> String {
@@ -770,18 +1046,25 @@ fn main() {
     #[cfg(windows)]
     compile_windows_resources();
 
-    generate_asset_bundles_rs();
+    let (image_report, icon_report) = generate_asset_bundles_rs();
     entity_avatar::generate();
-    generate_embedded_bloader();
+    let bloader_embedded = generate_embedded_bloader();
 
     generate_dependency_metadata_rs();
 
-    let out_dir = env::var_os("OUT_DIR").unwrap();
-    let dest_path = Path::new(&out_dir).join("secrets.rs");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let dest_path = out_dir.join("secrets.rs");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    build::locales::generate(&manifest_dir, Path::new(&out_dir))
+    build::locales::generate(&manifest_dir, &out_dir)
         .expect("failed to pack embedded language files");
+    write_resource_size_report(
+        &out_dir,
+        &manifest_dir,
+        &image_report,
+        &icon_report,
+        bloader_embedded,
+    );
     let key_dir = manifest_dir
         .join("src")
         .join("core")

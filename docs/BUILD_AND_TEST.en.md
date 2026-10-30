@@ -26,6 +26,21 @@ cargo build --release --bin BMCBL
 The dev profile uses `opt-level = 3` with line-tables-only debug info; release uses fat LTO,
 `panic = "abort"` and stripping for size.
 
+### 2.1 Release size report
+
+`build.rs` writes `resource_size_report.json` and `resource_size_report.txt` on every build,
+covering images/icons (content deduplication plus release-only lossless PNG re-encoding), language
+data and BLoader source/embedded bytes. The final EXE size is added after linking:
+
+```powershell
+pwsh -File scripts/size-report.ps1
+pwsh -File scripts/size-report.ps1 -NoBuild
+```
+
+The script runs `cargo build --release --bin BMCBL` by default; `-NoBuild` reads existing
+artifacts. Pass `-Baseline <json>` to compare against a baseline containing `exe_bytes`.
+Raw resource/EXE measurements stay under `target/` and are not committed.
+
 ## 3. Features and backend matrix
 
 Root package default features:

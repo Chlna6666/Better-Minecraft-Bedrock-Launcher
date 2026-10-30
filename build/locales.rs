@@ -4,11 +4,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const LOCALE_CODES: [&str; 5] = ["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR"];
-const MAGIC: &[u8; 8] = b"BMCLANG1";
-const HEADER_LEN: usize = 20;
-const KEY_RECORD_LEN: usize = 8;
-const VALUE_RECORD_LEN: usize = 16;
-const PART_RECORD_LEN: usize = 12;
+const MAGIC: &[u8; 8] = b"BMCLANG2";
+const HEADER_LEN: usize = 32;
+const KEY_RECORD_LEN: usize = 3;
+const VALUE_RECORD_LEN: usize = 7;
+const PART_RECORD_LEN: usize = 6;
+/// Largest representable 24-bit offset. Real offsets must stay below it because
+/// value records reuse it as the "translation absent" marker.
+const OFFSET_SENTINEL: u32 = 0x00FF_FFFF;
 
 /// Read the five embedded language files and write the compact binary catalog.
 ///
@@ -46,6 +49,18 @@ pub fn generate(manifest_dir: &Path, out_dir: &Path) -> io::Result<()> {
 }
 
 /// Encode language sources without generating Rust code or validating catalogs.
+///
+/// Layout (all integers little-endian):
+///
+/// - header, 32 bytes: magic, key count, locale count, part count, pool offset,
+///   pool length, reserved (must be zero);
+/// - keys, 3 bytes each: offset of the NUL-terminated key in the pool, sorted by
+///   key text so the runtime can binary-search;
+/// - values, 7 bytes each: text pool offset, first part index, part count. A
+///   text offset of `OFFSET_SENTINEL` marks an absent translation;
+/// - parts, 6 bytes each: placeholder-name pool offset and placeholder byte
+///   offset inside the value text;
+/// - pool: deduplicated UTF-8 strings, each terminated by a NUL byte.
 pub(crate) fn encode(sources: &[&str]) -> io::Result<Vec<u8>> {
     let catalogs = sources
         .iter()
@@ -74,7 +89,11 @@ pub(crate) fn encode(sources: &[&str]) -> io::Result<Vec<u8>> {
         parts_bytes,
         "catalog layout",
     )?;
-    let total_len = checked_add(pool_offset, pool.len(), "catalog length")?;
+    let pool_len = pool.len();
+    if pool_len > OFFSET_SENTINEL as usize {
+        return Err(io_error("string pool exceeds the 24-bit offset range"));
+    }
+    let total_len = checked_add(pool_offset, pool_len, "catalog length")?;
     let mut output = Vec::new();
     output
         .try_reserve(total_len)
@@ -82,7 +101,10 @@ pub(crate) fn encode(sources: &[&str]) -> io::Result<Vec<u8>> {
     output.extend_from_slice(MAGIC);
     push_u32(&mut output, key_count);
     push_u32(&mut output, locale_count);
+    push_u32(&mut output, as_u32(part_count, "part count")?);
     push_u32(&mut output, as_u32(pool_offset, "pool offset")?);
+    push_u32(&mut output, as_u32(pool_len, "pool length")?);
+    push_u32(&mut output, 0);
     output.extend_from_slice(&key_records);
     output.extend_from_slice(&value_records);
     output.extend_from_slice(&part_records);
@@ -97,9 +119,8 @@ fn encode_keys<'a>(
 ) -> io::Result<Vec<u8>> {
     let mut records = Vec::new();
     for &key in keys {
-        let (offset, length) = intern(key, pool, pool_index)?;
-        push_u32(&mut records, offset);
-        push_u32(&mut records, length);
+        let offset = intern(key, pool, pool_index)?;
+        push_u24(&mut records, offset);
     }
     Ok(records)
 }
@@ -115,20 +136,19 @@ fn encode_values<'a>(
     let mut part_count = 0usize;
     for catalog in catalogs {
         for key in keys {
-            let Some(&text) = catalog.get(key) else {
-                push_u32(&mut value_records, u32::MAX);
-                push_u32(&mut value_records, 0);
-                push_u32(&mut value_records, 0);
-                push_u32(&mut value_records, 0);
+            let Some(&text) = catalog.get(*key) else {
+                push_u24(&mut value_records, OFFSET_SENTINEL);
+                push_u24(&mut value_records, 0);
+                value_records.push(0);
                 continue;
             };
-            let (offset, length) = intern(text, pool, pool_index)?;
-            let first_part_index = as_u32(part_count, "part index")?;
-            let value_part_count = append_parts(text, &mut part_records, &mut part_count)?;
-            push_u32(&mut value_records, offset);
-            push_u32(&mut value_records, length);
-            push_u32(&mut value_records, first_part_index);
-            push_u32(&mut value_records, value_part_count);
+            let text_offset = intern(text, pool, pool_index)?;
+            let first_part = as_u24(part_count, "part index")?;
+            let value_part_count =
+                append_parts(text, &mut part_records, &mut part_count, pool, pool_index)?;
+            push_u24(&mut value_records, text_offset);
+            push_u24(&mut value_records, first_part);
+            value_records.push(value_part_count);
         }
     }
     Ok((value_records, part_records))
@@ -190,22 +210,28 @@ fn intern<'a>(
     value: &'a str,
     pool: &mut Vec<u8>,
     pool_index: &mut BTreeMap<&'a str, u32>,
-) -> io::Result<(u32, u32)> {
-    let length = as_u32(value.len(), "string length")?;
-    if let Some(&offset) = pool_index.get(value) {
-        return Ok((offset, length));
+) -> io::Result<u32> {
+    if value.as_bytes().contains(&0) {
+        return Err(io_error("language string contains a NUL byte"));
     }
-    let end = checked_add(pool.len(), value.len(), "string pool length")?;
-    let offset = as_pool_offset(pool.len())?;
-    as_pool_offset(end)?;
+    if let Some(&offset) = pool_index.get(value) {
+        return Ok(offset);
+    }
+    let offset = as_u24(pool.len(), "string pool offset")?;
     pool.extend_from_slice(value.as_bytes());
+    pool.push(0);
     pool_index.insert(value, offset);
-    Ok((offset, length))
+    Ok(offset)
 }
 
-fn append_parts(text: &str, records: &mut Vec<u8>, total_count: &mut usize) -> io::Result<u32> {
+fn append_parts<'a>(
+    text: &'a str,
+    records: &mut Vec<u8>,
+    total_count: &mut usize,
+    pool: &mut Vec<u8>,
+    pool_index: &mut BTreeMap<&'a str, u32>,
+) -> io::Result<u8> {
     let first_count = *total_count;
-    let mut names = Vec::<&str>::new();
     let mut remaining = text;
     while let Some(open) = remaining.find("{{") {
         // find() matched both delimiter bytes, so these slices stay in the input.
@@ -215,27 +241,18 @@ fn append_parts(text: &str, records: &mut Vec<u8>, total_count: &mut usize) -> i
         };
         let name = &after_open[..close];
         let name_start = text.len() - remaining.len() + open + 2;
-        let argument_index = names
-            .iter()
-            .position(|existing| *existing == name)
-            .unwrap_or_else(|| {
-                names.push(name);
-                names.len() - 1
-            });
-        push_u32(records, as_u32(name_start, "placeholder offset")?);
-        push_u32(records, as_u32(name.len(), "placeholder length")?);
-        push_u32(records, as_u32(argument_index, "argument index")?);
+        let name_offset = intern(name, pool, pool_index)?;
+        push_u24(records, name_offset);
+        push_u24(records, as_u24(name_start, "placeholder offset")?);
         *total_count = total_count
             .checked_add(1)
             .ok_or_else(|| io_error("part count overflow"))?;
         remaining = &after_open[close + 2..];
     }
-    as_u32(
-        total_count
-            .checked_sub(first_count)
-            .ok_or_else(|| io_error("part count underflow"))?,
-        "part count",
-    )
+    let value_part_count = total_count
+        .checked_sub(first_count)
+        .ok_or_else(|| io_error("part count underflow"))?;
+    u8::try_from(value_part_count).map_err(|_| io_error("value has more than 255 placeholders"))
 }
 
 fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -247,20 +264,26 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+fn push_u24(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes()[..3]);
+}
+
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn as_u32(value: usize, field: &str) -> io::Result<u32> {
-    u32::try_from(value).map_err(|_| io_error(format!("{field} exceeds u32")))
+fn as_u24(value: usize, field: &str) -> io::Result<u32> {
+    let value = as_u32(value, field)?;
+    if value >= OFFSET_SENTINEL {
+        return Err(io_error(format!(
+            "{field} collides with the 24-bit missing-value marker"
+        )));
+    }
+    Ok(value)
 }
 
-fn as_pool_offset(value: usize) -> io::Result<u32> {
-    let offset = as_u32(value, "pool offset")?;
-    if offset == u32::MAX {
-        return Err(io_error("pool offset collides with missing-value marker"));
-    }
-    Ok(offset)
+fn as_u32(value: usize, field: &str) -> io::Result<u32> {
+    u32::try_from(value).map_err(|_| io_error(format!("{field} exceeds u32")))
 }
 
 fn record_section_len(
@@ -299,9 +322,26 @@ mod tests {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32"))
     }
 
-    fn pool_text(bytes: &[u8], pool_offset: usize, offset: u32, length: u32) -> &str {
+    fn read_u24(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], 0])
+    }
+
+    fn pool_text(bytes: &[u8], pool_offset: usize, offset: u32) -> &str {
         let start = pool_offset + offset as usize;
-        std::str::from_utf8(&bytes[start..start + length as usize]).expect("UTF-8 pool")
+        let length = bytes[start..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("NUL-terminated pool string");
+        std::str::from_utf8(&bytes[start..start + length]).expect("UTF-8 pool")
+    }
+
+    fn values_offset(bytes: &[u8]) -> usize {
+        HEADER_LEN + read_u32(bytes, 8) as usize * KEY_RECORD_LEN
+    }
+
+    fn parts_offset(bytes: &[u8]) -> usize {
+        values_offset(bytes)
+            + read_u32(bytes, 8) as usize * read_u32(bytes, 12) as usize * VALUE_RECORD_LEN
     }
 
     #[test]
@@ -312,35 +352,35 @@ mod tests {
         assert_eq!(&first[..8], MAGIC);
         assert_eq!(read_u32(&first, 8), 3);
         assert_eq!(read_u32(&first, 12), 2);
-        let pool_offset = read_u32(&first, 16) as usize;
-        let first_key = read_u32(&first, HEADER_LEN);
-        let first_key_len = read_u32(&first, HEADER_LEN + 4);
-        let second_key = read_u32(&first, HEADER_LEN + 8);
-        let second_key_len = read_u32(&first, HEADER_LEN + 12);
-        assert_eq!(
-            pool_text(&first, pool_offset, first_key, first_key_len),
-            "a"
-        );
-        assert_eq!(
-            pool_text(&first, pool_offset, second_key, second_key_len),
-            "b"
-        );
+        let pool_offset = read_u32(&first, 20) as usize;
+        let first_key = read_u24(&first, HEADER_LEN);
+        let second_key = read_u24(&first, HEADER_LEN + KEY_RECORD_LEN);
+        assert_eq!(pool_text(&first, pool_offset, first_key), "a");
+        assert_eq!(pool_text(&first, pool_offset, second_key), "b");
+        assert_eq!(read_u32(&first, 16), 0);
+        assert_eq!(read_u32(&first, 28), 0);
+        assert_eq!(read_u32(&first, 24) as usize + pool_offset, first.len());
+        assert_eq!(first.last(), Some(&0));
     }
 
     #[test]
     fn missing_values_and_different_key_sets_are_encoded() {
         let bytes = encode(&["only_a=A\nshared=S", "only_b=B\nshared=S"]).expect("encode");
-        let pool_offset = read_u32(&bytes, 16) as usize;
+        let pool_offset = read_u32(&bytes, 20) as usize;
         let key_count = read_u32(&bytes, 8) as usize;
         assert_eq!(key_count, 3);
-        let values = HEADER_LEN + key_count * KEY_RECORD_LEN;
+        let values = values_offset(&bytes);
         let only_b_missing_value = values + VALUE_RECORD_LEN;
         let only_a_missing_value = values + VALUE_RECORD_LEN * 3;
         let only_b_present_value = values + VALUE_RECORD_LEN * 4;
-        assert_eq!(read_u32(&bytes, only_b_missing_value), u32::MAX);
-        assert_eq!(read_u32(&bytes, only_a_missing_value), u32::MAX);
-        assert_ne!(read_u32(&bytes, only_b_present_value), u32::MAX);
-        assert!(pool_offset > values);
+        assert_eq!(read_u24(&bytes, only_b_missing_value), OFFSET_SENTINEL);
+        assert_eq!(read_u24(&bytes, only_a_missing_value), OFFSET_SENTINEL);
+        assert_ne!(read_u24(&bytes, only_b_present_value), OFFSET_SENTINEL);
+        assert_eq!(read_u32(&bytes, 16), 0);
+        assert_eq!(
+            pool_offset,
+            values + key_count * read_u32(&bytes, 12) as usize * VALUE_RECORD_LEN
+        );
     }
 
     #[test]
@@ -348,30 +388,42 @@ mod tests {
         let bytes = encode(&["# comment\n// comment\nbad line\n =ignored\nkey=old\nkey=新\n"])
             .expect("encode");
         assert_eq!(read_u32(&bytes, 8), 1);
-        let pool_offset = read_u32(&bytes, 16) as usize;
-        let value_offset = HEADER_LEN + KEY_RECORD_LEN;
-        let text_offset = read_u32(&bytes, value_offset);
-        let text_len = read_u32(&bytes, value_offset + 4);
-        assert_eq!(pool_text(&bytes, pool_offset, text_offset, text_len), "新");
+        let pool_offset = read_u32(&bytes, 20) as usize;
+        let value_offset = values_offset(&bytes);
+        assert_eq!(
+            pool_text(&bytes, pool_offset, read_u24(&bytes, value_offset)),
+            "新"
+        );
     }
 
     #[test]
     fn unicode_placeholders_repeat_argument_indices_and_skip_unclosed() {
         let bytes = encode(&["msg=雪{{值}}/{{值}}/{{二}} {{未闭\n"]).expect("encode");
+        assert_eq!(read_u32(&bytes, 8), 1);
+        assert_eq!(read_u32(&bytes, 16), 3);
+        let pool_offset = read_u32(&bytes, 20) as usize;
+        let values = values_offset(&bytes);
+        assert_eq!(read_u24(&bytes, values + 3), 0);
+        assert_eq!(bytes[values + 6], 3);
+        let parts = parts_offset(&bytes);
+        let first_name = read_u24(&bytes, parts);
+        let first_start = read_u24(&bytes, parts + 3);
+        assert_eq!(first_start, "雪{{".len() as u32);
+        assert_eq!(pool_text(&bytes, pool_offset, first_name), "值");
+        let third_start = read_u24(&bytes, parts + PART_RECORD_LEN * 2 + 3);
+        assert_eq!(third_start, "雪{{值}}/{{值}}/{{".len() as u32);
+        let third_name = read_u24(&bytes, parts + PART_RECORD_LEN * 2);
+        assert_eq!(pool_text(&bytes, pool_offset, third_name), "二");
+    }
+
+    #[test]
+    fn pool_deduplicates_strings_and_terminates_every_entry() {
+        let bytes = encode(&["b=同\nc=同\n", "a=同\n"]).expect("encode");
+        let pool_offset = read_u32(&bytes, 20) as usize;
+        let pool = &bytes[pool_offset..];
+        assert_eq!(pool, "a\0b\0c\0同\0".as_bytes());
         let key_count = read_u32(&bytes, 8) as usize;
-        let values = HEADER_LEN + key_count * KEY_RECORD_LEN;
-        let first_part = read_u32(&bytes, values + 8) as usize;
-        let part_count = read_u32(&bytes, values + 12) as usize;
-        assert_eq!(first_part, 0);
-        assert_eq!(part_count, 3);
-        let parts = values + key_count * VALUE_RECORD_LEN;
-        let first_name = read_u32(&bytes, parts);
-        let first_len = read_u32(&bytes, parts + 4);
-        assert_eq!(first_len, "值".len() as u32);
-        assert_eq!(read_u32(&bytes, parts + 8), 0);
-        assert_eq!(read_u32(&bytes, parts + PART_RECORD_LEN + 8), 0);
-        assert_eq!(read_u32(&bytes, parts + PART_RECORD_LEN * 2 + 8), 1);
-        assert_eq!(first_name, "雪{{".len() as u32);
+        assert_eq!(key_count, 3);
     }
 
     #[test]

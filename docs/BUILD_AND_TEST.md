@@ -25,6 +25,21 @@ cargo build --release --bin BMCBL
 开发 profile 使用 `opt-level = 3`、`line-tables-only` 调试信息；release 使用 fat LTO、
 `panic = "abort"`、strip，追求发布体积。
 
+### 2.1 Release 体积报告
+
+`build.rs` 在每次构建时写入 `resource_size_report.json` 与 `resource_size_report.txt`，
+统计图片/图标（含内容去重与 release 期 PNG 无损重编码）、语言包和 BLoader 的原始与嵌入字节。
+链接完成后再用脚本补充最终 EXE 大小：
+
+```powershell
+pwsh -File scripts/size-report.ps1
+pwsh -File scripts/size-report.ps1 -NoBuild
+```
+
+脚本默认执行 `cargo build --release --bin BMCBL`；`-NoBuild` 只读取现有产物。可用
+`-Baseline <json>` 对比包含 `exe_bytes` 的基线 JSON。资源与 EXE 的原始数据只写入
+`target/`，不提交到仓库。
+
 ## 3. Feature 与后端矩阵
 
 根 package 的默认 feature：
