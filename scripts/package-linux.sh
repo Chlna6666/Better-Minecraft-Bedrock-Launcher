@@ -78,7 +78,11 @@ done
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP_SOURCE="$ROOT_DIR/packaging/linux/$APP_ID.desktop"
 METAINFO_SOURCE="$ROOT_DIR/packaging/linux/$APP_ID.metainfo.xml"
-ICON_SOURCE="$ROOT_DIR/assets/icons/icon.ico"
+if [[ -f "$ROOT_DIR/assets/images/logo.png" ]]; then
+  ICON_SOURCE="$ROOT_DIR/assets/images/logo.png"
+else
+  ICON_SOURCE="$ROOT_DIR/assets/icons/icon.ico"
+fi
 
 for source in "$DESKTOP_SOURCE" "$METAINFO_SOURCE" "$ICON_SOURCE"; do
   if [[ ! -f "$source" ]]; then
@@ -105,12 +109,18 @@ BUILD_DATE="$(date -u +%F)"
 
 convert_icon() {
   local destination="$1"
+  local size="${2:-256x256}"
+  local source="$ICON_SOURCE"
+  if [[ "$source" =~ \.ico$ ]]; then
+    # In Windows ICO files, frame [0] is often 16x16. Frame [5] is 256x256.
+    source="${source}[5]"
+  fi
   if command -v magick >/dev/null 2>&1; then
-    magick "${ICON_SOURCE}[0]" -background none -alpha on -resize 256x256 "$destination"
+    magick "$source" -background none -alpha on -resize "$size" "$destination"
   elif command -v convert >/dev/null 2>&1; then
-    convert "${ICON_SOURCE}[0]" -background none -alpha on -resize 256x256 "$destination"
+    convert "$source" -background none -alpha on -resize "$size" "$destination"
   else
-    echo "ImageMagick is required to convert assets/icons/icon.ico" >&2
+    echo "ImageMagick is required to convert $ICON_SOURCE" >&2
     exit 1
   fi
 }
@@ -121,8 +131,14 @@ install_payload() {
   install -Dm644 "$DESKTOP_SOURCE" "$root/usr/share/applications/$APP_ID.desktop"
   install -Dm644 "$METAINFO_SOURCE" "$root/usr/share/metainfo/$APP_ID.metainfo.xml"
   install -Dm644 "$ROOT_DIR/LICENSE" "$root/usr/share/licenses/$PACKAGE_NAME/LICENSE"
-  install -d "$root/usr/share/icons/hicolor/256x256/apps"
-  convert_icon "$root/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
+
+  for size in 16 32 48 64 128 256 512; do
+    install -d "$root/usr/share/icons/hicolor/${size}x${size}/apps"
+    convert_icon "$root/usr/share/icons/hicolor/${size}x${size}/apps/$APP_ID.png" "${size}x${size}"
+  done
+
+  install -d "$root/usr/share/pixmaps"
+  cp "$root/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$root/usr/share/pixmaps/$APP_ID.png"
 }
 
 APPDIR="$WORK_DIR/AppDir"
@@ -188,7 +204,14 @@ cp -a usr %{buildroot}/
 %files
 /usr/bin/BMCBL
 /usr/share/applications/$APP_ID.desktop
+/usr/share/icons/hicolor/16x16/apps/$APP_ID.png
+/usr/share/icons/hicolor/32x32/apps/$APP_ID.png
+/usr/share/icons/hicolor/48x48/apps/$APP_ID.png
+/usr/share/icons/hicolor/64x64/apps/$APP_ID.png
+/usr/share/icons/hicolor/128x128/apps/$APP_ID.png
 /usr/share/icons/hicolor/256x256/apps/$APP_ID.png
+/usr/share/icons/hicolor/512x512/apps/$APP_ID.png
+/usr/share/pixmaps/$APP_ID.png
 /usr/share/metainfo/$APP_ID.metainfo.xml
 /usr/share/licenses/$PACKAGE_NAME/LICENSE
 
