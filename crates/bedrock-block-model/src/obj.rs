@@ -489,6 +489,13 @@ impl ObjTextureResolver {
         let lookup_block = obj_canonical_block_lookup_name(&block);
         let material_texture = obj_material_texture_name(material);
         let material_slot = obj_material_instance_slot(material);
+        // The capture catalog stores engine texture aliases only. Resolve
+        // them against local resource packs (never a version-indexed path).
+        if let Some(alias)=material_slot.as_deref()
+            .and_then(crate::decode_capture_texture_slot)
+            && let Some((pack,path))=self.texture_path_for_key(&alias) {
+            return Some(pack.resolved_texture(&self.texture_directory_name,path));
+        }
         let slot_face = material_slot
             .as_deref()
             .map(BlockFace::parse)

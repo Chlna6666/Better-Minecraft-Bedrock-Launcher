@@ -1828,7 +1828,18 @@ impl Worker {
             );
         }
         let resolver = Arc::new(ObjTextureResolver::with_pack_roots(&roots, "textures"));
-        let models = Arc::new(resolver.models().clone());
+        let mut models = resolver.models().clone();
+        if let Some(root)=discover_capture_library(&config.package_roots) {
+            match models.load_capture_catalog(&root) {
+                Ok(count) => {
+                    if trace_timings(){
+                        eprintln!("world3d: loaded {count} captured model states from {}",root.display());
+                    }
+                }
+                Err(error) => eprintln!("world3d: capture library ignored ({}): {error}",root.display()),
+            }
+        }
+        let models = Arc::new(models);
         let mut info = ChunkServiceInfo::default();
         info.block_model_count = models.blocks.len();
         info.resource_pack_count = roots.len();
@@ -3589,6 +3600,35 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
     }
 }
 
+/// Discover the selected installation's exported model catalog. No game version
+/// paths, texture files or model blobs are bundled in BMCBL.
+fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
+    if let Some(root)=std::env::var_os("BMCBL_CAPTURE_MODEL_DIR")
+        .filter(|p|!p.is_empty())
+        .map(PathBuf::from)
+    {
+        return root.join("manifest.json").is_file().then_some(root);
+    }
+    // Resource packs are already scoped to the selected game installation.
+    // Probe only a few fixed relative paths; no recursive filesystem walk.
+    for package in package_roots {
+        for base in package.ancestors().take(5) {
+            for rel in ["BedrockSceneCapture/export","mods/BedrockSceneCapture/export",
+                        "plugins/BedrockSceneCapture/export"] {
+                let exports=base.join(rel);
+                let Ok(entries)=std::fs::read_dir(exports) else {continue;};
+                for entry in entries.flatten() {
+                    let dir=entry.path();
+                    if dir.is_dir() && dir.join("manifest.json").is_file()
+                        && dir.join("blocks.json").is_file() {
+                        return Some(dir);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBuf> {
     vanilla_resource_pack_roots_from_packages(package_roots.iter())
 }

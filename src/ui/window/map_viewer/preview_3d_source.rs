@@ -3649,6 +3649,14 @@ fn preview_3d_resolved_detail_shape_for_block(
         }
     }
     let query = preview_3d_block_state_query(state);
+    // Exact registry state wins for non-contextual detail geometry. Incomplete
+    // neighbor-driven states stay on the established wall/fence/stair logic.
+    if let Some(shape)=repository.captured_shape(&query)
+        .map(preview_3d_detail_shape_from_model_shape)
+        .filter(|shape|!shape.is_empty() && !preview_3d_shape_is_full_cube(shape))
+    {
+        return Some(shape);
+    }
     if is_java_block_entity_model_block(&state.name)
         && let Some(shape) = model_shape_for_block_state(&query)
             .map(preview_3d_detail_shape_from_model_shape)

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
+use crate::runtime_capture::RuntimeCaptureCatalog;
 
 use serde_json::Value;
 
@@ -18,6 +20,9 @@ pub struct BlockModelRepository {
     pub blocks: BTreeMap<String, BlockDefinition>,
     pub terrain_textures: TerrainTextureAtlas,
     pub geometries: GeometryLibrary,
+    /// Optional runtime-captured geometry; owned by this editor's pack repository.
+    /// No global version table, immutable after loading and shared between worker clones.
+    pub capture_catalog: Option<Arc<RuntimeCaptureCatalog>>,
 }
 
 impl BlockModelRepository {
@@ -114,6 +119,20 @@ impl BlockModelRepository {
     #[must_use]
     pub fn resolve_block(&self, state: &BlockStateQuery) -> ResolvedBlockModel {
         resolve_block(self, state)
+    }
+
+    /// Load a BedrockSceneCapture export found beside the local game installation.
+    /// Meshes are read lazily by state and cached by their content hash.
+    pub fn load_capture_catalog(&mut self, root: &Path) -> std::result::Result<usize, String> {
+        let catalog=RuntimeCaptureCatalog::open(root)?;
+        let count=catalog.state_count();
+        self.capture_catalog=Some(Arc::new(catalog));
+        Ok(count)
+    }
+
+    #[must_use]
+    pub fn captured_shape(&self, state: &BlockStateQuery) -> Option<crate::ModelShape> {
+        self.capture_catalog.as_ref()?.shape_for_state(state)
     }
 
     #[must_use]

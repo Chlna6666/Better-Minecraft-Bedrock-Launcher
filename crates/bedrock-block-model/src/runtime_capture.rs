@@ -3,7 +3,6 @@
 //! files are loaded only when the corresponding state is first encountered.
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 

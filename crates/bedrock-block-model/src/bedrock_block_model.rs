@@ -23,6 +23,7 @@ mod pack;
 mod permutation;
 mod resolver;
 mod resource;
+mod runtime_capture;
 mod state;
 mod texture;
 
@@ -95,6 +96,7 @@ pub use pack::{BlockDefinition, BlockModelRepository};
 pub use permutation::{BlockPermutation, ConditionEvaluation};
 pub use resolver::{ModelWarning, ResolvedBlockModel, ResolvedMaterialInstance, ResolvedTexture};
 pub use resource::ResourceFile;
+pub use runtime_capture::{RuntimeCaptureCatalog,capture_texture_slot,decode_capture_texture_slot};
 pub use state::{BlockStateQuery, BlockStateValue};
 pub use texture::{TerrainTexture, TerrainTextureAtlas};
 
