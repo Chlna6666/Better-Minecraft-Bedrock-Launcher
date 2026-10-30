@@ -58,34 +58,25 @@ instead of `PathBuf`. For loose inputs use `ResourceFile::file(path)`; use
 An archived resource's logical path need not exist on disk. Source clones retain
 the open archive after the resolver is dropped, including until OBJ export completes.
 
-## Embedded native model catalog
+## Runtime BedrockSceneCapture model library
 
-`crates/bedrock-block-model/generated/native_models.json` is generated from a real Minecraft
-Bedrock installation and embedded into the crate (`src/native_models.rs`), so the 3D editor does
-not have to scan `Minecraft.Windows.exe` at runtime. It contains **one entry for every block id**
-in `data/resource_packs/*/blocks.json` plus the data-driven behavior-pack blocks (about 1,280 blocks in 26.40):
+The 3D editor resolves mesh definitions by exact BlockState from an optional
+**per-installation** BedrockSceneCapture export. It never bundles old
+`captured_detail_models.bin` or `native_models.json` (those catalogs were
+incomplete and contained misleading geometry). Java Edition geometry is not
+used as an automatic replacement for Bedrock native shapes.
 
-- `render_source: "voxel_shape"` – cuboids decoded from the native block shapes the game ships
-  under `data/behavior_packs/*/shapes/**` (fence, anvil, chest, composter, ...).
-- `render_source: "pack_geometry"` – cuboids from a resource-pack block model
-  (`models/blocks/*.geo.json`, e.g. the experimental straw bed / shelf models).
-- `render_source: "cube"` – all remaining blocks; the entry still records the block texture
-  slots, the engine geometry-template ids (`minecraft:geometry.template_fence_gate`, ...) and the
-  native occlusion shape id. The renderer keeps its family/Java fallback for those blocks because
-  Bedrock builds most vanilla render templates in engine code, not in shipped data.
-
-`model_shape_for_block_state` consults the native catalog first; `BMCBL_BLOCK_MODEL_SOURCE` can
-force `native`, `native-all` (also use occlusion shapes), or `legacy`.
-
-`generated/item_texture_map.json` maps Bedrock item ids to their icon names (legacy dye names,
-`wooden_*`/`golden_*` tools, music discs, ...) and is consumed by `ObjTextureResolver::item_texture_for`.
-
-Regenerate both after a game update:
-
-```powershell
-python crates/bedrock-block-model/tools/generate_native_models.py --game-dir "<version dir>"
-python crates/bedrock-block-model/tools/generate_item_texture_map.py --game-dir "<version dir>"
-```
+- Import a selected installation's `manifest.json` and `blocks.json` once when
+  opening the 3D editor, then load `meshes/<sha256>.json` lazily on demand.
+- Use full state identity and neighbor-dependent rules. No cached geometry may
+  be silently reused for an unmatched stair orientation or wall connection.
+- Resolve texture **resource aliases**, not version-indexed paths, from local
+  `terrain_texture.json` and resource packs. Missing explicit aliases do not
+  fall back to an unrelated face texture.
+- `BMCBL_CAPTURE_MODEL_DIR` can explicitly point to the export directory.
+- Native-model completeness is limited to what the export actually captured.
+  The existing procedural Bedrock model-family geometry remains a provisional
+  fallback, not a claim of native tessellation fidelity.
 
 ## Boundary
 

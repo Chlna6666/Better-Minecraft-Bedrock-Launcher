@@ -17,31 +17,19 @@
 - `resource_packs/vanilla` 为权威包：它排在 `vanilla_*` 覆盖包之后，因此同名纹理以基础包为准，
   覆盖包只补齐基础包没有的文件。
 
-## 内嵌原生模型目录（由游戏目录生成）
+## 运行时 BedrockSceneCapture 模型库
 
-`generated/native_models.json` 由真实 Bedrock 版本目录生成并内嵌进 crate（`src/native_models.rs`），
-3D 编辑器运行时无需再扫描 `Minecraft.Windows.exe`。目录对 `blocks.json` 中的 **每一个方块 id**
-（26.40 约 1280 个，含行为包数据驱动方块）都有一条记录：
+已移除不完整的内置 `captured_detail_models.bin` 与 `native_models.json`，
+不再把 Java 版网格当作基岩版原生几何的自动替代品。
 
-- `render_source: "voxel_shape"`：来自游戏自带 `data/behavior_packs/*/shapes/**` 的原生形状盒子
-  （栅栏、铁砧、箱子、堆肥桶等）；
-- `render_source: "pack_geometry"`：来自资源包 `models/blocks/*.geo.json` 的方块模型；
-- `render_source: "cube"`：其余方块，仍保留材质槽、引擎几何模板 id（如
-  `minecraft:geometry.template_fence_gate`）与原生 occlusion 形状 id；渲染回退到 family/Java 形状，
-  因为原版渲染模板的 cuboid/UV 由引擎代码生成，不在随包数据中。
+3D 编辑器按选定游戏安装目录读取 BedrockSceneCapture 的 `manifest.json`、
+`blocks.json`，通过完整 BlockState 精确查找，按 SHA-256 懒加载几何。
+纹理仅保存游戏中的资源别名，路径从当前游戏资源包的
+`terrain_texture.json` 动态解析；不维护跨版本硬编码贴图表。
 
-`model_shape_for_block_state` 优先使用内嵌原生目录；环境变量 `BMCBL_BLOCK_MODEL_SOURCE` 可取
-`native`（默认）、`native-all`（额外把 occlusion 形状当渲染形状）、`legacy`。
-
-`generated/item_texture_map.json` 是物品 id → 图标名映射（染料旧名、`wooden_*`/`golden_*` 工具、
-唱片等），由 `ObjTextureResolver::item_texture_for` 使用。
-
-游戏更新后重新生成：
-
-```powershell
-python crates/bedrock-block-model/tools/generate_native_models.py --game-dir "<版本目录>"
-python crates/bedrock-block-model/tools/generate_item_texture_map.py --game-dir "<版本目录>"
-```
+可以通过 `BMCBL_CAPTURE_MODEL_DIR` 显式指定模型导出目录。
+缺少真实采样时，旧的基岩版程序化形状仍属不保证精度的临时回退，
+不能将其标记为原生精准模型。
 
 ## 边界
 
