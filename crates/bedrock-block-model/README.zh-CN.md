@@ -22,8 +22,7 @@
 已移除不完整的内置 `captured_detail_models.bin` 与 `native_models.json`，
 不再把 Java 版网格当作基岩版原生几何的自动替代品。
 
-3D 编辑器按选定游戏安装目录读取 BedrockSceneCapture 的 `manifest.json`、
-`blocks.json`，通过完整 BlockState 精确查找，按 SHA-256 懒加载几何。
+3D 编辑器按选定游戏安装目录读取 BedrockSceneCapture 的 Geometry Pool v2：`manifest.json`、`blocks.json` 和 `geometry_pool` 下的几何、外观、材质表。通过完整 BlockState 精确查找，按 SHA-256 引用懒加载共享资源；不再依赖旧 `meshes/` 完整网格。
 纹理仅保存游戏中的资源别名，路径从当前游戏资源包的
 `terrain_texture.json` 动态解析；不维护跨版本硬编码贴图表。
 
