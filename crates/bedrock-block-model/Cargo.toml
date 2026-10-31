@@ -2,6 +2,7 @@
 name = "bedrock-block-model"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "Resource-pack block model resolver for Minecraft Bedrock"
@@ -14,6 +15,8 @@ categories = ["parser-implementations", "game-development", "rendering"]
 publish = false
 include = [
     "Cargo.toml",
+    "build.rs",
+    "generated/bsc_models.bin",
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "README.md",
@@ -35,6 +38,7 @@ bedrock-world = { path = "../bedrock-world", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 thiserror = "2.0.17"
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2"] }
 walkdir = "2.5.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "tga"] }
 
