@@ -344,33 +344,77 @@ pub fn decode_capture_texture_slot(slot:&str)->Option<String>{
     let bytes=decode_hex(hex)?;
     String::from_utf8(bytes).ok()
 }
-fn mesh_planes(mesh:&CaptureMesh,slots:&[Option<usize>],aliases:&HashMap<usize,String>)
-    ->Option<Vec<ModelPlane>>{
-    if mesh.indices.len()%6!=0 || slots.len()!=mesh.indices.len()/3 {return None}
-    let mut planes=Vec::with_capacity(mesh.indices.len()/6);
-    for (quad,idx) in mesh.indices.chunks_exact(6).enumerate(){
-        if idx[0]!=idx[3] || idx[2]!=idx[4] {return None}
-        let (Some(a),Some(b),Some(c),Some(d)) =
-            (mesh.vertices.get(idx[0]),mesh.vertices.get(idx[1]),
-             mesh.vertices.get(idx[2]),mesh.vertices.get(idx[5]))
-            else {return None};
-        let mut corners=[[0f32;3];4];
-        let mut uv=[[0f32;2];4];
-        for (i,row) in [a,b,c,d].into_iter().enumerate(){
-            if row.len()!=9{return None}
-            for axis in 0..3{corners[i][axis]=row[axis].as_f64()? as f32;}
-            for axis in 0..2{uv[i][axis]=row[axis+6].as_f64()? as f32;}
-            if !corners[i].iter().chain(uv[i].iter()).all(|v|v.is_finite()){return None}
+// Canonical V2 triangles are sorted independently from source quad order.
+// Match two oppositely directed shared edges to recover a *real* quad;
+// never invent a face from unrelated triangles or assume adjacent indices.
+fn shared_mesh_planes(
+    geometry:&CaptureGeometryV2,appearance:&CaptureAppearanceV2,
+    geometry_hash:&str,aliases:&HashMap<usize,String>,
+)->Option<Vec<ModelPlane>>{
+    if geometry.topology!="triangles" || appearance.geometry_ref!=geometry_hash ||
+        appearance.uv_space!="block_face_local" ||
+        !matches!(appearance.geometry_source.as_str(),
+            "registry_visual_bounds"|"registry_cross_planes") {return None}
+    let count=geometry.triangles.len();
+    if count==0 || count>32768 || count%2!=0 ||
+        appearance.corner_attributes.len()!=count*3 ||
+        appearance.triangle_texture_slots.len()!=count {return None}
+    let points=&geometry.vertices;
+    let attr=&appearance.corner_attributes;
+    let slots=&appearance.triangle_texture_slots;
+    let mut used=vec![false;count];
+    let mut planes=Vec::with_capacity(count/2);
+    for i in 0..count{
+        if used[i]{continue}
+        let a=geometry.triangles[i];
+        if a.iter().any(|&index|index>=points.len()){return None}
+        let mut selected=None;
+        'candidate:for j in i+1..count{
+            if used[j]||slots[i]!=slots[j]{continue}
+            let b=geometry.triangles[j];
+            if b.iter().any(|&index|index>=points.len()){return None}
+            for ra in 0..3{
+                let ai=[(ra)%3,(ra+1)%3,(ra+2)%3];
+                for rb in 0..3{
+                    let bj=[rb%3,(rb+1)%3,(rb+2)%3];
+                    if a[ai[0]]!=b[bj[0]] || a[ai[2]]!=b[bj[1]] ||
+                        a[ai[1]]==b[bj[2]] {continue}
+                    let left=&attr[3*i+ai[0]];
+                    let right=&attr[3*j+bj[0]];
+                    let left2=&attr[3*i+ai[2]];
+                    let right2=&attr[3*j+bj[1]];
+                    if left!=right||left2!=right2{continue}
+                    let rows=[&attr[3*i+ai[0]],&attr[3*i+ai[1]],
+                              &attr[3*i+ai[2]],&attr[3*j+bj[2]]];
+                    if rows.iter().any(|row|row.len()!=6){continue}
+                    if rows.iter().any(|row|row[0..3]!=rows[0][0..3]){continue}
+                    let corners=[points[a[ai[0]]],points[a[ai[1]]],
+                                 points[a[ai[2]]],points[b[bj[2]]]];
+                    let uv=rows.map(|row|->Option<[f32;2]>{
+                        Some([row[3].as_f64()? as f32,row[4].as_f64()? as f32])
+                    });
+                    let [Some(u0),Some(u1),Some(u2),Some(u3)]=uv else {continue};
+                    let uvs=[u0,u1,u2,u3];
+                    if !corners.iter().flatten().chain(uvs.iter().flatten())
+                        .all(|v|v.is_finite()){continue}
+                    let normal=[rows[0][0].as_f64()?.round() as i32,
+                                rows[0][1].as_f64()?.round() as i32,
+                                rows[0][2].as_f64()?.round() as i32];
+                    // Only axis-aligned block faces are currently consumable
+                    // by the editor's quad/cuboid model representation.
+                    if normal.iter().filter(|&&v|v!=0).count()!=1 ||
+                       normal.iter().any(|&v|v.abs()>1){continue}
+                    let plane=ModelPlane::new(corners,normal).with_uv(uvs).front_only();
+                    selected=Some((j,plane));
+                    break 'candidate;
+                }
+            }
         }
-        let nx=a[3].as_f64()?.round() as i32;
-        let ny=a[4].as_f64()?.round() as i32;
-        let nz=a[5].as_f64()?.round() as i32;
-        let first=slots[quad*2];let second=slots[quad*2+1];
-        if first!=second {return None}
-        let mut plane=ModelPlane::new(corners,[nx,ny,nz]).with_uv(uv).front_only();
-        if let Some(alias)=first.and_then(|id|aliases.get(&id)){
+        let (j,mut plane)=selected?;
+        if let Some(alias)=slots[i].and_then(|id|aliases.get(&id)){
             plane=plane.with_material_slot(capture_texture_slot(alias));
         }
+        used[i]=true;used[j]=true;
         planes.push(plane);
     }
     Some(planes)
