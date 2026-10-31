@@ -400,10 +400,26 @@ fn shared_mesh_planes(
                     let normal=[rows[0][0].as_f64()?.round() as i32,
                                 rows[0][1].as_f64()?.round() as i32,
                                 rows[0][2].as_f64()?.round() as i32];
-                    // Only axis-aligned block faces are currently consumable
-                    // by the editor's quad/cuboid model representation.
-                    if normal.iter().filter(|&&v|v!=0).count()!=1 ||
-                       normal.iter().any(|&v|v.abs()>1){continue}
+                    // The previous reader also supported diagonal cross
+                    // planes (flowers, grasses). Do not restrict normals to
+                    // coordinate axes, but verify the four positions are
+                    // coplanar before reconstructing a native quad.
+                    let ab=[corners[1][0]-corners[0][0],
+                            corners[1][1]-corners[0][1],
+                            corners[1][2]-corners[0][2]];
+                    let ac=[corners[2][0]-corners[0][0],
+                            corners[2][1]-corners[0][1],
+                            corners[2][2]-corners[0][2]];
+                    let ad=[corners[3][0]-corners[0][0],
+                            corners[3][1]-corners[0][1],
+                            corners[3][2]-corners[0][2]];
+                    let cross=[ab[1]*ac[2]-ab[2]*ac[1],
+                               ab[2]*ac[0]-ab[0]*ac[2],
+                               ab[0]*ac[1]-ab[1]*ac[0]];
+                    let norm_sq=cross.iter().map(|v|v*v).sum::<f32>();
+                    if norm_sq<1e-12 {continue}
+                    let deviation=(cross[0]*ad[0]+cross[1]*ad[1]+cross[2]*ad[2]).abs();
+                    if deviation>1e-4*norm_sq.sqrt(){continue}
                     let plane=ModelPlane::new(corners,normal).with_uv(uvs).front_only();
                     selected=Some((j,plane));
                     break 'candidate;
