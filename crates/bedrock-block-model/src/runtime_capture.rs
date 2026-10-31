@@ -553,8 +553,8 @@ mod tests {
     fn v2_triangle_pairing_keeps_uv_and_shared_material_slot(){
         let dir=tempfile::tempdir().expect("temporary export");
         let (geo,app,_)=fixture(dir.path(),false);
-        let mesh=read_pool::<CaptureGeometryV2>(dir.path(),"geometry",&geo).expect("geometry");
-        let appearance=read_pool::<CaptureAppearanceV2>(dir.path(),"appearance",&app)
+        let mesh=read_pool::<CaptureGeometryV2>(dir.path(),None,"geometry",&geo).expect("geometry");
+        let appearance=read_pool::<CaptureAppearanceV2>(dir.path(),None,"appearance",&app)
             .expect("appearance");
         let aliases=HashMap::from([(2,"grass_side".to_owned())]);
         let planes=shared_mesh_planes(&mesh,&appearance,&geo,&aliases).expect("valid quad");
@@ -567,6 +567,37 @@ mod tests {
         let mut invalid=appearance;
         invalid.triangle_texture_slots[1]=Some(9);
         assert!(shared_mesh_planes(&mesh,&invalid,&geo,&aliases).is_none());
+    }
+    #[test]
+    fn embedded_zip_archive_reads_geometry_lazily() {
+        use std::io::Write;
+        let dir=tempfile::tempdir().expect("temporary capture");
+        fixture(dir.path(),false);
+        let mut writer=zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options=zip::write::SimpleFileOptions::default();
+        for name in ["manifest.json","blocks.json"] {
+            writer.start_file(name,options).expect("ZIP index");
+            writer.write_all(&fs::read(dir.path().join(name)).expect("index bytes"))
+                .expect("write index");
+        }
+        for kind in ["geometry","appearance","materials"] {
+            let root=dir.path().join("geometry_pool").join(kind);
+            for file in fs::read_dir(root).expect("pool files") {
+                let entry=file.expect("pool entry");
+                let file_name=entry.file_name().into_string().expect("UTF-8 hash");
+                writer.start_file(format!("geometry_pool/{kind}/{file_name}"),options)
+                    .expect("ZIP pool");
+                writer.write_all(&fs::read(entry.path()).expect("pool bytes"))
+                    .expect("pool write");
+            }
+        }
+        let bytes=writer.finish().expect("ZIP finalize").into_inner();
+        let bytes: &'static [u8]=Box::leak(bytes.into_boxed_slice());
+        let catalog=RuntimeCaptureCatalog::open_with_source(
+            Path::new("<embedded>"),Some(bytes)).expect("archive catalog");
+        assert_eq!(catalog.state_count(),1);
+        assert!(catalog.shape_for_state(
+            &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2)).is_some());
     }
     #[test]
     fn v2_diagonal_cross_planes_remain_supported(){
