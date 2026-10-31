@@ -1839,6 +1839,15 @@ impl Worker {
                 Err(error) => eprintln!("world3d: capture library ignored ({}): {error}",root.display()),
             }
         }
+        // A verified installation-specific capture always overrides the
+        // optional built-in fallback, which is compiled from a BSC export.
+        if models.capture_catalog.is_none() {
+            if let Ok(count)=models.load_embedded_capture_catalog() {
+                if trace_timings(){
+                    eprintln!("world3d: using {count} embedded BSC model states");
+                }
+            }
+        }
         let models = Arc::new(models);
         let mut info = ChunkServiceInfo::default();
         info.block_model_count = models.blocks.len();
