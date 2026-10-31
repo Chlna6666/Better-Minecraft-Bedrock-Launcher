@@ -3,6 +3,7 @@
 //! files are loaded only when the corresponding state is first encountered.
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -142,11 +143,34 @@ struct StateRecipe{
 fn valid_ref(hash:&str)->bool{
     hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())
 }
-fn read_pool<T:serde::de::DeserializeOwned>(root:&Path,kind:&str,hash:&str)->Option<T>{
+// The packed ZIP is indexed once and entries are decompressed only on cache misses.
+// Serialized access prevents repeated archive-index creation and keeps memory bounded.
+struct PackedSource(Mutex<zip::ZipArchive<Cursor<&'static [u8]>>>);
+impl std::fmt::Debug for PackedSource {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.write_str("PackedBscArchive")
+    }
+}
+fn read_catalog_entry(root:&Path,packed:Option<&PackedSource>,name:&str,max_size:u64)->Option<Vec<u8>> {
+    if let Some(packed)=packed {
+        let mut archive=packed.0.lock().ok()?;
+        let mut entry=archive.by_name(name).ok()?;
+        if entry.size()>max_size {return None}
+        let mut content=Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut content).ok()?;
+        (content.len() as u64<=max_size).then_some(content)
+    }else{
+        let path=root.join(name);
+        fs::metadata(&path).ok().filter(|m|m.len()<=max_size)
+            .and_then(|_|fs::read(path).ok())
+    }
+}
+fn read_pool<T:serde::de::DeserializeOwned>(
+    root:&Path,packed:Option<&PackedSource>,kind:&str,hash:&str
+)->Option<T>{
     if !valid_ref(hash){return None}
-    let file=root.join("geometry_pool").join(kind).join(format!("{hash}.json"));
-    fs::metadata(&file).ok().filter(|m|m.len()<=8*1024*1024)
-        .and_then(|_|fs::read(file).ok())
+    let name=format!("geometry_pool/{kind}/{hash}.json");
+    read_catalog_entry(root,packed,&name,8*1024*1024)
         .and_then(|bytes|serde_json::from_slice(&bytes).ok())
 }
 /// The BMCBL model cache is scoped to a game installation, not to a process-global
@@ -154,6 +178,7 @@ fn read_pool<T:serde::de::DeserializeOwned>(root:&Path,kind:&str,hash:&str)->Opt
 #[derive(Debug)]
 pub struct RuntimeCaptureCatalog {
     root: PathBuf,
+    packed: Option<PackedSource>,
     version: String,
     states: HashMap<StateKey,StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
@@ -169,15 +194,33 @@ impl Eq for RuntimeCaptureCatalog {}
 impl RuntimeCaptureCatalog {
     /// Parses the state index once. The heavy geometry blobs remain on disk until used.
     pub fn open(root: impl AsRef<Path>) -> Result<Self,String> {
-        let root=root.as_ref();
-        let manifest:CaptureManifest=serde_json::from_slice(&fs::read(root.join("manifest.json"))
-            .map_err(|e|format!("manifest.json: {e}"))?).map_err(|e|format!("manifest.json: {e}"))?;
+        Self::open_with_source(root.as_ref(),None)
+    }
+    /// Use the optional compile-time model library. Disk captures take priority,
+    /// so the user may override this with their current installation's export.
+    pub fn open_embedded() -> Result<Self,String> {
+        const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"),"/bsc_models.bin"));
+        if ARCHIVE.is_empty() {return Err("no embedded BSC model library".to_owned())}
+        Self::open_with_source(Path::new("<embedded>"),Some(ARCHIVE))
+    }
+    fn open_with_source(root:&Path,blob:Option<&'static [u8]>)->Result<Self,String> {
+        let packed=blob.map(|bytes|
+            zip::ZipArchive::new(Cursor::new(bytes))
+                .map(|archive|PackedSource(Mutex::new(archive)))
+                .map_err(|e|format!("packed BSC ZIP: {e}"))
+        ).transpose()?;
+        let manifest:CaptureManifest=serde_json::from_slice(
+            &read_catalog_entry(root,packed.as_ref(),"manifest.json",1024*1024)
+                .ok_or_else(||"manifest.json: missing or too large".to_owned())?
+        ).map_err(|e|format!("manifest.json: {e}"))?;
         if !manifest.registry_only {return Err("capture is not registry-only".to_owned());}
         if manifest.shared_geometry_pool_schema!=2 || manifest.legacy_meshes_retained {
             return Err("Geometry Pool v2 exclusive export required".to_owned());
         }
-        let index:CaptureIndex=serde_json::from_slice(&fs::read(root.join("blocks.json"))
-            .map_err(|e|format!("blocks.json: {e}"))?).map_err(|e|format!("blocks.json: {e}"))?;
+        let index:CaptureIndex=serde_json::from_slice(
+            &read_catalog_entry(root,packed.as_ref(),"blocks.json",64*1024*1024)
+                .ok_or_else(||"blocks.json: missing or too large".to_owned())?
+        ).map_err(|e|format!("blocks.json: {e}"))?;
         let mut states=HashMap::with_capacity(index.blocks.len());
         let mut canonical_by_network_id:HashMap<u32,(String,StateRecipe)>=HashMap::new();
         let mut geometry_aliases=Vec::new();
@@ -202,7 +245,7 @@ impl RuntimeCaptureCatalog {
             let aliases=if let Some(cached)=material_cache.get(material_ref){
                 cached.clone()
             }else{
-                let Some(table)=read_pool::<CaptureMaterialTable>(root,"materials",material_ref)
+                let Some(table)=read_pool::<CaptureMaterialTable>(root,packed.as_ref(),"materials",material_ref)
                     else {continue};
                 if table.schema!=2 {continue}
                 let aliases:HashMap<usize,String>=table.texture_bindings.into_iter()
@@ -230,7 +273,7 @@ impl RuntimeCaptureCatalog {
                 if *name==key.name {states.insert(key,recipe.clone());}
             }
         }
-        Ok(Self{root:root.to_owned(),version:manifest.target_game_version,states,
+        Ok(Self{root:root.to_owned(),packed,version:manifest.target_game_version,states,
             geometries:Mutex::new(HashMap::new()),
             appearances:Mutex::new(HashMap::new()),shapes:Mutex::new(HashMap::new())})
     }
@@ -268,7 +311,7 @@ impl RuntimeCaptureCatalog {
     fn shared_geometry(&self,hash:&str)->Option<Arc<CaptureGeometryV2>>{
         let mut cache=self.geometries.lock().ok()?;
         if let Some(value)=cache.get(hash){return value.clone()}
-        let result=read_pool::<CaptureGeometryV2>(&self.root,"geometry",hash)
+        let result=read_pool::<CaptureGeometryV2>(&self.root,self.packed.as_ref(),"geometry",hash)
             .filter(|mesh|mesh.schema==2&&mesh.topology=="triangles").map(Arc::new);
         cache.insert(hash.to_owned(),result.clone());
         result
@@ -276,7 +319,7 @@ impl RuntimeCaptureCatalog {
     fn shared_appearance(&self,hash:&str)->Option<Arc<CaptureAppearanceV2>>{
         let mut cache=self.appearances.lock().ok()?;
         if let Some(value)=cache.get(hash){return value.clone()}
-        let result=read_pool::<CaptureAppearanceV2>(&self.root,"appearance",hash)
+        let result=read_pool::<CaptureAppearanceV2>(&self.root,self.packed.as_ref(),"appearance",hash)
             .filter(|mesh|mesh.schema==2).map(Arc::new);
         cache.insert(hash.to_owned(),result.clone());
         result
