@@ -1839,12 +1839,17 @@ impl Worker {
                 Err(error) => eprintln!("world3d: capture library ignored ({}): {error}",root.display()),
             }
         }
-        // A verified installation-specific capture always overrides the
-        // optional built-in fallback, which is compiled from a BSC export.
+        // An installation capture takes precedence. The optional embedded
+        // archive is version-specific: never apply its exact-state recipes to
+        // an unrelated Minecraft build.
         if models.capture_catalog.is_none() {
-            if let Ok(count)=models.load_embedded_capture_catalog() {
-                if trace_timings(){
-                    eprintln!("world3d: using {count} embedded BSC model states");
+            if let Ok(catalog)=bedrock_block_model::RuntimeCaptureCatalog::open_embedded() {
+                if capture_version_matches_installation(catalog.game_version(), &config.package_roots) {
+                    let count=catalog.state_count();
+                    if trace_timings(){
+                        eprintln!("world3d: using {count} embedded BSC model states for {}",catalog.game_version());
+                    }
+                    models.capture_catalog=Some(Arc::new(catalog));
                 }
             }
         }
@@ -3609,8 +3614,20 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
     }
 }
 
-/// Discover the selected installation's exported model catalog. No game version
-/// paths, texture files or model blobs are bundled in BMCBL.
+/// Match the full BSC game version to a selected installation's version
+/// directory, e.g. 1.26.51.1 to versions/26.51. Do not share the database
+/// across unrelated versions: network IDs and native UV layouts may change.
+fn capture_version_matches_installation(version:&str, package_roots:&[PathBuf])->bool {
+    let version_tag=version.strip_prefix("1.").unwrap_or(version);
+    package_roots.iter().any(|package| package.ancestors().take(5).any(|part| {
+        let Some(folder)=part.file_name().and_then(|s|s.to_str()) else{return false;};
+        version_tag==folder || version_tag.strip_prefix(folder)
+            .is_some_and(|tail|tail.starts_with('.'))
+    }))
+}
+
+/// Discover the selected installation's exported model catalog. External
+/// captures are always preferred over the optional compiled-in model bundle.
 fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
     if let Some(root)=std::env::var_os("BMCBL_CAPTURE_MODEL_DIR")
         .filter(|p|!p.is_empty()).map(PathBuf::from) {
