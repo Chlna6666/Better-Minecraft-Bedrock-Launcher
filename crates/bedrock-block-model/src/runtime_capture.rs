@@ -81,6 +81,10 @@ struct CaptureIndex {
 #[derive(Debug, Deserialize)]
 struct CaptureBlock {
     name: String,
+    #[serde(default)]
+    network_id: Option<u32>,
+    #[serde(default)]
+    geometry_alias_network_id: Option<u32>,
     state_nbt_hex: String,
     #[serde(default)]
     status: String,
@@ -148,6 +152,8 @@ impl RuntimeCaptureCatalog {
         let index:CaptureIndex=serde_json::from_slice(&fs::read(root.join("blocks.json"))
             .map_err(|e|format!("blocks.json: {e}"))?).map_err(|e|format!("blocks.json: {e}"))?;
         let mut states=HashMap::with_capacity(index.blocks.len());
+        let mut canonical_by_network_id:HashMap<u32,(String,StateRecipe)>=HashMap::new();
+        let mut geometry_aliases=Vec::new();
         for block in index.blocks {
             // Neighbor-driven and BlockEntity geometry must come from explicit
             // connection/NBT rules, never from a single static visual-bounds mesh.
@@ -156,6 +162,14 @@ impl RuntimeCaptureCatalog {
                 continue;
             }
             let Some(key)=capture_key(&block) else {continue};
+            // Audio-only states keep their exact NBT key but point to a
+            // canonical visual recipe. The referenced network ID is strictly
+            // scoped to this capture's own registry, not a cross-version ID.
+            if let Some(id)=block.geometry_alias_network_id {
+                geometry_aliases.push((key,id));
+                continue;
+            }
+            let network_id=block.network_id;
             let aliases=block.texture_bindings.into_iter()
                 .filter(|x|!x.resource_alias.is_empty())
                 .map(|x|(x.slot,x.resource_alias))
@@ -165,7 +179,18 @@ impl RuntimeCaptureCatalog {
                 .zip(variant.mesh_triangle_texture_slots)
                 .filter(|(hash,_)|hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
                 .collect();
-            states.insert(key,StateRecipe{meshes,texture_aliases:aliases});
+            let recipe=StateRecipe{meshes,texture_aliases:aliases};
+            if let Some(id)=network_id {
+                canonical_by_network_id.insert(id,(key.name.clone(),recipe.clone()));
+            }
+            states.insert(key,recipe);
+        }
+        for (key,id) in geometry_aliases {
+            // Refuse cross-type or chained aliases: mismatches must remain
+            // unresolved, not render an unrelated face or orientation.
+            if let Some((name,recipe))=canonical_by_network_id.get(&id) {
+                if *name==key.name {states.insert(key,recipe.clone());}
+            }
         }
         Ok(Self{root:root.to_owned(),version:manifest.target_game_version,states,
             meshes:Mutex::new(HashMap::new()),shapes:Mutex::new(HashMap::new())})
@@ -376,6 +401,55 @@ mod tests {
             Some(capture_texture_slot("grass_side").as_str()));
         assert!(catalog.shape_for_state(
             &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",1)).is_none());
+    }
+    #[test]
+    fn note_pitch_changes_reuse_one_visual_recipe(){
+        use bedrock_world::NbtWriter;
+        let dir=tempfile::tempdir().expect("temp note model");
+        std::fs::create_dir(dir.path().join("meshes")).expect("mesh folder");
+        let make_nbt=|pitch:i32|{
+            let mut root=std::collections::BTreeMap::new();
+            root.insert("name".to_owned(),NbtTag::String("minecraft:noteblock".to_owned()));
+            let mut states=std::collections::BTreeMap::new();
+            states.insert("note".to_owned(),NbtTag::Int(pitch));
+            root.insert("states".to_owned(),NbtTag::Compound(states.into_iter().collect()));
+            NbtWriter::write_root(&NbtTag::Compound(root.into_iter().collect()))
+                .expect("write note state").iter().map(|b|format!("{b:02x}")).collect::<String>()
+        };
+        let digest="a".repeat(64);
+        let v=|x:f32,y:f32|serde_json::json!([x,y,0.,0.,0.,-1.,x,y,4294967295_u32]);
+        let mesh=serde_json::json!({
+            "topology":"triangles","uv_space":"block_face_local",
+            "geometry_source":"registry_visual_bounds",
+            "vertices":[v(0.,0.),v(0.,1.),v(1.,1.),v(1.,0.)],
+            "indices":[0,1,2,0,2,3]
+        });
+        std::fs::write(dir.path().join("meshes").join(format!("{digest}.json")),
+            serde_json::to_vec(&mesh).expect("mesh json")).expect("write mesh");
+        std::fs::write(dir.path().join("manifest.json"),
+            r#"{"registry_only":true,"target_game_version":"1.26.51.1"}"#).expect("manifest");
+        let blocks=serde_json::json!({"blocks":[{
+            "name":"minecraft:noteblock","network_id":12,
+            "state_nbt_hex":make_nbt(0),"status":"partial","geometry_context":"none",
+            "texture_bindings":[{"slot":2,"resource_alias":"noteblock"}],
+            "variants":[{"neighborhood":"registry_visual_bounds",
+                "mesh_refs":[digest],"mesh_triangle_texture_slots":[[2,2]]}]
+        },{
+            "name":"minecraft:noteblock","network_id":13,"geometry_alias_network_id":12,
+            "state_nbt_hex":make_nbt(24),"status":"partial","geometry_context":"none",
+            "texture_bindings":[],"variants":[]
+        }]});
+        std::fs::write(dir.path().join("blocks.json"),
+            serde_json::to_vec(&blocks).expect("serialize index")).expect("write index");
+        let catalog=RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
+        assert_eq!(catalog.state_count(),2);
+        let first=catalog.shape_for_state(
+            &BlockStateQuery::new("noteblock").with_state("note",0)).expect("base shape");
+        let second=catalog.shape_for_state(
+            &BlockStateQuery::new("noteblock").with_state("note",24)).expect("shared shape");
+        assert_eq!(first,second);
+        assert!(catalog.shape_for_state(
+            &BlockStateQuery::new("noteblock").with_state("note",12)).is_none());
     }
     #[test]
     fn complete_six_face_cube_preserves_slots_and_greedy_merge(){
