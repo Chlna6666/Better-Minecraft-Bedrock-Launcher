@@ -423,6 +423,66 @@ fn shared_mesh_planes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bedrock_world::NbtWriter;
+    use serde_json::{json,Value};
+
+    fn write(root:&Path,name:&str,doc:&Value){
+        fs::write(root.join(name),serde_json::to_vec(doc).expect("json")).expect(name);
+    }
+    fn fixture(root:&Path,aliases:bool)->(String,String,String){
+        let geometry="a".repeat(64);
+        let appearance="b".repeat(64);
+        let material="c".repeat(64);
+        for kind in ["geometry","appearance","materials"]{
+            fs::create_dir_all(root.join("geometry_pool").join(kind)).expect("pool directory");
+        }
+        write(&root.join("geometry_pool/geometry"),&format!("{geometry}.json"),
+            &json!({"schema":2,"topology":"triangles",
+                "vertices":[[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]],
+                "triangles":[[0,2,3],[0,1,2]]}));
+        write(&root.join("geometry_pool/appearance"),&format!("{appearance}.json"),
+            &json!({"schema":2,"geometry_ref":geometry,
+                "geometry_source":"registry_visual_bounds","uv_space":"block_face_local",
+                "corner_attributes":[
+                    [0,0,-1,0,0,4294967295_u32],
+                    [0,0,-1,1,1,4294967295_u32],
+                    [0,0,-1,0,1,4294967295_u32],
+                    [0,0,-1,0,0,4294967295_u32],
+                    [0,0,-1,1,0,4294967295_u32],
+                    [0,0,-1,1,1,4294967295_u32]],
+                "triangle_texture_slots":[2,2]}));
+        write(&root.join("geometry_pool/materials"),&format!("{material}.json"),
+            &json!({"schema":2,"texture_bindings":[{"slot":2,"resource_alias":"grass_side"}]}));
+        write(root,"manifest.json",&json!({
+            "registry_only":true,"target_game_version":"1.26.51.1",
+            "shared_geometry_pool_schema":2,"legacy_meshes_retained":false}));
+        let state_nbt=|note:i32|{
+            let mut obj=BTreeMap::new();
+            obj.insert("name".to_owned(),NbtTag::String(
+                if aliases{"minecraft:noteblock".to_owned()}
+                else {"minecraft:oak_stairs".to_owned()}));
+            let mut states=BTreeMap::new();
+            states.insert(if aliases{"note"}else{"weirdo_direction"}.to_owned(),NbtTag::Int(note));
+            obj.insert("states".to_owned(),NbtTag::Compound(states.into_iter().collect()));
+            NbtWriter::write_root(&NbtTag::Compound(obj.into_iter().collect()))
+                .expect("nbt").iter().map(|b|format!("{b:02x}")).collect::<String>()
+        };
+        let name=if aliases{"minecraft:noteblock"}else{"minecraft:oak_stairs"};
+        let mut blocks=vec![json!({
+            "name":name,"network_id":12,"state_nbt_hex":state_nbt(2),
+            "status":"partial","geometry_context":"none","shared_material_ref":material,
+            "variants":[{"neighborhood":"registry_visual_bounds",
+                "shared_geometry_refs":[geometry],
+                "shared_appearance_refs":[appearance]}]})];
+        if aliases{
+            blocks.push(json!({
+                "name":name,"network_id":13,"geometry_alias_network_id":12,
+                "state_nbt_hex":state_nbt(24),"status":"partial",
+                "geometry_context":"none","variants":[]}));
+        }
+        write(root,"blocks.json",&json!({"blocks":blocks}));
+        (geometry,appearance,material)
+    }
     #[test]
     fn texture_alias_roundtrip_without_version_index(){
         for alias in ["stone","minecraft:grass_side","textures/blocks/oak_log_top","红色"] {
@@ -431,107 +491,50 @@ mod tests {
         assert!(decode_capture_texture_slot("bsc_xyz").is_none());
     }
     #[test]
-    fn face_uv_and_slot_identity_survive_mesh_decode(){
-        let v=|x:f32,y:f32|vec![serde_json::json!(x),serde_json::json!(y),serde_json::json!(0),
-            serde_json::json!(0),serde_json::json!(0),serde_json::json!(-1),
-            serde_json::json!(x),serde_json::json!(y),serde_json::json!(4294967295u32)];
-        let mesh=CaptureMesh{topology:"triangles".into(),geometry_source:"registry_visual_bounds".into(),
-            uv_space:"block_face_local".into(),vertices:vec![v(0.,0.),v(0.,1.),v(1.,1.),v(1.,0.)],
-            indices:vec![0,1,2,0,2,3],face_index_per_triangle:vec![2,2]};
-        let aliases=HashMap::from([(2,"grass_side".into())]);
-        let planes=mesh_planes(&mesh,&[Some(2),Some(2)],&aliases).expect("quad");
+    fn v2_triangle_pairing_keeps_uv_and_shared_material_slot(){
+        let dir=tempfile::tempdir().expect("temporary export");
+        let (geo,app,_)=fixture(dir.path(),false);
+        let mesh=read_pool::<CaptureGeometryV2>(dir.path(),"geometry",&geo).expect("geometry");
+        let appearance=read_pool::<CaptureAppearanceV2>(dir.path(),"appearance",&app)
+            .expect("appearance");
+        let aliases=HashMap::from([(2,"grass_side".to_owned())]);
+        let planes=shared_mesh_planes(&mesh,&appearance,&geo,&aliases).expect("valid quad");
         assert_eq!(planes.len(),1);
+        assert_eq!(planes[0].normal,[0,0,-1]);
         assert_eq!(planes[0].material_slot.as_deref(),
             Some(capture_texture_slot("grass_side").as_str()));
-        assert_eq!(planes[0].normal,[0,0,-1]);
-        assert_eq!(planes[0].uv.unwrap()[3],[1.,0.]);
-        assert!(mesh_planes(&mesh,&[Some(2),None],&aliases).is_none());
+        assert_eq!(planes[0].corners.len(),4);
+        assert!(planes[0].uv.is_some());
+        let mut invalid=appearance;
+        invalid.triangle_texture_slots[1]=Some(9);
+        assert!(shared_mesh_planes(&mesh,&invalid,&geo,&aliases).is_none());
     }
     #[test]
-    fn catalog_matches_exact_nbt_states_and_keeps_face_aliases(){
-        use bedrock_world::NbtWriter;
-        let dir=tempfile::tempdir().expect("temp catalog");
-        std::fs::create_dir(dir.path().join("meshes")).expect("mesh folder");
-        let NbtTag::Compound(mut root)=
-            NbtReader::new(&NbtWriter::write_root(&NbtTag::Compound(Default::default()))
-                .expect("root")).parse_root().expect("NBT") else {panic!("compound")};
-        let mut states=std::collections::BTreeMap::new();
-        states.insert("weirdo_direction".into(),NbtTag::Int(2));
-        root.insert("name".into(),NbtTag::String("minecraft:oak_stairs".into()));
-        root.insert("states".into(),NbtTag::Compound(states.into_iter().collect()));
-        let bytes=NbtWriter::write_root(&NbtTag::Compound(root)).expect("write block state");
-        let hex=bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
-        let v=|x:f32,y:f32|serde_json::json!([x,y,0.,0.,0.,-1.,x,y,4294967295_u32]);
-        let mesh=serde_json::json!({"topology":"triangles","uv_space":"block_face_local",
-            "geometry_source":"registry_visual_bounds",
-            "vertices":[v(0.,0.),v(0.,1.),v(1.,1.),v(1.,0.)],
-            "indices":[0,1,2,0,2,3],"face_index_per_triangle":[2,2]});
-        let digest="b".repeat(64);
-        std::fs::write(dir.path().join("meshes").join(format!("{digest}.json")),
-            serde_json::to_vec(&mesh).expect("mesh json")).expect("mesh");
-        std::fs::write(dir.path().join("manifest.json"),
-            r#"{"registry_only":true,"target_game_version":"1.26.51.1"}"#).expect("manifest");
-        let blocks=serde_json::json!({"blocks":[{"name":"minecraft:oak_stairs",
-            "state_nbt_hex":hex,"status":"partial","geometry_context":"none",
-            "texture_bindings":[{"slot":2,"resource_alias":"grass_side"}],
-            "variants":[{"neighborhood":"registry_visual_bounds",
-                "mesh_refs":[digest],"mesh_triangle_texture_slots":[[2,2]]}]}]});
-        std::fs::write(dir.path().join("blocks.json"),
-            serde_json::to_vec(&blocks).expect("block json")).expect("blocks");
-        let catalog=RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
+    fn v2_catalog_matches_exact_state_and_rejects_v1(){
+        let dir=tempfile::tempdir().expect("temp model library");
+        fixture(dir.path(),false);
+        let catalog=RuntimeCaptureCatalog::open(dir.path()).expect("v2 catalog");
         assert_eq!(catalog.state_count(),1);
         let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
-        let shape=catalog.shape_for_state(&state).expect("exact state");
+        let shape=catalog.shape_for_state(&state).expect("shape");
         assert_eq!(shape.planes.len(),1);
-        assert_eq!(shape.planes[0].normal,[0,0,-1]);
         assert_eq!(shape.planes[0].material_slot.as_deref(),
             Some(capture_texture_slot("grass_side").as_str()));
-        assert!(catalog.shape_for_state(
-            &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",1)).is_none());
+        assert!(catalog.shape_for_state(&BlockStateQuery::new("oak_stairs")
+            .with_state("weirdo_direction",1)).is_none());
+        write(dir.path(),"manifest.json",&json!({
+            "registry_only":true,"target_game_version":"1.26.51.1",
+            "shared_geometry_pool_schema":1,"legacy_meshes_retained":true}));
+        assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
     }
     #[test]
     fn note_pitch_changes_reuse_one_visual_recipe(){
-        use bedrock_world::NbtWriter;
         let dir=tempfile::tempdir().expect("temp note model");
-        std::fs::create_dir(dir.path().join("meshes")).expect("mesh folder");
-        let make_nbt=|pitch:i32|{
-            let mut root=std::collections::BTreeMap::new();
-            root.insert("name".to_owned(),NbtTag::String("minecraft:noteblock".to_owned()));
-            let mut states=std::collections::BTreeMap::new();
-            states.insert("note".to_owned(),NbtTag::Int(pitch));
-            root.insert("states".to_owned(),NbtTag::Compound(states.into_iter().collect()));
-            NbtWriter::write_root(&NbtTag::Compound(root.into_iter().collect()))
-                .expect("write note state").iter().map(|b|format!("{b:02x}")).collect::<String>()
-        };
-        let digest="a".repeat(64);
-        let v=|x:f32,y:f32|serde_json::json!([x,y,0.,0.,0.,-1.,x,y,4294967295_u32]);
-        let mesh=serde_json::json!({
-            "topology":"triangles","uv_space":"block_face_local",
-            "geometry_source":"registry_visual_bounds",
-            "vertices":[v(0.,0.),v(0.,1.),v(1.,1.),v(1.,0.)],
-            "indices":[0,1,2,0,2,3]
-        });
-        std::fs::write(dir.path().join("meshes").join(format!("{digest}.json")),
-            serde_json::to_vec(&mesh).expect("mesh json")).expect("write mesh");
-        std::fs::write(dir.path().join("manifest.json"),
-            r#"{"registry_only":true,"target_game_version":"1.26.51.1"}"#).expect("manifest");
-        let blocks=serde_json::json!({"blocks":[{
-            "name":"minecraft:noteblock","network_id":12,
-            "state_nbt_hex":make_nbt(0),"status":"partial","geometry_context":"none",
-            "texture_bindings":[{"slot":2,"resource_alias":"noteblock"}],
-            "variants":[{"neighborhood":"registry_visual_bounds",
-                "mesh_refs":[digest],"mesh_triangle_texture_slots":[[2,2]]}]
-        },{
-            "name":"minecraft:noteblock","network_id":13,"geometry_alias_network_id":12,
-            "state_nbt_hex":make_nbt(24),"status":"partial","geometry_context":"none",
-            "texture_bindings":[],"variants":[]
-        }]});
-        std::fs::write(dir.path().join("blocks.json"),
-            serde_json::to_vec(&blocks).expect("serialize index")).expect("write index");
+        fixture(dir.path(),true);
         let catalog=RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
         assert_eq!(catalog.state_count(),2);
         let first=catalog.shape_for_state(
-            &BlockStateQuery::new("noteblock").with_state("note",0)).expect("base shape");
+            &BlockStateQuery::new("noteblock").with_state("note",2)).expect("base shape");
         let second=catalog.shape_for_state(
             &BlockStateQuery::new("noteblock").with_state("note",24)).expect("shared shape");
         assert_eq!(first,second);
