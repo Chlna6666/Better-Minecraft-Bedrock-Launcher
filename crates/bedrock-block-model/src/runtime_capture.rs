@@ -73,6 +73,10 @@ struct CaptureManifest {
     target_game_version: String,
     #[serde(default)]
     registry_only: bool,
+    #[serde(default)]
+    shared_geometry_pool_schema: u32,
+    #[serde(default)]
+    legacy_meshes_retained: bool,
 }
 #[derive(Debug, Deserialize)]
 struct CaptureIndex {
@@ -91,7 +95,7 @@ struct CaptureBlock {
     #[serde(default)]
     geometry_context: String,
     #[serde(default)]
-    texture_bindings: Vec<CaptureTexture>,
+    shared_material_ref: Option<String>,
     #[serde(default)]
     variants: Vec<CaptureVariant>,
 }
@@ -105,27 +109,46 @@ struct CaptureTexture {
 struct CaptureVariant {
     neighborhood: String,
     #[serde(default)]
-    mesh_refs: Vec<String>,
+    shared_geometry_refs: Vec<String>,
     #[serde(default)]
-    mesh_triangle_texture_slots: Vec<Vec<Option<usize>>>,
+    shared_appearance_refs: Vec<String>,
 }
-#[derive(Debug, Deserialize)]
-struct CaptureMesh {
-    topology: String,
-    geometry_source: String,
-    uv_space: String,
-    vertices: Vec<Vec<serde_json::Value>>,
-    indices: Vec<usize>,
-    #[serde(default)]
-    face_index_per_triangle: Vec<usize>,
+#[derive(Debug,Deserialize)]
+struct CaptureMaterialTable{
+    schema:u32,
+    texture_bindings:Vec<CaptureTexture>,
 }
-
-#[derive(Clone, Debug)]
-struct StateRecipe {
-    meshes: Vec<(String, Vec<Option<usize>>)>,
-    texture_aliases: HashMap<usize,String>,
+#[derive(Debug,Deserialize)]
+struct CaptureGeometryV2{
+    schema:u32,
+    topology:String,
+    vertices:Vec<[f32;3]>,
+    triangles:Vec<[usize;3]>,
 }
-
+#[derive(Debug,Deserialize)]
+struct CaptureAppearanceV2{
+    schema:u32,
+    geometry_ref:String,
+    geometry_source:String,
+    uv_space:String,
+    corner_attributes:Vec<Vec<serde_json::Value>>,
+    triangle_texture_slots:Vec<Option<usize>>,
+}
+#[derive(Clone,Debug)]
+struct StateRecipe{
+    meshes:Vec<(String,String)>,
+    texture_aliases:HashMap<usize,String>,
+}
+fn valid_ref(hash:&str)->bool{
+    hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())
+}
+fn read_pool<T:serde::de::DeserializeOwned>(root:&Path,kind:&str,hash:&str)->Option<T>{
+    if !valid_ref(hash){return None}
+    let file=root.join("geometry_pool").join(kind).join(format!("{hash}.json"));
+    fs::metadata(&file).ok().filter(|m|m.len()<=8*1024*1024)
+        .and_then(|_|fs::read(file).ok())
+        .and_then(|bytes|serde_json::from_slice(&bytes).ok())
+}
 /// The BMCBL model cache is scoped to a game installation, not to a process-global
 /// Minecraft version. No path or material table is compiled into the executable.
 #[derive(Debug)]
@@ -134,7 +157,8 @@ pub struct RuntimeCaptureCatalog {
     version: String,
     states: HashMap<StateKey,StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
-    meshes: Mutex<HashMap<String,Option<Arc<CaptureMesh>>>>,
+    geometries: Mutex<HashMap<String,Option<Arc<CaptureGeometryV2>>>>,
+    appearances: Mutex<HashMap<String,Option<Arc<CaptureAppearanceV2>>>>,
     shapes: Mutex<HashMap<StateKey,Option<Arc<ModelShape>>>>,
 }
 impl PartialEq for RuntimeCaptureCatalog {
@@ -148,12 +172,16 @@ impl RuntimeCaptureCatalog {
         let root=root.as_ref();
         let manifest:CaptureManifest=serde_json::from_slice(&fs::read(root.join("manifest.json"))
             .map_err(|e|format!("manifest.json: {e}"))?).map_err(|e|format!("manifest.json: {e}"))?;
-        if !manifest.registry_only { return Err("capture is not registry-only".to_owned()); }
+        if !manifest.registry_only {return Err("capture is not registry-only".to_owned());}
+        if manifest.shared_geometry_pool_schema!=2 || manifest.legacy_meshes_retained {
+            return Err("Geometry Pool v2 exclusive export required".to_owned());
+        }
         let index:CaptureIndex=serde_json::from_slice(&fs::read(root.join("blocks.json"))
             .map_err(|e|format!("blocks.json: {e}"))?).map_err(|e|format!("blocks.json: {e}"))?;
         let mut states=HashMap::with_capacity(index.blocks.len());
         let mut canonical_by_network_id:HashMap<u32,(String,StateRecipe)>=HashMap::new();
         let mut geometry_aliases=Vec::new();
+        let mut material_cache:HashMap<String,HashMap<usize,String>>=HashMap::new();
         for block in index.blocks {
             // Neighbor-driven and BlockEntity geometry must come from explicit
             // connection/NBT rules, never from a single static visual-bounds mesh.
@@ -170,15 +198,25 @@ impl RuntimeCaptureCatalog {
                 continue;
             }
             let network_id=block.network_id;
-            let aliases=block.texture_bindings.into_iter()
-                .filter(|x|!x.resource_alias.is_empty())
-                .map(|x|(x.slot,x.resource_alias))
-                .collect();
-            let Some(variant)=block.variants.into_iter().find(|v|v.neighborhood=="registry_visual_bounds") else {continue};
-            let meshes=variant.mesh_refs.into_iter()
-                .zip(variant.mesh_triangle_texture_slots)
-                .filter(|(hash,_)|hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
-                .collect();
+            let Some(material_ref)=block.shared_material_ref.as_ref() else {continue};
+            let aliases=if let Some(cached)=material_cache.get(material_ref){
+                cached.clone()
+            }else{
+                let Some(table)=read_pool::<CaptureMaterialTable>(root,"materials",material_ref)
+                    else {continue};
+                if table.schema!=2 {continue}
+                let aliases:HashMap<usize,String>=table.texture_bindings.into_iter()
+                    .filter(|t|!t.resource_alias.is_empty())
+                    .map(|t|(t.slot,t.resource_alias)).collect();
+                material_cache.insert(material_ref.clone(),aliases.clone());
+                aliases
+            };
+            let Some(variant)=block.variants.into_iter()
+                .find(|v|v.neighborhood=="registry_visual_bounds") else {continue};
+            if variant.shared_geometry_refs.len()!=variant.shared_appearance_refs.len(){continue}
+            let meshes=variant.shared_geometry_refs.into_iter()
+                .zip(variant.shared_appearance_refs)
+                .filter(|(g,a)|valid_ref(g)&&valid_ref(a)).collect();
             let recipe=StateRecipe{meshes,texture_aliases:aliases};
             if let Some(id)=network_id {
                 canonical_by_network_id.insert(id,(key.name.clone(),recipe.clone()));
@@ -193,7 +231,8 @@ impl RuntimeCaptureCatalog {
             }
         }
         Ok(Self{root:root.to_owned(),version:manifest.target_game_version,states,
-            meshes:Mutex::new(HashMap::new()),shapes:Mutex::new(HashMap::new())})
+            geometries:Mutex::new(HashMap::new()),
+            appearances:Mutex::new(HashMap::new()),shapes:Mutex::new(HashMap::new())})
     }
     #[must_use]
     pub fn game_version(&self)->&str { &self.version }
@@ -209,9 +248,11 @@ impl RuntimeCaptureCatalog {
         }
         let recipe=self.states.get(&key)?;
         let mut shape=ModelShape::default();
-        for (hash,slots) in &recipe.meshes {
-            let Some(mesh)=self.mesh(hash) else {continue};
-            let Some(mut planes)=mesh_planes(&mesh,slots,&recipe.texture_aliases) else {continue};
+        for (geometry,appearance) in &recipe.meshes {
+            let Some(mesh)=self.shared_geometry(geometry) else {continue};
+            let Some(appearance)=self.shared_appearance(appearance) else {continue};
+            let Some(mut planes)=shared_mesh_planes(&mesh,&appearance,geometry,&recipe.texture_aliases)
+                else {continue};
             shape.planes.append(&mut planes);
         }
         // Ordinary full-cube states belong to the 3D editor's greedy voxel
@@ -224,17 +265,19 @@ impl RuntimeCaptureCatalog {
         if let Ok(mut cache)=self.shapes.lock(){cache.insert(key,result.clone());}
         result.as_ref().map(|s|(**s).clone())
     }
-    fn mesh(&self,hash:&str)->Option<Arc<CaptureMesh>>{
-        let mut cache=self.meshes.lock().ok()?;
-        if let Some(v)=cache.get(hash){return v.clone();}
-        let file=self.root.join("meshes").join(format!("{hash}.json"));
-        let result=fs::metadata(&file).ok()
-            .filter(|m|m.len()<=4*1024*1024)
-            .and_then(|_|fs::read(file).ok())
-            .and_then(|data|serde_json::from_slice::<CaptureMesh>(&data).ok())
-            .filter(|m|m.topology=="triangles" && m.uv_space=="block_face_local"
-                && matches!(m.geometry_source.as_str(),"registry_visual_bounds"|"registry_cross_planes"))
-            .map(Arc::new);
+    fn shared_geometry(&self,hash:&str)->Option<Arc<CaptureGeometryV2>>{
+        let mut cache=self.geometries.lock().ok()?;
+        if let Some(value)=cache.get(hash){return value.clone()}
+        let result=read_pool::<CaptureGeometryV2>(&self.root,"geometry",hash)
+            .filter(|mesh|mesh.schema==2&&mesh.topology=="triangles").map(Arc::new);
+        cache.insert(hash.to_owned(),result.clone());
+        result
+    }
+    fn shared_appearance(&self,hash:&str)->Option<Arc<CaptureAppearanceV2>>{
+        let mut cache=self.appearances.lock().ok()?;
+        if let Some(value)=cache.get(hash){return value.clone()}
+        let result=read_pool::<CaptureAppearanceV2>(&self.root,"appearance",hash)
+            .filter(|mesh|mesh.schema==2).map(Arc::new);
         cache.insert(hash.to_owned(),result.clone());
         result
     }
