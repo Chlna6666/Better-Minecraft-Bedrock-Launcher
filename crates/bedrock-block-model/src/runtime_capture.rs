@@ -526,6 +526,30 @@ mod tests {
         assert!(shared_mesh_planes(&mesh,&invalid,&geo,&aliases).is_none());
     }
     #[test]
+    fn v2_diagonal_cross_planes_remain_supported(){
+        let geometry=CaptureGeometryV2{
+            schema:2,topology:"triangles".to_owned(),
+            vertices:vec![[0.,0.,0.],[1.,0.,1.],[1.,1.,1.],[0.,1.,0.]],
+            triangles:vec![[0,2,3],[0,1,2]],
+        };
+        let make=|u:f32,v:f32|serde_json::json!([
+            -0.70710677,0.,0.70710677,u,v,4294967295u32]);
+        let appearance=CaptureAppearanceV2{
+            schema:2,geometry_ref:"a".repeat(64),
+            geometry_source:"registry_cross_planes".to_owned(),
+            uv_space:"block_face_local".to_owned(),
+            corner_attributes:vec![
+                make(0.,0.),make(1.,1.),make(0.,1.),
+                make(0.,0.),make(1.,0.),make(1.,1.)]
+                .into_iter().map(|v|v.as_array().expect("vertex").clone()).collect(),
+            triangle_texture_slots:vec![Some(1),Some(1)],
+        };
+        let planes=shared_mesh_planes(&geometry,&appearance,&"a".repeat(64),
+            &HashMap::from([(1,"grass".to_owned())])).expect("diagonal cross");
+        assert_eq!(planes.len(),1);
+        assert_eq!(planes[0].normal,[-1,0,1]);
+    }
+    #[test]
     fn v2_catalog_matches_exact_state_and_rejects_v1(){
         let dir=tempfile::tempdir().expect("temp model library");
         fixture(dir.path(),false);
