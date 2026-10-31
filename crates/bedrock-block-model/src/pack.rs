@@ -130,6 +130,16 @@ impl BlockModelRepository {
         Ok(count)
     }
 
+    /// Load the compile-time BSC model library when an installation-specific
+    /// capture has not been found. The ZIP stays compressed in the executable;
+    /// individual geometry/appearance entries are inflated on demand.
+    pub fn load_embedded_capture_catalog(&mut self) -> std::result::Result<usize, String> {
+        let catalog=RuntimeCaptureCatalog::open_embedded()?;
+        let count=catalog.state_count();
+        self.capture_catalog=Some(Arc::new(catalog));
+        Ok(count)
+    }
+
     #[must_use]
     pub fn captured_shape(&self, state: &BlockStateQuery) -> Option<crate::ModelShape> {
         self.capture_catalog.as_ref()?.shape_for_state(state)
