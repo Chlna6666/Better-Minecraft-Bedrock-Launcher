@@ -130,11 +130,7 @@ impl Window {
         let content_size = platform_window.content_size();
         let scale_factor = platform_window.scale_factor();
         let appearance = platform_window.appearance();
-        #[expect(
-            clippy::arc_with_non_send_sync,
-            reason = "window internals share text shaping state through Arc on the foreground thread"
-        )]
-        let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
+        let text_system = Rc::new(WindowTextSystem::new(cx.text_system().clone()));
         let invalidator = WindowInvalidator::new();
         let dirty_frame_diagnostics = Rc::new(RefCell::new(DirtyFrameDiagnostics::default()));
         invalidator.set_dirty_frame_diagnostics(dirty_frame_diagnostics.clone());

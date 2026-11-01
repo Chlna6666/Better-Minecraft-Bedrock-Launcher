@@ -3,10 +3,10 @@ use crate::{
     record_text_layout_cache_metrics,
 };
 use collections::FxHashMap;
-use parking_lot::{Condvar, Mutex, RwLock, RwLockUpgradableReadGuard};
+use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     hash::Hash,
     mem::size_of,
@@ -22,9 +22,9 @@ use super::key::{AsCacheKeyRef, CacheKey, CacheKeyRef};
 use super::{FontRun, LineLayout, ShapedGlyph, ShapedRun, WrapBoundary};
 
 pub(crate) struct LineLayoutCache {
-    previous_frame: Mutex<FrameCache>,
-    current_frame: RwLock<FrameCache>,
-    retained: Mutex<RetainedLayoutCache>,
+    previous_frame: RefCell<FrameCache>,
+    current_frame: RefCell<FrameCache>,
+    retained: RefCell<RetainedLayoutCache>,
     platform_text_system: Arc<dyn PlatformTextSystem>,
     font_generation: Arc<AtomicU64>,
     cached_font_generation: AtomicU64,
@@ -314,9 +314,9 @@ impl LineLayoutCache {
     ) -> Self {
         let cached_font_generation = font_generation.load(Ordering::Acquire);
         Self {
-            previous_frame: Mutex::default(),
-            current_frame: RwLock::default(),
-            retained: Mutex::default(),
+            previous_frame: RefCell::default(),
+            current_frame: RefCell::default(),
+            retained: RefCell::default(),
             platform_text_system,
             font_generation,
             cached_font_generation: AtomicU64::new(cached_font_generation),
@@ -330,12 +330,11 @@ impl LineLayoutCache {
             return generation;
         }
 
-        // Keep one lock order throughout the cache: current -> previous -> retained.
-        // This also matches layout lookup paths and avoids generation invalidation introducing
-        // an AB/BA cycle with frame finalization or retained replay.
-        let mut current_frame = self.current_frame.write();
-        let mut previous_frame = self.previous_frame.lock();
-        let mut retained = self.retained.lock();
+        // Font discovery may advance the shared generation from another thread.
+        // Clear every per-window tier before publishing the generation it represents.
+        let mut current_frame = self.current_frame.borrow_mut();
+        let mut previous_frame = self.previous_frame.borrow_mut();
+        let mut retained = self.retained.borrow_mut();
         let generation = self.font_generation.load(Ordering::Acquire);
         if self.cached_font_generation.load(Ordering::Acquire) != generation {
             current_frame.clear();
@@ -349,7 +348,7 @@ impl LineLayoutCache {
 
     pub fn layout_index(&self) -> LineLayoutIndex {
         let font_generation = self.clear_if_font_generation_changed();
-        let frame = self.current_frame.read();
+        let frame = self.current_frame.borrow();
         LineLayoutIndex {
             font_generation,
             lines_index: frame.used_lines.len(),
@@ -365,7 +364,7 @@ impl LineLayoutCache {
             return false;
         }
 
-        let previous_frame = self.previous_frame.lock();
+        let previous_frame = self.previous_frame.borrow_mut();
         self.font_generation.load(Ordering::Acquire) == font_generation
             && line_layout_range_is_valid(
                 range.start.lines_index,
@@ -387,8 +386,8 @@ impl LineLayoutCache {
             return;
         }
 
-        let current_frame = &mut *self.current_frame.write();
-        let previous_frame = &mut *self.previous_frame.lock();
+        let current_frame = &mut *self.current_frame.borrow_mut();
+        let previous_frame = &mut *self.previous_frame.borrow_mut();
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             return;
         }
@@ -418,7 +417,7 @@ impl LineLayoutCache {
             return;
         }
 
-        let current_frame = &mut *self.current_frame.write();
+        let current_frame = &mut *self.current_frame.borrow_mut();
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             return;
         }
@@ -429,9 +428,9 @@ impl LineLayoutCache {
     }
 
     pub fn clear(&self) {
-        let mut current_frame = self.current_frame.write();
-        let mut previous_frame = self.previous_frame.lock();
-        let mut retained = self.retained.lock();
+        let mut current_frame = self.current_frame.borrow_mut();
+        let mut previous_frame = self.previous_frame.borrow_mut();
+        let mut retained = self.retained.borrow_mut();
         previous_frame.clear();
         current_frame.clear();
         retained.clear();
@@ -439,9 +438,9 @@ impl LineLayoutCache {
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         let _font_generation = self.clear_if_font_generation_changed();
-        let mut current_frame = self.current_frame.write();
-        let mut previous_frame = self.previous_frame.lock();
-        let mut retained = self.retained.lock();
+        let mut current_frame = self.current_frame.borrow_mut();
+        let mut previous_frame = self.previous_frame.borrow_mut();
+        let mut retained = self.retained.borrow_mut();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
         retained.trim_retained_capacity_for_level(level);
@@ -449,8 +448,8 @@ impl LineLayoutCache {
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
         let _font_generation = self.clear_if_font_generation_changed();
-        let mut curr_frame = self.current_frame.write();
-        let mut prev_frame = self.previous_frame.lock();
+        let mut curr_frame = self.current_frame.borrow_mut();
+        let mut prev_frame = self.previous_frame.borrow_mut();
         std::mem::swap(&mut *prev_frame, &mut *curr_frame);
 
         // After the swap, `prev_frame` is the frame that just finished rendering and therefore the
@@ -459,7 +458,7 @@ impl LineLayoutCache {
         // byte estimate is maintained incrementally as entries move between frame caches, so this
         // hot frame-finalization path stays O(1) in the number of shaped glyphs.
         let active_frame_bytes = prev_frame.estimated_bytes();
-        let mut retained = self.retained.lock();
+        let mut retained = self.retained.borrow_mut();
         retained.observe_working_set(active_frame_bytes);
 
         for (key, entry) in curr_frame.lines.drain() {
@@ -496,7 +495,7 @@ impl LineLayoutCache {
             force_width: None,
         } as &dyn AsCacheKeyRef;
 
-        let current_frame = self.current_frame.upgradable_read();
+        let mut current_frame = self.current_frame.borrow_mut();
         if let Some(entry) = current_frame.wrapped_lines.get(key) {
             self.frame_metrics.hit();
             let layout = entry.value.clone();
@@ -507,10 +506,9 @@ impl LineLayoutCache {
             return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
-        let previous_frame_entry = self.previous_frame.lock().take_wrapped_line(key);
+        let previous_frame_entry = self.previous_frame.borrow_mut().take_wrapped_line(key);
         if let Some((key, entry)) = previous_frame_entry {
             let layout = entry.value.clone();
-            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.insert_wrapped_line_entry(key.clone(), entry);
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
@@ -521,10 +519,9 @@ impl LineLayoutCache {
             return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
-        let retained_entry = self.retained.lock().take_wrapped_line(key);
+        let retained_entry = self.retained.borrow_mut().take_wrapped_line(key);
         if let Some((key, entry)) = retained_entry {
             let layout = entry.value.clone();
-            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.insert_wrapped_line_entry(key.clone(), entry);
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
@@ -563,7 +560,7 @@ impl LineLayoutCache {
             );
         }
 
-        let mut current_frame = self.current_frame.write();
+        let mut current_frame = self.current_frame.borrow_mut();
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             drop(current_frame);
             return self.layout_wrapped_line::<&SharedString>(
@@ -596,7 +593,7 @@ impl LineLayoutCache {
             force_width,
         } as &dyn AsCacheKeyRef;
 
-        let current_frame = self.current_frame.upgradable_read();
+        let mut current_frame = self.current_frame.borrow_mut();
         if let Some(entry) = current_frame.lines.get(key) {
             self.frame_metrics.hit();
             let layout = entry.value.clone();
@@ -607,9 +604,9 @@ impl LineLayoutCache {
             return self.layout_line(text, font_size, runs, force_width);
         }
 
-        if let Some((key, entry)) = self.previous_frame.lock().take_line(key) {
+        let previous_frame_entry = self.previous_frame.borrow_mut().take_line(key);
+        if let Some((key, entry)) = previous_frame_entry {
             let layout = entry.value.clone();
-            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.insert_line_entry(key.clone(), entry);
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
@@ -620,9 +617,9 @@ impl LineLayoutCache {
             return self.layout_line(text, font_size, runs, force_width);
         }
 
-        if let Some((key, entry)) = self.retained.lock().take_line(key) {
+        let retained_entry = self.retained.borrow_mut().take_line(key);
+        if let Some((key, entry)) = retained_entry {
             let layout = entry.value.clone();
-            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.insert_line_entry(key.clone(), entry);
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
@@ -660,7 +657,7 @@ impl LineLayoutCache {
             return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
         }
 
-        let mut current_frame = self.current_frame.write();
+        let mut current_frame = self.current_frame.borrow_mut();
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             drop(current_frame);
             return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
@@ -1494,12 +1491,12 @@ mod tests {
         }];
 
         cache.layout_line("hello", px(14.), &runs, None);
-        let expected = cache.current_frame.read().estimated_bytes();
+        let expected = cache.current_frame.borrow().estimated_bytes();
         assert!(expected > 0);
         cache.finish_frame();
 
-        assert_eq!(cache.retained.lock().working_set_bytes, expected);
-        assert_eq!(cache.current_frame.read().estimated_bytes(), 0);
+        assert_eq!(cache.retained.borrow_mut().working_set_bytes, expected);
+        assert_eq!(cache.current_frame.borrow().estimated_bytes(), 0);
     }
 
     #[test]
@@ -1512,13 +1509,13 @@ mod tests {
         }];
 
         cache.layout_line("hello", px(14.), &runs, None);
-        let expected = cache.current_frame.read().estimated_bytes();
+        let expected = cache.current_frame.borrow().estimated_bytes();
         assert!(expected > 0);
 
         cache.finish_frame();
         cache.finish_frame();
 
-        let retained = cache.retained.lock();
+        let retained = cache.retained.borrow_mut();
         assert_eq!(retained.lines.len(), 1);
         assert_eq!(retained.estimated_bytes, expected);
         assert_eq!(

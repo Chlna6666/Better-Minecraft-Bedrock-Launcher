@@ -109,6 +109,9 @@ reports X screen roots and no nominal refresh interval.
   change.
 - `Render` views build element trees. `RenderOnce` components are lightweight
   element recipes that are consumed when rendered.
+- Layout uses Taffy 0.15. Each window shares its `WindowTextSystem` through `Rc`;
+  window layout caches and font-run scratch buffers stay on the foreground thread.
+  The app-wide `TextSystem` retains synchronization for background font work.
 - `cx.spawn(async move |cx| ...)` and `window.spawn(cx, async move |cx| ...)`
   run foreground async work. Use background executors or blocking tasks for
   work that must not block UI rendering.

@@ -543,7 +543,7 @@ pub struct Window {
     pub(crate) display_notification_pending: bool,
     pub(crate) display_observers: SingleSubscriberSet<AnyObserver>,
     pub(super) sprite_atlas: Arc<dyn PlatformAtlas>,
-    pub(super) text_system: Arc<WindowTextSystem>,
+    pub(super) text_system: Rc<WindowTextSystem>,
     pub(super) text_rendering_mode: std::rc::Rc<std::cell::Cell<crate::TextRenderingMode>>,
     pub(super) default_text_style: TextStyle,
     pub(super) image_pipeline_config: ImagePipelineConfig,

@@ -1,8 +1,8 @@
 use super::*;
 
 impl Window {
-    /// Accessor for the text system.
-    pub fn text_system(&self) -> &Arc<WindowTextSystem> {
+    /// Accessor for this window's foreground-thread text layout system.
+    pub fn text_system(&self) -> &Rc<WindowTextSystem> {
         &self.text_system
     }
 

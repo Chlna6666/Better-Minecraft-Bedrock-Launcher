@@ -9,9 +9,11 @@ use parking_lot::{Mutex, RwLock};
 use smallvec::{SmallVec, smallvec};
 use std::{
     borrow::Cow,
+    cell::RefCell,
     cmp,
     collections::VecDeque,
     hash::Hash,
+    mem,
     ops::{Deref, DerefMut, Range},
     path::PathBuf,
     sync::{
@@ -32,7 +34,6 @@ use super::{
 
 pub(super) const MAX_WRAPPER_POOL_KEYS: usize = 128;
 const MAX_WRAPPERS_PER_KEY: usize = 4;
-pub(super) const MAX_FONT_RUNS_POOL_SIZE: usize = 128;
 pub(super) const FONT_RUNS_MIN_RETAINED_CAPACITY: usize = 32;
 const FONT_RUNS_TRIM_WATERMARK_MULTIPLIER: usize = 4;
 const TEXT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
@@ -53,7 +54,6 @@ pub struct TextSystem {
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<RasterBoundsCache>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
-    font_runs_pool: Mutex<VecDeque<Vec<FontRun>>>,
     font_catalog: FontCatalog,
     missing_glyph_reporter: Arc<MissingGlyphReporter>,
     missing_glyph_receiver: Mutex<Option<MissingGlyphReceiver>>,
@@ -63,6 +63,7 @@ pub struct TextSystem {
 struct FontIdCache {
     ids_by_font: FxHashMap<Font, Result<FontId>>,
     fonts_by_id: FxHashMap<FontId, Font>,
+    resolved_fonts: FxHashMap<Font, Result<FontId>>,
 }
 
 struct RasterBoundsEntry {
@@ -297,7 +298,6 @@ impl TextSystem {
             font_id_cache: RwLock::default(),
             font_cache_generation: Arc::new(AtomicU64::new(0)),
             wrapper_pool: Mutex::default(),
-            font_runs_pool: Mutex::default(),
             font_catalog: FontCatalog::default(),
             missing_glyph_reporter,
             missing_glyph_receiver: Mutex::new(Some(missing_glyph_receiver)),
@@ -480,6 +480,7 @@ impl TextSystem {
         let mut font_metrics = self.font_metrics.write();
         font_id_cache.ids_by_font.clear();
         font_id_cache.fonts_by_id.clear();
+        font_id_cache.resolved_fonts.clear();
         font_metrics.clear();
         self.font_cache_generation.fetch_add(1, Ordering::Release);
         self.missing_glyph_reporter.reset();
@@ -487,7 +488,6 @@ impl TextSystem {
         drop(font_id_cache);
         self.raster_bounds.write().clear();
         self.wrapper_pool.lock().clear();
-        self.font_runs_pool.lock().clear();
     }
 
     /// Get the FontId for the configure font family and style.
@@ -507,17 +507,11 @@ impl TextSystem {
             font
         };
 
-        fn clone_font_id(font_id: &Result<FontId>) -> Result<FontId> {
-            match font_id {
-                Ok(font_id) => Ok(*font_id),
-                Err(err) => Err(anyhow!("{err}")),
-            }
-        }
-
         loop {
             let generation = {
                 let font_id_cache = self.font_id_cache.read();
-                if let Some(font_id) = font_id_cache.ids_by_font.get(font).map(clone_font_id) {
+                if let Some(font_id) = font_id_cache.ids_by_font.get(font).map(Self::clone_font_id)
+                {
                     return font_id;
                 }
                 self.font_cache_generation.load(Ordering::Acquire)
@@ -528,7 +522,7 @@ impl TextSystem {
             // reconciled under the short write section below.
             let font_id = self.platform_text_system.font_id(font);
             let mut font_id_cache = self.font_id_cache.write();
-            if let Some(cached) = font_id_cache.ids_by_font.get(font).map(clone_font_id) {
+            if let Some(cached) = font_id_cache.ids_by_font.get(font).map(Self::clone_font_id) {
                 return cached;
             }
             if self.font_cache_generation.load(Ordering::Acquire) != generation {
@@ -538,7 +532,7 @@ impl TextSystem {
 
             font_id_cache
                 .ids_by_font
-                .insert(font.clone(), clone_font_id(&font_id));
+                .insert(font.clone(), Self::clone_font_id(&font_id));
             if let Ok(font_id) = font_id.as_ref() {
                 font_id_cache
                     .fonts_by_id
@@ -554,9 +548,36 @@ impl TextSystem {
         self.font_id_cache.read().fonts_by_id.get(&id).cloned()
     }
 
+    fn clone_font_id(font_id: &Result<FontId>) -> Result<FontId> {
+        match font_id {
+            Ok(font_id) => Ok(*font_id),
+            Err(err) => Err(anyhow!("{err}")),
+        }
+    }
+
     /// Tries to resolve the specified font, preserving its weight, style, and
     /// OpenType features while checking configured fallback families.
     pub fn try_resolve_font(&self, font: &Font) -> Result<FontId> {
+        loop {
+            let generation = {
+                let cache = self.font_id_cache.read();
+                if let Some(resolved) = cache.resolved_fonts.get(font) {
+                    return Self::clone_font_id(resolved);
+                }
+                self.font_cache_generation.load(Ordering::Acquire)
+            };
+            let resolved = self.resolve_font_uncached(font);
+            let mut cache = self.font_id_cache.write();
+            if self.font_cache_generation.load(Ordering::Acquire) != generation {
+                continue;
+            }
+            return Self::clone_font_id(
+                cache.resolved_fonts.entry(font.clone()).or_insert(resolved),
+            );
+        }
+    }
+
+    fn resolve_font_uncached(&self, font: &Font) -> Result<FontId> {
         let mut attempted_families = SmallVec::<[SharedString; 8]>::new();
         attempted_families.push(font.family.clone());
         let mut last_error = match self.font_id(font) {
@@ -782,30 +803,8 @@ impl TextSystem {
             .rasterize_glyph(params, raster_bounds)
     }
 
-    pub(super) fn take_font_runs_pool(&self) -> Vec<FontRun> {
-        let mut font_runs = self.font_runs_pool.lock().pop_back().unwrap_or_default();
-        font_runs.clear();
-        font_runs
-    }
-
-    pub(super) fn recycle_font_runs_pool(&self, mut font_runs: Vec<FontRun>) {
-        font_runs.clear();
-        trim_vec_capacity(
-            &mut font_runs,
-            FONT_RUNS_MIN_RETAINED_CAPACITY,
-            FONT_RUNS_TRIM_WATERMARK_MULTIPLIER,
-        );
-
-        let mut pool = self.font_runs_pool.lock();
-        if pool.len() >= MAX_FONT_RUNS_POOL_SIZE {
-            pool.pop_front();
-        }
-        pool.push_back(font_runs);
-    }
-
     pub(crate) fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         trim_wrapper_pool(&mut self.wrapper_pool.lock(), level);
-        trim_font_runs_pool(&mut self.font_runs_pool.lock(), level);
         self.raster_bounds
             .write()
             .trim_retained_capacity_for_level(level);
@@ -815,38 +814,44 @@ impl TextSystem {
     pub(super) fn wrapper_pool_len(&self) -> usize {
         self.wrapper_pool.lock().len()
     }
-
-    #[cfg(test)]
-    pub(super) fn font_runs_pool_len(&self) -> usize {
-        self.font_runs_pool.lock().len()
-    }
-
-    #[cfg(test)]
-    pub(super) fn font_runs_pool_max_capacity(&self) -> usize {
-        self.font_runs_pool
-            .lock()
-            .iter()
-            .map(Vec::capacity)
-            .max()
-            .unwrap_or_default()
-    }
 }
 
 /// The GPUI text layout subsystem.
 #[derive(Deref)]
 pub struct WindowTextSystem {
     line_layout_cache: LineLayoutCache,
+    font_runs_buffer: RefCell<Vec<FontRun>>,
     #[deref]
     text_system: Arc<TextSystem>,
 }
 
 impl WindowTextSystem {
+    fn take_font_runs_buffer(&self) -> Vec<FontRun> {
+        mem::take(&mut *self.font_runs_buffer.borrow_mut())
+    }
+
+    pub(super) fn recycle_font_runs_buffer(&self, mut font_runs: Vec<FontRun>) {
+        font_runs.clear();
+        trim_vec_capacity(
+            &mut font_runs,
+            FONT_RUNS_MIN_RETAINED_CAPACITY,
+            FONT_RUNS_TRIM_WATERMARK_MULTIPLIER,
+        );
+        *self.font_runs_buffer.borrow_mut() = font_runs;
+    }
+
+    #[cfg(test)]
+    pub(super) fn font_runs_buffer_capacity(&self) -> usize {
+        self.font_runs_buffer.borrow().capacity()
+    }
+
     pub(crate) fn new(text_system: Arc<TextSystem>) -> Self {
         Self {
             line_layout_cache: LineLayoutCache::new(
                 text_system.platform_text_system.clone(),
                 text_system.font_cache_generation.clone(),
             ),
+            font_runs_buffer: RefCell::default(),
             text_system,
         }
     }
@@ -878,6 +883,16 @@ impl WindowTextSystem {
     pub(crate) fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         self.line_layout_cache
             .trim_retained_capacity_for_level(level);
+        let mut font_runs = self.font_runs_buffer.borrow_mut();
+        if level == GpuiMemoryTrimLevel::Aggressive {
+            *font_runs = Vec::new();
+        } else {
+            trim_vec_capacity(
+                &mut font_runs,
+                FONT_RUNS_MIN_RETAINED_CAPACITY,
+                FONT_RUNS_TRIM_WATERMARK_MULTIPLIER,
+            );
+        }
         self.text_system.trim_retained_capacity_for_level(level);
     }
 
@@ -944,7 +959,7 @@ impl WindowTextSystem {
         line_clamp: Option<usize>,
     ) -> Result<SmallVec<[WrappedLine; 1]>> {
         if text.find('\n').is_none() {
-            let mut font_runs = self.text_system.take_font_runs_pool();
+            let mut font_runs = self.take_font_runs_buffer();
             let line = self.shape_single_line_text(
                 text,
                 font_size,
@@ -953,12 +968,12 @@ impl WindowTextSystem {
                 line_clamp,
                 &mut font_runs,
             );
-            self.text_system.recycle_font_runs_pool(font_runs);
+            self.recycle_font_runs_buffer(font_runs);
             return Ok(smallvec![line]);
         }
 
         let mut runs = runs.iter().filter(|run| run.len > 0).cloned().peekable();
-        let mut font_runs = self.text_system.take_font_runs_pool();
+        let mut font_runs = self.take_font_runs_buffer();
 
         let mut lines = SmallVec::new();
         let mut line_start = 0;
@@ -1033,7 +1048,7 @@ impl WindowTextSystem {
             queue_line_layout(text);
         }
 
-        self.text_system.recycle_font_runs_pool(font_runs);
+        self.recycle_font_runs_buffer(font_runs);
 
         Ok(lines)
     }
@@ -1105,7 +1120,7 @@ impl WindowTextSystem {
         runs: &[TextRun],
         force_width: Option<Pixels>,
     ) -> Arc<LineLayout> {
-        let mut font_runs = self.text_system.take_font_runs_pool();
+        let mut font_runs = self.take_font_runs_buffer();
         font_runs.clear();
 
         for run in runs.iter().filter(|run| run.len > 0) {
@@ -1119,7 +1134,7 @@ impl WindowTextSystem {
             force_width,
         );
 
-        self.text_system.recycle_font_runs_pool(font_runs);
+        self.recycle_font_runs_buffer(font_runs);
 
         layout
     }
@@ -1209,40 +1224,6 @@ fn trim_wrapper_pool(
         GpuiMemoryTrimLevel::Aggressive => {
             wrapper_pool.clear();
             wrapper_pool.shrink_to(0);
-        }
-    }
-}
-
-fn trim_font_runs_pool(font_runs_pool: &mut VecDeque<Vec<FontRun>>, level: GpuiMemoryTrimLevel) {
-    match level {
-        GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
-            let target_len = match level {
-                GpuiMemoryTrimLevel::Light => MAX_FONT_RUNS_POOL_SIZE,
-                GpuiMemoryTrimLevel::Moderate => MAX_FONT_RUNS_POOL_SIZE / 2,
-                GpuiMemoryTrimLevel::Aggressive => unreachable!(),
-            };
-
-            while font_runs_pool.len() > target_len {
-                font_runs_pool.pop_front();
-            }
-
-            for font_runs in font_runs_pool.iter_mut() {
-                font_runs.clear();
-                trim_vec_capacity(
-                    font_runs,
-                    FONT_RUNS_MIN_RETAINED_CAPACITY,
-                    FONT_RUNS_TRIM_WATERMARK_MULTIPLIER,
-                );
-            }
-            trim_vec_deque_capacity(
-                font_runs_pool,
-                target_len,
-                TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-            );
-        }
-        GpuiMemoryTrimLevel::Aggressive => {
-            font_runs_pool.clear();
-            font_runs_pool.shrink_to(0);
         }
     }
 }

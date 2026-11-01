@@ -83,6 +83,8 @@ Windows 即使没有 GPUI 窗口，也会保留一个隐藏的顶层通知窗口
 - `Entity<T>`：GPUI 管理的状态；通过 `Entity::update` 或 `Context<T>` 更新，状态变化
   后调用 `cx.notify()`。
 - `Render` 构建元素树；`RenderOnce` 是渲染时消费的轻量组件。
+- 布局使用 Taffy 0.15。每个窗口通过 `Rc` 共享 `WindowTextSystem`，窗口布局缓存和字体 run
+  临时缓冲只在前台线程使用；应用级 `TextSystem` 保留后台字体工作需要的同步。
 - `cx.spawn` / `window.spawn` 运行前台异步任务；阻塞或 IO 工作应放到后台执行器。
 
 新代码不要使用旧接口名：`Model<T>`、`View<T>`、`AppContext`、`ModelContext<T>`、

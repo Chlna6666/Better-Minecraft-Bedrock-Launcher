@@ -1,6 +1,4 @@
-use super::system::{
-    FONT_RUNS_MIN_RETAINED_CAPACITY, MAX_FONT_RUNS_POOL_SIZE, MAX_WRAPPER_POOL_KEYS,
-};
+use super::system::{FONT_RUNS_MIN_RETAINED_CAPACITY, MAX_WRAPPER_POOL_KEYS};
 use super::*;
 use crate::{
     Bounds, DevicePixels, GlyphRasterization, Pixels, PlatformTextSystem, Point, Result,
@@ -271,7 +269,7 @@ fn application_font_decision_marks_log_state() {
 }
 
 #[test]
-fn text_pools_are_bounded() {
+fn wrapper_pool_is_bounded() {
     let text_system = Arc::new(TextSystem::new(Arc::new(RecordingTextSystem::default())));
 
     for index in 0..MAX_WRAPPER_POOL_KEYS + 16 {
@@ -279,28 +277,60 @@ fn text_pools_are_bounded() {
     }
 
     assert!(text_system.wrapper_pool_len() <= MAX_WRAPPER_POOL_KEYS);
-
-    for _ in 0..MAX_FONT_RUNS_POOL_SIZE + 16 {
-        text_system.recycle_font_runs_pool(vec![FontRun {
-            len: 1,
-            font_id: FontId(1),
-        }]);
-    }
-
-    assert!(text_system.font_runs_pool_len() <= MAX_FONT_RUNS_POOL_SIZE);
 }
 
 #[test]
-fn font_runs_pool_trims_oversized_buffers() {
-    let text_system = TextSystem::new(Arc::new(RecordingTextSystem::default()));
+fn window_font_runs_buffer_trims_oversized_allocations() {
+    let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
+        RecordingTextSystem::default(),
+    ))));
     let mut font_runs = Vec::with_capacity(FONT_RUNS_MIN_RETAINED_CAPACITY * 8);
     font_runs.push(FontRun {
         len: 1,
         font_id: FontId(1),
     });
 
-    text_system.recycle_font_runs_pool(font_runs);
+    text_system.recycle_font_runs_buffer(font_runs);
 
-    assert_eq!(text_system.font_runs_pool_len(), 1);
-    assert!(text_system.font_runs_pool_max_capacity() <= FONT_RUNS_MIN_RETAINED_CAPACITY);
+    assert!(text_system.font_runs_buffer_capacity() <= FONT_RUNS_MIN_RETAINED_CAPACITY);
+    text_system.trim_retained_capacity_for_level(crate::GpuiMemoryTrimLevel::Aggressive);
+    assert_eq!(text_system.font_runs_buffer_capacity(), 0);
+}
+
+#[test]
+fn registering_fonts_invalidates_cached_fallback_resolution() -> anyhow::Result<()> {
+    let platform = Arc::new(RecordingTextSystem::default());
+    *platform.available_families.lock().unwrap() = Some(vec!["Fallback".into()]);
+    let text_system = TextSystem::new(platform.clone());
+    text_system.set_fallback_font_families(vec!["Fallback".into()]);
+    let requested = font("Requested").bold().italic();
+    let fallback_id = text_system.try_resolve_font(&requested)?;
+    assert_eq!(
+        text_system.font_for_id(fallback_id).unwrap().family,
+        "Fallback"
+    );
+    let calls = platform.requested_fonts.lock().unwrap().len();
+    assert_eq!(text_system.try_resolve_font(&requested)?, fallback_id);
+    assert_eq!(platform.requested_fonts.lock().unwrap().len(), calls);
+
+    *platform.available_families.lock().unwrap() =
+        Some(vec!["Requested".into(), "Fallback".into()]);
+    text_system.add_fonts(Vec::new())?;
+    let resolved_id = text_system.try_resolve_font(&requested)?;
+    assert_eq!(text_system.font_for_id(resolved_id), Some(requested));
+    Ok(())
+}
+
+#[test]
+fn changing_fallback_families_invalidates_resolved_font_cache() -> anyhow::Result<()> {
+    let platform = Arc::new(RecordingTextSystem::default());
+    *platform.available_families.lock().unwrap() = Some(vec!["First".into(), "Second".into()]);
+    let text_system = TextSystem::new(platform);
+    let requested = font("Missing");
+    for family in ["First", "Second"] {
+        text_system.set_fallback_font_families(vec![family.into()]);
+        let id = text_system.try_resolve_font(&requested)?;
+        assert_eq!(text_system.font_for_id(id).unwrap().family.as_ref(), family);
+    }
+    Ok(())
 }
