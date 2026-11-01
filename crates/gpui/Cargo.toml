@@ -54,6 +54,7 @@ leak-detection = ["dep:backtrace"]
 mimalloc-collect = ["dep:libmimalloc-sys"]
 # Opt-in foreground performance journal and hang detector. Default builds pay no event-recording cost.
 profiler = []
+hot-reload = ["dep:async-tungstenite", "dep:dioxus-cli-config", "dep:dioxus-devtools-types", "dep:subsecond"]
 macos-blade = [
     "blade-graphics",
     "blade-macros",
@@ -314,6 +315,22 @@ version = "2.5"
 
 [dependencies.async-task]
 version = "4.7"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies.async-tungstenite]
+version = "0.33"
+optional = true
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies.dioxus-cli-config]
+version = "=0.7.10"
+optional = true
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies.dioxus-devtools-types]
+version = "=0.7.10"
+optional = true
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies.subsecond]
+version = "=0.7.10"
+optional = true
 
 [dependencies.backtrace]
 version = "0.3"

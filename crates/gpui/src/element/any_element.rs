@@ -64,11 +64,11 @@ impl<C: RenderOnce> Element for Component<C> {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let component = &mut self.component;
         request_layout_component(type_name::<C>(), window, cx, &mut |window, cx| {
-            component
-                .take()
-                .unwrap()
-                .render(window, cx)
-                .into_any_element()
+            let component = component.take().expect("component renders exactly once");
+            #[cfg(gpui_hot_reload)]
+            return subsecond::HotFn::current(render_component::<C>).call((component, window, cx));
+            #[cfg(not(gpui_hot_reload))]
+            render_component(component, window, cx)
         })
     }
 
@@ -96,6 +96,11 @@ impl<C: RenderOnce> Element for Component<C> {
     ) {
         paint_component(type_name::<C>(), bounds, element, window, cx);
     }
+}
+
+#[inline(never)]
+fn render_component<C: RenderOnce>(component: C, window: &mut Window, cx: &mut App) -> AnyElement {
+    component.render(window, cx).into_any_element()
 }
 
 #[inline(never)]

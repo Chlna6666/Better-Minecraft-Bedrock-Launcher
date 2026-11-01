@@ -50,6 +50,20 @@ fn main() {
 }
 ```
 
+## Debug 热重载
+
+可选 `hot-reload` feature 使用 Subsecond 0.7.10。安装匹配的 Dioxus CLI（`dx` 0.7.10）后，
+在仓库根目录启动 BMCBL：
+
+```powershell
+dx serve --platform desktop --renderer native --bin BMCBL --features hot-reload --hot-patch
+```
+
+Entity 视图、类型擦除的 `AnyView` 和 `RenderOnce` 组件在下一次刷新时进入补丁后的渲染函数，
+保留 Entity 状态；应用补丁会使窗口保留的渲染结果失效。自定义 `Element` 生命周期方法、
+持久状态内存布局的变化可能仍需重启。运行时仅在 Windows、Linux、macOS 的 Debug 构建中启用，
+默认关闭。
+
 ## 显示器跟踪
 
 `App::observe_displays` 报告显示器连接、断开和属性变化，包括边界与标称刷新间隔。
@@ -69,8 +83,6 @@ Windows 即使没有 GPUI 窗口，也会保留一个隐藏的顶层通知窗口
 - `Entity<T>`：GPUI 管理的状态；通过 `Entity::update` 或 `Context<T>` 更新，状态变化
   后调用 `cx.notify()`。
 - `Render` 构建元素树；`RenderOnce` 是渲染时消费的轻量组件。
-- 布局使用 Taffy 0.15。每个窗口通过 `Rc` 共享 `WindowTextSystem`，窗口布局缓存和字体 run
-  临时缓冲只在前台线程使用；应用级 `TextSystem` 保留后台字体工作需要的同步。
 - `cx.spawn` / `window.spawn` 运行前台异步任务；阻塞或 IO 工作应放到后台执行器。
 
 新代码不要使用旧接口名：`Model<T>`、`View<T>`、`AppContext`、`ModelContext<T>`、

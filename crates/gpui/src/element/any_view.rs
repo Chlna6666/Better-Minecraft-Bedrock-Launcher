@@ -73,13 +73,14 @@ impl AnyView {
         let mut element = None;
         let render = self.render;
         cx.update_entity_erased(&self.entity, &mut |entity, cx| {
-            element = Some(render(
-                entity,
-                weak.take()
-                    .expect("rendered entity callback must execute exactly once"),
-                window,
-                cx,
-            ));
+            let weak = weak
+                .take()
+                .expect("rendered entity callback must execute exactly once");
+            #[cfg(gpui_hot_reload)]
+            let rendered = subsecond::HotFn::current(render).call((entity, weak, window, cx));
+            #[cfg(not(gpui_hot_reload))]
+            let rendered = render(entity, weak, window, cx);
+            element = Some(rendered);
         });
         element.expect("rendered entity callback must produce an element")
     }

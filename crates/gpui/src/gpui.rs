@@ -17,12 +17,14 @@ mod element;
 mod foundation;
 mod geometry;
 mod gestures;
+#[cfg(gpui_hot_reload)]
+mod hot_reload;
 mod layout;
 mod paint;
 mod platform;
 mod render_pipeline;
-pub(crate) use window::retained::{RetainedChunkId, PreparedRetainedQuadChunk};
 pub(crate) use paint::BackdropBlurDamagePlan;
+pub(crate) use window::retained::{PreparedRetainedQuadChunk, RetainedChunkId};
 mod primitives;
 mod scene;
 pub use primitives::*;
@@ -71,6 +73,12 @@ pub use gestures::*;
 #[cfg(feature = "bench-support")]
 pub use gpui_macros::bench;
 pub use gpui_macros::{AppContext, IntoElement, Render, VisualContext, register_action, test};
+/// Subsecond entry points for hot-patching callbacks outside GPUI's render boundaries.
+#[cfg(all(
+    feature = "hot-reload",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+pub use subsecond;
 
 /// Defines a Criterion benchmark group for functions annotated with `gpui::bench`.
 #[cfg(feature = "bench-support")]

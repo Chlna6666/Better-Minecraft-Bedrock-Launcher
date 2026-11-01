@@ -262,6 +262,8 @@ impl Application {
             let cx = &mut *this.borrow_mut();
             // Native display enumeration becomes available when the event loop starts.
             cx.displays_changed();
+            #[cfg(gpui_hot_reload)]
+            crate::hot_reload::init(cx);
             on_finish_launching(cx);
         }));
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]

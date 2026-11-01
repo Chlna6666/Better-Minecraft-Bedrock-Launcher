@@ -9,6 +9,13 @@ use std::env;
 fn main() {
     let target = env::var("CARGO_CFG_TARGET_OS");
     println!("cargo::rustc-check-cfg=cfg(gles)");
+    println!("cargo::rustc-check-cfg=cfg(gpui_hot_reload)");
+    if env::var_os("CARGO_FEATURE_HOT_RELOAD").is_some()
+        && env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some()
+        && matches!(target.as_deref(), Ok("windows" | "linux" | "macos"))
+    {
+        println!("cargo::rustc-cfg=gpui_hot_reload");
+    }
 
     #[cfg(feature = "build-shader-validation")]
     check_nova_wgsl_shaders();

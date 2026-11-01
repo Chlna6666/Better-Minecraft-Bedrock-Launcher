@@ -67,6 +67,21 @@ fn main() {
 }
 ```
 
+## Debug Hot Reload
+
+The optional `hot-reload` feature uses Subsecond 0.7.10. Use a matching Dioxus CLI
+(`dx` 0.7.10) and launch BMCBL from the repository root:
+
+```powershell
+dx serve --platform desktop --renderer native --bin BMCBL --features hot-reload --hot-patch
+```
+
+Entity views, type-erased `AnyView` handles and `RenderOnce` components enter patched
+render functions on the next refresh while keeping entity state. Applying a patch
+invalidates retained window rendering. Custom `Element` lifecycle methods and changes
+to persistent state layouts may require a restart. The runtime is enabled only in
+debug builds on Windows, Linux and macOS; the feature is off by default.
+
 ## Display Tracking
 
 `App::observe_displays` reports connected, disconnected and changed displays, including
@@ -94,9 +109,6 @@ reports X screen roots and no nominal refresh interval.
   change.
 - `Render` views build element trees. `RenderOnce` components are lightweight
   element recipes that are consumed when rendered.
-- Layout uses Taffy 0.15. Each window shares its `WindowTextSystem` through `Rc`;
-  window layout caches and font-run scratch buffers stay on the foreground thread.
-  The app-wide `TextSystem` retains synchronization for background font work.
 - `cx.spawn(async move |cx| ...)` and `window.spawn(cx, async move |cx| ...)`
   run foreground async work. Use background executors or blocking tasks for
   work that must not block UI rendering.

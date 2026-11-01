@@ -2719,6 +2719,7 @@ dependencies = [
  "serde",
  "slab",
  "slotmap",
+ "subsecond",
  "tracing",
 ]
 
@@ -4329,6 +4330,7 @@ dependencies = [
  "ashpd",
  "async-channel 2.5.0",
  "async-task",
+ "async-tungstenite",
  "backtrace",
  "bindgen 0.73.2",
  "bitflags 2.13.1",
@@ -4354,6 +4356,8 @@ dependencies = [
  "cursor-icon",
  "derive_more 2.1.1",
  "dhat",
+ "dioxus-cli-config",
+ "dioxus-devtools-types",
  "dpi",
  "embed-resource",
  "enumflags2",

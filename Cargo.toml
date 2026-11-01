@@ -143,6 +143,7 @@ default = ["gpui-windows-dx12", "gpui-windows-vulkan", "gpui-opengl"]
 # 暴露 `bench_support` 入口并启用 criterion；正常构建与发布不启用。
 bench-support = ["dep:criterion", "dep:wasm-encoder"]
 gpui-opengl = ["gpui/nova-gfx-opengl"]
+hot-reload = ["gpui/hot-reload"]
 gpui-windows-dx12 = ["gpui/nova-gfx-dx12"]
 gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 
