@@ -66,10 +66,23 @@ impl Painter {
             .sort_unstable_by_key(|underline| underline.order);
         self.scene
             .monochrome_sprites
-            .sort_unstable_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_unstable_by_key(|sprite| {
+                (
+                    sprite.order,
+                    sprite.tile.texture_id.kind as u32,
+                    sprite.tile.texture_id.index,
+                    sprite.sampling() as u32,
+                )
+            });
         self.scene
             .polychrome_sprites
-            .sort_unstable_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_unstable_by_key(|sprite| {
+                (
+                    sprite.order,
+                    sprite.tile.texture_id.kind as u32,
+                    sprite.tile.texture_id.index,
+                )
+            });
         self.scene
             .surfaces
             .sort_unstable_by_key(|surface| surface.order);

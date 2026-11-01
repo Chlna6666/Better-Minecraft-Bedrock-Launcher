@@ -5,6 +5,8 @@ use crate::{
 };
 use std::{ops::Range, sync::Arc};
 
+mod sprite_batching;
+
 #[test]
 fn retained_scene_bounds_ignore_fullscreen_paint_layer_metadata() {
     let viewport = bounds(
