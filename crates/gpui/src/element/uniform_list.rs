@@ -7,6 +7,8 @@
 mod builder;
 mod decoration;
 mod scroll;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId,
@@ -307,11 +309,14 @@ impl Element for UniformList {
                             scroll_offset = *updated_scroll_offset
                         }
 
+                        let scroll_top = -scroll_offset.y.to_f64();
+                        let item_height_f64 = item_height.to_f64();
                         let first_visible_element_ix =
-                            (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
-                        let last_visible_element_ix =
-                            ((-scroll_offset.y + padded_bounds.size.height) / item_height).ceil()
+                            ((scroll_top - padding.top.to_f64()) / item_height_f64).floor()
                                 as usize;
+                        let last_visible_element_ix =
+                            ((scroll_top + padded_bounds.size.height.to_f64()) / item_height_f64)
+                                .ceil() as usize;
 
                         let visible_range = first_visible_element_ix
                             ..cmp::min(last_visible_element_ix, self.item_count);
@@ -332,6 +337,8 @@ impl Element for UniformList {
                         };
                         window.with_content_mask(Some(content_mask), |window| {
                             for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
+                                let item_top =
+                                    item_height_f64 * ix as f64 - scroll_top + padding.top.to_f64();
                                 let item_origin = padded_bounds.origin
                                     + point(
                                         if can_scroll_horizontally {
@@ -339,7 +346,7 @@ impl Element for UniformList {
                                         } else {
                                             scroll_offset.x
                                         },
-                                        item_height * ix + scroll_offset.y + padding.top,
+                                        Pixels::from(item_top),
                                     );
                                 let available_width = if can_scroll_horizontally {
                                     padded_bounds.size.width + scroll_offset.x.abs()
