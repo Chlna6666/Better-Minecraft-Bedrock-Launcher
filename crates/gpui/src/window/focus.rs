@@ -99,7 +99,7 @@ impl Window {
         &self,
         value: AnyWindowFocusListener,
     ) -> (Subscription, impl FnOnce() + use<>) {
-        self.focus_listeners.insert((), value)
+        self.focus_listeners.insert_pending(value)
     }
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.

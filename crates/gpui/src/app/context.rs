@@ -1,7 +1,8 @@
 use crate::{
     AnyView, AnyWindowHandle, AppContext, AsyncApp, DispatchPhase, Effect, EntityId, EventEmitter,
-    FocusHandle, FocusOutEvent, Focusable, Global, KeystrokeObserver, Reservation, SubscriberSet,
-    Subscription, Task, WeakEntity, WeakFocusHandle, Window, WindowHandle, WindowVisibility,
+    FocusHandle, FocusOutEvent, Focusable, Global, KeystrokeObserver, Reservation,
+    SingleSubscriberSet, Subscription, Task, WeakEntity, WeakFocusHandle, Window, WindowHandle,
+    WindowVisibility,
 };
 use anyhow::Result;
 use futures::{FutureExt, Stream, StreamExt};
@@ -129,7 +130,7 @@ impl<'a, T: 'static> Context<'a, T> {
     where
         T: 'static,
     {
-        let (subscription, activate) = self.app.release_listeners.insert(
+        let (subscription, activate) = self.app.release_listeners.insert_pending(
             self.entity_state.entity_id,
             Box::new(move |this, cx| {
                 let this = this.downcast_mut().expect("invalid entity type");
@@ -152,7 +153,7 @@ impl<'a, T: 'static> Context<'a, T> {
     {
         let entity_id = entity.entity_id();
         let this = self.weak_entity();
-        let (subscription, activate) = self.app.release_listeners.insert(
+        let (subscription, activate) = self.app.release_listeners.insert_pending(
             entity_id,
             Box::new(move |entity, cx| {
                 let entity = entity.downcast_mut().expect("invalid entity type");
@@ -174,7 +175,7 @@ impl<'a, T: 'static> Context<'a, T> {
         T: 'static,
     {
         let handle = self.weak_entity();
-        let (subscription, activate) = self.global_observers.insert(
+        let (subscription, activate) = self.global_observers.insert_pending(
             TypeId::of::<G>(),
             Box::new(move |cx| handle.update(cx, |view, cx| f(view, cx)).is_ok()),
         );

@@ -494,7 +494,7 @@ impl Window {
             if !previous_focus_path.is_empty() && current_focus_path.is_empty() {
                 self.focus_lost_listeners
                     .clone()
-                    .retain(&(), |listener| listener(self, cx));
+                    .retain(|listener| listener(self, cx));
             }
 
             let event = WindowFocusEvent {
@@ -511,7 +511,7 @@ impl Window {
             };
             self.focus_listeners
                 .clone()
-                .retain(&(), |listener| listener(&event, self, cx));
+                .retain(|listener| listener(&event, self, cx));
         }
     }
 

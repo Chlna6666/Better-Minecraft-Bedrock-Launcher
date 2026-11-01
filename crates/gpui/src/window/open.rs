@@ -44,7 +44,7 @@ impl Window {
         );
         self.visibility_observers
             .clone()
-            .retain(&(), |callback| callback(visibility, self, cx));
+            .retain(|callback| callback(visibility, self, cx));
         self.presentation_visibility_changed();
     }
 
@@ -337,7 +337,7 @@ impl Window {
                             window
                                 .activation_observers
                                 .clone()
-                                .retain(&(), |callback| callback(window, cx));
+                                .retain(|callback| callback(window, cx));
 
                             let previous_scale_factor = window.scale_factor;
                             let previous_viewport_size = window.viewport_size;
@@ -533,20 +533,20 @@ impl Window {
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
             direct_dirty_views: FxHashSet::default(),
-            focus_listeners: SubscriberSet::new(),
-            focus_lost_listeners: SubscriberSet::new(),
+            focus_listeners: SingleSubscriberSet::new(),
+            focus_lost_listeners: SingleSubscriberSet::new(),
             default_prevented: true,
             mouse_position,
             mouse_hit_test: HitTest::default(),
             modifiers,
             capslock,
             scale_factor,
-            bounds_observers: SubscriberSet::new(),
+            bounds_observers: SingleSubscriberSet::new(),
             appearance,
-            appearance_observers: SubscriberSet::new(),
+            appearance_observers: SingleSubscriberSet::new(),
             active,
             visibility,
-            visibility_observers: SubscriberSet::new(),
+            visibility_observers: SingleSubscriberSet::new(),
             hovered,
             needs_present,
             scene_animation_needs_commit: Cell::new(false),
@@ -595,13 +595,13 @@ impl Window {
             deadline_invalidation_pending,
             deadline_invalidation_generation,
             image_animation_deadline_generation: Rc::new(Cell::new(0)),
-            activation_observers: SubscriberSet::new(),
+            activation_observers: SingleSubscriberSet::new(),
             focus: None,
             focus_retained_targets: FxHashMap::default(),
             focus_enabled: true,
             pending_input: None,
             pending_modifier: ModifierState::default(),
-            pending_input_observers: SubscriberSet::new(),
+            pending_input_observers: SingleSubscriberSet::new(),
             prompt: None,
             client_inset,
             window_control_drag_gesture: TitlebarGesture::default(),

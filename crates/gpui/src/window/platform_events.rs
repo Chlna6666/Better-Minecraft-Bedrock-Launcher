@@ -63,7 +63,7 @@ impl Window {
 
         self.bounds_observers
             .clone()
-            .retain(&(), |callback| callback(self, cx));
+            .retain(|callback| callback(self, cx));
     }
 
     pub(super) fn content_bounds_changed(&mut self, cx: &mut App) {
@@ -195,7 +195,7 @@ impl Window {
 
         self.bounds_observers
             .clone()
-            .retain(&(), |callback| callback(self, cx));
+            .retain(|callback| callback(self, cx));
     }
 
     pub(crate) fn appearance_changed(&mut self, cx: &mut App) {
@@ -208,7 +208,7 @@ impl Window {
 
         self.appearance_observers
             .clone()
-            .retain(&(), |callback| callback(self, cx));
+            .retain(|callback| callback(self, cx));
     }
 }
 

@@ -106,7 +106,7 @@ impl App {
                 cx.window_handles.remove(&id);
                 cx.windows.remove(id);
 
-                cx.window_closed_observers.clone().retain(&(), |callback| {
+                cx.window_closed_observers.clone().retain(|callback| {
                     callback(id, cx);
                     true
                 });

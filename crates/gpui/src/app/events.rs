@@ -1,8 +1,8 @@
 use std::{any::Any, rc::Rc, sync::Arc};
 
 use crate::{
-    Action, AnyView, App, Bounds, CursorStyle, KeyContext, Keystroke, Pixels, Point, SubscriberSet,
-    Subscription, Window,
+    Action, AnyView, App, Bounds, CursorStyle, KeyContext, Keystroke, Pixels, Point,
+    SingleSubscriberSet, Subscription, Window,
 };
 
 /// Contains state associated with an active drag operation, started by dragging an element
@@ -63,10 +63,10 @@ impl App {
         mut f: impl FnMut(&KeystrokeEvent, &mut Window, &mut App) + 'static,
     ) -> Subscription {
         fn inner(
-            keystroke_observers: &SubscriberSet<(), KeystrokeObserver>,
+            keystroke_observers: &SingleSubscriberSet<KeystrokeObserver>,
             handler: KeystrokeObserver,
         ) -> Subscription {
-            let (subscription, activate) = keystroke_observers.insert((), handler);
+            let (subscription, activate) = keystroke_observers.insert_pending(handler);
             activate();
             subscription
         }
@@ -89,10 +89,10 @@ impl App {
         mut f: impl FnMut(&KeystrokeEvent, &mut Window, &mut App) + 'static,
     ) -> Subscription {
         fn inner(
-            keystroke_interceptors: &SubscriberSet<(), KeystrokeObserver>,
+            keystroke_interceptors: &SingleSubscriberSet<KeystrokeObserver>,
             handler: KeystrokeObserver,
         ) -> Subscription {
-            let (subscription, activate) = keystroke_interceptors.insert((), handler);
+            let (subscription, activate) = keystroke_interceptors.insert_pending(handler);
             activate();
             subscription
         }
