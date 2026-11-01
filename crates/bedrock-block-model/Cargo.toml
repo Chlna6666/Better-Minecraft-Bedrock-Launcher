@@ -26,6 +26,7 @@ include = [
     "generated/item_texture_map.json",
     "generated/vanilla_models.bin",
     "generated/vanilla_models.meta.json",
+    "generated/vanilla_voxel_shapes.json",
 ]
 
 [lib]

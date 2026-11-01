@@ -5,6 +5,13 @@
 `bedrock-block-model` 把 Minecraft Bedrock 资源包中的方块视觉数据解析为单一模型描述，
 供渲染器和 OBJ 导出器消费。
 
+`vanilla_voxel_shapes()` 提供独立的只读形状数据库，包含从所提供的 Bedrock 1.21.110
+行为包文档解码的 218 个体积、684 个盒体。`generated/vanilla_voxel_shapes.json` 保留
+标识符、版本和原始 16 单位坐标；API 将盒体转换为方块单位，并预计算保守的 16×16
+边界覆盖。未知标识符返回 `None`。这些体积没有 UV、材质或完整 BlockState 映射，
+不会替换捕获的视觉模型。覆盖本身不代表不透明：调用方必须确认状态及不透明材质语义，
+才能用来剔除面。库不嵌入游戏着色器字节码。
+
 ## 覆盖范围
 
 - 旧版原版资源包 `blocks.json`；

@@ -24,6 +24,7 @@ mod resource;
 mod runtime_capture;
 mod state;
 mod texture;
+mod voxel_shape;
 
 pub use error::{BlockModelError, Result};
 pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, GeometryUv};
@@ -85,9 +86,14 @@ pub use pack::{BlockDefinition, BlockModelRepository};
 pub use permutation::{BlockPermutation, ConditionEvaluation};
 pub use resolver::{ModelWarning, ResolvedBlockModel, ResolvedMaterialInstance, ResolvedTexture};
 pub use resource::ResourceFile;
-pub use runtime_capture::{RuntimeCaptureCatalog,capture_texture_slot,decode_capture_texture_slot};
+pub use runtime_capture::{
+    RuntimeCaptureCatalog, capture_texture_slot, decode_capture_texture_slot,
+};
 pub use state::{BlockStateQuery, BlockStateValue};
 pub use texture::{TerrainTexture, TerrainTextureAtlas};
+pub use voxel_shape::{
+    VoxelBox, VoxelFaceCoverage, VoxelShape, VoxelShapeLibrary, vanilla_voxel_shapes,
+};
 
 /// Names whose Bedrock geometry is hardcoded in the engine, so the Java block model is the
 /// authoritative replacement (the vanilla Bedrock resource pack ships no block model).
@@ -104,7 +110,7 @@ pub fn is_java_block_entity_model_block(name: &str) -> bool {
 /// geometry is resolved by BlockModelRepository::captured_shape or block pack geometry.
 #[must_use]
 pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
-    let mut shape=model_family::model_shape_for_block_state(state)?;
-    java_runtime::apply_double_plant_material_slots(state,&mut shape);
+    let mut shape = model_family::model_shape_for_block_state(state)?;
+    java_runtime::apply_double_plant_material_slots(state, &mut shape);
     Some(shape)
 }

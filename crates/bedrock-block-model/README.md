@@ -3,6 +3,15 @@
 `bedrock-block-model` resolves Minecraft Bedrock resource-pack block visual data into a
 single model description that renderers and OBJ exporters can consume.
 
+`vanilla_voxel_shapes()` exposes a separate, immutable database of 218 voxel volumes
+(684 boxes) decoded from the supplied Bedrock 1.21.110 behavior-pack documents.
+`generated/vanilla_voxel_shapes.json` preserves their identifiers, versions and original
+16-unit coordinates; the API normalizes boxes to block units and precomputes conservative
+16×16 boundary coverage. Unknown identifiers return `None`. These volumes have no UVs,
+materials or complete BlockState mapping and never replace captured visual geometry.
+Coverage alone does not establish opacity: consumers must verify both state and opaque
+material semantics before using a volume for face occlusion. No game shader bytecode is embedded.
+
 The crate currently loads:
 
 - `blocks.json` in the legacy vanilla resource-pack format.
