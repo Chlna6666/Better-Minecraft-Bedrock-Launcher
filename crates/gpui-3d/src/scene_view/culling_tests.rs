@@ -473,7 +473,10 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
             (0, page.vertices, page.vertex_binding_bytes as u64),
             (1, draw_buffer, draws.len() as u64),
             (8, instance_buffer, instances.len() as u64),
-            (9, frame_buffer, 112),
+            (9, frame_buffer, FRAME_PARAMS_STRIDE as u64),
+            (12, draw_buffer, draws.len() as u64),
+            (13, page.vertices, page.vertex_binding_bytes as u64),
+            (14, draw_buffer, draws.len() as u64),
             (
                 11,
                 culling.visible_instances,

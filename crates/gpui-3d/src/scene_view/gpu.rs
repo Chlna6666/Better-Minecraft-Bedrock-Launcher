@@ -777,6 +777,15 @@ pub(super) fn create_draw_resource_set(
         layout: bind_group_layout,
         entries: vec![
             BindGroupEntry {
+                binding: 14,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: mesh.generated.as_ref().map_or(draw_buffer, |m| m.templates),
+                    offset: 0,
+                    size: mesh.generated.as_ref().map_or(16, |m| m.template_bytes),
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
                 binding: 13,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: if mesh.generated.is_some() {

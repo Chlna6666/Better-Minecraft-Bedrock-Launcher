@@ -11,6 +11,48 @@ struct Params { size:vec4<u32>, origin:vec4<f32>, clip:vec4<f32>, extra:vec4<u32
 @group(0) @binding(5) var<storage,read_write> scratch:array<u32>;
 var<workgroup> prefix:array<u32,64>;
 var<workgroup> output_base:u32;
+fn opaque_cell(p:vec3<i32>,instance:bool)->bool {
+    if(any(p<vec3<i32>(0)) || any(p>=vec3<i32>(params.size.xyz))){return false;}
+    let index=(u32(p.z)*params.size.y+u32(p.y))*params.size.x+u32(p.x);
+    if(!instance){return cells[index]!=0u;}
+    let base=params.extra.w&0x7fffffffu;
+    var kind=0u;
+    if((params.extra.w&0x80000000u)!=0u){kind=(cells[base+index/4u]>>((index%4u)*8u))&255u;}
+    else{kind=cells[base+index];}
+    return (kind&bitcast<u32>(params.clip.w))!=0u;
+}
+fn face_ao(face:Face,cell:u32,instance:bool)->u32 {
+    if(bitcast<u32>(params.clip.w)==0u){return 0u;}
+    var low=vec3<f32>(1.0);var high=vec3<f32>(0.0);
+    for(var i=0u;i<4u;i++){
+        let v=face.vertices[i];let p=vec3<f32>(v.x,v.y,v.z);
+        if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0)))){return 0u;}
+        low=min(low,p);high=max(high,p);
+    }
+    var axis=3u;
+    for(var a=0u;a<3u;a++){if(low[a]==high[a]){axis=a;}}
+    if(axis==3u){return 0u;}
+    let direction=select(-1,1,low[axis]==1.0);
+    let normal=vec3<i32>(select(0,direction,axis==0u),select(0,direction,axis==1u),select(0,direction,axis==2u));
+    let stride=vec3<i32>(1,i32(params.size.x),i32(params.size.x*params.size.y));
+    if(bitcast<i32>(face.info.y)!=normal.x*stride.x+normal.y*stride.y+normal.z*stride.z){return 0u;}
+    var tangents=vec2<u32>(0u,1u);
+    if(axis==0u){tangents=vec2<u32>(1u,2u);}else if(axis==1u){tangents=vec2<u32>(0u,2u);}
+    let p=vec3<i32>(i32(cell%params.size.x),i32(cell/params.size.x%params.size.y),i32(cell/params.size.x/params.size.y));
+    var packed=0u;
+    for(var i=0u;i<4u;i++){
+        let v=face.vertices[i];let corner=vec3<f32>(v.x,v.y,v.z);
+        let da=select(-1,1,corner[tangents.x]==1.0);
+        let db=select(-1,1,corner[tangents.y]==1.0);
+        let sa=normal+select(vec3<i32>(0),vec3<i32>(da),vec3<u32>(0u,1u,2u)==vec3<u32>(tangents.x));
+        let sb=normal+select(vec3<i32>(0),vec3<i32>(db),vec3<u32>(0u,1u,2u)==vec3<u32>(tangents.y));
+        let a=opaque_cell(p+sa,instance);let b=opaque_cell(p+sb,instance);
+        var count=3u;
+        if(!(a&&b)){count=u32(a)+u32(b)+u32(opaque_cell(p+sa+sb-normal,instance));}
+        packed|=(255u-count*51u)<<(i*8u);
+    }
+    return packed;
+}
 fn instance_visible(face:Face,job:u32)->bool {
     let height=bitcast<f32>(cells[job+3u]);
     let y=params.origin.y+f32(cells[job+1u])+bitcast<f32>(face.info.w)*height;
@@ -29,7 +71,7 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32){
     if(y<params.clip.x || y>=params.clip.y){return;}
     let vertex=atomicAdd(&args[face.info.x*4u],6u);
     let slot=face.info.z+vertex/6u;
-    output[slot]=GeneratedFace(cell,model_face,1.0,0u);
+    output[slot]=GeneratedFace(cell,model_face,1.0,face_ao(face,cell,false));
 }
 @compute @workgroup_size(64)
 fn cs_mesh(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
@@ -76,7 +118,9 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
             if(!instance_visible(face,job)){continue;}
             if(mode==5u){
                 let cell=(cells[job+2u]*params.size.y+cells[job+1u])*params.size.x+cells[job];
-                output[face.info.z+scratch[index]+emitted]=GeneratedFace(cell,model_face,bitcast<f32>(cells[job+3u]),0u);
+                let height=bitcast<f32>(cells[job+3u]);
+                var ao=0u;if(height==1.0){ao=face_ao(face,cell,true);}
+                output[face.info.z+scratch[index]+emitted]=GeneratedFace(cell,model_face,height,ao);
             }
             emitted++;
         }

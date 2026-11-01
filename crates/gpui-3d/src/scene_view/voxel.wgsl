@@ -64,6 +64,13 @@ struct GeneratedTemplates {origin:vec4<f32>,size:vec4<u32>,faces:array<Generated
 struct GeneratedFace {cell:u32,model_face:u32,height:f32,padding:u32};
 @group(0) @binding(12) var<storage, read> generated_templates:GeneratedTemplates;
 @group(0) @binding(13) var<storage, read> generated_faces:array<GeneratedFace>;
+@group(0) @binding(14) var<storage, read> lighting_words:array<u32>;
+
+fn cell_brightness(cell:u32)->f32 {
+    let word=lighting_words[generated_templates.size.w+cell/4u];
+    let packed=(word>>((cell%4u)*8u))&255u;
+    return f32(max(packed&15u,packed>>4u))/15.0;
+}
 
 @vertex
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
@@ -79,7 +86,21 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     vertex.position_x+=position.x;
     vertex.position_y=vertex.position_y*descriptor.height+position.y;
     vertex.position_z+=position.z;
-    return shade_voxel_value(vertex,instance_index);
+    var shaded=shade_voxel_value(vertex,instance_index);
+    if(descriptor.cell!=0xffffffffu && generated_templates.size.w!=0u){
+        let delta=bitcast<i32>(generated_templates.faces[descriptor.model_face].info.y);
+        let neighbor=i32(descriptor.cell)+delta;
+        var light=cell_brightness(descriptor.cell);
+        let count=generated_templates.size.x*generated_templates.size.y*generated_templates.size.z;
+        if(neighbor>=0 && u32(neighbor)<count){light=max(light,cell_brightness(u32(neighbor)));}
+        let factor=generated_templates.origin.w+(1.0-generated_templates.origin.w)*light*light;
+        shaded.vertex_color=vec4<f32>(shaded.vertex_color.rgb*factor,shaded.vertex_color.a);
+    }
+    if(descriptor.padding!=0u){
+        let ao=f32((descriptor.padding>>(corners[index%6u]*8u))&255u)/255.0;
+        shaded.vertex_color=vec4<f32>(shaded.vertex_color.rgb*ao,shaded.vertex_color.a);
+    }
+    return shaded;
 }
 
 @vertex

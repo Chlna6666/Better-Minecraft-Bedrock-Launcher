@@ -100,6 +100,11 @@ impl RendererResources {
                     label: Some("gpui-3d scene-view resource-set layout".into()),
                     entries: vec![
                         BindGroupLayoutEntry {
+                            binding: 14,
+                            binding_type: BindingType::StorageBuffer,
+                            stages: ShaderStages::VERTEX,
+                        },
+                        BindGroupLayoutEntry {
                             binding: 13,
                             binding_type: BindingType::StorageBuffer,
                             stages: ShaderStages::VERTEX,

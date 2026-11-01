@@ -9,6 +9,10 @@ use gpui::ExtensionDevice;
 #[path = "generated_tests.rs"]
 pub(super) mod tests;
 
+#[cfg(all(test, target_os = "windows"))]
+#[path = "generated_lighting_tests.rs"]
+mod lighting_tests;
+
 pub(super) struct GeneratedMesh {
     pub templates: BufferId,
     pub arguments: BufferId,
@@ -66,7 +70,12 @@ pub(super) fn create_shader(
 
 fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     let mut bytes = Vec::with_capacity(32 + source.templates.len() * 112);
-    for value in [source.origin.x, source.origin.y, source.origin.z, 0.0] {
+    for value in [
+        source.origin.x,
+        source.origin.y,
+        source.origin.z,
+        source.lighting.as_ref().map_or(0., |light| light.ambient),
+    ] {
         bytes.extend(value.to_le_bytes());
     }
     for value in source.size.into_iter().chain([0]) {
@@ -108,6 +117,12 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
             bytes.extend(vertex.uv.x.to_le_bytes());
             bytes.extend(vertex.uv.y.to_le_bytes());
         }
+    }
+    if let Some(light) = &source.lighting {
+        let base = (bytes.len() / 4) as u32;
+        bytes[28..32].copy_from_slice(&base.to_le_bytes());
+        bytes.extend_from_slice(&light.levels);
+        bytes.resize(bytes.len().div_ceil(4) * 4, 0);
     }
     (bytes, static_counts)
 }
@@ -177,7 +192,7 @@ pub(super) fn create(
                 source.clip_y[0],
                 source.clip_y[1],
                 f32::from_bits((source.templates.len() - source.static_start) as u32),
-                0.0,
+                f32::from_bits(source.ambient_occlusion),
             ]
             .into_iter()
             .flat_map(f32::to_le_bytes),

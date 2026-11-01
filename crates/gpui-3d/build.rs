@@ -53,7 +53,8 @@ fn main() {
             Shader::new("mesher_check")
                 .wgsl_file("src/scene_view/mesher_check.wgsl")
                 .entry("vs_mesh_check", ShaderStage::Vertex)
-                .entry("fs_mesh_check", ShaderStage::Fragment),
+                .entry("fs_mesh_check", ShaderStage::Fragment)
+                .entry("fs_mesh_ao_check", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("voxel")

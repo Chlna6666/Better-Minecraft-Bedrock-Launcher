@@ -3,8 +3,11 @@ use crate::{Aabb, Mesh, MeshError, MeshPart, Vec3, Vertex};
 use std::{collections::BTreeMap, sync::OnceLock};
 mod cells;
 mod classes;
+mod illumination;
 mod instances;
+mod lighting;
 pub use instances::VoxelMeshInstance;
+pub use lighting::voxel_ambient_light;
 
 /// Occupied halo cell which occludes faces but does not emit geometry.
 pub const VOXEL_OCCLUDER: u32 = u32::MAX;
@@ -127,6 +130,8 @@ pub struct VoxelMeshSource {
     pub(crate) parts: Box<[MeshPart]>,
     pub(crate) bounds: Aabb,
     pub(crate) clip_y: [f32; 2],
+    pub(crate) ambient_occlusion: u32,
+    pub(crate) lighting: Option<illumination::Lighting>,
     fallback: OnceLock<Mesh>,
 }
 
@@ -263,6 +268,8 @@ impl VoxelMeshSource {
             parts: parts.into_boxed_slice(),
             bounds,
             clip_y: [-f32::MAX, f32::MAX],
+            ambient_occlusion: 0,
+            lighting: None,
             fallback: OnceLock::new(),
         })
     }
@@ -368,6 +375,7 @@ impl VoxelMeshSource {
     }
     pub(crate) fn storage_bytes(&self) -> usize {
         self.cells.storage_bytes()
+            + self.lighting.as_ref().map_or(0, |light| light.levels.len())
             + self.templates.len() * std::mem::size_of::<VoxelFaceTemplate>()
             + self.instances.as_ref().map_or(0, |instances| {
                 instances.classes.storage_bytes()
@@ -421,7 +429,18 @@ impl VoxelMeshSource {
                         .expect("active model material has output capacity");
                     let slot = self.parts[part].first_index() as usize / 6 + counts[part];
                     counts[part] += 1;
-                    quads[slot] = face.vertices.map(|mut vertex| {
+                    let cell = [
+                        index as u32 % self.size[0],
+                        index as u32 / self.size[0] % self.size[1],
+                        index as u32 / self.size[0] / self.size[1],
+                    ];
+                    let light = self.face_ambient_light(face, cell, false);
+                    let illumination = self.face_light(face, cell);
+                    quads[slot] = std::array::from_fn(|corner| {
+                        let mut vertex = face.vertices[corner];
+                        for c in &mut vertex.color[..3] {
+                            *c *= light[corner] * illumination;
+                        }
                         vertex.position = vertex.position + position;
                         vertex
                     });

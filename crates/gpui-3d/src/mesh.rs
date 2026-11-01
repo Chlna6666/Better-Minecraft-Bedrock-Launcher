@@ -931,6 +931,8 @@ impl Mesh {
                             && a.clip_y == b.clip_y
                             && a.model_faces == b.model_faces
                             && a.static_start == b.static_start
+                            && a.ambient_occlusion == b.ambient_occlusion
+                            && a.lighting == b.lighting
                             && a.instances == b.instances
                             && a.cells == b.cells
                             && a.templates == b.templates)

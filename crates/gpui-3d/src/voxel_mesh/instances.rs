@@ -289,7 +289,17 @@ impl VoxelMeshSource {
                 }
                 let slot = self.parts[part].first_index() as usize / 6 + counts[part];
                 counts[part] += 1;
-                quads[slot] = face.vertices.map(|mut v| {
+                let light = if job.height == 1.0 {
+                    self.face_ambient_light(face, job.position, true)
+                } else {
+                    [1.0; 4]
+                };
+                quads[slot] = std::array::from_fn(|corner| {
+                    let illumination = self.face_light(face, job.position);
+                    let mut v = face.vertices[corner];
+                    for c in &mut v.color[..3] {
+                        *c *= light[corner] * illumination;
+                    }
                     v.position =
                         position + Vec3::new(v.position.x, v.position.y * job.height, v.position.z);
                     v

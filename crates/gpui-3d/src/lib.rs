@@ -65,7 +65,9 @@ pub use gfx_core::FrontFace;
 mod math;
 mod mesh;
 mod voxel_mesh;
-pub use voxel_mesh::{VOXEL_OCCLUDER, VoxelFaceTemplate, VoxelMeshInstance, VoxelMeshSource};
+pub use voxel_mesh::{
+    VOXEL_OCCLUDER, VoxelFaceTemplate, VoxelMeshInstance, VoxelMeshSource, voxel_ambient_light,
+};
 mod prepare;
 mod raycast;
 mod render;
