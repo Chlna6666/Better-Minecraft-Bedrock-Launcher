@@ -92,7 +92,7 @@ pub fn resolve_block(
     }
 }
 
-fn resolved_components(
+pub(crate) fn resolved_components(
     block: &BlockDefinition,
     state: &BlockStateQuery,
 ) -> (BlockComponents, Vec<String>, Vec<ModelWarning>) {

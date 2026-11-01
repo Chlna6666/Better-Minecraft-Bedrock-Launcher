@@ -12,6 +12,16 @@ materials or complete BlockState mapping and never replace captured visual geome
 Coverage alone does not establish opacity: consumers must verify both state and opaque
 material semantics before using a volume for face occlusion. No game shader bytecode is embedded.
 
+`BlockModelRepository::light_properties` resolves emission and attenuation on a 0..=15 scale,
+including resource-pack components and permutations. Default numeric metadata for 1,356 Bedrock
+1.26.30 block identifiers comes from the MIT-licensed
+[PrismarineJS minecraft-data snapshot](https://github.com/PrismarineJS/minecraft-data/tree/b43925ca90babfd63745de4bbcd84feb35c1b40c/data/bedrock/1.26.30).
+The generated table records its source/version; attribution is in
+[`generated/block_lighting.NOTICE`](generated/block_lighting.NOTICE). These are default block
+properties, not complete per-state or version-specific behavior. Water/leaves attenuation and
+explicit extinguished/unlit states are handled; arbitrary partial-shape transmission and legacy
+numeric-state lighting require additional metadata. This crate performs no propagation or GPU work.
+
 The crate currently loads:
 
 - `blocks.json` in the legacy vanilla resource-pack format.

@@ -12,6 +12,13 @@
 不会替换捕获的视觉模型。覆盖本身不代表不透明：调用方必须确认状态及不透明材质语义，
 才能用来剔除面。库不嵌入游戏着色器字节码。
 
+`BlockModelRepository::light_properties` 解析 0..=15 等级的发光与衰减，支持资源包组件与
+permutation 覆盖。1,356 个 Bedrock 1.26.30 方块标识符的默认数字属性来自 MIT 许可的
+[PrismarineJS minecraft-data 固定版本](https://github.com/PrismarineJS/minecraft-data/tree/b43925ca90babfd63745de4bbcd84feb35c1b40c/data/bedrock/1.26.30)。
+生成表记录来源与版本，署名见 [`generated/block_lighting.NOTICE`](generated/block_lighting.NOTICE)。
+这些是默认方块属性，不是完整的逐状态、逐版本行为。当前处理水/树叶衰减及明确的熄灭状态；
+任意局部形状的方向性透光、旧式数字状态光照仍需补充元数据。本 crate 不执行传播或 GPU 工作。
+
 ## 覆盖范围
 
 - 旧版原版资源包 `blocks.json`；

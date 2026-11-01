@@ -170,6 +170,10 @@ impl MaterialInstance {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockComponents {
+    /// Resource-defined light emission, 0..=15.
+    pub light_emission: Option<u8>,
+    /// Resource-defined light attenuation, 0..=15.
+    pub light_dampening: Option<u8>,
     pub geometry: Option<String>,
     pub material_instances: BTreeMap<String, MaterialInstance>,
     pub textures: Option<TextureSet>,
@@ -190,6 +194,15 @@ impl BlockComponents {
         let Some(object) = value.as_object() else {
             return components;
         };
+        let level = |key| {
+            object
+                .get(key)
+                .and_then(Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| *n <= 15)
+        };
+        components.light_emission = level("minecraft:light_emission");
+        components.light_dampening = level("minecraft:light_dampening");
 
         if let Some(geometry) = object
             .get("minecraft:geometry")
@@ -225,6 +238,12 @@ impl BlockComponents {
     }
 
     pub fn merge_from(&mut self, other: Self) {
+        if other.light_emission.is_some() {
+            self.light_emission = other.light_emission;
+        }
+        if other.light_dampening.is_some() {
+            self.light_dampening = other.light_dampening;
+        }
         if other.geometry.is_some() {
             self.geometry = other.geometry;
         }
