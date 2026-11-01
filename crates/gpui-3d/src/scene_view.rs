@@ -23,7 +23,7 @@ pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
 // record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
 pub(crate) const DRAW_PARAMS_STRIDE: u32 = 80;
 pub(crate) const DRAW_SLOT_STRIDE: usize = 512;
-pub(crate) const FRAME_PARAMS_STRIDE: usize = 112;
+pub(crate) const FRAME_PARAMS_STRIDE: usize = 144;
 pub(crate) const INSTANCE_STRIDE: u32 = 144;
 pub(crate) const LIGHT_STRIDE: u32 = 80;
 pub(crate) const VERTEX_BINDING: u32 = 0;
@@ -41,15 +41,19 @@ pub(crate) const VISIBLE_INSTANCE_BINDING: u32 = 11;
 
 static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
+mod fog;
+pub use fog::DistanceFog;
 mod artifacts;
 mod batching;
 mod culling;
 mod generated;
 pub(crate) mod gpu;
+mod hiz;
 mod projection;
 mod renderer;
 mod resources;
 mod scene;
+mod uploads;
 /// A prepared scene and camera snapshot rendered as a GPUI layout element through Nova.
 ///
 /// A scene view owns immutable scene, camera, and texture snapshots. Use
@@ -72,6 +76,7 @@ pub struct SceneView {
     pub(super) anisotropy_enabled: bool,
     pub(super) sampling: crate::TextureSampling,
     pub(super) voxel_shader: bool,
+    pub(super) fog: Option<DistanceFog>,
     pub(super) culling_bounds: Option<crate::Aabb>,
 }
 
@@ -112,6 +117,16 @@ impl SceneViewRaycastScratch {
 pub(super) struct SceneViewId(u64);
 
 impl SceneView {
+    /// Sets distance fog without changing scene assets or rebuilding draw records.
+    /// `None` disables fog. Existing views default to no fog.
+    #[must_use]
+    pub fn with_fog(&self, fog: Option<DistanceFog>) -> Self {
+        Self {
+            fog,
+            ..self.clone()
+        }
+    }
+
     /// Creates a scene view for an immutable scene and camera.
     #[must_use]
     pub fn new(scene: Arc<Scene>, camera: Camera) -> Self {
@@ -130,6 +145,7 @@ impl SceneView {
             anisotropy_enabled: false,
             sampling: crate::TextureSampling::Linear,
             voxel_shader: false,
+            fog: None,
             culling_bounds: None,
         }
     }
@@ -155,6 +171,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -177,6 +194,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -231,6 +249,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -253,6 +272,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -295,6 +315,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -326,6 +347,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -352,6 +374,7 @@ impl SceneView {
             anisotropy_enabled: enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -378,6 +401,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -390,6 +414,7 @@ impl SceneView {
     pub fn with_voxel_shader(&self) -> Self {
         Self {
             voxel_shader: true,
+            fog: self.fog,
             ..self.clone()
         }
     }
@@ -427,6 +452,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -451,6 +477,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -499,6 +526,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            fog: self.fog,
             culling_bounds: self.culling_bounds,
         })
     }

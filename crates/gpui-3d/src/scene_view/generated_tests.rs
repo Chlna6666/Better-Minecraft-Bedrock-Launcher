@@ -1,18 +1,36 @@
 //! Native count/argument validation; only pixels are read back by these tests.
 use super::*;
 
-fn render_generated<D: Device + TextureTransferDevice>(
+pub(super) fn render_generated<D: Device + TextureTransferDevice>(
     device: &mut D,
     mesh: &Mesh,
     resource: &MeshResources,
     arguments: BufferId,
     left: [u8; 4],
+    fog: Option<crate::DistanceFog>,
 ) {
     use super::super::{culling::tests as culling_tests, gpu};
     use crate::{
         Camera, Mat4, Material, Node, PreparedScene, Scene, ShadingModel, Transform, Vec3,
     };
     use std::sync::Arc;
+    let frame = |matrix| {
+        let mut bytes = culling_tests::frame(matrix);
+        if let Some(fog) = fog {
+            for (destination, value) in bytes[112..].chunks_exact_mut(4).zip(fog.encoded()) {
+                destination.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    };
+    let right = fog.map_or([255; 4], |fog| {
+        [
+            (fog.color[0] * 255.0).round() as u8,
+            (fog.color[1] * 255.0).round() as u8,
+            (fog.color[2] * 255.0).round() as u8,
+            255,
+        ]
+    });
     let mut scene = Scene::new();
     let mut material = Material::new();
     material.shading_model = ShadingModel::Unlit;
@@ -53,7 +71,7 @@ fn render_generated<D: Device + TextureTransferDevice>(
             gpu::encode_instances(&prepared).unwrap(),
             BufferUsage::STORAGE,
         ),
-        (culling_tests::frame(Mat4::IDENTITY), BufferUsage::UNIFORM),
+        (frame(Mat4::IDENTITY), BufferUsage::UNIFORM),
     ] {
         let buffer = ResourceDevice::create_buffer(
             device,
@@ -78,6 +96,7 @@ fn render_generated<D: Device + TextureTransferDevice>(
             (9, buffers[2].0, buffers[2].1),
             (12, generated.templates, generated.template_bytes),
             (13, resource.vertices, resource.vertex_binding_bytes as u64),
+            (14, generated.templates, generated.template_bytes),
         ],
     );
     let extent = Extent2d::new(16, 16).unwrap();
@@ -164,18 +183,11 @@ fn render_generated<D: Device + TextureTransferDevice>(
             }
             .matrix()
         };
-        ResourceDevice::write_buffer(device, buffers[2].0, 0, &culling_tests::frame(matrix))
-            .unwrap();
+        ResourceDevice::write_buffer(device, buffers[2].0, 0, &frame(matrix)).unwrap();
         culling
             .dispatch(device, cs, buffers[2].0, None, Some((arguments, 3)))
             .unwrap();
-        ResourceDevice::write_buffer(
-            device,
-            buffers[2].0,
-            0,
-            &culling_tests::frame(Mat4::IDENTITY),
-        )
-        .unwrap();
+        ResourceDevice::write_buffer(device, buffers[2].0, 0, &frame(Mat4::IDENTITY)).unwrap();
         PresentationDevice::render_to_textures(
             device,
             &[RenderPassCommands {
@@ -204,11 +216,7 @@ fn render_generated<D: Device + TextureTransferDevice>(
         );
         assert_eq!(
             &pixels[(8 * 16 + 10) * 4..][..4],
-            if visible {
-                &[255, 255, 255, 255]
-            } else {
-                &[0, 0, 0, 255]
-            }
+            if visible { &right } else { &[0, 0, 0, 255] }
         );
         assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
     }
@@ -238,6 +246,15 @@ pub(in crate::scene_view) fn counts<D: Device + TextureTransferDevice>(
     device: &mut D,
     buffer: BufferId,
     size: u64,
+) -> [u8; 4] {
+    probe(device, buffer, size, "fs_mesh_check")
+}
+
+pub(super) fn probe<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    buffer: BufferId,
+    size: u64,
+    fragment: &str,
 ) -> [u8; 4] {
     let extent = Extent2d::new(4, 4).unwrap();
     let texture = ResourceDevice::create_texture(
@@ -313,7 +330,7 @@ pub(in crate::scene_view) fn counts<D: Device + TextureTransferDevice>(
     )
     .unwrap();
     let vs = shader(device, ShaderStage::Vertex, "vs_mesh_check");
-    let fs = shader(device, ShaderStage::Fragment, "fs_mesh_check");
+    let fs = shader(device, ShaderStage::Fragment, fragment);
     let pipeline = PipelineDevice::create_render_pipeline(
         device,
         &RenderPipelineDescriptor {
@@ -321,7 +338,7 @@ pub(in crate::scene_view) fn counts<D: Device + TextureTransferDevice>(
             vertex_shader: vs,
             vertex_entry_point: "vs_mesh_check".into(),
             fragment_shader: fs,
-            fragment_entry_point: "fs_mesh_check".into(),
+            fragment_entry_point: fragment.into(),
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(pipeline_layout),
@@ -562,6 +579,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
                 } else {
                     [255; 4]
                 },
+                None,
             );
             assert_eq!(
                 before,

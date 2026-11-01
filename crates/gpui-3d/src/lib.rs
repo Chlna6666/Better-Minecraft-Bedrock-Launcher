@@ -100,6 +100,6 @@ pub use render::{
 };
 pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Scene, SceneError};
 pub use scene_view::{
-    ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,
+    DistanceFog, ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,
     SceneViewRaycastScratch, SceneViewTextureError, scene_view,
 };

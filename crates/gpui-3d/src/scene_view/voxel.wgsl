@@ -38,6 +38,8 @@ struct FrameParams {
     render_target_size: vec2<f32>,
     blend_edge_feather_px: f32,
     _padding: f32,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
 };
 
 struct VoxelOutput {
@@ -45,6 +47,7 @@ struct VoxelOutput {
     @location(2) vertex_color: vec4<f32>,
     @location(3) uv: vec2<f32>,
     @location(4) @interpolate(flat) draw_index: u32,
+    @location(5) fog_distance: f32,
 };
 
 const ALPHA_MODE_MASK: u32 = 1u;
@@ -179,6 +182,7 @@ fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
         f32((vertex.color_rgba8 >> 24u) & 255u),
     ) / 255.0;
     output.uv = vertex.uv;
+    output.fog_distance = distance(world_position.xyz, frame.camera_position);
     return output;
 }
 
@@ -210,7 +214,9 @@ fn fs_voxel(input: VoxelOutput) -> @location(0) vec4<f32> {
     if (draw.alpha_mode == ALPHA_MODE_MASK && alpha < draw.alpha_cutoff) {
         discard;
     }
-    let rgb = color.rgb + draw.emissive.rgb * draw.emissive.a;
+    let fog = clamp((input.fog_distance - frame.fog_range.x)
+        / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a;
+    let rgb = mix(color.rgb + draw.emissive.rgb * draw.emissive.a, frame.fog_color.rgb, fog);
     if (draw.alpha_mode == ALPHA_MODE_BLEND) {
         let coverage = element_bounds_coverage(input.position.xy);
         let output_alpha = alpha * coverage;

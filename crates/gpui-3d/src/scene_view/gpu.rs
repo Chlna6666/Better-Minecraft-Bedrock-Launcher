@@ -1004,6 +1004,8 @@ pub(super) fn encode_frame_params(
             0.0,
         ],
     );
+    // Default fog is disabled. The frame owner fills the trailing fog uniforms.
+    bytes.resize(FRAME_PARAMS_STRIDE, 0);
     debug_assert_eq!(bytes.len(), FRAME_PARAMS_STRIDE);
     bytes
 }

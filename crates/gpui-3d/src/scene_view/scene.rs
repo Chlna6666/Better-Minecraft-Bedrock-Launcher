@@ -568,13 +568,18 @@ impl SceneResources {
         projection: FrameProjection,
         camera: Camera,
     ) -> gpui::Result<()> {
-        let bytes = encode_frame_params(
+        let mut bytes = encode_frame_params(
             self.prepared.view_projection,
             camera,
             projection.bounds(),
             projection.target_extent(),
             projection.blend_edge_feather(),
         );
+        if let Some(fog) = projection.fog() {
+            for (destination, value) in bytes[112..].chunks_exact_mut(4).zip(fog.encoded()) {
+                destination.copy_from_slice(&value.to_le_bytes());
+            }
+        }
         device.write_buffer(self.frame_buffer, 0, &bytes)?;
         Ok(())
     }

@@ -21,6 +21,8 @@ struct FrameParams {
     render_target_size: vec2<f32>,
     blend_edge_feather_px: f32,
     _padding: f32,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
 };
 
 struct DrawParams {
@@ -297,8 +299,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     if (draw_params.shading_model == SHADING_MODEL_UNLIT) {
-        let unlit_color = base_color.rgb
-            + draw_params.emissive.rgb * draw_params.emissive.a;
+        let unlit_color = apply_fog(base_color.rgb
+            + draw_params.emissive.rgb * draw_params.emissive.a, input.world_position);
         if (alpha_mode == ALPHA_MODE_BLEND) {
             let output_alpha = alpha * edge_coverage;
             return vec4<f32>(unlit_color * output_alpha, output_alpha);
@@ -380,14 +382,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         occlusion_factor = mix(1.0, occlusion, draw_params.occlusion_strength);
     }
     radiance += base_color.rgb * ambient_radiance * (1.0 - metallic) * occlusion_factor;
-    let output_color = pow(
+    let output_color = apply_fog(pow(
         max(radiance / (radiance + vec3<f32>(1.0)), vec3<f32>(0.0)),
         vec3<f32>(1.0 / 2.2),
-    );
+    ), input.world_position);
 
     if (alpha_mode == ALPHA_MODE_BLEND) {
         let output_alpha = alpha * edge_coverage;
         return vec4<f32>(output_color * output_alpha, output_alpha);
     }
     return vec4<f32>(output_color, 1.0);
+}
+
+fn apply_fog(color: vec3<f32>, world_position: vec3<f32>) -> vec3<f32> {
+    let amount = clamp((distance(world_position, frame.camera_position) - frame.fog_range.x)
+        / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a;
+    return mix(color, frame.fog_color.rgb, amount);
 }

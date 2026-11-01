@@ -9,6 +9,7 @@ pub(super) struct FrameProjection {
     target_extent: Extent2d,
     aspect: f32,
     blend_edge_feather: f32,
+    fog: Option<super::DistanceFog>,
 }
 
 impl FrameProjection {
@@ -42,6 +43,7 @@ impl FrameProjection {
             target_extent: context.viewport(),
             aspect,
             blend_edge_feather: scene_view.blend_edge_feather,
+            fog: scene_view.fog,
         })
     }
 
@@ -59,6 +61,10 @@ impl FrameProjection {
 
     pub(super) fn blend_edge_feather(self) -> f32 {
         self.blend_edge_feather
+    }
+
+    pub(super) fn fog(self) -> Option<super::DistanceFog> {
+        self.fog
     }
 }
 
