@@ -162,14 +162,25 @@ impl Window {
 
         platform_window.on_close(Box::new({
             let window_id = handle.window_id();
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move || {
-                #[cfg(feature = "profiler")]
-                crate::diagnostics::foreground_profiler::record_window_closed(window_id.as_u64());
-                let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
-                let _ = cx.update(|cx| {
-                    WindowTabRegistry::remove_tab(cx, window_id);
-                });
+                // Native destruction can re-enter while the app is borrowed.
+                // Queue cleanup without borrowing the app from this callback.
+                cx.spawn(async move |cx| {
+                    let _ = cx.update(|cx| {
+                        #[cfg(feature = "profiler")]
+                        crate::diagnostics::foreground_profiler::record_window_closed(
+                            window_id.as_u64(),
+                        );
+                        if cx.windows.contains_key(window_id) {
+                            handle
+                                .update(cx, |_, window, _| window.remove_window())
+                                .log_err();
+                        }
+                        WindowTabRegistry::remove_tab(cx, window_id);
+                    });
+                })
+                .detach();
             }
         }));
         let (frame_request_sender, frame_request_receiver) =

@@ -10,6 +10,7 @@ use crate::{
 use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 mod completion_render;
+mod native_close;
 mod presentation_ownership;
 mod resize;
 mod sampled_animation;
