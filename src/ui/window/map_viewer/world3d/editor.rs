@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+mod scene_registry;
 
 const TOP_BAR_HEIGHT: f32 = 46.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
@@ -181,6 +182,8 @@ pub struct World3dEditorView {
     texture_prune_pending: bool,
     texture_table_dirty: bool,
     scene_view: Option<Arc<SceneView>>,
+    scene_nodes: scene_registry::ChunkScene,
+    scene_has_preview: bool,
     target_scene_view: Option<Arc<SceneView>>,
     target_outline_mesh: Option<Arc<Mesh>>,
     target_outline_material: Arc<Material>,
@@ -286,6 +289,8 @@ impl World3dEditorView {
             texture_prune_pending: false,
             texture_table_dirty: true,
             scene_view: None,
+            scene_nodes: scene_registry::ChunkScene::default(),
+            scene_has_preview: false,
             target_scene_view: None,
             target_outline_mesh: block_outline_mesh().map(Arc::new),
             target_outline_material: selection_material(AlphaMode::Blend),
@@ -676,25 +681,26 @@ impl World3dEditorView {
         if self.render_origin != previous_origin {
             self.update_target_scene();
         }
-        let mut scene = Scene::new();
-        for mesh in self.chunk_meshes.values() {
-            let translation = Vec3::new(
-                (mesh.origin[0] - self.render_origin[0]) as f32,
-                mesh.origin[1] as f32,
-                (mesh.origin[2] - self.render_origin[2]) as f32,
-            );
-            let _ = scene.insert(
-                None,
-                Node::new()
-                    .with_mesh(mesh.mesh.clone())
-                    .with_materials(mesh.materials.iter().cloned())
-                    .with_culling_origin()
-                    .with_transform(Transform {
-                        translation,
-                        ..Transform::IDENTITY
-                    }),
-            );
-        }
+        let base = self
+            .scene_view
+            .as_ref()
+            .filter(|_| {
+                previous_origin == self.render_origin
+                    && self.import_preview.is_none()
+                    && !self.scene_has_preview
+            })
+            .map(|view| view.scene().as_ref());
+        let mut scene = match self
+            .scene_nodes
+            .update(base, &self.chunk_meshes, self.render_origin)
+        {
+            Ok(scene) => scene,
+            Err(error) => {
+                self.status = format!("更新世界场景失败：{error}").into();
+                self.status_kind = StatusKind::Error;
+                return;
+            }
+        };
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
             && let Err(error) = preview
@@ -704,7 +710,13 @@ impl World3dEditorView {
             self.status = SharedString::from(format!("导入预览场景失败：{error}"));
             self.status_kind = StatusKind::Error;
         }
-        let scene = Arc::new(scene);
+        let scene = match (self.scene_view.as_ref(), base) {
+            (Some(view), Some(previous)) if previous.version() == scene.version() => {
+                view.scene().clone()
+            }
+            _ => Arc::new(scene),
+        };
+        self.scene_has_preview = self.import_preview.is_some();
         let camera = self.camera.gpu_camera(self.render_origin);
         let base = match self.scene_view.as_ref() {
             Some(view) => view.with_scene(scene).with_camera(camera),
