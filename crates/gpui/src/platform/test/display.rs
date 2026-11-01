@@ -1,24 +1,33 @@
 use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, Point, px};
 use anyhow::{Ok, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TestDisplay {
     id: DisplayId,
     uuid: uuid::Uuid,
-    bounds: Bounds<Pixels>,
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) refresh_interval: Option<std::time::Duration>,
 }
 
 impl TestDisplay {
     pub fn new() -> Self {
+        Self::with_id(DisplayId(1))
+    }
+
+    pub fn with_id(id: DisplayId) -> Self {
         TestDisplay {
-            id: DisplayId(1),
+            id,
             uuid: uuid::Uuid::new_v4(),
             bounds: Bounds::from_corners(Point::default(), Point::new(px(1920.), px(1080.))),
+            refresh_interval: None,
         }
     }
 }
 
 impl PlatformDisplay for TestDisplay {
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.refresh_interval
+    }
     fn id(&self) -> crate::DisplayId {
         self.id
     }

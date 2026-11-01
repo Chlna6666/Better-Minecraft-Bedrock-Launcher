@@ -293,6 +293,7 @@ pub struct InProgressOutput {
     scale: Option<i32>,
     position: Option<Point<DevicePixels>>,
     size: Option<Size<DevicePixels>>,
+    refresh_millihertz: Option<i32>,
 }
 
 impl InProgressOutput {
@@ -303,6 +304,7 @@ impl InProgressOutput {
                 name: self.name.clone(),
                 scale,
                 bounds: Bounds::new(position, size),
+                refresh_millihertz: self.refresh_millihertz,
             })
         } else {
             None
@@ -312,6 +314,7 @@ impl InProgressOutput {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Output {
+    pub refresh_millihertz: Option<i32>,
     pub name: Option<String>,
     pub scale: i32,
     pub bounds: Bounds<DevicePixels>,
@@ -336,6 +339,7 @@ pub(crate) struct WaylandClientState {
     // Output to scale mapping
     outputs: HashMap<ObjectId, Output>,
     in_progress_outputs: HashMap<ObjectId, InProgressOutput>,
+    output_globals: HashMap<u32, wl_output::WlOutput>,
     keyboard_layout: LinuxKeyboardLayout,
     keymap_state: Option<xkb::State>,
     compose_state: Option<xkb::compose::State>,
@@ -404,6 +408,26 @@ pub(crate) enum PendingActivation {
 pub struct WaylandClientStatePtr(Weak<RefCell<WaylandClientState>>);
 
 impl WaylandClientStatePtr {
+    fn outputs_changed(&self) {
+        let client = self.client();
+        let mut state = client.borrow_mut();
+        let outputs = state.outputs.clone();
+        let windows = state.windows.values().cloned().collect::<Vec<_>>();
+        let callback = state.common.callbacks.displays_changed.take();
+        drop(state);
+        for window in windows {
+            window.refresh_outputs(&outputs);
+        }
+        if let Some(mut callback) = callback {
+            callback();
+            client
+                .borrow_mut()
+                .common
+                .callbacks
+                .displays_changed
+                .get_or_insert(callback);
+        }
+    }
     pub fn client(&self) -> Rc<RefCell<WaylandClientState>> {
         self.0
             .upgrade()
@@ -581,6 +605,7 @@ impl WaylandClient {
         let mut seat: Option<wl_seat::WlSeat> = None;
         #[allow(clippy::mutable_key_type)]
         let mut in_progress_outputs = HashMap::default();
+        let mut output_globals = HashMap::default();
         globals.contents().with_list(|list| {
             for global in list {
                 match &global.interface[..] {
@@ -600,6 +625,7 @@ impl WaylandClient {
                             (),
                         );
                         in_progress_outputs.insert(output.id(), InProgressOutput::default());
+                        output_globals.insert(global.name, output);
                     }
                     _ => {}
                 }
@@ -691,6 +717,7 @@ impl WaylandClient {
             last_ime_cursor_rectangle: None,
             outputs: HashMap::default(),
             in_progress_outputs,
+            output_globals,
             windows: HashMap::default(),
             common,
             renderer_options,
@@ -768,6 +795,9 @@ impl LinuxClient for WaylandClient {
                     id: id.clone(),
                     name: output.name.clone(),
                     bounds: output.bounds.to_pixels(output.scale as f32),
+                    refresh_interval: output
+                        .refresh_millihertz
+                        .and_then(|rate| crate::refresh_interval_from_hz(f64::from(rate) / 1000.0)),
                 }) as Rc<dyn PlatformDisplay>
             })
             .collect()
@@ -784,6 +814,9 @@ impl LinuxClient for WaylandClient {
                         id: object_id.clone(),
                         name: output.name.clone(),
                         bounds: output.bounds.to_pixels(output.scale as f32),
+                        refresh_interval: output.refresh_millihertz.and_then(|rate| {
+                            crate::refresh_interval_from_hz(f64::from(rate) / 1000.0)
+                        }),
                     }) as Rc<dyn PlatformDisplay>
                 })
             })
@@ -1053,11 +1086,21 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                     state
                         .in_progress_outputs
                         .insert(output.id(), InProgressOutput::default());
+                    state.output_globals.insert(name, output);
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name: _ } => {
-                // TODO: handle global removal
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(output) = state.output_globals.remove(&name) {
+                    state.outputs.remove(&output.id());
+                    state.in_progress_outputs.remove(&output.id());
+                    // wl_output.release is available starting with protocol version 3.
+                    if output.version() >= 3 {
+                        output.release();
+                    }
+                    drop(state);
+                    this.outputs_changed();
+                }
             }
             _ => {}
         }
@@ -1244,14 +1287,30 @@ impl Dispatch<wl_output::WlOutput, ()> for WaylandClientStatePtr {
             wl_output::Event::Geometry { x, y, .. } => {
                 in_progress_output.position = Some(point(DevicePixels(x), DevicePixels(y)))
             }
-            wl_output::Event::Mode { width, height, .. } => {
-                in_progress_output.size = Some(size(DevicePixels(width), DevicePixels(height)))
+            wl_output::Event::Mode {
+                flags,
+                width,
+                height,
+                refresh,
+            } => {
+                if let WEnum::Value(flags) = flags
+                    && flags.contains(wl_output::Mode::Current)
+                {
+                    in_progress_output.size = Some(size(DevicePixels(width), DevicePixels(height)));
+                    in_progress_output.refresh_millihertz = Some(refresh);
+                }
             }
             wl_output::Event::Done => {
                 if let Some(complete) = in_progress_output.complete() {
+                    let changed = state.outputs.get(&output.id()) != Some(&complete);
                     state.outputs.insert(output.id(), complete);
+                    if changed {
+                        drop(state);
+                        this.outputs_changed();
+                    }
                 }
-                state.in_progress_outputs.remove(&output.id());
+                // Keep the last complete description: subsequent Done batches only
+                // contain the properties that changed, including refresh-rate switches.
             }
             _ => {}
         }

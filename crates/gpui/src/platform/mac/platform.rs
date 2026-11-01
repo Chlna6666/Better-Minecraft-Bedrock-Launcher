@@ -150,6 +150,10 @@ unsafe fn build_classes() {
                 on_keyboard_layout_change as extern "C" fn(&mut Object, Sel, id),
             );
             decl.add_method(
+                sel!(onDisplaysChanged:),
+                on_displays_changed as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
                 sel!(onSystemSleep:),
                 on_system_sleep as extern "C" fn(&mut Object, Sel, id),
             );
@@ -176,6 +180,7 @@ pub(crate) struct MacPlatformState {
     metadata_pasteboard_type: id,
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    on_displays_changed: Option<Box<dyn FnMut()>>,
     on_system_sleep: Option<Box<dyn FnMut()>>,
     on_system_wake: Option<Box<dyn FnMut()>>,
     system_power_observers_registered: bool,
@@ -228,6 +233,7 @@ impl MacPlatform {
             finish_launching: None,
             dock_menu: None,
             on_keyboard_layout_change: None,
+            on_displays_changed: None,
             menus: None,
             keyboard_mapper,
         }))
@@ -878,6 +884,10 @@ impl Platform for MacPlatform {
         self.0.lock().reopen = Some(callback);
     }
 
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
+        self.0.lock().on_displays_changed = Some(callback);
+    }
+
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().on_keyboard_layout_change = Some(callback);
     }
@@ -1427,6 +1437,12 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             name: name
             object: nil
         ];
+        let name = ns_string("NSApplicationDidChangeScreenParametersNotification");
+        let _: () = msg_send![notification_center, addObserver: this as id
+            selector: sel!(onDisplaysChanged:)
+            name: name
+            object: nil
+        ];
 
         let platform = mac_platform(this);
         {
@@ -1472,6 +1488,16 @@ extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
         callback();
         let mut lock = platform.0.lock();
         restore_callback(&mut lock.quit, callback);
+    }
+}
+
+extern "C" fn on_displays_changed(this: &mut Object, _: Sel, _: id) {
+    // SAFETY: AppKit invokes this selector on the registered GPUI application delegate.
+    let platform = unsafe { mac_platform(this) };
+    let callback = platform.0.lock().on_displays_changed.take();
+    if let Some(mut callback) = callback {
+        callback();
+        restore_callback(&mut platform.0.lock().on_displays_changed, callback);
     }
 }
 

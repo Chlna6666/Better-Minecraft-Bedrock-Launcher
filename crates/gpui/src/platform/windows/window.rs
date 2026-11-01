@@ -1434,6 +1434,7 @@ impl rwh::HasDisplayHandle for WindowsRendererWindowHandle {
 }
 
 pub(crate) struct WindowsWindowInner {
+    display_ids: Rc<RefCell<super::WindowsDisplayIds>>,
     pub(crate) use_native_decorations: bool,
     pub(crate) state: RefCell<WindowsWindowState>,
     pub(crate) pressed_button: Cell<Option<MouseButton>>,
@@ -1699,6 +1700,7 @@ impl WindowsWindow {
         event_loop_proxy: EventLoopProxy<WindowsUserEvent>,
     ) -> Result<Self> {
         let WindowCreationInfo {
+            display_ids,
             executor,
             power_event,
             end_session_event,
@@ -1849,6 +1851,7 @@ impl WindowsWindow {
                 click_state: RefCell::new(ClickState::new()),
             }),
             input_handler: RefCell::new(None),
+            display_ids,
             handle,
             executor,
             power_event,
@@ -2674,7 +2677,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        WindowsDisplay::from_window_monitor(self.window())
+        WindowsDisplay::from_window_monitor(self.window(), &mut self.0.display_ids.borrow_mut())
             .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
     }
 

@@ -542,6 +542,8 @@ impl Window {
             capslock,
             scale_factor,
             bounds_observers: SingleSubscriberSet::new(),
+            display_notification_pending: false,
+            display_observers: SingleSubscriberSet::new(),
             appearance,
             appearance_observers: SingleSubscriberSet::new(),
             active,

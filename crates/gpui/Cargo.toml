@@ -319,6 +319,9 @@ version = "4.7"
 version = "0.3"
 optional = true
 
+[dependencies.bitflags]
+version = "2"
+
 [dependencies.blade-graphics]
 version = "0.8.4"
 optional = true

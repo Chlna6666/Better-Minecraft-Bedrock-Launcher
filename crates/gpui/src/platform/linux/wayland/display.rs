@@ -15,6 +15,7 @@ pub(crate) struct WaylandDisplay {
     pub id: ObjectId,
     pub name: Option<String>,
     pub bounds: Bounds<Pixels>,
+    pub refresh_interval: Option<std::time::Duration>,
 }
 
 impl Hash for WaylandDisplay {
@@ -24,6 +25,9 @@ impl Hash for WaylandDisplay {
 }
 
 impl PlatformDisplay for WaylandDisplay {
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.refresh_interval
+    }
     fn id(&self) -> DisplayId {
         DisplayId(self.id.protocol_id())
     }

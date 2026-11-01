@@ -265,7 +265,7 @@ pub(crate) struct WindowParams {
 
     #[cfg_attr(feature = "wayland", allow(dead_code))]
     #[cfg_attr(
-        target_os = "windows",
+        all(target_os = "windows", not(any(test, feature = "test-support"))),
         expect(
             dead_code,
             reason = "Windows window placement does not use GPUI display ids"

@@ -94,6 +94,9 @@ pub struct App {
     pub(crate) keystroke_observers: SingleSubscriberSet<KeystrokeObserver>,
     pub(crate) keystroke_interceptors: SingleSubscriberSet<KeystrokeObserver>,
     pub(crate) keyboard_layout_observers: SingleSubscriberSet<Handler>,
+    pub(crate) display_observers:
+        SingleSubscriberSet<Box<dyn FnMut(crate::DisplayEvent, &mut App) -> bool>>,
+    pub(super) display_states: FxHashMap<crate::DisplayId, super::displays::DisplayState>,
     pub(super) missing_glyph_callback: Rc<MissingGlyphCallbackSlot>,
     pub(crate) system_sleep_observers: SingleSubscriberSet<Handler>,
     pub(crate) system_wake_observers: SingleSubscriberSet<Handler>,
@@ -192,6 +195,8 @@ impl App {
                 keystroke_observers: SingleSubscriberSet::new(),
                 keystroke_interceptors: SingleSubscriberSet::new(),
                 keyboard_layout_observers: SingleSubscriberSet::new(),
+                display_observers: SingleSubscriberSet::new(),
+                display_states: super::displays::read_displays(platform.as_ref()),
                 missing_glyph_callback: Rc::default(),
                 system_sleep_observers: SingleSubscriberSet::new(),
                 system_wake_observers: SingleSubscriberSet::new(),
@@ -216,6 +221,17 @@ impl App {
 
         init_app_menus(platform.as_ref(), &app.borrow());
         WindowTabRegistry::init(&mut app.borrow_mut());
+
+        platform.on_displays_changed(Box::new({
+            let cx = app.borrow().to_async();
+            move || {
+                // Native monitor queries may re-enter while App is borrowed.
+                cx.spawn(async move |cx| {
+                    let _ = cx.update(|cx| cx.displays_changed());
+                })
+                .detach();
+            }
+        }));
 
         platform.on_keyboard_layout_change(Box::new({
             let app = Rc::downgrade(&app);

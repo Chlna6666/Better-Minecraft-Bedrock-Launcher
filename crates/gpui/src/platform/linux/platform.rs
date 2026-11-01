@@ -88,6 +88,7 @@ pub(crate) struct PlatformHandlers {
     pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
     pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     pub(crate) keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    pub(crate) displays_changed: Option<Box<dyn FnMut()>>,
 }
 
 pub(crate) struct LinuxCommon {
@@ -166,6 +167,10 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
         Arc::new(crate::DummyKeyboardMapper)
+    }
+
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
+        self.with_common(|common| common.callbacks.displays_changed = Some(callback));
     }
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {

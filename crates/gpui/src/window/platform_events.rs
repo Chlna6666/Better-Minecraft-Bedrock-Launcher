@@ -31,7 +31,7 @@ impl Window {
         crate::platform::advance_text_rasterization_generation();
     }
 
-    pub(super) fn window_origin_changed(&mut self, cx: &mut App) {
+    pub(crate) fn window_origin_changed(&mut self, cx: &mut App) {
         let scale_factor = self.platform_window.scale_factor();
         let viewport_size = self.platform_window.content_size();
         let display_id = self.platform_window.display().map(|display| display.id());
@@ -49,6 +49,9 @@ impl Window {
             self.scale_factor != scale_factor || self.display_id != display_id;
 
         self.scale_factor = scale_factor;
+        if self.display_id != display_id {
+            self.defer_display_observers(cx);
+        }
         self.display_id = display_id;
 
         // 窗口移动到另一显示器，或系统在窗口映射后修正 DPI 时，即使客户区尺寸
@@ -89,6 +92,9 @@ impl Window {
 
         self.scale_factor = scale_factor;
         self.viewport_size = viewport_size;
+        if self.display_id != display_id {
+            self.defer_display_observers(cx);
+        }
         self.display_id = display_id;
         self.live_resize_active = live_resize_active;
         // The viewport now carries the newest authoritative native geometry, so

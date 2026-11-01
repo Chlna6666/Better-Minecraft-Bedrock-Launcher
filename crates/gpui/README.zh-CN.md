@@ -50,6 +50,17 @@ fn main() {
 }
 ```
 
+## 显示器跟踪
+
+`App::observe_displays` 报告显示器连接、断开和属性变化，包括边界与标称刷新间隔。
+`Window::refresh_interval(cx)` 读取 App 缓存；`Window::observe_window_display` 及对应的
+`Context` 接口触发时，显示器元数据已更新。原生跨屏通知会延迟并合并处理，允许它们在窗口
+更新期间到达。可选 profiler 读取该缓存，避免每帧查询显示器。
+
+Windows 即使没有 GPUI 窗口，也会保留一个隐藏的顶层通知窗口；进程内显示器 ID 不随枚举顺序
+变化。Wayland 跟踪当前输出模式、后续模式更新和输出移除。macOS 使用屏幕参数通知，并在
+可用时读取 ProMotion 的最高刷新率。X11 仍报告 X screen root，不提供标称刷新间隔。
+
 ## 核心概念
 
 - `App`：全局上下文，管理窗口、Entity、菜单、键位、资产与平台服务。
@@ -58,6 +69,8 @@ fn main() {
 - `Entity<T>`：GPUI 管理的状态；通过 `Entity::update` 或 `Context<T>` 更新，状态变化
   后调用 `cx.notify()`。
 - `Render` 构建元素树；`RenderOnce` 是渲染时消费的轻量组件。
+- 布局使用 Taffy 0.15。每个窗口通过 `Rc` 共享 `WindowTextSystem`，窗口布局缓存和字体 run
+  临时缓冲只在前台线程使用；应用级 `TextSystem` 保留后台字体工作需要的同步。
 - `cx.spawn` / `window.spawn` 运行前台异步任务；阻塞或 IO 工作应放到后台执行器。
 
 新代码不要使用旧接口名：`Model<T>`、`View<T>`、`AppContext`、`ModelContext<T>`、

@@ -7,6 +7,7 @@ mod dialogs;
 mod direct_write;
 mod dispatcher;
 mod display;
+mod display_events;
 mod input;
 mod keyboard;
 mod library;

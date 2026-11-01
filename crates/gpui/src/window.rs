@@ -74,6 +74,7 @@ pub(crate) mod debug_visualization;
 #[cfg(test)]
 mod dirty_region_tests;
 mod dispatch;
+mod display;
 mod draw;
 mod draw_reuse;
 mod element_context;

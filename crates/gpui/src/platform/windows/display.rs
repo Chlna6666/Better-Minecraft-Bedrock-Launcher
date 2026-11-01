@@ -3,6 +3,7 @@
     reason = "the Windows display boundary queries Win32 monitor work areas"
 )]
 
+use collections::FxHashMap;
 use uuid::Uuid;
 use windows::Win32::{
     Foundation::POINT,
@@ -11,8 +12,20 @@ use windows::Win32::{
     },
 };
 use winit::monitor::MonitorHandle;
+use winit::platform::windows::MonitorHandleExtWindows;
 
 use crate::{Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, logical_point, size};
+
+/// Maps native monitor handles to process-local IDs independent of enumeration order.
+#[derive(Default)]
+pub(crate) struct WindowsDisplayIds(FxHashMap<usize, DisplayId>);
+
+impl WindowsDisplayIds {
+    pub(crate) fn id(&mut self, monitor: &MonitorHandle) -> DisplayId {
+        let next = DisplayId(self.0.len() as u32);
+        *self.0.entry(monitor.hmonitor() as usize).or_insert(next)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DisplaySnapshotKey {
@@ -49,7 +62,7 @@ impl DisplaySnapshotKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WindowsDisplay {
     pub display_id: DisplayId,
     bounds: Bounds<Pixels>,
@@ -90,16 +103,15 @@ impl WindowsDisplay {
         }
     }
 
-    pub(crate) fn from_window_monitor(window: &winit::window::Window) -> Option<Self> {
+    pub(crate) fn from_window_monitor(
+        window: &winit::window::Window,
+        ids: &mut WindowsDisplayIds,
+    ) -> Option<Self> {
         let current_monitor = window.current_monitor()?;
-        let current_key = DisplaySnapshotKey::from_monitor_handle(&current_monitor);
-        window
-            .available_monitors()
-            .enumerate()
-            .find_map(|(index, monitor)| {
-                let display = Self::from_monitor_handle(DisplayId(index as u32), &monitor);
-                (display.key == current_key).then_some(display)
-            })
+        Some(Self::from_monitor_handle(
+            ids.id(&current_monitor),
+            &current_monitor,
+        ))
     }
 
     pub(crate) fn matches_monitor(&self, monitor: &MonitorHandle) -> bool {

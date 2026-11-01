@@ -273,6 +273,19 @@ impl<'a, T: 'static> Context<'a, T> {
         subscription
     }
 
+    /// Observes this window's display and refresh interval using the entity context.
+    pub fn observe_window_display(
+        &self,
+        window: &mut Window,
+        mut callback: impl FnMut(&mut T, &mut Window, &mut Context<T>) + 'static,
+    ) -> Subscription {
+        let view = self.weak_entity();
+        window.display_observers.insert(Box::new(move |window, cx| {
+            view.update(cx, |view, cx| callback(view, window, cx))
+                .is_ok()
+        }))
+    }
+
     /// Register a listener to be called when the given focus handle receives focus.
     /// Returns a subscription and persists until the subscription is dropped.
     pub fn on_focus(

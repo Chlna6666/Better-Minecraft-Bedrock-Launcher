@@ -67,6 +67,20 @@ fn main() {
 }
 ```
 
+## Display Tracking
+
+`App::observe_displays` reports connected, disconnected and changed displays, including
+bounds and nominal refresh intervals. `Window::refresh_interval(cx)` reads App's cache;
+`Window::observe_window_display` and its `Context` counterpart run with updated metadata.
+Native move notifications are deferred and coalesced so they can safely arrive during
+a window update. The optional profiler uses this cache instead of querying monitors per frame.
+
+Windows keeps a hidden top-level notification window alive even with no GPUI windows open,
+and display IDs remain stable across monitor enumeration changes within the process.
+Wayland tracks current output modes, subsequent mode updates and output removal. macOS
+uses screen-parameter notifications and the ProMotion maximum when available. X11 still
+reports X screen roots and no nominal refresh interval.
+
 ## Core Concepts
 
 - `App` is the root context for globals, windows, entities, menus, key
@@ -80,6 +94,9 @@ fn main() {
   change.
 - `Render` views build element trees. `RenderOnce` components are lightweight
   element recipes that are consumed when rendered.
+- Layout uses Taffy 0.15. Each window shares its `WindowTextSystem` through `Rc`;
+  window layout caches and font-run scratch buffers stay on the foreground thread.
+  The app-wide `TextSystem` retains synchronization for background font work.
 - `cx.spawn(async move |cx| ...)` and `window.spawn(cx, async move |cx| ...)`
   run foreground async work. Use background executors or blocking tasks for
   work that must not block UI rendering.

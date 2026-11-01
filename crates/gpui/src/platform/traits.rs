@@ -71,6 +71,9 @@ pub(crate) trait Platform: 'static {
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
+    /// Registers a foreground callback indicating that connected displays may have changed.
+    /// Calls may be spurious; GPUI rereads display bounds and refresh intervals.
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>);
     fn active_window(&self) -> Option<AnyWindowHandle>;
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
         None

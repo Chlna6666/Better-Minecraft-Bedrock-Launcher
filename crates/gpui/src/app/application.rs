@@ -260,6 +260,8 @@ impl Application {
         };
         platform.run(Box::new(move || {
             let cx = &mut *this.borrow_mut();
+            // Native display enumeration becomes available when the event loop starts.
+            cx.displays_changed();
             on_finish_launching(cx);
         }));
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]

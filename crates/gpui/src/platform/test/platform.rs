@@ -31,7 +31,8 @@ pub(crate) struct TestPlatform {
     foreground_executor: ForegroundExecutor,
 
     pub(crate) active_window: RefCell<Option<TestWindow>>,
-    active_display: Rc<dyn PlatformDisplay>,
+    displays: RefCell<Vec<TestDisplay>>,
+    displays_changed: RefCell<Option<Box<dyn FnMut()>>>,
     active_cursor: Mutex<CursorStyle>,
     current_clipboard_item: Mutex<Option<ClipboardItem>>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -58,6 +59,14 @@ pub(crate) struct TestPrompts {
 }
 
 impl TestPlatform {
+    pub(crate) fn set_displays(&self, displays: Vec<TestDisplay>) {
+        *self.displays.borrow_mut() = displays;
+        let callback = self.displays_changed.borrow_mut().take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.displays_changed.borrow_mut().get_or_insert(callback);
+        }
+    }
     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
         #[cfg(target_os = "windows")]
         let bitmap_factory = unsafe {
@@ -76,7 +85,8 @@ impl TestPlatform {
             foreground_executor,
             prompts: Default::default(),
             active_cursor: Default::default(),
-            active_display: Rc::new(TestDisplay::new()),
+            displays: RefCell::new(vec![TestDisplay::new()]),
+            displays_changed: RefCell::new(None),
             active_window: Default::default(),
             current_clipboard_item: Mutex::new(None),
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -206,6 +216,10 @@ impl Platform for TestPlatform {
 
     fn on_keyboard_layout_change(&self, _: Box<dyn FnMut()>) {}
 
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
+        *self.displays_changed.borrow_mut() = Some(callback);
+    }
+
     fn run(&self, _on_finish_launching: Box<dyn FnOnce()>) {
         unimplemented!()
     }
@@ -233,11 +247,20 @@ impl Platform for TestPlatform {
     }
 
     fn displays(&self) -> Vec<std::rc::Rc<dyn crate::PlatformDisplay>> {
-        vec![self.active_display.clone()]
+        self.displays
+            .borrow()
+            .iter()
+            .cloned()
+            .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
+            .collect()
     }
 
     fn primary_display(&self) -> Option<std::rc::Rc<dyn crate::PlatformDisplay>> {
-        Some(self.active_display.clone())
+        self.displays
+            .borrow()
+            .first()
+            .cloned()
+            .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
     }
 
     fn active_window(&self) -> Option<crate::AnyWindowHandle> {
@@ -252,12 +275,15 @@ impl Platform for TestPlatform {
         handle: AnyWindowHandle,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
-        let window = TestWindow::new(
-            handle,
-            params,
-            self.weak.clone(),
-            self.active_display.clone(),
-        );
+        let displays = self.displays.borrow();
+        let display = displays
+            .iter()
+            .find(|display| Some(display.id()) == params.display_id)
+            .or_else(|| displays.first())
+            .cloned()
+            .unwrap_or_else(TestDisplay::new);
+        drop(displays);
+        let window = TestWindow::new(handle, params, self.weak.clone(), Rc::new(display));
         Ok(Box::new(window))
     }
 

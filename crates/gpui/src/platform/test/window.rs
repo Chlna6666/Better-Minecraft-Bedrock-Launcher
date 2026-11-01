@@ -142,6 +142,11 @@ impl TestWindow {
         })))
     }
 
+    pub(crate) fn simulate_display_change(&mut self, display: Rc<dyn PlatformDisplay>) {
+        self.0.lock().display = display;
+        self.simulate_resize(self.content_size());
+    }
+
     pub fn simulate_resize(&mut self, size: Size<Pixels>) {
         let scale_factor = self.scale_factor();
         let mut lock = self.0.lock();
@@ -491,7 +496,6 @@ impl PlatformWindow for TestWindow {
     }
 
     fn on_close(&self, _callback: Box<dyn FnOnce()>) {}
-
     fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
         self.0.lock().hit_test_window_control_callback = Some(callback);
     }

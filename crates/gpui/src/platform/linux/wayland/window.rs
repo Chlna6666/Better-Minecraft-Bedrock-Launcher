@@ -313,7 +313,10 @@ impl WaylandWindowState {
 
     pub fn primary_output_scale(&mut self) -> i32 {
         let mut scale = 1;
-        let mut current_output = self.display.take();
+        let mut current_output = self
+            .display
+            .take()
+            .and_then(|(id, _)| self.outputs.get(&id).cloned().map(|output| (id, output)));
         for (id, output) in self.outputs.iter() {
             if let Some((_, output_data)) = &current_output {
                 if output.scale > output_data.scale {
@@ -1110,11 +1113,16 @@ impl WaylandWindowStatePtr {
                 let scale = state.primary_output_scale();
 
                 // We use `PreferredBufferScale` instead to set the scale if it's available
-                if state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE {
+                let legacy_scale =
+                    state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+                if legacy_scale {
                     state.surface.set_buffer_scale(scale);
-                    drop(state);
+                }
+                drop(state);
+                if legacy_scale {
                     self.rescale(scale as f32);
                 }
+                self.notify_output_move();
             }
             wl_surface::Event::Leave { output } => {
                 state.outputs.remove(&output.id());
@@ -1122,11 +1130,16 @@ impl WaylandWindowStatePtr {
                 let scale = state.primary_output_scale();
 
                 // We use `PreferredBufferScale` instead to set the scale if it's available
-                if state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE {
+                let legacy_scale =
+                    state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+                if legacy_scale {
                     state.surface.set_buffer_scale(scale);
-                    drop(state);
+                }
+                drop(state);
+                if legacy_scale {
                     self.rescale(scale as f32);
                 }
+                self.notify_output_move();
             }
             wl_surface::Event::PreferredBufferScale { factor } => {
                 // We use `WpFractionalScale` instead to set the scale if it's available
@@ -1314,6 +1327,36 @@ impl WaylandWindowStatePtr {
         }
     }
 
+    fn notify_output_move(&self) {
+        let callback = self.callbacks.borrow_mut().moved.take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.callbacks.borrow_mut().moved.get_or_insert(callback);
+        }
+    }
+
+    pub(super) fn refresh_outputs(&self, outputs: &HashMap<ObjectId, Output>) {
+        let mut state = self.state.borrow_mut();
+        state.outputs.retain(|id, output| {
+            if let Some(current) = outputs.get(id) {
+                *output = current.clone();
+                true
+            } else {
+                false
+            }
+        });
+        let scale = state.primary_output_scale();
+        let legacy_scale = state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+        if legacy_scale {
+            state.surface.set_buffer_scale(scale);
+        }
+        drop(state);
+        if legacy_scale {
+            self.rescale(scale as f32);
+        }
+        self.notify_output_move();
+    }
+
     pub fn primary_output_scale(&self) -> i32 {
         self.state.borrow_mut().primary_output_scale()
     }
@@ -1454,6 +1497,9 @@ impl PlatformWindow for WaylandWindow {
                 id: id.clone(),
                 name: display.name.clone(),
                 bounds: display.bounds.to_pixels(state.scale),
+                refresh_interval: display
+                    .refresh_millihertz
+                    .and_then(|rate| crate::refresh_interval_from_hz(f64::from(rate) / 1000.0)),
             }) as Rc<dyn PlatformDisplay>
         })
     }

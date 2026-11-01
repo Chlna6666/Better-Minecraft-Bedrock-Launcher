@@ -107,6 +107,7 @@ fn with_active_context<R>(
 #[derive(Debug)]
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
+    DisplaysChanged,
     VSync(super::vsync::VSyncEventTiming),
     RenderOwnerFrame {
         window_id: winit::window::WindowId,
@@ -220,6 +221,7 @@ pub(crate) struct WindowsPlatformState {
     jump_list: JumpList,
     cursor_style: CursorStyle,
     displays: Vec<WindowsDisplay>,
+    display_ids: Rc<RefCell<super::WindowsDisplayIds>>,
     primary_display_id: Option<DisplayId>,
     active_window_handle: Option<AnyWindowHandle>,
     system_suspended: bool,
@@ -234,6 +236,7 @@ struct PlatformCallbacks {
     will_open_app_menu: Option<Box<dyn FnMut()>>,
     validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    displays_changed: Option<Box<dyn FnMut()>>,
     system_sleep: Option<Box<dyn FnMut()>>,
     system_wake: Option<Box<dyn FnMut()>>,
 }
@@ -248,6 +251,7 @@ impl WindowsPlatformState {
             jump_list,
             cursor_style: CursorStyle::Arrow,
             displays: Vec::new(),
+            display_ids: Rc::default(),
             primary_display_id: None,
             active_window_handle: None,
             system_suspended: false,
@@ -450,6 +454,7 @@ impl WindowsPlatform {
         let end_session_platform = platform.clone();
         WindowCreationInfo {
             executor: self.foreground_executor.clone(),
+            display_ids: self.inner.state.borrow().display_ids.clone(),
             power_event: Rc::new(move |wparam| {
                 if let Some(platform) = platform.upgrade() {
                     platform.handle_power_broadcast(wparam);
@@ -610,6 +615,10 @@ impl Platform for WindowsPlatform {
         Arc::new(WindowsKeyboardMapper::new())
     }
 
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
+        self.inner.state.borrow_mut().callbacks.displays_changed = Some(callback);
+    }
+
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
         self.inner
             .state
@@ -647,6 +656,7 @@ impl Platform for WindowsPlatform {
         let inner = self.inner.clone();
         let event_loop_proxy = self.event_loop_proxy.clone();
         let mut application = WindowsApplication {
+            display_listener: None,
             inner,
             on_finish_launching: Some(on_finish_launching),
             event_loop_proxy,
@@ -1153,6 +1163,7 @@ impl WindowsPlatformInner {
 }
 
 struct WindowsApplication {
+    display_listener: Option<super::display_events::DisplayEventListener>,
     inner: Rc<WindowsPlatformInner>,
     on_finish_launching: Option<Box<dyn FnOnce()>>,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
@@ -1267,11 +1278,11 @@ impl WindowsApplication {
     }
 
     fn refresh_display_cache(&mut self, event_loop: &ActiveEventLoop) {
+        let display_ids = self.inner.state.borrow().display_ids.clone();
         let displays: Vec<WindowsDisplay> = event_loop
             .available_monitors()
-            .enumerate()
-            .map(|(index, monitor)| {
-                WindowsDisplay::from_monitor_handle(DisplayId(index as u32), &monitor)
+            .map(|monitor| {
+                WindowsDisplay::from_monitor_handle(display_ids.borrow_mut().id(&monitor), &monitor)
             })
             .collect();
         let primary_display_id = event_loop.primary_monitor().and_then(|primary_monitor| {
@@ -1282,8 +1293,22 @@ impl WindowsApplication {
         });
 
         let mut state = self.inner.state.borrow_mut();
+        let changed = state.displays != displays;
         state.displays = displays;
         state.primary_display_id = primary_display_id;
+        if changed {
+            let callback = state.callbacks.displays_changed.take();
+            drop(state);
+            if let Some(mut callback) = callback {
+                callback();
+                self.inner
+                    .state
+                    .borrow_mut()
+                    .callbacks
+                    .displays_changed
+                    .get_or_insert(callback);
+            }
+        }
     }
 
     fn sync_active_window_handle(&mut self) {
@@ -1365,6 +1390,17 @@ fn current_cursor_position(hwnd: HWND, scale_factor: f32) -> Option<Point<Pixels
 
 impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.display_listener.is_none() {
+            let proxy = self
+                .event_loop_proxy
+                .lock()
+                .ok()
+                .and_then(|proxy| proxy.clone());
+            if let Some(proxy) = proxy {
+                self.display_listener =
+                    super::display_events::DisplayEventListener::new(event_loop, proxy).log_err();
+            }
+        }
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
@@ -1383,6 +1419,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         });
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
+            WindowsUserEvent::DisplaysChanged => self.refresh_display_cache(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
             WindowsUserEvent::RemoveNativeWindow { window_id } => {
                 // GPUI already acknowledged this close; never invoke its
@@ -1869,6 +1906,7 @@ impl Drop for WindowsPlatformState {
 
 #[derive(Clone)]
 pub(crate) struct WindowCreationInfo {
+    pub(crate) display_ids: Rc<RefCell<super::WindowsDisplayIds>>,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) power_event: Rc<dyn Fn(WPARAM)>,
     pub(crate) end_session_event: Rc<dyn Fn() -> bool>,

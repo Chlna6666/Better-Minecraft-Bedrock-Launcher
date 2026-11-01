@@ -1,12 +1,16 @@
-use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, size};
+use crate::{
+    Bounds, DisplayId, Pixels, PlatformDisplay, point, px, refresh_interval_from_hz, size,
+};
 use anyhow::Result;
 use cocoa::{
     appkit::NSScreen,
-    base::{id, nil},
+    base::{BOOL, NO, YES, id, nil},
     foundation::{NSDictionary, NSString},
 };
 use core_foundation::uuid::{CFUUIDGetUUIDBytes, CFUUIDRef};
-use core_graphics::display::{CGDirectDisplayID, CGDisplayBounds, CGGetActiveDisplayList};
+use core_graphics::display::{
+    CGDirectDisplayID, CGDisplay, CGDisplayBounds, CGGetActiveDisplayList,
+};
 use objc::{msg_send, sel, sel_impl};
 use uuid::Uuid;
 
@@ -90,6 +94,29 @@ unsafe extern "C" {
 }
 
 impl PlatformDisplay for MacDisplay {
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        // SAFETY: GPUI reads display metadata on the AppKit thread. Check the
+        // selector before querying the ProMotion maximum on older macOS versions.
+        let screen_hertz = unsafe {
+            let screen = self.get_nsscreen();
+            let supported: BOOL = if screen == nil {
+                NO
+            } else {
+                msg_send![screen, respondsToSelector: sel!(maximumFramesPerSecond)]
+            };
+            if supported == YES {
+                let frames_per_second: isize = msg_send![screen, maximumFramesPerSecond];
+                frames_per_second as f64
+            } else {
+                0.0
+            }
+        };
+        refresh_interval_from_hz(screen_hertz).or_else(|| {
+            CGDisplay::new(self.0)
+                .display_mode()
+                .and_then(|mode| refresh_interval_from_hz(mode.refresh_rate()))
+        })
+    }
     fn id(&self) -> DisplayId {
         DisplayId(self.0)
     }
