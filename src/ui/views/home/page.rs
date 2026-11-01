@@ -2,7 +2,7 @@ use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_vers
 use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
-use crate::ui::animation::{spring_bouncy, spring_snappy};
+use crate::ui::animation::{SpringValue, spring_bouncy, spring_snappy};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
 use crate::ui::hooks::use_local_versions::{
@@ -18,7 +18,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
 use std::cell::{Cell, RefCell};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TITLEBAR_TOP_OFFSET_PX: f32 = 0.0;
 const TITLEBAR_HEIGHT_PX: f32 = 60.0;
@@ -66,9 +66,10 @@ pub(crate) struct HomePageView {
     version_kind_labels_key: Option<(u64, u64)>,
     selected_folder: Option<SharedString>,
     dropdown_open: bool,
-    /// Closing menus remain mounted until the compositor spring settles.
-    dropdown_closing: bool,
-    /// Invalidates delayed unmount callbacks when a transition is reversed.
+    /// 下拉展开进度弹簧：展开 Q 弹、收起干脆，中途切换目标不跳变。
+    dropdown_spring: SpringValue,
+    dropdown_animating: bool,
+    dropdown_motion_from: f32,
     dropdown_motion_generation: u64,
     active: bool,
     _subscriptions: Vec<Subscription>,
@@ -153,7 +154,9 @@ impl HomePageView {
             version_kind_labels_key: None,
             selected_folder,
             dropdown_open: false,
-            dropdown_closing: false,
+            dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
+            dropdown_animating: false,
+            dropdown_motion_from: 0.0,
             dropdown_motion_generation: 0,
             active: false,
             _subscriptions: subscriptions,
@@ -179,8 +182,9 @@ impl HomePageView {
         self.active = active;
         if !active {
             self.dropdown_open = false;
-            self.dropdown_closing = false;
-            self.dropdown_motion_generation = self.dropdown_motion_generation.wrapping_add(1);
+            self.dropdown_spring.snap_to(0.0);
+            self.dropdown_animating = false;
+            self.dropdown_motion_from = 0.0;
             return;
         }
 
@@ -209,35 +213,34 @@ impl HomePageView {
         self.version_kind_labels_key = Some(key);
     }
 
-    fn begin_dropdown_transition(&mut self, open: bool, cx: &mut Context<Self>) {
+    fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
+        let sample = self.dropdown_spring.sample(now);
+        if !self.dropdown_open && sample.value <= 0.01 {
+            self.dropdown_spring.snap_to(0.0);
+            self.dropdown_animating = false;
+            return 0.0;
+        }
+        self.dropdown_animating = !sample.done;
+        sample.value.clamp(0.0, 1.08)
+    }
+
+    fn begin_dropdown_transition(&mut self, open: bool) {
         if self.dropdown_open == open {
             return;
         }
 
-        // The retained presentation tracks handle interruption/velocity continuity. Only the
-        // target change invalidates the view; no CPU-side per-frame layout or spring sampling.
-        self.dropdown_open = open;
-        self.dropdown_closing = !open;
+        let now = Instant::now();
+        self.dropdown_motion_from = self.dropdown_spring.sample(now).value.clamp(0.0, 1.08);
         self.dropdown_motion_generation = self.dropdown_motion_generation.wrapping_add(1);
-
-        if !open {
-            let generation = self.dropdown_motion_generation;
-            // Keep the closing list mounted until the snappy spring's tail has settled.
-            // This one-shot cleanup does not schedule per-frame view renders. The generation
-            // guard prevents a stale callback from hiding a menu reopened during the close.
-            cx.spawn(async move |view, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(850))
-                    .await;
-                let _ = view.update(cx, |this, cx| {
-                    if !this.dropdown_open && this.dropdown_motion_generation == generation {
-                        this.dropdown_closing = false;
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
-        }
+        self.dropdown_open = open;
+        let spring = if open {
+            spring_bouncy()
+        } else {
+            spring_snappy()
+        };
+        self.dropdown_spring
+            .retarget_with_spring(if open { 1.0 } else { 0.0 }, spring, now);
+        self.dropdown_animating = true;
     }
 
     fn render_dropdown(
@@ -250,9 +253,12 @@ impl HomePageView {
         item_height_px: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Keep the list at its final geometry and animate only a bottom-anchored
-        // compositor clip. Unlike animating height, this does not relayout the
-        // virtual list or recapture text/images on every spring sample.
+        // Keep the same list element mounted for the entire in-flight spring,
+        // including its zero-height first and last samples. Returning a different
+        // empty element at an arbitrary epsilon discards retained list identity
+        // and can produce a one-frame flash when rapidly reversing direction.
+        // Keep the list at its final viewport while the spring changes only the
+        // rounded card's height; its rows do not need a new viewport each frame.
         let version_count = self.versions.len();
         let theme_colors = theme_colors.clone();
         let versions = uniform_list(
@@ -276,11 +282,15 @@ impl HomePageView {
             }),
         )
         .h_full();
-        let open = self.dropdown_open;
-        let spring = if open { spring_bouncy() } else { spring_snappy() };
+        let from = self.dropdown_motion_from;
+        let target = if self.dropdown_open { 1.0 } else { 0.0 };
+        let spring = if self.dropdown_open {
+            spring_bouncy()
+        } else {
+            spring_snappy()
+        };
         div()
             .w_full()
-            .h(px(desired_list_h_px))
             .relative()
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
@@ -308,17 +318,18 @@ impl HomePageView {
                     .p(px(6.0))
                     .child(versions),
             )
-            .with_visual_animation(
-                "home-version-list-reveal",
-                Animation::spring(spring)
-                    .fill_mode(FillMode::Both)
-                    .with_property(AnimationProperty::vertical_reveal(
-                        VerticalRevealEdge::Bottom,
-                        if open { 0.0 } else { 1.0 },
-                        if open { 1.0 } else { 0.0 },
-                    )),
+            .with_animation(
+                SharedString::from(format!(
+                    "home-version-list-motion-{}",
+                    self.dropdown_motion_generation
+                )),
+                Animation::spring(spring).fill_mode(FillMode::Both),
+                move |card, progress| {
+                    let reveal = (from + (target - from) * progress).clamp(0.0, 1.08);
+                    card.h(px(desired_list_h_px * reveal))
+                        .opacity((reveal / 0.04).min(1.0))
+                },
             )
-            .expect("version list reveal uses a compositor property")
             .into_any_element()
     }
 
@@ -486,7 +497,7 @@ impl HomePageView {
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
                     this.selected_folder = Some(folder.clone().into());
-                    this.begin_dropdown_transition(false, cx);
+                    this.begin_dropdown_transition(false);
                     cx.notify();
                 }),
             )
@@ -596,6 +607,7 @@ impl HomePageView {
     fn render_launch_secondary(
         &self,
         is_empty: bool,
+        dropdown_factor: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let chevron: AnyElement = if is_empty {
@@ -604,26 +616,16 @@ impl HomePageView {
                 .text_color(rgb(0xffffff))
                 .into_any_element()
         } else {
-            let icon = icon_path(lucide_gpui::icon!(chevron_down))
+            icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
-                .text_color(rgb(0xffffff));
-            if self.dropdown_open || self.dropdown_closing {
-                let open = self.dropdown_open;
-                let spring = if open { spring_bouncy() } else { spring_snappy() };
-                icon.with_visual_animation(
+                .text_color(rgb(0xffffff))
+                .with_stable_sampled_animation(
                     "home-version-chevron-motion",
-                    Animation::spring(spring)
-                        .fill_mode(FillMode::Both)
-                        .with_property(AnimationProperty::rotation(
-                            radians(if open { 0.0 } else { std::f32::consts::PI }),
-                            radians(if open { std::f32::consts::PI } else { 0.0 }),
-                        )),
+                    AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
+                    dropdown_factor,
+                    false,
                 )
-                .expect("chevron rotation uses a compositor property")
                 .into_any_element()
-            } else {
-                icon.into_any_element()
-            }
         };
 
         div()
@@ -648,7 +650,7 @@ impl HomePageView {
                 style.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
-                        this.begin_dropdown_transition(!this.dropdown_open, cx);
+                        this.begin_dropdown_transition(!this.dropdown_open);
                         cx.notify();
                     }),
                 )
@@ -802,7 +804,8 @@ impl Render for HomePageView {
             theme_k,
             theme.accent,
         );
-        let dropdown_visible = self.dropdown_open || self.dropdown_closing;
+        let dropdown_factor = self.sync_dropdown_animation(now);
+        let dropdown_visible = self.dropdown_open || self.dropdown_animating;
         let i18n = cx.global::<I18n>();
 
         let initial_versions_loading = self.versions_loading && self.versions.is_empty();
@@ -959,7 +962,7 @@ impl Render for HomePageView {
                         cx,
                     ))
                     .child(div().w(px(1.0)).h_full().bg(divider))
-                    .child(self.render_launch_secondary(is_empty, cx)),
+                    .child(self.render_launch_secondary(is_empty, dropdown_factor, cx)),
             );
         let launch_bar: AnyElement = if initial_versions_loading {
             launch_bar
