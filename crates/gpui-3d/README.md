@@ -72,12 +72,40 @@ counts and parts describe output capacities, rather than the GPU's final visible
 Other render paths lazily generate padded CPU geometry. Voxel meshes do not support raycasts.
 World decoding, cell/template extraction, connected-model state resolution, LOD selection and
 material resolution remain CPU work. Applications may retain CPU generation for entity geometry;
-this does not provide GPU Hi-Z occlusion culling or an independent asynchronous compute queue.
+there is no independent asynchronous compute queue.
 `GPUI_3D_TRACE_TIMINGS` reports `gpu_cull_batches_max` and `gpu_resident_draws_max` alongside draws.
+
+`Scene::fork` shares copy-on-write node pages and records changed root leaves while preserving
+previous snapshots and stable node/mesh/material IDs. Consecutive snapshots prepare only changed
+nodes and update asset reference counts incrementally; hierarchy, LOD, animation and skipped
+revision changes fall back to full preparation. Resident draw/instance/light and culling tables upload only
+the changed record range; camera updates reuse geometry and asset tables.
+
+GPU voxel culling includes a current-camera, buffer-backed 128x128 Hi-Z pyramid. Only explicitly
+certified `Node::occluders` opaque box faces contribute depth; arbitrary mesh bounds do not.
+Face masks preserve neighbor/height face removal, merged columns retain only actual outer faces,
+and back faces do not contribute. Rotated, reflected or sheared proxies are omitted.
+At most 512 nearby volumes are rasterized conservatively, including a maximum-depth hierarchy.
+Near-plane intersections, biased/offset draws and incomplete tile coverage remain visible.
+Removed volumes clear old depth. This path uses ordered compute without host depth-texture access
+or GPU readback; it is not a copy of the Bedrock renderer or a measured FPS guarantee.
 
 `SceneView::with_culling_bounds` updates an optional world-space culling region without replacing
 the scene. Nodes opt in with `Node::with_culling_origin`; the region uses inclusive minimum and
 exclusive maximum coordinates. Ray queries and other nodes are unaffected.
+
+`VoxelMeshSource::with_ambient_occlusion` opts into corner AO for unit cell-boundary faces.
+The supplied mask selects full opaque instance classes; base cube grids treat occupied cells
+as opaque. GPU generation packs four corner factors into the existing 16-byte face descriptor;
+CPU fallback uses the same side/diagonal rule. Arbitrary detail and static faces retain their
+supplied lighting. `voxel_ambient_light` exposes this rule to CPU mesh producers.
+`SceneView::with_fog` accepts validated `DistanceFog` parameters, disabled by default.
+Fog updates the shared frame uniform without rebuilding scene assets, preserves alpha masking
+and premultiplied blending, and applies to both voxel and regular scene-view materials.
+`VoxelMeshSource::with_lighting` attaches packed sky/block levels for the padded cell grid.
+GPU vertex shading and CPU fallback use the same face sampling and ambient floor, independently
+of corner AO. The world editor combines worker-computed light propagation, face-direction light,
+AO and dimension-colored fog. There is no day/night simulation or state-complete Bedrock lightmap.
 
 The voxel mesh arena keeps retired ranges unavailable while GPU work may still read them. During
 host memory trim, DX11, DX12 and Vulkan wait for queue completion before releasing
