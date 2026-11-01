@@ -16,9 +16,32 @@ struct CullRange { minimum: vec4<f32>, maximum: vec4<f32> };
 @group(0) @binding(4) var<storage, read> batches: array<vec4<u32>>;
 @group(0) @binding(5) var<uniform> range: CullRange;
 @group(0) @binding(6) var<storage, read> generated: array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read> hiz: array<u32>;
 var<workgroup> planes: array<vec4<f32>, 6>;
 var<workgroup> visible_count: atomic<u32>;
 var<workgroup> largest_mesh: atomic<u32>;
+
+fn is_occluded(box: Bounds) -> bool {
+    if (box.bounds_max.w != 0.0) { return false; }
+    var lo=vec2<f32>(1.0);var hi=vec2<f32>(0.0);var nearest=1.0;
+    for(var i=0u;i<8u;i++){
+        let p=select(box.bounds_min.xyz,box.bounds_max.xyz,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u));
+        let clip=frame.view_projection*vec4<f32>(p,1.0);
+        if(clip.w<=0.0001 || clip.z<0.0){return false;}
+        let ndc=clip.xyz/clip.w;let uv=clamp(ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5),vec2<f32>(0.0),vec2<f32>(1.0));
+        lo=min(lo,uv);hi=max(hi,uv);nearest=min(nearest,ndc.z);
+    }
+    var size=128u;var base=0u;
+    for(var level=0u;level<7u;level++){
+        if(all(floor(hi*f32(size))-floor(lo*f32(size))<=vec2<f32>(1.0))){break;}
+        base+=size*size;size/=2u;
+    }
+    let a=min(vec2<u32>(lo*f32(size)),vec2<u32>(size-1u));
+    let b=min(vec2<u32>(hi*f32(size)),vec2<u32>(size-1u));
+    let depth=max(max(hiz[base+a.y*size+a.x],hiz[base+a.y*size+b.x]),
+        max(hiz[base+b.y*size+a.x],hiz[base+b.y*size+b.x]));
+    return nearest>bitcast<f32>(depth)+0.00001;
+}
 
 fn is_visible(box: Bounds) -> bool {
     if (box.origin.w != 0.0 &&
@@ -30,7 +53,7 @@ fn is_visible(box: Bounds) -> bool {
         let positive = select(box.bounds_min.xyz, box.bounds_max.xyz, normal.xyz >= vec3<f32>(0.0));
         if (dot(normal.xyz, positive) + normal.w < 0.0) { return false; }
     }
-    return true;
+    return !is_occluded(box);
 }
 
 @compute @workgroup_size(64)

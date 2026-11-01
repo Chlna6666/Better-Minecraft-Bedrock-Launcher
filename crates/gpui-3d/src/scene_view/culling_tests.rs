@@ -14,6 +14,9 @@ use gfx_core::*;
 use gfx_dx11::Dx11Device;
 use std::{collections::HashMap, sync::Arc};
 
+#[path = "hiz_tests.rs"]
+mod hiz_tests;
+
 fn quad_mesh(quads: usize, color: [f32; 4]) -> Arc<Mesh> {
     let corners = [(-0.9, -0.5), (-0.1, -0.5), (-0.1, 0.5), (-0.9, 0.5)];
     let left = corners.map(|(x, y)| Vertex {
@@ -141,6 +144,7 @@ pub(in crate::scene_view) fn frame(matrix: Mat4) -> Vec<u8> {
     ]) {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
+    bytes.resize(FRAME_PARAMS_STRIDE, 0);
     bytes
 }
 
@@ -424,6 +428,12 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
             6,
             culling.batches,
             batches.len() as u64 * ARGUMENT_STRIDE,
+            ComputeBufferAccess::ReadOnly,
+        ),
+        compute_binding(
+            7,
+            culling.hiz.depths,
+            (super::super::hiz::WORDS * 4) as u64,
             ComputeBufferAccess::ReadOnly,
         ),
     ];

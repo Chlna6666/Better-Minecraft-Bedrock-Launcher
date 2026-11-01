@@ -9,6 +9,7 @@ use std::{
 
 static DEFAULT_MATERIAL: OnceLock<Arc<Material>> = OnceLock::new();
 mod incremental;
+mod occluders;
 
 /// Applies a new-position -> previous-position permutation using reusable cycle storage.
 pub(crate) fn apply_order<T>(values: &mut [T], order: &[usize], positions: &mut Vec<usize>) {
@@ -139,6 +140,7 @@ fn same_instance_draw(left: &PreparedDraw, right: &PreparedDraw) -> bool {
 /// Camera-culled immutable scene snapshot ready for a renderer.
 #[derive(Clone, Debug, Default)]
 pub struct PreparedScene {
+    occluders: std::collections::HashMap<NodeId, (Option<Vec3>, Arc<[crate::Occluder]>)>,
     /// Opaque and masked draws followed by back-to-front blended draws.
     pub draws: Vec<PreparedDraw>,
     /// Lights in world space.
@@ -359,6 +361,7 @@ impl PreparedScene {
         camera: Camera,
     ) -> Result<(), CameraError> {
         self.candidates.clear();
+        self.occluders.clear();
         self.blend_order.clear();
         self.blend_positions.clear();
         self.gpu_candidates_dirty = true;
@@ -392,6 +395,7 @@ impl PreparedScene {
                 continue;
             }
             let world = parent_world * local_transform(id, node).matrix();
+            self.record_occluders(id, node, world);
             if let Some(light) = node.light {
                 self.lights.push(transform_light(light, world));
             }

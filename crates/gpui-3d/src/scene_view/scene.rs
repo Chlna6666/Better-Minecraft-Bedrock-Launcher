@@ -506,6 +506,17 @@ impl SceneResources {
             destroy_mesh(device, mesh, &mut self.arena)?;
         }
         if gpu_culling {
+            if (draw_state_changed || culling_bounds_changed || frame_changed)
+                && let Some(culling) = &mut self.culling
+            {
+                culling.hiz.update(
+                    device,
+                    self.prepared.occluder_bounds(scene_view.culling_bounds),
+                    scene_view.camera.eye,
+                    scene_view.camera.target - scene_view.camera.eye,
+                    draw_state_changed || culling_bounds_changed,
+                )?;
+            }
             if frame_changed || draw_list_changed || culling_bounds_changed {
                 self.culling
                     .as_mut()

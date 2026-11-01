@@ -28,6 +28,13 @@ fn main() {
                 .entry("cs_cull", ShaderStage::Compute),
         )
         .shader(
+            Shader::new("hiz")
+                .wgsl_file("src/scene_view/hiz.wgsl")
+                .entry("cs_hiz_clear", ShaderStage::Compute)
+                .entry("cs_hiz_raster", ShaderStage::Compute)
+                .entry("cs_hiz_reduce", ShaderStage::Compute),
+        )
+        .shader(
             Shader::new("mesher")
                 .wgsl_file("src/scene_view/mesher.wgsl")
                 .entry("cs_mesh", ShaderStage::Compute)

@@ -96,7 +96,7 @@ pub use render::{
     OffscreenRenderer, PickError, PostEffects, RenderError, RenderOptions, RenderQuality,
     RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated, project,
 };
-pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Scene, SceneError};
+pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Scene, SceneError};
 pub use scene_view::{
     ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,
     SceneViewRaycastScratch, SceneViewTextureError, scene_view,

@@ -13,6 +13,7 @@ const BOUNDS_STRIDE: usize = 48;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
 
 pub(super) struct CullResources {
+    pub(super) hiz: super::hiz::HiZ,
     backend: BackendKind,
     bounds: BufferId,
     pub(super) batches: BufferId,
@@ -24,6 +25,7 @@ pub(super) struct CullResources {
     batch_capacity: usize,
     count: usize,
     instances: usize,
+    uploaded_inputs: [Vec<u8>; 2],
 }
 
 impl CullResources {
@@ -56,6 +58,15 @@ impl CullResources {
             buffer_memory_location(backend),
         )?;
         let mut resources = Self {
+            hiz: match super::hiz::HiZ::create(device, backend) {
+                Ok(hiz) => hiz,
+                Err(error) => {
+                    for buffer in buffers {
+                        let _ = device.destroy_buffer(buffer);
+                    }
+                    return Err(error);
+                }
+            },
             backend,
             bounds: buffers[0],
             batches: buffers[1],
@@ -65,6 +76,7 @@ impl CullResources {
             range_bounds: None,
             count: 0,
             instances: 0,
+            uploaded_inputs: Default::default(),
             instance_capacity,
             batch_capacity,
         };
@@ -106,14 +118,27 @@ impl CullResources {
         let bytes = encode_batches(draws, batches, meshes)?;
         let bounds = encode_bounds(draws);
         let writes = [
-            (self.bounds, bounds.as_slice()),
-            (self.batches, bytes.as_slice()),
+            (self.bounds, bounds.as_slice(), BOUNDS_STRIDE),
+            (self.batches, bytes.as_slice(), ARGUMENT_STRIDE as usize),
         ]
-        .map(|(buffer, data)| gfx_core::BufferWrite {
-            descriptor: gfx_core::BufferWriteDescriptor { buffer, offset: 0 },
-            data,
-        });
-        device.write_buffer_batch(&writes)?;
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (buffer, data, stride))| {
+            let range = super::uploads::changed_range(&self.uploaded_inputs[i], data, stride)?;
+            Some(gfx_core::BufferWrite {
+                descriptor: gfx_core::BufferWriteDescriptor {
+                    buffer,
+                    offset: range.start as u64,
+                },
+                data: &data[range],
+            })
+        })
+        .collect::<Vec<_>>();
+        self.uploaded_inputs = Default::default();
+        if !writes.is_empty() {
+            device.write_buffer_batch(&writes)?;
+        }
+        self.uploaded_inputs = [bounds, bytes];
         self.count = batches.len();
         self.instances = draws.len();
         Ok(())
@@ -130,6 +155,7 @@ impl CullResources {
         if self.count == 0 {
             return Ok(());
         }
+        self.hiz.dispatch(device, frame)?;
         let (min, max) = range.map_or(([-f32::MAX; 3], [f32::MAX; 3]), |range| {
             (
                 [range.min.x, range.min.y, range.min.z],
@@ -187,6 +213,12 @@ impl CullResources {
                 }),
                 ComputeBufferAccess::ReadOnly,
             ),
+            compute_binding(
+                7,
+                self.hiz.depths,
+                (super::hiz::WORDS * 4) as u64,
+                ComputeBufferAccess::ReadOnly,
+            ),
         ];
         let limit = device.compute_capabilities().max_workgroups[0];
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
@@ -200,6 +232,7 @@ impl CullResources {
     }
 
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        self.hiz.destroy(device)?;
         device.destroy_buffer(self.bounds)?;
         device.destroy_buffer(self.batches)?;
         device.destroy_buffer(self.arguments)?;
@@ -216,7 +249,16 @@ fn encode_bounds(draws: &[PreparedDraw]) -> Vec<u8> {
             bounds.extend_from_slice(&value.to_le_bytes());
         }
         bounds.extend_from_slice(&draw.part.index_count().to_le_bytes());
-        for value in [draw.bounds.max.x, draw.bounds.max.y, draw.bounds.max.z, 0.0] {
+        for value in [
+            draw.bounds.max.x,
+            draw.bounds.max.y,
+            draw.bounds.max.z,
+            if draw.depth_bias != 0.0 || draw.pixel_offset != crate::Vec2::ZERO {
+                1.0
+            } else {
+                0.0
+            },
+        ] {
             bounds.extend_from_slice(&value.to_le_bytes());
         }
         let origin = draw.culling_origin;
