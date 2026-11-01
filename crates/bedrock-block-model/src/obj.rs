@@ -514,6 +514,14 @@ impl ObjTextureResolver {
         Ok(resolver)
     }
 
+    /// Resolves the engine's red/black "missing texture" placeholder so
+    /// renderers can bind it instead of an invisible solid-color fallback.
+    #[must_use]
+    pub fn missing_texture(&self) -> Option<ObjResolvedTexture> {
+        self.texture_path_for_key("textures/misc/missing_texture")
+            .map(|(pack, path)| pack.resolved_texture(&self.texture_directory_name, path))
+    }
+
     #[must_use]
     pub fn texture_for(&self, material: &str, normal: [i32; 3]) -> Option<ObjResolvedTexture> {
         let block = obj_block_texture_name(material);
@@ -2683,6 +2691,28 @@ fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, norm
     }
 
     let texture_slot = obj_face_texture_slot(normal);
+    // Flora whose terrain_texture key predates or differs from the block id;
+    // the pack stack defines no key matching the block name itself.
+    if block == "sugar_cane" {
+        for key in ["reeds", "sugar_canes"] {
+            push_texture_key_aliases(keys, key);
+        }
+    }
+    if block == "lily_pad" {
+        for key in ["waterlily", "waterlily_carried"] {
+            push_texture_key_aliases(keys, key);
+        }
+    }
+    if block == "tall_seagrass" {
+        for key in ["seagrass_tall_top_a", "seagrass_tall_bot_a"] {
+            push_texture_key_aliases(keys, key);
+        }
+    }
+    if block == "kelp_plant" {
+        for key in ["kelp_c", "kelp_a"] {
+            push_texture_key_aliases(keys, key);
+        }
+    }
     if block == "bricks" {
         for key in ["brick_block", "bricks", "brick"] {
             push_texture_key_aliases(keys, key);
