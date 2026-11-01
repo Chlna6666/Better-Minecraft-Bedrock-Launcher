@@ -10,6 +10,7 @@ use super::{
     projection::FrameProjection,
     renderer::trace_timings,
     resources::RendererResources,
+    uploads,
 };
 use crate::{
     Aabb, AlphaMode, AnimationScratch, Camera, Mat4, MaterialId, MeshId, MeshPart, NodeId,
@@ -37,6 +38,7 @@ pub(super) struct SceneResources {
     generated_arguments: Option<(BufferId, usize)>,
     generated_mappings: HashMap<BufferId, generated::Mapping>,
     scene: Option<Arc<Scene>>,
+    active_assets: assets::AssetCounts,
     texture_table: Option<Arc<HashMap<TextureAssetId, Arc<crate::TextureAsset>>>>,
     animation: Option<Arc<[crate::TransformTrack]>>,
     animation_time: Option<Duration>,
@@ -56,6 +58,7 @@ pub(super) struct SceneResources {
     light_capacity: usize,
     frame_buffer: BufferId,
     frame_state: Option<FrameState>,
+    uploaded_tables: [Vec<u8>; 3],
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
     retired_meshes: Vec<MeshResources>,
@@ -75,6 +78,7 @@ pub(super) struct SceneResources {
 
 const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
+mod assets;
 mod generated;
 mod reorder;
 
@@ -221,6 +225,7 @@ impl SceneResources {
             generated_arguments: None,
             generated_mappings: HashMap::new(),
             scene: None,
+            active_assets: assets::AssetCounts::default(),
             texture_table: None,
             animation: None,
             animation_time: None,
@@ -240,6 +245,7 @@ impl SceneResources {
             light_capacity,
             frame_buffer,
             frame_state: None,
+            uploaded_tables: Default::default(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
             retired_meshes: Vec::new(),
@@ -310,12 +316,31 @@ impl SceneResources {
         let mut reordered_blends = None;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
-            update_prepared(
-                &mut self.prepared,
-                &mut self.animation_scratch,
-                scene_view,
-                projection.aspect(),
-            )?;
+            let local_changes = self
+                .scene
+                .as_ref()
+                .filter(|_| {
+                    !culling_mode_changed
+                        && scene_view.animation.is_empty()
+                        && self.scene_transform == Some(scene_view.scene_transform)
+                        && !(camera_changed && self.prepared.uses_lod())
+                })
+                .and_then(|previous| scene_view.scene.changed_nodes(previous));
+            let updated = local_changes.and_then(|nodes| {
+                self.prepared
+                    .update_nodes(&scene_view.scene, nodes, scene_view.scene_transform)
+            });
+            if updated.is_some() {
+                self.prepared
+                    .update_camera(scene_view.camera, projection.aspect())?;
+            } else {
+                update_prepared(
+                    &mut self.prepared,
+                    &mut self.animation_scratch,
+                    scene_view,
+                    projection.aspect(),
+                )?;
+            }
             if let Some(started) = stage_started {
                 walk_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
@@ -470,7 +495,9 @@ impl SceneResources {
         }
         if assets_changed {
             // Keep scene-owned meshes resident across camera culling and hidden warm-cache nodes.
-            let (active_meshes, active_textures) = scene_asset_ids(scene_view.scene());
+            self.active_assets
+                .sync(self.scene.as_deref(), scene_view.scene());
+            let (active_meshes, active_textures) = self.active_assets.ids();
             self.retire_bindings(device, &active_meshes, &active_textures)?;
             self.retire_textures(device, &active_textures)?;
             self.retire_meshes(&active_meshes);
@@ -618,15 +645,54 @@ impl SceneResources {
         let light_buffer = new_lights.unwrap_or(self.light_buffer);
         let write_started = trace_started.map(|_| Instant::now());
         let writes = [
-            (draw_buffer, draw_bytes.as_slice()),
-            (instance_buffer, instance_bytes.as_slice()),
-            (light_buffer, light_bytes.as_slice()),
+            (
+                draw_buffer,
+                draw_bytes.as_slice(),
+                replace_draw,
+                DRAW_PARAMS_STRIDE as usize,
+            ),
+            (
+                instance_buffer,
+                instance_bytes.as_slice(),
+                replace_instances,
+                INSTANCE_STRIDE as usize,
+            ),
+            (
+                light_buffer,
+                light_bytes.as_slice(),
+                replace_lights,
+                LIGHT_STRIDE as usize,
+            ),
         ]
-        .map(|(buffer, data)| gfx_core::BufferWrite {
-            descriptor: gfx_core::BufferWriteDescriptor { buffer, offset: 0 },
-            data,
-        });
-        let write_result = device.write_buffer_batch(&writes);
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (buffer, data, replace, stride))| {
+            let range = uploads::changed_range(
+                if replace {
+                    &[]
+                } else {
+                    &self.uploaded_tables[i]
+                },
+                data,
+                stride,
+            )?;
+            Some(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer,
+                    offset: range.start as u64,
+                },
+                data: &data[range],
+            })
+        })
+        .collect::<Vec<_>>();
+        let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
+        // A failed write or later binding update may leave existing buffers partially changed.
+        self.uploaded_tables = Default::default();
+        let write_result = if writes.is_empty() {
+            Ok(())
+        } else {
+            device.write_buffer_batch(&writes).map(|_| ())
+        };
         if let Err(error) = write_result {
             if let Some(buffer) = new_draw {
                 device.destroy_buffer(buffer)?;
@@ -704,13 +770,14 @@ impl SceneResources {
             eprintln!(
                 "gpui3d buffer_detail draws={} bytes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
                 draw_count,
-                draw_bytes.len() + instance_bytes.len() + light_bytes.len(),
+                uploaded_bytes,
                 encode_ms.unwrap_or_default(),
                 write_ms.unwrap_or_default(),
                 bind_ms.unwrap_or_default(),
                 replace_draw || replace_instances || replace_lights,
             );
         }
+        self.uploaded_tables = [draw_bytes, instance_bytes, light_bytes];
         Ok(())
     }
 
@@ -1705,6 +1772,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 fn scene_asset_ids(scene: &Scene) -> (HashSet<MeshId>, HashSet<TextureAssetId>) {
     let mut meshes = HashSet::new();
     let mut textures = HashSet::new();

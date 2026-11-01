@@ -5,6 +5,8 @@ use crate::{
 use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc, time::Duration};
 
 mod bounds;
+mod snapshot;
+mod storage;
 
 /// Generational identity for a scene node.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -252,7 +254,7 @@ impl Node {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct NodeSlot {
     generation: u32,
     parent: Option<NodeId>,
@@ -263,13 +265,15 @@ struct NodeSlot {
 /// Mutable 3D scene graph with generational handles and shared immutable assets.
 #[derive(Debug)]
 pub struct Scene {
-    nodes: Vec<NodeSlot>,
-    free_slots: Vec<u32>,
-    roots: Vec<NodeId>,
+    nodes: storage::NodePages,
+    free_slots: Arc<Vec<u32>>,
+    roots: Arc<Vec<NodeId>>,
     live_nodes: usize,
     version: u64,
     instance_id: u64,
     environment: Option<Arc<EnvironmentMap>>,
+    base: Option<(u64, u64)>,
+    changes: Option<Vec<NodeId>>,
 }
 
 static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -277,13 +281,15 @@ static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 impl Default for Scene {
     fn default() -> Self {
         Self {
-            nodes: Vec::new(),
-            free_slots: Vec::new(),
-            roots: Vec::new(),
+            nodes: storage::NodePages::default(),
+            free_slots: Arc::default(),
+            roots: Arc::default(),
             live_nodes: 0,
             version: 0,
             instance_id: NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             environment: None,
+            base: None,
+            changes: None,
         }
     }
 }
@@ -331,6 +337,7 @@ impl Scene {
     }
 
     fn bump_version(&mut self) {
+        self.changes = None;
         self.version = self.version.wrapping_add(1);
     }
 
@@ -548,8 +555,7 @@ impl Scene {
         if parent.is_some_and(|parent| self.node_slot(parent).is_none()) {
             return Err(SceneError::StaleNode);
         }
-        self.bump_version();
-        let id = if let Some(index) = self.free_slots.pop() {
+        let id = if let Some(index) = Arc::make_mut(&mut self.free_slots).pop() {
             let slot = &mut self.nodes[index as usize];
             slot.parent = parent;
             slot.children.clear();
@@ -577,9 +583,10 @@ impl Scene {
                 .children
                 .push(id);
         } else {
-            self.roots.push(id);
+            Arc::make_mut(&mut self.roots).push(id);
         }
         self.live_nodes += 1;
+        self.record_node(id);
         Ok(id)
     }
 
@@ -591,7 +598,7 @@ impl Scene {
     /// Returns a mutable node by its generational handle.
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.node_slot(id)?.node.as_ref()?;
-        self.bump_version();
+        self.record_node(id);
         self.node_slot_mut(id)?.node.as_mut()
     }
 
@@ -645,7 +652,7 @@ impl Scene {
                 .children
                 .retain(|child| *child != id);
         } else {
-            self.roots.retain(|root| *root != id);
+            Arc::make_mut(&mut self.roots).retain(|root| *root != id);
         }
         self.node_slot_mut(id).ok_or(SceneError::StaleNode)?.parent = parent;
         if let Some(parent) = parent {
@@ -654,7 +661,7 @@ impl Scene {
                 .children
                 .push(id);
         } else {
-            self.roots.push(id);
+            Arc::make_mut(&mut self.roots).push(id);
         }
         Ok(())
     }
@@ -666,14 +673,14 @@ impl Scene {
     /// Returns [`SceneError::StaleNode`] when `id` is not live.
     pub fn remove(&mut self, id: NodeId) -> Result<(), SceneError> {
         let parent = self.node_slot(id).ok_or(SceneError::StaleNode)?.parent;
-        self.bump_version();
+        self.record_node(id);
         if let Some(parent) = parent {
             self.node_slot_mut(parent)
                 .ok_or(SceneError::StaleNode)?
                 .children
                 .retain(|child| *child != id);
         } else {
-            self.roots.retain(|root| *root != id);
+            Arc::make_mut(&mut self.roots).retain(|root| *root != id);
         }
         let mut pending = vec![id];
         while let Some(current) = pending.pop() {
@@ -689,7 +696,7 @@ impl Scene {
             self.live_nodes -= 1;
             if let Some(generation) = next_generation {
                 self.nodes[current.index as usize].generation = generation;
-                self.free_slots.push(current.index);
+                Arc::make_mut(&mut self.free_slots).push(current.index);
             }
         }
         Ok(())

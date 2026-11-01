@@ -8,6 +8,7 @@ use std::{
 };
 
 static DEFAULT_MATERIAL: OnceLock<Arc<Material>> = OnceLock::new();
+mod incremental;
 
 /// Applies a new-position -> previous-position permutation using reusable cycle storage.
 pub(crate) fn apply_order<T>(values: &mut [T], order: &[usize], positions: &mut Vec<usize>) {
@@ -374,6 +375,15 @@ impl PreparedScene {
                 .copied()
                 .map(|id| (id, scene_transform, true)),
         );
+        self.walk_pending(scene, local_transform, camera)
+    }
+
+    fn walk_pending(
+        &mut self,
+        scene: &Scene,
+        local_transform: impl Fn(NodeId, &Node) -> crate::Transform,
+        camera: Camera,
+    ) -> Result<(), CameraError> {
         while let Some((id, parent_world, parent_visible)) = self.walk_stack.pop() {
             let Some(node) = scene.node(id) else { continue };
             // Hidden nodes hide their whole subtree; skip traversal instead of emitting draws and
