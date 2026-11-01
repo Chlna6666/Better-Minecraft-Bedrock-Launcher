@@ -536,7 +536,7 @@ version = "0.2.2"
 package = "gpui_sum_tree"
 
 [dependencies.taffy]
-version = "=0.14.0"
+version = "=0.15.0"
 
 [dependencies.thiserror]
 version = "2.0.12"
