@@ -2503,6 +2503,14 @@ fn curseforge_result_card_animation(
     Some(animation)
 }
 
+fn adjacent_curseforge_page(page_index: usize, total_pages: usize, forward: bool) -> Option<usize> {
+    if forward {
+        page_index.checked_add(1).filter(|&page| page < total_pages)
+    } else {
+        page_index.checked_sub(1)
+    }
+}
+
 fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
     let state = cx.global::<DownloadPageState>();
     let _i18n = cx.global::<I18n>().clone();
@@ -2545,8 +2553,8 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
         });
     }
 
-    let prev_enabled = page_index > 0;
-    let next_enabled = page_index + 1 < total_pages;
+    let prev_target = adjacent_curseforge_page(page_index, total_pages, false);
+    let next_target = adjacent_curseforge_page(page_index, total_pages, true);
 
     let request_page_change = move |target_page: usize, cx: &mut App| {
         let target_page = target_page.min(total_pages.saturating_sub(1));
@@ -2579,11 +2587,8 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
         }
     };
 
-    let nav_btn = |icon: &'static str,
-                   enabled: bool,
-                   on_click_cb: Box<dyn Fn(&mut DownloadPageState)>,
-                   _source: &'static str| {
-        let enabled = enabled && !results_loading;
+    let nav_btn = |icon: &'static str, target_page: Option<usize>| {
+        let enabled = target_page.is_some() && !results_loading;
         div()
             .min_w(px(32.))
             .h(px(32.))
@@ -2621,12 +2626,9 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 if !enabled {
                     return;
                 }
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    on_click_cb(s);
-                });
-                let target_page =
-                    cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_page_index);
-                request_page_change(target_page, cx);
+                if let Some(target_page) = target_page {
+                    request_page_change(target_page, cx);
+                }
             })
     };
 
@@ -2766,23 +2768,9 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(nav_btn(
-                    lucide_gpui::icon!(chevron_left),
-                    prev_enabled,
-                    Box::new(|s| {
-                        s.curseforge_page_index = s.curseforge_page_index.saturating_sub(1)
-                    }),
-                    "prev",
-                ))
+                .child(nav_btn(lucide_gpui::icon!(chevron_left), prev_target))
                 .child(page_row)
-                .child(nav_btn(
-                    lucide_gpui::icon!(chevron_right),
-                    next_enabled,
-                    Box::new(|s| {
-                        s.curseforge_page_index = s.curseforge_page_index.saturating_add(1)
-                    }),
-                    "next",
-                )),
+                .child(nav_btn(lucide_gpui::icon!(chevron_right), next_target)),
         )
         .child(
             div().flex_1().flex().justify_end().child(
@@ -4509,4 +4497,25 @@ fn render_curseforge_mod_page_modal(
             modals::close_curseforge_mod_page(cx);
         }),
     )
+}
+
+#[cfg(test)]
+mod pager_navigation_tests {
+    use super::adjacent_curseforge_page;
+
+    #[test]
+    fn arrows_compute_a_new_page_before_requesting_results() {
+        assert_eq!(adjacent_curseforge_page(0, 3, true), Some(1));
+        assert_eq!(adjacent_curseforge_page(1, 3, true), Some(2));
+        assert_eq!(adjacent_curseforge_page(2, 3, false), Some(1));
+        assert_eq!(adjacent_curseforge_page(1, 3, false), Some(0));
+    }
+
+    #[test]
+    fn arrows_respect_bounds_and_do_not_overflow() {
+        assert_eq!(adjacent_curseforge_page(0, 3, false), None);
+        assert_eq!(adjacent_curseforge_page(2, 3, true), None);
+        assert_eq!(adjacent_curseforge_page(0, 0, true), None);
+        assert_eq!(adjacent_curseforge_page(usize::MAX, usize::MAX, true), None);
+    }
 }

@@ -85,6 +85,10 @@ struct ImportFilePreview {
     error: Option<SharedString>,
 }
 
+fn import_conflict_preflight_required(overwrite: bool, allow_shared_fallback: bool) -> bool {
+    !overwrite && !allow_shared_fallback
+}
+
 fn extend_unique_import_paths(
     paths: &mut Vec<PathBuf>,
     incoming: impl IntoIterator<Item = PathBuf>,
@@ -574,19 +578,26 @@ impl ImportWindowView {
 
         let selected_folder_text = selected_folder.to_string();
         cx.spawn(async move |handle, cx| {
-            let checks = file_paths.iter().cloned().map(|file_path| {
-                let request = CheckImportRequest {
-                    build_type: build_type.clone(),
-                    edition: edition.clone(),
-                    version_name: selected_folder_text.clone(),
-                    enable_isolation,
-                    user_id: user_id.clone(),
-                    file_path: file_path.clone(),
-                    allow_shared_fallback,
+            // The confirmation dialog is shown only after checking every file in the batch.
+            // Once approved, avoid another scan and proceed with the authorized options.
+            let check_results =
+                if import_conflict_preflight_required(overwrite, allow_shared_fallback) {
+                    let checks = file_paths.iter().cloned().map(|file_path| {
+                        let request = CheckImportRequest {
+                            build_type: build_type.clone(),
+                            edition: edition.clone(),
+                            version_name: selected_folder_text.clone(),
+                            enable_isolation,
+                            user_id: user_id.clone(),
+                            file_path: file_path.clone(),
+                            allow_shared_fallback,
+                        };
+                        async move { (file_path, check_import_conflict(request).await) }
+                    });
+                    join_all(checks).await
+                } else {
+                    Vec::new()
                 };
-                async move { (file_path, check_import_conflict(request).await) }
-            });
-            let check_results = join_all(checks).await;
             let mut conflicts = Vec::new();
             for (file_path, result) in check_results {
                 match result {
@@ -2932,7 +2943,7 @@ fn render_footer(
     disabled_by_context: bool,
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
-    let disabled = this.is_importing || disabled_by_context;
+    let disabled = this.is_importing || this.show_conflict_dialog || disabled_by_context;
     let is_overlay = this.presentation == ImportPresentation::Overlay;
     div()
         .w_full()
@@ -2957,7 +2968,9 @@ fn render_footer(
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.import_now(false, false, false, cx);
+                        if !this.show_conflict_dialog {
+                            this.import_now(false, false, false, cx);
+                        }
                     }),
                 ),
         )
@@ -2967,7 +2980,9 @@ fn render_footer(
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.import_now(false, false, true, cx);
+                        if !this.show_conflict_dialog {
+                            this.import_now(false, false, true, cx);
+                        }
                     }),
                 ),
         )
@@ -3181,6 +3196,7 @@ fn render_conflict_dialog(
                                             .on_mouse_up(
                                                 MouseButton::Left,
                                                 cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
                                                     this.show_conflict_dialog = false;
                                                     cx.notify();
                                                 }),
@@ -3190,6 +3206,10 @@ fn render_conflict_dialog(
                                         primary_button(&colors, primary_label, false).on_mouse_up(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if !this.show_conflict_dialog || this.is_importing {
+                                                    return;
+                                                }
                                                 let overwrite = this.conflict_requires_overwrite;
                                                 let allow_shared_fallback =
                                                     this.conflict_requires_shared_fallback;
@@ -3506,6 +3526,19 @@ fn format_size(bytes: u64) -> String {
         unit_index += 1;
     }
     format!("{value:.2} {}", UNITS[unit_index])
+}
+
+#[cfg(test)]
+mod import_conflict_confirmation_tests {
+    use super::import_conflict_preflight_required;
+
+    #[test]
+    fn preflight_is_not_repeated_after_batch_confirmation() {
+        assert!(import_conflict_preflight_required(false, false));
+        assert!(!import_conflict_preflight_required(true, false));
+        assert!(!import_conflict_preflight_required(false, true));
+        assert!(!import_conflict_preflight_required(true, true));
+    }
 }
 
 #[cfg(test)]
