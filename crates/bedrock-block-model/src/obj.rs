@@ -387,6 +387,9 @@ pub trait ObjMeshFaceSource {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjTextureResolver {
     packs: Vec<ObjResourcePack>,
+    /// Pack indices in texture lookup priority: the base `vanilla` pack first,
+    /// then versioned overlays newest-first.
+    pack_lookup_order: Vec<usize>,
     models: BlockModelRepository,
     texture_directory_name: String,
     model_errors: Vec<String>,
@@ -420,24 +423,52 @@ impl ObjTextureResolver {
         let mut packs = Vec::new();
         let mut models = BlockModelRepository::new();
         let mut model_errors = Vec::new();
-        for root in &unique_pack_roots {
-            match PackResources::open(root) {
-                Ok(resources) => {
-                    if let Err(error) = models.merge_resources(&resources) {
-                        model_errors.push(error.to_string());
-                    }
-                    match ObjResourcePack::load(root.clone(), resources) {
-                        Ok(Some(pack)) => packs.push(pack),
-                        Ok(None) => {}
-                        Err(error) => model_errors.push(error.to_string()),
-                    }
+        // Texture and definition priority: the unversioned base `vanilla` pack
+        // wins over versioned `vanilla_*` overlays, and among overlays newer
+        // versions win (roots arrive oldest-first). Merge overlays first so the
+        // base pack's definitions are inserted last into the last-wins model
+        // repository.
+        for base_pass in [false, true] {
+            for root in &unique_pack_roots {
+                if is_base_vanilla_root(root) != base_pass {
+                    continue;
                 }
-                Err(error) => model_errors.push(error.to_string()),
+                match PackResources::open(root) {
+                    Ok(resources) => {
+                        if let Err(error) = models.merge_resources(&resources) {
+                            model_errors.push(error.to_string());
+                        }
+                        match ObjResourcePack::load(root.clone(), resources) {
+                            Ok(Some(pack)) => packs.push(pack),
+                            Ok(None) => {}
+                            Err(error) => model_errors.push(error.to_string()),
+                        }
+                    }
+                    Err(error) => model_errors.push(error.to_string()),
+                }
             }
         }
 
+        // Texture file lookup order: base vanilla first, then overlays
+        // newest-first (input order is oldest-first, so walk it backwards).
+        let pack_lookup_order = {
+            let mut order = Vec::with_capacity(packs.len());
+            for (index, pack) in packs.iter().enumerate() {
+                if pack.is_base_vanilla() {
+                    order.push(index);
+                }
+            }
+            for index in (0..packs.len()).rev() {
+                if !packs[index].is_base_vanilla() {
+                    order.push(index);
+                }
+            }
+            order
+        };
+
         Self {
             packs,
+            pack_lookup_order,
             models,
             texture_directory_name: texture_directory_name.to_owned(),
             model_errors,
@@ -491,12 +522,15 @@ impl ObjTextureResolver {
         let material_slot = obj_material_instance_slot(material);
         // The capture catalog stores engine texture aliases only. Resolve
         // them against local resource packs (never a version-indexed path).
-        if let Some(alias)=material_slot.as_deref()
-            .and_then(crate::decode_capture_texture_slot) {
+        if let Some(alias) = material_slot
+            .as_deref()
+            .and_then(crate::decode_capture_texture_slot)
+        {
             // An explicit capture alias must never silently fall back to the
             // block's generic north/top texture on a missing asset.
-            return self.texture_path_for_key(&alias)
-                .map(|(pack,path)|pack.resolved_texture(&self.texture_directory_name,path));
+            return self
+                .texture_path_for_key(&alias)
+                .map(|(pack, path)| pack.resolved_texture(&self.texture_directory_name, path));
         }
         let slot_face = material_slot
             .as_deref()
@@ -549,7 +583,8 @@ impl ObjTextureResolver {
             return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
         }
 
-        for (priority, pack) in self.packs.iter().rev().enumerate() {
+        for (priority, &pack_index) in self.pack_lookup_order.iter().enumerate() {
+            let pack = &self.packs[pack_index];
             if let Some(texture_key) = pack.block_texture_key_for(&lookup_block, lookup_normal)
                 && let Some((texture_pack, source_path)) = self.texture_path_for_key(&texture_key)
             {
@@ -599,10 +634,10 @@ impl ObjTextureResolver {
         // Item atlas entries and their PNG payloads can live in different packs, exactly like
         // block terrain textures.
         let mapped = self
-            .packs
+            .pack_lookup_order
             .iter()
-            .rev()
-            .find_map(|pack| pack.item_texture_key_path(name))
+            .filter_map(|&index| self.packs[index].item_texture_key_path(name))
+            .next()
             .map(str::to_owned);
         if let Some(path) = mapped
             && let Some((texture_pack, source_path)) = self.texture_path_for_key(&path)
@@ -730,10 +765,9 @@ impl ObjTextureResolver {
         // stays in the vanilla base pack. A high-priority override may also map the key to a
         // missing texture, so every mapping is tried in priority order before giving up.
         let mut mappings = self
-            .packs
+            .pack_lookup_order
             .iter()
-            .rev()
-            .filter_map(|pack| pack.texture_key_path(texture_key))
+            .filter_map(|&index| self.packs[index].texture_key_path(texture_key))
             .collect::<Vec<_>>();
         if mappings.is_empty() {
             mappings.push(texture_key);
@@ -745,7 +779,11 @@ impl ObjTextureResolver {
                     PathBuf::from("textures").join(&relative),
                     PathBuf::from(&relative),
                 ] {
-                    for pack in self.packs.iter().rev() {
+                    for pack in self
+                        .pack_lookup_order
+                        .iter()
+                        .map(|&index| &self.packs[index])
+                    {
                         if let Some(file) = pack.texture_file_for_path(&path) {
                             return Some((pack, file));
                         }
@@ -2517,7 +2555,7 @@ fn read_optional_json(path: &Path) -> Option<Value> {
     read_json_file(path).ok()
 }
 
-fn read_texture_data_maps(root: &Path, texture_root: &Path) -> HashMap<String, String> {
+fn read_texture_data_maps(root: &Path, texture_root: &Path) -> HashMap<String, Vec<String>> {
     let mut textures = HashMap::new();
     for path in texture_data_json_paths(root, texture_root) {
         merge_texture_data_map(&mut textures, &path);
@@ -2555,7 +2593,13 @@ fn collect_direct_json_paths(root: &Path, paths: &mut BTreeSet<PathBuf>) {
     }
 }
 
-fn merge_texture_data_map(textures: &mut HashMap<String, String>, path: &Path) {
+/// True for the unversioned base `vanilla` pack root — never the versioned
+/// `vanilla_<version>` overlays or their `client` subdirectories.
+fn is_base_vanilla_root(root: &Path) -> bool {
+    root.file_name().and_then(std::ffi::OsStr::to_str) == Some("vanilla")
+}
+
+fn merge_texture_data_map(textures: &mut HashMap<String, Vec<String>>, path: &Path) {
     let Some(value) = read_optional_json(path) else {
         return;
     };
@@ -2563,31 +2607,60 @@ fn merge_texture_data_map(textures: &mut HashMap<String, String>, path: &Path) {
         return;
     };
     for (key, value) in texture_data {
-        if let Some(path) = terrain_texture_path(value) {
-            let path = obj_normalize_texture_key(&path);
-            textures.entry(key.clone()).or_insert(path);
+        let paths: Vec<String> = terrain_texture_paths(value)
+            .into_iter()
+            .map(|path| obj_normalize_texture_key(&path))
+            .collect();
+        if paths.is_empty() {
+            continue;
         }
+        textures.entry(key.clone()).or_insert(paths);
+    }
+}
+
+/// Collects every texture path declared for one `terrain_texture.json` key, in
+/// declaration order. Arrays are variants (legacy data values or block states
+/// such as `furnace_front` off/on), so the full list must survive parsing; the
+/// game selects the variant at runtime. Callers that only need one texture
+/// (or want the documented default) use the first entry.
+fn terrain_texture_paths(value: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    collect_terrain_texture_paths(value, &mut paths);
+    paths
+}
+
+fn collect_terrain_texture_paths(value: &Value, paths: &mut Vec<String>) {
+    if let Some(text) = value.as_str() {
+        paths.push(text.to_owned());
+        return;
+    }
+    if let Some(text) = value.get("path").and_then(Value::as_str) {
+        paths.push(text.to_owned());
+    }
+    let Some(textures) = value.get("textures").or_else(|| value.get("texture")) else {
+        return;
+    };
+    match textures {
+        Value::String(text) => paths.push(text.to_owned()),
+        Value::Array(values) => {
+            for item in values {
+                collect_terrain_texture_paths(item, paths);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(path) = object.get("path").and_then(Value::as_str) {
+                paths.push(path.to_owned());
+            }
+            for item in object.values() {
+                collect_terrain_texture_paths(item, paths);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
 fn terrain_texture_path(value: &Value) -> Option<String> {
-    if let Some(text) = value.as_str() {
-        return Some(text.to_owned());
-    }
-    if let Some(text) = value.get("path").and_then(Value::as_str) {
-        return Some(text.to_owned());
-    }
-    let textures = value.get("textures").or_else(|| value.get("texture"))?;
-    match textures {
-        Value::String(text) => Some(text.to_owned()),
-        Value::Array(values) => values.iter().find_map(terrain_texture_path),
-        Value::Object(object) => object
-            .get("path")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .or_else(|| object.values().find_map(terrain_texture_path)),
-        Value::Null | Value::Bool(_) | Value::Number(_) => None,
-    }
+    terrain_texture_paths(value).into_iter().next()
 }
 
 fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, normal: [i32; 3]) {

@@ -11,8 +11,11 @@ use std::collections::BTreeSet;
 pub(super) struct ObjResourcePack {
     root: PathBuf,
     texture_root: PathBuf,
+    /// True for the unversioned base `vanilla` pack; texture and definition
+    /// lookups always give it priority over versioned `vanilla_*` overlays.
+    is_base_vanilla: bool,
     blocks: Value,
-    texture_data: HashMap<String, String>,
+    texture_data: HashMap<String, Vec<String>>,
     item_texture_data: HashMap<String, String>,
     flipbook_textures: BTreeSet<String>,
     resources: PackResources,
@@ -42,8 +45,12 @@ impl ObjResourcePack {
                 let value = read_resource_json(&file)?;
                 if let Some(entries) = value.get("texture_data").and_then(Value::as_object) {
                     for (key, value) in entries {
-                        if let Some(path) = super::terrain_texture_path(value) {
-                            texture_data.insert(key.clone(), path);
+                        let paths: Vec<String> = super::terrain_texture_paths(value)
+                            .into_iter()
+                            .map(|path| obj_normalize_texture_key(&path))
+                            .collect();
+                        if !paths.is_empty() {
+                            texture_data.insert(key.clone(), paths);
                         }
                     }
                 }
@@ -79,6 +86,7 @@ impl ObjResourcePack {
             }
         }
         Ok(Some(Self {
+            is_base_vanilla: super::is_base_vanilla_root(&root),
             root,
             texture_root,
             blocks,
@@ -87,6 +95,11 @@ impl ObjResourcePack {
             flipbook_textures,
             resources,
         }))
+    }
+
+    /// Whether this pack is the unversioned base `vanilla` pack.
+    pub(super) fn is_base_vanilla(&self) -> bool {
+        self.is_base_vanilla
     }
 
     /// Whether the given texture path is declared as an animated flipbook strip.
@@ -105,8 +118,20 @@ impl ObjResourcePack {
     }
 
     /// Returns the terrain-texture path registered for one key in this pack.
+    ///
+    /// This is the documented default variant (the first declared entry); the
+    /// full variant list is available through [`Self::texture_key_paths`].
     pub(super) fn texture_key_path(&self, texture_key: &str) -> Option<&str> {
-        self.texture_data.get(texture_key).map(String::as_str)
+        self.texture_key_paths(texture_key)
+            .and_then(|paths| paths.first())
+            .map(String::as_str)
+    }
+
+    /// Returns every terrain-texture path registered for one key, in
+    /// declaration order. Arrays in `terrain_texture.json` are variants
+    /// selected by legacy data value or block state at runtime.
+    pub(super) fn texture_key_paths(&self, texture_key: &str) -> Option<&[String]> {
+        self.texture_data.get(texture_key).map(Vec::as_slice)
     }
 
     /// Returns the item-texture path registered for one item in this pack.
