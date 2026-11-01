@@ -871,6 +871,12 @@ impl Window {
         else {
             return;
         };
+        #[cfg(feature = "profiler")]
+        crate::diagnostics::foreground_profiler::frame_timing::record_frame_signal(
+            self.handle.window_id().as_u64(),
+            frame_started_at,
+            self.refresh_interval(cx),
+        );
         self.animation_time.set(frame_started_at);
         // The native HWND remains the source of truth even AFTER WM_EXITSIZEMOVE.
         // A resize callback may have been coalesced or deferred while GPUI held

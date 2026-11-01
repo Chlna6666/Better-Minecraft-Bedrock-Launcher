@@ -19,6 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod frame_timing;
+pub use frame_timing::{FRAME_BUDGET_FLOOR, UNKNOWN_REFRESH_FRAME_BUDGET};
+
 const TASK_POLL_FLOOR: Duration = Duration::from_micros(100);
 const PENDING_FRAME_DEADLINE: Duration = Duration::from_secs(1);
 const MAX_INTERVAL_EVENTS: usize = 16 * 1024;
@@ -35,15 +38,13 @@ pub const DEFAULT_HANG_THRESHOLD: Duration = if cfg!(debug_assertions) {
     Duration::from_millis(100)
 };
 
-/// Default cumulative foreground-work budget.
+/// Default duration at which one foreground operation counts as blocking work.
 ///
-/// Release builds use 24ms, matching the upstream semantic: multiple individually-small pieces of
-/// work can still miss a frame. Debug builds use a wider budget to avoid profiling unoptimized
-/// work as a continuous hang.
+/// Release builds use one 60Hz refresh. Debug builds use a wider budget for unoptimized work.
 pub const DEFAULT_FRAME_BUDGET: Duration = if cfg!(debug_assertions) {
     Duration::from_millis(100)
 } else {
-    Duration::from_millis(24)
+    UNKNOWN_REFRESH_FRAME_BUDGET
 };
 
 /// Why a foreground interval qualified as a hang.
@@ -52,9 +53,10 @@ pub const DEFAULT_FRAME_BUDGET: Duration = if cfg!(debug_assertions) {
 pub enum HangTrigger {
     /// At least one individual operation exceeded the detector threshold.
     Threshold,
-    /// No individual operation crossed the threshold, but cumulative foreground occupancy exceeded
-    /// the interval budget.
-    Budget,
+    /// A measured frame exceeded its display refresh budget.
+    LateFrame,
+    /// Without a measured frame, one operation exceeded the blocking-work budget.
+    BlockingWork,
 }
 
 /// One category of foreground work retained by the profiler.
@@ -120,6 +122,13 @@ pub struct FramePipelineSample {
     pub window_id: u64,
     /// Timestamp at GPUI's successful platform presentation boundary.
     pub presented_at: Instant,
+    /// Display refresh interval sampled when the UI owner accepted the frame callback.
+    pub refresh_interval: Option<Duration>,
+    /// Main-thread work from the later of dirtying and callback acceptance to submission start.
+    /// Platform submission, GPU execution and compositor waits are excluded.
+    pub work: Option<Duration>,
+    /// Start of platform submission, before any Present wait.
+    pub submitted_at: Option<Instant>,
     /// Time from first dirty edge to the first platform frame request.
     pub dirty_to_request: Option<Duration>,
     /// Time from frame request until CPU frame generation began.
@@ -251,9 +260,9 @@ pub struct HangIncident {
     pub trigger: HangTrigger,
     /// Full interval snapshot.
     pub snapshot: ForegroundIntervalSnapshot,
-    /// Longest contributors first. Budget-only incidents contain every retained event.
+    /// Longest contributors first, restricted to the qualifying frame or blocking operations.
     pub contributors: Vec<ForegroundWorkSample>,
-    /// Total foreground occupancy used by the budget rule.
+    /// Total foreground occupancy, excluding overlap between nested events.
     pub foreground_spend: Duration,
 }
 
@@ -271,15 +280,33 @@ impl HangIncident {
             .filter(|event| event.duration() >= threshold)
             .collect::<Vec<_>>();
 
-        let trigger = if contributors.is_empty() {
-            // Cumulative inference is not reliable once the interval event cap has dropped work.
-            if snapshot.dropped_events != 0 || foreground_spend < frame_budget {
+        let trigger = if !contributors.is_empty() {
+            HangTrigger::Threshold
+        } else if let ForegroundIntervalBoundary::Presented(frame) = snapshot.boundary
+            && let Some((work, submitted_at)) = frame.work.zip(frame.submitted_at)
+        {
+            if snapshot.dropped_events != 0 || !frame.is_late() {
                 return None;
             }
-            contributors = snapshot.events.clone();
-            HangTrigger::Budget
+            let work_start = submitted_at.checked_sub(work)?;
+            contributors = snapshot
+                .events
+                .iter()
+                .copied()
+                .filter(|event| event.ended_at > work_start && event.started_at < submitted_at)
+                .collect();
+            HangTrigger::LateFrame
         } else {
-            HangTrigger::Threshold
+            contributors = snapshot
+                .events
+                .iter()
+                .copied()
+                .filter(|event| event.duration() >= frame_budget)
+                .collect();
+            if contributors.is_empty() {
+                return None;
+            }
+            HangTrigger::BlockingWork
         };
 
         contributors.sort_unstable_by_key(|event| std::cmp::Reverse(event.duration()));
@@ -292,7 +319,7 @@ impl HangIncident {
     }
 }
 
-/// Polls sealed foreground intervals for threshold- and budget-qualified hangs.
+/// Polls foreground intervals for threshold stalls, late frames and blocking work.
 ///
 /// A detector is bound to the foreground thread on which it is created.
 pub struct HangDetector {
@@ -302,7 +329,7 @@ pub struct HangDetector {
 }
 
 impl HangDetector {
-    /// Creates a detector using explicit per-event and cumulative interval budgets.
+    /// Creates a detector using explicit per-event and blocking-work budgets.
     pub fn new(threshold: Duration, frame_budget: Duration) -> Self {
         assert!(
             threshold >= TASK_POLL_FLOOR,
@@ -448,6 +475,8 @@ impl Drop for ForegroundWorkSpan {
 struct PendingFrame {
     dirty_at: Instant,
     request_at: Instant,
+    signal_at: Option<Instant>,
+    refresh_interval: Option<Duration>,
     draw_start: Option<Instant>,
     draw_end: Option<Instant>,
     submit_start: Option<Instant>,
@@ -461,6 +490,8 @@ struct WindowProfileState {
     visible: bool,
     visibility_epoch: u64,
     pending_frame: Option<PendingFrame>,
+    signal_at: Option<Instant>,
+    refresh_interval: Option<Duration>,
 }
 
 impl Default for WindowProfileState {
@@ -469,6 +500,8 @@ impl Default for WindowProfileState {
             visible: true,
             visibility_epoch: 0,
             pending_frame: None,
+            signal_at: None,
+            refresh_interval: None,
         }
     }
 }
@@ -671,6 +704,8 @@ pub(crate) fn record_frame_request(window_id: u64, dirty_at: Option<Instant>) {
                 window.pending_frame = Some(PendingFrame {
                     dirty_at,
                     request_at: now,
+                    signal_at: window.signal_at,
+                    refresh_interval: window.refresh_interval,
                     draw_start: None,
                     draw_end: None,
                     submit_start: None,
@@ -745,6 +780,14 @@ pub(crate) fn record_frame_presented(window_id: u64, presented_at: Instant) {
         let sample = FramePipelineSample {
             window_id,
             presented_at,
+            refresh_interval: pending.refresh_interval,
+            work: pending
+                .signal_at
+                .zip(pending.submit_start)
+                .map(|(signal, submitted)| {
+                    submitted.saturating_duration_since(signal.max(pending.dirty_at))
+                }),
+            submitted_at: pending.submit_start,
             dirty_to_request: Some(
                 pending
                     .request_at
@@ -843,8 +886,9 @@ mod tests {
             .map(|event| event.started_at)
             .unwrap_or_else(Instant::now);
         let ended_at = events
-            .last()
+            .iter()
             .map(|event| event.ended_at)
+            .max()
             .unwrap_or(started_at);
         ForegroundIntervalSnapshot {
             started_at,
@@ -881,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn budget_trigger_accumulates_individually_small_work() {
+    fn separated_short_operations_do_not_qualify_as_blocking_work() {
         let start = Instant::now();
         let incident = HangIncident::detect(
             snapshot(
@@ -892,14 +936,10 @@ mod tests {
                 ],
                 0,
             ),
-            Duration::from_millis(10),
+            Duration::from_millis(20),
             Duration::from_millis(15),
-        )
-        .expect("budget-qualified interval");
-
-        assert_eq!(incident.trigger, HangTrigger::Budget);
-        assert_eq!(incident.contributors.len(), 3);
-        assert_eq!(incident.foreground_spend, Duration::from_millis(15));
+        );
+        assert!(incident.is_none());
     }
 
     #[test]

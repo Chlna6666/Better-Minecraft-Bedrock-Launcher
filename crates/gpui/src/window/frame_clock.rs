@@ -111,6 +111,7 @@ impl Window {
 /// Asynchronous request-coalescing state owned by one window's frame clock.
 #[derive(Default)]
 pub(super) struct FrameClockState {
+    /// Cadence anchor, corrected to the deadline after small dispatch delays.
     pub(super) last_frame_started_at: Option<Instant>,
     pub(super) platform_request_pending: bool,
     pub(super) pending_request: Option<PlatformFrameRequest>,
@@ -195,7 +196,16 @@ impl FrameClockState {
         }
 
         self.cancel_timer();
-        self.last_frame_started_at = Some(frame_started_at);
+        // Preserve cadence across small dispatch delays. A long stall starts a
+        // fresh cadence so recovery cannot produce closely spaced catch-up frames.
+        self.last_frame_started_at = Some(
+            next_allowed_frame
+                .zip(interval)
+                .filter(|(deadline, interval)| {
+                    frame_started_at.saturating_duration_since(*deadline) <= *interval / 4
+                })
+                .map_or(frame_started_at, |(deadline, _)| deadline),
+        );
         ReceivedPlatformFrame::Ready(self.take_merged_request(request))
     }
 
@@ -270,5 +280,85 @@ mod native_clock_tests {
         assert_eq!(window_frame_clock_interval(hz1000, None), hz1000);
         assert_eq!(window_frame_clock_interval(hz120, hz1000), hz120);
         assert_eq!(window_frame_clock_interval(None, hz1000), None);
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    #[test]
+    fn all_frame_request_sources_wait_for_the_same_deadline() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(16);
+        for request in [
+            PlatformFrameRequest::ui_commit(),
+            PlatformFrameRequest::animation_tick(),
+            PlatformFrameRequest::presentation(),
+            PlatformFrameRequest::ui_commit_and_presentation(),
+        ] {
+            let mut state = FrameClockState::default();
+            assert!(matches!(
+                state.receive_frame(request, start, Some(interval)),
+                ReceivedPlatformFrame::Ready(_)
+            ));
+            assert!(matches!(
+                state.receive_frame(request, start + interval / 2, Some(interval)),
+                ReceivedPlatformFrame::Wait { deadline, .. } if deadline == start + interval
+            ));
+            assert!(matches!(
+                state.receive_frame(request, start + interval, Some(interval)),
+                ReceivedPlatformFrame::Ready(merged) if merged == request
+            ));
+            assert!(state.pending_request.is_none());
+        }
+    }
+
+    #[test]
+    fn small_dispatch_delays_do_not_accumulate_cadence_drift() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(16);
+        let request = PlatformFrameRequest::animation_tick();
+        let mut state = FrameClockState::default();
+        state.receive_frame(request, start, Some(interval));
+        for frame in 1..=4 {
+            let delayed = start + interval * frame + Duration::from_millis(2);
+            assert!(matches!(
+                state.receive_frame(request, delayed, Some(interval)),
+                ReceivedPlatformFrame::Ready(_)
+            ));
+            assert!(matches!(
+                state.queue_request(request, delayed, interval),
+                FrameClockRequest::Wait { deadline, .. }
+                    if deadline == start + interval * (frame + 1)
+            ));
+        }
+    }
+
+    #[test]
+    fn stalls_and_unpaced_frames_reset_cadence_without_catch_up() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(16);
+        let request = PlatformFrameRequest::animation_tick();
+        let mut state = FrameClockState::default();
+        state.receive_frame(request, start, Some(interval));
+        let after_stall = start + interval * 2 - Duration::from_millis(1);
+        assert!(matches!(
+            state.receive_frame(request, after_stall, Some(interval)),
+            ReceivedPlatformFrame::Ready(_)
+        ));
+        assert!(matches!(
+            state.receive_frame(request, after_stall + interval / 2, Some(interval)),
+            ReceivedPlatformFrame::Wait { deadline, .. } if deadline == after_stall + interval
+        ));
+        let unpaced = after_stall + interval / 2;
+        assert!(matches!(
+            state.receive_frame(request, unpaced, None),
+            ReceivedPlatformFrame::Ready(_)
+        ));
+        assert!(matches!(
+            state.queue_request(request, unpaced, interval),
+            FrameClockRequest::Wait { deadline, .. } if deadline == unpaced + interval
+        ));
     }
 }
