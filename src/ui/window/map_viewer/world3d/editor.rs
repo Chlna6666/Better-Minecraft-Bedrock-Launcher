@@ -2333,7 +2333,14 @@ impl World3dEditorView {
             .bg(sky_color(self.dimension));
         if let Some(scene_view) = self.scene_view.as_ref() {
             let camera = self.camera.gpu_camera(self.render_origin);
-            let snapshot = scene_view.with_camera(camera);
+            let fog_color: Rgba = sky_color(self.dimension).into();
+            let fog_end = (self.view_radius.max(1) * 16) as f32;
+            let fog = gpui_3d::DistanceFog::new(
+                [fog_color.r, fog_color.g, fog_color.b],
+                fog_end * 0.65,
+                fog_end,
+            );
+            let snapshot = scene_view.with_camera(camera).with_fog(fog);
             let snapshot = snapshot
                 .with_culling_bounds(Some(self.scene_culling_bounds()))
                 .unwrap_or(snapshot);
@@ -2853,6 +2860,7 @@ mod texture_retention_tests {
             dimension: Dimension::Overworld,
         };
         let old = Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
             pos,
             section_y: 0,
             origin: [0; 3],
@@ -2864,6 +2872,7 @@ mod texture_retention_tests {
             missing_texture_faces: 0,
         });
         let newer = Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
             faces: 1,
             ..old.as_ref().clone()
         });
@@ -2899,6 +2908,7 @@ mod texture_retention_tests {
             dimension: Dimension::Overworld,
         };
         let mesh = Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
             pos,
             section_y: 0,
             origin: [0; 3],
@@ -2930,6 +2940,7 @@ mod texture_retention_tests {
         };
         let neighbor = ChunkPos { x: 1, ..pos };
         let mesh = Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
             pos,
             section_y: 0,
             origin: [0; 3],

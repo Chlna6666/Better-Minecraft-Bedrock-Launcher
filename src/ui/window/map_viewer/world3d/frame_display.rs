@@ -154,6 +154,7 @@ impl FrameDisplay {
             corners,
             color: [1.0; 4],
             shade: 1.0,
+            ambient_light: [1.0; 4],
             normal: self.normal,
             material: Arc::from(material),
             uv: Some([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),

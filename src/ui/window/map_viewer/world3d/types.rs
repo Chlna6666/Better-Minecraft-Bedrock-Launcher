@@ -243,6 +243,7 @@ impl World3dTargetBlock {
 /// One independently uploaded height section of a streamed chunk.
 #[derive(Clone, Debug)]
 pub struct World3dChunkMesh {
+    pub occluders: Arc<[gpui_3d::Occluder]>,
     pub pos: ChunkPos,
     pub section_y: i32,
     pub origin: [i32; 3],
@@ -258,6 +259,7 @@ impl World3dChunkMesh {
     #[must_use]
     pub fn estimated_cpu_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
+            .saturating_add(std::mem::size_of_val(self.occluders.as_ref()))
             .saturating_add(self.triangles.saturating_mul(3 * 32))
             .saturating_add(
                 self.textures

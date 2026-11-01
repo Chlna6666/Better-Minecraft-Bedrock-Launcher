@@ -7,7 +7,9 @@ impl Worker {
         pos: ChunkPos,
         band: p3d::GpuCubeBand,
         faces: &[p3d::Preview3dStreamFace],
+        lighting: &super::lighting::ChunkLighting,
     ) -> Result<Option<World3dChunkMesh>, String> {
+        let levels = lighting.gpu_levels(pos, &band);
         let mut faces = faces.to_vec();
         for face in &mut faces[..band.template_faces] {
             for corner in &mut face.corners {
@@ -47,6 +49,7 @@ impl Worker {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| "GPU 方块模板不完整".to_string())?;
+        let occluders = super::occluders::gpu_boxes(&band, &templates, &output.materials);
         let extra = templates.split_off(band.template_faces);
         let instance_templates = templates.split_off(band.model_faces);
         let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
@@ -54,6 +57,8 @@ impl Worker {
                 source.with_instances(band.classes, instance_templates, band.instances)
             })
             .and_then(|source| source.with_static_faces(extra))
+            .map(|source| source.with_ambient_occlusion(16))
+            .and_then(|source| source.with_lighting(levels, lighting.ambient))
             .and_then(|source| {
                 source.with_y_range(
                     (band.section_y * 64) as f32,
@@ -70,6 +75,7 @@ impl Worker {
         output.faces = mesh.index_count() / 6;
         output.triangles = output.faces * 2;
         output.mesh = Arc::new(mesh);
+        output.occluders = occluders;
         Ok(Some(output))
     }
 }

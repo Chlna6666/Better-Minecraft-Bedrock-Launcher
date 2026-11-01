@@ -286,18 +286,20 @@ impl Preview3dMeshBuilder {
             for z in 0..size[2] {
                 for y in 0..size[1] {
                     for x in 0..size[0] {
-                        let class = match self.block_class_at(BlockKey {
+                        let key = BlockKey {
                             x: min[0] + x as i32,
                             y: min[1] + y as i32,
                             z: min[2] + z as i32,
-                        }) {
+                        };
+                        let class = match self.block_class_at(key) {
                             Some(Preview3dBlockClass::Opaque) => 1,
                             Some(Preview3dBlockClass::TransparentGlass) => 2,
                             Some(Preview3dBlockClass::Water) => 4,
                             Some(Preview3dBlockClass::Lava) => 8,
                             _ => 0,
                         };
-                        classes[((z * size[1] + y) * size[0] + x) as usize] = class;
+                        classes[((z * size[1] + y) * size[0] + x) as usize] =
+                            class | if self.ambient_occludes_at(key) { 16 } else { 0 };
                     }
                 }
             }

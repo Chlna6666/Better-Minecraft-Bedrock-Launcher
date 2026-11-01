@@ -1,14 +1,15 @@
 use super::bedrock_world_domains as bedrock_world;
 mod gpu_cubes;
 mod gpu_models;
+mod lighting;
 use super::model::{CopiedChunk, CopiedChunkData};
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, detail_material_block_name_for_state,
-    is_java_block_entity_model_block, model_family_for_block_name, model_family_has_detail_shape,
-    model_shape_for_block_state, shape_from_geometry,
+    block_face_for_normal, detail_material_block_name_for_state, is_java_block_entity_model_block,
+    model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
+    shape_from_geometry,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
@@ -2272,6 +2273,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
     }
 
     let mut blocks = Preview3dChunkBlocks {
+        ao_exclusions: HashSet::default(),
         occupied,
         glass,
         water,
@@ -2815,6 +2817,7 @@ impl BlockKey {
 }
 
 pub(super) struct Preview3dChunkBlocks {
+    ao_exclusions: HashSet<BlockKey>,
     occupied: HashSet<BlockKey>,
     glass: HashSet<BlockKey>,
     water: HashSet<BlockKey>,
@@ -2857,7 +2860,7 @@ impl Preview3dChunkBoundary {
             .get(&block.y.div_euclid(16))?
             .get(index / 2)
             .copied()?;
-        match (packed >> ((index % 2) * 4)) & 0x0f {
+        match (packed >> ((index % 2) * 4)) & 0x07 {
             1 => Some(Preview3dBlockClass::Opaque),
             2 => Some(Preview3dBlockClass::TransparentGlass),
             3 => Some(Preview3dBlockClass::Water),
@@ -2899,6 +2902,7 @@ struct Preview3dFluidBlock {
 impl Default for Preview3dChunkBlocks {
     fn default() -> Self {
         Self {
+            ao_exclusions: HashSet::default(),
             occupied: HashSet::default(),
             glass: HashSet::default(),
             water: HashSet::default(),
@@ -2962,6 +2966,10 @@ impl Preview3dChunkBlocks {
             (1, 0) => i64::from(self.max_x) >= x + 15,
             (0, -1) => i64::from(self.min_z) <= z,
             (0, 1) => i64::from(self.max_z) >= z + 15,
+            (-1, -1) => i64::from(self.min_x) <= x && i64::from(self.min_z) <= z,
+            (-1, 1) => i64::from(self.min_x) <= x && i64::from(self.max_z) >= z + 15,
+            (1, -1) => i64::from(self.max_x) >= x + 15 && i64::from(self.min_z) <= z,
+            (1, 1) => i64::from(self.max_x) >= x + 15 && i64::from(self.max_z) >= z + 15,
             _ => true,
         }
     }
@@ -2978,6 +2986,7 @@ impl Preview3dChunkBlocks {
             }
         }
         compact_set(&mut self.occupied);
+        compact_set(&mut self.ao_exclusions);
         compact_set(&mut self.glass);
         compact_set(&mut self.water);
         compact_set(&mut self.lava);
@@ -3006,7 +3015,8 @@ impl Preview3dChunkBlocks {
                     .entry(key.y.div_euclid(16))
                     .or_insert_with(|| Box::new([0; 2048]))[index / 2];
                 let shift = (index % 2) * 4;
-                *packed = (*packed & !(0x0f << shift)) | (class << shift);
+                let ao = u8::from(class == 1 && !self.ao_exclusions.contains(key)) << 3;
+                *packed = (*packed & !(0x0f << shift)) | ((class | ao) << shift);
             }
         }
         let coarse_key = |key: BlockKey| BlockKey {
@@ -3042,6 +3052,7 @@ impl Preview3dChunkBlocks {
     }
 
     fn rebuild_neighbor_indexes(&mut self) {
+        self.refresh_ambient_exclusions();
         self.stair_states.clear();
         for block in self
             .detail_blocks
@@ -7868,6 +7879,7 @@ pub(super) struct Preview3dStreamFace {
     pub(super) corners: [[f64; 3]; 4],
     pub(super) color: [f32; 4],
     pub(super) shade: f32,
+    pub(super) ambient_light: [f32; 4],
     pub(super) normal: [i32; 3],
     pub(super) material: Arc<str>,
     pub(super) uv: Option<[[f32; 2]; 4]>,
@@ -7929,6 +7941,11 @@ impl Preview3dChunkBlocks {
         std::mem::size_of::<Self>()
             .saturating_add(
                 self.occupied
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<BlockKey>() * 2),
+            )
+            .saturating_add(
+                self.ao_exclusions
                     .capacity()
                     .saturating_mul(std::mem::size_of::<BlockKey>() * 2),
             )
@@ -8285,13 +8302,15 @@ impl Preview3dMeshBuilder {
                 if self.is_preview_3d_opaque_neighbor(block.key, face) {
                     continue;
                 }
-                faces.push(preview_3d_stream_cube_face(
+                let mut emitted = preview_3d_stream_cube_face(
                     block.key,
                     face,
                     block.colors.color_for_normal(face.normal),
                     preview_3d_material_name_for_face(block.material.clone(), face.normal),
                     Preview3dStreamPass::Opaque,
-                ));
+                );
+                emitted.ambient_light = self.stream_ambient_light(block.key, face.normal);
+                faces.push(emitted);
             }
         }
         for block in &blocks.glass_blocks {
@@ -8436,6 +8455,7 @@ fn preview_3d_stream_face_from_preview(
         corners: face.corners,
         color: face.color,
         shade: face.shade,
+        ambient_light: [1.0; 4],
         normal: face.normal,
         material: face.material,
         uv: face.uv,
@@ -8461,6 +8481,7 @@ fn preview_3d_stream_cube_face(
         corners,
         color,
         shade: face.shade,
+        ambient_light: [1.0; 4],
         normal: face.normal,
         material,
         uv: Some(preview_3d_cube_face_uv(face.normal)),

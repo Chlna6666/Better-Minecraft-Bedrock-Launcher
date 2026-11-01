@@ -36,6 +36,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod mesh_assets;
 use mesh_assets::MeshAssets;
 mod gpu_cubes;
+mod lighting;
+mod occluders;
 mod prefetch;
 use prefetch::{BatchWait, PendingChunkBatch};
 
@@ -397,10 +399,21 @@ fn partition_section_faces(
 
 fn neighbor_affected_bands(min_y: i32, max_y: i32) -> (i32, i32) {
     (
-        (min_y - 1).div_euclid(MESH_BAND_BLOCKS),
-        (max_y + 1).div_euclid(MESH_BAND_BLOCKS),
+        (min_y - 15).div_euclid(MESH_BAND_BLOCKS),
+        (max_y + 15).div_euclid(MESH_BAND_BLOCKS),
     )
 }
+
+const CHUNK_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (1, -1),
+    (-1, 1),
+    (-1, -1),
+];
 
 fn mesh_target_positions(
     changed: &[ChunkPos],
@@ -411,7 +424,7 @@ fn mesh_target_positions(
     for pos in changed {
         targets.insert(*pos);
         if include_neighbors {
-            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            for (dx, dz) in CHUNK_NEIGHBOR_OFFSETS {
                 let neighbor = ChunkPos {
                     x: pos.x + dx,
                     z: pos.z + dz,
@@ -442,6 +455,7 @@ fn forget_published_sections(
 
 fn same_chunk_render_geometry(left: &World3dChunkMesh, right: &World3dChunkMesh) -> bool {
     left.pos == right.pos
+        && left.occluders == right.occluders
         && left.section_y == right.section_y
         && left.origin == right.origin
         && left.faces == right.faces
@@ -567,6 +581,7 @@ mod view_tests {
         let material = Arc::new(Material::new());
         let build = |section_y, vertices| {
             Arc::new(super::World3dChunkMesh {
+                occluders: Arc::from([]),
                 pos,
                 section_y,
                 origin: [0; 3],
@@ -617,7 +632,7 @@ mod view_tests {
             z,
             dimension: Dimension::Overworld,
         };
-        let cached = BTreeSet::from([pos(0, 0), pos(1, 0), pos(0, 1)]);
+        let cached = BTreeSet::from([pos(0, 0), pos(1, 0), pos(0, 1), pos(1, 1)]);
         let changed = [pos(0, 0)];
         assert_eq!(
             mesh_target_positions(&changed, false, |_, p| cached.contains(p)),
@@ -740,6 +755,7 @@ mod view_tests {
             view_distance: 320.0,
         };
         let face_at = |y: f64| p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
             corners: [[0.0, y, 0.0]; 4],
             color: [1.0; 4],
             shade: 1.0,
@@ -1194,6 +1210,7 @@ mod view_tests {
     #[test]
     fn section_assignment_uses_world_height_and_unique_mesh_ids() {
         let face = p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
             corners: [
                 [0.0, -1.0, 0.0],
                 [1.0, -1.0, 0.0],
@@ -1232,6 +1249,7 @@ mod view_tests {
     #[test]
     fn face_material_names_share_one_allocation_per_chunk() {
         let face = p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [1.0; 4],
             shade: 1.0,
@@ -1250,6 +1268,7 @@ mod view_tests {
     #[test]
     fn pre_tinted_face_keeps_vertex_color_neutral() {
         let face = p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [0.5, 0.7, 0.3, 1.0],
             shade: 1.0,
@@ -1258,8 +1277,20 @@ mod view_tests {
             uv: None,
             pass: p3d::Preview3dStreamPass::Opaque,
         };
-        assert_eq!(face_vertex_color(&face, true, false, false), [1.0; 4]);
-        assert_eq!(face_vertex_color(&face, true, true, false), face.color);
+        assert_eq!(
+            face_vertex_color(
+                &face,
+                true,
+                false,
+                false,
+                super::TextureAlphaContent::Opaque
+            ),
+            [1.0; 4]
+        );
+        assert_eq!(
+            face_vertex_color(&face, true, true, false, super::TextureAlphaContent::Opaque),
+            face.color
+        );
     }
 }
 
@@ -1781,6 +1812,7 @@ struct Worker {
     view: ViewState,
     cursor: ChunkCursor,
     cache: BTreeMap<ChunkPos, CachedChunk>,
+    light_fields: HashMap<ChunkPos, Arc<lighting::ChunkLighting>>,
     published_sections: BTreeMap<(ChunkPos, i32), Weak<World3dChunkMesh>>,
     lod_modes: HashMap<ChunkPos, bool>,
     dirty_meshes: BTreeSet<ChunkPos>,
@@ -1789,7 +1821,8 @@ struct Worker {
     missing: BTreeSet<ChunkPos>,
     failed_positions: BTreeSet<ChunkPos>,
     textures_by_path: HashMap<String, Option<Weak<TextureAsset>>>,
-    texture_lookup: HashMap<(String, [i32; 3]), Option<Weak<TextureAsset>>>,
+    texture_alpha_content: HashMap<String, TextureAlphaContent>,
+    texture_lookup: HashMap<(String, [i32; 3]), Option<(Weak<TextureAsset>, TextureAlphaContent)>>,
     resolved_texture_lookup: HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
     mesh_assets: MeshAssets,
     resolver_time: Duration,
@@ -1829,27 +1862,39 @@ impl Worker {
         }
         let resolver = Arc::new(ObjTextureResolver::with_pack_roots(&roots, "textures"));
         let mut models = resolver.models().clone();
-        if let Some(root)=discover_capture_library(&config.package_roots) {
+        if let Some(root) = discover_capture_library(&config.package_roots) {
             match models.load_capture_catalog(&root) {
                 Ok(count) => {
-                    if trace_timings(){
-                        eprintln!("world3d: loaded {count} captured model states from {}",root.display());
+                    if trace_timings() {
+                        eprintln!(
+                            "world3d: loaded {count} captured model states from {}",
+                            root.display()
+                        );
                     }
                 }
-                Err(error) => eprintln!("world3d: capture library ignored ({}): {error}",root.display()),
+                Err(error) => eprintln!(
+                    "world3d: capture library ignored ({}): {error}",
+                    root.display()
+                ),
             }
         }
         // An installation capture takes precedence. The optional embedded
         // archive is version-specific: never apply its exact-state recipes to
         // an unrelated Minecraft build.
         if models.capture_catalog.is_none() {
-            if let Ok(catalog)=bedrock_block_model::RuntimeCaptureCatalog::open_embedded() {
-                if capture_version_matches_installation(catalog.game_version(), &config.package_roots) {
-                    let count=catalog.state_count();
-                    if trace_timings(){
-                        eprintln!("world3d: using {count} embedded BSC model states for {}",catalog.game_version());
+            if let Ok(catalog) = bedrock_block_model::RuntimeCaptureCatalog::open_embedded() {
+                if capture_version_matches_installation(
+                    catalog.game_version(),
+                    &config.package_roots,
+                ) {
+                    let count = catalog.state_count();
+                    if trace_timings() {
+                        eprintln!(
+                            "world3d: using {count} embedded BSC model states for {}",
+                            catalog.game_version()
+                        );
                     }
-                    models.capture_catalog=Some(Arc::new(catalog));
+                    models.capture_catalog = Some(Arc::new(catalog));
                 }
             }
         }
@@ -1874,6 +1919,7 @@ impl Worker {
             },
             cursor: ChunkCursor::default(),
             cache: BTreeMap::new(),
+            light_fields: HashMap::new(),
             published_sections: BTreeMap::new(),
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
@@ -1882,6 +1928,7 @@ impl Worker {
             missing: BTreeSet::new(),
             failed_positions: BTreeSet::new(),
             textures_by_path: HashMap::new(),
+            texture_alpha_content: HashMap::new(),
             texture_lookup: HashMap::new(),
             resolved_texture_lookup: HashMap::new(),
             mesh_assets: MeshAssets::default(),
@@ -1936,7 +1983,13 @@ impl Worker {
             .cache
             .values()
             .map(CachedChunk::estimated_cpu_bytes)
-            .sum();
+            .sum::<usize>()
+            .saturating_add(
+                self.light_fields
+                    .values()
+                    .map(|light| light.storage_bytes())
+                    .sum::<usize>(),
+            );
         let (mut texture_count, mut texture_bytes) = self
             .textures_by_path
             .values()
@@ -1994,8 +2047,11 @@ impl Worker {
         self.mesh_assets.prune();
         self.textures_by_path
             .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));
-        self.texture_lookup
-            .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));
+        self.texture_lookup.retain(|_, asset| {
+            asset
+                .as_ref()
+                .is_none_or(|(texture, _)| texture.strong_count() > 0)
+        });
         self.last_status_at = Some(Instant::now());
         let _ = tx.send(ChunkServiceEvent::Status(self.status()));
     }
@@ -2045,24 +2101,25 @@ impl Worker {
         }
         for pos in stale {
             self.cache.remove(&pos);
+            self.light_fields.remove(&pos);
             forget_published_sections(&mut self.published_sections, pos, &[]);
             self.lod_modes.remove(&pos);
             self.dirty_meshes.remove(&pos);
-            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let neighbor = ChunkPos {
-                    x: pos.x + dx,
-                    z: pos.z + dz,
-                    dimension: pos.dimension,
-                };
-                if self.cache.contains_key(&neighbor) {
-                    self.dirty_meshes.insert(neighbor);
-                }
-            }
+            self.mark_neighbor_meshes(pos);
             let _ = tx.send(ChunkServiceEvent::Unloaded {
                 generation: self.view.generation,
                 pos,
             });
         }
+        self.light_fields.retain(|pos, _| {
+            inside_cache_hysteresis(
+                *pos,
+                self.view.dimension,
+                center_x,
+                center_z,
+                self.view.radius,
+            )
+        });
         let stale_invalidated = self
             .retained_invalidated
             .iter()
@@ -2175,8 +2232,10 @@ impl Worker {
                     Ok(None) => {
                         self.failed_positions.remove(&pos);
                         self.missing.insert(pos);
+                        self.light_fields.remove(&pos);
                         self.lod_modes.remove(&pos);
                         if self.retained_invalidated.remove(&pos) {
+                            self.mark_neighbor_meshes(pos);
                             forget_published_sections(&mut self.published_sections, pos, &[]);
                             let _ = tx.send(ChunkServiceEvent::Unloaded {
                                 generation: self.view.generation,
@@ -2362,6 +2421,14 @@ impl Worker {
         }
     }
 
+    fn mark_neighbor_meshes(&mut self, pos: ChunkPos) {
+        let neighbors = mesh_target_positions(&[pos], true, |_, neighbor| {
+            self.cache.contains_key(neighbor)
+        });
+        self.dirty_meshes
+            .extend(neighbors.into_iter().filter(|neighbor| *neighbor != pos));
+    }
+
     fn mesh_targets(
         &mut self,
         tx: &SyncSender<ChunkServiceEvent>,
@@ -2374,16 +2441,8 @@ impl Worker {
         let mut texture_lookup_time = Duration::ZERO;
         let mut texture_read_time = Duration::ZERO;
         let mut texture_decode_time = Duration::ZERO;
-        let targets = mesh_target_positions(loaded, include_neighbors, |pos, neighbor| {
+        let targets = mesh_target_positions(loaded, include_neighbors, |_, neighbor| {
             self.cache.contains_key(neighbor)
-                && (self.retained_invalidated.contains(pos)
-                    || self.lod_modes.get(pos) == Some(&true)
-                    || self.lod_modes.get(neighbor) == Some(&true)
-                    || self
-                        .cache
-                        .get(pos)
-                        .and_then(|chunk| chunk.blocks.as_ref())
-                        .is_none_or(|blocks| blocks.touches_neighbor(*pos, *neighbor)))
         });
         let (center_x, center_z) = self.view_center_chunk();
         let priority_targets = loaded
@@ -2403,7 +2462,7 @@ impl Worker {
         let mut local_positions = BTreeSet::new();
         for pos in &targets {
             local_positions.insert(*pos);
-            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            for (dx, dz) in CHUNK_NEIGHBOR_OFFSETS {
                 local_positions.insert(ChunkPos {
                     x: pos.x + dx,
                     z: pos.z + dz,
@@ -2522,6 +2581,31 @@ impl Worker {
         // Only reuse untouched height bands for previously published, unchanged cube-only
         // neighbors. Models and edit invalidations can affect geometry beyond this range.
         let mut partial_bands = HashMap::<ChunkPos, Vec<(i32, i32)>>::new();
+        let light_started = Instant::now();
+        let light_fields = targets
+            .iter()
+            .copied()
+            .map(|pos| (pos, self.build_lighting(pos)))
+            .collect::<HashMap<_, _>>();
+        if trace && light_started.elapsed() >= Duration::from_millis(1) {
+            let reused = light_fields
+                .iter()
+                .filter(|(pos, light)| {
+                    light.as_ref().ok().is_some_and(|light| {
+                        self.light_fields
+                            .get(pos)
+                            .is_some_and(|old| Arc::ptr_eq(old, light))
+                    })
+                })
+                .count();
+            eprintln!(
+                "world3d light gen={} fields={} reused={} solve_ms={:.2}",
+                self.view.generation,
+                light_fields.len(),
+                reused,
+                light_started.elapsed().as_secs_f64() * 1000.
+            );
+        }
         if include_neighbors {
             for &pos in &targets {
                 if priority_targets.contains(&pos)
@@ -2539,10 +2623,10 @@ impl Worker {
                 }
                 let mut bands = Vec::new();
                 let mut safe = true;
-                for &source in loaded.iter().filter(|source| {
-                    (i64::from(source.x) - i64::from(pos.x)).abs()
-                        + (i64::from(source.z) - i64::from(pos.z)).abs()
-                        == 1
+                for &source in loaded.iter().filter(|&&source| {
+                    source != pos
+                        && (i64::from(source.x) - i64::from(pos.x)).abs() <= 1
+                        && (i64::from(source.z) - i64::from(pos.z)).abs() <= 1
                 }) {
                     if self.retained_invalidated.contains(&source)
                         || self.lod_modes.get(&source) == Some(&true)
@@ -2556,6 +2640,11 @@ impl Worker {
                         break;
                     };
                     bands.push(neighbor_affected_bands(min_y, max_y));
+                }
+                if let Some(Ok(light)) = light_fields.get(&pos) {
+                    bands.extend(light.changed_bands(self.light_fields.get(&pos).map(Arc::as_ref)));
+                } else {
+                    safe = false;
                 }
                 if safe && !bands.is_empty() {
                     let keep = self
@@ -2738,7 +2827,12 @@ impl Worker {
             pending_sections.sort_by_key(|(pos, section_y, _, _)| {
                 section_priority(*pos, *section_y, self.view)
             });
-            for (pos, section_y, faces, probe) in pending_sections {
+            for (&pos, light) in &light_fields {
+                if let Ok(light) = light {
+                    self.light_fields.insert(pos, light.clone());
+                }
+            }
+            for (pos, section_y, mut faces, probe) in pending_sections {
                 if partial_bands.get(&pos).is_some_and(|bands| {
                     !bands
                         .iter()
@@ -2752,10 +2846,26 @@ impl Worker {
                     continue;
                 }
                 let build_started = Instant::now();
+                let light = light_fields
+                    .get(&pos)
+                    .ok_or_else(|| "光照结果缺失".to_string())
+                    .and_then(|value| value.as_ref().map_err(Clone::clone));
                 let mesh_result = if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
-                    self.build_gpu_cube_mesh(pos, band, &faces)
+                    match light {
+                        Ok(light) => {
+                            light.shade_faces(&mut faces[band.template_faces..]);
+                            self.build_gpu_cube_mesh(pos, band, &faces, light)
+                        }
+                        Err(error) => Err(error.clone()),
+                    }
                 } else {
-                    self.build_chunk_mesh(pos, section_y, &faces)
+                    match light {
+                        Ok(light) => {
+                            light.shade_faces(&mut faces);
+                            self.build_chunk_mesh(pos, section_y, &faces)
+                        }
+                        Err(error) => Err(error.clone()),
+                    }
                 };
                 if trace {
                     texture_lookup_time += self.resolver_time;
@@ -2988,6 +3098,7 @@ impl Worker {
         let build_started = Instant::now();
         let origin = [pos.x * 16, 0, pos.z * 16];
         let mut material_map = HashMap::<MaterialSlotKey, usize>::new();
+        let mut solid_cells = BTreeMap::<[i32; 3], u8>::new();
         let mut materials = Vec::<Arc<Material>>::new();
         let mut bucket_map = HashMap::<(i32, usize), usize>::new();
         let mut buckets = Vec::<FaceBucket>::new();
@@ -3012,13 +3123,34 @@ impl Worker {
             let lookup_started = trace.then(Instant::now);
             let properties = chunk_texture_lookup
                 .entry((face.material.as_ptr() as usize, face.normal))
-                .or_insert_with(|| FaceMaterialProperties {
-                    texture: self.resolve_texture(material_name, face.normal),
-                    uses_tint: material_uses_tint(material_name),
-                    uses_texture_alpha: bedrock_block_model::obj_material_uses_texture_alpha(
-                        material_name,
-                    ) || material_uses_cutout_alpha(material_name),
-                    opaque_glass: material_name.starts_with("minecraft_glass_"),
+                .or_insert_with(|| {
+                    let resolved = self.resolve_texture(material_name, face.normal);
+                    let (mut resolved_texture, mut alpha_content, mut is_missing) = match resolved {
+                        Some((texture, content)) => (Some(texture), content, false),
+                        None => (None, TEXTURE_ALPHA_CONTENT_UNKNOWN, true),
+                    };
+                    // Bind the engine's red/black placeholder instead of an
+                    // invisible solid color so unresolved textures stay visible
+                    // (and counted) rather than rendering as black faces.
+                    if is_missing
+                        && let Some((missing, missing_content)) = self
+                            .resolver
+                            .missing_texture()
+                            .and_then(|resolved| self.resolve_texture_path(resolved))
+                    {
+                        resolved_texture = Some(missing);
+                        alpha_content = missing_content;
+                    }
+                    FaceMaterialProperties {
+                        texture: resolved_texture,
+                        alpha_content,
+                        is_missing,
+                        uses_tint: material_uses_tint(material_name),
+                        uses_texture_alpha: bedrock_block_model::obj_material_uses_texture_alpha(
+                            material_name,
+                        ) || material_uses_cutout_alpha(material_name),
+                        opaque_glass: material_name.starts_with("minecraft_glass_"),
+                    }
                 });
             let mut resolved_texture = properties.texture.clone();
             let mut uses_tint = properties.uses_tint;
@@ -3035,7 +3167,7 @@ impl Worker {
             if let Some(started) = lookup_started {
                 texture_resolve_time += started.elapsed();
             }
-            if texture.is_none() {
+            if properties.is_missing {
                 missing_texture_faces = missing_texture_faces.saturating_add(1);
                 if trace {
                     *missing_materials
@@ -3048,7 +3180,16 @@ impl Worker {
                     .entry(texture.id())
                     .or_insert_with(|| texture.clone());
             }
-            let alpha_mode = alpha_mode_for_pass(face.pass, properties.uses_texture_alpha);
+            let alpha_mode = alpha_mode_for_pass(
+                face.pass,
+                properties.uses_texture_alpha,
+                properties.alpha_content,
+            );
+            if alpha_mode == AlphaMode::Opaque
+                && let Some((cell, side)) = occluders::cube_cell(face)
+            {
+                *solid_cells.entry(cell).or_default() |= side;
+            }
             let base_color = if texture.is_none() {
                 [
                     face.color[0].clamp(0.0, 1.0),
@@ -3081,8 +3222,13 @@ impl Worker {
                     bucket_material_slots.push(slot);
                     index
                 });
-            let color =
-                face_vertex_color(face, texture.is_some(), uses_tint, properties.opaque_glass);
+            let color = face_vertex_color(
+                face,
+                texture.is_some(),
+                uses_tint,
+                properties.opaque_glass,
+                properties.alpha_content,
+            );
             buckets[bucket_index].faces.push((face_index, color));
         }
         if buckets.is_empty() {
@@ -3136,7 +3282,13 @@ impl Worker {
                     ),
                     normal,
                     uv: Vec2::new(uv[index][0], uv[index][1]),
-                    color,
+                    color: std::array::from_fn(|channel| {
+                        if channel < 3 {
+                            color[channel] * face.ambient_light[index]
+                        } else {
+                            color[channel]
+                        }
+                    }),
                 })
             })
         });
@@ -3165,6 +3317,12 @@ impl Worker {
             );
         }
         let mesh = World3dChunkMesh {
+            occluders: occluders::boxes(
+                solid_cells
+                    .into_iter()
+                    .filter_map(|(cell, sides)| (sides == 63).then_some((cell, 63))),
+                origin,
+            ),
             pos,
             section_y,
             origin,
@@ -3237,13 +3395,17 @@ impl Worker {
             .extend(unresolved.into_iter().zip(resolved));
     }
 
-    fn resolve_texture(&mut self, material: &str, normal: [i32; 3]) -> Option<Arc<TextureAsset>> {
+    fn resolve_texture(
+        &mut self,
+        material: &str,
+        normal: [i32; 3],
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
         let lookup_key = (material.to_string(), normal);
         if let Some(cached) = self.texture_lookup.get(&lookup_key) {
             match cached {
-                Some(texture) => {
+                Some((texture, content)) => {
                     if let Some(texture) = texture.upgrade() {
-                        return Some(texture);
+                        return Some((texture, *content));
                     }
                 }
                 None => return None,
@@ -3271,18 +3433,30 @@ impl Worker {
                 });
             resolved.and_then(|resolved| self.resolve_texture_path(resolved))
         };
-        self.texture_lookup
-            .insert(lookup_key, result.as_ref().map(Arc::downgrade));
+        self.texture_lookup.insert(
+            lookup_key,
+            result
+                .as_ref()
+                .map(|(texture, content)| (Arc::downgrade(texture), *content)),
+        );
         result
     }
 
-    fn resolve_map_texture(&mut self, id: &str) -> Option<Arc<TextureAsset>> {
+    fn resolve_map_texture(
+        &mut self,
+        id: &str,
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
         let cache_key = format!("{MAP_MATERIAL_PREFIX}{id}");
         if let Some(cached) = self.textures_by_path.get(&cache_key) {
             match cached {
                 Some(texture) => {
                     if let Some(texture) = texture.upgrade() {
-                        return Some(texture);
+                        let content = self
+                            .texture_alpha_content
+                            .get(&cache_key)
+                            .copied()
+                            .unwrap_or(TEXTURE_ALPHA_CONTENT_UNKNOWN);
+                        return Some((texture, content));
                     }
                 }
                 None => return None,
@@ -3299,23 +3473,30 @@ impl Worker {
             return None;
         }
         let image = RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba)?;
+        let content = texture_alpha_content(&image);
         let asset = mipmapped_texture(image)?;
         let asset = Arc::new(asset);
         self.textures_by_path
-            .insert(cache_key, Some(Arc::downgrade(&asset)));
-        Some(asset)
+            .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
+        self.texture_alpha_content.insert(cache_key, content);
+        Some((asset, content))
     }
 
     fn resolve_texture_path(
         &mut self,
         resolved: bedrock_block_model::ObjResolvedTexture,
-    ) -> Option<Arc<TextureAsset>> {
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
         let cache_key = resolved.relative_path.clone();
         if let Some(cached) = self.textures_by_path.get(&cache_key) {
             match cached {
                 Some(texture) => {
                     if let Some(texture) = texture.upgrade() {
-                        return Some(texture);
+                        let content = self
+                            .texture_alpha_content
+                            .get(&cache_key)
+                            .copied()
+                            .unwrap_or(TEXTURE_ALPHA_CONTENT_UNKNOWN);
+                        return Some((texture, content));
                     }
                 }
                 None => return None,
@@ -3376,11 +3557,13 @@ impl Worker {
             self.textures_by_path.insert(cache_key, None);
             return None;
         }
+        let content = texture_alpha_content(&image);
         let asset = mipmapped_texture(image)?;
         let asset = Arc::new(asset);
         self.textures_by_path
-            .insert(cache_key, Some(Arc::downgrade(&asset)));
-        Some(asset)
+            .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
+        self.texture_alpha_content.insert(cache_key, content);
+        Some((asset, content))
     }
 
     fn ensure_cached(&mut self, pos: ChunkPos) -> Result<Option<&CachedChunk>, String> {
@@ -3534,6 +3717,7 @@ fn face_vertex_color(
     has_texture: bool,
     uses_tint: bool,
     opaque_glass: bool,
+    alpha_content: TextureAlphaContent,
 ) -> [f32; 4] {
     let tinted = has_texture && (uses_tint || matches!(face.pass, p3d::Preview3dStreamPass::Water));
     let (r, g, b) = if tinted {
@@ -3550,9 +3734,15 @@ fn face_vertex_color(
         p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass if opaque_glass => {
             1.0
         }
-        p3d::Preview3dStreamPass::Glass
-        | p3d::Preview3dStreamPass::DetailGlass
-        | p3d::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
+        p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass => {
+            // Textures with hard 0/255 alpha (vanilla glass) render as cutout;
+            // only genuinely translucent textures keep the vertex alpha.
+            match alpha_content {
+                TextureAlphaContent::Binary | TextureAlphaContent::Opaque => 1.0,
+                TextureAlphaContent::Partial => face.color[3].clamp(0.08, 1.0),
+            }
+        }
+        p3d::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
         _ => 1.0,
     };
     [
@@ -3617,51 +3807,75 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
 /// Match the full BSC game version to a selected installation's version
 /// directory, e.g. 1.26.51.1 to versions/26.51. Do not share the database
 /// across unrelated versions: network IDs and native UV layouts may change.
-fn capture_version_matches_installation(version:&str, package_roots:&[PathBuf])->bool {
-    let version_tag=version.strip_prefix("1.").unwrap_or(version);
-    package_roots.iter().any(|package| package.ancestors().take(5).any(|part| {
-        let Some(folder)=part.file_name().and_then(|s|s.to_str()) else{return false;};
-        version_tag==folder || version_tag.strip_prefix(folder)
-            .is_some_and(|tail|tail.starts_with('.'))
-    }))
+fn capture_version_matches_installation(version: &str, package_roots: &[PathBuf]) -> bool {
+    let version_tag = version.strip_prefix("1.").unwrap_or(version);
+    package_roots.iter().any(|package| {
+        package.ancestors().take(5).any(|part| {
+            let Some(folder) = part.file_name().and_then(|s| s.to_str()) else {
+                return false;
+            };
+            version_tag == folder
+                || version_tag
+                    .strip_prefix(folder)
+                    .is_some_and(|tail| tail.starts_with('.'))
+        })
+    })
 }
 
 /// Discover the selected installation's exported model catalog. External
 /// captures are always preferred over the optional compiled-in model bundle.
 fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
-    if let Some(root)=std::env::var_os("BMCBL_CAPTURE_MODEL_DIR")
-        .filter(|p|!p.is_empty()).map(PathBuf::from) {
+    if let Some(root) = std::env::var_os("BMCBL_CAPTURE_MODEL_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+    {
         return root.join("manifest.json").is_file().then_some(root);
     }
     // Ignore exports from unrelated installed game versions. A known
     // package root is the only installation identity available to this worker.
-    let mut matches=std::collections::BTreeSet::<PathBuf>::new();
+    let mut matches = std::collections::BTreeSet::<PathBuf>::new();
     for package in package_roots {
         for base in package.ancestors().take(5) {
-            for rel in ["BedrockSceneCapture/export","mods/BedrockSceneCapture/export",
-                        "plugins/BedrockSceneCapture/export"] {
-                let Ok(entries)=std::fs::read_dir(base.join(rel)) else {continue;};
+            for rel in [
+                "BedrockSceneCapture/export",
+                "mods/BedrockSceneCapture/export",
+                "plugins/BedrockSceneCapture/export",
+            ] {
+                let Ok(entries) = std::fs::read_dir(base.join(rel)) else {
+                    continue;
+                };
                 for entry in entries.flatten() {
-                    let dir=entry.path();
-                    if !dir.join("manifest.json").is_file() ||
-                       !dir.join("blocks.json").is_file() {continue;}
-                    let Some(version)=dir.file_name().and_then(|name|name.to_str()) else{continue;};
-                    let version_tag=version.strip_prefix("1.").unwrap_or(version);
-                    let selected=package.ancestors().take(5).any(|part|{
-                        let Some(folder)=part.file_name().and_then(|s|s.to_str()) else{return false;};
+                    let dir = entry.path();
+                    if !dir.join("manifest.json").is_file() || !dir.join("blocks.json").is_file() {
+                        continue;
+                    }
+                    let Some(version) = dir.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    let version_tag = version.strip_prefix("1.").unwrap_or(version);
+                    let selected = package.ancestors().take(5).any(|part| {
+                        let Some(folder) = part.file_name().and_then(|s| s.to_str()) else {
+                            return false;
+                        };
                         // BMCBL version directories may be named 26.51 while the
                         // game's full version string is 1.26.51.1.
-                        version_tag==folder || version_tag.strip_prefix(folder)
-                            .is_some_and(|tail|tail.starts_with('.'))
+                        version_tag == folder
+                            || version_tag
+                                .strip_prefix(folder)
+                                .is_some_and(|tail| tail.starts_with('.'))
                     });
-                    if selected {matches.insert(dir);}
+                    if selected {
+                        matches.insert(dir);
+                    }
                 }
             }
         }
     }
     // Multiple distinct matches are ambiguous. Require explicit selection
     // rather than rendering the wrong release's directional geometry.
-    (matches.len()==1).then(||matches.into_iter().next()).flatten()
+    (matches.len() == 1)
+        .then(|| matches.into_iter().next())
+        .flatten()
 }
 fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBuf> {
     vanilla_resource_pack_roots_from_packages(package_roots.iter())
@@ -3717,6 +3931,10 @@ fn intern_face_materials(faces: &mut [p3d::Preview3dStreamFace]) {
 
 struct FaceMaterialProperties {
     texture: Option<Arc<TextureAsset>>,
+    alpha_content: TextureAlphaContent,
+    /// The face failed texture resolution and is showing the missing-texture
+    /// placeholder instead; still counted and traceable.
+    is_missing: bool,
     uses_tint: bool,
     uses_texture_alpha: bool,
     opaque_glass: bool,
@@ -3742,10 +3960,52 @@ fn material_uses_cutout_alpha(material: &str) -> bool {
         || name.contains("end_rod")
 }
 
-fn alpha_mode_for_pass(pass: p3d::Preview3dStreamPass, uses_texture_alpha: bool) -> AlphaMode {
+/// Alpha content of a decoded texture, used to pick the glass pipeline from
+/// real pixel data instead of guessing from the block name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextureAlphaContent {
+    /// Every pixel is fully opaque; the block can render in the opaque pass.
+    Opaque,
+    /// Alpha values are only 0 or 255 (vanilla glass, leaves, plants); render
+    /// as alpha-tested cutout instead of translucent blend.
+    Binary,
+    /// Intermediate alpha values exist (ice, slime, stained variants); keep
+    /// the translucent blend pipeline.
+    Partial,
+}
+
+/// Unknown textures keep the historical translucent behaviour.
+const TEXTURE_ALPHA_CONTENT_UNKNOWN: TextureAlphaContent = TextureAlphaContent::Partial;
+
+fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
+    let mut transparent = false;
+    for pixel in image.pixels() {
+        match pixel.0[3] {
+            255 => {}
+            0 => transparent = true,
+            _ => return TextureAlphaContent::Partial,
+        }
+    }
+    if transparent {
+        TextureAlphaContent::Binary
+    } else {
+        TextureAlphaContent::Opaque
+    }
+}
+
+fn alpha_mode_for_pass(
+    pass: p3d::Preview3dStreamPass,
+    uses_texture_alpha: bool,
+    alpha_content: TextureAlphaContent,
+) -> AlphaMode {
     use p3d::Preview3dStreamPass as Pass;
     match pass {
-        Pass::Glass | Pass::DetailGlass | Pass::Water => AlphaMode::Blend,
+        Pass::Water => AlphaMode::Blend,
+        Pass::Glass | Pass::DetailGlass => match alpha_content {
+            TextureAlphaContent::Partial => AlphaMode::Blend,
+            TextureAlphaContent::Binary => AlphaMode::Mask,
+            TextureAlphaContent::Opaque => AlphaMode::Opaque,
+        },
         _ if uses_texture_alpha => AlphaMode::Mask,
         _ => AlphaMode::Opaque,
     }
