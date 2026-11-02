@@ -4,6 +4,7 @@ use gpui_3d::{NodeId, SceneError};
 
 #[derive(Default)]
 pub(super) struct ChunkScene {
+    lights: BTreeMap<(ChunkPos, [i32; 4]), (NodeId, super::super::types::World3dLocalLight)>,
     nodes: BTreeMap<(ChunkPos, i32), (NodeId, Arc<World3dChunkMesh>)>,
 }
 
@@ -11,6 +12,41 @@ pub(super) struct ChunkScene {
 mod tests {
     use super::{Arc, BTreeMap, ChunkPos, ChunkScene, Dimension, World3dChunkMesh};
     use gpui_3d::Mesh;
+    #[test]
+    fn invisible_emitters_keep_stable_nodes_without_geometry() {
+        let pos = ChunkPos {
+            x: 2,
+            z: -3,
+            dimension: Dimension::Overworld,
+        };
+        let source = super::super::super::types::World3dLocalLight {
+            key: [0; 4],
+            light: gpui_3d::Light::Spherical {
+                radius: 0.5,
+                diffuse_only: true,
+                position: gpui_3d::Vec3::ZERO,
+                color: [1., 0., 0.],
+                intensity: 1.,
+                range: 8.,
+            },
+        };
+        let mut registry = ChunkScene::default();
+        let mut scene = registry.update(None, &BTreeMap::new(), [0; 3]).unwrap();
+        let lights = BTreeMap::from([(pos, Arc::from([source]))]);
+        registry.update_lights(&mut scene, &lights, [0; 3]).unwrap();
+        let id = registry.lights[&(pos, [0; 4])].0;
+        let mut next = registry
+            .update(Some(&scene), &BTreeMap::new(), [0; 3])
+            .unwrap();
+        registry.update_lights(&mut next, &lights, [0; 3]).unwrap();
+        assert_eq!(registry.lights[&(pos, [0; 4])].0, id);
+        assert_eq!(scene.version(), next.version());
+        registry
+            .update_lights(&mut next, &BTreeMap::new(), [0; 3])
+            .unwrap();
+        assert!(next.node(id).is_none());
+        assert!(scene.node(id).is_some());
+    }
     #[test]
     fn chunk_replacement_keeps_node_ids_and_old_scene_snapshots() {
         let pos = ChunkPos {
@@ -63,13 +99,10 @@ impl ChunkScene {
         meshes: &BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
         origin: [i32; 3],
     ) -> Result<Scene, SceneError> {
-        if meshes.is_empty() {
-            self.nodes.clear();
-            return Ok(Scene::new());
-        }
         let mut scene = base.map_or_else(Scene::new, Scene::fork);
         if base.is_none() {
             self.nodes.clear();
+            self.lights.clear();
         }
         let removed = self
             .nodes
@@ -100,6 +133,53 @@ impl ChunkScene {
             self.nodes.insert(*key, (id, mesh.clone()));
         }
         Ok(scene)
+    }
+
+    pub(super) fn update_lights(
+        &mut self,
+        scene: &mut Scene,
+        lights: &BTreeMap<ChunkPos, Arc<[super::super::types::World3dLocalLight]>>,
+        origin: [i32; 3],
+    ) -> Result<(), SceneError> {
+        let mut active = HashSet::new();
+        for (&pos, sources) in lights {
+            for source in sources.iter() {
+                let key = (pos, source.key);
+                active.insert(key);
+                if self.lights.get(&key).is_some_and(|(_, old)| old == source) {
+                    continue;
+                }
+                let node = Node::new()
+                    .with_light(source.light)
+                    .with_transform(Transform {
+                        translation: Vec3::new(
+                            (pos.x * 16 - origin[0]) as f32,
+                            -origin[1] as f32,
+                            (pos.z * 16 - origin[2]) as f32,
+                        ),
+                        ..Transform::IDENTITY
+                    });
+                let id = if let Some((id, _)) = self.lights.get(&key) {
+                    *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = node;
+                    *id
+                } else {
+                    scene.insert(None, node)?
+                };
+                self.lights.insert(key, (id, source.clone()));
+            }
+        }
+        let removed = self
+            .lights
+            .keys()
+            .filter(|key| !active.contains(key))
+            .copied()
+            .collect::<Vec<_>>();
+        for key in removed {
+            if let Some((id, _)) = self.lights.remove(&key) {
+                scene.remove(id)?;
+            }
+        }
+        Ok(())
     }
 }
 

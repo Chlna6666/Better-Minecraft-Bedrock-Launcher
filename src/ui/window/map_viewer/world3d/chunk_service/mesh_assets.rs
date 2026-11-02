@@ -43,6 +43,11 @@ impl MeshAssets {
             return material;
         }
         let mut material = Material::new();
+        material.surface = if key.water {
+            gpui_3d::SurfaceKind::Water
+        } else {
+            gpui_3d::SurfaceKind::Standard
+        };
         material.shading_model = ShadingModel::Unlit;
         material.alpha_mode = alpha_mode;
         material.alpha_cutoff = 0.35;
@@ -51,6 +56,9 @@ impl MeshAssets {
         let color = key.base_color_bits.map(f32::from_bits);
         material.base_color = [color[0], color[1], color[2], 1.0];
         material.albedo_texture = key.texture;
+        material.normal_texture = key.normal;
+        material.metallic_roughness_texture = key.mer;
+        material.pbr_texture_layout = gpui_3d::PbrTextureLayout::MetallicEmissiveRoughness;
         let material = Arc::new(material);
         self.materials.insert(key, Arc::downgrade(&material));
         material
@@ -114,7 +122,10 @@ mod tests {
     fn shared_material_is_reused_until_last_owner_drops() {
         let mut assets = MeshAssets::default();
         let key = MaterialSlotKey {
+            water: false,
             texture: None,
+            normal: None,
+            mer: None,
             alpha_mode: AlphaMode::Opaque as u8,
             double_sided: false,
             base_color_bits: [1.0_f32.to_bits(); 3],

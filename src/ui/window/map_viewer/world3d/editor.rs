@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+mod rendering;
 mod scene_registry;
 
 const TOP_BAR_HEIGHT: f32 = 46.0;
@@ -46,6 +47,7 @@ const VIEW_UPDATE_INTERVAL: Duration = Duration::from_millis(120);
 const SNAPSHOT_PUBLISH_INTERVAL: Duration = Duration::from_millis(33);
 const POLL_INTERVAL: Duration = Duration::from_millis(16);
 const MAX_MESH_EVENTS_PER_POLL: usize = 16;
+const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 
 // A streamed section replaces the immutable scene snapshot. Large snapshots make
@@ -175,6 +177,7 @@ pub struct World3dEditorView {
     last_view_sent_at: Option<Instant>,
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
+    chunk_lights: BTreeMap<ChunkPos, Arc<[super::types::World3dLocalLight]>>,
     chunk_meshes: BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
@@ -184,6 +187,9 @@ pub struct World3dEditorView {
     scene_view: Option<Arc<SceneView>>,
     scene_nodes: scene_registry::ChunkScene,
     scene_has_preview: bool,
+    render_settings: super::rendering::RenderSettings,
+    last_light_tick: Option<Instant>,
+    last_pick_at: Option<Instant>,
     target_scene_view: Option<Arc<SceneView>>,
     target_outline_mesh: Option<Arc<Mesh>>,
     target_outline_material: Arc<Material>,
@@ -282,6 +288,7 @@ impl World3dEditorView {
             last_view_sent_at: None,
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
+            chunk_lights: BTreeMap::new(),
             chunk_meshes: BTreeMap::new(),
             probes: BTreeMap::new(),
             textures: HashMap::new(),
@@ -291,6 +298,9 @@ impl World3dEditorView {
             scene_view: None,
             scene_nodes: scene_registry::ChunkScene::default(),
             scene_has_preview: false,
+            render_settings: super::rendering::RenderSettings::default(),
+            last_light_tick: None,
+            last_pick_at: None,
             target_scene_view: None,
             target_outline_mesh: block_outline_mesh().map(Arc::new),
             target_outline_material: selection_material(AlphaMode::Blend),
@@ -387,6 +397,9 @@ impl World3dEditorView {
         };
         match spawn_chunk_service(config) {
             Ok(service) => {
+                service.send(super::types::ChunkServiceCommand::SetLighting(
+                    self.render_settings.lighting,
+                ));
                 self.service = Some(service);
                 self.status = SharedString::from("3D 区块流已启动，正在加载出生点周围区块");
                 self.status_kind = StatusKind::Info;
@@ -424,6 +437,8 @@ impl World3dEditorView {
         let mut textures_may_be_unused = false;
         let mut probes_changed = false;
         let previous_texture_count = self.textures.len();
+        let poll_started = Instant::now();
+        let mut submitted_bytes = 0usize;
         loop {
             let Some(event) = self.service.as_ref().and_then(ChunkServiceHandle::try_recv) else {
                 break;
@@ -431,6 +446,7 @@ impl World3dEditorView {
             match event {
                 ChunkServiceEvent::Ready(info) => {
                     self.worker_info = info;
+                    self.texture_table_dirty = true;
                     self.status = SharedString::from(format!(
                         "资源就绪：{} 个方块模型 · {} 个资源包根",
                         self.worker_info.block_model_count, self.worker_info.resource_pack_count
@@ -438,6 +454,11 @@ impl World3dEditorView {
                     changed = true;
                 }
                 ChunkServiceEvent::Chunk(payload) => {
+                    if payload.lighting != self.render_settings.lighting {
+                        continue;
+                    }
+                    submitted_bytes =
+                        submitted_bytes.saturating_add(payload.mesh.estimated_cpu_bytes());
                     let _ = payload.generation;
                     if payload.mesh.pos.dimension != self.dimension {
                         continue;
@@ -470,8 +491,22 @@ impl World3dEditorView {
                     let mut removed = false;
                     let mut restored = false;
                     for completion in completions {
+                        if completion.lighting != self.render_settings.lighting {
+                            continue;
+                        }
                         if completion.pos.dimension != self.dimension {
                             continue;
+                        }
+                        if completion.lights.is_empty() {
+                            self.stream_scene_pending |=
+                                self.chunk_lights.remove(&completion.pos).is_some();
+                        } else if self
+                            .chunk_lights
+                            .get(&completion.pos)
+                            .is_none_or(|old| old.as_ref() != completion.lights.as_ref())
+                        {
+                            self.chunk_lights.insert(completion.pos, completion.lights);
+                            self.stream_scene_pending = true;
                         }
                         restored |= restore_retained_sections(
                             &mut self.chunk_meshes,
@@ -496,6 +531,7 @@ impl World3dEditorView {
                     if pos.dimension != self.dimension {
                         continue;
                     }
+                    self.stream_scene_pending |= self.chunk_lights.remove(&pos).is_some();
                     let removed = retain_chunk_sections(&mut self.chunk_meshes, pos, &[]);
                     textures_may_be_unused |= removed;
                     self.probes.remove(&pos);
@@ -535,6 +571,11 @@ impl World3dEditorView {
                     self.status_kind = StatusKind::Error;
                     changed = true;
                 }
+            }
+            if poll_started.elapsed() >= Duration::from_millis(2)
+                || submitted_bytes >= MESH_SUBMIT_BUDGET_BYTES
+            {
+                break;
             }
         }
         self.texture_prune_pending |= textures_may_be_unused;
@@ -701,6 +742,14 @@ impl World3dEditorView {
                 return;
             }
         };
+        if let Err(error) =
+            self.scene_nodes
+                .update_lights(&mut scene, &self.chunk_lights, self.render_origin)
+        {
+            self.status = format!("更新世界光源失败：{error}").into();
+            self.status_kind = StatusKind::Error;
+            return;
+        }
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
             && let Err(error) = preview
@@ -725,8 +774,13 @@ impl World3dEditorView {
         .with_sampling(TextureSampling::PixelArt)
         .with_voxel_shader();
         let scene_view = if std::mem::take(&mut self.texture_table_dirty) {
-            base.with_textures(self.textures.values().cloned())
-                .unwrap_or(base)
+            base.with_textures(
+                self.textures
+                    .values()
+                    .cloned()
+                    .chain(self.worker_info.cloud_texture.iter().cloned()),
+            )
+            .unwrap_or(base)
         } else {
             base
         };
@@ -962,6 +1016,7 @@ impl World3dEditorView {
             self.saved_cameras.insert(self.dimension, self.camera);
             self.dimension = target.dimension;
             self.chunk_meshes.clear();
+            self.chunk_lights.clear();
             self.probes.clear();
             self.textures.clear();
             self.texture_bytes = 0;
@@ -1042,6 +1097,7 @@ impl World3dEditorView {
         self.saved_cameras.insert(self.dimension, self.camera);
         self.dimension = dimension;
         self.chunk_meshes.clear();
+        self.chunk_lights.clear();
         self.probes.clear();
         self.textures.clear();
         self.texture_bytes = 0;
@@ -2009,6 +2065,7 @@ impl World3dEditorView {
                 )),
         );
 
+        panel = panel.child(self.render_rendering_controls(colors, cx));
         panel = panel.child(section_title(colors, "流式加载"));
         panel = panel.child(info_row(
             colors,
@@ -2342,20 +2399,54 @@ impl World3dEditorView {
             .min_h(px(0.0))
             .min_w(px(0.0))
             .overflow_hidden()
-            .bg(sky_color(self.dimension));
+            .bg(self.render_sky_color());
         if let Some(scene_view) = self.scene_view.as_ref() {
             let camera = self.camera.gpu_camera(self.render_origin);
-            let fog_color: Rgba = sky_color(self.dimension).into();
+            let fog_color: Rgba = self.render_sky_color().into();
             let fog_end = (self.view_radius.max(1) * 16) as f32;
             let fog = gpui_3d::DistanceFog::new(
                 [fog_color.r, fog_color.g, fog_color.b],
                 fog_end * 0.65,
                 fog_end,
             );
+            let fog = if self.render_settings.fog { fog } else { None };
             let snapshot = scene_view.with_camera(camera).with_fog(fog);
+            let snapshot = match snapshot
+                .with_voxel_shading(self.render_settings.shading_for_dimension(self.dimension))
+            {
+                Ok(view) => view,
+                Err(error) => {
+                    eprintln!("world3d shading: {error}");
+                    snapshot
+                }
+            };
             let snapshot = snapshot
                 .with_culling_bounds(Some(self.scene_culling_bounds()))
                 .unwrap_or(snapshot);
+            let mut settings = self.render_settings.effects(
+                self.worker_info
+                    .cloud_texture
+                    .as_ref()
+                    .map(|texture| texture.id()),
+                self.render_origin,
+                self.dimension == Dimension::Overworld,
+            );
+            if self.dimension != Dimension::Overworld
+                && let Some(settings) = settings.as_mut()
+            {
+                settings.background_color = Some(super::rendering::linear_rgb([
+                    fog_color.r,
+                    fog_color.g,
+                    fog_color.b,
+                ]));
+            }
+            let snapshot = match snapshot.with_screen_effects(settings) {
+                Ok(view) => view,
+                Err(error) => {
+                    eprintln!("world3d effects: {error}");
+                    snapshot
+                }
+            };
             let snapshot = Arc::new(snapshot);
             viewport = viewport.child(
                 div()
@@ -2591,17 +2682,27 @@ impl World3dEditorView {
 impl Render for World3dEditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
+        self.tick_lighting(now, window);
         self.frame.record(now);
         self.sample_gpu_diagnostics(now, window);
         let moving = self.tick_motion(now);
         self.update_stage_size(window);
         let pick_camera = self.camera_snapshot();
-        if self.target_pick_dirty || self.last_pick_camera != Some(pick_camera) {
+        let pick_pending = self.target_pick_dirty || self.last_pick_camera != Some(pick_camera);
+        if pick_pending
+            && self
+                .last_pick_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_micros(33_334))
+        {
+            self.last_pick_at = Some(now);
             self.target_pick_dirty = false;
             self.last_pick_camera = Some(pick_camera);
             if let Some(position) = self.pointer_position {
                 self.update_target_at(position, window);
             }
+        }
+        if pick_pending {
+            window.request_animation_frame();
         }
         if moving {
             window.request_animation_frame();
@@ -2708,9 +2809,9 @@ impl Render for World3dEditorView {
                                     if this.selection_drag.is_some() {
                                         this.drag_selection_to(event.position, window);
                                         cx.notify();
-                                    } else if event.pressed_button.is_none()
-                                        && this.update_target_at(event.position, window)
-                                    {
+                                    } else if event.pressed_button.is_none() {
+                                        this.pointer_position = Some(event.position);
+                                        this.target_pick_dirty = true;
                                         cx.notify();
                                     }
                                 },

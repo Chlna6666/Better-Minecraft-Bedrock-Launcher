@@ -14,6 +14,7 @@ pub(super) mod link;
 #[cfg(test)]
 mod offscreen_check;
 pub(super) mod registry;
+mod rendering;
 pub(super) mod types;
 
 pub(super) use link::World3dMapLink;

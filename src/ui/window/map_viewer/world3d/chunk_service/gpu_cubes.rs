@@ -7,9 +7,9 @@ impl Worker {
         pos: ChunkPos,
         band: p3d::GpuCubeBand,
         faces: &[p3d::Preview3dStreamFace],
-        lighting: &super::lighting::ChunkLighting,
+        lighting: Option<&super::lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
-        let levels = lighting.gpu_levels(pos, &band);
+        let levels = lighting.map(|light| light.gpu_levels(pos, &band));
         let mut faces = faces.to_vec();
         for face in &mut faces[..band.template_faces] {
             for corner in &mut face.corners {
@@ -57,8 +57,11 @@ impl Worker {
                 source.with_instances(band.classes, instance_templates, band.instances)
             })
             .and_then(|source| source.with_static_faces(extra))
-            .map(|source| source.with_ambient_occlusion(16))
-            .and_then(|source| source.with_lighting(levels, lighting.ambient))
+            .map(|source| source.with_ambient_occlusion(if lighting.is_some() { 16 } else { 0 }))
+            .and_then(|source| match (levels, lighting) {
+                (Some(levels), Some(light)) => source.with_lighting(levels, light.ambient),
+                _ => Ok(source),
+            })
             .and_then(|source| {
                 source.with_y_range(
                     (band.section_y * 64) as f32,

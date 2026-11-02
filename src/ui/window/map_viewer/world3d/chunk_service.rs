@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod mesh_assets;
+mod pbr;
 use mesh_assets::MeshAssets;
 mod gpu_cubes;
 mod lighting;
@@ -790,7 +791,10 @@ mod view_tests {
             assert!(super::face_double_sided(pass));
         }
         let cube = super::MaterialSlotKey {
+            water: false,
             texture: None,
+            normal: None,
+            mer: None,
             alpha_mode: 0,
             double_sided: false,
             base_color_bits: [0; 3],
@@ -1536,7 +1540,10 @@ mod cache_tests {
             };
             for material in payload.mesh.materials.iter() {
                 let key = MaterialSlotKey {
+                    water: material.surface == gpui_3d::SurfaceKind::Water,
                     texture: material.albedo_texture,
+                    normal: material.normal_texture,
+                    mer: material.metallic_roughness_texture,
                     alpha_mode: material.alpha_mode as u8,
                     double_sided: material.double_sided,
                     base_color_bits: [
@@ -1640,7 +1647,10 @@ impl CachedChunk {
 
 #[derive(Clone, Copy)]
 struct MaterialSlotKey {
+    water: bool,
     texture: Option<gpui_3d::TextureAssetId>,
+    normal: Option<gpui_3d::TextureAssetId>,
+    mer: Option<gpui_3d::TextureAssetId>,
     alpha_mode: u8,
     double_sided: bool,
     base_color_bits: [u32; 3],
@@ -1648,7 +1658,10 @@ struct MaterialSlotKey {
 
 impl std::hash::Hash for MaterialSlotKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.water.hash(state);
         self.texture.hash(state);
+        self.normal.hash(state);
+        self.mer.hash(state);
         self.alpha_mode.hash(state);
         self.double_sided.hash(state);
         for bits in self.base_color_bits {
@@ -1659,7 +1672,10 @@ impl std::hash::Hash for MaterialSlotKey {
 
 impl PartialEq for MaterialSlotKey {
     fn eq(&self, other: &Self) -> bool {
-        self.texture == other.texture
+        self.water == other.water
+            && self.texture == other.texture
+            && self.normal == other.normal
+            && self.mer == other.mer
             && self.alpha_mode == other.alpha_mode
             && self.double_sided == other.double_sided
             && self.base_color_bits == other.base_color_bits
@@ -1796,6 +1812,7 @@ fn load_batch_from_world(
 }
 
 struct Worker {
+    lighting: super::rendering::LightingMode,
     world: Arc<World>,
     resolver: Arc<ObjTextureResolver>,
     models: Arc<bedrock_block_model::BlockModelRepository>,
@@ -1825,6 +1842,7 @@ struct Worker {
     texture_lookup: HashMap<(String, [i32; 3]), Option<(Weak<TextureAsset>, TextureAlphaContent)>>,
     resolved_texture_lookup: HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
     mesh_assets: MeshAssets,
+    pbr: pbr::PbrCache,
     resolver_time: Duration,
     texture_read_time: Duration,
     texture_decode_time: Duration,
@@ -1905,6 +1923,7 @@ impl Worker {
         info.texture_resolver_errors = resolver.model_errors().len();
         Self {
             world: Arc::new(world),
+            lighting: super::rendering::LightingMode::default(),
             resolver,
             models,
             probe_stash: HashMap::new(),
@@ -1932,6 +1951,7 @@ impl Worker {
             texture_lookup: HashMap::new(),
             resolved_texture_lookup: HashMap::new(),
             mesh_assets: MeshAssets::default(),
+            pbr: pbr::PbrCache::default(),
             resolver_time: Duration::ZERO,
             texture_read_time: Duration::ZERO,
             texture_decode_time: Duration::ZERO,
@@ -2484,6 +2504,7 @@ impl Worker {
             );
         }
         let mut builder = p3d::Preview3dMeshBuilder::new_stream(bounds);
+        builder.set_ambient_occlusion(self.lighting.is_lit());
         let mut boundary_hits = 0usize;
         let target_set = targets.iter().copied().collect::<HashSet<_>>();
         // Rehydrating each discarded target separately serializes world queries and block
@@ -2585,6 +2606,7 @@ impl Worker {
         let light_fields = targets
             .iter()
             .copied()
+            .filter(|_| self.lighting.is_lit())
             .map(|pos| (pos, self.build_lighting(pos)))
             .collect::<HashMap<_, _>>();
         if trace && light_started.elapsed() >= Duration::from_millis(1) {
@@ -2643,7 +2665,7 @@ impl Worker {
                 }
                 if let Some(Ok(light)) = light_fields.get(&pos) {
                     bands.extend(light.changed_bands(self.light_fields.get(&pos).map(Arc::as_ref)));
-                } else {
+                } else if self.lighting.is_lit() {
                     safe = false;
                 }
                 if safe && !bands.is_empty() {
@@ -2846,23 +2868,47 @@ impl Worker {
                     continue;
                 }
                 let build_started = Instant::now();
+                if self.lighting != super::rendering::LightingMode::Vanilla {
+                    for face in &mut faces {
+                        face.shade = 1.;
+                    }
+                }
+                if !self.lighting.is_lit() {
+                    for face in &mut faces {
+                        face.ambient_light = [1.; 4];
+                    }
+                }
                 let light = light_fields
                     .get(&pos)
                     .ok_or_else(|| "光照结果缺失".to_string())
                     .and_then(|value| value.as_ref().map_err(Clone::clone));
-                let mesh_result = if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
+                let mesh_result = if !self.lighting.is_lit() {
+                    if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
+                        self.build_gpu_cube_mesh(pos, band, &faces, None)
+                    } else {
+                        self.build_chunk_mesh(pos, section_y, &faces)
+                    }
+                } else if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
                     match light {
-                        Ok(light) => {
-                            light.shade_faces(&mut faces[band.template_faces..]);
-                            self.build_gpu_cube_mesh(pos, band, &faces, light)
-                        }
+                        Ok(light) => self.build_gpu_cube_mesh(pos, band, &faces, Some(light)),
                         Err(error) => Err(error.clone()),
                     }
                 } else {
                     match light {
                         Ok(light) => {
-                            light.shade_faces(&mut faces);
                             self.build_chunk_mesh(pos, section_y, &faces)
+                                .and_then(|mesh| {
+                                    mesh.map(|mut mesh| {
+                                        let source = light.static_source(&mesh.mesh)?;
+                                        mesh.mesh =
+                                            Arc::new(Mesh::from_gpu_voxels(source).with_identity(
+                                                chunk_mesh_id(pos, section_y),
+                                                self.mesh_generation,
+                                            ));
+                                        Ok(mesh)
+                                    })
+                                    .transpose()
+                                })
                         }
                         Err(error) => Err(error.clone()),
                     }
@@ -2890,6 +2936,7 @@ impl Worker {
                         } else {
                             self.published_sections.insert(key, Arc::downgrade(&mesh));
                             let payload = World3dChunkPayload {
+                                lighting: self.lighting,
                                 generation,
                                 mesh,
                                 probe,
@@ -2950,6 +2997,11 @@ impl Worker {
                 }
                 forget_published_sections(&mut self.published_sections, pos, &sections);
                 completions.push(World3dChunkCompletion {
+                    lights: self
+                        .light_fields
+                        .get(&pos)
+                        .map_or_else(|| Arc::from([]), |field| field.sources.clone()),
+                    lighting: self.lighting,
                     pos,
                     sections,
                     retained_meshes: retained_sections.remove(&pos).unwrap_or_default(),
@@ -3125,7 +3177,7 @@ impl Worker {
                 .entry((face.material.as_ptr() as usize, face.normal))
                 .or_insert_with(|| {
                     let resolved = self.resolve_texture(material_name, face.normal);
-                    let (mut resolved_texture, mut alpha_content, mut is_missing) = match resolved {
+                    let (mut resolved_texture, mut alpha_content, is_missing) = match resolved {
                         Some((texture, content)) => (Some(texture), content, false),
                         None => (None, TEXTURE_ALPHA_CONTENT_UNKNOWN, true),
                     };
@@ -3141,14 +3193,23 @@ impl Worker {
                         resolved_texture = Some(missing);
                         alpha_content = missing_content;
                     }
+                    let [color, normal, mer] =
+                        if self.lighting == super::rendering::LightingMode::VibrantPreview {
+                            self.resolve_pbr(material_name, face.normal)
+                        } else {
+                            [None, None, None]
+                        };
+                    if let Some((color, content)) = color {
+                        resolved_texture = Some(color);
+                        alpha_content = content;
+                    }
                     FaceMaterialProperties {
                         texture: resolved_texture,
+                        normal: normal.map(|(asset, _)| asset),
+                        mer: mer.map(|(asset, _)| asset),
                         alpha_content,
                         is_missing,
                         uses_tint: material_uses_tint(material_name),
-                        uses_texture_alpha: bedrock_block_model::obj_material_uses_texture_alpha(
-                            material_name,
-                        ) || material_uses_cutout_alpha(material_name),
                         opaque_glass: material_name.starts_with("minecraft_glass_"),
                     }
                 });
@@ -3180,11 +3241,12 @@ impl Worker {
                     .entry(texture.id())
                     .or_insert_with(|| texture.clone());
             }
-            let alpha_mode = alpha_mode_for_pass(
-                face.pass,
-                properties.uses_texture_alpha,
-                properties.alpha_content,
-            );
+            for auxiliary in [&properties.normal, &properties.mer].into_iter().flatten() {
+                used_textures
+                    .entry(auxiliary.id())
+                    .or_insert_with(|| auxiliary.clone());
+            }
+            let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
             if alpha_mode == AlphaMode::Opaque
                 && let Some((cell, side)) = occluders::cube_cell(face)
             {
@@ -3200,7 +3262,10 @@ impl Worker {
                 [1.0, 1.0, 1.0]
             };
             let key = MaterialSlotKey {
+                water: face.pass == p3d::Preview3dStreamPass::Water,
                 texture: texture.map(|texture| texture.id()),
+                normal: properties.normal.as_ref().map(|asset| asset.id()),
+                mer: properties.mer.as_ref().map(|asset| asset.id()),
                 alpha_mode: alpha_mode as u8,
                 double_sided: face_double_sided(face.pass),
                 base_color_bits: base_color.map(f32::to_bits),
@@ -3486,7 +3551,7 @@ impl Worker {
         &mut self,
         resolved: bedrock_block_model::ObjResolvedTexture,
     ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
-        let cache_key = resolved.relative_path.clone();
+        let cache_key = resolved.source_path.path().to_string_lossy().into_owned();
         if let Some(cached) = self.textures_by_path.get(&cache_key) {
             match cached {
                 Some(texture) => {
@@ -3930,37 +3995,18 @@ fn intern_face_materials(faces: &mut [p3d::Preview3dStreamFace]) {
 }
 
 struct FaceMaterialProperties {
+    normal: Option<Arc<TextureAsset>>,
+    mer: Option<Arc<TextureAsset>>,
     texture: Option<Arc<TextureAsset>>,
     alpha_content: TextureAlphaContent,
     /// The face failed texture resolution and is showing the missing-texture
     /// placeholder instead; still counted and traceable.
     is_missing: bool,
     uses_tint: bool,
-    uses_texture_alpha: bool,
     opaque_glass: bool,
 }
 
-/// Plants use alpha-masked textures but their material names are not flagged as transparent by
-/// the block-definition resolver, so treat the common plant families as cutout explicitly.
-fn material_uses_cutout_alpha(material: &str) -> bool {
-    let name = material.strip_prefix("minecraft_").unwrap_or(material);
-    name.contains("grass")
-        || name.contains("fern")
-        || name.contains("flower")
-        || name.contains("cane")
-        || name.contains("reed")
-        || name.contains("vine")
-        || name.contains("seagrass")
-        || name.contains("kelp")
-        || name.contains("lily")
-        || name.contains("sapling")
-        || name.contains("wheat")
-        || name.contains("crop")
-        || name.contains("lightning_rod")
-        || name.contains("end_rod")
-}
-
-/// Alpha content of a decoded texture, used to pick the glass pipeline from
+/// Alpha content of a decoded texture, used to pick the alpha pipeline from
 /// real pixel data instead of guessing from the block name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TextureAlphaContent {
@@ -3993,21 +4039,25 @@ fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
     }
 }
 
+/// The alpha pipeline follows the texture's real pixels: binary-alpha
+/// textures cut out, partially translucent ones blend, fully opaque ones
+/// render opaque. Block names are deliberately not consulted — vanilla
+/// textures carry their transparency in the asset itself.
 fn alpha_mode_for_pass(
     pass: p3d::Preview3dStreamPass,
-    uses_texture_alpha: bool,
     alpha_content: TextureAlphaContent,
 ) -> AlphaMode {
     use p3d::Preview3dStreamPass as Pass;
-    match pass {
-        Pass::Water => AlphaMode::Blend,
-        Pass::Glass | Pass::DetailGlass => match alpha_content {
-            TextureAlphaContent::Partial => AlphaMode::Blend,
-            TextureAlphaContent::Binary => AlphaMode::Mask,
-            TextureAlphaContent::Opaque => AlphaMode::Opaque,
+    match alpha_content {
+        TextureAlphaContent::Opaque => match pass {
+            Pass::Water => AlphaMode::Blend,
+            _ => AlphaMode::Opaque,
         },
-        _ if uses_texture_alpha => AlphaMode::Mask,
-        _ => AlphaMode::Opaque,
+        TextureAlphaContent::Binary => match pass {
+            Pass::Water => AlphaMode::Blend,
+            _ => AlphaMode::Mask,
+        },
+        TextureAlphaContent::Partial => AlphaMode::Blend,
     }
 }
 
@@ -4065,6 +4115,28 @@ fn run_worker(
         }
     };
     let mut worker = Worker::new(&config, world);
+    worker.info.cloud_texture = worker
+        .resolver
+        .environment_texture("textures/environment/clouds")
+        .or_else(|| worker.resolver.environment_texture("textures/clouds"))
+        .and_then(|source| {
+            worker
+                .resolve_texture_path(source)
+                .map(|(texture, _)| texture)
+        })
+        .and_then(|texture| {
+            match TextureAsset::rgba8_mip_chain(
+                texture.width(),
+                texture.height(),
+                (0..texture.mip_level_count()).filter_map(|level| texture.mip_pixels(level)),
+            ) {
+                Ok(texture) => Some(Arc::new(texture)),
+                Err(error) => {
+                    worker.last_error = Some(format!("准备云材质失败：{error}"));
+                    None
+                }
+            }
+        });
     let _ = events.send(ChunkServiceEvent::Ready(worker.info.clone()));
     worker.publish_status(&events);
 
@@ -4091,6 +4163,20 @@ fn run_worker(
             command
         };
         match command {
+            ChunkServiceCommand::SetLighting(lighting) => {
+                if worker.lighting != lighting {
+                    worker.lighting = lighting;
+                    worker.light_fields.clear();
+                    worker.published_sections.clear();
+                    worker.dirty_meshes.extend(worker.cache.keys().copied());
+                    while pending.is_none() {
+                        match worker.stream(&events, &commands) {
+                            Some(command) => pending = Some(command),
+                            None => break,
+                        }
+                    }
+                }
+            }
             ChunkServiceCommand::ViewUpdated => continue,
             ChunkServiceCommand::Shutdown => break,
             ChunkServiceCommand::SetView {

@@ -26,8 +26,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+mod effects;
 
 struct SnapshotWorld {
+    lights: BTreeMap<(i32, i32), Arc<[super::types::World3dLocalLight]>>,
+    cloud: Option<Arc<gpui_3d::TextureAsset>>,
     meshes: BTreeMap<(i32, i32, i32), Arc<World3dChunkMesh>>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<gpui_3d::TextureAsset>>,
     probes: BTreeMap<(i32, i32), Arc<World3dChunkProbe>>,
@@ -159,6 +163,12 @@ fn collect_world_with_timeout(
         view_radius: radius,
     })
     .expect("start 3D chunk worker");
+    let lighting = match std::env::var("BMCBL_WORLD3D_TEST_LIGHTING").as_deref() {
+        Ok("vibrant") => super::rendering::LightingMode::VibrantPreview,
+        Ok("vanilla") => super::rendering::LightingMode::Vanilla,
+        _ => super::rendering::LightingMode::NightVision,
+    };
+    service.send(ChunkServiceCommand::SetLighting(lighting));
     let generation = 1;
     service.send(ChunkServiceCommand::SetView {
         generation,
@@ -170,6 +180,8 @@ fn collect_world_with_timeout(
         view_distance: 256.0,
     });
     let mut result = SnapshotWorld {
+        lights: BTreeMap::new(),
+        cloud: None,
         meshes: BTreeMap::new(),
         textures: HashMap::new(),
         probes: BTreeMap::new(),
@@ -181,6 +193,12 @@ fn collect_world_with_timeout(
     while Instant::now() < deadline {
         while let Some(event) = service.try_recv() {
             match event {
+                ChunkServiceEvent::Ready(info) => {
+                    if let Some(cloud) = info.cloud_texture {
+                        result.textures.insert(cloud.id(), cloud.clone());
+                        result.cloud = Some(cloud);
+                    }
+                }
                 ChunkServiceEvent::Chunk(payload) => {
                     for texture in payload.mesh.textures.iter() {
                         result.textures.insert(texture.id(), texture.clone());
@@ -199,6 +217,9 @@ fn collect_world_with_timeout(
                 }
                 ChunkServiceEvent::Completed(completions) => {
                     for completion in completions {
+                        result
+                            .lights
+                            .insert((completion.pos.x, completion.pos.z), completion.lights);
                         for mesh in completion.retained_meshes {
                             let key = (mesh.pos.x, mesh.pos.z, mesh.section_y);
                             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -276,18 +297,15 @@ fn scene_from_world(
             mesh.origin[1] as f32,
             mesh.origin[2] as f32,
         );
-        scene
-            .insert(
-                None,
-                Node::new()
-                    .with_mesh(mesh.mesh.clone())
-                    .with_materials(mesh.materials.iter().cloned())
-                    .with_transform(Transform {
-                        translation,
-                        ..Transform::IDENTITY
-                    }),
-            )
-            .expect("valid chunk scene node");
+        let mut node = Node::new()
+            .with_mesh(mesh.mesh.clone())
+            .with_materials(mesh.materials.iter().cloned())
+            .with_transform(Transform {
+                translation,
+                ..Transform::IDENTITY
+            });
+        node.occluders = mesh.occluders.clone();
+        scene.insert(None, node).expect("valid chunk scene node");
     }
     let textures = world
         .textures

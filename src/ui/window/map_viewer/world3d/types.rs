@@ -374,13 +374,24 @@ pub struct World3dTextureUpload {
 
 /// Streaming event carrying one finished chunk.
 pub struct World3dChunkPayload {
+    pub(super) lighting: super::rendering::LightingMode,
     pub generation: u64,
     pub mesh: Arc<World3dChunkMesh>,
     pub probe: Arc<World3dChunkProbe>,
 }
 
 /// Reconciles all sections of a chunk after a complete remesh.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct World3dLocalLight {
+    /// Stable two-block cluster and direct-specular class within the owning column.
+    pub key: [i32; 4],
+    pub light: gpui_3d::Light,
+}
+
+/// Reconciles geometry and independent emitters, including invisible light blocks.
 pub struct World3dChunkCompletion {
+    pub(super) lights: Arc<[World3dLocalLight]>,
+    pub(super) lighting: super::rendering::LightingMode,
     pub pos: ChunkPos,
     pub sections: Vec<i32>,
     /// Previously published meshes reused by this completion, retained until it is consumed.
@@ -451,6 +462,7 @@ impl Default for ChunkServiceStatus {
 /// World resource information emitted once after the worker initializes.
 #[derive(Clone, Debug, Default)]
 pub struct ChunkServiceInfo {
+    pub cloud_texture: Option<Arc<gpui_3d::TextureAsset>>,
     pub block_model_count: usize,
     pub resource_pack_count: usize,
     pub texture_resolver_errors: usize,
@@ -458,6 +470,7 @@ pub struct ChunkServiceInfo {
 
 /// Streaming command sent from the UI thread to the background chunk worker.
 pub enum ChunkServiceCommand {
+    SetLighting(super::rendering::LightingMode),
     ViewUpdated,
     SetView {
         generation: u64,

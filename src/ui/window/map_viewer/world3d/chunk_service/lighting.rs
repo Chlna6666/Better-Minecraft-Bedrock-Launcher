@@ -1,8 +1,11 @@
 //! Worker-owned light solves use one-chunk halo and retain only center samples plus one cell.
 use super::*;
-use bedrock_render::{LightCell, LightVolume};
+use bedrock_light::{LightCell, LightVolume};
+mod mesh;
+mod sources;
 
 pub(super) struct ChunkLighting {
+    pub(super) sources: Arc<[super::super::types::World3dLocalLight]>,
     inputs: [Option<Weak<World3dChunkProbe>>; 9],
     origin: [i32; 3],
     size: [u32; 3],
@@ -62,6 +65,11 @@ impl Worker {
             }
         }
         let has_sky = pos.dimension == Dimension::Overworld;
+        let sources = if self.lighting == super::super::rendering::LightingMode::VibrantPreview {
+            sources::collect(&self.models, &self.resolver, probe, &cells, min_y, height)
+        } else {
+            Arc::from([])
+        };
         let solved = LightVolume::solve(size, &cells, has_sky).map_err(|e| e.to_string())?;
         let mut levels = Vec::with_capacity((18 * height * 18) as usize);
         for z in 15..33 {
@@ -72,6 +80,7 @@ impl Worker {
             }
         }
         Ok(Arc::new(ChunkLighting {
+            sources,
             inputs,
             origin: [origin[0] + 15, min_y, origin[2] + 15],
             size: [18, height, 18],
@@ -169,7 +178,9 @@ fn write_probe_cells(
 
 impl ChunkLighting {
     pub(super) fn storage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.levels.len()
+        std::mem::size_of::<Self>()
+            + self.levels.len()
+            + std::mem::size_of_val(self.sources.as_ref())
     }
 
     pub(super) fn changed_bands(&self, previous: Option<&Self>) -> Vec<(i32, i32)> {
@@ -215,25 +226,6 @@ impl ChunkLighting {
             [((q[2] * i64::from(self.size[1]) + q[1]) * i64::from(self.size[0]) + q[0]) as usize]
     }
 
-    pub(super) fn shade_faces(&self, faces: &mut [p3d::Preview3dStreamFace]) {
-        for face in faces {
-            let center: [f64; 3] =
-                std::array::from_fn(|a| face.corners.iter().map(|p| p[a]).sum::<f64>() * 0.25);
-            let own = self.packed_at(std::array::from_fn(|a| {
-                (center[a] - f64::from(face.normal[a]) * 0.001).floor() as i32
-            }));
-            let next = self.packed_at(std::array::from_fn(|a| {
-                (center[a] + f64::from(face.normal[a]) * 0.001).floor() as i32
-            }));
-            let level = (own & 15).max(own >> 4).max(next & 15).max(next >> 4);
-            let value = f32::from(level) / 15.;
-            let factor = self.ambient + (1. - self.ambient) * value * value;
-            for light in &mut face.ambient_light {
-                *light *= factor;
-            }
-        }
-    }
-
     pub(super) fn gpu_levels(&self, pos: ChunkPos, band: &p3d::GpuCubeBand) -> Vec<u8> {
         (0..band.size[0] * band.size[1] * band.size[2])
             .map(|i| {
@@ -252,6 +244,7 @@ mod tests {
     use super::*;
     fn field() -> ChunkLighting {
         ChunkLighting {
+            sources: Arc::from([]),
             inputs: std::array::from_fn(|_| None),
             origin: [-1, -64, -1],
             size: [18, 384, 18],
