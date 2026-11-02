@@ -3,6 +3,13 @@
 `bedrock-block-model` resolves Minecraft Bedrock resource-pack block visual data into a
 single model description that renderers and OBJ exporters can consume.
 
+`ObjTextureResolver::pbr_texture_set_for` resolves `.texture_set.json` color/normal/MER/MERS
+layers in pack priority order. Image references resolve only inside the definition's own pack;
+constants retain byte values. Conflicting layers, invalid paths and missing same-pack images
+return errors. Results preserve resource provenance and archive access without image decoding
+or GPU dependencies. Height-map/subsurface presence is reported; their rendering is the consumer's
+responsibility. This is separate from the model's face-to-texture-key `TextureSet`.
+
 `vanilla_voxel_shapes()` exposes a separate, immutable database of 218 voxel volumes
 (684 boxes) decoded from the supplied Bedrock 1.21.110 behavior-pack documents.
 `generated/vanilla_voxel_shapes.json` preserves their identifiers, versions and original
@@ -96,6 +103,11 @@ used as an automatic replacement for Bedrock native shapes.
 - Native-model completeness is limited to what the export actually captured.
   The existing procedural Bedrock model-family geometry remains a provisional
   fallback, not a claim of native tessellation fidelity.
+
+`ObjTextureResolver::local_light_for` reads resource-pack `local_lighting/local_lighting.json`
+colors (sRGB bytes) and point/static classification. Lighting-only packs are accepted; malformed
+optional lighting is reported without discarding valid texture resources. `environment_texture`
+resolves logical texture paths in pack priority order. These APIs return CPU data, not GPU resources.
 
 ## Boundary
 

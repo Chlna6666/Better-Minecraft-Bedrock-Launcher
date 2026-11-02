@@ -19,13 +19,21 @@ pub(super) struct ObjResourcePack {
     item_texture_data: HashMap<String, String>,
     flipbook_textures: BTreeSet<String>,
     resources: PackResources,
+    local_lights: HashMap<String, super::LocalLightDefinition>,
+    pub(super) local_light_error: Option<String>,
 }
 
 impl ObjResourcePack {
+    pub(super) fn pbr_resource(&self, path: &Path) -> Option<ResourceFile> {
+        self.resources.get(path)
+    }
     pub(super) fn load(root: PathBuf, resources: PackResources) -> Result<Option<Self>> {
         let texture_root = root.join("textures");
         if !texture_root.is_dir()
             && !root.join("__brarchive/textures.brarchive").is_file()
+            && resources
+                .get(Path::new("local_lighting/local_lighting.json"))
+                .is_none()
             && !root.join("__brarchive/textures").is_dir()
         {
             return Ok(None);
@@ -85,7 +93,14 @@ impl ObjResourcePack {
                 flipbook_textures.insert(obj_normalize_texture_key(texture));
             }
         }
+        let (local_lights, local_light_error) = match super::lighting::read_local_lights(&resources)
+        {
+            Ok(lights) => (lights, None),
+            Err(error) => (HashMap::new(), Some(error.to_string())),
+        };
         Ok(Some(Self {
+            local_lights,
+            local_light_error,
             is_base_vanilla: super::is_base_vanilla_root(&root),
             root,
             texture_root,
@@ -100,6 +115,9 @@ impl ObjResourcePack {
     /// Whether this pack is the unversioned base `vanilla` pack.
     pub(super) fn is_base_vanilla(&self) -> bool {
         self.is_base_vanilla
+    }
+    pub(super) fn local_light(&self, block: &str) -> Option<super::LocalLightDefinition> {
+        self.local_lights.get(block).copied()
     }
 
     /// Whether the given texture path is declared as an animated flipbook strip.

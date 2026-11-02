@@ -5,6 +5,11 @@
 `bedrock-block-model` 把 Minecraft Bedrock 资源包中的方块视觉数据解析为单一模型描述，
 供渲染器和 OBJ 导出器消费。
 
+`ObjTextureResolver::pbr_texture_set_for` 按资源包优先级解析 `.texture_set.json` 的
+color/normal/MER/MERS 图层。图片只从定义所属包查找，常量保留字节值；冲突图层、非法路径及
+缺失的同包图片返回错误。结果保留来源与归档访问能力，不解码图片、不依赖 GPU。高度图与
+次表面属性仅报告是否存在，由呈现方处理；此接口独立于模型面到纹理键映射的 `TextureSet`。
+
 `vanilla_voxel_shapes()` 提供独立的只读形状数据库，包含从所提供的 Bedrock 1.21.110
 行为包文档解码的 218 个体积、684 个盒体。`generated/vanilla_voxel_shapes.json` 保留
 标识符、版本和原始 16 单位坐标；API 将盒体转换为方块单位，并预计算保守的 16×16
@@ -18,6 +23,10 @@ permutation 覆盖。1,356 个 Bedrock 1.26.30 方块标识符的默认数字属
 生成表记录来源与版本，署名见 [`generated/block_lighting.NOTICE`](generated/block_lighting.NOTICE)。
 这些是默认方块属性，不是完整的逐状态、逐版本行为。当前处理水/树叶衰减及明确的熄灭状态；
 任意局部形状的方向性透光、旧式数字状态光照仍需补充元数据。本 crate 不执行传播或 GPU 工作。
+
+`ObjTextureResolver::local_light_for` 读取资源包 `local_lighting/local_lighting.json` 的 sRGB
+光色与 point/static 分类，支持仅含光照的资源包；可选光照文件无效时报告错误，不丢弃其他
+纹理资源。`environment_texture` 按资源包优先级解析逻辑纹理路径。这些 API 仅返回 CPU 数据。
 
 ## 覆盖范围
 

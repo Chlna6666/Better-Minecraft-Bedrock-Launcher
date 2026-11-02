@@ -263,11 +263,17 @@ mod tests {
 }
 
 fn relevant_archive(path: &Path) -> bool {
-    ["textures", "models", "blocks", "definitions"]
-        .iter()
-        .any(|directory| {
-            path.starts_with(directory) || path == Path::new(&format!("{directory}.brarchive"))
-        })
+    [
+        "textures",
+        "models",
+        "blocks",
+        "definitions",
+        "local_lighting",
+    ]
+    .iter()
+    .any(|directory| {
+        path.starts_with(directory) || path == Path::new(&format!("{directory}.brarchive"))
+    })
 }
 
 fn is_json(path: &Path) -> bool {

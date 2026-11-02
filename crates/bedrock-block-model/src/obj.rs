@@ -16,7 +16,11 @@ use crate::{
 pub const MATERIAL_SLOT_SEPARATOR: &str = "__mat_";
 pub const FALLBACK_MATERIAL_NAME: &str = "minecraft_unknown";
 
+mod pbr;
+mod lighting;
+pub use lighting::LocalLightDefinition;
 mod resource_pack;
+pub use pbr::{ObjResolvedPbrTextureSet, PbrTextureLayer};
 use resource_pack::ObjResourcePack;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -439,7 +443,10 @@ impl ObjTextureResolver {
                             model_errors.push(error.to_string());
                         }
                         match ObjResourcePack::load(root.clone(), resources) {
-                            Ok(Some(pack)) => packs.push(pack),
+                            Ok(Some(pack)) => {
+                                if let Some(error) = &pack.local_light_error { model_errors.push(error.clone()); }
+                                packs.push(pack);
+                            },
                             Ok(None) => {}
                             Err(error) => model_errors.push(error.to_string()),
                         }
