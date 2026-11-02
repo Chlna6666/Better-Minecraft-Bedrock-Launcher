@@ -8,7 +8,7 @@ use crate::json::read_resource_json;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ObjResourcePack {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     texture_root: PathBuf,
     /// True for the unversioned base `vanilla` pack; texture and definition
     /// lookups always give it priority over versioned `vanilla_*` overlays.

@@ -1916,7 +1916,40 @@ impl Worker {
                 roots.len()
             );
         }
-        let resolver = Arc::new(ObjTextureResolver::with_pack_roots(&roots, "textures"));
+        let resolver = ObjTextureResolver::with_pack_roots(&roots, "textures");
+        // Version the material index by the ordered pack set: path strings and
+        // directory mtimes, so any pack update rotates the cache file.
+        let stamp = {
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for root in &roots {
+                for value in [
+                    root.to_string_lossy().into_owned(),
+                    root.metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .map(|modified| {
+                            modified
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|since| since.as_secs())
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0)
+                        .to_string(),
+                ] {
+                    for byte in value.as_bytes() {
+                        hash ^= u64::from(*byte);
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    hash ^= 0xff;
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            hash
+        };
+        resolver.open_material_index(
+            &crate::utils::file_ops::cache_subdir("world3d/material_index"),
+            stamp,
+        );
+        let resolver = Arc::new(resolver);
         let mut models = resolver.models().clone();
         if let Some(root) = discover_capture_library(&config.package_roots) {
             match models.load_capture_catalog(&root) {
@@ -3524,6 +3557,7 @@ impl Worker {
         self.resolver_time += elapsed;
         self.resolved_texture_lookup
             .extend(unresolved.into_iter().zip(resolved));
+        self.resolver.flush_material_index();
     }
 
     fn resolve_texture(
