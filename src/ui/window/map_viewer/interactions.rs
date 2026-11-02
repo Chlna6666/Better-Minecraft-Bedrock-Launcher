@@ -4150,6 +4150,16 @@ fn select_world_package_version(versions: &[LaunchVersionEntry], stamp: &[u32]) 
 
 pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
     let mut package_paths = Vec::new();
+    let version_stamp = world_version_stamp(world_path);
+    // The world directory often lives outside any installed package (for
+    // example the Roaming "Minecraft Bedrock" users tree), so resource
+    // inference from the world path can bind to unrelated or older installs.
+    // level.dat records the version that last opened the world: pick the
+    // BMCBL-managed version matching that stamp, else the closest newer one,
+    // and keep using that version's data\resource_packs stack.
+    if let Some(path) = best_bmcbl_version_for_stamp(&version_stamp) {
+        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
+    }
     let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
         let package_path = state.package_path.to_string();
         (!package_path.trim().is_empty()).then(|| PathBuf::from(package_path))
@@ -4161,7 +4171,6 @@ pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> 
     // Select the installed version that matches the version stamp saved in level.dat. Appending
     // every installed version here let later (unrelated) versions override the matching one,
     // which mixed textures and models from different game versions.
-    let version_stamp = world_version_stamp(world_path);
     let selected = cx.read_global(|state: &LocalVersionsState, _cx| {
         select_world_package_version(state.versions.as_ref(), &version_stamp)
     });
@@ -4176,6 +4185,51 @@ pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> 
     }
 
     package_paths
+}
+
+/// Finds the BMCBL-managed version directory that best matches the world's
+/// version stamp from level.dat: the closest definition match, else the
+/// newest installed version (a newer render stack stays data-compatible;
+/// an older one would not).
+fn best_bmcbl_version_for_stamp(stamp: &[u32]) -> Option<PathBuf> {
+    let versions_dir = crate::utils::file_ops::bmcbl_subdir("versions");
+    let entries = std::fs::read_dir(&versions_dir).ok()?;
+    let mut best: Option<(usize, Vec<u32>, PathBuf)> = None;
+    let mut newest: Option<(Vec<u32>, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let numbers: Vec<u32> = name
+            .split('.')
+            .filter_map(|part| part.parse::<u32>().ok())
+            .collect();
+        if numbers.is_empty() || !crate::core::minecraft::paths::has_vanilla_resource_pack(&path) {
+            continue;
+        }
+        if newest
+            .as_ref()
+            .is_none_or(|(best_numbers, _)| numbers > *best_numbers)
+        {
+            newest = Some((numbers.clone(), path.clone()));
+        }
+        let score = version_stamp_score(&numbers, stamp);
+        let better = match &best {
+            None => score > 0,
+            Some((best_score, best_numbers, _)) => {
+                score > *best_score || (score == *best_score && numbers > *best_numbers)
+            }
+        };
+        if better {
+            best = Some((score, numbers, path));
+        }
+    }
+    best.map(|(_, _, path)| path)
+        .or_else(|| newest.map(|(_, path)| path))
 }
 
 pub(super) fn take_pointer_captures(
