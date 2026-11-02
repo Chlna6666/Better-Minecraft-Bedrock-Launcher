@@ -1151,6 +1151,7 @@ fn emit_preview_3d_mesh_update(
 pub(super) struct Preview3dMeshBuilder {
     bounds: SlimeChunkBounds,
     mask_unprocessed_neighbors: bool,
+    ambient_occlusion: bool,
     combined_meshes: Vec<Preview3dChunkMesh>,
     mesh_generation: u64,
     min_y: i16,
@@ -1190,6 +1191,7 @@ impl Preview3dMeshBuilder {
         Self {
             bounds,
             mask_unprocessed_neighbors: true,
+            ambient_occlusion: true,
             combined_meshes: Vec::new(),
             mesh_generation: 0,
             min_y: i16::MAX,
@@ -3662,9 +3664,10 @@ fn preview_3d_resolved_detail_shape_for_block(
     let query = preview_3d_block_state_query(state);
     // Exact registry state wins for non-contextual detail geometry. Incomplete
     // neighbor-driven states stay on the established wall/fence/stair logic.
-    if let Some(shape)=repository.captured_shape(&query)
+    if let Some(shape) = repository
+        .captured_shape(&query)
         .map(preview_3d_detail_shape_from_model_shape)
-        .filter(|shape|!shape.is_empty() && !preview_3d_shape_is_full_cube(shape))
+        .filter(|shape| !shape.is_empty() && !preview_3d_shape_is_full_cube(shape))
     {
         return Some(shape);
     }

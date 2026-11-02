@@ -18,7 +18,13 @@ impl Preview3dChunkBlocks {
 }
 
 impl Preview3dMeshBuilder {
+    pub(in crate::ui::window::map_viewer) fn set_ambient_occlusion(&mut self, enabled: bool) {
+        self.ambient_occlusion = enabled;
+    }
     pub(super) fn stream_ambient_light(&self, block: BlockKey, normal: [i32; 3]) -> [f32; 4] {
+        if !self.ambient_occlusion {
+            return [1.; 4];
+        }
         gpui_3d::voxel_ambient_light(normal, preview_3d_stream_face_corners(normal), |offset| {
             let neighbor = BlockKey {
                 x: block.x + offset[0],
