@@ -57,6 +57,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "tga"
 mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
 bedrock-world = { path = "crates/bedrock-world" }
 bedrock-block-model = { path = "crates/bedrock-block-model" }
+bedrock-light = { path = "crates/bedrock-light" }
 bedrock-voxel = { path = "crates/bedrock-voxel" }
 
 serde = { version = "1.0.219", features = ["derive", "rc"] }
@@ -154,6 +155,7 @@ members = [
     "crates/bedrock-block-model",
     "crates/bedrock-leveldb",
     "crates/bedrock-world",
+    "crates/bedrock-light",
     "crates/bedrock-render",
     "crates/bedrock-voxel",
     "crates/egpui",

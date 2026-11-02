@@ -809,6 +809,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bedrock-light"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bedrock-render"
 version = "0.7.0"
 dependencies = [
@@ -1107,6 +1114,7 @@ dependencies = [
  "base64 0.23.0",
  "bedrock-block-model",
  "bedrock-leveldb",
+ "bedrock-light",
  "bedrock-render",
  "bedrock-voxel",
  "bedrock-world",

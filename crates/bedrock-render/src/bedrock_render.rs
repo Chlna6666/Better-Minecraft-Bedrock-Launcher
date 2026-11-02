@@ -5,8 +5,6 @@
 //! benchmark support for map tooling.
 
 mod error;
-mod lighting;
-pub use lighting::{LightCell, LightError, LightVolume};
 /// Exact non-rectangular selection planning with separate compact 2D-surface and full 3D-chunk loads.
 pub mod exact_selection;
 mod palette;

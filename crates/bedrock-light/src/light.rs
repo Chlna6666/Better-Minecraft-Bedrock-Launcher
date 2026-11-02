@@ -9,6 +9,16 @@ impl LightCell {
     pub const AIR: Self = Self(0);
     /// Non-emitting cell blocking all incoming light.
     pub const OPAQUE: Self = Self(0xf0);
+    /// Block-emitted light on the 0..=15 scale.
+    #[must_use]
+    pub const fn emission(self) -> u8 {
+        self.0 & 15
+    }
+    /// Attenuation on the 0..=15 scale; 15 blocks incoming light.
+    #[must_use]
+    pub const fn attenuation(self) -> u8 {
+        self.0 >> 4
+    }
     /// Creates a cell on the 0..=15 emission/attenuation scale.
     #[must_use]
     pub fn new(emission: u8, attenuation: u8) -> Option<Self> {
@@ -140,5 +150,5 @@ fn spread(size: [u32; 3], cells: &[LightCell], levels: &mut [u8], shift: u8) {
 }
 
 #[cfg(test)]
-#[path = "lighting_tests.rs"]
+#[path = "light_tests.rs"]
 mod tests;

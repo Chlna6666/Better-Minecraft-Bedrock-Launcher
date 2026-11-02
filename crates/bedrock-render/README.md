@@ -8,13 +8,8 @@ queries. Rendering, palettes, tile planning, image encoding, cancellation,
 threading, previews, and benchmarks live in this separate crate so the world
 parser remains lightweight.
 
-`LightVolume::solve` provides bounded six-neighbor sky/block-light propagation independently of
-world storage and GPU rendering. It preserves level-15 skylight straight down through transparent
-cells and attenuates lateral/block light. Re-solving a region removes old light sources. Inputs
-must cover the full vertical columns and at least 15 horizontal halo cells; unknown cells should
-be opaque. The editor solves 3x3 chunk neighborhoods in its worker, caches immutable center fields,
-invalidates changed sky columns across height bands, and samples the same levels on CPU/GPU.
-It does not persist light arrays to worlds or reproduce all Bedrock state/shape rules.
+Storage-independent voxel sky/block-light propagation belongs to
+[`bedrock-light`](../bedrock-light/README.md). This crate retains its 2D tile-rendering scope.
 
 This repository is designed to be checked out independently. The current MSRV is
 Rust 1.88, and the default feature set includes `async` and `webp`. GPU
