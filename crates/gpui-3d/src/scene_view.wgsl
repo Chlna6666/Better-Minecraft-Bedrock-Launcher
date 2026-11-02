@@ -23,6 +23,7 @@ struct FrameParams {
     _padding: f32,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
+    voxel_settings:vec4<f32>,sun_direction:vec4<f32>,sun_color:vec4<f32>,shadow_matrix:mat4x4<f32>,shadow_settings:vec4<f32>,
 };
 
 struct DrawParams {
@@ -161,51 +162,6 @@ fn vs_main(
 
 const PI: f32 = 3.14159265359;
 
-fn fresnel_schlick(cosine: f32, f0: vec3<f32>) -> vec3<f32> {
-    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
-}
-
-fn ggx_normal_distribution(normal_dot_half: f32, roughness: f32) -> f32 {
-    let roughness_alpha = roughness * roughness;
-    let roughness_alpha_squared = roughness_alpha * roughness_alpha;
-    let denominator = normal_dot_half * normal_dot_half * (roughness_alpha_squared - 1.0) + 1.0;
-    return roughness_alpha_squared / max(PI * denominator * denominator, 0.0001);
-}
-
-fn schlick_ggx_geometry(normal_dot_direction: f32, roughness: f32) -> f32 {
-    let geometry_k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-    return normal_dot_direction
-        / max(normal_dot_direction * (1.0 - geometry_k) + geometry_k, 0.0001);
-}
-
-fn cook_torrance_lighting(
-    base_color: vec3<f32>,
-    metallic: f32,
-    roughness: f32,
-    surface_normal: vec3<f32>,
-    view_direction: vec3<f32>,
-    light_direction: vec3<f32>,
-    light_radiance: vec3<f32>,
-) -> vec3<f32> {
-    let normal_dot_light = max(dot(surface_normal, light_direction), 0.0);
-    let normal_dot_view = max(dot(surface_normal, view_direction), 0.0);
-    if (normal_dot_light <= 0.0 || normal_dot_view <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let half_vector = normalize(view_direction + light_direction);
-    let normal_dot_half = max(dot(surface_normal, half_vector), 0.0);
-    let view_dot_half = max(dot(view_direction, half_vector), 0.0);
-    let base_reflectance = mix(vec3<f32>(0.04), base_color, metallic);
-    let fresnel = fresnel_schlick(view_dot_half, base_reflectance);
-    let normal_distribution = ggx_normal_distribution(normal_dot_half, roughness);
-    let geometric_attenuation = schlick_ggx_geometry(normal_dot_view, roughness)
-        * schlick_ggx_geometry(normal_dot_light, roughness);
-    let specular = normal_distribution * geometric_attenuation * fresnel
-        / max(4.0 * normal_dot_view * normal_dot_light, 0.0001);
-    let diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic) * base_color / PI;
-    return (diffuse + specular) * light_radiance * normal_dot_light;
-}
-
 fn apply_normal_map(input: VertexOutput, surface_normal: vec3<f32>) -> vec3<f32> {
     let projected_world_tangent = input.world_tangent.xyz
         - surface_normal * dot(surface_normal, input.world_tangent.xyz);
@@ -268,9 +224,9 @@ fn triangle_edge_coverage(barycentrics: vec3<f32>, edge_mask: u32) -> f32 {
     return visible_edge_coverage;
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
     let draw_params = draws[input.draw_index];
+    if(hdr && draw_params.alpha_mode==ALPHA_MODE_BLEND){discard;}
     var base_color = draw_params.base_color * input.vertex_color;
     if ((draw_params.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u
         && (draw_params.texture_flags & TEXTURE_FLAG_UV) != 0u) {
@@ -299,8 +255,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     if (draw_params.shading_model == SHADING_MODEL_UNLIT) {
-        let unlit_color = apply_fog(base_color.rgb
+        var unlit_color = apply_fog(base_color.rgb
             + draw_params.emissive.rgb * draw_params.emissive.a, input.world_position);
+        if(hdr){unlit_color=base_color.rgb+draw_params.emissive.rgb*draw_params.emissive.a;}
         if (alpha_mode == ALPHA_MODE_BLEND) {
             let output_alpha = alpha * edge_coverage;
             return vec4<f32>(unlit_color * output_alpha, output_alpha);
@@ -315,16 +272,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let view_direction = normalize(frame.camera_position.xyz - input.world_position);
     var metallic = clamp(draw_params.metallic, 0.0, 1.0);
     var roughness = clamp(draw_params.roughness, 0.045, 1.0);
+    var packed_emission=0.0;
     if ((draw_params.texture_flags & TEXTURE_FLAG_METALLIC_ROUGHNESS) != 0u) {
         let metallic_roughness_sample =
             textureSample(metallic_roughness_texture, material_sampler, input.uv);
-        metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
-        roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);
+        if((draw_params.texture_flags&16u)!=0u){metallic=metallic_roughness_sample.r;roughness=max(metallic_roughness_sample.b,0.045);packed_emission=metallic_roughness_sample.g;}
+        else{metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
+        roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);}
     }
-    var radiance = draw_params.emissive.rgb * draw_params.emissive.a;
+    var radiance = draw_params.emissive.rgb * draw_params.emissive.a+base_color.rgb*packed_emission;
     var ambient_radiance = vec3<f32>(0.03);
     for (var light_index = 0u; light_index < draw_params.light_count; light_index += 1u) {
         let light = lights[light_index];
+        if(hdr && (light.kind==LIGHT_KIND_POINT || light.kind==4u || light.kind==5u || light.kind==LIGHT_KIND_SPOT)){continue;}
         if (light.kind == LIGHT_KIND_AMBIENT) {
             ambient_radiance += light.color * light.intensity;
         } else if (light.kind == LIGHT_KIND_DIRECTIONAL) {
@@ -338,20 +298,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 light_direction,
                 light.color * light.intensity,
             );
-        } else if (light.kind == LIGHT_KIND_POINT) {
+        } else if (light.kind == LIGHT_KIND_POINT || light.kind == 4u || light.kind == 5u) {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
             let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
                 / max(light_distance * light_distance, 0.01);
-            radiance += cook_torrance_lighting(
+            radiance += local_brdf(
                 base_color.rgb,
                 metallic,
                 roughness,
                 surface_normal,
                 view_direction,
                 normalize(surface_to_light),
-                light.color * light.intensity * attenuation,
+                light.color * light.intensity * attenuation, light.kind==4u, select(0.0,light.outer_cone_cosine,light.kind==4u || light.kind==5u),light_distance,
             );
         } else if (light.kind == LIGHT_KIND_SPOT) {
             let surface_to_light = light.position - input.world_position;
@@ -382,11 +342,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         occlusion_factor = mix(1.0, occlusion, draw_params.occlusion_strength);
     }
     radiance += base_color.rgb * ambient_radiance * (1.0 - metallic) * occlusion_factor;
-    let output_color = apply_fog(pow(
+    if(hdr){radiance+=cook_torrance_lighting(base_color.rgb,metallic,roughness,surface_normal,view_direction,frame.sun_direction.xyz,frame.sun_color.rgb*frame.sun_direction.w*3.0);}
+    var output_color = apply_fog(pow(
         max(radiance / (radiance + vec3<f32>(1.0)), vec3<f32>(0.0)),
         vec3<f32>(1.0 / 2.2),
     ), input.world_position);
 
+    if(hdr){output_color=radiance;}
     if (alpha_mode == ALPHA_MODE_BLEND) {
         let output_alpha = alpha * edge_coverage;
         return vec4<f32>(output_color * output_alpha, output_alpha);
@@ -395,7 +357,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 fn apply_fog(color: vec3<f32>, world_position: vec3<f32>) -> vec3<f32> {
+    if(frame.shadow_settings.w>0.5){return color;}
     let amount = clamp((distance(world_position, frame.camera_position) - frame.fog_range.x)
         / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a;
     return mix(color, frame.fog_color.rgb, amount);
 }
+@fragment fn fs_main(input:VertexOutput)->@location(0) vec4<f32>{return scene_fragment(input,false);}
+@fragment fn fs_hdr(input:VertexOutput)->@location(0) vec4<f32>{return scene_fragment(input,true);}
+fn scene_base(input:VertexOutput)->vec4<f32>{
+    let draw=draws[input.draw_index];var color=draw.base_color*input.vertex_color;
+    if((draw.texture_flags&1u)!=0u){color*=textureSample(albedo_texture,material_sampler,input.uv);}
+    if(draw.alpha_mode==ALPHA_MODE_MASK && color.a<draw.alpha_cutoff || color.a<0.001){discard;}
+    return color;
+}
+fn oct_normal(n:vec3<f32>)->vec2<f32>{let p=n/(abs(n.x)+abs(n.y)+abs(n.z));return select(p.xy,(vec2<f32>(1.0)-abs(p.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),p.xy>=vec2<f32>(0.0)),p.z<0.0);}
+@fragment fn fs_scene_surface(input:VertexOutput)->@location(0) vec4<f32>{
+    let color=scene_base(input);let draw=draws[input.draw_index];var n=normalize(input.world_normal);
+    if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n);}
+    var roughness=draw.roughness;var metallic=draw.metallic;
+    if((draw.texture_flags&8u)!=0u){let p=textureSample(metallic_roughness_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
+    let kind=select(select(metallic,4.0+color.a,draw.alpha_mode==ALPHA_MODE_BLEND),2.0+color.a,(draw.texture_flags&64u)!=0u);
+    return vec4<f32>(oct_normal(n),clamp(roughness,0.06,1.0),select(kind,-1.0,draw.shading_model==SHADING_MODEL_UNLIT && draw.alpha_mode!=ALPHA_MODE_BLEND));
+}
+@fragment fn fs_scene_albedo(input:VertexOutput)->@location(0) vec4<f32>{let color=scene_base(input);let draw=draws[input.draw_index];return vec4<f32>(color.rgb,draw.emissive.a);}
+@fragment fn fs_scene_shadow(input:VertexOutput)->@location(0) vec4<f32>{if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}let color=scene_base(input);return vec4<f32>(1.0);}

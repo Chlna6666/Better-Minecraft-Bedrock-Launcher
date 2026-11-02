@@ -195,51 +195,6 @@ fn vs_scene(
     return output;
 }
 
-fn fresnel_schlick(cosine: f32, f0: vec3<f32>) -> vec3<f32> {
-    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
-}
-
-fn ggx_normal_distribution(normal_dot_half: f32, roughness: f32) -> f32 {
-    let roughness_alpha = roughness * roughness;
-    let roughness_alpha_squared = roughness_alpha * roughness_alpha;
-    let denominator = normal_dot_half * normal_dot_half * (roughness_alpha_squared - 1.0) + 1.0;
-    return roughness_alpha_squared / max(PI * denominator * denominator, 0.0001);
-}
-
-fn schlick_ggx_geometry(normal_dot_direction: f32, roughness: f32) -> f32 {
-    let geometry_k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-    return normal_dot_direction
-        / max(normal_dot_direction * (1.0 - geometry_k) + geometry_k, 0.0001);
-}
-
-fn cook_torrance_lighting(
-    base_color: vec3<f32>,
-    metallic: f32,
-    roughness: f32,
-    surface_normal: vec3<f32>,
-    view_direction: vec3<f32>,
-    light_direction: vec3<f32>,
-    light_radiance: vec3<f32>,
-) -> vec3<f32> {
-    let normal_dot_light = max(dot(surface_normal, light_direction), 0.0);
-    let normal_dot_view = max(dot(surface_normal, view_direction), 0.0);
-    if (normal_dot_light <= 0.0 || normal_dot_view <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let half_vector = normalize(view_direction + light_direction);
-    let normal_dot_half = max(dot(surface_normal, half_vector), 0.0);
-    let view_dot_half = max(dot(view_direction, half_vector), 0.0);
-    let base_reflectance = mix(vec3<f32>(0.04), base_color, metallic);
-    let fresnel = fresnel_schlick(view_dot_half, base_reflectance);
-    let normal_distribution = ggx_normal_distribution(normal_dot_half, roughness);
-    let geometric_attenuation = schlick_ggx_geometry(normal_dot_view, roughness)
-        * schlick_ggx_geometry(normal_dot_light, roughness);
-    let specular = normal_distribution * geometric_attenuation * fresnel
-        / max(4.0 * normal_dot_view * normal_dot_light, 0.0001);
-    let diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic) * base_color / PI;
-    return (diffuse + specular) * light_radiance * normal_dot_light;
-}
-
 fn apply_normal_map(input: VertexOutput, surface_normal: vec3<f32>) -> vec3<f32> {
     let projected_world_tangent = input.world_tangent.xyz
         - surface_normal * dot(surface_normal, input.world_tangent.xyz);
@@ -346,15 +301,17 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
     let view_direction = normalize(frame.camera_position.xyz - input.world_position);
     var metallic = clamp(draw_params.metallic, 0.0, 1.0);
     var roughness = clamp(draw_params.roughness, 0.045, 1.0);
+    var packed_emission=0.0;
     if ((draw_params.texture_flags & TEXTURE_FLAG_METALLIC_ROUGHNESS) != 0u) {
         let metallic_roughness_sample =
             textureSample(metallic_roughness_texture, material_sampler, input.uv);
-        metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
-        roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);
+        if((draw_params.texture_flags&16u)!=0u){metallic=metallic_roughness_sample.r;roughness=max(metallic_roughness_sample.b,0.045);packed_emission=metallic_roughness_sample.g;}
+        else{metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
+        roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);}
     }
     let shadow_visibility_value = shadow_visibility(input.light_clip, surface_normal);
 
-    var radiance = draw_params.emissive.rgb * draw_params.emissive.a;
+    var radiance = draw_params.emissive.rgb * draw_params.emissive.a+base_color.rgb*packed_emission;
     var ambient_radiance = vec3<f32>(0.03);
     if (draw_params.alpha_mode == ALPHA_MODE_BLEND) {
         // Blended surfaces keep their authored shading but must not be darkened by shadows
@@ -375,20 +332,20 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
                 light_direction,
                 light.color * light.intensity * shadow_visibility_value,
             );
-        } else if (light.kind == LIGHT_KIND_POINT) {
+        } else if (light.kind == LIGHT_KIND_POINT || light.kind == 4u || light.kind == 5u) {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
             let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
                 / max(light_distance * light_distance, 0.01);
-            radiance += cook_torrance_lighting(
+            radiance += local_brdf(
                 base_color.rgb,
                 metallic,
                 roughness,
                 surface_normal,
                 view_direction,
                 normalize(surface_to_light),
-                light.color * light.intensity * attenuation,
+                light.color * light.intensity * attenuation, light.kind==4u, select(0.0,light.outer_cone_cosine,light.kind==4u || light.kind==5u),light_distance,
             );
         } else if (light.kind == LIGHT_KIND_SPOT) {
             let surface_to_light = light.position - input.world_position;

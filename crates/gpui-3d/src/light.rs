@@ -193,6 +193,21 @@ pub enum Light {
         /// Influence radius in node-local units.
         range: f32,
     },
+    /// Finite-size spherical emitter with an approximate specular lobe.
+    Spherical {
+        /// Local-space light position.
+        position: Vec3,
+        /// Linear RGB color.
+        color: [f32; 3],
+        /// Non-negative intensity.
+        intensity: f32,
+        /// Influence radius in node-local units.
+        range: f32,
+        /// Non-negative emitter radius, used to avoid self-occluding its own geometry.
+        radius: f32,
+        /// Suppresses the direct specular lobe for diffuse-only authored lights.
+        diffuse_only: bool,
+    },
     /// Soft-cone spotlight with node-local position and direction.
     Spot(SpotLight),
     /// Ambient scene illumination.
@@ -226,6 +241,21 @@ pub enum PreparedLight {
         intensity: f32,
         /// Influence radius in world units.
         range: f32,
+    },
+    /// Finite-size spherical emitter with an approximate specular lobe.
+    Spherical {
+        /// World-space light position.
+        position: Vec3,
+        /// Linear RGB color.
+        color: [f32; 3],
+        /// Non-negative intensity.
+        intensity: f32,
+        /// Influence radius in world units.
+        range: f32,
+        /// Non-negative emitter radius, used to avoid self-occluding its own geometry.
+        radius: f32,
+        /// Suppresses the direct specular lobe for diffuse-only authored lights.
+        diffuse_only: bool,
     },
     /// Soft-cone spotlight in world space.
     Spot {

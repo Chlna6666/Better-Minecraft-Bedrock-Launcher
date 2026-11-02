@@ -458,7 +458,13 @@ impl VoxelMeshSource {
                     .expect("static material has capacity");
                 let slot = self.parts[part].first_index() as usize / 6 + counts[part];
                 counts[part] += 1;
-                quads[slot] = face.vertices;
+                let illumination = self.static_light(face);
+                quads[slot] = face.vertices.map(|mut vertex| {
+                    for color in &mut vertex.color[..3] {
+                        *color *= illumination;
+                    }
+                    vertex
+                });
             }
             self.append_instance_fallback(&mut quads, &mut counts);
             Mesh::from_voxel_quads_without_raycast(quads, self.parts.to_vec())

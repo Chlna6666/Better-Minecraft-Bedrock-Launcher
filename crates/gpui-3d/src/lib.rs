@@ -86,8 +86,8 @@ pub use asset::{ImportedScene, ImportedTriangle, load_imported_bytes, load_impor
 pub use camera::{Camera, CameraError, OrbitCamera, Projection};
 pub use light::{Light, LightError, PreparedLight, SpotCone, SpotLight};
 pub use material::{
-    AlphaMode, Material, MaterialId, ShadingModel, TextureAsset, TextureAssetId, TextureColorSpace,
-    TextureError, TextureSampling,
+    AlphaMode, Material, MaterialId, PbrTextureLayout, ShadingModel, TextureAsset, TextureAssetId,
+    TextureColorSpace, TextureError, TextureSampling,SurfaceKind,
 };
 pub use math::{Aabb, Mat4, Quat, Ray, Transform, Vec2, Vec3};
 pub use mesh::{GeneratedTangents, Mesh, MeshError, MeshId, MeshPart, TriangleEdgeMask, Vertex};
@@ -101,5 +101,6 @@ pub use render::{
 pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Scene, SceneError};
 pub use scene_view::{
     DistanceFog, ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,
-    SceneViewRaycastScratch, SceneViewTextureError, scene_view,
+    SceneViewRaycastScratch, SceneViewTextureError, VoxelDisplay, VoxelIllumination, VoxelShading,
+    VoxelShadingError, ScreenEffects,scene_view,
 };

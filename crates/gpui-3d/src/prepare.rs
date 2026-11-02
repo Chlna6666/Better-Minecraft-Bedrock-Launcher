@@ -705,6 +705,21 @@ fn transform_light(light: Light, world: Mat4) -> PreparedLight {
             intensity,
             range: range * max_world_scale(world),
         },
+        Light::Spherical {
+            position,
+            color,
+            intensity,
+            range,
+            radius,
+            diffuse_only,
+        } => PreparedLight::Spherical {
+            position: world.transform_point(position),
+            color,
+            intensity,
+            range: range * max_world_scale(world),
+            radius: radius * max_world_scale(world),
+            diffuse_only,
+        },
         Light::Spot(light) => PreparedLight::Spot {
             position: world.transform_point(light.position()),
             direction: world

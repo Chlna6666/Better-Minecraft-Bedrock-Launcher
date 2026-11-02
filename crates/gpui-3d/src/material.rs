@@ -374,8 +374,30 @@ pub enum ShadingModel {
 }
 
 /// Metallic-roughness surface material.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PbrTextureLayout {
+    /// glTF: roughness in green and metallic in blue, multiplied by scalar factors.
+    #[default]
+    RoughnessMetallic,
+    /// Metallic in red, emissive intensity in green and roughness in blue.
+    MetallicEmissiveRoughness,
+}
+
+/// Physical surface specialization for screen-space transmission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceKind {
+    /// Ordinary opaque, alpha-tested or thin transparent material.
+    #[default]
+    Standard,
+    /// Water volume with dielectric reflection, waves and absorption.
+    Water,
+}
+
+/// Metallic-roughness surface material.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Material {
+    /// Specialized physical surface response, independent of alpha coverage.
+    pub surface: SurfaceKind,
     id: MaterialId,
     /// Linear base RGBA color.
     pub base_color: [f32; 4],
@@ -406,10 +428,12 @@ pub struct Material {
     /// Optional linear red-channel ambient-occlusion texture, sampled with the mesh UVs.
     /// Create the asset with [`TextureAsset::linear_rgba8`].
     pub occlusion_texture: Option<TextureAssetId>,
-    /// Optional linear metallic-roughness texture following the glTF 2.0 channel layout:
-    /// green is roughness and blue is metallic. The scalar factors multiply the sampled values.
+    /// Optional linear surface texture. The default glTF 2.0 layout has green roughness and blue
+    /// metallic, multiplied by scalar factors. See [`PbrTextureLayout`] for direct MER channels.
     /// Create the asset with [`TextureAsset::linear_rgba8`].
     pub metallic_roughness_texture: Option<TextureAssetId>,
+    /// Channel interpretation for the packed surface texture.
+    pub pbr_texture_layout: PbrTextureLayout,
     /// Strength of the occlusion texture in `0..=1`; zero disables occlusion.
     ///
     /// This attenuates ambient illumination only; direct lights remain unaffected.
@@ -428,6 +452,7 @@ impl Material {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             id: MaterialId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+            surface: SurfaceKind::Standard,
             base_color: [1.0; 4],
             metallic: 0.0,
             roughness: 0.5,
@@ -441,6 +466,7 @@ impl Material {
             normal_texture: None,
             occlusion_texture: None,
             metallic_roughness_texture: None,
+            pbr_texture_layout: PbrTextureLayout::default(),
             occlusion_strength: 1.0,
         }
     }

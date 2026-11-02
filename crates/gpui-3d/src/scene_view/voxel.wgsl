@@ -40,6 +40,11 @@ struct FrameParams {
     _padding: f32,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
+    voxel_settings:vec4<f32>,
+    sun_direction:vec4<f32>,
+    sun_color:vec4<f32>,
+    shadow_matrix:mat4x4<f32>,
+    shadow_settings:vec4<f32>,
 };
 
 struct VoxelOutput {
@@ -48,17 +53,23 @@ struct VoxelOutput {
     @location(3) uv: vec2<f32>,
     @location(4) @interpolate(flat) draw_index: u32,
     @location(5) fog_distance: f32,
+    @location(6) world_position:vec3<f32>,
+    @location(7) surface_normal:vec3<f32>,
+    @location(8) quad_uv:vec2<f32>,
 };
 
 const ALPHA_MODE_MASK: u32 = 1u;
 const ALPHA_MODE_BLEND: u32 = 2u;
 const TEXTURE_FLAG_ALBEDO: u32 = 1u;
 const TEXTURE_FLAG_UV: u32 = 4u;
+const PI:f32=3.141592653589793;
 
 @group(0) @binding(0) var<storage, read> vertices: array<VoxelVertex>;
 @group(0) @binding(1) var<storage, read> draws: array<DrawParams>;
 @group(0) @binding(3) var albedo_texture: texture_2d<f32>;
 @group(0) @binding(4) var material_sampler: sampler;
+@group(0) @binding(5) var normal_texture:texture_2d<f32>;
+@group(0) @binding(10) var material_texture:texture_2d<f32>;
 @group(0) @binding(8) var<storage, read> instances: array<Instance>;
 @group(0) @binding(9) var<uniform> frame: FrameParams;
 @group(0) @binding(11) var<storage, read> visible_instances: array<u32>;
@@ -69,11 +80,28 @@ struct GeneratedFace {cell:u32,model_face:u32,height:f32,padding:u32};
 @group(0) @binding(13) var<storage, read> generated_faces:array<GeneratedFace>;
 @group(0) @binding(14) var<storage, read> lighting_words:array<u32>;
 
-fn cell_brightness(cell:u32)->f32 {
+fn cell_levels(cell:u32)->vec2<f32> {
     let word=lighting_words[generated_templates.size.w+cell/4u];
     let packed=(word>>((cell%4u)*8u))&255u;
-    return f32(max(packed&15u,packed>>4u))/15.0;
+    return vec2<f32>(f32(packed&15u),f32(packed>>4u))/15.0;
 }
+
+fn static_levels(p:vec3<f32>)->vec2<f32> {
+    let q=vec3<i32>(floor(p-generated_templates.origin.xyz));
+    let size=generated_templates.size.xyz;
+    if(any(q<vec3<i32>(0))||any(q>=vec3<i32>(size))){return vec2<f32>(0.0);}
+    return cell_levels((u32(q.z)*size.y+u32(q.y))*size.x+u32(q.x));
+}
+
+fn quad_coordinates(corner:u32)->vec2<f32> {return array<vec2<f32>,4>(vec2<f32>(0.0),vec2<f32>(1.0,0.0),vec2<f32>(1.0),vec2<f32>(0.0,1.0))[corner];}
+
+fn quad_normal(a:vec3<f32>,b:vec3<f32>,c:vec3<f32>,instance:u32)->vec3<f32> {
+    let x=(instances[instance].model*vec4<f32>(b-a,0.0)).xyz;
+    let y=(instances[instance].model*vec4<f32>(c-a,0.0)).xyz;
+    let n=cross(x,y);return n/max(length(n),0.00001);
+}
+
+fn template_position(v:VoxelVertex,height:f32)->vec3<f32> {return vec3<f32>(v.position_x,v.position_y*height,v.position_z);}
 
 @vertex
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
@@ -90,16 +118,31 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     vertex.position_y=vertex.position_y*descriptor.height+position.y;
     vertex.position_z+=position.z;
     var shaded=shade_voxel_value(vertex,instance_index);
-    if(descriptor.cell!=0xffffffffu && generated_templates.size.w!=0u){
+    let face=generated_templates.faces[descriptor.model_face];
+    let a=template_position(face.vertices[0],descriptor.height);
+    let b=template_position(face.vertices[1],descriptor.height);
+    let c=template_position(face.vertices[2],descriptor.height);
+    if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance_index);}
+    shaded.quad_uv=quad_coordinates(corners[index%6u]);
+    if(frame.voxel_settings.y!=1.0 && generated_templates.size.w!=0u){
+        var light=vec2<f32>(0.0);
+        if(descriptor.cell==0xffffffffu){
+            let center=(a+b+c+template_position(face.vertices[3],descriptor.height))*0.25;
+            let normal=cross(b-a,c-a);let n=normal/max(length(normal),0.00001)*0.001;
+            light=max(static_levels(center-n),static_levels(center+n));
+        }else{
         let delta=bitcast<i32>(generated_templates.faces[descriptor.model_face].info.y);
         let neighbor=i32(descriptor.cell)+delta;
-        var light=cell_brightness(descriptor.cell);
+        light=cell_levels(descriptor.cell);
         let count=generated_templates.size.x*generated_templates.size.y*generated_templates.size.z;
-        if(neighbor>=0 && u32(neighbor)<count){light=max(light,cell_brightness(u32(neighbor)));}
-        let factor=generated_templates.origin.w+(1.0-generated_templates.origin.w)*light*light;
+        if(neighbor>=0 && u32(neighbor)<count){light=max(light,cell_levels(u32(neighbor)));}
+        }
+        let sky=select(1.0,frame.voxel_settings.z,frame.voxel_settings.w!=0.0);
+        let brightness=max(light.x,light.y*sky);
+        let factor=generated_templates.origin.w+(1.0-generated_templates.origin.w)*brightness*brightness;
         shaded.vertex_color=vec4<f32>(shaded.vertex_color.rgb*factor,shaded.vertex_color.a);
     }
-    if(descriptor.padding!=0u){
+    if(frame.voxel_settings.y!=1.0 && descriptor.padding!=0u){
         let ao=f32((descriptor.padding>>(corners[index%6u]*8u))&255u)/255.0;
         shaded.vertex_color=vec4<f32>(shaded.vertex_color.rgb*ao,shaded.vertex_color.a);
     }
@@ -146,7 +189,13 @@ fn shade_voxel(vertex_index: u32, instance_index: u32) -> VoxelOutput {
         quad_expansion,
     );
     let vertex = vertices[local_vertex + base];
-    return shade_voxel_value(vertex,instance_index);
+    var shaded=shade_voxel_value(vertex,instance_index);
+    shaded.quad_uv=quad_coordinates(local_vertex%4u);
+    if(quad_expansion && frame.voxel_settings.y==2.0){
+        let q=local_vertex/4u*4u+base;
+        shaded.surface_normal=quad_normal(template_position(vertices[q],1.0),template_position(vertices[q+1u],1.0),template_position(vertices[q+2u],1.0),instance_index);
+    }
+    return shaded;
 }
 
 fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
@@ -183,6 +232,7 @@ fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
     ) / 255.0;
     output.uv = vertex.uv;
     output.fog_distance = distance(world_position.xyz, frame.camera_position);
+    output.world_position=world_position.xyz;output.surface_normal=vec3<f32>(0.0);output.quad_uv=vec2<f32>(0.0);
     return output;
 }
 
@@ -199,28 +249,67 @@ fn element_bounds_coverage(screen_position: vec2<f32>) -> f32 {
     return clamp(edge_distance_pixels / frame.blend_edge_feather_px, 0.0, 1.0);
 }
 
-@fragment
-fn fs_voxel(input: VoxelOutput) -> @location(0) vec4<f32> {
+fn voxel_color(input:VoxelOutput)->vec4<f32> {
     let draw = draws[input.draw_index];
     var color = draw.base_color * input.vertex_color;
-    if ((draw.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u) {
+    if (frame.voxel_settings.x==0.0 && (draw.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u) {
         if ((draw.texture_flags & TEXTURE_FLAG_UV) != 0u) {
             color *= textureSample(albedo_texture, material_sampler, input.uv);
         } else {
             color *= textureSample(albedo_texture, material_sampler, vec2<f32>(0.5, 0.5));
         }
     }
+    return color;
+}
+fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
+    let draw=draws[input.draw_index];let color=voxel_color(input);
     let alpha = clamp(color.a, 0.0, 1.0);
     if (draw.alpha_mode == ALPHA_MODE_MASK && alpha < draw.alpha_cutoff) {
         discard;
     }
     let fog = clamp((input.fog_distance - frame.fog_range.x)
-        / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a;
-    let rgb = mix(color.rgb + draw.emissive.rgb * draw.emissive.a, frame.fog_color.rgb, fog);
+        / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a*select(1.0,0.0,frame.shadow_settings.w>0.5);
+    var lit=color.rgb+draw.emissive.rgb*draw.emissive.a;
+    if(frame.voxel_settings.y==2.0){lit=shade_surface(input,draw,color.rgb);}
+    let rgb = mix(lit, frame.fog_color.rgb, fog);
+    if(frame.voxel_settings.x==2.0){
+        let edge=min(input.quad_uv,vec2<f32>(1.0)-input.quad_uv)/max(fwidth(input.quad_uv),vec2<f32>(0.00001));
+        if(min(edge.x,edge.y)>1.2){discard;}
+    }
     if (draw.alpha_mode == ALPHA_MODE_BLEND) {
         let coverage = element_bounds_coverage(input.position.xy);
         let output_alpha = alpha * coverage;
         return vec4<f32>(rgb * output_alpha, output_alpha);
     }
     return vec4<f32>(rgb, 1.0);
+}
+@fragment fn fs_voxel(input:VoxelOutput)->@location(0) vec4<f32>{return voxel_fragment(input);}
+@fragment fn fs_voxel_capture(input:VoxelOutput)->@location(0) vec4<f32>{
+    if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}
+    return voxel_fragment(input);
+}
+fn test_voxel_alpha(input:VoxelOutput)->vec4<f32> {
+    let color=voxel_color(input);let draw=draws[input.draw_index];
+    if(draw.alpha_mode==ALPHA_MODE_MASK && color.a<draw.alpha_cutoff || color.a<0.001){discard;}
+    return color;
+}
+fn encode_normal(n:vec3<f32>)->vec2<f32>{
+    let p=n/(abs(n.x)+abs(n.y)+abs(n.z));
+    return select(p.xy,(vec2<f32>(1.0)-abs(p.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),p.xy>=vec2<f32>(0.0)),p.z<0.0);
+}
+@fragment fn fs_voxel_surface(input:VoxelOutput)->@location(0) vec4<f32>{
+    let color=test_voxel_alpha(input);let draw=draws[input.draw_index];var roughness=draw.roughness;var metallic=draw.metallic;
+    if((draw.texture_flags&8u)!=0u){let p=textureSample(material_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
+    let kind=select(select(metallic,4.0+color.a,draw.alpha_mode==ALPHA_MODE_BLEND),2.0+color.a,(draw.texture_flags&64u)!=0u);
+    return vec4<f32>(encode_normal(surface_normal(input,draw)),clamp(roughness,0.06,1.0),kind);
+}
+@fragment fn fs_voxel_albedo(input:VoxelOutput)->@location(0) vec4<f32>{
+    let color=test_voxel_alpha(input);let draw=draws[input.draw_index];var emission=0.0;
+    if((draw.texture_flags&24u)==24u){emission=textureSample(material_texture,material_sampler,input.uv).g*6.0;}
+    let base=select(color.rgb,srgb_linear(color.rgb),frame.sun_color.w>0.5);
+    return vec4<f32>(base,emission+draw.emissive.a);
+}
+@fragment fn fs_voxel_shadow(input:VoxelOutput)->@location(0) vec4<f32>{
+    if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}
+    let color=test_voxel_alpha(input);return vec4<f32>(1.0);
 }

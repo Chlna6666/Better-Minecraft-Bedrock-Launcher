@@ -44,6 +44,44 @@ mod tests {
 }
 
 impl VoxelMeshSource {
+    pub(super) fn static_light(&self, face: &VoxelFaceTemplate) -> f32 {
+        let Some(light) = &self.lighting else {
+            return 1.;
+        };
+        let center = face
+            .vertices
+            .iter()
+            .fold(Vec3::ZERO, |sum, v| sum + v.position)
+            * 0.25
+            - self.origin;
+        let normal = Vec3::new(
+            face.neighbour[0] as f32,
+            face.neighbour[1] as f32,
+            face.neighbour[2] as f32,
+        ) * 0.001;
+        let level = [center - normal, center + normal]
+            .into_iter()
+            .filter_map(|p| {
+                let q = [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
+                if q.into_iter()
+                    .zip(self.size)
+                    .any(|(p, n)| p < 0 || p >= n as i32)
+                {
+                    return None;
+                }
+                light
+                    .levels
+                    .get(
+                        ((q[2] as u32 * self.size[1] + q[1] as u32) * self.size[0] + q[0] as u32)
+                            as usize,
+                    )
+                    .copied()
+            })
+            .map(|n| (n & 15).max(n >> 4))
+            .max()
+            .unwrap_or(0);
+        light.ambient + (1. - light.ambient) * (f32::from(level) / 15.).powi(2)
+    }
     /// Attaches sky (high nibble) and block (low nibble) light for the padded cell grid.
     /// Ambient is the minimum brightness in 0..=1; this is independent of corner AO.
     /// # Errors
@@ -79,5 +117,27 @@ impl VoxelMeshSource {
         let level = (own & 15).max(own >> 4).max(next & 15).max(next >> 4);
         let value = f32::from(level) / 15.;
         light.ambient + (1. - light.ambient) * value * value
+    }
+}
+
+#[cfg(test)]
+mod static_tests {
+    use super::*;
+    #[test]
+    fn static_faces_sample_the_same_sky_and_block_levels() {
+        let face = super::super::tests::source().templates[0].clone();
+        let mut colors = Vec::new();
+        for level in [7, 0x70, 0xf0] {
+            let source = VoxelMeshSource::new([3; 3], Vec3::ZERO, vec![0; 27], vec![])
+                .unwrap()
+                .with_static_faces(vec![face.clone()])
+                .unwrap()
+                .with_lighting(vec![level; 27], 0.2)
+                .unwrap();
+            colors.push(source.fallback().vertices()[0].color[0]);
+        }
+        assert_eq!(colors[0], colors[1]);
+        assert!(colors[2] > colors[0]);
+        assert_eq!(colors[2], 1.);
     }
 }
