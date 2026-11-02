@@ -61,7 +61,7 @@ fn pipelines(
         device,
         &BindGroupLayoutDescriptor {
             label: None,
-            entries: (0..14)
+            entries: (0..16)
                 .map(|binding| BindGroupLayoutEntry {
                     binding,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,

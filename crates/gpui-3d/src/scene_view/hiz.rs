@@ -14,6 +14,9 @@ pub(super) struct HiZ {
     count: usize,
     clear_pending: bool,
     selection_eye: Option<Vec3>,
+    words: usize,
+    max_boxes: usize,
+    shadow: bool,
 }
 
 impl HiZ {
@@ -21,16 +24,33 @@ impl HiZ {
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
     ) -> gpui::Result<Self> {
+        Self::create_mode(device, backend, false)
+    }
+
+    pub(super) fn create_shadow(
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+    ) -> gpui::Result<Self> {
+        Self::create_mode(device, backend, true)
+    }
+
+    fn create_mode(
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        shadow: bool,
+    ) -> gpui::Result<Self> {
+        let words = if shadow { 512 * 512 } else { WORDS };
+        let max_boxes = if shadow { 2048 } else { MAX_BOXES };
         let mut buffers = Vec::new();
         let mut shaders = Vec::new();
         let result = (|| {
             for (size, usage) in [
                 (
-                    WORDS * 4,
+                    words * 4,
                     BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
                 ),
                 (
-                    16 + MAX_BOXES * 32,
+                    16 + max_boxes * 32,
                     BufferUsage::STORAGE | BufferUsage::COPY_DST,
                 ),
                 (8 * 256, BufferUsage::UNIFORM | BufferUsage::COPY_DST),
@@ -42,13 +62,21 @@ impl HiZ {
                     memory_location: super::gpu::buffer_memory_location(backend),
                 })?);
             }
-            for entry in ["cs_hiz_clear", "cs_hiz_raster", "cs_hiz_reduce"] {
+            for entry in [
+                "cs_hiz_clear",
+                if shadow {
+                    "cs_shadow_raster"
+                } else {
+                    "cs_hiz_raster"
+                },
+                "cs_hiz_reduce",
+            ] {
                 shaders.push(super::generated::create_shader(device, backend, entry)?);
             }
             device.write_buffer(
                 buffers[0],
                 0,
-                &vec![1.0f32.to_bits(); WORDS]
+                &vec![1.0f32.to_bits(); words]
                     .into_iter()
                     .flat_map(u32::to_le_bytes)
                     .collect::<Vec<_>>(),
@@ -79,6 +107,9 @@ impl HiZ {
             count: 0,
             clear_pending: false,
             selection_eye: None,
+            words,
+            max_boxes,
+            shadow,
         })
     }
 
@@ -102,9 +133,9 @@ impl HiZ {
             .filter(|b| b.faces & 63 != 0 && Aabb::new(b.bounds.min, b.bounds.max).is_some())
             .collect::<Vec<_>>();
         let key = |b: &Occluder| (eye.max(b.bounds.min).min(b.bounds.max) - eye).length_squared();
-        if bounds.len() > MAX_BOXES {
-            bounds.select_nth_unstable_by(MAX_BOXES, |a, b| key(a).total_cmp(&key(b)));
-            bounds.truncate(MAX_BOXES);
+        if bounds.len() > self.max_boxes {
+            bounds.select_nth_unstable_by(self.max_boxes, |a, b| key(a).total_cmp(&key(b)));
+            bounds.truncate(self.max_boxes);
         }
         let count = bounds.len();
         let mut bytes = encode_header(count, forward).to_vec();
@@ -139,11 +170,17 @@ impl HiZ {
         if self.count == 0 && !self.clear_pending {
             return Ok(());
         }
-        let depth = binding(2, self.depths, 0, WORDS * 4, ComputeBufferAccess::ReadWrite);
+        let depth = binding(
+            2,
+            self.depths,
+            0,
+            self.words * 4,
+            ComputeBufferAccess::ReadWrite,
+        );
         device.dispatch_compute(&ComputeDispatch {
             shader: self.shaders[0],
             bindings: &[depth],
-            workgroups: [(WORDS as u32).div_ceil(64), 1, 1],
+            workgroups: [(self.words as u32).div_ceil(64), 1, 1],
         })?;
         self.clear_pending = false;
         if self.count == 0 {
@@ -171,7 +208,7 @@ impl HiZ {
             bindings: &raster,
             workgroups: [(self.count * 6) as u32, 1, 1],
         })?;
-        for level in 1..8 {
+        for level in 1..if self.shadow { 1 } else { 8 } {
             let size = 128u32 >> level;
             let bindings = [
                 depth,

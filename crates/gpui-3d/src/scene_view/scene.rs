@@ -58,6 +58,8 @@ pub(super) struct SceneResources {
     light_capacity: usize,
     frame_buffer: BufferId,
     frame_state: Option<FrameState>,
+    shadow: Option<super::shadow::Shadow>,
+    light_pass:Option<light_pass::LightPass>,
     uploaded_tables: [Vec<u8>; 3],
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
@@ -81,6 +83,7 @@ const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 mod assets;
 mod generated;
 mod reorder;
+mod light_pass;
 
 /// Values that only affect the frame-wide uniform buffer, not the prepared draw list.
 #[derive(Clone, Copy, PartialEq)]
@@ -109,6 +112,7 @@ enum DrawMeshKey {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct DrawResourceKey {
+    shadow: Option<BufferId>,
     mesh: DrawMeshKey,
     visible_instances: Option<BufferId>,
     albedo_id: Option<TextureAssetId>,
@@ -245,6 +249,8 @@ impl SceneResources {
             light_capacity,
             frame_buffer,
             frame_state: None,
+            shadow: None,
+            light_pass:None,
             uploaded_tables: Default::default(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
@@ -301,6 +307,10 @@ impl SceneResources {
             || self.frame_state.is_none_or(|state| {
                 state.camera != scene_view.camera || state.projection != projection
             });
+        let visibility_changed = camera_changed
+            || self
+                .frame_state
+                .is_none_or(|state| !state.projection.visibility_matches(projection));
         let sampler_changed = self.sampler != Some(sampler);
         let voxel_shader_changed = self.voxel_shader != scene_view.voxel_shader;
         if !draw_state_changed
@@ -413,6 +423,20 @@ impl SceneResources {
         if voxel_shader_changed && !draw_state_changed {
             self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
         }
+        let shading = projection.voxel_shading();
+        let shadow_enabled = scene_view.voxel_shader
+            && shading.shadow_strength > 0.
+            && shading.illumination == super::VoxelIllumination::Sunlight
+            && shading.display != super::VoxelDisplay::Wireframe
+            && device
+                .compute_capabilities()
+                .max_workgroups
+                .iter()
+                .all(|&size| size > 0);
+        let shadow_created = shadow_enabled && self.shadow.is_none();
+        if shadow_created {
+            reordered_blends = None;
+        }
         if draw_list_changed && reordered_blends.is_none() {
             let batch_started = trace_timings().then(Instant::now);
             self.batches = if gpu_culling {
@@ -458,6 +482,27 @@ impl SceneResources {
         } else if !gpu_culling && let Some(previous) = self.culling.take() {
             previous.destroy(device)?;
         }
+        if !shadow_enabled
+            && (draw_state_changed || culling_bounds_changed)
+            && let Some(shadow) = &mut self.shadow
+        {
+            shadow.invalidate();
+        }
+        if shadow_created {
+            self.shadow = Some(super::shadow::Shadow::create(device, self.backend)?);
+        }
+        if shadow_enabled && let Some(shadow) = &mut self.shadow {
+            shadow.update(
+                device,
+                self.prepared.occluder_bounds(scene_view.culling_bounds),
+                scene_view.camera.eye,
+                shading.sun_direction,
+                draw_state_changed || culling_bounds_changed,
+            )?;
+        }
+        let wire_changed = self
+            .frame_state
+            .is_some_and(|previous| previous.projection.voxel_shading().display != shading.display);
         if frame_changed {
             self.sync_frame_params(device, projection, scene_view.camera)?;
             self.frame_state = Some(FrameState {
@@ -483,7 +528,7 @@ impl SceneResources {
             if let Some(started) = buffer_started {
                 buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
-        } else if sampler_changed {
+        } else if sampler_changed || shadow_created {
             self.sync_draw_resources(
                 device,
                 renderer,
@@ -506,18 +551,20 @@ impl SceneResources {
             destroy_mesh(device, mesh, &mut self.arena)?;
         }
         if gpu_culling {
-            if (draw_state_changed || culling_bounds_changed || frame_changed)
+            if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
                 && let Some(culling) = &mut self.culling
             {
                 culling.hiz.update(
                     device,
-                    self.prepared.occluder_bounds(scene_view.culling_bounds),
+                    self.prepared
+                        .occluder_bounds(scene_view.culling_bounds)
+                        .filter(|_| shading.display != super::VoxelDisplay::Wireframe),
                     scene_view.camera.eye,
                     scene_view.camera.target - scene_view.camera.eye,
-                    draw_state_changed || culling_bounds_changed,
+                    draw_state_changed || culling_bounds_changed || wire_changed,
                 )?;
             }
-            if frame_changed || draw_list_changed || culling_bounds_changed {
+            if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed {
                 self.culling
                     .as_mut()
                     .ok_or_else(|| anyhow!("GPU culling resources missing"))?
@@ -580,6 +627,31 @@ impl SceneResources {
                 destination.copy_from_slice(&value.to_le_bytes());
             }
         }
+        for (destination, value) in bytes[144..192]
+            .chunks_exact_mut(4)
+            .zip(projection.voxel_shading().encoded())
+        {
+            destination.copy_from_slice(&value.to_le_bytes());
+        }
+        if projection.voxel_shading().display != super::VoxelDisplay::Wireframe
+            && let Some(shadow) = &self.shadow
+        {
+            for (dst, value) in bytes[192..256]
+                .chunks_exact_mut(4)
+                .zip(shadow.matrix.columns().into_iter().flatten())
+            {
+                dst.copy_from_slice(&value.to_le_bytes());
+            }
+            for (dst, value) in bytes[256..].chunks_exact_mut(4).zip([
+                projection.voxel_shading().shadow_strength,
+                0.0008,
+                512.,
+                0.,
+            ]) {
+                dst.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        if projection.is_hdr() {bytes[268..272].copy_from_slice(&1f32.to_le_bytes());}
         device.write_buffer(self.frame_buffer, 0, &bytes)?;
         Ok(())
     }
@@ -1008,6 +1080,7 @@ impl SceneResources {
             let occlusion_id = draw.material.occlusion_texture;
             let metallic_roughness_id = draw.material.metallic_roughness_texture;
             let key = DrawResourceKey {
+                shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
                 visible_instances: self
                     .culling
                     .as_ref()
@@ -1082,6 +1155,7 @@ impl SceneResources {
             match create_draw_resource_set(
                 device,
                 DrawBindingResources {
+                    shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
                     bind_group_layout,
                     mesh,
                     draw_buffer: self.draw_buffer,
@@ -1186,6 +1260,9 @@ impl SceneResources {
         voxel_shader: bool,
         steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
+        self.append_pass_steps(renderer,voxel_shader,steps,None)
+    }
+    fn append_pass_steps(&self,renderer:&RendererResources,voxel_shader:bool,steps:&mut Vec<RenderCommand>,shadow:Option<(&[BindGroupId],BufferId)>)->gpui::Result<()> {
         steps.reserve(self.batches.len());
         let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
@@ -1199,15 +1276,15 @@ impl SceneResources {
                 .meshes
                 .get(&mesh_key(draw, voxel_shader))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+            if shadow.is_some() && draw.material.alpha_mode==AlphaMode::Blend {continue;}
             // Indexed ranges still use direct draws, so retain their CPU frustum test.
-            if self.culling.is_some()
+            if shadow.is_none() && self.culling.is_some()
                 && !mesh.procedural_quads
                 && (!bounds_visible(draw.bounds) || !self.prepared.is_draw_in_culling_bounds(draw))
             {
                 continue;
             }
-            let draw_resources = self
-                .draw_resources
+            let draw_resources = shadow.map_or(self.draw_resources.as_slice(),|value|value.0)
                 .get(batch_index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
             let voxel = mesh_key(draw, voxel_shader).1;
@@ -1235,11 +1312,11 @@ impl SceneResources {
                 steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                     pipeline,
                     bind_groups: bind_group_list([*draw_resources]),
-                    arguments: self
+                    arguments: shadow.map(|value|value.1).or_else(||self
                         .culling
                         .as_ref()
                         .map(|culling| culling.arguments)
-                        .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer))
+                        .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer)))
                         .ok_or_else(|| anyhow!("missing generated mesh arguments"))?,
                     offset: address.arguments_offset,
                     scissor: None,
@@ -1249,7 +1326,7 @@ impl SceneResources {
                     steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                         pipeline,
                         bind_groups: bind_group_list([*draw_resources]),
-                        arguments: culling.arguments,
+                        arguments: shadow.map_or(culling.arguments,|value|value.1),
                         offset: address.arguments_offset,
                         scissor: None,
                     }));
@@ -1309,6 +1386,10 @@ impl SceneResources {
         for bind_group in self.binding_cache.drain().map(|(_, binding)| binding) {
             device.destroy_bind_group(bind_group)?;
         }
+        if let Some(shadow) = self.shadow.take() {
+            shadow.destroy(device)?;
+        }
+        if let Some(pass)=self.light_pass.take() {pass.destroy(device)?;}
         for (_, mesh) in self.meshes.drain() {
             destroy_mesh(device, mesh, &mut self.arena)?;
         }
@@ -1389,6 +1470,7 @@ mod tests {
         let mesh = MeshId(7);
         let texture = TextureAssetId(11);
         let key = DrawResourceKey {
+            shadow: None,
             visible_instances: None,
             mesh: DrawMeshKey::Mesh {
                 id: mesh,

@@ -20,6 +20,14 @@ fn cs_hiz_clear(@builtin(global_invocation_id) id:vec3<u32>) {
 }
 @compute @workgroup_size(64)
 fn cs_hiz_raster(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,false);
+}
+@compute @workgroup_size(64)
+fn cs_shadow_raster(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,true);
+}
+fn raster_box(group:vec3<u32>,lane:u32,shadow:bool) {
+    let dimension=select(128u,512u,shadow);let extent=f32(dimension);
     let box_id=group.x/6u;if(box_id>=boxes.count.x){return;}
     let box=boxes.boxes[box_id];
     let face=group.x%6u;let axis=face/2u;let positive=(face&1u)!=0u;
@@ -33,19 +41,28 @@ fn cs_hiz_raster(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocatio
         let world=select(box.lo.xyz,box.hi.xyz,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u));
         let clip=frame.matrix*vec4<f32>(world,1.0);
         if(clip.w<=0.0001 || clip.z<0.0 || clip.z>clip.w){return;}
-        let ndc=clip.xyz/clip.w;p[i]=vec3<f32>((ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5))*128.0,ndc.z);
+        let ndc=clip.xyz/clip.w;p[i]=vec3<f32>((ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5))*extent,ndc.z);
     }
     let quads=array<vec4<u32>,6>(vec4<u32>(0u,4u,6u,2u),vec4<u32>(1u,3u,7u,5u),
         vec4<u32>(0u,1u,5u,4u),vec4<u32>(2u,6u,7u,3u),vec4<u32>(0u,2u,3u,1u),vec4<u32>(4u,5u,7u,6u));
     let t=quads[face];let a=p[t.x];let b=p[t.y];let c=p[t.z];let d=p[t.w];
-    let lo=vec2<u32>(clamp(ceil(min(min(a.xy,b.xy),min(c.xy,d.xy))),vec2<f32>(0.0),vec2<f32>(128.0)));
-    let hi=vec2<u32>(clamp(floor(max(max(a.xy,b.xy),max(c.xy,d.xy))),vec2<f32>(0.0),vec2<f32>(128.0)));
+    let lower=min(min(a.xy,b.xy),min(c.xy,d.xy));let upper=max(max(a.xy,b.xy),max(c.xy,d.xy));
+    let lo=vec2<u32>(clamp(select(ceil(lower),floor(lower),shadow),vec2<f32>(0.0),vec2<f32>(extent)));
+    let hi=vec2<u32>(clamp(select(floor(upper),ceil(upper),shadow),vec2<f32>(0.0),vec2<f32>(extent)));
     if(any(hi<=lo)){return;}
     let width=hi.x-lo.x;let count=width*(hi.y-lo.y);
     // Farthest vertex depth overestimates triangle depth over every fully covered tile.
     let depth=bitcast<u32>(max(max(a.z,b.z),max(c.z,d.z)));
     for(var i=lane;i<count;i+=64u){
         let tile=lo+vec2<u32>(i%width,i/width);let q=vec2<f32>(tile);
+        if(shadow){
+            let center=q+vec2<f32>(0.5);let area=edge(a.xy,b.xy,c.xy);
+            if(abs(area)>0.000001 && inside(a.xy,b.xy,c.xy,d.xy,center)){
+                let z=(edge(b.xy,c.xy,center)*a.z+edge(c.xy,a.xy,center)*b.z+edge(a.xy,b.xy,center)*c.z)/area;
+                atomicMin(&depths[tile.y*dimension+tile.x],bitcast<u32>(clamp(z,0.0,1.0)));
+            }
+            continue;
+        }
         if(inside(a.xy,b.xy,c.xy,d.xy,q) && inside(a.xy,b.xy,c.xy,d.xy,q+vec2<f32>(1.0,0.0))
             && inside(a.xy,b.xy,c.xy,d.xy,q+vec2<f32>(0.0,1.0)) && inside(a.xy,b.xy,c.xy,d.xy,q+vec2<f32>(1.0))){
             atomicMin(&depths[tile.y*128u+tile.x],depth);

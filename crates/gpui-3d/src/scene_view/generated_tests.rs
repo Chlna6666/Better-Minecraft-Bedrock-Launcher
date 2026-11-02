@@ -8,6 +8,7 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
     arguments: BufferId,
     left: [u8; 4],
     fog: Option<crate::DistanceFog>,
+    style: Option<(crate::VoxelShading, [u8; 4])>,
 ) {
     use super::super::{culling::tests as culling_tests, gpu};
     use crate::{
@@ -21,9 +22,29 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
                 destination.copy_from_slice(&value.to_le_bytes());
             }
         }
+        if let Some((style, _)) = style {
+            for (dst, value) in bytes[144..192].chunks_exact_mut(4).zip(style.encoded()) {
+                dst.copy_from_slice(&value.to_le_bytes());
+            }
+            if style.shadow_strength > 0. {
+                for (dst, value) in bytes[192..256]
+                    .chunks_exact_mut(4)
+                    .zip(Mat4::IDENTITY.columns().into_iter().flatten())
+                {
+                    dst.copy_from_slice(&value.to_le_bytes());
+                }
+                for (dst, value) in
+                    bytes[256..]
+                        .chunks_exact_mut(4)
+                        .zip([style.shadow_strength, 0., 512., 0.])
+                {
+                    dst.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
         bytes
     };
-    let right = fog.map_or([255; 4], |fog| {
+    let right = fog.map_or(style.map_or([255; 4], |(_, right)| right), |fog| {
         [
             (fog.color[0] * 255.0).round() as u8,
             (fog.color[1] * 255.0).round() as u8,
@@ -35,6 +56,11 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
     let mut material = Material::new();
     material.shading_model = ShadingModel::Unlit;
     material.double_sided = true;
+    if style.is_some_and(|(style, _)| style.illumination == crate::VoxelIllumination::Sunlight) {
+        material.normal_texture = Some(crate::TextureAssetId(101));
+        material.metallic_roughness_texture = Some(crate::TextureAssetId(102));
+        material.pbr_texture_layout = crate::PbrTextureLayout::MetallicEmissiveRoughness;
+    }
     scene
         .insert(
             None,
@@ -87,6 +113,9 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
         buffers.push((buffer, bytes.len() as u64));
     }
     let generated = resource.generated.as_ref().unwrap();
+    let shadow = style
+        .filter(|(style, _)| style.shadow_strength > 0.)
+        .map(|_| culling_tests::upload(device, &vec![0; 512 * 512 * 4], BufferUsage::STORAGE));
     let (group, layout) = culling_tests::graphics_group(
         device,
         &[
@@ -97,6 +126,15 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
             (12, generated.templates, generated.template_bytes),
             (13, resource.vertices, resource.vertex_binding_bytes as u64),
             (14, generated.templates, generated.template_bytes),
+            (
+                15,
+                shadow.unwrap_or(buffers[0].0),
+                if shadow.is_some() {
+                    512 * 512 * 4
+                } else {
+                    buffers[0].1
+                },
+            ),
         ],
     );
     let extent = Extent2d::new(16, 16).unwrap();
@@ -250,7 +288,7 @@ pub(in crate::scene_view) fn counts<D: Device + TextureTransferDevice>(
     probe(device, buffer, size, "fs_mesh_check")
 }
 
-pub(super) fn probe<D: Device + TextureTransferDevice>(
+pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
     device: &mut D,
     buffer: BufferId,
     size: u64,
@@ -579,6 +617,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
                 } else {
                     [255; 4]
                 },
+                None,
                 None,
             );
             assert_eq!(

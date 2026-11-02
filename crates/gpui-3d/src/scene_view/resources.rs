@@ -1,3 +1,4 @@
+mod factory;
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, FRAME_BINDING, INSTANCE_BINDING, LIGHT_BINDING,
     METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING,
@@ -17,6 +18,8 @@ use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 
 pub(super) struct RendererResources {
+    pass: PassKind,
+    owns_layout: bool,
     pub(super) cull_shader: Option<ShaderModuleId>,
     bind_group_layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
@@ -39,6 +42,8 @@ impl RendererResources {
         fallback: TextureViewId,
     ) -> Self {
         Self {
+            pass: PassKind::Color,
+            owns_layout: false,
             cull_shader: None,
             bind_group_layout: Some(layout),
             pipeline_layout: None,
@@ -53,185 +58,6 @@ impl RendererResources {
             samplers: [None; 6],
         }
     }
-    pub(super) fn new(
-        device: &mut dyn ExtensionDevice,
-        context: &RendererExtensionContext,
-    ) -> gpui::Result<Self> {
-        let vertex_binary = embedded_shader(context, ShaderStage::Vertex, "vs_main")?;
-        let compute = device.compute_capabilities();
-        let voxel_entry = if compute.indirect_draw && !compute.max_workgroups.contains(&0) {
-            "vs_voxel_gpu"
-        } else {
-            "vs_voxel"
-        };
-        let voxel_vertex_binary = embedded_shader(context, ShaderStage::Vertex, voxel_entry)?;
-        let fragment_binary = embedded_shader(context, ShaderStage::Fragment, "fs_main")?;
-        let voxel_fragment_binary = embedded_shader(context, ShaderStage::Fragment, "fs_voxel")?;
-        let mut resources = Self {
-            cull_shader: None,
-            bind_group_layout: None,
-            pipeline_layout: None,
-            vertex_shader: None,
-            voxel_vertex_shader: None,
-            generated_vertex_shader: None,
-            fragment_shader: None,
-            voxel_fragment_shader: None,
-            pipelines: [None; 18],
-            fallback_texture: None,
-            fallback_texture_view: None,
-            samplers: [None; 6],
-        };
-        let result = (|| {
-            resources.generated_vertex_shader =
-                Some(device.create_shader_module(&ShaderModuleDescriptor {
-                    label: None,
-                    binary: embedded_shader(context, ShaderStage::Vertex, "vs_generated_voxel")?,
-                })?);
-            let compute = device.compute_capabilities();
-            if compute.indirect_draw && !compute.max_workgroups.contains(&0) {
-                resources.cull_shader =
-                    Some(device.create_shader_module(&ShaderModuleDescriptor {
-                        label: Some("gpui-3d GPU batch culling".into()),
-                        binary: embedded_shader(context, ShaderStage::Compute, "cs_cull")?,
-                    })?);
-            }
-            resources.bind_group_layout =
-                Some(device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                    label: Some("gpui-3d scene-view resource-set layout".into()),
-                    entries: vec![
-                        BindGroupLayoutEntry {
-                            binding: 14,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 13,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 12,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: VISIBLE_INSTANCE_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: VERTEX_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: DRAW_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: LIGHT_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: ALBEDO_BINDING,
-                            binding_type: BindingType::SampledTexture,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: SAMPLER_BINDING,
-                            binding_type: BindingType::Sampler,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: NORMAL_MAP_BINDING,
-                            binding_type: BindingType::SampledTexture,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: OCCLUSION_BINDING,
-                            binding_type: BindingType::SampledTexture,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: METALLIC_ROUGHNESS_BINDING,
-                            binding_type: BindingType::SampledTexture,
-                            stages: ShaderStages::FRAGMENT,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: TANGENT_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: INSTANCE_BINDING,
-                            binding_type: BindingType::StorageBuffer,
-                            stages: ShaderStages::VERTEX,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: FRAME_BINDING,
-                            binding_type: BindingType::UniformBuffer,
-                            stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                        },
-                    ],
-                })?);
-            resources.pipeline_layout =
-                Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                    label: Some("gpui-3d pipeline layout".into()),
-                    bind_group_layouts: vec![resources.bind_group_layout()?],
-                })?);
-            resources.vertex_shader =
-                Some(device.create_shader_module(&ShaderModuleDescriptor {
-                    label: Some("gpui-3d vertex shader".into()),
-                    binary: vertex_binary,
-                })?);
-            resources.voxel_vertex_shader =
-                Some(device.create_shader_module(&ShaderModuleDescriptor {
-                    label: Some("gpui-3d voxel vertex shader".into()),
-                    binary: voxel_vertex_binary,
-                })?);
-            resources.fragment_shader =
-                Some(device.create_shader_module(&ShaderModuleDescriptor {
-                    label: Some("gpui-3d fragment shader".into()),
-                    binary: fragment_binary,
-                })?);
-            resources.voxel_fragment_shader =
-                Some(device.create_shader_module(&ShaderModuleDescriptor {
-                    label: Some("gpui-3d voxel fragment shader".into()),
-                    binary: voxel_fragment_binary,
-                })?);
-            let fallback_texture = device.create_texture(&TextureDescriptor {
-                label: Some("gpui-3d fallback texture".into()),
-                size: Extent2d::new(1, 1)?,
-                mip_level_count: 1,
-                format: Format::Rgba8UnormSrgb,
-                usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
-                memory_location: MemoryLocation::GpuOnly,
-                dimension: TextureDimension::D2,
-            })?;
-            resources.fallback_texture = Some(fallback_texture);
-            resources.fallback_texture_view =
-                Some(device.create_texture_view(&TextureViewDescriptor {
-                    label: Some("gpui-3d fallback texture view".into()),
-                    texture: fallback_texture,
-                    base_mip_level: 0,
-                    mip_level_count: 1,
-                    format: Format::Rgba8UnormSrgb,
-                })?);
-            resources.replace_pipelines(device, context)
-        })();
-        if let Err(error) = result {
-            if let Err(cleanup_error) = resources.destroy(device) {
-                return Err(anyhow!(
-                    "{error:#}; renderer cleanup also failed: {cleanup_error:#}"
-                ));
-            }
-            return Err(error);
-        }
-        Ok(resources)
-    }
-
     pub(super) fn bind_group_layout(&self) -> gpui::Result<BindGroupLayoutId> {
         self.bind_group_layout
             .ok_or_else(|| anyhow!("GPUI 3D resource-set layout is unavailable"))
@@ -374,10 +200,14 @@ impl RendererResources {
                 device.destroy_sampler(sampler)?;
             }
         }
-        if let Some(layout) = self.pipeline_layout.take() {
+        if self.owns_layout
+            && let Some(layout) = self.pipeline_layout.take()
+        {
             device.destroy_pipeline_layout(layout)?;
         }
-        if let Some(layout) = self.bind_group_layout.take() {
+        if self.owns_layout
+            && let Some(layout) = self.bind_group_layout.take()
+        {
             device.destroy_bind_group_layout(layout)?;
         }
         Ok(())
@@ -410,7 +240,7 @@ const fn sampler_filters(sampling: TextureSampling) -> (FilterMode, FilterMode) 
 /// this is a lookup rather than a shader compile while a scene view is being created.
 /// The arms follow the platform, not this crate's Cargo features, because the host
 /// application decides which backend renders.
-fn embedded_shader(
+pub(super) fn embedded_shader(
     context: &RendererExtensionContext,
     stage: ShaderStage,
     entry_point: &str,
@@ -443,6 +273,29 @@ fn embedded_shader(
 enum PipelineMode {
     Opaque,
     Blend,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PassKind {
+    Color,
+    Hdr,
+    Surface,
+    Albedo,
+    Shadow,
+}
+impl PassKind {
+    fn entries(self) -> [&'static str; 2] {
+        match self {
+            Self::Color => ["fs_main", "fs_voxel"],
+            Self::Hdr => ["fs_hdr", "fs_voxel_capture"],
+            Self::Surface => ["fs_scene_surface", "fs_voxel_surface"],
+            Self::Albedo => ["fs_scene_albedo", "fs_voxel_albedo"],
+            Self::Shadow => ["fs_scene_shadow", "fs_voxel_shadow"],
+        }
+    }
+    fn is_attribute(self) -> bool {
+        matches!(self, Self::Surface | Self::Albedo | Self::Shadow)
+    }
 }
 
 fn create_pipeline(
@@ -489,12 +342,12 @@ fn create_pipeline(
                 resources.fragment_shader
             }
             .ok_or_else(|| anyhow!("GPUI 3D fragment shader is unavailable"))?,
-            fragment_entry_point: if voxel { "fs_voxel" } else { "fs_main" }.into(),
+            fragment_entry_point: resources.pass.entries()[usize::from(voxel)].into(),
             vertex_buffers: Vec::new(),
             render_pass: context.render_pass(),
             pipeline_layout: resources.pipeline_layout,
             color_format: context.color_format(),
-            blend_mode: if blend {
+            blend_mode: if blend && !resources.pass.is_attribute() {
                 BlendMode::PremultipliedAlpha
             } else {
                 BlendMode::Replace
@@ -506,7 +359,7 @@ fn create_pipeline(
             },
             depth_state: Some(DepthState {
                 compare: CompareFunction::LessEqual,
-                write_enabled: depth_write,
+                write_enabled: depth_write || resources.pass.is_attribute(),
             }),
         },
         context.viewport(),

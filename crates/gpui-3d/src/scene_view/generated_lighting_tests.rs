@@ -90,6 +90,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         arguments,
         [0, 255, 0, 255],
         crate::DistanceFog::new([0.0, 1.0, 0.0], 0.0, 0.001),
+        None,
     );
     for sky_channel in [false, true] {
         let source = crate::voxel_mesh::tests::source();
@@ -116,8 +117,126 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             arguments,
             [expected, expected, expected, 255],
             None,
+            None,
         );
     }
+    let source = crate::voxel_mesh::tests::source()
+        .with_lighting(vec![0x70; 36], 0.2)
+        .unwrap();
+    let mesh = Mesh::from_gpu_voxels(source);
+    let resources = create(&mut device, &mesh, &shaders).unwrap();
+    for (illumination, display, strength, expected) in [
+        (
+            crate::VoxelIllumination::Unlit,
+            crate::VoxelDisplay::VertexColor,
+            0.,
+            255,
+        ),
+        (
+            crate::VoxelIllumination::Vertex,
+            crate::VoxelDisplay::Textured,
+            0.,
+            51,
+        ),
+        (
+            crate::VoxelIllumination::Sunlight,
+            crate::VoxelDisplay::Textured,
+            1.,
+            85,
+        ),
+        (
+            crate::VoxelIllumination::Unlit,
+            crate::VoxelDisplay::Wireframe,
+            0.,
+            0,
+        ),
+        (
+            crate::VoxelIllumination::Sunlight,
+            crate::VoxelDisplay::VertexColor,
+            1.,
+            20,
+        ),
+    ] {
+        let style = crate::VoxelShading {
+            color_space: crate::TextureColorSpace::Srgb,
+            illumination,
+            display,
+            sky_brightness: 0.,
+            sun_direction: -crate::Vec3::Z,
+            sun_intensity: 1.,
+            shadow_strength: strength,
+            ..crate::VoxelShading::default()
+        };
+        tests::render_generated(
+            &mut device,
+            &mesh,
+            &resources,
+            arguments,
+            [expected, expected, expected, 255],
+            None,
+            Some((style, [expected, expected, expected, 255])),
+        );
+    }
+    let linear_style = crate::VoxelShading {
+        color_space: crate::TextureColorSpace::Linear,
+        illumination: crate::VoxelIllumination::Sunlight,
+        sky_brightness: 0.,
+        sun_direction: -crate::Vec3::Z,
+        sun_intensity: 1.,
+        shadow_strength: 1.,
+        ..crate::VoxelShading::default()
+    };
+    tests::render_generated(
+        &mut device,
+        &mesh,
+        &resources,
+        arguments,
+        [165, 165, 165, 255],
+        None,
+        Some((linear_style, [165, 165, 165, 255])),
+    );
+    let face = crate::voxel_mesh::tests::source()
+        .templates
+        .into_iter()
+        .find(|face| face.neighbour == [0, 0, -1])
+        .unwrap();
+    let mut left = face.clone();
+    for vertex in &mut left.vertices {
+        vertex.position.x -= 1.;
+    }
+    let source = crate::VoxelMeshSource::new(
+        [4, 3, 3],
+        crate::Vec3::new(-2., -1., -1.),
+        vec![0; 36],
+        vec![],
+    )
+    .unwrap()
+    .with_static_faces(vec![left, face])
+    .unwrap()
+    .with_lighting(vec![0x70; 36], 0.2)
+    .unwrap();
+    let mesh = Mesh::from_gpu_voxels(source);
+    let resources = create(&mut device, &mesh, &shaders).unwrap();
+    ResourceDevice::write_buffer(
+        &mut device,
+        arguments,
+        0,
+        &[12u32, 1, 0, 0]
+            .repeat(3)
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    tests::render_generated(
+        &mut device,
+        &mesh,
+        &resources,
+        arguments,
+        [95, 95, 95, 255],
+        None,
+        Some((crate::VoxelShading::default(), [95, 95, 95, 255])),
+    );
     SubmissionDevice::wait_queue_idle(&mut device).unwrap();
 }
 

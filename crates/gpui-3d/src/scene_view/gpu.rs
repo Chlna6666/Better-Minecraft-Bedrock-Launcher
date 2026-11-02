@@ -303,6 +303,7 @@ pub(super) struct TextureResources {
 }
 
 pub(super) struct DrawBindingResources<'a> {
+    pub(super) shadow: Option<BufferId>,
     pub(super) bind_group_layout: BindGroupLayoutId,
     pub(super) mesh: &'a MeshResources,
     pub(super) draw_buffer: BufferId,
@@ -740,6 +741,7 @@ pub(super) fn create_draw_resource_set(
     bindings: DrawBindingResources<'_>,
 ) -> gpui::Result<BindGroupId> {
     let DrawBindingResources {
+        shadow,
         bind_group_layout,
         mesh,
         draw_buffer,
@@ -915,6 +917,19 @@ pub(super) fn create_draw_resource_set(
                     stride: None,
                 }),
             },
+            BindGroupEntry {
+                binding: 15,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: shadow.unwrap_or(draw_buffer),
+                    offset: 0,
+                    size: if shadow.is_some() {
+                        512 * 512 * 4
+                    } else {
+                        DRAW_PARAMS_STRIDE as u64
+                    },
+                    stride: Some(4),
+                }),
+            },
         ],
     })?)
 }
@@ -1067,6 +1082,9 @@ fn encode_draw_record(
     };
     write_u32(bytes, shading_model);
     let mut texture_flags = 0;
+    if draw.material.surface == crate::SurfaceKind::Water {
+        texture_flags |= 64;
+    }
     if draw.material.albedo_texture.is_some() {
         texture_flags |= TEXTURE_FLAG_ALBEDO;
     }
@@ -1078,6 +1096,12 @@ fn encode_draw_record(
     }
     if draw.material.metallic_roughness_texture.is_some() {
         texture_flags |= TEXTURE_FLAG_METALLIC_ROUGHNESS;
+    }
+    if draw.material.pbr_texture_layout == crate::PbrTextureLayout::MetallicEmissiveRoughness {
+        texture_flags |= 16;
+    }
+    if draw.material.normal_texture.is_some() {
+        texture_flags |= 32;
     }
     write_u32(bytes, texture_flags);
 
@@ -1182,6 +1206,21 @@ pub(crate) fn encode_lights_into(lights: &[PreparedLight], bytes: &mut Vec<u8>) 
                 write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
                 write_vec4(bytes, [color[0], color[1], color[2], intensity]);
                 write_spot_cone_cosines(bytes, 0.0, 0.0);
+            }
+            PreparedLight::Spherical {
+                position,
+                color,
+                intensity,
+                range,
+                radius,
+                diffuse_only,
+            } => {
+                write_light_header(bytes, if diffuse_only { 4 } else { 5 });
+                write_vec4(bytes, [position.x, position.y, position.z, range]);
+                write_vec4(bytes, [0.; 4]);
+                write_vec4(bytes, [color[0], color[1], color[2], intensity]);
+                // Point/spherical records reuse the spot-only cone slot for source radius.
+                write_spot_cone_cosines(bytes, radius, 0.);
             }
             PreparedLight::Spot {
                 position,

@@ -8,3 +8,6 @@
  let ao=args[3];
  return vec4<f32>(f32(ao&255u),f32((ao>>8u)&255u),f32((ao>>16u)&255u),f32((ao>>24u)&255u))/255.0;
 }
+@fragment fn fs_shadow_check()->@location(0) vec4<f32>{
+ return vec4<f32>(bitcast<f32>(args[256u*512u+256u]),bitcast<f32>(args[0u]),bitcast<f32>(args[257u*512u+257u]),1.0);
+}

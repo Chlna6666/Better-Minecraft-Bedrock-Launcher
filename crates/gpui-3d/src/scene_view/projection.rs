@@ -10,9 +10,14 @@ pub(super) struct FrameProjection {
     aspect: f32,
     blend_edge_feather: f32,
     fog: Option<super::DistanceFog>,
+    voxel_shading: super::VoxelShading,
+    hdr:bool,
 }
 
 impl FrameProjection {
+    pub(super) fn visibility_matches(self, other: Self) -> bool {
+        self.bounds == other.bounds && self.target_extent == other.target_extent
+    }
     pub(super) fn new(
         scene_view: &SceneView,
         context: &RendererExtensionContext,
@@ -44,6 +49,8 @@ impl FrameProjection {
             aspect,
             blend_edge_feather: scene_view.blend_edge_feather,
             fog: scene_view.fog,
+            voxel_shading: scene_view.voxel_shading,
+            hdr:scene_view.screen_effects.is_some(),
         })
     }
 
@@ -66,6 +73,10 @@ impl FrameProjection {
     pub(super) fn fog(self) -> Option<super::DistanceFog> {
         self.fog
     }
+    pub(super) fn voxel_shading(self) -> super::VoxelShading {
+        self.voxel_shading
+    }
+    pub(super) fn is_hdr(self)->bool {self.hdr}
 }
 
 fn inset_bounds(
@@ -105,6 +116,32 @@ fn projection_bounds(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lighting_and_fog_change_uniforms_without_invalidating_visibility() {
+        let base = super::FrameProjection {
+            hdr:false,
+            bounds: bounds(point(px(0.), px(0.)), size(px(100.), px(100.))).scale(1.),
+            target_extent: gfx_core::Extent2d::new(100, 100).unwrap(),
+            aspect: 1.,
+            blend_edge_feather: 0.,
+            fog: None,
+            voxel_shading: crate::VoxelShading::default(),
+        };
+        let changed = super::FrameProjection {
+            voxel_shading: crate::VoxelShading {
+                sky_brightness: 0.1,
+                ..base.voxel_shading
+            },
+            fog: crate::DistanceFog::new([0.2; 3], 10., 100.),
+            ..base
+        };
+        assert_ne!(base, changed);
+        assert!(base.visibility_matches(changed));
+        assert!(!base.visibility_matches(super::FrameProjection {
+            target_extent: gfx_core::Extent2d::new(200, 100).unwrap(),
+            ..base
+        }));
+    }
     use super::{inset_bounds, projection_bounds};
     use crate::ProjectionRegion;
     use gpui::{Bounds, bounds, point, px, size};

@@ -103,7 +103,11 @@ fn prepared() -> PreparedScene {
     prepared
 }
 
-fn upload(device: &mut impl ResourceDevice, bytes: &[u8], usage: BufferUsage) -> BufferId {
+pub(in crate::scene_view) fn upload(
+    device: &mut impl ResourceDevice,
+    bytes: &[u8],
+    usage: BufferUsage,
+) -> BufferId {
     let buffer = ResourceDevice::create_buffer(
         device,
         &BufferDescriptor {
@@ -154,7 +158,12 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
 ) -> (BindGroupId, PipelineLayoutId) {
     let mut entries = Vec::new();
     let mut layout_entries = Vec::new();
-    for &(binding, buffer, size) in buffers {
+    let mut buffers = buffers.to_vec();
+    if !buffers.iter().any(|entry| entry.0 == 15) {
+        let (_, buffer, size) = buffers[0];
+        buffers.push((15, buffer, size));
+    }
+    for &(binding, buffer, size) in &buffers {
         entries.push(BindGroupEntry {
             binding,
             resource: BindingResource::Buffer(BufferBinding {
@@ -176,35 +185,65 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
     }
     // Vulkan pipeline layouts must include every statically referenced shader binding,
     // even when the material has no texture and its fragment branch will not sample.
-    let texture = ResourceDevice::create_texture(
-        device,
-        &TextureDescriptor {
-            label: None,
-            size: Extent2d::new(1, 1).unwrap(),
-            mip_level_count: 1,
-            format: Format::Rgba8Unorm,
-            usage: TextureUsage::SAMPLED,
-            memory_location: MemoryLocation::GpuOnly,
-            dimension: TextureDimension::D2,
-        },
-    )
-    .unwrap();
-    let view = ResourceDevice::create_texture_view(
-        device,
-        &TextureViewDescriptor {
-            label: None,
-            texture,
-            base_mip_level: 0,
-            mip_level_count: 1,
-            format: Format::Rgba8Unorm,
-        },
-    )
-    .unwrap();
+    let mut views = Vec::new();
+    for pixel in [[255; 4], [128, 128, 255, 255], [255, 128, 255, 255]] {
+        let texture = ResourceDevice::create_texture(
+            device,
+            &TextureDescriptor {
+                label: None,
+                size: Extent2d::new(1, 1).unwrap(),
+                mip_level_count: 1,
+                format: Format::Rgba8Unorm,
+                usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
+                memory_location: MemoryLocation::GpuOnly,
+                dimension: TextureDimension::D2,
+            },
+        )
+        .unwrap();
+        ResourceDevice::write_texture(
+            device,
+            TextureWriteDescriptor {
+                texture,
+                mip_level: 0,
+                layout: TextureDataLayout::new(0, 4, 1).unwrap(),
+                origin: Origin2d::ZERO,
+                size: Extent2d::new(1, 1).unwrap(),
+            },
+            &pixel,
+        )
+        .unwrap();
+        let view = ResourceDevice::create_texture_view(
+            device,
+            &TextureViewDescriptor {
+                label: None,
+                texture,
+                base_mip_level: 0,
+                mip_level_count: 1,
+                format: Format::Rgba8Unorm,
+            },
+        )
+        .unwrap();
+        views.push(view);
+    }
     let sampler = ResourceDevice::create_sampler(device, &SamplerDescriptor::default()).unwrap();
     entries.extend([
         BindGroupEntry {
+            binding: 5,
+            resource: BindingResource::Texture(TextureBinding {
+                texture_view: views[1],
+            }),
+        },
+        BindGroupEntry {
+            binding: 10,
+            resource: BindingResource::Texture(TextureBinding {
+                texture_view: views[2],
+            }),
+        },
+        BindGroupEntry {
             binding: 3,
-            resource: BindingResource::Texture(TextureBinding { texture_view: view }),
+            resource: BindingResource::Texture(TextureBinding {
+                texture_view: views[0],
+            }),
         },
         BindGroupEntry {
             binding: 4,
@@ -212,6 +251,16 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
         },
     ]);
     layout_entries.extend([
+        BindGroupLayoutEntry {
+            binding: 5,
+            binding_type: BindingType::SampledTexture,
+            stages: ShaderStages::FRAGMENT,
+        },
+        BindGroupLayoutEntry {
+            binding: 10,
+            binding_type: BindingType::SampledTexture,
+            stages: ShaderStages::FRAGMENT,
+        },
         BindGroupLayoutEntry {
             binding: 3,
             binding_type: BindingType::SampledTexture,

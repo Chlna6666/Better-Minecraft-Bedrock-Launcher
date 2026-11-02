@@ -15,7 +15,11 @@ use std::sync::{
 use std::time::Duration;
 
 #[cfg(test)]
-pub(crate) const SHADER: &str = include_str!("scene_view.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("pbr.wgsl"),
+    "\n",
+    include_str!("scene_view.wgsl")
+);
 pub(crate) const PACKED_VERTEX_STRIDE: u32 = 64;
 pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
 // WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
@@ -23,7 +27,7 @@ pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
 // record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
 pub(crate) const DRAW_PARAMS_STRIDE: u32 = 80;
 pub(crate) const DRAW_SLOT_STRIDE: usize = 512;
-pub(crate) const FRAME_PARAMS_STRIDE: usize = 144;
+pub(crate) const FRAME_PARAMS_STRIDE: usize = 272;
 pub(crate) const INSTANCE_STRIDE: u32 = 144;
 pub(crate) const LIGHT_STRIDE: u32 = 80;
 pub(crate) const VERTEX_BINDING: u32 = 0;
@@ -43,9 +47,12 @@ static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 mod fog;
 pub use fog::DistanceFog;
+mod voxel_style;
+pub use voxel_style::{VoxelDisplay, VoxelIllumination, VoxelShading, VoxelShadingError};
 mod artifacts;
 mod batching;
 mod culling;
+mod effects;
 mod generated;
 pub(crate) mod gpu;
 mod hiz;
@@ -53,6 +60,8 @@ mod projection;
 mod renderer;
 mod resources;
 mod scene;
+mod shadow;
+pub use effects::ScreenEffects;
 mod uploads;
 /// A prepared scene and camera snapshot rendered as a GPUI layout element through Nova.
 ///
@@ -77,6 +86,8 @@ pub struct SceneView {
     pub(super) sampling: crate::TextureSampling,
     pub(super) voxel_shader: bool,
     pub(super) fog: Option<DistanceFog>,
+    pub(super) voxel_shading: VoxelShading,
+    pub(super) screen_effects: Option<ScreenEffects>,
     pub(super) culling_bounds: Option<crate::Aabb>,
 }
 
@@ -117,6 +128,27 @@ impl SceneViewRaycastScratch {
 pub(super) struct SceneViewId(u64);
 
 impl SceneView {
+    /// Enables GPU color/depth screen effects; `None` retains direct host rendering.
+    /// # Errors
+    /// Rejects non-finite or out-of-range effect parameters.
+    pub fn with_screen_effects(&self, effects: Option<ScreenEffects>) -> gpui::Result<Self> {
+        if let Some(effects) = effects {
+            effects.validate()?;
+        }
+        let mut view = self.with_camera(self.camera);
+        view.screen_effects = effects;
+        Ok(view)
+    }
+    /// Sets validated frame-wide voxel presentation without rebuilding scene assets.
+    /// # Errors
+    /// Rejects non-finite or out-of-range lighting parameters.
+    pub fn with_voxel_shading(&self, shading: VoxelShading) -> Result<Self, VoxelShadingError> {
+        shading.validate()?;
+        Ok(Self {
+            voxel_shading: shading,
+            ..self.clone()
+        })
+    }
     /// Sets distance fog without changing scene assets or rebuilding draw records.
     /// `None` disables fog. Existing views default to no fog.
     #[must_use]
@@ -146,6 +178,8 @@ impl SceneView {
             sampling: crate::TextureSampling::Linear,
             voxel_shader: false,
             fog: None,
+            voxel_shading: VoxelShading::default(),
+            screen_effects: None,
             culling_bounds: None,
         }
     }
@@ -172,6 +206,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -195,6 +231,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -250,6 +288,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -273,6 +313,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -316,6 +358,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -348,6 +392,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -375,6 +421,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -402,6 +450,8 @@ impl SceneView {
             sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -415,6 +465,8 @@ impl SceneView {
         Self {
             voxel_shader: true,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             ..self.clone()
         }
     }
@@ -453,6 +505,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -478,6 +532,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         }
     }
@@ -527,6 +583,8 @@ impl SceneView {
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
             fog: self.fog,
+            voxel_shading: self.voxel_shading,
+            screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
         })
     }
@@ -675,12 +733,30 @@ pub fn scene_view(scene_view: Arc<SceneView>) -> impl IntoElement {
 }
 
 impl RendererExtension for SceneView {
+    fn is_time_dependent(&self) -> bool {
+        self.screen_effects.is_some_and(|effects| {
+            effects.water || effects.clouds && effects.cloud_texture.is_some()
+        })
+    }
+    fn renderer_type(&self) -> std::any::TypeId {
+        if self.screen_effects.is_some() {
+            std::any::TypeId::of::<effects::EffectsRenderer>()
+        } else {
+            std::any::TypeId::of::<Self>()
+        }
+    }
     fn create_renderer(
         &self,
         device: &mut dyn ExtensionDevice,
         context: RendererExtensionContext,
     ) -> gpui::Result<Box<dyn RendererExtensionRenderer>> {
-        Ok(Box::new(renderer::Renderer::new(device, context)?))
+        if let Some(settings) = self.screen_effects {
+            Ok(Box::new(effects::EffectsRenderer::new(
+                device, context, settings,
+            )?))
+        } else {
+            Ok(Box::new(renderer::Renderer::new(device, context)?))
+        }
     }
 }
 
@@ -842,7 +918,7 @@ mod tests {
         assert_eq!(u32::from_ne_bytes(bytes[60..64].try_into().unwrap()), 0);
         assert_eq!(
             u32::from_ne_bytes(bytes[64..68].try_into().unwrap()),
-            1 | 2 | 4,
+            1 | 2 | 4 | 32,
             "albedo, occlusion, and UV flags are set for UV-mapped cube geometry",
         );
         assert_eq!(f32::from_ne_bytes(bytes[8..12].try_into().unwrap()), 1.0);

@@ -104,8 +104,43 @@ Fog updates the shared frame uniform without rebuilding scene assets, preserves 
 and premultiplied blending, and applies to both voxel and regular scene-view materials.
 `VoxelMeshSource::with_lighting` attaches packed sky/block levels for the padded cell grid.
 GPU vertex shading and CPU fallback use the same face sampling and ambient floor, independently
-of corner AO. The world editor combines worker-computed light propagation, face-direction light,
-AO and dimension-colored fog. There is no day/night simulation or state-complete Bedrock lightmap.
+of corner AO, including static detail faces. `SceneView::with_voxel_shading` controls textured,
+vertex-color and quad-wireframe views, full-bright/vertex/PBR illumination and daylight without
+rebuilding scene assets. Wireframe disables opaque-volume occlusion while retaining frustum culling.
+`PbrTextureLayout` supports both glTF roughness/metallic and metallic/emissive/roughness channels.
+PBR voxel normals use UV derivatives; they do not require a separate tangent stream.
+`VoxelShading::color_space` distinguishes display bytes in linear voxel textures from
+already-decoded linear material inputs, avoiding double sRGB decoding.
+
+`SceneView::with_screen_effects(Some(ScreenEffects::default()))` opts into HDR scene capture,
+material-aware geometry shadows, screen-space reflections, nearest-surface transmission/absorption,
+height fog and textured cloud volumes. `SurfaceKind::Water` selects animated water normals and
+water absorption. Cloud RGB follows `TextureAsset` color-space metadata; alpha supplies coverage.
+Clouds attenuate sunlight on surfaces and in fog. The 1024×1024 material shadow map spans 192 world
+units and applies the same alpha cutoff as the visible geometry, including cutout/detail models.
+The shadow projection is cached independently from the main camera's indirect visibility list.
+
+Scene geometry and material resources are shared by the capture and shadow passes. After the host
+confirms submission, unchanged capture attachments are reused until camera, scene, material or
+viewport changes. Cloud/water time is sampled on GPUI's presentation owner without rebuilding UI
+layout. Internal resolution scales from 0.25 to 1.0, capped at 4,194,304 pixels. Rays use fixed step
+limits; tiled local lighting uses 16-pixel tiles with an exact full-light fallback on overflow.
+`Light::Spherical` carries source radius and an optional diffuse-only lobe. Local-light occlusion
+and reflections are screen-space approximations and cannot see all offscreen geometry. Only the
+nearest translucent surface is resolved. Cascaded shadows, full biome/weather behavior, height-map
+conversion, subsurface scattering and a complete post-processing stack are not implemented.
+
+The world editor defaults to full-bright night vision with light solving, AO, fog and sun shadows
+disabled. Ordinary rendering uses `bedrock-light`, face-direction light and AO. Experimental Vibrant
+Visuals rendering supplies same-pack Texture Set color/normal/MER, resource-authored local-light
+colors, two-block emitter clusters and the optional screen effects. The application owns Bedrock
+resource, dimension and preset policy; these are not GPUI or Nova backend responsibilities. This
+is an independent compatible preview, not the official RenderDragon implementation.
+Night/day controls alter the shared frame uniform; a full cycle takes 20 real minutes. Streaming
+event submission uses a soft 2 ms / 8 MiB estimated-payload budget between events (one event may
+exceed it); hover picking runs at most 30 Hz, while explicit edit clicks still pick immediately.
+These bounds are not measured FPS improvements or a hard GPU-upload budget. Large-world hardware
+benchmarks and state-complete Bedrock lightmaps remain necessary.
 
 The voxel mesh arena keeps retired ranges unavailable while GPU work may still read them. During
 host memory trim, DX11, DX12 and Vulkan wait for queue completion before releasing

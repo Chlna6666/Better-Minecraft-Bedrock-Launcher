@@ -195,6 +195,7 @@ mod tests {
         (
             BindGroupId::from_parts(index as u32, 1),
             DrawResourceKey {
+                shadow: None,
                 mesh: DrawMeshKey::Mesh {
                     id: draw.mesh.id(),
                     generation: draw.mesh.generation(),

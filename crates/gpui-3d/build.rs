@@ -9,6 +9,29 @@ use gfx_shader_build::{
 
 fn main() {
     let shaders = ShaderSet::new("scene_view")
+        .shader(
+            Shader::new("screen_effects")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/frame.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/screen.wgsl")
+                ))
+                .entry("vs_effects", ShaderStage::Vertex)
+                .entry("fs_effects", ShaderStage::Fragment)
+                .entry("fs_composite", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("light_tiles")
+                .wgsl(concat!(
+                    include_str!("src/scene_view/effects/frame.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/tiles.wgsl")
+                ))
+                .entry("cs_clear_light_tiles", ShaderStage::Compute)
+                .entry("cs_light_tiles", ShaderStage::Compute),
+        )
         .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         // The host application decides which backend renders, and this crate's own
         // features only forward to `gpui`, so artifacts are generated for every backend
@@ -16,11 +39,27 @@ fn main() {
         .backend_selection(BackendSelection::Platform)
         .shader(
             Shader::new("scene_view")
-                .wgsl_file("src/scene_view.wgsl")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view.wgsl")
+                ))
                 // The scene-view shader uses the `instance_id` attribute, which MSL 1.2 adds.
                 .msl_version(MslVersion::V1_2)
                 .entry("vs_main", ShaderStage::Vertex)
                 .entry("fs_main", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("scene_attributes")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view.wgsl")
+                ))
+                .entry("fs_hdr", ShaderStage::Fragment)
+                .entry("fs_scene_surface", ShaderStage::Fragment)
+                .entry("fs_scene_albedo", ShaderStage::Fragment)
+                .entry("fs_scene_shadow", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("cull")
@@ -32,6 +71,7 @@ fn main() {
                 .wgsl_file("src/scene_view/hiz.wgsl")
                 .entry("cs_hiz_clear", ShaderStage::Compute)
                 .entry("cs_hiz_raster", ShaderStage::Compute)
+                .entry("cs_shadow_raster", ShaderStage::Compute)
                 .entry("cs_hiz_reduce", ShaderStage::Compute),
         )
         .shader(
@@ -54,15 +94,36 @@ fn main() {
                 .wgsl_file("src/scene_view/mesher_check.wgsl")
                 .entry("vs_mesh_check", ShaderStage::Vertex)
                 .entry("fs_mesh_check", ShaderStage::Fragment)
+                .entry("fs_shadow_check", ShaderStage::Fragment)
                 .entry("fs_mesh_ao_check", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("voxel")
-                .wgsl_file("src/scene_view/voxel.wgsl")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/voxel.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/voxel_lighting.wgsl")
+                ))
                 .entry("vs_voxel", ShaderStage::Vertex)
                 .entry("vs_voxel_gpu", ShaderStage::Vertex)
                 .entry("vs_generated_voxel", ShaderStage::Vertex)
                 .entry("fs_voxel", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("voxel_attributes")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/voxel.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/voxel_lighting.wgsl")
+                ))
+                .entry("fs_voxel_capture", ShaderStage::Fragment)
+                .entry("fs_voxel_surface", ShaderStage::Fragment)
+                .entry("fs_voxel_albedo", ShaderStage::Fragment)
+                .entry("fs_voxel_shadow", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("offscreen_shadow")
@@ -73,7 +134,11 @@ fn main() {
         )
         .shader(
             Shader::new("offscreen_scene")
-                .wgsl_file("src/render/scene.wgsl")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/render/scene.wgsl")
+                ))
                 .msl_version(MslVersion::V1_2)
                 .entry("vs_scene", ShaderStage::Vertex)
                 .entry("fs_scene", ShaderStage::Fragment),

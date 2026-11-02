@@ -147,3 +147,95 @@ fn hiz_vulkan() {
 fn hiz_dx12() {
     verify(gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap());
 }
+
+fn verify_shadow<D: Device + TextureTransferDevice>(mut device: D) {
+    let mut raster =
+        super::super::super::hiz::HiZ::create_shadow(&mut device, D::BACKEND_KIND).unwrap();
+    let mut bytes = frame(Mat4::IDENTITY);
+    bytes[72..76].copy_from_slice(&(-1f32).to_le_bytes());
+    let frame_buffer = upload(&mut device, &bytes, BufferUsage::UNIFORM);
+    let front = crate::Occluder {
+        bounds: Aabb::new(Vec3::new(-0.8, -0.8, 0.2), Vec3::new(0.8, 0.8, 0.3)).unwrap(),
+        faces: 16,
+    };
+    for boxes in [
+        vec![front],
+        vec![],
+        vec![crate::Occluder { faces: 32, ..front }],
+    ] {
+        let expected = if boxes.first().is_some_and(|face| face.faces == 16) {
+            [51, 255, 51, 255]
+        } else {
+            [255; 4]
+        };
+        raster
+            .update(
+                &mut device,
+                boxes.into_iter(),
+                Vec3::new(0., 0., -1.),
+                Vec3::Z,
+                true,
+            )
+            .unwrap();
+        raster.dispatch(&mut device, frame_buffer).unwrap();
+        let pixel = super::super::super::generated::tests::probe(
+            &mut device,
+            raster.depths,
+            512 * 512 * 4,
+            "fs_shadow_check",
+        );
+        assert_eq!(pixel, expected);
+    }
+    raster.destroy(&mut device).unwrap();
+    let mut shadow =
+        super::super::super::shadow::Shadow::create(&mut device, D::BACKEND_KIND).unwrap();
+    shadow
+        .update(
+            &mut device,
+            std::iter::once(crate::Occluder { faces: 63, ..front }),
+            Vec3::ZERO,
+            Vec3::Z,
+            true,
+        )
+        .unwrap();
+    let pixel = super::super::super::generated::tests::probe(
+        &mut device,
+        shadow.raster.depths,
+        512 * 512 * 4,
+        "fs_shadow_check",
+    );
+    assert!(pixel[0] < 255);
+    assert_eq!(pixel[1], 255);
+    // Edits while shadows are disabled must invalidate their retained map before re-enabling.
+    shadow.invalidate();
+    shadow
+        .update(&mut device, std::iter::empty(), Vec3::ZERO, Vec3::Z, false)
+        .unwrap();
+    assert_eq!(
+        super::super::super::generated::tests::probe(
+            &mut device,
+            shadow.raster.depths,
+            512 * 512 * 4,
+            "fs_shadow_check"
+        ),
+        [255; 4]
+    );
+    shadow.destroy(&mut device).unwrap();
+    ResourceDevice::destroy_buffer(&mut device, frame_buffer).unwrap();
+}
+
+#[test]
+#[ignore = "requires D3D11 hardware; actual opaque-face shadow depth and stale removal"]
+fn shadow_dx11() {
+    verify_shadow(Dx11Device::new(&DeviceDescriptor::default()).unwrap());
+}
+#[test]
+#[ignore = "requires D3D12 hardware; actual opaque-face shadow depth and stale removal"]
+fn shadow_dx12() {
+    verify_shadow(gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap());
+}
+#[test]
+#[ignore = "requires Vulkan hardware; actual opaque-face shadow depth and stale removal"]
+fn shadow_vulkan() {
+    verify_shadow(gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap());
+}
