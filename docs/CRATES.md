@@ -50,6 +50,7 @@
 | `bedrock-world` | `crates/bedrock-world` | 世界/level.dat/NBT/玩家/区块读写与版本语义 | 活跃 | [README](../crates/bedrock-world/README.md) |
 | `bedrock-leveldb` | `crates/bedrock-leveldb` | Mojang 修改版 LevelDB 存储引擎 | 活跃 | [README](../crates/bedrock-leveldb/README.md) |
 | `bedrock-render` | `crates/bedrock-render` | 世界瓦片 CPU 渲染 | 活跃 | [README](../crates/bedrock-render/README.md) |
+| `bedrock-light` | `crates/bedrock-light` | 无存储依赖的体素光传播 | 活跃 | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | 资源包方块模型解析 | 活跃 | [README](../crates/bedrock-block-model/README.md) |
 | `bedrock-brarchive` | `crates/bedrock-brarchive` | BRArchive v1 只读访问 | 活跃 | [README](../crates/bedrock-brarchive/README.md) |
 | `bedrock-voxel` | `crates/bedrock-voxel` | 图片/OBJ → 方块放置计划 | 活跃 | [README](../crates/bedrock-voxel/README.md) |

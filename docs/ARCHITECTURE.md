@@ -78,6 +78,7 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 | `bedrock-world` | Bedrock 世界/level.dat/NBT/玩家/区块读写与多版本语义 | 拥有 Bedrock 世界语义 |
 | `bedrock-leveldb` | Mojang 修改版 LevelDB 存储引擎 | 只负责存储机制 |
 | `bedrock-render` | 世界瓦片 CPU 渲染 | 不依赖 gpui |
+| `bedrock-light` | 有界体素天空光/方块光传播 | 不依赖 UI、GPU 或世界存储 |
 | `bedrock-block-model` | 资源包方块模型解析 | 只产出模型描述 |
 | `bedrock-brarchive` | BRArchive v1 只读访问 | 不负责解包/解码 |
 | `bedrock-voxel` | 图片/OBJ → 方块放置计划 | 不直接写世界 |
@@ -100,6 +101,10 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
    - `PresentationDevice::render_to_textures(&[RenderPassCommands])`
    - `SurfaceDevice::{resize_swapchain, recreate_swapchain, swapchain_extent, resolve_composite_alpha}`
 4. **backend**：DX11/DX12/Vulkan/OpenGL/Metal/WebGL。`gfx-core` 是无 UI、无窗口句柄的公共契约。
+
+通用 `RendererExtensionPass` 由扩展编码、GPUI 的呈现所有者按序提交，再合成窗口。扩展不
+拥有窗口或 swapchain。提交确认与 GPU 完成是两个独立通知：前者允许复用捕获结果，后者才
+允许回收仍可能被读取的资源。时间相关扩展可复用不可变 Paint 连续呈现，不触发 UI 布局。
 
 ### 4.2 帧流程（概念）
 

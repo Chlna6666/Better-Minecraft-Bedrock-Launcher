@@ -80,6 +80,7 @@ See [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) for the boundary decision.
 | `bedrock-world` | Bedrock world, level.dat, NBT, players, chunks, versions | Owns Bedrock world semantics |
 | `bedrock-leveldb` | Modified LevelDB storage engine | Storage mechanics only |
 | `bedrock-render` | CPU tile rendering for worlds | No gpui dependency |
+| `bedrock-light` | Bounded voxel sky/block-light propagation | No UI, GPU or world-storage dependency |
 | `bedrock-block-model` | Resource-pack block model resolution | Produces model descriptions only |
 | `bedrock-brarchive` | Read-only BRArchive v1 access | No extraction or decoding |
 | `bedrock-voxel` | Image/OBJ to block placement plans | Does not write worlds |
@@ -109,6 +110,11 @@ frame-ready callback or deferred submission tracking.
 
 `present_region` is the graphics-level changed-area argument; `DirtyRegion`/damage merging belongs
 to gpui.
+
+Generic `RendererExtensionPass` plans are encoded by extensions, submitted in order by GPUI's
+presentation owner, and then composed into the window. Extensions own neither windows nor
+swapchains. Submission confirmation permits capture reuse; GPU completion separately permits
+resource reclamation. Time-dependent extensions reuse immutable Paint without relaying out UI.
 
 ## 5. Backend selection
 

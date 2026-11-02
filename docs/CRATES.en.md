@@ -50,6 +50,7 @@ examples, not library APIs.
 | `bedrock-world` | `crates/bedrock-world` | World/level.dat/NBT/player/chunk I/O and version semantics | Active | [README](../crates/bedrock-world/README.md) |
 | `bedrock-leveldb` | `crates/bedrock-leveldb` | Modified LevelDB storage engine | Active | [README](../crates/bedrock-leveldb/README.md) |
 | `bedrock-render` | `crates/bedrock-render` | CPU world tile renderer | Active | [README](../crates/bedrock-render/README.md) |
+| `bedrock-light` | `crates/bedrock-light` | Storage-independent voxel light propagation | Active | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | Resource-pack block model resolution | Active | [README](../crates/bedrock-block-model/README.md) |
 | `bedrock-brarchive` | `crates/bedrock-brarchive` | Read-only BRArchive v1 access | Active | [README](../crates/bedrock-brarchive/README.md) |
 | `bedrock-voxel` | `crates/bedrock-voxel` | Image/OBJ to block placement plans | Active | [README](../crates/bedrock-voxel/README.md) |
