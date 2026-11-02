@@ -102,9 +102,13 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
    - `SurfaceDevice::{resize_swapchain, recreate_swapchain, swapchain_extent, resolve_composite_alpha}`
 4. **backend**：DX11/DX12/Vulkan/OpenGL/Metal/WebGL。`gfx-core` 是无 UI、无窗口句柄的公共契约。
 
-通用 `RendererExtensionPass` 由扩展编码、GPUI 的呈现所有者按序提交，再合成窗口。扩展不
+通用 `RendererExtensionPass` 由扩展编码、GPUI 的呈现所有者先于 Root、元素层和背景模糊消费者
+按序提交，再合成窗口。后续消费者失败时仍保留已提交扩展的栅栏记录。扩展不
 拥有窗口或 swapchain。提交确认与 GPU 完成是两个独立通知：前者允许复用捕获结果，后者才
 允许回收仍可能被读取的资源。时间相关扩展可复用不可变 Paint 连续呈现，不触发 UI 布局。
+Windows 的 `gpui-gpu-owner` 独立线程负责呈现。窗口指标中的 `renderer_extension_prepare`
+单独记录扩展准备的主机耗时，它包含在 `renderer_scene_prepare` 内；两者不可相加，也不等于
+GPU 执行耗时。离屏提交与原生等待需分别结合 `offscreen_render` 和后端指标分析。
 
 ### 4.2 帧流程（概念）
 

@@ -59,7 +59,7 @@ pub(super) struct SceneResources {
     frame_buffer: BufferId,
     frame_state: Option<FrameState>,
     shadow: Option<super::shadow::Shadow>,
-    light_pass:Option<light_pass::LightPass>,
+    light_pass: Option<light_pass::LightPass>,
     uploaded_tables: [Vec<u8>; 3],
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
@@ -82,8 +82,8 @@ const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 mod assets;
 mod generated;
-mod reorder;
 mod light_pass;
+mod reorder;
 
 /// Values that only affect the frame-wide uniform buffer, not the prepared draw list.
 #[derive(Clone, Copy, PartialEq)]
@@ -250,7 +250,7 @@ impl SceneResources {
             frame_buffer,
             frame_state: None,
             shadow: None,
-            light_pass:None,
+            light_pass: None,
             uploaded_tables: Default::default(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
@@ -556,9 +556,7 @@ impl SceneResources {
             {
                 culling.hiz.update(
                     device,
-                    self.prepared
-                        .occluder_bounds(scene_view.culling_bounds)
-                        .filter(|_| shading.display != super::VoxelDisplay::Wireframe),
+                    self.prepared.occluder_bounds(scene_view.culling_bounds),
                     scene_view.camera.eye,
                     scene_view.camera.target - scene_view.camera.eye,
                     draw_state_changed || culling_bounds_changed || wire_changed,
@@ -651,7 +649,14 @@ impl SceneResources {
                 dst.copy_from_slice(&value.to_le_bytes());
             }
         }
-        if projection.is_hdr() {bytes[268..272].copy_from_slice(&1f32.to_le_bytes());}
+        if projection.is_hdr() {
+            let flags = if projection.has_water_animation() {
+                3f32
+            } else {
+                1f32
+            };
+            bytes[268..272].copy_from_slice(&flags.to_le_bytes());
+        }
         device.write_buffer(self.frame_buffer, 0, &bytes)?;
         Ok(())
     }
@@ -1260,9 +1265,15 @@ impl SceneResources {
         voxel_shader: bool,
         steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
-        self.append_pass_steps(renderer,voxel_shader,steps,None)
+        self.append_pass_steps(renderer, voxel_shader, steps, None)
     }
-    fn append_pass_steps(&self,renderer:&RendererResources,voxel_shader:bool,steps:&mut Vec<RenderCommand>,shadow:Option<(&[BindGroupId],BufferId)>)->gpui::Result<()> {
+    fn append_pass_steps(
+        &self,
+        renderer: &RendererResources,
+        voxel_shader: bool,
+        steps: &mut Vec<RenderCommand>,
+        shadow: Option<(&[BindGroupId], BufferId)>,
+    ) -> gpui::Result<()> {
         steps.reserve(self.batches.len());
         let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
@@ -1276,15 +1287,21 @@ impl SceneResources {
                 .meshes
                 .get(&mesh_key(draw, voxel_shader))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
-            if shadow.is_some() && draw.material.alpha_mode==AlphaMode::Blend {continue;}
+            if renderer.rejects_material(&draw.material)
+                || (shadow.is_some() && draw.material.alpha_mode == AlphaMode::Blend)
+            {
+                continue;
+            }
             // Indexed ranges still use direct draws, so retain their CPU frustum test.
-            if shadow.is_none() && self.culling.is_some()
+            if shadow.is_none()
+                && self.culling.is_some()
                 && !mesh.procedural_quads
                 && (!bounds_visible(draw.bounds) || !self.prepared.is_draw_in_culling_bounds(draw))
             {
                 continue;
             }
-            let draw_resources = shadow.map_or(self.draw_resources.as_slice(),|value|value.0)
+            let draw_resources = shadow
+                .map_or(self.draw_resources.as_slice(), |value| value.0)
                 .get(batch_index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
             let voxel = mesh_key(draw, voxel_shader).1;
@@ -1312,11 +1329,14 @@ impl SceneResources {
                 steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                     pipeline,
                     bind_groups: bind_group_list([*draw_resources]),
-                    arguments: shadow.map(|value|value.1).or_else(||self
-                        .culling
-                        .as_ref()
-                        .map(|culling| culling.arguments)
-                        .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer)))
+                    arguments: shadow
+                        .map(|value| value.1)
+                        .or_else(|| {
+                            self.culling
+                                .as_ref()
+                                .map(|culling| culling.arguments)
+                                .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer))
+                        })
                         .ok_or_else(|| anyhow!("missing generated mesh arguments"))?,
                     offset: address.arguments_offset,
                     scissor: None,
@@ -1326,7 +1346,7 @@ impl SceneResources {
                     steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                         pipeline,
                         bind_groups: bind_group_list([*draw_resources]),
-                        arguments: shadow.map_or(culling.arguments,|value|value.1),
+                        arguments: shadow.map_or(culling.arguments, |value| value.1),
                         offset: address.arguments_offset,
                         scissor: None,
                     }));
@@ -1389,7 +1409,9 @@ impl SceneResources {
         if let Some(shadow) = self.shadow.take() {
             shadow.destroy(device)?;
         }
-        if let Some(pass)=self.light_pass.take() {pass.destroy(device)?;}
+        if let Some(pass) = self.light_pass.take() {
+            pass.destroy(device)?;
+        }
         for (_, mesh) in self.meshes.drain() {
             destroy_mesh(device, mesh, &mut self.arena)?;
         }

@@ -5,7 +5,6 @@ use super::{
     relative_path_string, replace_path_extension,
 };
 use crate::json::read_resource_json;
-use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ObjResourcePack {
@@ -15,9 +14,15 @@ pub(super) struct ObjResourcePack {
     /// lookups always give it priority over versioned `vanilla_*` overlays.
     is_base_vanilla: bool,
     blocks: Value,
+    /// `blocks.json` keys indexed by a case- and underscore-insensitive form.
+    ///
+    /// World data writes flattened ids in snake_case (`piston_arm_collision`)
+    /// while `blocks.json` historically uses camelCase (`pistonArmCollision`);
+    /// the index lets one spelling find the other as a last-resort fallback.
+    block_lookup: HashMap<String, String>,
     texture_data: HashMap<String, Vec<String>>,
     item_texture_data: HashMap<String, String>,
-    flipbook_textures: BTreeSet<String>,
+    flipbook_textures: HashMap<String, Value>,
     resources: PackResources,
     local_lights: HashMap<String, super::LocalLightDefinition>,
     pub(super) local_light_error: Option<String>,
@@ -43,6 +48,7 @@ impl ObjResourcePack {
             .map(|file| read_resource_json(&file))
             .transpose()?
             .unwrap_or(Value::Null);
+        let block_lookup = block_lookup_index(&blocks);
         let mut texture_data = read_texture_data_maps(&root, &texture_root);
         // Archive entries take precedence over matching loose atlas files.
         for path in ["terrain_texture.json", "textures/terrain_texture.json"] {
@@ -77,7 +83,7 @@ impl ObjResourcePack {
                 }
             }
         }
-        let mut flipbook_textures = BTreeSet::new();
+        let mut flipbook_textures = HashMap::new();
         for path in ["flipbook_textures.json", "textures/flipbook_textures.json"] {
             let Some(file) = resources.get(Path::new(path)) else {
                 continue;
@@ -90,7 +96,7 @@ impl ObjResourcePack {
                 let Some(texture) = entry.get("flipbook_texture").and_then(Value::as_str) else {
                     continue;
                 };
-                flipbook_textures.insert(obj_normalize_texture_key(texture));
+                flipbook_textures.insert(obj_normalize_texture_key(texture), entry.clone());
             }
         }
         let (local_lights, local_light_error) = match super::lighting::read_local_lights(&resources)
@@ -109,6 +115,7 @@ impl ObjResourcePack {
             item_texture_data,
             flipbook_textures,
             resources,
+            block_lookup,
         }))
     }
 
@@ -123,11 +130,20 @@ impl ObjResourcePack {
     /// Whether the given texture path is declared as an animated flipbook strip.
     pub(super) fn is_flipbook_texture(&self, relative_path: &str) -> bool {
         self.flipbook_textures
-            .contains(&obj_normalize_texture_key(relative_path))
+            .contains_key(&obj_normalize_texture_key(relative_path))
+    }
+
+    pub(super) fn flipbook_definition(&self, texture: &ObjResolvedTexture) -> Option<&Value> {
+        (texture.pack_root == self.root).then_some(())?;
+        self.flipbook_textures
+            .get(&obj_normalize_texture_key(&texture.relative_path))
     }
 
     pub(super) fn block_texture_key_for(&self, block: &str, normal: [i32; 3]) -> Option<String> {
-        let object = block_definition(&self.blocks, block)?;
+        let object = block_definition(&self.blocks, block).or_else(|| {
+            let key = self.block_lookup.get(&normalize_block_lookup_key(block))?;
+            self.blocks.get(key)
+        })?;
         let textures = object
             .get("textures")
             .or_else(|| object.get("texture"))
@@ -214,4 +230,27 @@ impl ObjResourcePack {
             pack_root: self.root.clone(),
         }
     }
+}
+
+/// Indexes `blocks.json` keys by their normalized spelling.
+fn block_lookup_index(blocks: &Value) -> HashMap<String, String> {
+    let mut index = HashMap::new();
+    let Some(entries) = blocks.as_object() else {
+        return index;
+    };
+    for key in entries.keys() {
+        index.insert(normalize_block_lookup_key(key), key.clone());
+    }
+    index
+}
+
+/// Normalizes one block id or `blocks.json` key: drops the `minecraft:` prefix,
+/// underscores, and casing, so `piston_arm_collision` matches `pistonArmCollision`.
+fn normalize_block_lookup_key(name: &str) -> String {
+    name.strip_prefix("minecraft:")
+        .unwrap_or(name)
+        .chars()
+        .filter(|character| *character != '_')
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
 }

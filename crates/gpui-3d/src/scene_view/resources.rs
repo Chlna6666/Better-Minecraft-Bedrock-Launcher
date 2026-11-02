@@ -35,6 +35,11 @@ pub(super) struct RendererResources {
 }
 
 impl RendererResources {
+    pub(super) fn rejects_material(&self, material: &crate::Material) -> bool {
+        material.alpha_mode == crate::AlphaMode::Blend
+            && (self.pass == PassKind::Shadow
+                || (self.pass == PassKind::Hdr && material.surface != crate::SurfaceKind::Standard))
+    }
     #[cfg(test)]
     pub(super) fn test_pipeline(
         layout: BindGroupLayoutId,

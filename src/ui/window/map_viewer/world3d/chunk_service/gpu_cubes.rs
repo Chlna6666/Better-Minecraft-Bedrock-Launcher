@@ -1,4 +1,4 @@
-//! Resolve small cube template tables while leaving cell faces for GPU generation.
+//! Resolve reusable cube templates into compact static meshes or dynamically lit GPU sources.
 use super::*;
 
 impl Worker {
@@ -9,6 +9,7 @@ impl Worker {
         faces: &[p3d::Preview3dStreamFace],
         lighting: Option<&super::lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
+        let lighting = lighting.filter(|_| self.lighting.is_lit());
         let levels = lighting.map(|light| light.gpu_levels(pos, &band));
         let mut faces = faces.to_vec();
         for face in &mut faces[..band.template_faces] {
@@ -69,12 +70,21 @@ impl Worker {
                 )
             })
             .map_err(|error| format!("GPU 构网输入无效: {error}"))?;
-        let mesh = Mesh::from_gpu_voxels(source)
-            .with_identity(chunk_mesh_id(pos, band.section_y), self.mesh_generation);
+        let compact = !self.lighting.is_lit();
+        #[cfg(test)]
+        let compact = compact && std::env::var("BMCBL_WORLD3D_TEST_GPU_MESH").as_deref() != Ok("1");
+        let mesh = if compact {
+            source
+                .compact_mesh()
+                .map_err(|error| format!("构造紧凑网格失败: {error}"))?
+        } else {
+            Mesh::from_gpu_voxels(source)
+        }
+        .with_identity(chunk_mesh_id(pos, band.section_y), self.mesh_generation);
         output.pos = pos;
         output.section_y = band.section_y;
         output.origin = [pos.x * 16, 0, pos.z * 16];
-        // GPU output count is consumed directly by rendering; this diagnostic is capacity.
+        // GPU sources report reserved capacity; compact meshes report their actual face count.
         output.faces = mesh.index_count() / 6;
         output.triangles = output.faces * 2;
         output.mesh = Arc::new(mesh);

@@ -32,6 +32,7 @@ mod platform {
     mod buffer_upload;
     mod compute;
     mod descriptors;
+    mod recording;
     use descriptors::DescriptorKey;
     mod relocation;
     mod surface;
@@ -2804,7 +2805,10 @@ mod platform {
                 }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
+            let record_started = recording::start();
             let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let staging_ms =
+                record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
             for step in steps.iter() {
@@ -2903,6 +2907,7 @@ mod platform {
                     )?;
                 }
             }
+            recording::finish(record_started, staging_ms, steps.len());
             record_transition_barrier(
                 &command_list,
                 &render_target,
@@ -3069,7 +3074,10 @@ mod platform {
                     }
                 }
             }
+            let record_started = recording::start();
             let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let staging_ms =
+                record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
             for step in steps.iter() {
@@ -3168,6 +3176,7 @@ mod platform {
                     )?;
                 }
             }
+            recording::finish(record_started, staging_ms, steps.len());
             record_transition_barrier(
                 &command_list,
                 &texture_resource,
@@ -3337,7 +3346,7 @@ mod platform {
         fn wait_for_pending_work(&mut self) -> Result<()> {
             let fence_value = self.signal_frame()?;
             self.wait_for_fence_value(fence_value)?;
-            self.deferred_command_encoders.clear();
+            self.poll_cleanup();
             self.recycle_completed_uploads_all();
             let releases = self.deferred_releases.drain_all();
             for payload in releases {
@@ -4954,7 +4963,10 @@ mod platform {
     }
 
     fn enable_debug_layer() {
-        if !cfg!(debug_assertions) {
+        if !recording::debug_layer_enabled(
+            std::env::var("GFX_DX12_DEBUG_LAYER").ok().as_deref(),
+            cfg!(debug_assertions),
+        ) {
             return;
         }
         let mut debug = None;

@@ -5,9 +5,12 @@ use super::frame_graph::{FrameGraphPlan, Pass as GraphPass};
 use super::*;
 use crate::diagnostics::gpu_owner::phases::{self, Phase};
 use std::time::Duration;
+#[cfg(test)]
+#[path = "present/extension_tests.rs"]
+mod extension_tests;
 
 struct MainPresentDescriptor<'a> {
-    renderer_registry: &'a mut super::extensions::RendererRegistry,
+    extension_submission: Option<SubmissionId>,
     submission_mode: GpuSubmissionMode,
     async_capabilities: AsyncCapabilities,
     pending_submissions: &'a mut Vec<PendingSubmission>,
@@ -26,19 +29,7 @@ fn present_main_frame<D>(
 where
     D: PresentationDevice + CommandDevice + SubmissionDevice + ResourceDevice,
 {
-    let passes = descriptor
-        .renderer_registry
-        .passes()
-        .iter()
-        .map(crate::RendererExtensionPass::commands)
-        .collect::<Vec<_>>();
-    let predecessor = if passes.is_empty() {
-        None
-    } else {
-        device.render_to_textures(&passes)?
-    };
-    drop(passes);
-    descriptor.renderer_registry.render_passes_submitted();
+    let predecessor = descriptor.extension_submission;
     let pending_before = descriptor.pending_submissions.len();
     let result = NovaRenderer::submit_present_frame(
         descriptor.submission_mode,
@@ -53,21 +44,59 @@ where
         descriptor.frame_resource_index,
         descriptor.damage,
     );
-    if let Some(predecessor) = predecessor {
-        if descriptor.pending_submissions.len() > pending_before {
-            if let Some(frame) = descriptor.pending_submissions.last_mut() {
-                frame.predecessors.push(predecessor);
-            }
+    if descriptor.pending_submissions.len() > pending_before {
+        attach_extension_submission(descriptor.pending_submissions, predecessor);
+    }
+    result
+}
+
+// Keep a submitted producer tracked even if a later offscreen consumer fails.
+struct ExtensionSubmission<'a> {
+    registry: &'a mut super::extensions::RendererRegistry,
+    pending: &'a mut Vec<PendingSubmission>,
+    frame_resource_index: usize,
+}
+impl ExtensionSubmission<'_> {
+    fn submit<D: PresentationDevice>(self, device: &mut D) -> Result<Option<SubmissionId>> {
+        let passes = self
+            .registry
+            .passes()
+            .iter()
+            .map(crate::RendererExtensionPass::commands)
+            .collect::<Vec<_>>();
+        let submission = if passes.is_empty() {
+            None
         } else {
-            descriptor.pending_submissions.push(PendingSubmission {
-                submission: predecessor,
+            device.render_to_textures(&passes)?
+        };
+        drop(passes);
+        self.registry.render_passes_submitted();
+        if let Some(submission) = submission {
+            self.pending.push(PendingSubmission {
+                submission,
                 predecessors: SmallVec::new(),
-                frame_resource_index: descriptor.frame_resource_index,
+                frame_resource_index: self.frame_resource_index,
                 publication: None,
             });
         }
+        Ok(submission)
     }
-    result
+}
+fn attach_extension_submission(
+    pending: &mut Vec<PendingSubmission>,
+    predecessor: Option<SubmissionId>,
+) {
+    if let Some(predecessor) = predecessor
+        && let Some(index) = pending
+            .iter()
+            .position(|entry| entry.submission == predecessor)
+        && index + 1 < pending.len()
+    {
+        pending.remove(index);
+        if let Some(frame) = pending.last_mut() {
+            frame.predecessors.push(predecessor);
+        }
+    }
 }
 
 fn render_backdrop_blur_groups<D>(
@@ -272,7 +301,10 @@ fn execute_frame_graph_offscreen<D: PresentationDevice>(
     backdrop_source: Option<TextureViewId>,
     backdrop_groups: &[PreparedBackdropBlurGroup],
     viewport: gfx_core::Viewport,
-) -> Result<()> {
+    extensions: ExtensionSubmission<'_>,
+) -> Result<Option<SubmissionId>> {
+    // Producers precede every Root/Element/Backdrop consumer, not just the swapchain.
+    let extension_submission = extensions.submit(device)?;
     let mut color_passes = Vec::new();
     for pass in graph.offscreen_passes() {
         match pass {
@@ -324,7 +356,7 @@ fn execute_frame_graph_offscreen<D: PresentationDevice>(
     if !color_passes.is_empty() {
         device.render_to_textures(&color_passes)?;
     }
-    Ok(())
+    Ok(extension_submission)
 }
 
 pub(super) fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
@@ -1108,7 +1140,7 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    execute_frame_graph_offscreen(
+                    let extension_submission = execute_frame_graph_offscreen(
                         device,
                         &graph,
                         self.render_pass,
@@ -1122,6 +1154,11 @@ impl NovaRenderer {
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                         render_viewport,
+                        ExtensionSubmission {
+                            registry: &mut self.renderer_registry,
+                            pending: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                        },
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1138,7 +1175,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
-                            renderer_registry: &mut self.renderer_registry,
+                            extension_submission,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1163,7 +1200,7 @@ impl NovaRenderer {
                             warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
-                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} extension_prepare_us={} ",
                                 "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
@@ -1172,6 +1209,9 @@ impl NovaRenderer {
                             buffer_upload_elapsed_ms,
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
+                            presentation_timing
+                                .as_ref()
+                                .map_or(0, |timing| timing.renderer_extension_prepare.as_micros()),
                             present_elapsed_ms,
                             backend_presentation_timings
                                 .map_or(0, |timing| timing.command_record.as_micros()),
@@ -1230,7 +1270,7 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    execute_frame_graph_offscreen(
+                    let extension_submission = execute_frame_graph_offscreen(
                         device,
                         &graph,
                         self.render_pass,
@@ -1244,6 +1284,11 @@ impl NovaRenderer {
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                         render_viewport,
+                        ExtensionSubmission {
+                            registry: &mut self.renderer_registry,
+                            pending: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                        },
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1260,7 +1305,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
-                            renderer_registry: &mut self.renderer_registry,
+                            extension_submission,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1285,7 +1330,7 @@ impl NovaRenderer {
                             warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
-                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} extension_prepare_us={} ",
                                 "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
@@ -1294,6 +1339,9 @@ impl NovaRenderer {
                             buffer_upload_elapsed_ms,
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
+                            presentation_timing
+                                .as_ref()
+                                .map_or(0, |timing| timing.renderer_extension_prepare.as_micros()),
                             present_elapsed_ms,
                             backend_presentation_timings
                                 .map_or(0, |timing| timing.command_record.as_micros()),
@@ -1352,7 +1400,7 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    execute_frame_graph_offscreen(
+                    let extension_submission = execute_frame_graph_offscreen(
                         device,
                         &graph,
                         self.render_pass,
@@ -1366,6 +1414,11 @@ impl NovaRenderer {
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                         render_viewport,
+                        ExtensionSubmission {
+                            registry: &mut self.renderer_registry,
+                            pending: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                        },
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1382,7 +1435,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
-                            renderer_registry: &mut self.renderer_registry,
+                            extension_submission,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1407,7 +1460,7 @@ impl NovaRenderer {
                             warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
-                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} extension_prepare_us={} ",
                                 "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
@@ -1416,6 +1469,9 @@ impl NovaRenderer {
                             buffer_upload_elapsed_ms,
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
+                            presentation_timing
+                                .as_ref()
+                                .map_or(0, |timing| timing.renderer_extension_prepare.as_micros()),
                             present_elapsed_ms,
                             backend_presentation_timings
                                 .map_or(0, |timing| timing.command_record.as_micros()),
@@ -1461,7 +1517,7 @@ impl NovaRenderer {
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
-                    execute_frame_graph_offscreen(
+                    let extension_submission = execute_frame_graph_offscreen(
                         device,
                         &graph,
                         self.render_pass,
@@ -1475,6 +1531,11 @@ impl NovaRenderer {
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                         render_viewport,
+                        ExtensionSubmission {
+                            registry: &mut self.renderer_registry,
+                            pending: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                        },
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1486,7 +1547,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
-                            renderer_registry: &mut self.renderer_registry,
+                            extension_submission,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1549,7 +1610,7 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    execute_frame_graph_offscreen(
+                    let extension_submission = execute_frame_graph_offscreen(
                         device,
                         &graph,
                         self.render_pass,
@@ -1563,6 +1624,11 @@ impl NovaRenderer {
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                         render_viewport,
+                        ExtensionSubmission {
+                            registry: &mut self.renderer_registry,
+                            pending: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                        },
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1579,7 +1645,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
-                            renderer_registry: &mut self.renderer_registry,
+                            extension_submission,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1604,7 +1670,7 @@ impl NovaRenderer {
                             warn,
                             concat!(
                                 "nova-gfx frame stages: backend={} total_ms={} ",
-                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} extension_prepare_us={} ",
                                 "present_ms={} native_record_us={} native_present_us={} native_signal_us={} native_cleanup_us={} submission_mode={:?} atlas_uploads={} ",
                                 "atlas_bytes={} blur_groups={} element_blur_layers={}"
                             ),
@@ -1613,6 +1679,9 @@ impl NovaRenderer {
                             buffer_upload_elapsed_ms,
                             atlas_upload_elapsed_ms,
                             offscreen_elapsed_ms,
+                            presentation_timing
+                                .as_ref()
+                                .map_or(0, |timing| timing.renderer_extension_prepare.as_micros()),
                             present_elapsed_ms,
                             backend_presentation_timings
                                 .map_or(0, |timing| timing.command_record.as_micros()),

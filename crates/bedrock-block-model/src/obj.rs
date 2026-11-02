@@ -16,8 +16,11 @@ use crate::{
 pub const MATERIAL_SLOT_SEPARATOR: &str = "__mat_";
 pub const FALLBACK_MATERIAL_NAME: &str = "minecraft_unknown";
 
-mod pbr;
+#[cfg(test)]
+#[path = "obj/flipbook_tests.rs"]
+mod flipbook_tests;
 mod lighting;
+mod pbr;
 pub use lighting::LocalLightDefinition;
 mod resource_pack;
 pub use pbr::{ObjResolvedPbrTextureSet, PbrTextureLayer};
@@ -220,22 +223,60 @@ fn obj_export_texture_target_path(export_root: &Path, relative_path: &str) -> Re
 
 pub fn read_obj_texture_copy_image(texture_copy: &ObjTextureCopy) -> Result<DynamicImage> {
     let bytes = texture_copy.source_path.read()?;
-    if path_extension_eq(texture_copy.source_path.path(), "tga") {
-        return image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga).map_err(
-            |error| {
-                BlockModelError::Message(format!(
-                    "failed to decode OBJ TGA texture {}: {error}",
-                    texture_copy.source_path.path().display()
-                ))
-            },
-        );
-    }
-    image::load_from_memory(&bytes).map_err(|error| {
+    let tga = path_extension_eq(texture_copy.source_path.path(), "tga");
+    decode_texture_image(&bytes, tga).map_err(|error| {
         BlockModelError::Message(format!(
             "failed to decode OBJ texture {}: {error}",
             texture_copy.source_path.path().display()
         ))
     })
+}
+
+/// Decodes a pack texture image from its bytes; `tga` selects the TGA decoder.
+///
+/// Color-mapped TGA headers may declare alpha bits that their palette cannot
+/// carry (the vanilla water normal maps ship a 24-bit palette with an 8-alpha
+/// descriptor), which the TGA decoder rejects. The palette entries carry no
+/// alpha, so the declaration is bogus: when the direct decode fails, retry a
+/// header copy with the alpha bits cleared.
+///
+/// # Errors
+/// Returns the decoder error when both the direct and the retried decode fail.
+pub fn decode_texture_image(bytes: &[u8], tga: bool) -> Result<DynamicImage> {
+    if !tga {
+        return image::load_from_memory(bytes)
+            .map_err(|error| BlockModelError::Message(error.to_string()));
+    }
+    if let Ok(image) = image::load_from_memory_with_format(bytes, image::ImageFormat::Tga) {
+        return Ok(image);
+    }
+    let Some(retried) = tga_without_unreachable_palette_alpha(bytes) else {
+        return image::load_from_memory_with_format(bytes, image::ImageFormat::Tga)
+            .map_err(|error| BlockModelError::Message(error.to_string()));
+    };
+    image::load_from_memory_with_format(&retried, image::ImageFormat::Tga)
+        .map_err(|error| BlockModelError::Message(error.to_string()))
+}
+
+/// Returns a header copy of `bytes` with bogus color-map alpha bits cleared.
+///
+/// Only color-mapped TGAs (uncompressed or run-length encoded) whose palette
+/// entries are 24-bit and whose descriptor claims alpha bits qualify: a 24-bit
+/// palette entry cannot carry alpha, so the claimed bits cannot be honored.
+fn tga_without_unreachable_palette_alpha(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 18 {
+        return None;
+    }
+    let image_type = bytes[2];
+    if !matches!(image_type, 1 | 9) {
+        return None;
+    }
+    if bytes[7] != 24 || bytes[17] & 0x0F == 0 {
+        return None;
+    }
+    let mut retried = bytes.to_vec();
+    retried[17] &= 0xF0;
+    Some(retried)
 }
 
 #[must_use]
@@ -444,9 +485,11 @@ impl ObjTextureResolver {
                         }
                         match ObjResourcePack::load(root.clone(), resources) {
                             Ok(Some(pack)) => {
-                                if let Some(error) = &pack.local_light_error { model_errors.push(error.clone()); }
+                                if let Some(error) = &pack.local_light_error {
+                                    model_errors.push(error.clone());
+                                }
                                 packs.push(pack);
-                            },
+                            }
                             Ok(None) => {}
                             Err(error) => model_errors.push(error.to_string()),
                         }
@@ -679,6 +722,15 @@ impl ObjTextureResolver {
             .iter()
             .rev()
             .any(|pack| pack.is_flipbook_texture(relative_path))
+    }
+
+    /// Returns the unmodified flipbook definition from the resolved texture's own pack.
+    /// Frame timing, ordering, replication and blending remain CPU metadata for the consumer.
+    #[must_use]
+    pub fn flipbook_definition_for(&self, texture: &ObjResolvedTexture) -> Option<&Value> {
+        self.packs
+            .iter()
+            .find_map(|pack| pack.flipbook_definition(texture))
     }
 
     #[must_use]
@@ -2725,6 +2777,14 @@ fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, norm
             push_texture_key_aliases(keys, key);
         }
     }
+    // The chain block ships its art as chain1/chain2 without any blocks.json or
+    // terrain_texture entry under its own id; those keys only exist in the
+    // older overlay packs' terrain_texture.json.
+    if block == "iron_chain" || block == "chain" {
+        for key in ["chain1", "chain2", "chain"] {
+            push_texture_key_aliases(keys, key);
+        }
+    }
     if block == "stone_bricks" {
         for key in ["stonebrick", "stone_brick", "stone_bricks"] {
             push_texture_key_aliases(keys, key);
@@ -4724,6 +4784,51 @@ mod tests {
     }
 
     #[test]
+    fn texture_resolver_should_match_camel_case_blocks_json_from_snake_case_ids() {
+        let pack = TestPack::new();
+        pack.write(
+            "blocks.json",
+            r#"{
+                "pistonArmCollision": {"textures": "piston_top"},
+                "stickyPistonArmCollision": {"textures": "piston_top"}
+            }"#,
+        );
+        pack.write(
+            "textures/terrain_texture.json",
+            r#"{"texture_data":{"piston_top":{"textures":"textures/blocks/piston_top"}}}"#,
+        );
+        pack.write_bytes("textures/blocks/piston_top.png", b"png");
+
+        let resolver = ObjTextureResolver::with_pack_roots([pack.path()], "textures");
+        for material in [
+            "minecraft_piston_arm_collision",
+            "minecraft_sticky_piston_arm_collision",
+        ] {
+            let resolved = resolver
+                .texture_for(material, [0, 0, 1])
+                .unwrap_or_else(|| panic!("missing texture for {material}"));
+            assert_eq!(resolved.relative_path, "textures/blocks/piston_top.png");
+        }
+    }
+
+    #[test]
+    fn texture_resolver_should_alias_iron_chain_to_chain_textures() {
+        let pack = TestPack::new();
+        pack.write(
+            "textures/terrain_texture.json",
+            r#"{"texture_data":{"chain1":{"textures":"textures/blocks/chain1"}}}"#,
+        );
+        pack.write_bytes("textures/blocks/chain1.png", b"png");
+
+        let resolver = ObjTextureResolver::with_pack_roots([pack.path()], "textures");
+        let resolved = resolver
+            .texture_for("minecraft_iron_chain", [0, 0, 1])
+            .unwrap_or_else(|| panic!("missing chain texture"));
+
+        assert_eq!(resolved.relative_path, "textures/blocks/chain1.png");
+    }
+
+    #[test]
     fn texture_resolver_should_ignore_item_texture_json_for_block_materials() {
         let pack = TestPack::new();
         pack.write(
@@ -6034,5 +6139,66 @@ mod tests {
         let water_tint =
             super::obj_material_texture_tint("minecraft_flowing_water_up", [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(water_tint, Some([0.267, 0.686, 0.961]));
+    }
+
+    #[test]
+    fn decode_texture_image_should_retry_colormap_tga_with_unreachable_palette_alpha() {
+        // The vanilla water normal maps ship a 24-bit palette plus an 8-alpha-bit
+        // descriptor; a 24-bit palette entry cannot carry alpha, and the TGA
+        // decoder rejects the combination outright.
+        let mut bytes = Vec::from([
+            0, 1, 1, // id length, color-map type, color-mapped image
+            0, 0, 4, 0, 24, // map origin 0, map length 4, 24-bit entries
+            0, 0, 0, 0, // x/y origin
+            2, 0, 2, 0, // 2x2
+            8, 0x08, // 8-bit indices, 8 alpha bits in the descriptor
+        ]);
+        // 24-bit palette entries in BGR order.
+        bytes.extend_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 10, 20, 30]);
+        // Bottom-up rows: the first byte is the bottom-left pixel.
+        bytes.extend_from_slice(&[2, 3, 0, 1]);
+
+        assert!(image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga).is_err());
+        let decoded = super::decode_texture_image(&bytes, true).unwrap();
+        let pixels = decoded.to_rgba8();
+        assert_eq!(pixels.dimensions(), (2, 2));
+        assert_eq!(pixels.get_pixel(0, 0).0, [0, 0, 255, 255]);
+        assert_eq!(pixels.get_pixel(1, 0).0, [0, 255, 0, 255]);
+        assert_eq!(pixels.get_pixel(0, 1).0, [255, 0, 0, 255]);
+        assert_eq!(pixels.get_pixel(1, 1).0, [30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn decode_texture_image_should_decode_colormap_tga_without_alpha_claim_directly() {
+        let mut bytes = Vec::from([
+            0, 1, 1, // id length, color-map type, color-mapped image
+            0, 0, 2, 0, 24, // map origin 0, map length 2, 24-bit entries
+            0, 0, 0, 0, // x/y origin
+            1, 0, 1, 0, // 1x1
+            8, 0x20, // 8-bit indices, top-down origin, no alpha bits
+        ]);
+        bytes.extend_from_slice(&[255, 0, 0, 0, 255, 0]);
+        bytes.push(1);
+
+        assert!(
+            super::tga_without_unreachable_palette_alpha(&bytes).is_none(),
+            "no palette alpha bits to clear"
+        );
+        let decoded = super::decode_texture_image(&bytes, true).unwrap();
+        assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn decode_texture_image_should_pass_non_tga_bytes_to_format_detection() {
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let decoded = super::decode_texture_image(&png_bytes, false).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1, 1));
+        assert!(super::decode_texture_image(&[], true).is_err());
     }
 }

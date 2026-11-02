@@ -3,6 +3,7 @@ use crate::{Aabb, Mesh, MeshError, MeshPart, Vec3, Vertex};
 use std::{collections::BTreeMap, sync::OnceLock};
 mod cells;
 mod classes;
+mod compact;
 mod illumination;
 mod instances;
 mod lighting;
@@ -399,74 +400,16 @@ impl VoxelMeshSource {
             }; 4];
             let mut quads = vec![empty; self.capacity()];
             let mut counts = vec![0usize; self.parts.len()];
-            for (index, kind) in self.cells.iter().enumerate() {
-                if kind == 0 || kind == VOXEL_OCCLUDER {
-                    continue;
-                }
-                let position = self.origin
-                    + Vec3::new(
-                        (index as u32 % self.size[0]) as f32,
-                        (index as u32 / self.size[0] % self.size[1]) as f32,
-                        (index as u32 / self.size[0] / self.size[1]) as f32,
-                    );
-                for face in &self.templates[(kind - 1) as usize * 6..kind as usize * 6] {
-                    let y =
-                        position.y + face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
-                    if y < self.clip_y[0] || y >= self.clip_y[1] {
-                        continue;
-                    }
-                    if self
-                        .cells
-                        .cell((index as i64 + i64::from(self.neighbour_delta(face))) as usize)
-                        != 0
-                    {
-                        continue;
-                    }
-                    let part = self
-                        .parts
-                        .iter()
-                        .position(|p| p.material_slot() == face.material_slot)
-                        .expect("active model material has output capacity");
-                    let slot = self.parts[part].first_index() as usize / 6 + counts[part];
-                    counts[part] += 1;
-                    let cell = [
-                        index as u32 % self.size[0],
-                        index as u32 / self.size[0] % self.size[1],
-                        index as u32 / self.size[0] / self.size[1],
-                    ];
-                    let light = self.face_ambient_light(face, cell, false);
-                    let illumination = self.face_light(face, cell);
-                    quads[slot] = std::array::from_fn(|corner| {
-                        let mut vertex = face.vertices[corner];
-                        for c in &mut vertex.color[..3] {
-                            *c *= light[corner] * illumination;
-                        }
-                        vertex.position = vertex.position + position;
-                        vertex
-                    });
-                }
-            }
-            for face in &self.templates[self.static_start..] {
-                let y = face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
-                if y < self.clip_y[0] || y >= self.clip_y[1] {
-                    continue;
-                }
+            self.visit_quads(|material, quad| {
                 let part = self
                     .parts
                     .iter()
-                    .position(|part| part.material_slot() == face.material_slot)
-                    .expect("static material has capacity");
+                    .position(|p| p.material_slot() == material)
+                    .expect("validated face material has output capacity");
                 let slot = self.parts[part].first_index() as usize / 6 + counts[part];
                 counts[part] += 1;
-                let illumination = self.static_light(face);
-                quads[slot] = face.vertices.map(|mut vertex| {
-                    for color in &mut vertex.color[..3] {
-                        *color *= illumination;
-                    }
-                    vertex
-                });
-            }
-            self.append_instance_fallback(&mut quads, &mut counts);
+                quads[slot] = quad;
+            });
             Mesh::from_voxel_quads_without_raycast(quads, self.parts.to_vec())
                 .expect("validated voxel templates and bounded material regions")
         })

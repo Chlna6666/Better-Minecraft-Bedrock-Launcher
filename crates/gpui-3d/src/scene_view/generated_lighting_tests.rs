@@ -92,7 +92,8 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         crate::DistanceFog::new([0.0, 1.0, 0.0], 0.0, 0.001),
         None,
     );
-    for sky_channel in [false, true] {
+    let mut probes = [[0u8; 4]; 2];
+    for (index, sky_channel) in [false, true].into_iter().enumerate() {
         let source = crate::voxel_mesh::tests::source();
         let levels = (0..36)
             .map(|i| {
@@ -106,20 +107,48 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             })
             .collect();
         let source = source.with_lighting(levels, 0.2).unwrap();
-        let expected = (source.fallback().vertices()[0].color[0] * 255.).round() as u8;
-        assert_eq!(expected, 95);
+        // Smooth per-corner lighting interpolates vertex colors across each quad, so
+        // the rendered probe must land inside the CPU corner range instead of matching
+        // one exact per-face value.
+        let mut min = 255u8;
+        let mut max = 0u8;
+        for vertex in source.fallback().vertices() {
+            let value = (vertex.color[0] * 255.).round() as u8;
+            min = min.min(value);
+            max = max.max(value);
+        }
         let mesh = Mesh::from_gpu_voxels(source);
         let resources = create(&mut device, &mesh, &shaders).unwrap();
-        tests::render_generated(
+        let pixels = tests::probe_generated(
             &mut device,
             &mesh,
             &resources,
             arguments,
-            [expected, expected, expected, 255],
+            [max, max, max, 255],
             None,
             None,
+            false,
         );
+        assert!(
+            pixels[0][0] >= min && pixels[0][0] <= max,
+            "sky_channel={sky_channel} pixel {} outside CPU corner range [{min},{max}]",
+            pixels[0][0]
+        );
+        probes[index] = pixels[0];
     }
+    // The sky nibble adds light (cells with 0xf0 carry sky 15), so counting the sky
+    // channel must never darken the probe and should lift it above the ambient floor.
+    assert!(
+        probes[1][0] >= probes[0][0],
+        "sky channel must not darken: {:?} vs {:?}",
+        probes[1],
+        probes[0]
+    );
+    assert!(
+        probes[1][0] >= 95,
+        "sky nibble should contribute: {:?}",
+        probes
+    );
     let source = crate::voxel_mesh::tests::source()
         .with_lighting(vec![0x70; 36], 0.2)
         .unwrap();

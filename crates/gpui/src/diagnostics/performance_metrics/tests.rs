@@ -668,6 +668,7 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
             window_dispatch_delay: Duration::from_micros(200),
             frame_started_at,
             renderer_scene_prepare: Duration::from_micros(600),
+            renderer_extension_prepare: Duration::from_micros(250),
             submission_prepare: Duration::from_micros(700),
             retained_resource_prepare: Duration::from_micros(800),
             frame_prepare_upload: Duration::from_micros(900),
@@ -714,6 +715,10 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
         Duration::from_micros(400),
     );
     assert_eq!(timing.renderer_scene_prepare, Duration::from_micros(600));
+    assert_eq!(
+        timing.renderer_extension_prepare,
+        Duration::from_micros(250)
+    );
     assert_eq!(timing.submission_prepare, Duration::from_micros(700));
     assert_eq!(timing.retained_resource_prepare, Duration::from_micros(800));
     assert_eq!(timing.frame_prepare_upload, Duration::from_micros(900));

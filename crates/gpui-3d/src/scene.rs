@@ -116,10 +116,10 @@ impl LodLevel {
     }
 }
 
-/// A solid box whose selected boundary faces are present as fully opaque geometry.
+/// Selected axis-aligned boundary faces proven fully covered by opaque geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Occluder {
-    /// Local bounds, contained in the authored geometry.
+    /// Local bounds. Zero thickness is allowed for a planar occluder; only selected faces occlude.
     pub bounds: crate::Aabb,
     /// Rendered faces: bits 0..5 select -X, +X, -Y, +Y, -Z, +Z respectively.
     /// Faces removed by neighbor or height culling must not be included.
@@ -131,7 +131,7 @@ pub struct Occluder {
 #[must_use]
 pub struct Node {
     /// Proven opaque box faces in local space; never inferred from arbitrary mesh bounds.
-    /// Alpha-tested or hollow models must not supply solid occluders.
+    /// Bounds of alpha-tested or hollow models must not be certified as filled faces.
     pub occluders: Arc<[Occluder]>,
     /// Local transform relative to the parent.
     pub transform: Transform,

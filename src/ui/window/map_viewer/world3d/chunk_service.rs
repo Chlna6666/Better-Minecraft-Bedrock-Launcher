@@ -35,6 +35,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod mesh_assets;
 mod pbr;
+mod water;
 use mesh_assets::MeshAssets;
 mod gpu_cubes;
 mod lighting;
@@ -792,6 +793,7 @@ mod view_tests {
         }
         let cube = super::MaterialSlotKey {
             water: false,
+            glass: false,
             texture: None,
             normal: None,
             mer: None,
@@ -805,6 +807,38 @@ mod view_tests {
         };
         assert!(cube != detail);
         assert_eq!(HashSet::from([cube, detail]).len(), 2);
+    }
+
+    #[test]
+    fn missing_textures_do_not_make_ordinary_blocks_translucent() {
+        use super::TextureAlphaContent as Content;
+        use gpui_3d::AlphaMode;
+        use p3d::Preview3dStreamPass as Pass;
+        for pass in [Pass::Opaque, Pass::DetailOpaque, Pass::Lava] {
+            assert_eq!(
+                super::alpha_mode_for_pass(pass, Content::Unknown),
+                AlphaMode::Opaque
+            );
+            assert_eq!(
+                super::alpha_mode_for_pass(pass, Content::Opaque),
+                AlphaMode::Opaque
+            );
+            assert_eq!(
+                super::alpha_mode_for_pass(pass, Content::Binary),
+                AlphaMode::Mask
+            );
+            // Authored partial coverage (portal, slime) must remain blended.
+            assert_eq!(
+                super::alpha_mode_for_pass(pass, Content::Partial),
+                AlphaMode::Blend
+            );
+        }
+        for pass in [Pass::Glass, Pass::DetailGlass, Pass::Water] {
+            assert_eq!(
+                super::alpha_mode_for_pass(pass, Content::Unknown),
+                AlphaMode::Blend
+            );
+        }
     }
 
     #[test]
@@ -1541,6 +1575,7 @@ mod cache_tests {
             for material in payload.mesh.materials.iter() {
                 let key = MaterialSlotKey {
                     water: material.surface == gpui_3d::SurfaceKind::Water,
+                    glass: material.surface == gpui_3d::SurfaceKind::Glass,
                     texture: material.albedo_texture,
                     normal: material.normal_texture,
                     mer: material.metallic_roughness_texture,
@@ -1648,6 +1683,7 @@ impl CachedChunk {
 #[derive(Clone, Copy)]
 struct MaterialSlotKey {
     water: bool,
+    glass: bool,
     texture: Option<gpui_3d::TextureAssetId>,
     normal: Option<gpui_3d::TextureAssetId>,
     mer: Option<gpui_3d::TextureAssetId>,
@@ -1659,6 +1695,7 @@ struct MaterialSlotKey {
 impl std::hash::Hash for MaterialSlotKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.water.hash(state);
+        self.glass.hash(state);
         self.texture.hash(state);
         self.normal.hash(state);
         self.mer.hash(state);
@@ -1673,6 +1710,7 @@ impl std::hash::Hash for MaterialSlotKey {
 impl PartialEq for MaterialSlotKey {
     fn eq(&self, other: &Self) -> bool {
         self.water == other.water
+            && self.glass == other.glass
             && self.texture == other.texture
             && self.normal == other.normal
             && self.mer == other.mer
@@ -3150,7 +3188,7 @@ impl Worker {
         let build_started = Instant::now();
         let origin = [pos.x * 16, 0, pos.z * 16];
         let mut material_map = HashMap::<MaterialSlotKey, usize>::new();
-        let mut solid_cells = BTreeMap::<[i32; 3], u8>::new();
+        let mut opaque_proxies = Vec::new();
         let mut materials = Vec::<Arc<Material>>::new();
         let mut bucket_map = HashMap::<(i32, usize), usize>::new();
         let mut buckets = Vec::<FaceBucket>::new();
@@ -3248,9 +3286,9 @@ impl Worker {
             }
             let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
             if alpha_mode == AlphaMode::Opaque
-                && let Some((cell, side)) = occluders::cube_cell(face)
+                && let Some(proxy) = occluders::face_proxy(face, origin)
             {
-                *solid_cells.entry(cell).or_default() |= side;
+                opaque_proxies.push(proxy);
             }
             let base_color = if texture.is_none() {
                 [
@@ -3263,6 +3301,11 @@ impl Worker {
             };
             let key = MaterialSlotKey {
                 water: face.pass == p3d::Preview3dStreamPass::Water,
+                glass: alpha_mode == AlphaMode::Blend
+                    && matches!(
+                        face.pass,
+                        p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass
+                    ),
                 texture: texture.map(|texture| texture.id()),
                 normal: properties.normal.as_ref().map(|asset| asset.id()),
                 mer: properties.mer.as_ref().map(|asset| asset.id()),
@@ -3274,6 +3317,34 @@ impl Worker {
                 index
             } else {
                 let shared = self.mesh_assets.material(key, alpha_mode);
+                #[cfg(test)]
+                if std::env::var("BMCBL_WORLD3D_TEST_MATERIALS").as_deref() == Ok("1") {
+                    let alpha = texture.map(|asset| {
+                        let pixels =
+                            &asset.pixels()[..asset.width() as usize * asset.height() as usize * 4];
+                        let mut counts = [0usize; 3];
+                        for pixel in pixels.chunks_exact(4) {
+                            counts[match pixel[3] {
+                                0 => 0,
+                                255 => 2,
+                                _ => 1,
+                            }] += 1;
+                        }
+                        counts
+                    });
+                    eprintln!(
+                        "world3d material {}",
+                        serde_json::json!({
+                            "name": material_name,
+                            "pass": format!("{:?}", face.pass),
+                            "alpha_mode": format!("{alpha_mode:?}"),
+                            "alpha_content": format!("{:?}", properties.alpha_content),
+                            "surface": format!("{:?}", shared.surface),
+                            "roughness": shared.roughness,
+                            "alpha_zero_partial_opaque": alpha,
+                        })
+                    );
+                }
                 materials.push(shared);
                 let index = materials.len() - 1;
                 material_map.insert(key, index);
@@ -3382,12 +3453,7 @@ impl Worker {
             );
         }
         let mesh = World3dChunkMesh {
-            occluders: occluders::boxes(
-                solid_cells
-                    .into_iter()
-                    .filter_map(|(cell, sides)| (sides == 63).then_some((cell, 63))),
-                origin,
-            ),
+            occluders: occluders::merge_boxes(opaque_proxies),
             pos,
             section_y,
             origin,
@@ -3580,15 +3646,15 @@ impl Worker {
             self.texture_read_time += started.elapsed();
         }
         let decode_started = trace_timings().then(Instant::now);
-        let decoded = if resolved
-            .source_path
-            .path()
-            .extension()
-            .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("tga"))
-        {
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga)
-        } else {
-            image::load_from_memory(&bytes)
+        // decode_texture_image retries color-mapped TGAs whose headers over-declare
+        // palette alpha bits (vanilla water normal maps), which the TGA decoder rejects.
+        let decoded = {
+            let is_tga = resolved
+                .source_path
+                .path()
+                .extension()
+                .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("tga"));
+            bedrock_block_model::decode_texture_image(&bytes, is_tga)
         };
         let image = match decoded {
             Ok(image) => image.to_rgba8(),
@@ -3804,7 +3870,9 @@ fn face_vertex_color(
             // only genuinely translucent textures keep the vertex alpha.
             match alpha_content {
                 TextureAlphaContent::Binary | TextureAlphaContent::Opaque => 1.0,
-                TextureAlphaContent::Partial => face.color[3].clamp(0.08, 1.0),
+                TextureAlphaContent::Partial | TextureAlphaContent::Unknown => {
+                    face.color[3].clamp(0.08, 1.0)
+                }
             }
         }
         p3d::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
@@ -4018,10 +4086,11 @@ enum TextureAlphaContent {
     /// Intermediate alpha values exist (ice, slime, stained variants); keep
     /// the translucent blend pipeline.
     Partial,
+    /// The texture could not be resolved; use the model render pass as fallback.
+    Unknown,
 }
 
-/// Unknown textures keep the historical translucent behaviour.
-const TEXTURE_ALPHA_CONTENT_UNKNOWN: TextureAlphaContent = TextureAlphaContent::Partial;
+const TEXTURE_ALPHA_CONTENT_UNKNOWN: TextureAlphaContent = TextureAlphaContent::Unknown;
 
 fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
     let mut transparent = false;
@@ -4041,8 +4110,8 @@ fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
 
 /// The alpha pipeline follows the texture's real pixels: binary-alpha
 /// textures cut out, partially translucent ones blend, fully opaque ones
-/// render opaque. Block names are deliberately not consulted — vanilla
-/// textures carry their transparency in the asset itself.
+/// render opaque. When pixels are unavailable, only a transmissive model pass
+/// selects blending; missing ordinary textures must not turn blocks into glass.
 fn alpha_mode_for_pass(
     pass: p3d::Preview3dStreamPass,
     alpha_content: TextureAlphaContent,
@@ -4058,6 +4127,10 @@ fn alpha_mode_for_pass(
             _ => AlphaMode::Mask,
         },
         TextureAlphaContent::Partial => AlphaMode::Blend,
+        TextureAlphaContent::Unknown => match pass {
+            Pass::Water | Pass::Glass | Pass::DetailGlass => AlphaMode::Blend,
+            _ => AlphaMode::Opaque,
+        },
     }
 }
 
@@ -4115,6 +4188,7 @@ fn run_worker(
         }
     };
     let mut worker = Worker::new(&config, world);
+    worker.info.water_textures = worker.load_water_textures();
     worker.info.cloud_texture = worker
         .resolver
         .environment_texture("textures/environment/clouds")

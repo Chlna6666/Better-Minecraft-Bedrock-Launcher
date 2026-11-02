@@ -252,16 +252,11 @@ impl VoxelMeshSource {
         Ok(self)
     }
 
-    pub(super) fn append_instance_fallback(&self, quads: &mut [[Vertex; 4]], counts: &mut [usize]) {
+    pub(super) fn visit_instance_quads(&self, mut emit: impl FnMut(u32, [Vertex; 4])) {
         let Some(instances) = &self.instances else {
             return;
         };
         for job in &instances.jobs {
-            let part = self
-                .parts
-                .iter()
-                .position(|part| part.material_slot() == job.material)
-                .expect("instance material has capacity");
             let position = self.origin
                 + Vec3::new(
                     job.position[0] as f32,
@@ -287,23 +282,24 @@ impl VoxelMeshSource {
                 {
                     continue;
                 }
-                let slot = self.parts[part].first_index() as usize / 6 + counts[part];
-                counts[part] += 1;
                 let light = if job.height == 1.0 {
                     self.face_ambient_light(face, job.position, true)
                 } else {
                     [1.0; 4]
                 };
-                quads[slot] = std::array::from_fn(|corner| {
-                    let illumination = self.face_light(face, job.position);
-                    let mut v = face.vertices[corner];
-                    for c in &mut v.color[..3] {
-                        *c *= light[corner] * illumination;
-                    }
-                    v.position =
-                        position + Vec3::new(v.position.x, v.position.y * job.height, v.position.z);
-                    v
-                });
+                let illumination = self.face_light(face, job.position, job.height);
+                emit(
+                    job.material,
+                    std::array::from_fn(|corner| {
+                        let mut v = face.vertices[corner];
+                        for c in &mut v.color[..3] {
+                            *c *= light[corner] * illumination[corner];
+                        }
+                        v.position = position
+                            + Vec3::new(v.position.x, v.position.y * job.height, v.position.z);
+                        v
+                    }),
+                );
             }
         }
     }

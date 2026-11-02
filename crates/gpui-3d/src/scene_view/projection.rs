@@ -11,7 +11,8 @@ pub(super) struct FrameProjection {
     blend_edge_feather: f32,
     fog: Option<super::DistanceFog>,
     voxel_shading: super::VoxelShading,
-    hdr:bool,
+    hdr: bool,
+    water_animation: bool,
 }
 
 impl FrameProjection {
@@ -50,7 +51,10 @@ impl FrameProjection {
             blend_edge_feather: scene_view.blend_edge_feather,
             fog: scene_view.fog,
             voxel_shading: scene_view.voxel_shading,
-            hdr:scene_view.screen_effects.is_some(),
+            hdr: scene_view.screen_effects.is_some(),
+            water_animation: scene_view
+                .screen_effects
+                .is_some_and(|s| s.has_water_animation()),
         })
     }
 
@@ -76,7 +80,12 @@ impl FrameProjection {
     pub(super) fn voxel_shading(self) -> super::VoxelShading {
         self.voxel_shading
     }
-    pub(super) fn is_hdr(self)->bool {self.hdr}
+    pub(super) fn is_hdr(self) -> bool {
+        self.hdr
+    }
+    pub(super) fn has_water_animation(self) -> bool {
+        self.water_animation
+    }
 }
 
 fn inset_bounds(
@@ -119,7 +128,8 @@ mod tests {
     #[test]
     fn lighting_and_fog_change_uniforms_without_invalidating_visibility() {
         let base = super::FrameProjection {
-            hdr:false,
+            hdr: false,
+            water_animation: false,
             bounds: bounds(point(px(0.), px(0.)), size(px(100.), px(100.))).scale(1.),
             target_extent: gfx_core::Extent2d::new(100, 100).unwrap(),
             aspect: 1.,

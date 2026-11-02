@@ -56,14 +56,13 @@ pub use neighbor::{
     NeighborModelKind, RedstoneConnection, StairShape, WallConnection, derive_model_variant,
 };
 pub use obj::{
-    LocalLightDefinition,
-    FALLBACK_MATERIAL_NAME, MATERIAL_SLOT_SEPARATOR, NamedObjMaterial, ObjExport,
-    ObjExportMaterial, ObjExportTarget, ObjExportWriteSummary, ObjFace, ObjMaterial,
+    FALLBACK_MATERIAL_NAME, LocalLightDefinition, MATERIAL_SLOT_SEPARATOR, NamedObjMaterial,
+    ObjExport, ObjExportMaterial, ObjExportTarget, ObjExportWriteSummary, ObjFace, ObjMaterial,
     ObjMaterialSample, ObjMeshFace, ObjMeshFaceSource, ObjResolvedPbrTextureSet,
     ObjResolvedTexture, ObjTextureCopy, ObjTextureResolver, PbrTextureLayer,
     alpha_mask_obj_texture_image, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_export_material_name_for_slot, block_face_for_normal,
+    block_export_material_name_for_slot, block_face_for_normal, decode_texture_image,
     default_block_face_uvs_from_corners, export_obj_from_face_sources_with_package_roots,
     find_texture_file, obj_alpha_texture_path, obj_block_face_for_normal, obj_block_identifier,
     obj_block_texture_name, obj_canonical_block_lookup_name, obj_cull_hidden_mesh_faces,

@@ -1082,8 +1082,10 @@ fn encode_draw_record(
     };
     write_u32(bytes, shading_model);
     let mut texture_flags = 0;
-    if draw.material.surface == crate::SurfaceKind::Water {
-        texture_flags |= 64;
+    match draw.material.surface {
+        crate::SurfaceKind::Standard => {}
+        crate::SurfaceKind::Water => texture_flags |= 64,
+        crate::SurfaceKind::Glass => texture_flags |= 128,
     }
     if draw.material.albedo_texture.is_some() {
         texture_flags |= TEXTURE_FLAG_ALBEDO;

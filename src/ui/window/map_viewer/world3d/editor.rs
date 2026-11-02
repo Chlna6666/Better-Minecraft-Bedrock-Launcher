@@ -778,7 +778,14 @@ impl World3dEditorView {
                 self.textures
                     .values()
                     .cloned()
-                    .chain(self.worker_info.cloud_texture.iter().cloned()),
+                    .chain(self.worker_info.cloud_texture.iter().cloned())
+                    .chain(
+                        self.worker_info
+                            .water_textures
+                            .iter()
+                            .flatten()
+                            .map(|v| v.asset.clone()),
+                    ),
             )
             .unwrap_or(base)
         } else {
@@ -2091,7 +2098,7 @@ impl World3dEditorView {
         ));
         panel = panel.child(info_row(
             colors,
-            "面数",
+            "面数上限",
             SharedString::from(format!(
                 "{} 面 · {} 三角形",
                 self.worker_status.face_count,
@@ -2431,6 +2438,18 @@ impl World3dEditorView {
                 self.render_origin,
                 self.dimension == Dimension::Overworld,
             );
+            if let Some(settings) = settings.as_mut() {
+                let flipbook = |index: usize| {
+                    self.worker_info.water_textures[index].as_ref().map(|v| {
+                        gpui_3d::FlipbookTexture {
+                            texture: v.asset.id(),
+                            seconds_per_frame: v.seconds_per_frame,
+                        }
+                    })
+                };
+                settings.water_texture = flipbook(0);
+                settings.water_flow_texture = flipbook(1);
+            }
             if self.dimension != Dimension::Overworld
                 && let Some(settings) = settings.as_mut()
             {

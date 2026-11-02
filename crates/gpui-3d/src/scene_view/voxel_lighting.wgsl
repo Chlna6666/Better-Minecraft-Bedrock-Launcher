@@ -55,10 +55,10 @@ fn shade_surface(input:VoxelOutput,draw:DrawParams,color:vec3<f32>)->vec3<f32> {
     let sun=frame.sun_direction.xyz;
     let direct=cook_torrance_lighting(base,metallic,roughness,n,v,sun,frame.sun_color.rgb*frame.sun_direction.w*3.0)*sun_visibility(input.world_position,n);
     let f0=mix(vec3<f32>(0.04),base,metallic);
-    let reflection=sky_radiance(reflect(-v,n))*fresnel_schlick(max(dot(n,v),0.0),f0)*(1.0-roughness*0.7);
     let ambient=base*(0.22+0.3*frame.voxel_settings.z)*(1.0-metallic);
-    let radiance=ambient+direct+reflection+base*emission*6.0+draw.emissive.rgb*draw.emissive.a;
+    var radiance=ambient+direct+base*emission*6.0+draw.emissive.rgb*draw.emissive.a;
     // Display-referred UNORM output. No HDR scene/bloom pass is claimed here.
     if(frame.shadow_settings.w>0.5){return radiance;}
+    radiance+=sky_radiance(normalize(mix(reflect(-v,n),n,roughness*roughness)))*environment_reflectance(max(dot(n,v),0.0),roughness,metallic,f0);
     return linear_srgb(radiance/(vec3<f32>(1.0)+radiance));
 }

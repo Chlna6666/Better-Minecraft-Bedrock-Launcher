@@ -101,22 +101,80 @@ impl VoxelMeshSource {
         Ok(self)
     }
 
-    pub(super) fn face_light(&self, face: &VoxelFaceTemplate, position: [u32; 3]) -> f32 {
+    pub(super) fn face_light(
+        &self,
+        face: &VoxelFaceTemplate,
+        position: [u32; 3],
+        height: f32,
+    ) -> [f32; 4] {
         let Some(light) = &self.lighting else {
-            return 1.;
+            return [1.; 4];
         };
-        let index =
-            ((position[2] * self.size[1] + position[1]) * self.size[0] + position[0]) as usize;
-        let own = light.levels[index];
-        let neighbor = i64::try_from(index).unwrap_or(0) + i64::from(self.neighbour_delta(face));
-        let next = usize::try_from(neighbor)
-            .ok()
-            .and_then(|i| light.levels.get(i))
-            .copied()
-            .unwrap_or(0);
-        let level = (own & 15).max(own >> 4).max(next & 15).max(next >> 4);
-        let value = f32::from(level) / 15.;
-        light.ambient + (1. - light.ambient) * value * value
+        // Smooth lighting: average the four front-plane cells around each corner so
+        // adjacent faces interpolate instead of stepping one level per block. This
+        // mirrors `corner_cell_light` in the voxel vertex shader.
+        let normal = face.neighbour;
+        let cell = [
+            i64::from(position[0]),
+            i64::from(position[1]),
+            i64::from(position[2]),
+        ];
+        std::array::from_fn(|corner| {
+            let vertex = face.vertices[corner];
+            let local = [
+                vertex.position.x,
+                vertex.position.y * height,
+                vertex.position.z,
+            ];
+            let tangent = |axis: usize| {
+                let mut step = [0i32; 3];
+                step[axis] = if local[axis] >= 0.5 { 1 } else { -1 };
+                step
+            };
+            let (a, b) = match normal {
+                [1 | -1, 0, 0] => (tangent(1), tangent(2)),
+                [0, 1 | -1, 0] => (tangent(0), tangent(2)),
+                _ => (tangent(0), tangent(1)),
+            };
+            let offsets = [
+                normal,
+                [normal[0] + a[0], normal[1] + a[1], normal[2] + a[2]],
+                [normal[0] + b[0], normal[1] + b[1], normal[2] + b[2]],
+                [
+                    normal[0] + a[0] + b[0],
+                    normal[1] + a[1] + b[1],
+                    normal[2] + a[2] + b[2],
+                ],
+            ];
+            let mut block = 0.;
+            let mut sky = 0.;
+            let mut count = 0.;
+            for offset in offsets {
+                let p = [
+                    cell[0] + i64::from(offset[0]),
+                    cell[1] + i64::from(offset[1]),
+                    cell[2] + i64::from(offset[2]),
+                ];
+                if (0..3).any(|axis| p[axis] < 0 || p[axis] >= i64::from(self.size[axis])) {
+                    continue;
+                }
+                let packed = light.levels[((p[2] * i64::from(self.size[1]) + p[1])
+                    * i64::from(self.size[0])
+                    + p[0]) as usize];
+                block += f32::from(packed & 15);
+                sky += f32::from(packed >> 4);
+                count += 1.;
+            }
+            let value = if count == 0. {
+                let own = light.levels[((cell[2] * i64::from(self.size[1]) + cell[1])
+                    * i64::from(self.size[0])
+                    + cell[0]) as usize];
+                f32::from((own & 15).max(own >> 4)) / 15.
+            } else {
+                (block / count).max(sky / count) / 15.
+            };
+            light.ambient + (1. - light.ambient) * value * value
+        })
     }
 }
 

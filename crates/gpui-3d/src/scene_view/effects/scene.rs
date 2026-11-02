@@ -25,7 +25,7 @@ pub(super) struct EffectScene {
     pub(super) composite_frame: BufferId,
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
-    pub(super) group_key: Option<(BufferId, Option<crate::TextureAssetId>)>,
+    pub(super) group_key: Option<(BufferId, [Option<crate::TextureAssetId>; 3])>,
     pub(super) shadow: Target,
     pub(super) shadow_color: Target,
     pub(super) shadow_key: Option<[i32; 6]>,
@@ -316,7 +316,7 @@ impl EffectScene {
             let matrix = view.camera.projection_matrix(
                 self.targets.extent.width() as f32 / self.targets.extent.height() as f32,
             )? * view.camera.view()?;
-            let mut bytes = Vec::with_capacity(400);
+            let mut bytes = Vec::with_capacity(super::FRAME_BYTES as usize);
             for matrix in [
                 matrix,
                 matrix
@@ -394,6 +394,22 @@ impl EffectScene {
                     .map_or([shading.sky_brightness, 0., 0., 0.], |color| {
                         [-1., color[0], color[1], color[2]]
                     }),
+                {
+                    let animation = |strip: Option<super::FlipbookTexture>| {
+                        strip
+                            .and_then(|strip| {
+                                view.textures.get(&strip.texture).map(|asset| {
+                                    [
+                                        asset.height() as f32 / asset.width() as f32,
+                                        strip.seconds_per_frame,
+                                    ]
+                                })
+                            })
+                            .unwrap_or([0., 1.])
+                    };
+                    let [still, flow] = settings.water_flipbooks().map(animation);
+                    [still[0], flow[0], still[1], flow[1]]
+                },
             ] {
                 for value in values {
                     bytes.extend(value.to_le_bytes());

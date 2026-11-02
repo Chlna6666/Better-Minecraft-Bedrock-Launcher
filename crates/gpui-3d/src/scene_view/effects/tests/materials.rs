@@ -1,6 +1,135 @@
 //! Material transmission, cloud/alpha shadows and failed-shadow retry.
 use super::*;
 
+pub(super) fn verify_material_reflections<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    renderer: &mut EffectsRenderer,
+    context: &RendererExtensionContext,
+    base: &SceneView,
+    target: &Target,
+    depth: &Target,
+) {
+    let mut red = Vec::new();
+    for (roughness, metallic, color) in [(1., 0., 0.), (0.08, 0., 0.), (0.9, 1., 0.8)] {
+        let mut material = Material::new();
+        material.roughness = roughness;
+        material.metallic = metallic;
+        material.base_color = [color, color, color, 1.];
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(Arc::new(Mesh::cube()))
+                    .with_materials([Arc::new(material)]),
+            )
+            .unwrap();
+        let view = base
+            .with_scene(Arc::new(scene))
+            .with_screen_effects(Some(ScreenEffects {
+                reflections: true,
+                background_color: Some([1., 0., 1.]),
+                ..base.screen_effects.unwrap()
+            }))
+            .unwrap();
+        let pixels = draw(device, renderer, context, &view, target, depth);
+        red.push(pixels[(32 * 64 + 32) * 4]);
+    }
+    assert!(
+        red[0] <= 4 && red[1] > red[0] + 20 && red[2] > red[1] + 30,
+        "rough dielectrics, polished dielectrics and rough metals need distinct environment responses: {red:?}"
+    );
+}
+
+pub(super) fn verify_hidden_lines<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    context: &RendererExtensionContext,
+    base: &SceneView,
+    target: &Target,
+    depth: &Target,
+) {
+    let view = base
+        .with_screen_effects(None)
+        .unwrap()
+        .with_voxel_shading(VoxelShading {
+            illumination: VoxelIllumination::Unlit,
+            display: crate::VoxelDisplay::Wireframe,
+            ..VoxelShading::default()
+        })
+        .unwrap();
+    let mut renderer = view.create_renderer(device, context.clone()).unwrap();
+    let pixels = draw(device, renderer.as_mut(), context, &view, target, depth);
+    let values = TextureTransferDevice::read_texture(device, depth.texture).unwrap();
+    let at = (32 * 64 + 32) * 4;
+    let z = f32::from_le_bytes(values.bytes[at..at + 4].try_into().unwrap());
+    assert!(z < 1., "wireframe interiors must occlude deeper edges: {z}");
+    assert!(
+        pixels.chunks_exact(4).any(|pixel| pixel[0] > 80),
+        "visible quad edges must remain"
+    );
+    renderer.destroy(device).unwrap();
+}
+
+pub(super) fn verify_water_animation<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    renderer: &mut EffectsRenderer,
+    context: &RendererExtensionContext,
+    base: &SceneView,
+    target: &Target,
+    depth: &Target,
+) {
+    let strip =
+        Arc::new(crate::TextureAsset::rgba8(1, 2, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap());
+    let mut material = Material::new();
+    material.surface = crate::SurfaceKind::Water;
+    material.alpha_mode = AlphaMode::Blend;
+    material.albedo_texture = Some(strip.id());
+    let mut scene = Scene::new();
+    scene
+        .insert(
+            None,
+            Node::new()
+                .with_mesh(Arc::new(Mesh::cube()))
+                .with_materials([Arc::new(material)]),
+        )
+        .unwrap();
+    let view = base
+        .with_scene(Arc::new(scene))
+        .with_textures([strip.clone()])
+        .unwrap()
+        .with_screen_effects(Some(ScreenEffects {
+            water: true,
+            water_texture: Some(crate::FlipbookTexture {
+                texture: strip.id(),
+                seconds_per_frame: 0.5,
+            }),
+            background_color: Some([0.; 3]),
+            ..base.screen_effects.unwrap()
+        }))
+        .unwrap();
+    let mut colors = Vec::new();
+    for milliseconds in [0, 600] {
+        renderer.epoch = context.frame_time() - std::time::Duration::from_millis(milliseconds);
+        let pixels = draw(device, renderer, context, &view, target, depth);
+        colors.push(pixels[(32 * 64 + 32) * 4..][..4].to_vec());
+    }
+    assert!(
+        colors[0][0] > colors[0][2] + 20 && colors[1][2] > colors[1][0] + 20,
+        "water must play both strip frames in the resolve: {colors:?}"
+    );
+    let mut commands = Vec::new();
+    renderer
+        .render(&view, device, context.clone(), &mut commands)
+        .unwrap();
+    let mut passes = Vec::new();
+    renderer.drain_render_passes(&mut passes);
+    assert_eq!(
+        passes.len(),
+        1,
+        "water animation must reuse the geometry capture"
+    );
+}
+
 pub(super) fn verify_sky_transmission<D: Device + TextureTransferDevice>(
     device: &mut D,
     renderer: &mut EffectsRenderer,
@@ -11,6 +140,7 @@ pub(super) fn verify_sky_transmission<D: Device + TextureTransferDevice>(
 ) {
     let mut material = Material::new();
     material.alpha_mode = AlphaMode::Blend;
+    material.surface = crate::SurfaceKind::Glass;
     material.base_color = [1., 1., 1., 0.1];
     let mut scene = Scene::new();
     scene

@@ -56,7 +56,7 @@ impl LightTiles {
                 buffer: BufferBinding {
                     buffer: frame,
                     offset: 0,
-                    size: 400,
+                    size: super::FRAME_BYTES,
                     stride: None,
                 },
                 access: ComputeBufferAccess::Uniform,

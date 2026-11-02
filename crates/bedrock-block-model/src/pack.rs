@@ -1,7 +1,7 @@
+use crate::runtime_capture::RuntimeCaptureCatalog;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use crate::runtime_capture::RuntimeCaptureCatalog;
 
 use serde_json::Value;
 
@@ -124,9 +124,9 @@ impl BlockModelRepository {
     /// Load a BedrockSceneCapture export found beside the local game installation.
     /// Meshes are read lazily by state and cached by their content hash.
     pub fn load_capture_catalog(&mut self, root: &Path) -> std::result::Result<usize, String> {
-        let catalog=RuntimeCaptureCatalog::open(root)?;
-        let count=catalog.state_count();
-        self.capture_catalog=Some(Arc::new(catalog));
+        let catalog = RuntimeCaptureCatalog::open(root)?;
+        let count = catalog.state_count();
+        self.capture_catalog = Some(Arc::new(catalog));
         Ok(count)
     }
 
@@ -134,9 +134,9 @@ impl BlockModelRepository {
     /// capture has not been found. The ZIP stays compressed in the executable;
     /// individual geometry/appearance entries are inflated on demand.
     pub fn load_embedded_capture_catalog(&mut self) -> std::result::Result<usize, String> {
-        let catalog=RuntimeCaptureCatalog::open_embedded()?;
-        let count=catalog.state_count();
-        self.capture_catalog=Some(Arc::new(catalog));
+        let catalog = RuntimeCaptureCatalog::open_embedded()?;
+        let count = catalog.state_count();
+        self.capture_catalog = Some(Arc::new(catalog));
         Ok(count)
     }
 

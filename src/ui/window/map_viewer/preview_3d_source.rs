@@ -3484,6 +3484,14 @@ fn preview_3d_block_class(name: &str) -> Preview3dBlockClass {
     if matches!(normalized, "air" | "cave_air" | "void_air") {
         return Preview3dBlockClass::Air;
     }
+    // Technical invisible blocks: the game hides them (barrier shows only its
+    // particle texture while held), so the preview must not emit faces either.
+    if normalized == "barrier"
+        || normalized == "structure_void"
+        || normalized.starts_with("light_block")
+    {
+        return Preview3dBlockClass::Air;
+    }
     if matches!(normalized, "water" | "flowing_water") {
         return Preview3dBlockClass::Water;
     }

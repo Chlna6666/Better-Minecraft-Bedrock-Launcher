@@ -2,6 +2,12 @@ fn fresnel_schlick(cosine: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
 }
 
+// Rough dielectrics lose sharp environment detail; rough metals retain a broad sky response.
+fn environment_reflectance(cosine:f32,roughness:f32,metallic:f32,f0:vec3<f32>)->vec3<f32>{
+    let smoothness=1.0-clamp(roughness,0.0,1.0);
+    return fresnel_schlick(cosine,f0)*mix(smoothness*smoothness,1.0,metallic);
+}
+
 fn ggx_normal_distribution(normal_dot_half: f32, roughness: f32) -> f32 {
     let roughness_alpha = roughness * roughness;
     let roughness_alpha_squared = roughness_alpha * roughness_alpha;

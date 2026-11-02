@@ -93,6 +93,39 @@ fn static_levels(p:vec3<f32>)->vec2<f32> {
     return cell_levels((u32(q.z)*size.y+u32(q.y))*size.x+u32(q.x));
 }
 
+// Smooth lighting: the four front-plane cells around one face corner, averaged so
+// adjacent faces interpolate instead of stepping one whole light level per block.
+fn normal_from_delta(delta:i32)->vec3<i32> {
+    let size=vec3<i32>(generated_templates.size.xyz);
+    var n=vec3<i32>(0);
+    if(delta==1){n.x=1;}else if(delta==-1){n.x=-1;}
+    else if(delta==size.x){n.y=1;}else if(delta==-size.x){n.y=-1;}
+    else if(delta==size.x*size.y){n.z=1;}else if(delta==-size.x*size.y){n.z=-1;}
+    return n;
+}
+fn corner_cell_light(cell:u32,delta:i32,local:vec3<f32>)->vec2<f32> {
+    let n=normal_from_delta(delta);
+    if(all(n==vec3<i32>(0))){return cell_levels(cell);}
+    let size=vec3<i32>(generated_templates.size.xyz);
+    let c=vec3<i32>(i32(cell%generated_templates.size.x),i32(cell/generated_templates.size.x%generated_templates.size.y),i32(cell/(generated_templates.size.x*generated_templates.size.y)));
+    var steps=array<vec3<i32>,2>(vec3<i32>(0),vec3<i32>(0));
+    if(n.x!=0){steps[0]=vec3<i32>(0,select(-1,1,local.y>=0.5),0);steps[1]=vec3<i32>(0,0,select(-1,1,local.z>=0.5));}
+    else if(n.y!=0){steps[0]=vec3<i32>(select(-1,1,local.x>=0.5),0,0);steps[1]=vec3<i32>(0,0,select(-1,1,local.z>=0.5));}
+    else{steps[0]=vec3<i32>(select(-1,1,local.x>=0.5),0,0);steps[1]=vec3<i32>(0,select(-1,1,local.y>=0.5),0);}
+    var sum=vec2<f32>(0.0);var count=0.0;
+    for(var i=0u;i<4u;i++){
+        var offset=n;
+        if(i==1u){offset+=steps[0];}
+        if(i==2u){offset+=steps[1];}
+        if(i==3u){offset+=steps[0]+steps[1];}
+        let p=c+offset;
+        if(any(p<vec3<i32>(0))||any(p>=size)){continue;}
+        sum+=cell_levels(u32((p.z*size.y+p.y)*size.x+p.x));count+=1.0;
+    }
+    if(count==0.0){return cell_levels(cell);}
+    return sum/vec2<f32>(count);
+}
+
 fn quad_coordinates(corner:u32)->vec2<f32> {return array<vec2<f32>,4>(vec2<f32>(0.0),vec2<f32>(1.0,0.0),vec2<f32>(1.0),vec2<f32>(0.0,1.0))[corner];}
 
 fn quad_normal(a:vec3<f32>,b:vec3<f32>,c:vec3<f32>,instance:u32)->vec3<f32> {
@@ -131,11 +164,9 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
             let normal=cross(b-a,c-a);let n=normal/max(length(normal),0.00001)*0.001;
             light=max(static_levels(center-n),static_levels(center+n));
         }else{
-        let delta=bitcast<i32>(generated_templates.faces[descriptor.model_face].info.y);
-        let neighbor=i32(descriptor.cell)+delta;
-        light=cell_levels(descriptor.cell);
-        let count=generated_templates.size.x*generated_templates.size.y*generated_templates.size.z;
-        if(neighbor>=0 && u32(neighbor)<count){light=max(light,cell_levels(u32(neighbor)));}
+            let delta=bitcast<i32>(generated_templates.faces[descriptor.model_face].info.y);
+            let local=template_position(face.vertices[corners[index%6u]],descriptor.height);
+            light=corner_cell_light(descriptor.cell,delta,local);
         }
         let sky=select(1.0,frame.voxel_settings.z,frame.voxel_settings.w!=0.0);
         let brightness=max(light.x,light.y*sky);
@@ -253,11 +284,14 @@ fn voxel_color(input:VoxelOutput)->vec4<f32> {
     let draw = draws[input.draw_index];
     var color = draw.base_color * input.vertex_color;
     if (frame.voxel_settings.x==0.0 && (draw.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u) {
+        var texel=vec4<f32>(1.0);
         if ((draw.texture_flags & TEXTURE_FLAG_UV) != 0u) {
-            color *= textureSample(albedo_texture, material_sampler, input.uv);
+            texel = textureSample(albedo_texture, material_sampler, input.uv);
         } else {
-            color *= textureSample(albedo_texture, material_sampler, vec2<f32>(0.5, 0.5));
+            texel = textureSample(albedo_texture, material_sampler, vec2<f32>(0.5, 0.5));
         }
+        if((draw.texture_flags&64u)!=0u && frame.shadow_settings.w>2.5){texel=vec4<f32>(1.0,1.0,1.0,texel.a);}
+        color*=texel;
     }
     return color;
 }
@@ -271,10 +305,12 @@ fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
         / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a*select(1.0,0.0,frame.shadow_settings.w>0.5);
     var lit=color.rgb+draw.emissive.rgb*draw.emissive.a;
     if(frame.voxel_settings.y==2.0){lit=shade_surface(input,draw,color.rgb);}
-    let rgb = mix(lit, frame.fog_color.rgb, fog);
+    var rgb = mix(lit, frame.fog_color.rgb, fog);
     if(frame.voxel_settings.x==2.0){
         let edge=min(input.quad_uv,vec2<f32>(1.0)-input.quad_uv)/max(fwidth(input.quad_uv),vec2<f32>(0.00001));
-        if(min(edge.x,edge.y)>1.2){discard;}
+        // Retain full face depth: discarding interiors exposes every deeper layer's edges.
+        let line=1.0-smoothstep(0.7,1.2,min(edge.x,edge.y));
+        rgb=mix(frame.fog_color.rgb,rgb,line);
     }
     if (draw.alpha_mode == ALPHA_MODE_BLEND) {
         let coverage = element_bounds_coverage(input.position.xy);
@@ -285,7 +321,8 @@ fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
 }
 @fragment fn fs_voxel(input:VoxelOutput)->@location(0) vec4<f32>{return voxel_fragment(input);}
 @fragment fn fs_voxel_capture(input:VoxelOutput)->@location(0) vec4<f32>{
-    if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}
+    let draw=draws[input.draw_index];
+    if(draw.alpha_mode==ALPHA_MODE_BLEND && (draw.texture_flags&192u)!=0u){discard;}
     return voxel_fragment(input);
 }
 fn test_voxel_alpha(input:VoxelOutput)->vec4<f32> {
@@ -300,14 +337,17 @@ fn encode_normal(n:vec3<f32>)->vec2<f32>{
 @fragment fn fs_voxel_surface(input:VoxelOutput)->@location(0) vec4<f32>{
     let color=test_voxel_alpha(input);let draw=draws[input.draw_index];var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){let p=textureSample(material_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
-    let kind=select(select(metallic,4.0+color.a,draw.alpha_mode==ALPHA_MODE_BLEND),2.0+color.a,(draw.texture_flags&64u)!=0u);
+    // Coverage does not imply transmission: ordinary alpha-blended surfaces stay diffuse.
+    let blended=draw.alpha_mode==ALPHA_MODE_BLEND;
+    var kind=select(metallic,6.0+metallic,blended);
+    if(blended && (draw.texture_flags&128u)!=0u){kind=4.0+metallic;}
+    if(blended && (draw.texture_flags&64u)!=0u){kind=2.0+metallic;}
     return vec4<f32>(encode_normal(surface_normal(input,draw)),clamp(roughness,0.06,1.0),kind);
 }
 @fragment fn fs_voxel_albedo(input:VoxelOutput)->@location(0) vec4<f32>{
-    let color=test_voxel_alpha(input);let draw=draws[input.draw_index];var emission=0.0;
-    if((draw.texture_flags&24u)==24u){emission=textureSample(material_texture,material_sampler,input.uv).g*6.0;}
+    let color=test_voxel_alpha(input);
     let base=select(color.rgb,srgb_linear(color.rgb),frame.sun_color.w>0.5);
-    return vec4<f32>(base,emission+draw.emissive.a);
+    return vec4<f32>(base,clamp(color.a,0.0,1.0));
 }
 @fragment fn fs_voxel_shadow(input:VoxelOutput)->@location(0) vec4<f32>{
     if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}

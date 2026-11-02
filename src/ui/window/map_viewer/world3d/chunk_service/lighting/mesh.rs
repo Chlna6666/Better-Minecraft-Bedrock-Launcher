@@ -19,6 +19,8 @@ impl ChunkLighting {
             (bounds.max.y.ceil() - origin.y + 1.) as u32,
             (bounds.max.z.ceil() - origin.z + 1.) as u32,
         ];
+        // A planar model still needs one interior cell and a halo on both sides.
+        let size = size.map(|extent| extent.max(3));
         let count = size
             .into_iter()
             .try_fold(1usize, |count, n| count.checked_mul(n as usize))

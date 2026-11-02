@@ -61,7 +61,7 @@ mod renderer;
 mod resources;
 mod scene;
 mod shadow;
-pub use effects::ScreenEffects;
+pub use effects::{FlipbookTexture, ScreenEffects};
 mod uploads;
 /// A prepared scene and camera snapshot rendered as a GPUI layout element through Nova.
 ///

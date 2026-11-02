@@ -460,9 +460,17 @@ impl Default for ChunkServiceStatus {
 }
 
 /// World resource information emitted once after the worker initializes.
+#[derive(Clone, Debug)]
+pub struct World3dWaterTexture {
+    pub asset: Arc<gpui_3d::TextureAsset>,
+    pub seconds_per_frame: f32,
+}
+
+/// World resource information emitted once after the worker initializes.
 #[derive(Clone, Debug, Default)]
 pub struct ChunkServiceInfo {
     pub cloud_texture: Option<Arc<gpui_3d::TextureAsset>>,
+    pub water_textures: [Option<World3dWaterTexture>; 2],
     pub block_model_count: usize,
     pub resource_pack_count: usize,
     pub texture_resolver_errors: usize,

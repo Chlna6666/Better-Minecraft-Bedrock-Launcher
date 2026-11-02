@@ -1,10 +1,20 @@
 //! GPU-only screen effects and their bounded quality budget.
 use crate::{TextureAssetId, Vec3};
+pub(super) const FRAME_BYTES: u64 = 416;
+
+/// Uniformly timed square frames laid out vertically in one immutable texture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlipbookTexture {
+    /// Image in the SceneView texture table. Its height must be a multiple of its width.
+    pub texture: TextureAssetId,
+    /// Positive finite duration of each frame, in seconds.
+    pub seconds_per_frame: f32,
+}
 
 /// Screen-space and atmospheric options. Disabled by default on ordinary SceneViews.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenEffects {
-    /// Enables bounded screen-space reflection tracing, with sky fallback on misses.
+    /// Enables screen-space reflections and their sky/environment fallback.
     pub reflections: bool,
     /// Enables water refraction, absorption, Fresnel reflection and animated wave normals.
     pub water: bool,
@@ -14,6 +24,10 @@ pub struct ScreenEffects {
     pub clouds: bool,
     /// Optional density/coverage material. Its alpha channel defines cloud coverage.
     pub cloud_texture: Option<TextureAssetId>,
+    /// Optional animated water albedo. Sampling occurs in the screen resolve, not scene capture.
+    pub water_texture: Option<FlipbookTexture>,
+    /// Optional side/flow water albedo; falls back to `water_texture`.
+    pub water_flow_texture: Option<FlipbookTexture>,
     /// Optional linear RGB background, replacing the analytic sky and celestial disk.
     pub background_color: Option<[f32; 3]>,
     /// Internal scene resolution relative to the element, in 0.25..=1.
@@ -37,6 +51,8 @@ impl Default for ScreenEffects {
             volumetric_fog: true,
             clouds: true,
             cloud_texture: None,
+            water_texture: None,
+            water_flow_texture: None,
             background_color: None,
             resolution_scale: 0.75,
             exposure: 1.,
@@ -48,6 +64,22 @@ impl Default for ScreenEffects {
     }
 }
 impl ScreenEffects {
+    pub(super) fn water_flipbooks(self) -> [Option<FlipbookTexture>; 2] {
+        [
+            self.water_texture.or(self.water_flow_texture),
+            self.water_flow_texture.or(self.water_texture),
+        ]
+    }
+    pub(super) fn has_water_animation(self) -> bool {
+        self.water && self.water_flipbooks()[0].is_some()
+    }
+    pub(super) fn texture_ids(self) -> [Option<TextureAssetId>; 3] {
+        [
+            self.cloud_texture,
+            self.water_flipbooks()[0].map(|v| v.texture),
+            self.water_flipbooks()[1].map(|v| v.texture),
+        ]
+    }
     pub(super) fn validate(self) -> gpui::Result<()> {
         if !self.resolution_scale.is_finite()
             || !(0.25..=1.).contains(&self.resolution_scale)
@@ -57,6 +89,10 @@ impl ScreenEffects {
             || !(0. ..=1.).contains(&self.fog_density)
             || !self.cloud_height.is_finite()
             || !self.world_origin.length_squared().is_finite()
+            || [self.water_texture, self.water_flow_texture]
+                .into_iter()
+                .flatten()
+                .any(|strip| !strip.seconds_per_frame.is_finite() || strip.seconds_per_frame <= 0.)
             || self.background_color.is_some_and(|color| {
                 color
                     .into_iter()
@@ -77,4 +113,5 @@ mod light_tiles;
 mod renderer;
 mod scene;
 mod targets;
+mod textures;
 pub(super) use renderer::EffectsRenderer;

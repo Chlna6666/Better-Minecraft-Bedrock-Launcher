@@ -32,6 +32,7 @@ mod effects;
 struct SnapshotWorld {
     lights: BTreeMap<(i32, i32), Arc<[super::types::World3dLocalLight]>>,
     cloud: Option<Arc<gpui_3d::TextureAsset>>,
+    water: [Option<super::types::World3dWaterTexture>; 2],
     meshes: BTreeMap<(i32, i32, i32), Arc<World3dChunkMesh>>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<gpui_3d::TextureAsset>>,
     probes: BTreeMap<(i32, i32), Arc<World3dChunkProbe>>,
@@ -182,6 +183,7 @@ fn collect_world_with_timeout(
     let mut result = SnapshotWorld {
         lights: BTreeMap::new(),
         cloud: None,
+        water: [None, None],
         meshes: BTreeMap::new(),
         textures: HashMap::new(),
         probes: BTreeMap::new(),
@@ -194,6 +196,12 @@ fn collect_world_with_timeout(
         while let Some(event) = service.try_recv() {
             match event {
                 ChunkServiceEvent::Ready(info) => {
+                    for water in info.water_textures.iter().flatten() {
+                        result
+                            .textures
+                            .insert(water.asset.id(), water.asset.clone());
+                    }
+                    result.water = info.water_textures;
                     if let Some(cloud) = info.cloud_texture {
                         result.textures.insert(cloud.id(), cloud.clone());
                         result.cloud = Some(cloud);
@@ -304,7 +312,9 @@ fn scene_from_world(
                 translation,
                 ..Transform::IDENTITY
             });
-        node.occluders = mesh.occluders.clone();
+        if std::env::var("BMCBL_WORLD3D_TEST_DISABLE_HIZ").as_deref() != Ok("1") {
+            node.occluders = mesh.occluders.clone();
+        }
         scene.insert(None, node).expect("valid chunk scene node");
     }
     let textures = world
@@ -498,7 +508,8 @@ fn stream_real_world_produces_textured_meshes() {
         .into_iter()
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
-    let (world, mut service) = collect_world(&world_path, package_roots, spawn, 2, 9);
+    let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS").unwrap_or(2);
+    let (world, mut service) = collect_world(&world_path, package_roots, spawn, radius, 9);
     service.shutdown();
     assert!(!world.meshes.is_empty(), "no chunk meshes were produced");
     let sections = world
@@ -960,4 +971,174 @@ fn profile_radius32_stream_budget() {
         "world3d radius32: completed_columns={completed_columns} missing_columns={missing_columns} sections={streamed_sections} faces={faces} elapsed_ms={}",
         started.elapsed().as_millis()
     );
+}
+
+#[test]
+#[ignore = "requires BMCBL_WORLD3D_TEST_WORLD pointing at a real Bedrock world"]
+fn audit_real_world_block_materials() {
+    use bedrock_block_model::BlockStateQuery;
+
+    let Some(world_path) = env_path("BMCBL_WORLD3D_TEST_WORLD") else {
+        eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
+        return;
+    };
+    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
+        .into_iter()
+        .collect::<Vec<_>>();
+    let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS").unwrap_or(32);
+    let world = World::open(&world_path, OpenOptions::default()).expect("open world");
+    let options = ChunkLoadOptions {
+        data_request: ChunkDataRequest::new().full_3d_indices(),
+        subchunk_decode: SubChunkDecodeMode::PackedIndices,
+        threading: WorldThreadingOptions::Single,
+        pipeline: WorldPipelineOptions::default(),
+        cancel: None,
+        progress: None,
+        priority: ChunkLoadPriority::DistanceFrom {
+            chunk_x: 0,
+            chunk_z: 0,
+        },
+        storage_cache_policy: Default::default(),
+    };
+
+    let mut resolver =
+        bedrock_block_model::ObjTextureResolver::with_package_roots(&package_roots, "textures");
+    let models = resolver.models().clone();
+
+    // Enumerate every placed block state in the scanned area.
+    let mut state_counts = BTreeMap::<String, (usize, String, BlockStateQuery)>::new();
+    let mut chunks_with_data = 0usize;
+    let mut placed_blocks = 0usize;
+    for chunk_x in -radius..=radius {
+        for chunk_z in -radius..=radius {
+            let data = match world.query_chunk_data(
+                ChunkPos {
+                    x: chunk_x,
+                    z: chunk_z,
+                    dimension: Dimension::Overworld,
+                },
+                options.clone(),
+            ) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            if !data.is_loaded {
+                continue;
+            }
+            chunks_with_data += 1;
+            for subchunk in data.subchunks.values() {
+                for local_y in 0u8..16 {
+                    for local_z in 0u8..16 {
+                        for local_x in 0u8..16 {
+                            let Some(state) = subchunk.block_state_at(local_x, local_y, local_z)
+                            else {
+                                continue;
+                            };
+                            if state.name.ends_with(":air") {
+                                continue;
+                            }
+                            placed_blocks += 1;
+                            let mut query = BlockStateQuery::new(state.name.clone());
+                            let mut summary = String::new();
+                            for (key, value) in &state.states {
+                                let rendered = match value {
+                                    NbtTag::Byte(v) => v.to_string(),
+                                    NbtTag::Short(v) => v.to_string(),
+                                    NbtTag::Int(v) => v.to_string(),
+                                    NbtTag::Long(v) => v.to_string(),
+                                    NbtTag::String(v) => v.clone(),
+                                    other => format!("{other:?}"),
+                                };
+                                summary.push_str(&format!("{key}={rendered};"));
+                                query = query.with_state(key, rendered);
+                            }
+                            let entry = state_counts
+                                .entry(state.name.clone())
+                                .or_insert((0, summary, query));
+                            entry.0 += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "world3d audit: chunks_with_data={chunks_with_data} placed_blocks={placed_blocks} unique_states={}",
+        state_counts.len()
+    );
+    let mut top_states = state_counts.iter().collect::<Vec<_>>();
+    top_states.sort_by_key(|(_, (count, _, _))| std::cmp::Reverse(*count));
+    for (name, (count, summary, _)) in top_states.iter().take(15) {
+        eprintln!("  TOP STATE {name} x{count} ({summary})");
+    }
+
+    let normals: [[i32; 3]; 7] = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+        [0, 1, 1],
+    ];
+    let mut texture_missing = BTreeMap::<String, Vec<[i32; 3]>>::new();
+    let mut model_missing = Vec::<String>::new();
+    let mut pbr_failures = Vec::<String>::new();
+    for (name, (count, summary, query)) in &state_counts {
+        let material = format!(
+            "minecraft_{}",
+            name.strip_prefix("minecraft:").unwrap_or(name)
+        );
+        let resolved = models.resolve_block(query);
+        if resolved.warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                bedrock_block_model::ModelWarning::MissingBlockDefinition(_)
+            )
+        }) {
+            model_missing.push(format!("{name} x{count} ({summary})"));
+        }
+        for normal in normals {
+            if resolver.texture_for(&material, normal).is_none() {
+                texture_missing
+                    .entry(material.clone())
+                    .or_default()
+                    .push(normal);
+            }
+        }
+        if let Some(texture) = resolver.texture_for(&material, [0, 1, 0])
+            && let Ok(Some(set)) = resolver.pbr_texture_set_for(&texture)
+        {
+            for (channel, layer) in [
+                ("color", &set.color),
+                ("normal", &set.normal),
+                ("mer", &set.material),
+            ] {
+                if let Some(bedrock_block_model::PbrTextureLayer::Image(source)) = layer {
+                    if let Ok(bytes) = source.source_path.read() {
+                        let is_tga = source
+                            .source_path
+                            .path()
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("tga"));
+                        if bedrock_block_model::decode_texture_image(&bytes, is_tga).is_err() {
+                            pbr_failures.push(format!("{name} {channel} {}", source.relative_path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("world3d audit: model_missing={}", model_missing.len());
+    for line in &model_missing {
+        eprintln!("  MODEL MISSING {line}");
+    }
+    eprintln!("world3d audit: texture_missing={}", texture_missing.len());
+    for (material, missed_normals) in &texture_missing {
+        eprintln!("  TEXTURE MISSING {material} normals={missed_normals:?}");
+    }
+    eprintln!("world3d audit: pbr_failures={}", pbr_failures.len());
+    for line in &pbr_failures {
+        eprintln!("  PBR FAIL {line}");
+    }
 }

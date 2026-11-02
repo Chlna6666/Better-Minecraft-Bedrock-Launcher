@@ -106,7 +106,9 @@ and premultiplied blending, and applies to both voxel and regular scene-view mat
 GPU vertex shading and CPU fallback use the same face sampling and ambient floor, independently
 of corner AO, including static detail faces. `SceneView::with_voxel_shading` controls textured,
 vertex-color and quad-wireframe views, full-bright/vertex/PBR illumination and daylight without
-rebuilding scene assets. Wireframe disables opaque-volume occlusion while retaining frustum culling.
+rebuilding scene assets. Wireframe fills face depth and retains Hi-Z occlusion to hide deeper edges.
+`Occluder` may describe a planar rectangle: each selected face must be fully opaque geometry.
+Unused bounds faces never occlude; rotation, reflection and shear exclude unsupported proxies.
 `PbrTextureLayout` supports both glTF roughness/metallic and metallic/emissive/roughness channels.
 PBR voxel normals use UV derivatives; they do not require a separate tangent stream.
 `VoxelShading::color_space` distinguishes display bytes in linear voxel textures from
@@ -115,10 +117,27 @@ already-decoded linear material inputs, avoiding double sRGB decoding.
 `SceneView::with_screen_effects(Some(ScreenEffects::default()))` opts into HDR scene capture,
 material-aware geometry shadows, screen-space reflections, nearest-surface transmission/absorption,
 height fog and textured cloud volumes. `SurfaceKind::Water` selects animated water normals and
-water absorption. Cloud RGB follows `TextureAsset` color-space metadata; alpha supplies coverage.
+water absorption. `SurfaceKind::Glass` explicitly selects solid transmission for `AlphaMode::Blend`; alpha blending alone
+keeps ordinary diffuse coverage and does not imply refraction or a polished material. Disabling
+`ScreenEffects::reflections` disables both SSR and the sky/environment reflection fallback.
+Cloud RGB follows `TextureAsset` color-space metadata; alpha supplies coverage.
+`water_texture` and `water_flow_texture` accept `FlipbookTexture` vertical square-frame strips.
+Water frame selection and world-aligned texture sampling run in the screen resolve, sharing the
+presentation clock with wave normals without recapturing static geometry. Frames use uniform timing;
+the application resolves pack-specific ordering. Rough dielectric surfaces omit sharp reflections;
+HDR voxel capture leaves environment reflection to the screen resolve to avoid counting it twice.
+Finite shadow-map coverage fades at its bounds; this does not extend shadow visibility beyond
+the map or replace cascaded shadow maps.
+Water normals use four rotated, decaying world-space wave octaves with subpixel detail filtered
+out. Horizontal waves do not affect water sides. Refraction projects a bounded world-space
+transmission path and rejects foreground samples, rather than applying a fixed screen offset.
+This independent image-space approximation does not implement the full original water simulation
+or resource-driven wave parameters.
 Clouds attenuate sunlight on surfaces and in fog. The 1024×1024 material shadow map spans 192 world
 units and applies the same alpha cutoff as the visible geometry, including cutout/detail models.
 The shadow projection is cached independently from the main camera's indirect visibility list.
+PCF compares each tap against the continuous geometric receiver plane to avoid sloped-surface
+self-shadowing. Normal maps do not change that plane; static frames do not accumulate shadows.
 
 Scene geometry and material resources are shared by the capture and shadow passes. After the host
 confirms submission, unchanged capture attachments are reused until camera, scene, material or
@@ -130,8 +149,11 @@ and reflections are screen-space approximations and cannot see all offscreen geo
 nearest translucent surface is resolved. Cascaded shadows, full biome/weather behavior, height-map
 conversion, subsurface scattering and a complete post-processing stack are not implemented.
 
-The world editor defaults to full-bright night vision with light solving, AO, fog and sun shadows
-disabled. Ordinary rendering uses `bedrock-light`, face-direction light and AO. Experimental Vibrant
+`VoxelMeshSource::compact_mesh` emits only visible CPU quads, preserving per-material face order
+and reusing the resident mesh arena. It allocates no capacity padding and retains no dynamic cell
+light field. The world editor uses this path for default full-bright night vision, with light solving,
+AO, fog and sun shadows disabled. Ordinary rendering retains GPU meshing and dynamic light fields,
+using `bedrock-light`, face-direction light and AO. Experimental Vibrant
 Visuals rendering supplies same-pack Texture Set color/normal/MER, resource-authored local-light
 colors, two-block emitter clusters and the optional screen effects. The application owns Bedrock
 resource, dimension and preset policy; these are not GPUI or Nova backend responsibilities. This

@@ -226,7 +226,7 @@ fn triangle_edge_coverage(barycentrics: vec3<f32>, edge_mask: u32) -> f32 {
 
 fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
     let draw_params = draws[input.draw_index];
-    if(hdr && draw_params.alpha_mode==ALPHA_MODE_BLEND){discard;}
+    if(hdr && draw_params.alpha_mode==ALPHA_MODE_BLEND && (draw_params.texture_flags&192u)!=0u){discard;}
     var base_color = draw_params.base_color * input.vertex_color;
     if ((draw_params.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u
         && (draw_params.texture_flags & TEXTURE_FLAG_UV) != 0u) {
@@ -366,7 +366,7 @@ fn apply_fog(color: vec3<f32>, world_position: vec3<f32>) -> vec3<f32> {
 @fragment fn fs_hdr(input:VertexOutput)->@location(0) vec4<f32>{return scene_fragment(input,true);}
 fn scene_base(input:VertexOutput)->vec4<f32>{
     let draw=draws[input.draw_index];var color=draw.base_color*input.vertex_color;
-    if((draw.texture_flags&1u)!=0u){color*=textureSample(albedo_texture,material_sampler,input.uv);}
+    if((draw.texture_flags&1u)!=0u){var texel=textureSample(albedo_texture,material_sampler,input.uv);if((draw.texture_flags&64u)!=0u && frame.shadow_settings.w>2.5){texel=vec4<f32>(1.0,1.0,1.0,texel.a);}color*=texel;}
     if(draw.alpha_mode==ALPHA_MODE_MASK && color.a<draw.alpha_cutoff || color.a<0.001){discard;}
     return color;
 }
@@ -376,8 +376,12 @@ fn oct_normal(n:vec3<f32>)->vec2<f32>{let p=n/(abs(n.x)+abs(n.y)+abs(n.z));retur
     if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n);}
     var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){let p=textureSample(metallic_roughness_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
-    let kind=select(select(metallic,4.0+color.a,draw.alpha_mode==ALPHA_MODE_BLEND),2.0+color.a,(draw.texture_flags&64u)!=0u);
+    // Coverage does not imply transmission: ordinary alpha-blended surfaces stay diffuse.
+    let blended=draw.alpha_mode==ALPHA_MODE_BLEND;
+    var kind=select(metallic,6.0+metallic,blended);
+    if(blended && (draw.texture_flags&128u)!=0u){kind=4.0+metallic;}
+    if(blended && (draw.texture_flags&64u)!=0u){kind=2.0+metallic;}
     return vec4<f32>(oct_normal(n),clamp(roughness,0.06,1.0),select(kind,-1.0,draw.shading_model==SHADING_MODEL_UNLIT && draw.alpha_mode!=ALPHA_MODE_BLEND));
 }
-@fragment fn fs_scene_albedo(input:VertexOutput)->@location(0) vec4<f32>{let color=scene_base(input);let draw=draws[input.draw_index];return vec4<f32>(color.rgb,draw.emissive.a);}
+@fragment fn fs_scene_albedo(input:VertexOutput)->@location(0) vec4<f32>{let color=scene_base(input);return vec4<f32>(color.rgb,clamp(color.a,0.0,1.0));}
 @fragment fn fs_scene_shadow(input:VertexOutput)->@location(0) vec4<f32>{if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}let color=scene_base(input);return vec4<f32>(1.0);}

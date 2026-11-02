@@ -86,7 +86,7 @@ impl World3dEditorView {
             let mut effects = div().flex().flex_wrap().gap(px(4.));
             for (index, label, active) in [
                 (0, "云层", self.render_settings.clouds),
-                (1, "精细反射", self.render_settings.reflections),
+                (1, "反射", self.render_settings.reflections),
             ] {
                 effects = effects.child(toolbar_button(colors, label, active).on_mouse_down(
                     MouseButton::Left,

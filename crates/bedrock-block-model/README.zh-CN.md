@@ -27,6 +27,8 @@ permutation 覆盖。1,356 个 Bedrock 1.26.30 方块标识符的默认数字属
 `ObjTextureResolver::local_light_for` 读取资源包 `local_lighting/local_lighting.json` 的 sRGB
 光色与 point/static 分类，支持仅含光照的资源包；可选光照文件无效时报告错误，不丢弃其他
 纹理资源。`environment_texture` 按资源包优先级解析逻辑纹理路径。这些 API 仅返回 CPU 数据。
+`flipbook_definition_for` 保留已解析图片所属包中的帧时长、顺序、复制和混合元数据，
+低优先级包的动画定义不会错误套用到覆盖图片。
 
 ## 覆盖范围
 

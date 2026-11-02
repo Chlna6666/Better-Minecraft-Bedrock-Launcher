@@ -111,10 +111,15 @@ frame-ready callback or deferred submission tracking.
 `present_region` is the graphics-level changed-area argument; `DirtyRegion`/damage merging belongs
 to gpui.
 
-Generic `RendererExtensionPass` plans are encoded by extensions, submitted in order by GPUI's
-presentation owner, and then composed into the window. Extensions own neither windows nor
+Generic `RendererExtensionPass` plans are encoded by extensions, submitted before Root, element-layer
+and backdrop consumers by GPUI's presentation owner, and then composed into the window. Producer
+fences remain tracked if a later consumer fails. Extensions own neither windows nor
 swapchains. Submission confirmation permits capture reuse; GPU completion separately permits
 resource reclamation. Time-dependent extensions reuse immutable Paint without relaying out UI.
+Windows presents on the separate `gpui-gpu-owner` thread. Window metrics expose host extension
+preparation as `renderer_extension_prepare`, a subset of `renderer_scene_prepare`; do not add
+them together or interpret either as GPU execution time. Analyze `offscreen_render` and native
+backend waits separately.
 
 ## 5. Backend selection
 

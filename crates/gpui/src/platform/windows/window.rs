@@ -2363,6 +2363,7 @@ impl WindowsWindow {
                     ),
                     frame_started_at,
                     renderer_scene_prepare: Duration::ZERO,
+                    renderer_extension_prepare: Duration::ZERO,
                     submission_prepare: Duration::ZERO,
                     retained_resource_prepare: Duration::ZERO,
                     frame_prepare_upload: Duration::ZERO,

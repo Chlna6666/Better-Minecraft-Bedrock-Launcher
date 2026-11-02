@@ -636,7 +636,11 @@ impl NovaRenderer {
             return Ok(false);
         }
         self.ensure_path_mask_target_for_frame()?;
+        let extension_started = Instant::now();
         self.prepare_renderer_extensions(packet.frame_time)?;
+        if let Some(timing) = presentation_timing.as_mut() {
+            timing.renderer_extension_prepare = extension_started.elapsed();
+        }
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;

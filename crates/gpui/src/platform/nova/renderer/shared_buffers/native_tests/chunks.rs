@@ -134,7 +134,7 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
             .expect("old chunk submission id")
     });
     renderer.pending_submissions.push(PendingSubmission {
-        predecessors:SmallVec::new(),
+        predecessors: SmallVec::new(),
         submission,
         frame_resource_index: 0,
         publication: None,

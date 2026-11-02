@@ -1782,6 +1782,7 @@ pub(crate) struct ActivePresentationTiming {
     pub(crate) window_dispatch_delay: Duration,
     pub(crate) frame_started_at: Instant,
     pub(crate) renderer_scene_prepare: Duration,
+    pub(crate) renderer_extension_prepare: Duration,
     pub(crate) submission_prepare: Duration,
     pub(crate) retained_resource_prepare: Duration,
     pub(crate) frame_prepare_upload: Duration,

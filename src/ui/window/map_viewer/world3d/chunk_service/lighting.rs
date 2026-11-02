@@ -253,6 +253,30 @@ mod tests {
             has_sky: true,
         }
     }
+
+    #[test]
+    fn flat_models_have_an_interior_light_cell_on_every_axis() {
+        let light = field();
+        let plane = Mesh::plane(1., 1.).unwrap();
+        for axis in 0..3 {
+            let vertices = plane
+                .vertices()
+                .iter()
+                .map(|vertex| {
+                    let mut vertex = *vertex;
+                    let p = vertex.position;
+                    vertex.position = match axis {
+                        0 => Vec3::new(p.y, p.x, p.z),
+                        1 => p,
+                        _ => Vec3::new(p.x, p.z, p.y),
+                    };
+                    vertex
+                })
+                .collect::<Vec<_>>();
+            let mesh = plane.with_vertices(vertices).unwrap();
+            assert!(light.static_source(&mesh).is_ok(), "flat axis {axis}");
+        }
+    }
     #[test]
     fn sky_column_changes_invalidate_all_affected_height_bands() {
         let before = field();

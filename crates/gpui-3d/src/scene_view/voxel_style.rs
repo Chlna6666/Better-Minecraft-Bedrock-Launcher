@@ -9,7 +9,7 @@ pub enum VoxelDisplay {
     Textured = 0,
     /// Authored vertex colors without texture sampling.
     VertexColor = 1,
-    /// Quad edges without texture sampling; occlusion proxies are disabled.
+    /// Quad edges over depth-occluding faces, without texture sampling.
     Wireframe = 2,
 }
 

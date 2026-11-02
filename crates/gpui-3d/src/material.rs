@@ -391,6 +391,8 @@ pub enum SurfaceKind {
     Standard,
     /// Water volume with dielectric reflection, waves and absorption.
     Water,
+    /// Glass transmission for blended materials, distinct from alpha coverage alone.
+    Glass,
 }
 
 /// Metallic-roughness surface material.

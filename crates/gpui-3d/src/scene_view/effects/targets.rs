@@ -122,7 +122,7 @@ pub(super) fn uniform(
 ) -> gpui::Result<BufferId> {
     Ok(device.create_buffer(&BufferDescriptor {
         label: Some("gpui-3d screen frame".into()),
-        size: 400,
+        size: super::FRAME_BYTES,
         usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::GpuOnly,
     })?)

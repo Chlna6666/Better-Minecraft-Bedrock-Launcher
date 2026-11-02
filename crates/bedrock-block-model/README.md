@@ -108,6 +108,8 @@ used as an automatic replacement for Bedrock native shapes.
 colors (sRGB bytes) and point/static classification. Lighting-only packs are accepted; malformed
 optional lighting is reported without discarding valid texture resources. `environment_texture`
 resolves logical texture paths in pack priority order. These APIs return CPU data, not GPU resources.
+`flipbook_definition_for` preserves frame timing, ordering, replication and blending metadata from
+the resolved image's own pack, so lower-priority animation definitions cannot animate an override.
 
 ## Boundary
 

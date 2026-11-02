@@ -56,6 +56,16 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     for (name, boxes, bias, offset, visible) in [
         ("covered", vec![front], 0., Vec2::ZERO, false),
         (
+            "planar opaque face",
+            vec![crate::Occluder {
+                bounds: Aabb::new(Vec3::new(-0.8, -0.8, 0.2), Vec3::new(0.8, 0.8, 0.2)).unwrap(),
+                faces: 16,
+            }],
+            0.,
+            Vec2::ZERO,
+            false,
+        ),
+        (
             "unrendered entry face",
             vec![crate::Occluder { faces: 32, ..front }],
             0.,

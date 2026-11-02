@@ -26,6 +26,11 @@ CPU 可见的映射写入仍要求调用方使用已不再被前序提交读取�
 
 ## Shader 编译
 
+`GFX_DX12_TRACE_TIMINGS=1` 分别报告间接参数准备与绘制录制的主机耗时，不代表 GPU 执行时间。
+调试构建默认启用 D3D12 原生验证层。`GFX_DX12_DEBUG_LAYER=0` 显式关闭它以进行性能对照；
+`1` 在 release 构建中也请求启用。必须在任何设备创建前设置，正确性测试应保持验证开启。
+这些诊断不改变通用间接绘制 ABI 或剔除策略。
+
 生产调用方应提供预编译的 `ShaderCode::DxBytecode`。运行时 HLSL/FXC 编译默认关闭；
 `shader-compiler` feature 显式启用 FXC 绑定，面向 shader 工具/示例，而不是应用启动。
 

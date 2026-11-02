@@ -1,94 +1,11 @@
 //! Exercise the production SceneView multipass renderer against a read-only real world.
 use super::*;
 use gfx_core::*;
-use gpui::{
-    RendererExtension, RendererExtensionContext, RendererExtensionPass, RendererExtensionRenderer,
-};
+use gpui::{RendererExtension, RendererExtensionContext};
 use gpui_3d::{SceneView, ScreenEffects, VoxelIllumination, VoxelShading};
 
-struct Attachment {
-    texture: TextureId,
-    view: TextureViewId,
-}
-impl Attachment {
-    fn new<D: Device>(device: &mut D, size: Extent2d, format: Format) -> Self {
-        let usage = if format == Format::Depth32Float {
-            TextureUsage::DEPTH_ATTACHMENT
-        } else {
-            TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC
-        };
-        let texture = ResourceDevice::create_texture(
-            device,
-            &TextureDescriptor {
-                label: None,
-                size,
-                mip_level_count: 1,
-                format,
-                usage,
-                memory_location: MemoryLocation::GpuOnly,
-                dimension: TextureDimension::D2,
-            },
-        )
-        .unwrap();
-        let view = ResourceDevice::create_texture_view(
-            device,
-            &TextureViewDescriptor {
-                label: None,
-                texture,
-                base_mip_level: 0,
-                mip_level_count: 1,
-                format,
-            },
-        )
-        .unwrap();
-        Self { texture, view }
-    }
-    fn destroy<D: Device>(self, device: &mut D) {
-        ResourceDevice::destroy_texture_view(device, self.view).unwrap();
-        ResourceDevice::destroy_texture(device, self.texture).unwrap();
-    }
-}
-
-fn frame<D: Device + TextureTransferDevice>(
-    device: &mut D,
-    renderer: &mut dyn RendererExtensionRenderer,
-    view: &SceneView,
-    context: RendererExtensionContext,
-    color: &Attachment,
-    depth: &Attachment,
-) -> (f64, f64) {
-    let start = Instant::now();
-    let mut commands = Vec::new();
-    renderer
-        .render(view, device, context.clone(), &mut commands)
-        .unwrap();
-    let mut owned = Vec::new();
-    renderer.drain_render_passes(&mut owned);
-    let encode = start.elapsed().as_secs_f64() * 1000.;
-    let mut passes = owned
-        .iter()
-        .map(RendererExtensionPass::commands)
-        .collect::<Vec<_>>();
-    passes.push(RenderPassCommands {
-        texture_view: color.view,
-        render_pass: context.render_pass(),
-        commands: &commands,
-        color_load_op: LoadOp::Clear(ClearColor::default()),
-        depth_attachment: Some(DepthAttachment {
-            target: depth.view,
-            depth_load_op: LoadOp::Clear(1.),
-        }),
-        clear_region: None,
-        viewport: None,
-    });
-    let submitted = Instant::now();
-    if let Some(submission) = PresentationDevice::render_to_textures(device, &passes).unwrap() {
-        SubmissionDevice::wait_submission(device, submission).unwrap();
-    }
-    renderer.render_passes_submitted();
-    // Vulkan's deferred legacy return has no token; wait for its readback only outside timings.
-    (encode, submitted.elapsed().as_secs_f64() * 1000.)
-}
+mod frames;
+use frames::{Attachment, frame, inspect_passes};
 
 fn capture<D: Device + TextureTransferDevice>(
     mut device: D,
@@ -133,10 +50,20 @@ fn capture<D: Device + TextureTransferDevice>(
         },
     )
     .unwrap();
-    let context =
-        || RendererExtensionContext::for_target(D::BACKEND_KIND, pass, Format::Rgba8Unorm, size);
+    let fixed =
+        RendererExtensionContext::for_target(D::BACKEND_KIND, pass, Format::Rgba8Unorm, size);
+    let context = || fixed.clone();
+    let vibrant = std::env::var("BMCBL_WORLD3D_TEST_LIGHTING").as_deref() == Ok("vibrant");
     let settings = ScreenEffects {
         cloud_texture: world.cloud.as_ref().map(|cloud| cloud.id()),
+        water_texture: world.water[0].as_ref().map(|v| gpui_3d::FlipbookTexture {
+            texture: v.asset.id(),
+            seconds_per_frame: v.seconds_per_frame,
+        }),
+        water_flow_texture: world.water[1].as_ref().map(|v| gpui_3d::FlipbookTexture {
+            texture: v.asset.id(),
+            seconds_per_frame: v.seconds_per_frame,
+        }),
         ..ScreenEffects::default()
     };
     let view = SceneView::new(Arc::new(scene), camera)
@@ -144,14 +71,18 @@ fn capture<D: Device + TextureTransferDevice>(
         .unwrap()
         .with_voxel_shader()
         .with_voxel_shading(VoxelShading {
-            illumination: VoxelIllumination::Sunlight,
+            illumination: if vibrant {
+                VoxelIllumination::Sunlight
+            } else {
+                VoxelIllumination::Unlit
+            },
             sun_direction: Vec3::new(0.4, 0.8, 0.3).normalized().unwrap(),
             sun_intensity: 1.,
-            shadow_strength: 0.9,
+            shadow_strength: if vibrant { 0.9 } else { 0. },
             ..VoxelShading::default()
         })
         .unwrap()
-        .with_screen_effects(Some(settings))
+        .with_screen_effects(vibrant.then_some(settings))
         .unwrap();
     let mut renderer = view.create_renderer(&mut device, context()).unwrap();
     frame(
@@ -171,26 +102,40 @@ fn capture<D: Device + TextureTransferDevice>(
         .save(&output)
         .unwrap();
     eprintln!(
-        "world3d effects adapter={} size={}x{} scale={} face_count={} source_count={}",
+        "world3d effects adapter={} size={}x{} scale={} face_capacity={} source_count={} occluder_proxies={}",
         device.adapter_name(),
         size.width(),
         size.height(),
-        settings.resolution_scale,
+        if vibrant {
+            settings.resolution_scale
+        } else {
+            1.
+        },
         world.meshes.values().map(|mesh| mesh.faces).sum::<usize>(),
-        light_count
+        light_count,
+        world
+            .meshes
+            .values()
+            .map(|mesh| mesh.occluders.len())
+            .sum::<usize>()
     );
-    for (profile, effects) in [
-        ("full", settings),
-        (
-            "without_atmosphere",
-            ScreenEffects {
-                clouds: false,
-                volumetric_fog: false,
-                ..settings
-            },
-        ),
-    ] {
-        let view = view.with_screen_effects(Some(effects)).unwrap();
+    let profiles = if vibrant {
+        vec![
+            ("full", Some(settings)),
+            (
+                "without_atmosphere",
+                Some(ScreenEffects {
+                    clouds: false,
+                    volumetric_fog: false,
+                    ..settings
+                }),
+            ),
+        ]
+    } else {
+        vec![("night_vision", None)]
+    };
+    for (profile, effects) in profiles {
+        let view = view.with_screen_effects(effects).unwrap();
         frame(
             &mut device,
             renderer.as_mut(),
@@ -209,6 +154,8 @@ fn capture<D: Device + TextureTransferDevice>(
         for moving in [false, true] {
             let mut cpu = Vec::new();
             let mut submit = Vec::new();
+            let mut records = Vec::new();
+            let mut waits = Vec::new();
             for index in 0..40 {
                 let offset = if moving {
                     Vec3::new(
@@ -223,7 +170,7 @@ fn capture<D: Device + TextureTransferDevice>(
                     eye: camera.eye + offset,
                     ..camera
                 });
-                let (encode, submitted) = frame(
+                let (encode, recorded, waited) = frame(
                     &mut device,
                     renderer.as_mut(),
                     &sample,
@@ -231,18 +178,17 @@ fn capture<D: Device + TextureTransferDevice>(
                     &color,
                     &depth,
                 );
-                // Force completion separately for APIs whose legacy multipass return is untracked.
-                if D::BACKEND_KIND == BackendKind::Vulkan {
-                    let _ =
-                        TextureTransferDevice::read_texture(&mut device, color.texture).unwrap();
-                }
                 cpu.push(encode);
-                submit.push(submitted);
+                submit.push(recorded + waited);
+                records.push(recorded);
+                waits.push(waited);
             }
             cpu.sort_by(f64::total_cmp);
             submit.sort_by(f64::total_cmp);
+            records.sort_by(f64::total_cmp);
+            waits.sort_by(f64::total_cmp);
             eprintln!(
-                "world3d effects {:?}: profile={profile} moving={moving} cpu_encode_p50_ms={:.3} cpu_encode_p95_ms={:.3} submit_wait_p50_ms={:.3} submit_wait_p95_ms={:.3} sections={} faces={} lights={} clouds={} eye={:?} target={:?} -> {}",
+                "world3d effects {:?}: profile={profile} moving={moving} cpu_encode_p50_ms={:.3} cpu_encode_p95_ms={:.3} submit_wait_p50_ms={:.3} submit_wait_p95_ms={:.3} sections={} face_capacity={} lights={} clouds={} eye={:?} target={:?} -> {}",
                 D::BACKEND_KIND,
                 cpu[19],
                 cpu[37],
@@ -256,8 +202,23 @@ fn capture<D: Device + TextureTransferDevice>(
                 camera.target,
                 output.display()
             );
+            eprintln!(
+                "world3d native profile={profile} moving={moving} record_p50_ms={:.3} record_p95_ms={:.3} fence_wait_p50_ms={:.3} fence_wait_p95_ms={:.3}",
+                records[19], records[37], waits[19], waits[37]
+            );
         }
     }
+    inspect_passes(
+        &mut device,
+        renderer.as_mut(),
+        &view.with_camera(Camera {
+            eye: camera.eye + Vec3::new(17., 0., 17.),
+            ..camera
+        }),
+        context(),
+        &color,
+        &depth,
+    );
     renderer.destroy(&mut device).unwrap();
     color.destroy(&mut device);
     depth.destroy(&mut device);
@@ -267,11 +228,22 @@ fn capture<D: Device + TextureTransferDevice>(
 #[test]
 #[ignore = "requires BMCBL_WORLD3D_TEST_WORLD, BMCBL_WORLD3D_TEST_LIGHTING=vibrant, resource pack and GPU"]
 fn render_real_world_effects() {
-    let world = env_path("BMCBL_WORLD3D_TEST_WORLD").expect("read-only world root");
     assert_eq!(
         std::env::var("BMCBL_WORLD3D_TEST_LIGHTING").as_deref(),
         Ok("vibrant")
     );
+    render_world();
+}
+
+#[test]
+#[ignore = "requires a read-only Bedrock world, resource pack and native GPU"]
+fn render_real_world_default() {
+    assert!(std::env::var("BMCBL_WORLD3D_TEST_LIGHTING").as_deref() != Ok("vibrant"));
+    render_world();
+}
+
+fn render_world() {
+    let world = env_path("BMCBL_WORLD3D_TEST_WORLD").expect("read-only world root");
     let roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE").into_iter().collect();
     let spawn = read_world_spawn(&world);
     let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS")

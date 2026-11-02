@@ -30,8 +30,7 @@ pub(in crate::scene_view) struct EffectsRenderer {
     scenes: HashMap<SceneViewId, EffectScene>,
     passes: Vec<RendererExtensionPass>,
     epoch: Instant,
-    cloud: HashMap<crate::TextureAssetId, super::super::gpu::TextureResources>,
-    cloud_fallback: Option<super::super::gpu::TextureResources>,
+    textures: Option<super::textures::Textures>,
     completed: bool,
     target_extent: Extent2d,
 }
@@ -81,8 +80,7 @@ impl EffectsRenderer {
                 renderers.push(resource);
             }
             compositor = Some(Compositor::new(device, &context)?);
-            let fallback = crate::TextureAsset::linear_rgba8(1, 1, vec![0, 0, 0, 0])?;
-            let cloud_fallback = super::super::gpu::create_texture(device, &fallback)?;
+            let textures = super::textures::Textures::new(device)?;
             let [hdr, surface, albedo, shadow_resources]: [RendererResources; 4] =
                 std::mem::take(&mut renderers)
                     .try_into()
@@ -100,8 +98,7 @@ impl EffectsRenderer {
                 scenes: HashMap::new(),
                 passes: Vec::new(),
                 epoch: context.frame_time(),
-                cloud: HashMap::new(),
-                cloud_fallback: Some(cloud_fallback),
+                textures: Some(textures),
                 completed: false,
                 target_extent,
             })
@@ -130,7 +127,7 @@ impl EffectsRenderer {
             device,
             view.id,
             context.frame_time(),
-            settings.cloud_texture,
+            settings.texture_ids(),
         )?;
         let extent = scaled_extent(context, settings)?;
         if !self.scenes.contains_key(&view.id) {
@@ -173,26 +170,11 @@ impl EffectsRenderer {
             &local,
             &mut self.passes,
         )?;
-        let fallback = self
-            .cloud_fallback
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("cloud fallback missing"))?
-            .view;
-        let cloud = if let Some(id) = settings.cloud_texture {
-            if !self.cloud.contains_key(&id) {
-                let asset = view.textures.get(&id).ok_or_else(|| {
-                    anyhow::anyhow!("cloud texture {id:?} is missing from the scene texture table")
-                })?;
-                self.cloud
-                    .insert(id, super::super::gpu::create_texture(device, asset)?);
-            }
-            self.cloud
-                .get(&id)
-                .map(|asset| asset.view)
-                .unwrap_or(fallback)
-        } else {
-            fallback
-        };
+        let [cloud, water, water_flow] = self
+            .textures
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("effect textures missing"))?
+            .views(device, view, settings)?;
         state
             .shadow_pass(
                 device,
@@ -232,7 +214,7 @@ impl EffectsRenderer {
             state.tile_transform = view.scene_transform;
             state.tile_scene = Some(view.scene.clone());
         }
-        let key = (light.0, settings.cloud_texture);
+        let key = (light.0, settings.texture_ids());
         if state.groups.is_none() || state.group_key != Some(key) {
             let inputs = |frame, color| Inputs {
                 targets: &state.targets,
@@ -241,6 +223,8 @@ impl EffectsRenderer {
                 tiles: (state.tiles.buffer, state.tiles.bytes),
                 shadow: state.shadow.view,
                 cloud,
+                water,
+                water_flow,
                 color,
             };
             let a = self.compositor.bind(device, inputs(state.frame, None))?;
@@ -282,7 +266,7 @@ impl EffectsRenderer {
         device: &mut dyn ExtensionDevice,
         current: SceneViewId,
         now: Instant,
-        cloud: Option<crate::TextureAssetId>,
+        texture_ids: [Option<crate::TextureAssetId>; 3],
     ) -> gpui::Result<()> {
         if let Some(previous) = self.last_frame.replace(now)
             && previous != now
@@ -301,19 +285,16 @@ impl EffectsRenderer {
             let used = self
                 .scenes
                 .values()
-                .filter_map(|scene| scene.group_key.and_then(|(_, cloud)| cloud))
-                .chain(cloud)
+                .flat_map(|scene| {
+                    scene
+                        .group_key
+                        .into_iter()
+                        .flat_map(|(_, ids)| ids.into_iter().flatten())
+                })
+                .chain(texture_ids.into_iter().flatten())
                 .collect::<std::collections::HashSet<_>>();
-            let expired = self
-                .cloud
-                .keys()
-                .filter(|id| !used.contains(id))
-                .copied()
-                .collect::<Vec<_>>();
-            for id in expired {
-                if let Some(texture) = self.cloud.remove(&id) {
-                    super::super::gpu::destroy_texture(device, texture)?;
-                }
+            if let Some(textures) = &mut self.textures {
+                textures.retain(device, &used)?;
             }
         }
         Ok(())
@@ -383,6 +364,8 @@ pub(super) fn same_capture(a: &SceneView, b: &SceneView) -> bool {
         && a.projection_region == b.projection_region
         && a.inset_max_pixels == b.inset_max_pixels
         && a.inset_fraction == b.inset_fraction
+        && a.screen_effects.is_some_and(|s| s.has_water_animation())
+            == b.screen_effects.is_some_and(|s| s.has_water_animation())
 }
 
 impl RendererExtensionRenderer for EffectsRenderer {
@@ -448,11 +431,8 @@ impl RendererExtensionRenderer for EffectsRenderer {
         self.albedo.destroy(device)?;
         self.surface.destroy(device)?;
         self.hdr.destroy(device)?;
-        for (_, texture) in self.cloud.drain() {
-            super::super::gpu::destroy_texture(device, texture)?;
-        }
-        if let Some(texture) = self.cloud_fallback.take() {
-            super::super::gpu::destroy_texture(device, texture)?;
+        if let Some(textures) = self.textures.take() {
+            textures.destroy(device)?;
         }
         self.compositor.destroy(device)?;
         device.destroy_render_pass(self.pass)?;

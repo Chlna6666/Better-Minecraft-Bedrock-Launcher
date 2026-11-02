@@ -45,6 +45,8 @@ impl MeshAssets {
         let mut material = Material::new();
         material.surface = if key.water {
             gpui_3d::SurfaceKind::Water
+        } else if key.glass {
+            gpui_3d::SurfaceKind::Glass
         } else {
             gpui_3d::SurfaceKind::Standard
         };
@@ -58,6 +60,8 @@ impl MeshAssets {
         material.albedo_texture = key.texture;
         material.normal_texture = key.normal;
         material.metallic_roughness_texture = key.mer;
+        // Missing Texture Sets describe ordinary dry blocks, not semi-polished surfaces.
+        material.roughness = if key.water || key.glass { 0.08 } else { 1.0 };
         material.pbr_texture_layout = gpui_3d::PbrTextureLayout::MetallicEmissiveRoughness;
         let material = Arc::new(material);
         self.materials.insert(key, Arc::downgrade(&material));
@@ -119,10 +123,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn alpha_coverage_does_not_select_glass_or_polished_roughness() {
+        let mut assets = MeshAssets::default();
+        let key = MaterialSlotKey {
+            water: false,
+            glass: false,
+            texture: None,
+            normal: None,
+            mer: None,
+            alpha_mode: AlphaMode::Blend as u8,
+            double_sided: true,
+            base_color_bits: [1.0_f32.to_bits(); 3],
+        };
+        let diffuse = assets.material(key, AlphaMode::Blend);
+        assert_eq!(diffuse.surface, gpui_3d::SurfaceKind::Standard);
+        assert_eq!(diffuse.roughness, 1.);
+        let glass = assets.material(MaterialSlotKey { glass: true, ..key }, AlphaMode::Blend);
+        assert_eq!(glass.surface, gpui_3d::SurfaceKind::Glass);
+        assert_eq!(glass.roughness, 0.08);
+        assert_ne!(diffuse.id(), glass.id());
+    }
+
+    #[test]
     fn shared_material_is_reused_until_last_owner_drops() {
         let mut assets = MeshAssets::default();
         let key = MaterialSlotKey {
             water: false,
+            glass: false,
             texture: None,
             normal: None,
             mer: None,
@@ -131,6 +158,10 @@ mod tests {
             base_color_bits: [1.0_f32.to_bits(); 3],
         };
         let first = assets.material(key, AlphaMode::Opaque);
+        assert_eq!(
+            first.roughness, 1.,
+            "ordinary blocks without MER must use a dry, rough fallback"
+        );
         let second = assets.material(key, AlphaMode::Opaque);
         assert!(Arc::ptr_eq(&first, &second));
         assets.prune();

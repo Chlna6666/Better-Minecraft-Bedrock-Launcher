@@ -1,6 +1,7 @@
 //! Native count/argument validation; only pixels are read back by these tests.
 use super::*;
 
+/// Renders the generated pipeline and asserts both probe pixels exactly.
 pub(super) fn render_generated<D: Device + TextureTransferDevice>(
     device: &mut D,
     mesh: &Mesh,
@@ -10,6 +11,24 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
     fog: Option<crate::DistanceFog>,
     style: Option<(crate::VoxelShading, [u8; 4])>,
 ) {
+    probe_generated(device, mesh, resource, arguments, left, fog, style, true);
+}
+
+/// Renders the generated pipeline and returns the two probe pixels.
+///
+/// Smooth per-corner lighting interpolates vertex colors across each quad, so tests
+/// whose light field varies per cell assert on ranges instead of exact pixels.
+pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    mesh: &Mesh,
+    resource: &MeshResources,
+    arguments: BufferId,
+    left: [u8; 4],
+    fog: Option<crate::DistanceFog>,
+    style: Option<(crate::VoxelShading, [u8; 4])>,
+    assert_pixels: bool,
+) -> [[u8; 4]; 2] {
+    let mut probes = [[0u8; 4]; 2];
     use super::super::{culling::tests as culling_tests, gpu};
     use crate::{
         Camera, Mat4, Material, Node, PreparedScene, Scene, ShadingModel, Transform, Vec3,
@@ -248,18 +267,25 @@ pub(super) fn render_generated<D: Device + TextureTransferDevice>(
         let pixels = TextureTransferDevice::read_texture(device, texture)
             .unwrap()
             .bytes;
-        assert_eq!(
-            &pixels[(8 * 16 + 5) * 4..][..4],
-            if visible { &left } else { &[0, 0, 0, 255] }
-        );
-        assert_eq!(
-            &pixels[(8 * 16 + 10) * 4..][..4],
-            if visible { &right } else { &[0, 0, 0, 255] }
-        );
-        assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
+        probes = [
+            pixels[(8 * 16 + 5) * 4..][..4].try_into().unwrap(),
+            pixels[(8 * 16 + 10) * 4..][..4].try_into().unwrap(),
+        ];
+        if assert_pixels {
+            assert_eq!(
+                &pixels[(8 * 16 + 5) * 4..][..4],
+                if visible { &left } else { &[0, 0, 0, 255] }
+            );
+            assert_eq!(
+                &pixels[(8 * 16 + 10) * 4..][..4],
+                if visible { &right } else { &[0, 0, 0, 255] }
+            );
+            assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
+        }
     }
     culling.destroy(device).unwrap();
     PipelineDevice::destroy_shader_module(device, cs).unwrap();
+    probes
 }
 
 fn shader<D: Device>(device: &mut D, stage: ShaderStage, entry: &str) -> ShaderModuleId {

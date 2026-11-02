@@ -134,6 +134,9 @@ pub struct WindowAnimationPresentationTiming {
     pub active_present_duration: Duration,
     /// Compositor scene preparation before the submission-readiness stage.
     pub renderer_scene_prepare: Duration,
+    /// Extension encoding within `renderer_scene_prepare`, measured on the GPU owner.
+    /// This is host work and can include compute submission; it is not GPU execution time.
+    pub renderer_extension_prepare: Duration,
     /// Time spent polling or waiting for frame submission resources.
     pub submission_prepare: Duration,
     /// Time spent synchronizing retained atlas and mesh resources.
@@ -390,6 +393,8 @@ pub(crate) fn record_window_animation_sample(
                 }),
                 renderer_scene_prepare: timing
                     .map_or(Duration::ZERO, |timing| timing.renderer_scene_prepare),
+                renderer_extension_prepare: timing
+                    .map_or(Duration::ZERO, |timing| timing.renderer_extension_prepare),
                 submission_prepare: timing
                     .map_or(Duration::ZERO, |timing| timing.submission_prepare),
                 retained_resource_prepare: timing

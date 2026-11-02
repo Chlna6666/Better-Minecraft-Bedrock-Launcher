@@ -24,7 +24,7 @@ impl Compositor {
             let layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d screen inputs".into()),
-                    entries: (0..12)
+                    entries: (0..14)
                         .map(|binding| BindGroupLayoutEntry {
                             binding,
                             binding_type: match binding {
@@ -187,6 +187,8 @@ impl Compositor {
             (4, t.albedo.view),
             (7, inputs.shadow),
             (8, inputs.cloud),
+            (12, inputs.water),
+            (13, inputs.water_flow),
         ] {
             entries.push(BindGroupEntry {
                 binding,
@@ -206,7 +208,7 @@ impl Compositor {
             }),
         });
         for (binding, buffer, size) in [
-            (6, inputs.uniform, 400),
+            (6, inputs.uniform, super::FRAME_BYTES),
             (9, inputs.lights.0, inputs.lights.1),
             (10, inputs.tiles.0, inputs.tiles.1),
         ] {
@@ -249,6 +251,8 @@ pub(super) struct Inputs<'a> {
     pub tiles: (BufferId, u64),
     pub shadow: TextureViewId,
     pub cloud: TextureViewId,
+    pub water: TextureViewId,
+    pub water_flow: TextureViewId,
     pub color: Option<TextureViewId>,
 }
 fn create_pipeline(

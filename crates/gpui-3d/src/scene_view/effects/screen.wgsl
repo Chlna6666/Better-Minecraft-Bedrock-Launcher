@@ -11,6 +11,8 @@ const PI:f32=3.14159265359;
 @group(0) @binding(9) var<storage,read> lights:array<EffectLight>;
 @group(0) @binding(10) var<storage,read> tiles:array<u32>;
 @group(0) @binding(11) var cloud_sampler:sampler;
+@group(0) @binding(12) var water_texture:texture_2d<f32>;
+@group(0) @binding(13) var water_flow_texture:texture_2d<f32>;
 struct ScreenOutput {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>};
 struct Resolved {@location(0) color:vec4<f32>,@builtin(frag_depth) depth:f32};
 @vertex fn vs_effects(@builtin(vertex_index) id:u32)->ScreenOutput{
@@ -22,6 +24,46 @@ fn pixel(uv:vec2<f32>)->vec2<i32>{return vec2<i32>(clamp(uv,vec2<f32>(0.0),vec2<
 fn world(uv:vec2<f32>,depth:f32)->vec3<f32>{let p=frame.inverse_view_projection*vec4<f32>(uv*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0),depth,1.0);return p.xyz/p.w;}
 fn project(p:vec3<f32>)->vec3<f32>{let c=frame.view_projection*vec4<f32>(p,1.0);if(c.w<=0.0){return vec3<f32>(-1.0);}return vec3<f32>(c.xy/c.w*vec2<f32>(0.5,-0.5)+0.5,c.z/c.w);}
 fn normal(p:vec2<f32>)->vec3<f32>{var n=vec3<f32>(p,1.0-abs(p.x)-abs(p.y));if(n.z<0.0){n=vec3<f32>((1.0-abs(n.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),n.xy>=vec2<f32>(0.0)),n.z);}return normalize(n);}
+fn strip_uv(uv:vec2<f32>,size:vec2<u32>,rows:f32,seconds:f32)->vec2<f32>{
+    let phase=fract(frame.work.w/(seconds*rows));let index=min(floor(phase*rows),rows-1.0);
+    let margin=vec2<f32>(0.5)/f32(size.x);let at=clamp(fract(uv),margin,vec2<f32>(1.0)-margin);
+    return vec2<f32>(at.x,(index+at.y)/rows);
+}
+fn water_albedo(p:vec3<f32>,normal:vec3<f32>,wave:vec3<f32>)->vec4<f32>{
+    let absolute=p+frame.origin.xyz;var uv=absolute.xz;let side=abs(normal.y)<0.5;
+    if(side){uv=vec2<f32>(select(absolute.x,absolute.z,abs(normal.x)>0.5),-absolute.y);}
+    uv+=wave.xz*0.025;
+    if(side){return textureSampleLevel(water_flow_texture,cloud_sampler,strip_uv(uv,textureDimensions(water_flow_texture),frame.water_animation.y,frame.water_animation.w),0.0);}
+    return textureSampleLevel(water_texture,cloud_sampler,strip_uv(uv,textureDimensions(water_texture),frame.water_animation.x,frame.water_animation.z),0.0);
+}
+// Image-space waves use world-space frequencies and rotated, decaying octaves.
+// Filter slopes smaller than a pixel instead of amplifying distant repeating patterns.
+fn water_normal(p:vec3<f32>,n:vec3<f32>,footprint:f32)->vec3<f32>{
+    if(abs(n.y)<0.5){return n;}
+    var direction=vec2<f32>(0.8,0.6);var frequency=3.4;var amplitude=0.018;var speed=0.7;var slope=vec2<f32>(0.0);var position=(p+frame.origin.xyz).xz;
+    for(var octave=0u;octave<4u;octave++){
+        let phase=dot(position,direction)*frequency-frame.work.w*speed;
+        let crest=exp(sin(phase)-1.0);let derivative=cos(phase)*crest;
+        let weight=1.0-smoothstep(0.8,3.0,footprint*frequency);
+        slope+=direction*derivative*amplitude*frequency*weight;
+        position-=direction*crest*amplitude*0.35;
+        direction=vec2<f32>(direction.x*0.139173-direction.y*0.990268,direction.x*0.990268+direction.y*0.139173);
+        frequency*=1.73;amplitude*=0.36;speed*=1.19;
+    }
+    return normalize(n+vec3<f32>(-slope.x,0.0,-slope.y)*sign(n.y));
+}
+fn refraction_uv(uv:vec2<f32>,p:vec3<f32>,ray:vec3<f32>,n:vec3<f32>,depth:f32,water:bool)->vec2<f32>{
+    let opaque=textureLoad(opaque_depth,pixel(uv),0).r;
+    if(opaque>=1.0 || opaque<=depth){return uv;}
+    let distance=min(length(world(uv,opaque)-p),8.0);
+    let ratio=select(1.0/1.5,select(1.0/1.333,1.333,frame.options.w>0.5),water);let transmitted=refract(ray,n,ratio);
+    if(dot(transmitted,transmitted)<0.000001){return uv;}
+    // Perturb the underwater path, then project it. A fixed UV offset grows in world units
+    // with view distance and causes the entire distant water surface to appear to wobble.
+    let candidate=project(p+transmitted*distance);
+    if(any(candidate.xy<=vec2<f32>(0.001)) || any(candidate.xy>=vec2<f32>(0.999)) || candidate.z<0.0 || candidate.z>=1.0){return uv;}
+    return select(uv,candidate.xy,textureLoad(opaque_depth,pixel(candidate.xy),0).r>depth);
+}
 fn cloud_material(p:vec3<f32>)->vec4<f32>{
     if(frame.flags.w<0.5){return vec4<f32>(0.0);}let absolute=p+frame.origin.xyz;let h=(absolute.y-frame.options.z)/frame.cloud.x;
     if(h<=0.0 || h>=1.0){return vec4<f32>(0.0);}
@@ -42,9 +84,18 @@ fn shadow_visibility(p:vec3<f32>,n:vec3<f32>)->f32{
     if(frame.display_target.z<=0.0){return 1.0;}let c=frame.light_matrix*vec4<f32>(p,1.0);let q=c.xyz/c.w;
     let uv=q.xy*vec2<f32>(0.5,-0.5)+0.5;if(any(uv<=vec2<f32>(0.0)) || any(uv>=vec2<f32>(1.0)) || q.z<=0.0 || q.z>=1.0){return 1.0;}
     let size=vec2<i32>(textureDimensions(shadow_depth));let at=vec2<i32>(uv*vec2<f32>(size));var lit=0.0;
-    let bias=frame.display_target.w*(1.0+3.0*(1.0-max(dot(n,frame.sun.xyz),0.0)));
-    for(var y=-1;y<=1;y++){for(var x=-1;x<=1;x++){let depth=textureLoad(shadow_depth,clamp(at+vec2<i32>(x,y),vec2<i32>(0),size-1),0).r;lit+=select(0.0,1.0,q.z-bias<=depth);}}
-    return mix(1.0,lit/9.0,frame.display_target.z);
+    let bias=frame.display_target.w*(1.0+3.0*(1.0-abs(dot(n,frame.sun.xyz))));
+    // Compare each PCF tap with the receiver plane at that tap, not its center depth.
+    let tangent=normalize(cross(n,select(vec3<f32>(0.0,1.0,0.0),vec3<f32>(1.0,0.0,0.0),abs(n.y)>0.99)));
+    let bitangent=cross(n,tangent);let a=frame.light_matrix*vec4<f32>(tangent,0.0);let b=frame.light_matrix*vec4<f32>(bitangent,0.0);
+    let da=(a.xyz-q*a.w)/c.w;let db=(b.xyz-q*b.w)/c.w;let determinant=da.x*db.y-da.y*db.x;var gradient=vec2<f32>(0.0);
+    if(abs(determinant)>0.00000001){gradient=vec2<f32>((da.z*db.y-da.y*db.z)*2.0,(da.x*db.z-da.z*db.x)*-2.0)/determinant;}
+    for(var y=-1;y<=1;y++){for(var x=-1;x<=1;x++){let sample_at=clamp(at+vec2<i32>(x,y),vec2<i32>(0),size-1);let depth=textureLoad(shadow_depth,sample_at,0).r;let delta=(vec2<f32>(sample_at)+0.5)/vec2<f32>(size)-uv;lit+=select(0.0,1.0,q.z+dot(gradient,delta)-bias<=depth);}}
+    // The finite map has no occlusion data outside its footprint. Fade coverage
+    // continuously into that fallback instead of drawing the map's rectangular edge.
+    let edge=min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y));
+    let coverage=smoothstep(0.0,0.08,edge)*smoothstep(0.0,0.04,min(q.z,1.0-q.z));
+    return mix(1.0,lit/9.0,frame.display_target.z*coverage);
 }
 fn atmosphere(direction:vec3<f32>)->vec3<f32>{
     if(frame.sky.x<0.0){return frame.sky.yzw;}
@@ -104,25 +155,33 @@ fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
 }
 fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec3<f32>(0.0));let mapped=clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));return select(mapped*12.92,1.055*pow(mapped,vec3<f32>(1.0/2.4))-0.055,mapped>vec3<f32>(0.0031308));}
 @fragment fn fs_effects(input:ScreenOutput)->@location(0) vec4<f32>{
-    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(uv,min(depth,0.99999));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
+    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(uv,min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
     if(depth>=1.0){color=atmosphere(ray);}
-    if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);let albedo=textureLoad(albedos,at,0);let v=-ray;
+    if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=textureLoad(albedos,at,0);let v=-ray;
         if(material.w<0.0){color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;}else{
-        let water=material.w>=2.0 && material.w<4.0;let glass=material.w>=4.0;let metallic=select(clamp(material.w,0.0,1.0),0.0,water||glass);var roughness=material.z;
-        if(water && frame.flags.y>0.5){let absolute=p+frame.origin.xyz;let phase=absolute.xz*vec2<f32>(0.3,0.22)+frame.work.w*vec2<f32>(0.8,-0.6);n=normalize(n+vec3<f32>(sin(phase.x)*0.12,0.0,cos(phase.y)*0.1));roughness=0.08;}
+        let water=material.w>=2.0 && material.w<4.0;let glass=material.w>=4.0 && material.w<6.0;let blended=material.w>=6.0;let metallic=select(select(clamp(material.w,0.0,1.0),clamp(material.w-6.0,0.0,1.0),blended),0.0,water||glass);let coverage=select(1.0,albedo.a,blended);var roughness=material.z;
+        let geometric=n;
+        if(water && frame.flags.y>0.5){n=water_normal(p,n,footprint);roughness=0.08;
+            if(frame.water_animation.x>0.0){albedo=vec4<f32>(albedo.rgb*water_albedo(p,geometric,n).rgb,albedo.a);}}
         let direct=cook_torrance_lighting(albedo.rgb,metallic,roughness,n,v,frame.sun.xyz,frame.sun_color.rgb*frame.sun_color.w*3.0);
-        let visibility=shadow_visibility(p,n)*cloud_visibility(p);color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
+        let visibility=shadow_visibility(p,receiver_normal)*cloud_visibility(p);color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
         if(water||glass){
-            let candidate=clamp(uv+n.xz*0.012,vec2<f32>(0.001),vec2<f32>(0.999));let refracted_depth=textureLoad(opaque_depth,pixel(candidate),0).r;
-            let refracted=select(uv,candidate,refracted_depth>depth);let behind_depth=textureLoad(opaque_depth,pixel(refracted),0).r;var behind=textureSampleLevel(scene,linear_sampler,refracted,0.0).rgb;
-            if(behind_depth>=1.0){behind=atmosphere(normalize(world(refracted,0.99999)-frame.eye.xyz));}
-            let thickness=select(min(length(world(refracted,behind_depth)-p),32.0),0.0,behind_depth>=1.0 && !water);
+            let refracted=refraction_uv(uv,p,ray,n,depth,water);let behind_depth=textureLoad(opaque_depth,pixel(refracted),0).r;var behind=textureSampleLevel(scene,linear_sampler,refracted,0.0).rgb;
+            let miss=behind_depth>=1.0;
+            if(miss){behind=atmosphere(normalize(world(refracted,0.99999)-frame.eye.xyz));}
+            // A water ray that leaves the scene has no bottom: treat it as deep water
+            // (full absorption) instead of leaking the bright sky through the surface.
+            let thickness=select(min(length(world(refracted,behind_depth)-p),32.0),select(0.0,512.0,water),miss);
             let absorption=select(-log(max(albedo.rgb,vec3<f32>(0.02)))*0.3,frame.water_absorption.xyz,water);let transmittance=exp(-absorption*thickness);
             color=behind*transmittance+albedo.rgb*(1.0-transmittance)*0.15+direct*visibility;
-        }else{color=max(color-direct,vec3<f32>(0.0))+direct*visibility;}
-        color+=local_lighting(uv,p,n,v,albedo.rgb,metallic,roughness);
-        if((frame.flags.x>0.5 && roughness<0.5)||water||glass){let reflected=reflect(ray,n);let hit=trace_reflection(p+n*0.08,reflected);let environment=sky(reflected);let reflection=mix(environment,hit.rgb,hit.a);
-            let f0=select(mix(vec3<f32>(0.04),albedo.rgb,metallic),vec3<f32>(0.02),water);let fresnel=fresnel_schlick(max(dot(n,v),0.0),f0)*(1.0-roughness*0.6);color=mix(color,reflection,clamp(fresnel,vec3<f32>(0.0),vec3<f32>(1.0)));}
+        }else{
+            color=max(color-direct*coverage,vec3<f32>(0.0))+direct*visibility*coverage;
+            if(blended && textureLoad(opaque_depth,at,0).r>=1.0){color+=atmosphere(ray)*(1.0-coverage);}
+        }
+        color+=local_lighting(uv,p,n,v,albedo.rgb,metallic,roughness)*coverage;
+        if(roughness<0.5||water||glass||metallic>0.0){let reflected=reflect(ray,n);var hit=vec4<f32>(0.0);if(roughness<0.5){hit=trace_reflection(p+n*0.08,reflected);}
+            let direction=normalize(mix(reflected,n,roughness*roughness));var environment=atmosphere(direction);if(roughness<0.5){environment=sky(direction);}let reflection=mix(environment,hit.rgb,hit.a);
+            let f0=select(mix(vec3<f32>(0.04),albedo.rgb,metallic),vec3<f32>(0.02),water);let fresnel=environment_reflectance(max(dot(n,v),0.0),roughness,metallic,f0);color=mix(color,reflection,clamp(fresnel,vec3<f32>(0.0),vec3<f32>(1.0))*coverage*frame.flags.x);}
     }
     }
     let clouds=cloud_volume(frame.eye.xyz,ray,distance_limit);color=color*clouds.a+clouds.rgb;
