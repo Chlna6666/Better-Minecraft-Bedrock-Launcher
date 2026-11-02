@@ -271,11 +271,6 @@ impl ResourceDevice for Dx11Device {
         if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
             bind |= D3D11_BIND_DEPTH_STENCIL.0 as u32;
         }
-        if desc.format == Format::Depth32Float && desc.usage.contains(TextureUsage::SAMPLED) {
-            return Err(Error::Unavailable(
-                "D3D11 sampled depth textures require typeless storage".into(),
-            ));
-        }
         let mut native = None;
         // SAFETY: initialized texture descriptor, no borrowed initial data.
         unsafe {
@@ -285,7 +280,13 @@ impl ResourceDevice for Dx11Device {
                     Height: desc.size.height(),
                     MipLevels: desc.mip_level_count,
                     ArraySize: 1,
-                    Format: format(desc.format),
+                    Format: if desc.format == Format::Depth32Float
+                        && desc.usage.contains(TextureUsage::SAMPLED)
+                    {
+                        DXGI_FORMAT_R32_TYPELESS
+                    } else {
+                        format(desc.format)
+                    },
                     SampleDesc: DXGI_SAMPLE_DESC {
                         Count: 1,
                         Quality: 0,
@@ -353,7 +354,11 @@ impl ResourceDevice for Dx11Device {
                     .CreateShaderResourceView(
                         &texture.native,
                         Some(&D3D11_SHADER_RESOURCE_VIEW_DESC {
-                            Format: format(desc.format),
+                            Format: if desc.format == Format::Depth32Float {
+                                DXGI_FORMAT_R32_FLOAT
+                            } else {
+                                format(desc.format)
+                            },
                             ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
                             Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                                 Texture2D: D3D11_TEX2D_SRV {
