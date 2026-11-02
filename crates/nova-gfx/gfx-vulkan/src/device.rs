@@ -52,6 +52,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 mod buffer_upload;
 mod compact;
 mod compute;
+mod depth;
 mod descriptors;
 mod presentation;
 mod relocation;
@@ -907,12 +908,14 @@ impl VulkanDevice {
             .next()
             .ok_or_else(|| Error::Backend("failed to allocate readback command buffer".into()))?;
         begin_one_time_commands(&self.device, command_buffer)?;
-        transition_image_layout(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             image,
             old_layout,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            1,
+            image_aspect_for_format(format),
         );
         let region = vk::BufferImageCopy::default()
             .image_subresource(
@@ -938,12 +941,14 @@ impl VulkanDevice {
                 &[region],
             );
         }
-        transition_image_layout(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             image,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             old_layout,
+            1,
+            image_aspect_for_format(format),
         );
         end_submit_wait_destroy(
             &self.device,
@@ -1071,6 +1076,7 @@ impl VulkanDevice {
         let layout = self.bind_group_layouts.get(desc.layout)?.layout;
         let mut buffer_infos = Vec::new();
         let mut image_infos = Vec::new();
+        let mut sampled_depth = Vec::new();
         let mut pending_writes = Vec::new();
         for binding in &desc.entries {
             match binding.resource {
@@ -1102,6 +1108,9 @@ impl VulkanDevice {
                 }
                 BindingResource::Texture(texture_binding) => {
                     let view = self.texture_views.get(texture_binding.texture_view)?;
+                    if self.textures.get(view.texture)?.desc.format == Format::Depth32Float {
+                        sampled_depth.push(view.texture);
+                    }
                     image_infos.push(
                         vk::DescriptorImageInfo::default()
                             .image_view(view.view)
@@ -1165,6 +1174,7 @@ impl VulkanDevice {
             self.device.update_descriptor_sets(&writes, &[]);
         }
         Ok(self.bind_groups.insert(VulkanResourceSet {
+            sampled_depth,
             descriptor_set,
             descriptor_pool,
             layout: desc.layout,
@@ -1704,7 +1714,9 @@ impl VulkanDevice {
                 scissor,
             });
         }
+        let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
         let result = record_command_buffer(&CommandRecordInfo {
+            depth_accesses: &depth_accesses,
             device: &self.device,
             command_buffer,
             render_pass: native_render_pass,
@@ -1723,6 +1735,9 @@ impl VulkanDevice {
             graph_write_hazard,
         });
         if result.is_ok() {
+            for access in depth_accesses {
+                self.textures.get_mut(access.texture)?.layout = access.new_layout;
+            }
             if let Some(slot) = gpu_trace_slot {
                 self.command_encoders.get_mut(encoder_id)?.gpu_trace_passes[slot] =
                     if render_target_transition.is_some() {
@@ -1888,12 +1903,14 @@ impl VulkanDevice {
 
         let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::with_capacity(passes.len());
         for pass in passes {
-            let texture_id = self.texture_views.get(pass.texture_view)?.texture;
-            if target_layouts
-                .iter()
-                .all(|(known_texture, _)| *known_texture != texture_id)
+            let color = self.texture_views.get(pass.texture_view)?.texture;
+            let depths = self.depth_accesses(pass.commands, pass.depth_attachment)?;
+            for texture_id in
+                std::iter::once(color).chain(depths.iter().map(|access| access.texture))
             {
-                target_layouts.push((texture_id, self.textures.get(texture_id)?.layout));
+                if target_layouts.iter().all(|(known, _)| *known != texture_id) {
+                    target_layouts.push((texture_id, self.textures.get(texture_id)?.layout));
+                }
             }
         }
 
@@ -3030,6 +3047,7 @@ impl VulkanDevice {
             group.old_layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             group.mip_level_count,
+            vk::ImageAspectFlags::COLOR,
         );
         let mut synchronized = 0;
         for (index, upload) in group.uploads.iter().enumerate() {
@@ -3063,6 +3081,7 @@ impl VulkanDevice {
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             group.mip_level_count,
+            vk::ImageAspectFlags::COLOR,
         );
         Ok(())
     }
@@ -4184,6 +4203,7 @@ struct VulkanResourceSetLayout {
 
 #[derive(Clone)]
 struct VulkanResourceSet {
+    sampled_depth: Vec<TextureId>,
     descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
     layout: BindGroupLayoutId,
@@ -5380,6 +5400,7 @@ fn create_sync_objects(
 }
 
 struct CommandRecordInfo<'a> {
+    depth_accesses: &'a [depth::DepthAccess],
     device: &'a ash::Device,
     command_buffer: vk::CommandBuffer,
     render_pass: vk::RenderPass,
@@ -5640,6 +5661,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             );
         }
     }
+    depth::record_depth_accesses(info.device, info.command_buffer, info.depth_accesses);
     if info.graph_write_hazard {
         // WAW on the same physical VkImage. Preserve execution/memory ordering
         // across independently recorded command buffers submitted to the same
@@ -5917,7 +5939,15 @@ fn transition_image_layout(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) {
-    transition_image_layout_levels(device, command_buffer, image, old_layout, new_layout, 1);
+    transition_image_layout_levels(
+        device,
+        command_buffer,
+        image,
+        old_layout,
+        new_layout,
+        1,
+        vk::ImageAspectFlags::COLOR,
+    );
 }
 
 fn transition_image_layout_levels(
@@ -5927,11 +5957,62 @@ fn transition_image_layout_levels(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
     mip_level_count: u32,
+    aspect: vk::ImageAspectFlags,
 ) {
     let color_attachment_access =
         vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
     let (source_stage, destination_stage, source_access_mask, destination_access_mask) =
         match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
+            (
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => (
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::AccessFlags::SHADER_READ,
+            ),
+            (
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            ) => (
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
+            (
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            ) => (
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::AccessFlags::TRANSFER_READ,
+            ),
+            (
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            ) => (
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
             (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::TRANSFER,
@@ -6013,7 +6094,7 @@ fn transition_image_layout_levels(
         .image(image)
         .subresource_range(
             vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .aspect_mask(aspect)
                 .base_mip_level(0)
                 .level_count(mip_level_count)
                 .base_array_layer(0)

@@ -61,6 +61,7 @@ impl VulkanDevice {
                 source_layout,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 source.desc.mip_level_count,
+                image_aspect_for_format(source.desc.format),
             );
             transition_image_layout_levels(
                 &self.device,
@@ -69,6 +70,7 @@ impl VulkanDevice {
                 destination_layout,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 destination.desc.mip_level_count,
+                image_aspect_for_format(destination.desc.format),
             );
             let layers = vk::ImageSubresourceLayers::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -111,6 +113,7 @@ impl VulkanDevice {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 source_layout,
                 source.desc.mip_level_count,
+                image_aspect_for_format(source.desc.format),
             );
             // An undefined destination must acquire a valid layout. Existing attachment/transfer
             // layouts are preserved, including copy-only textures without SAMPLED usage.
@@ -122,6 +125,7 @@ impl VulkanDevice {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 final_layout,
                 destination.desc.mip_level_count,
+                image_aspect_for_format(destination.desc.format),
             );
             layouts.insert(copy.destination, final_layout);
         }
