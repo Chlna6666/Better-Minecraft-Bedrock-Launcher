@@ -197,6 +197,27 @@ impl NovaRenderer {
     fn poll_pending_submissions(&mut self) -> Result<()> {
         let mut index = 0;
         while index < self.pending_submissions.len() {
+            while let Some(predecessor) = self.pending_submissions[index]
+                .predecessors
+                .first()
+                .copied()
+            {
+                let status = lock_backend(&self.backend).poll_submission(predecessor)?;
+                match status {
+                    SubmissionStatus::Complete => {
+                        self.pending_submissions[index].predecessors.remove(0);
+                    }
+                    SubmissionStatus::Pending => break,
+                    SubmissionStatus::Failed(error) => {
+                        self.invalidate_failed_gpu_submission();
+                        return Err(gfx_core::Error::Backend(error).into());
+                    }
+                }
+            }
+            if !self.pending_submissions[index].predecessors.is_empty() {
+                index += 1;
+                continue;
+            }
             let submission = self.pending_submissions[index].submission;
             let status = lock_backend(&self.backend).poll_submission(submission)?;
             match status {
@@ -224,6 +245,15 @@ impl NovaRenderer {
             .first()
             .map(|submission| submission.submission)
         {
+            while let Some(predecessor) = self.pending_submissions[0].predecessors.first().copied()
+            {
+                let result = lock_backend(&self.backend).wait_submission(predecessor);
+                if let Err(error) = result {
+                    self.invalidate_failed_gpu_submission();
+                    return Err(error.into());
+                }
+                self.pending_submissions[0].predecessors.remove(0);
+            }
             let started_at = Instant::now();
             let result = lock_backend(&self.backend).wait_submission(submission);
             let waited = started_at.elapsed();
@@ -403,6 +433,7 @@ impl NovaRenderer {
             }
         } else if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
             pending_submissions.push(PendingSubmission {
+                predecessors: SmallVec::new(),
                 submission,
                 frame_resource_index,
                 publication: None,

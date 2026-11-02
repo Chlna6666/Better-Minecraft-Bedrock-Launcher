@@ -340,6 +340,7 @@ impl SubmittedResourceVersions {
 }
 
 struct PendingSubmission {
+    predecessors: SmallVec<[SubmissionId; 1]>,
     submission: SubmissionId,
     frame_resource_index: usize,
     publication: Option<SubmittedResourceVersions>,
@@ -1187,7 +1188,8 @@ impl NovaRenderer {
             return Ok(None);
         }
         if !reference.presentation_is_due(now) {
-            let continues = !reference.presentation_animation_timelines.is_empty();
+            let continues = reference.has_time_dependent_extensions()
+                || !reference.presentation_animation_timelines.is_empty();
             return Ok((continues || was_pending).then(|| ActivePresentationFrame {
                 continues: continues || was_pending,
                 completed_animations: SmallVec::new(),
@@ -1203,7 +1205,8 @@ impl NovaRenderer {
             return Ok(None);
         };
         let sampled_completions = packet.sample_animations(now);
-        let continues = !packet.presentation_animation_timelines.is_empty();
+        let continues = packet.has_time_dependent_extensions()
+            || !packet.presentation_animation_timelines.is_empty();
         let mut presentation_timing = presentation_timing;
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = draw_result.as_ref().is_ok_and(|submitted| *submitted);

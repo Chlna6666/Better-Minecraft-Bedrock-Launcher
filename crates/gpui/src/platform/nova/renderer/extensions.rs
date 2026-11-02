@@ -7,9 +7,21 @@ use std::{any::TypeId, collections::hash_map::Entry};
 #[derive(Default)]
 pub(super) struct RendererRegistry {
     renderers: FxHashMap<TypeId, Box<dyn crate::RendererExtensionRenderer>>,
+    passes: Vec<crate::RendererExtensionPass>,
 }
 
 impl RendererRegistry {
+    pub(super) fn render_passes_submitted(&mut self) {
+        for renderer in self.renderers.values_mut() {
+            renderer.render_passes_submitted();
+        }
+    }
+    pub(super) fn begin_frame(&mut self) {
+        self.passes.clear();
+    }
+    pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
+        &self.passes
+    }
     pub(super) fn needs_gpu_completion(&self) -> bool {
         self.renderers
             .values()
@@ -42,7 +54,9 @@ impl RendererRegistry {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(input.create_renderer(device, context.clone())?),
         };
-        renderer.render(input, device, context, steps)
+        renderer.render(input, device, context, steps)?;
+        renderer.drain_render_passes(&mut self.passes);
+        Ok(())
     }
 
     pub(super) fn retain(&mut self, active: &[TypeId], device: &mut dyn ExtensionDevice) {

@@ -282,6 +282,7 @@ fn verify(backend: RendererBackend) {
             .expect("old slot submission id")
     });
     renderer.pending_submissions.push(PendingSubmission {
+        predecessors:SmallVec::new(),
         submission,
         frame_resource_index: 1,
         publication: None,

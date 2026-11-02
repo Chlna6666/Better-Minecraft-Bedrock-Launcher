@@ -1373,9 +1373,14 @@ struct PackedVisualSample {
 }
 
 impl PresentationPacket {
+    pub(crate) fn has_time_dependent_extensions(&self) -> bool {
+        self.paint.scene.has_time_dependent_extensions()
+    }
     /// Keep the final animation sample scheduled until its damage reaches the surface.
     pub(crate) fn has_pending_presentation(&self) -> bool {
-        !self.presentation_animation_timelines.is_empty() || !self.dirty_region.is_empty()
+        self.has_time_dependent_extensions()
+            || !self.presentation_animation_timelines.is_empty()
+            || !self.dirty_region.is_empty()
     }
 
     /// Consume damage only after the renderer has successfully submitted this sample.
@@ -1512,6 +1517,15 @@ impl PresentationPacket {
         now: Instant,
     ) -> SmallVec<[SceneAnimationCompletion; 4]> {
         self.frame_time = now;
+        let dirty = &mut self.dirty_region;
+        let refresh_blurs = &mut self.force_full_backdrop_blur_refresh;
+        let has_backdrops = self.paint.scene.has_backdrop_blurs();
+        self.paint
+            .scene
+            .for_each_time_dependent_extension_bounds(|bounds| {
+                dirty.push(bounds);
+                *refresh_blurs |= has_backdrops;
+            });
         self.sampled_active_presentation_animation =
             !self.presentation_animation_timelines.is_empty();
         if self.presentation_animation_timelines.is_empty() {

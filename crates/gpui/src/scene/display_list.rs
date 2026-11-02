@@ -30,7 +30,72 @@ pub(crate) struct Scene {
     pub(crate) replayed_primitives: usize,
 }
 
+#[cfg(test)]
+mod time_dependent_extension_tests {
+    use super::*;
+    struct AnimatedInput;
+    impl crate::RendererExtension for AnimatedInput {
+        fn is_time_dependent(&self) -> bool {
+            true
+        }
+        fn create_renderer(
+            &self,
+            _: &mut dyn crate::ExtensionDevice,
+            _: crate::RendererExtensionContext,
+        ) -> crate::Result<Box<dyn crate::RendererExtensionRenderer>> {
+            anyhow::bail!("CPU scheduling test does not create GPU resources")
+        }
+    }
+    #[test]
+    fn time_dependent_extension_damage_respects_the_clip() {
+        let mut scene = Scene::default();
+        assert!(!scene.has_time_dependent_extensions());
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(20.), ScaledPixels(20.)),
+        );
+        let clip = Bounds::new(
+            crate::point(ScaledPixels(2.), ScaledPixels(3.)),
+            crate::size(ScaledPixels(5.), ScaledPixels(6.)),
+        );
+        scene.renderer_extensions.push(PaintRendererExtension::new(
+            bounds,
+            crate::ContentMask::new(clip),
+            std::sync::Arc::new(AnimatedInput),
+        ));
+        assert!(scene.has_time_dependent_extensions());
+        let mut damage = Vec::new();
+        scene.for_each_time_dependent_extension_bounds(|bounds| damage.push(bounds));
+        assert_eq!(damage, vec![clip]);
+    }
+}
+
 impl Scene {
+    pub(crate) fn has_time_dependent_extensions(&self) -> bool {
+        self.renderer_extensions
+            .iter()
+            .any(|primitive| primitive.extension.is_time_dependent())
+            || self
+                .blurs
+                .iter()
+                .any(|blur| blur.content.has_time_dependent_extensions())
+    }
+
+    pub(crate) fn for_each_time_dependent_extension_bounds(
+        &self,
+        mut visit: impl FnMut(Bounds<ScaledPixels>),
+    ) {
+        for primitive in &self.renderer_extensions {
+            if primitive.extension.is_time_dependent() {
+                visit(primitive.bounds.intersect(&primitive.content_mask.bounds));
+            }
+        }
+        for blur in &self.blurs {
+            if blur.content.has_time_dependent_extensions() {
+                visit(blur.bounds.intersect(&blur.content_mask.bounds));
+            }
+        }
+    }
     pub fn len(&self) -> usize {
         self.paint_operations.len()
     }

@@ -7,6 +7,7 @@ use crate::diagnostics::gpu_owner::phases::{self, Phase};
 use std::time::Duration;
 
 struct MainPresentDescriptor<'a> {
+    renderer_registry: &'a mut super::extensions::RendererRegistry,
     submission_mode: GpuSubmissionMode,
     async_capabilities: AsyncCapabilities,
     pending_submissions: &'a mut Vec<PendingSubmission>,
@@ -25,7 +26,21 @@ fn present_main_frame<D>(
 where
     D: PresentationDevice + CommandDevice + SubmissionDevice + ResourceDevice,
 {
-    NovaRenderer::submit_present_frame(
+    let passes = descriptor
+        .renderer_registry
+        .passes()
+        .iter()
+        .map(crate::RendererExtensionPass::commands)
+        .collect::<Vec<_>>();
+    let predecessor = if passes.is_empty() {
+        None
+    } else {
+        device.render_to_textures(&passes)?
+    };
+    drop(passes);
+    descriptor.renderer_registry.render_passes_submitted();
+    let pending_before = descriptor.pending_submissions.len();
+    let result = NovaRenderer::submit_present_frame(
         descriptor.submission_mode,
         descriptor.async_capabilities,
         descriptor.pending_submissions,
@@ -37,7 +52,22 @@ where
         Some(descriptor.depth_attachment),
         descriptor.frame_resource_index,
         descriptor.damage,
-    )
+    );
+    if let Some(predecessor) = predecessor {
+        if descriptor.pending_submissions.len() > pending_before {
+            if let Some(frame) = descriptor.pending_submissions.last_mut() {
+                frame.predecessors.push(predecessor);
+            }
+        } else {
+            descriptor.pending_submissions.push(PendingSubmission {
+                submission: predecessor,
+                predecessors: SmallVec::new(),
+                frame_resource_index: descriptor.frame_resource_index,
+                publication: None,
+            });
+        }
+    }
+    result
 }
 
 fn render_backdrop_blur_groups<D>(
@@ -1108,6 +1138,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
+                            renderer_registry: &mut self.renderer_registry,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1229,6 +1260,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
+                            renderer_registry: &mut self.renderer_registry,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1350,6 +1382,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
+                            renderer_registry: &mut self.renderer_registry,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1453,6 +1486,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
+                            renderer_registry: &mut self.renderer_registry,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,
@@ -1545,6 +1579,7 @@ impl NovaRenderer {
                     let presentation_frame = present_main_frame(
                         device,
                         MainPresentDescriptor {
+                            renderer_registry: &mut self.renderer_registry,
                             submission_mode,
                             async_capabilities,
                             pending_submissions: &mut self.pending_submissions,

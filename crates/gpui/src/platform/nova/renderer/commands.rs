@@ -106,6 +106,7 @@ impl NovaRenderer {
     }
 
     pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
+        self.renderer_registry.begin_frame();
         let extension_count = self.frame_upload.renderer_extensions.len();
         prepare_renderer_extension_step_storage(
             &mut self.frame_upload.renderer_extension_steps,

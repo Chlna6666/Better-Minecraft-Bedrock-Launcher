@@ -10,6 +10,9 @@ use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId};
 use super::DrawOrder;
 
 pub use super::extension_device::ExtensionDevice;
+#[path = "extension_pass.rs"]
+mod extension_pass;
+pub use extension_pass::RendererExtensionPass;
 pub use gfx_core::{MemoryTrimLevel, RenderCommand, RenderPassId, ScissorRect};
 
 /// Frame-local information passed to a Nova renderer extension.
@@ -26,6 +29,69 @@ pub struct RendererExtensionContext {
 }
 
 impl RendererExtensionContext {
+    /// Describes a texture target for renderer extensions outside a window surface.
+    /// No swapchain, presentation or submission ownership is transferred.
+    #[must_use]
+    pub fn for_target(
+        backend_kind: gfx_core::BackendKind,
+        render_pass: RenderPassId,
+        color_format: gfx_core::Format,
+        viewport: gfx_core::Extent2d,
+    ) -> Self {
+        let bounds = Bounds {
+            origin: crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            size: crate::size(
+                ScaledPixels(viewport.width() as f32),
+                ScaledPixels(viewport.height() as f32),
+            ),
+        };
+        Self {
+            backend_kind,
+            render_pass,
+            color_format,
+            viewport,
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            scissor: ScissorRect {
+                x: 0,
+                y: 0,
+                width: viewport.width(),
+                height: viewport.height(),
+            },
+            frame_time: Instant::now(),
+        }
+    }
+    /// Creates local target metadata while preserving the host frame time and backend.
+    /// The caller owns only offscreen attachments, never a window surface.
+    #[must_use]
+    pub fn offscreen(
+        &self,
+        render_pass: RenderPassId,
+        color_format: gfx_core::Format,
+        viewport: gfx_core::Extent2d,
+    ) -> Self {
+        let bounds = Bounds {
+            origin: crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            size: crate::size(
+                ScaledPixels(viewport.width() as f32),
+                ScaledPixels(viewport.height() as f32),
+            ),
+        };
+        Self {
+            render_pass,
+            color_format,
+            viewport,
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            scissor: ScissorRect {
+                x: 0,
+                y: 0,
+                width: viewport.width(),
+                height: viewport.height(),
+            },
+            ..self.clone()
+        }
+    }
     pub(crate) fn new(
         backend_kind: gfx_core::BackendKind,
         render_pass: RenderPassId,
@@ -105,6 +171,10 @@ impl RendererExtensionContext {
 /// each frame and appends draw steps at this element's painter-order position. Implementations run
 /// synchronously on the renderer owner and must not perform application callbacks or blocking I/O.
 pub trait RendererExtension: Any + Send + Sync {
+    /// Requests compositor-owned frames for time-dependent shading without rebuilding UI layout.
+    fn is_time_dependent(&self) -> bool {
+        false
+    }
     /// Identifies the per-window renderer shared by this input's scene nodes.
     ///
     /// The default uses the concrete input type. Inputs overriding this to share a renderer must
@@ -142,6 +212,12 @@ impl dyn RendererExtension {
 /// Creation, encoding, trimming and destruction all run on the GPU owner. This state does not
 /// need to be `Send`; only the immutable [`RendererExtension`] inputs cross the UI boundary.
 pub trait RendererExtensionRenderer {
+    /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
+    /// This is submission ordering, not a resource-reclamation completion signal.
+    fn render_passes_submitted(&mut self) {}
+    /// Moves ordered offscreen passes to the host. They execute before this frame's UI draws.
+    /// Implementations must clear their pending list here, including on subsequent empty frames.
+    fn drain_render_passes(&mut self, _passes: &mut Vec<RendererExtensionPass>) {}
     /// Whether this renderer has retired suballocations awaiting a GPU completion proof.
     fn needs_gpu_completion(&self) -> bool {
         false
