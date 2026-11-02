@@ -31,6 +31,8 @@ mod platform {
     mod bindings;
     mod buffer_upload;
     mod compute;
+    mod descriptors;
+    use descriptors::DescriptorKey;
     mod relocation;
     mod surface;
     use std::{
@@ -1097,7 +1099,11 @@ mod platform {
                 // SAFETY: Texture was created by this device with depth usage and DSV handle is valid.
                 unsafe {
                     self.device
-                        .CreateDepthStencilView(&resource, None, slot.cpu_handle);
+                        .CreateDepthStencilView(&resource, Some(&windows::Win32::Graphics::Direct3D12::D3D12_DEPTH_STENCIL_VIEW_DESC {
+                            Format: format_to_dxgi(desc.format),
+                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_DSV_DIMENSION_TEXTURE2D,
+                            ..Default::default()
+                        }), slot.cpu_handle);
                 }
                 Some(slot)
             } else {
@@ -1175,68 +1181,91 @@ mod platform {
             let mut resource_tables = Vec::new();
             let mut sampler_tables = Vec::new();
 
-            for binding in &desc.entries {
-                match binding.resource {
-                    BindingResource::Buffer(buffer_binding) => {
-                        let buffer = self.buffers.get(buffer_binding.buffer)?;
-                        buffer_binding.validate_against(buffer.desc.size)?;
-                        let entry = layout
-                            .entries
-                            .iter()
-                            .find(|entry| entry.binding == binding.binding)
-                            .ok_or_else(|| {
-                                Error::InvalidInput(format!(
-                                    "bind group layout is missing binding {}",
-                                    binding.binding
-                                ))
+            let mut owned_buffers = Vec::new();
+            let mut sampler_index_table = None;
+            let result = (|| {
+                for binding in &desc.entries {
+                    match binding.resource {
+                        BindingResource::Buffer(buffer_binding) => {
+                            let buffer = self.buffers.get(buffer_binding.buffer)?;
+                            buffer_binding.validate_against(buffer.desc.size)?;
+                            let entry = layout
+                                .entries
+                                .iter()
+                                .find(|entry| entry.binding == binding.binding)
+                                .ok_or_else(|| {
+                                    Error::InvalidInput(format!(
+                                        "bind group layout is missing binding {}",
+                                        binding.binding
+                                    ))
+                                })?;
+                            let resource = buffer.resource.as_ref().ok_or_else(|| {
+                                Error::Backend("DX12 buffer has no native resource".to_string())
                             })?;
-                        let resource = buffer.resource.as_ref().ok_or_else(|| {
-                            Error::Backend("DX12 buffer has no native resource".to_string())
-                        })?;
-                        match entry.binding_type {
-                            BindingType::UniformBuffer => {
-                                validate_uniform_buffer_binding(buffer_binding, buffer.desc.size)?;
+                            match entry.binding_type {
+                                BindingType::UniformBuffer => {
+                                    validate_uniform_buffer_binding(
+                                        buffer_binding,
+                                        buffer.desc.size,
+                                    )?;
+                                }
+                                BindingType::StorageBuffer => {
+                                    validate_storage_buffer_binding(buffer_binding)?;
+                                }
+                                BindingType::SampledTexture | BindingType::Sampler => {
+                                    return Err(Error::InvalidInput(format!(
+                                        "unexpected buffer binding type {:?}",
+                                        entry.binding_type
+                                    )));
+                                }
                             }
-                            BindingType::StorageBuffer => {
-                                validate_storage_buffer_binding(buffer_binding)?;
+                            let uniform = entry.binding_type == BindingType::UniformBuffer;
+                            let descriptor_size = if uniform {
+                                u64::from(align_to_u32(buffer_binding.size, 256)?)
+                            } else {
+                                buffer_binding.size
+                            };
+                            if !uniform {
+                                u32::try_from(descriptor_size / 4)
+                                    .map_err(|error| Error::InvalidInput(error.to_string()))?;
                             }
-                            BindingType::SampledTexture | BindingType::Sampler => {
-                                return Err(Error::InvalidInput(format!(
-                                    "unexpected buffer binding type {:?}",
-                                    entry.binding_type
-                                )));
-                            }
-                        }
-                        let slot = self.resource_heap.allocate()?;
-                        match entry.binding_type {
-                            BindingType::UniformBuffer => {
-                                let size = align_to_u32(buffer_binding.size, 256)?;
-                                let desc =
+                            let (slot, fresh) =
+                                self.resource_heap.allocate_shared(DescriptorKey::Buffer(
+                                    buffer_binding.buffer,
+                                    buffer_binding.offset,
+                                    descriptor_size,
+                                    uniform,
+                                ))?;
+                            if fresh {
+                                match entry.binding_type {
+                                    BindingType::UniformBuffer => {
+                                        let size = align_to_u32(buffer_binding.size, 256)?;
+                                        let desc =
                                 windows::Win32::Graphics::Direct3D12::D3D12_CONSTANT_BUFFER_VIEW_DESC {
                                     BufferLocation: unsafe { resource.GetGPUVirtualAddress() }
                                         + buffer_binding.offset,
                                     SizeInBytes: size,
                                 };
-                                // SAFETY: Resource heap CPU slot is valid and CBV desc references a live upload buffer.
-                                unsafe {
-                                    self.device.CreateConstantBufferView(
-                                        Some(&raw const desc),
-                                        slot.cpu_handle,
-                                    );
-                                }
-                            }
-                            BindingType::StorageBuffer => {
-                                let byte_offset = buffer_binding.offset;
-                                let byte_size = buffer_binding.size;
-                                let num_elements =
+                                        // SAFETY: Resource heap CPU slot is valid and CBV desc references a live upload buffer.
+                                        unsafe {
+                                            self.device.CreateConstantBufferView(
+                                                Some(&raw const desc),
+                                                slot.cpu_handle,
+                                            );
+                                        }
+                                    }
+                                    BindingType::StorageBuffer => {
+                                        let byte_offset = buffer_binding.offset;
+                                        let byte_size = buffer_binding.size;
+                                        let num_elements =
                                     u32::try_from(byte_size / 4).map_err(|error| {
                                         Error::InvalidInput(format!(
                                             "raw storage buffer element count overflow: {error}"
                                         ))
                                     })?;
-                                // Naga lowers WGSL storage buffers to HLSL ByteAddressBuffer, so
-                                // the SRV must be raw even when gfx-core carries a logical stride.
-                                let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                                        // Naga lowers WGSL storage buffers to HLSL ByteAddressBuffer, so
+                                        // the SRV must be raw even when gfx-core carries a logical stride.
+                                        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
                                 Format: DXGI_FORMAT_R32_TYPELESS,
                                 ViewDimension:
                                     windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_BUFFER,
@@ -1250,37 +1279,41 @@ mod platform {
                                     },
                                 },
                             };
-                                // SAFETY: SRV descriptor references a live buffer resource and heap slot.
-                                unsafe {
-                                    self.device.CreateShaderResourceView(
-                                        Some(resource),
-                                        Some(&raw const desc),
-                                        slot.cpu_handle,
-                                    );
+                                        // SAFETY: SRV descriptor references a live buffer resource and heap slot.
+                                        unsafe {
+                                            self.device.CreateShaderResourceView(
+                                                Some(resource),
+                                                Some(&raw const desc),
+                                                slot.cpu_handle,
+                                            );
+                                        }
+                                    }
+                                    BindingType::SampledTexture | BindingType::Sampler => {
+                                        unreachable!(
+                                            "unexpected buffer binding type was validated earlier"
+                                        );
+                                    }
                                 }
                             }
-                            BindingType::SampledTexture | BindingType::Sampler => {
-                                unreachable!(
-                                    "unexpected buffer binding type was validated earlier"
-                                );
-                            }
+                            resource_tables.push(Dx12DescriptorTable {
+                                binding: binding.binding,
+                                gpu_handle: slot.gpu_handle,
+                                descriptor_index: slot.index,
+                                resource: Some(binding.resource),
+                            });
                         }
-                        resource_tables.push(Dx12DescriptorTable {
-                            binding: binding.binding,
-                            gpu_handle: slot.gpu_handle,
-                            descriptor_index: slot.index,
-                            resource: Some(binding.resource),
-                        });
-                    }
-                    BindingResource::Texture(texture_binding) => {
-                        let view = self.texture_views.get(texture_binding.texture_view)?;
-                        let texture = self.textures.get(view.texture)?;
-                        let resource = texture.resource.as_ref().ok_or_else(|| {
-                            Error::Backend("DX12 texture has no native resource".to_string())
-                        })?;
-                        let slot = self.resource_heap.allocate()?;
-                        let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                            Format: format_to_dxgi(view.format),
+                        BindingResource::Texture(texture_binding) => {
+                            let view = self.texture_views.get(texture_binding.texture_view)?;
+                            let texture = self.textures.get(view.texture)?;
+                            let resource = texture.resource.as_ref().ok_or_else(|| {
+                                Error::Backend("DX12 texture has no native resource".to_string())
+                            })?;
+                            let (slot, fresh) = self.resource_heap.allocate_shared(
+                                DescriptorKey::Texture(texture_binding.texture_view),
+                            )?;
+                            if fresh {
+                                let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                            Format: if view.format == Format::Depth32Float { windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT } else { format_to_dxgi(view.format) },
                             ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D,
                             Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                             Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
@@ -1292,87 +1325,63 @@ mod platform {
                                 },
                             },
                         };
-                        // SAFETY: SRV descriptor references a live texture resource and heap slot.
-                        unsafe {
-                            self.device.CreateShaderResourceView(
-                                Some(resource),
-                                Some(&raw const srv_desc),
-                                slot.cpu_handle,
-                            );
+                                // SAFETY: SRV descriptor references a live texture resource and heap slot.
+                                unsafe {
+                                    self.device.CreateShaderResourceView(
+                                        Some(resource),
+                                        Some(&raw const srv_desc),
+                                        slot.cpu_handle,
+                                    );
+                                }
+                            }
+                            resource_tables.push(Dx12DescriptorTable {
+                                binding: binding.binding,
+                                gpu_handle: slot.gpu_handle,
+                                descriptor_index: slot.index,
+                                resource: Some(binding.resource),
+                            });
                         }
-                        resource_tables.push(Dx12DescriptorTable {
-                            binding: binding.binding,
-                            gpu_handle: slot.gpu_handle,
-                            descriptor_index: slot.index,
-                            resource: Some(binding.resource),
-                        });
-                    }
-                    BindingResource::Sampler(sampler_binding) => {
-                        let sampler = self.samplers.get(sampler_binding.sampler)?;
-                        let slot = self.sampler_heap.allocate()?;
-                        let sampler_desc = sampler_desc_to_dx12(*sampler);
-                        // SAFETY: Sampler heap CPU slot is valid and descriptor is self-contained.
-                        unsafe {
-                            self.device
-                                .CreateSampler(&raw const sampler_desc, slot.cpu_handle);
+                        BindingResource::Sampler(sampler_binding) => {
+                            let sampler = self.samplers.get(sampler_binding.sampler)?;
+                            let (slot, fresh) = self
+                                .sampler_heap
+                                .allocate_shared(DescriptorKey::Sampler(sampler_binding.sampler))?;
+                            if fresh {
+                                let sampler_desc = sampler_desc_to_dx12(*sampler);
+                                // SAFETY: Sampler heap CPU slot is valid and descriptor is self-contained.
+                                unsafe {
+                                    self.device
+                                        .CreateSampler(&raw const sampler_desc, slot.cpu_handle);
+                                }
+                            }
+                            sampler_tables.push(Dx12DescriptorTable {
+                                binding: binding.binding,
+                                gpu_handle: self.sampler_heap.gpu_start(),
+                                descriptor_index: slot.index,
+                                resource: Some(binding.resource),
+                            });
                         }
-                        sampler_tables.push(Dx12DescriptorTable {
-                            binding: binding.binding,
-                            gpu_handle: self.sampler_heap.gpu_start(),
-                            descriptor_index: slot.index,
-                            resource: Some(binding.resource),
-                        });
                     }
                 }
-            }
-            let mut owned_buffers = Vec::new();
-            let sampler_index_table = if sampler_tables.is_empty() {
-                None
-            } else {
-                let index_buffer =
-                    create_sampler_index_buffer(&self.device, &sampler_tables, &layout)?;
-                let slot = self.resource_heap.allocate()?;
-                let srv_desc = windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
-                    Format: DXGI_FORMAT_UNKNOWN,
-                    ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_BUFFER,
-                    Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                        Buffer: windows::Win32::Graphics::Direct3D12::D3D12_BUFFER_SRV {
-                            FirstElement: 0,
-                            NumElements: layout_sampler_index_count(&layout)?,
-                            StructureByteStride: u32::try_from(std::mem::size_of::<u32>())
-                                .map_err(|error| {
-                                    Error::InvalidInput(format!(
-                                        "sampler index stride overflow: {error}"
-                                    ))
-                                })?,
-                            Flags: windows::Win32::Graphics::Direct3D12::D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                    },
-                };
-                // SAFETY: SRV descriptor references a live upload buffer and a valid descriptor slot.
-                unsafe {
-                    self.device.CreateShaderResourceView(
-                        Some(&index_buffer),
-                        Some(&raw const srv_desc),
-                        slot.cpu_handle,
-                    );
+                if !sampler_tables.is_empty() {
+                    let (table, buffer) = self.shared_sampler_table(&sampler_tables, &layout)?;
+                    sampler_index_table = Some(table);
+                    owned_buffers.push(buffer);
                 }
-                owned_buffers.push(index_buffer);
-                Some(Dx12DescriptorTable {
-                    binding: NAGA_HLSL_SAMPLER_INDEX_SPACE,
-                    gpu_handle: slot.gpu_handle,
-                    descriptor_index: slot.index,
-                    resource: None,
-                })
-            };
-            Ok(self.bind_groups.insert(Dx12ResourceSet {
+                Ok(())
+            })();
+            let resources = Dx12ResourceSet {
                 layout: desc.layout,
                 resource_tables,
                 sampler_tables,
                 sampler_index_table,
                 owned_buffers,
-            }))
+            };
+            if let Err(error) = result {
+                self.release_resource_set_descriptors(&resources);
+                return Err(error);
+            }
+            Ok(self.bind_groups.insert(resources))
         }
 
         /// Creates and validates a shader module.
@@ -5098,7 +5107,13 @@ mod platform {
             MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
                 Error::InvalidInput(format!("texture mip level count overflow: {error}"))
             })?,
-            Format: format_to_dxgi(desc.format),
+            Format: if desc.format == Format::Depth32Float
+                && desc.usage.contains(TextureUsage::SAMPLED)
+            {
+                DXGI_FORMAT_R32_TYPELESS
+            } else {
+                format_to_dxgi(desc.format)
+            },
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -5549,11 +5564,10 @@ mod platform {
             .ok_or_else(|| Error::InvalidInput("texture upload required size overflow".to_string()))
     }
 
-    fn create_sampler_index_buffer(
-        device: &ID3D12Device,
+    fn sampler_index_values(
         sampler_tables: &[Dx12DescriptorTable],
         layout: &BindGroupLayoutDescriptor,
-    ) -> Result<ID3D12Resource> {
+    ) -> Result<Vec<u32>> {
         let count = layout_sampler_index_count(layout)?;
         let mut indices = vec![
             0u32;
@@ -5573,6 +5587,13 @@ mod platform {
             })?;
             *slot = table.descriptor_index;
         }
+        Ok(indices)
+    }
+
+    fn create_sampler_index_buffer(
+        device: &ID3D12Device,
+        indices: &[u32],
+    ) -> Result<ID3D12Resource> {
         let mut bytes = Vec::with_capacity(indices.len() * std::mem::size_of::<u32>());
         for index in indices {
             bytes.extend_from_slice(&index.to_ne_bytes());
@@ -6083,6 +6104,7 @@ mod platform {
         capacity: u32,
         next: u32,
         free_indices: Vec<u32>,
+        shared: descriptors::DescriptorCache,
     }
 
     impl DescriptorHeapAllocator {
@@ -6113,6 +6135,7 @@ mod platform {
                 capacity,
                 next: 0,
                 free_indices: Vec::new(),
+                shared: descriptors::DescriptorCache::default(),
             })
         }
 
@@ -6164,6 +6187,9 @@ mod platform {
         }
 
         fn free_index(&mut self, index: u32) {
+            if !self.shared.release(index) {
+                return;
+            }
             if index < self.capacity && !self.free_indices.contains(&index) {
                 self.free_indices.push(index);
             }
