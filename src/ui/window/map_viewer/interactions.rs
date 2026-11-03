@@ -4063,119 +4063,41 @@ pub(super) fn canvas_pointer_move_action(
     }
 }
 
-fn world_version_stamp(world_path: &Path) -> Vec<u32> {
-    let Ok(document) =
-        ::bedrock_world::level::read_level_dat_document(&world_path.join("level.dat"))
-    else {
-        return Vec::new();
-    };
-    let bedrock_world::NbtTag::Compound(root) = &document.root else {
-        return Vec::new();
-    };
-    let Some(bedrock_world::NbtTag::List(values)) = root.get("lastOpenedWithVersion") else {
-        return Vec::new();
-    };
-    values
+fn latest_preview_resource_package(versions: &[LaunchVersionEntry]) -> Option<PathBuf> {
+    versions
         .iter()
-        .filter_map(|tag| match tag {
-            bedrock_world::NbtTag::Int(value) => u32::try_from(*value).ok(),
-            bedrock_world::NbtTag::Short(value) => u32::try_from(*value).ok(),
-            bedrock_world::NbtTag::Byte(value) => u32::try_from(*value).ok(),
-            _ => None,
+        .filter(|entry| {
+            crate::core::minecraft::paths::has_vanilla_resource_pack(Path::new(entry.path.as_ref()))
         })
-        .collect()
-}
-
-fn version_package_numbers(entry: &LaunchVersionEntry) -> Vec<u32> {
-    for text in [
-        entry.folder.as_ref(),
-        entry.version.as_ref(),
-        entry.name.as_ref(),
-    ] {
-        let numbers = text
-            .split(|character: char| !character.is_ascii_digit())
-            .filter(|part| !part.is_empty())
-            .filter_map(|part| part.parse::<u32>().ok())
-            .collect::<Vec<_>>();
-        if numbers.len() >= 2 {
-            return numbers;
-        }
-    }
-    Vec::new()
-}
-
-/// Scores how well an installed version's numbers appear in the world's saved version stamp.
-fn version_stamp_score(numbers: &[u32], stamp: &[u32]) -> usize {
-    let mut best = 0;
-    for start in 0..stamp.len() {
-        let mut cursor = start;
-        let mut matched = 0;
-        for number in numbers {
-            let Some(offset) = stamp[cursor..].iter().position(|value| value == number) else {
-                break;
-            };
-            cursor += offset + 1;
-            matched += 1;
-        }
-        best = best.max(matched);
-    }
-    best
-}
-
-fn select_world_package_version(versions: &[LaunchVersionEntry], stamp: &[u32]) -> Option<PathBuf> {
-    let mut best: Option<(usize, Vec<u32>, PathBuf)> = None;
-    let mut newest: Option<(Vec<u32>, PathBuf)> = None;
-    for entry in versions {
-        let numbers = version_package_numbers(entry);
-        let path = PathBuf::from(entry.path.as_ref());
-        if newest
-            .as_ref()
-            .is_none_or(|(best_numbers, _)| numbers > *best_numbers)
-        {
-            newest = Some((numbers.clone(), path.clone()));
-        }
-        let score = version_stamp_score(&numbers, stamp);
-        if score == 0 {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(best_score, best_numbers, _)| {
-            score > *best_score || (score == *best_score && numbers > *best_numbers)
-        }) {
-            best = Some((score, numbers, path));
-        }
-    }
-    best.map(|(_, _, path)| path)
-        .or_else(|| newest.map(|(_, path)| path))
+        .min_by(|left, right| {
+            crate::core::version::launch_versions::compare_versions_desc(
+                left.version.as_ref(),
+                right.version.as_ref(),
+            )
+            .then_with(|| left.path.cmp(&right.path))
+        })
+        .map(|entry| PathBuf::from(entry.path.as_ref()))
 }
 
 pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
     let mut package_paths = Vec::new();
-    let version_stamp = world_version_stamp(world_path);
-    // The world directory often lives outside any installed package (for
-    // example the Roaming "Minecraft Bedrock" users tree), so resource
-    // inference from the world path can bind to unrelated or older installs.
-    // level.dat records the version that last opened the world: pick the
-    // BMCBL-managed version matching that stamp, else the closest newer one,
-    // and keep using that version's data\resource_packs stack.
-    if let Some(path) = best_bmcbl_version_for_stamp(&version_stamp) {
+    // Rendering uses the newest available vanilla stack, independently of the
+    // version that last wrote this world. World decoding retains its own version semantics.
+    let selected = cx.read_global(|state: &LocalVersionsState, _cx| {
+        latest_preview_resource_package(state.versions.as_ref())
+    });
+    if let Some(path) = selected {
+        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
+    }
+    if let Some(path) = newest_bmcbl_resource_package() {
         bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
     }
     let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
-        let package_path = state.package_path.to_string();
-        (!package_path.trim().is_empty()).then(|| PathBuf::from(package_path))
+        let path = state.package_path.to_string();
+        (!path.trim().is_empty()).then(|| PathBuf::from(path))
     });
-    if let Some(package_path) = launcher_path {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
-    }
-
-    // Select the installed version that matches the version stamp saved in level.dat. Appending
-    // every installed version here let later (unrelated) versions override the matching one,
-    // which mixed textures and models from different game versions.
-    let selected = cx.read_global(|state: &LocalVersionsState, _cx| {
-        select_world_package_version(state.versions.as_ref(), &version_stamp)
-    });
-    if let Some(package_path) = selected {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
+    if let Some(path) = launcher_path {
+        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
     }
 
     for package_path in
@@ -4184,17 +4106,76 @@ pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> 
         bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
     }
 
-    package_paths
+    select_preview_resource_package(package_paths)
 }
 
-/// Finds the BMCBL-managed version directory that best matches the world's
-/// version stamp from level.dat: the closest definition match, else the
-/// newest installed version (a newer render stack stays data-compatible;
-/// an older one would not).
-fn best_bmcbl_version_for_stamp(stamp: &[u32]) -> Option<PathBuf> {
+fn select_preview_resource_package(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    // Each candidate is a complete game version. Only its own vanilla overlays
+    // belong in the render stack; fallback installs must not override its assets.
+    candidates
+        .into_iter()
+        .find(|path| crate::core::minecraft::paths::has_vanilla_resource_pack(path))
+        .into_iter()
+        .collect()
+}
+
+#[cfg(test)]
+mod resource_package_tests {
+    use super::{
+        LaunchVersionEntry, latest_preview_resource_package, select_preview_resource_package,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn preview_resources_select_game_version_instead_of_custom_folder_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let make = |folder: &str, version: &str| {
+            let path = temp.path().join(folder);
+            std::fs::create_dir_all(path.join("data/resource_packs/vanilla/textures")).unwrap();
+            LaunchVersionEntry {
+                folder: folder.into(),
+                name: folder.into(),
+                version: version.into(),
+                manifest_version: version.into(),
+                path: path.to_string_lossy().as_ref().into(),
+                kind: "Release".into(),
+                custom_icon_path: None,
+                mod_loaders: std::sync::Arc::from([]),
+                game_info: Default::default(),
+            }
+        };
+        let older = make("99.0", "1.26.40");
+        let newer = make("custom", "1.26.51");
+        assert_eq!(
+            latest_preview_resource_package(&[older, newer.clone()]),
+            Some(PathBuf::from(newer.path.as_ref()))
+        );
+    }
+
+    #[test]
+    fn preview_resources_use_one_complete_version_and_skip_missing_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let matched = temp.path().join("matched");
+        let fallback = temp.path().join("fallback");
+        for package in [&matched, &fallback] {
+            std::fs::create_dir_all(package.join("data/resource_packs/vanilla/textures")).unwrap();
+        }
+        assert_eq!(
+            select_preview_resource_package(vec![
+                temp.path().join("missing"),
+                matched.clone(),
+                fallback
+            ]),
+            vec![matched]
+        );
+        assert!(select_preview_resource_package(vec![temp.path().join("missing")]).is_empty());
+    }
+}
+
+/// Finds the newest complete BMCBL-managed resource installation.
+fn newest_bmcbl_resource_package() -> Option<PathBuf> {
     let versions_dir = crate::utils::file_ops::bmcbl_subdir("versions");
     let entries = std::fs::read_dir(&versions_dir).ok()?;
-    let mut best: Option<(usize, Vec<u32>, PathBuf)> = None;
     let mut newest: Option<(Vec<u32>, PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -4217,19 +4198,8 @@ fn best_bmcbl_version_for_stamp(stamp: &[u32]) -> Option<PathBuf> {
         {
             newest = Some((numbers.clone(), path.clone()));
         }
-        let score = version_stamp_score(&numbers, stamp);
-        let better = match &best {
-            None => score > 0,
-            Some((best_score, best_numbers, _)) => {
-                score > *best_score || (score == *best_score && numbers > *best_numbers)
-            }
-        };
-        if better {
-            best = Some((score, numbers, path));
-        }
     }
-    best.map(|(_, _, path)| path)
-        .or_else(|| newest.map(|(_, path)| path))
+    newest.map(|(_, path)| path)
 }
 
 pub(super) fn take_pointer_captures(
