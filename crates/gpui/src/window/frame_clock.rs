@@ -70,12 +70,63 @@ fn window_frame_clock_interval(
     }
 }
 
+const DEFAULT_INACTIVE_NATIVE_INTERVAL: Duration = Duration::from_micros(66_667);
+
+fn combined_frame_interval(active: Option<Duration>, inactive: Option<Duration>) -> Option<Duration> {
+    match (active, inactive) {
+        (Some(active), Some(inactive)) => Some(active.max(inactive)),
+        (Some(active), None) => Some(active),
+        (None, Some(inactive)) => Some(inactive),
+        (None, None) => None,
+    }
+}
+
 impl Window {
     pub(super) fn effective_frame_clock_interval(&self) -> Option<Duration> {
+        let active = self.frame_clock.interval();
+        if self.active.get() {
+            return window_frame_clock_interval(
+                active,
+                self.platform_window.native_frame_clock_interval(),
+            );
+        }
+
+        let native_inactive = self.platform_window.native_inactive_frame_clock_interval();
+        // A faster native scheduler is shared by all windows; a window without
+        // its own opt-in must still retain the original 15 Hz background policy.
+        let inactive = match self.inactive_frame_clock.get() {
+            Some(FrameClock::FixedFps(fps)) => FrameClock::FixedFps(fps).interval(),
+            _ => native_inactive.map(|_| DEFAULT_INACTIVE_NATIVE_INTERVAL),
+        };
         window_frame_clock_interval(
-            self.frame_clock.interval(),
-            self.platform_window.native_frame_clock_interval(),
+            combined_frame_interval(active, inactive),
+            native_inactive.or_else(|| self.platform_window.native_frame_clock_interval()),
         )
+    }
+
+    /// Returns this window's optional inactive frame pacing override.
+    pub fn inactive_frame_clock(&self) -> Option<FrameClock> {
+        self.inactive_frame_clock.get()
+    }
+
+    /// Changes the inactive cadence without affecting foreground frame pacing.
+    /// None removes this window's override. Newly opened child windows inherit
+    /// the current value unless they explicitly configure another one.
+    pub fn set_inactive_frame_clock(&mut self, clock: Option<FrameClock>) {
+        if self.inactive_frame_clock.get() == clock {
+            return;
+        }
+        self.inactive_frame_clock.set(clock);
+        self.platform_window
+            .set_inactive_frame_interval(clock.and_then(|value| value.interval()));
+        let pending_request = {
+            let mut state = self.frame_clock_state.borrow_mut();
+            state.cancel_timer();
+            state.pending_request.take()
+        };
+        if let Some(request) = pending_request {
+            self.request_platform_frame(request);
+        }
     }
 
     /// Returns this window's frame pacing configuration.
@@ -271,6 +322,19 @@ mod unpaced_tests {
 #[cfg(test)]
 mod native_clock_tests {
     use super::*;
+
+    #[test]
+    fn inactive_clock_never_exceeds_foreground_cap() {
+        assert_eq!(
+            combined_frame_interval(Some(Duration::from_millis(20)), Some(Duration::from_millis(16))),
+            Some(Duration::from_millis(20))
+        );
+        assert_eq!(combined_frame_interval(None, None), None);
+        assert_eq!(
+            combined_frame_interval(None, Some(DEFAULT_INACTIVE_NATIVE_INTERVAL)),
+            Some(DEFAULT_INACTIVE_NATIVE_INTERVAL)
+        );
+    }
 
     #[test]
     fn native_immediate_clock_owns_identical_fixed_fps_deadline() {
