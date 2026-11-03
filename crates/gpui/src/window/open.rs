@@ -115,9 +115,8 @@ impl Window {
             },
         )?;
         platform_window.set_frame_interval(frame_clock.interval());
-        platform_window.set_inactive_frame_interval(
-            inactive_frame_clock.and_then(|clock| clock.interval()),
-        );
+        platform_window
+            .set_inactive_frame_interval(inactive_frame_clock.and_then(|clock| clock.interval()));
 
         let tab_bar_visible = platform_window.tab_bar_visible();
         WindowTabRegistry::init_visible(cx, tab_bar_visible);
