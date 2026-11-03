@@ -72,7 +72,10 @@ fn window_frame_clock_interval(
 
 const DEFAULT_INACTIVE_NATIVE_INTERVAL: Duration = Duration::from_micros(66_667);
 
-fn combined_frame_interval(active: Option<Duration>, inactive: Option<Duration>) -> Option<Duration> {
+fn combined_frame_interval(
+    active: Option<Duration>,
+    inactive: Option<Duration>,
+) -> Option<Duration> {
     match (active, inactive) {
         (Some(active), Some(inactive)) => Some(active.max(inactive)),
         (Some(active), None) => Some(active),
@@ -326,7 +329,10 @@ mod native_clock_tests {
     #[test]
     fn inactive_clock_never_exceeds_foreground_cap() {
         assert_eq!(
-            combined_frame_interval(Some(Duration::from_millis(20)), Some(Duration::from_millis(16))),
+            combined_frame_interval(
+                Some(Duration::from_millis(20)),
+                Some(Duration::from_millis(16))
+            ),
             Some(Duration::from_millis(20))
         );
         assert_eq!(combined_frame_interval(None, None), None);
