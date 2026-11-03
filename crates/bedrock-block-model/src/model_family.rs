@@ -384,6 +384,11 @@ pub fn detail_material_block_name_for_state(state: &BlockStateQuery) -> Option<C
     if name == "carpet" {
         return Some(Cow::Borrowed("minecraft:wool"));
     }
+    if matches!(name, "moss_carpet" | "pale_moss_carpet") {
+        // These are plant materials, not dye-colored wool carpets. Preserve their
+        // block definitions so resource packs can supply the appropriate textures.
+        return Some(Cow::Owned(format!("minecraft:{name}")));
+    }
     if name == "iron_bars" {
         return Some(Cow::Borrowed("minecraft:iron_bars"));
     }
@@ -787,6 +792,7 @@ fn canonical_wall_material_name(base: &str) -> Cow<'static, str> {
         "polished_blackstone_brick" => Cow::Borrowed("minecraft:polished_blackstone_bricks"),
         "prismarine_brick" => Cow::Borrowed("minecraft:prismarine_bricks"),
         "tuff_brick" => Cow::Borrowed("minecraft:tuff_bricks"),
+        _ if base.ends_with("_brick") => Cow::Owned(format!("minecraft:{base}s")),
         _ => Cow::Owned(format!("minecraft:{base}")),
     }
 }
@@ -839,6 +845,7 @@ fn canonical_stairs_material_name(name: &str, base: &str) -> Option<Cow<'static,
         "deepslate_brick" | "deepslate_bricks" => "minecraft:deepslate_bricks",
         "deepslate_tile" | "deepslate_tiles" => "minecraft:deepslate_tiles",
         "mud_brick" | "mud_bricks" => "minecraft:mud_bricks",
+        _ if base.ends_with("_brick") => return Some(Cow::Owned(format!("minecraft:{base}s"))),
         _ => return Some(Cow::Owned(format!("minecraft:{base}"))),
     };
     Some(Cow::Borrowed(material))
@@ -863,7 +870,7 @@ fn slab_material_block_name_for_state(state: &BlockStateQuery) -> Option<&'stati
         return Some(material);
     }
     let (state_key, value_map): (&str, &[(&str, &str)]) = match name.as_str() {
-        "stone_slab" => (
+        "stone_slab" | "stone_block_slab" => (
             "stone_slab_type",
             &[
                 ("smooth_stone", "minecraft:smooth_stone"),
@@ -876,7 +883,7 @@ fn slab_material_block_name_for_state(state: &BlockStateQuery) -> Option<&'stati
                 ("nether_brick", "minecraft:nether_bricks"),
             ],
         ),
-        "stone_slab2" => (
+        "stone_slab2" | "stone_block_slab2" => (
             "stone_slab_type_2",
             &[
                 ("red_sandstone", "minecraft:red_sandstone"),
@@ -889,7 +896,7 @@ fn slab_material_block_name_for_state(state: &BlockStateQuery) -> Option<&'stati
                 ("red_nether_brick", "minecraft:red_nether_bricks"),
             ],
         ),
-        "stone_slab3" => (
+        "stone_slab3" | "stone_block_slab3" => (
             "stone_slab_type_3",
             &[
                 ("end_stone_brick", "minecraft:end_bricks"),
@@ -902,7 +909,7 @@ fn slab_material_block_name_for_state(state: &BlockStateQuery) -> Option<&'stati
                 ("polished_granite", "minecraft:polished_granite"),
             ],
         ),
-        "stone_slab4" => (
+        "stone_slab4" | "stone_block_slab4" => (
             "stone_slab_type_4",
             &[
                 ("mossy_stone_brick", "minecraft:mossy_stone_bricks"),
@@ -1032,6 +1039,27 @@ mod tests {
     use crate::state::BlockStateQuery;
 
     #[test]
+    fn plant_carpets_and_brick_details_keep_valid_material_identities() {
+        for (block, expected) in [
+            ("moss_carpet", "moss_carpet"),
+            ("pale_moss_carpet", "pale_moss_carpet"),
+            ("resin_brick_wall", "resin_bricks"),
+            ("resin_brick_stairs", "resin_bricks"),
+            ("cinnabar_brick_wall", "cinnabar_bricks"),
+            ("cinnabar_brick_stairs", "cinnabar_bricks"),
+            ("sulfur_brick_wall", "sulfur_bricks"),
+            ("sulfur_brick_stairs", "sulfur_bricks"),
+            ("red_carpet", "red_wool"),
+        ] {
+            let state = BlockStateQuery::new(format!("minecraft:{block}"));
+            assert_eq!(
+                detail_material_block_name_for_state(&state).as_deref(),
+                Some(format!("minecraft:{expected}").as_str())
+            );
+        }
+    }
+
+    #[test]
     fn current_bedrock_26_block_variants_should_map_to_common_families() {
         for (block, family) in [
             ("minecraft:pale_oak_fence", ModelFamily::Fence),
@@ -1157,6 +1185,64 @@ mod tests {
             ),
         ] {
             assert_eq!(canonical_block_name_for_state(&state), expected);
+        }
+    }
+
+    #[test]
+    fn stone_block_slabs_resolve_variants_for_both_halves_and_double_slabs() {
+        for (suffix, key, value, material) in [
+            (
+                "",
+                "stone_slab_type",
+                "smooth_stone",
+                "minecraft:smooth_stone",
+            ),
+            (
+                "",
+                "stone_slab_type",
+                "nether_brick",
+                "minecraft:nether_bricks",
+            ),
+            (
+                "2",
+                "stone_slab_type_2",
+                "prismarine_brick",
+                "minecraft:prismarine_bricks",
+            ),
+            ("3", "stone_slab_type_3", "andesite", "minecraft:andesite"),
+            (
+                "3",
+                "stone_slab_type_3",
+                "end_stone_brick",
+                "minecraft:end_bricks",
+            ),
+            ("4", "stone_slab_type_4", "stone", "minecraft:stone"),
+        ] {
+            for stem in ["stone_slab", "stone_block_slab"] {
+                for prefix in ["", "double_"] {
+                    for top in [false, true] {
+                        let name = format!("minecraft:{prefix}{stem}{suffix}");
+                        let state = BlockStateQuery::new(&name)
+                            .with_state(key, value)
+                            .with_state("top_slot_bit", top);
+                        assert_eq!(
+                            detail_material_block_name_for_state(&state).as_deref(),
+                            Some(material),
+                            "{name} {key}={value} top={top}"
+                        );
+                        let shape = model_shape_for_block_state(&state).unwrap();
+                        let slab = &shape.cuboids[0];
+                        let (min_y, max_y) = if !prefix.is_empty() {
+                            (0.0, 1.0)
+                        } else if top {
+                            (0.5, 1.0)
+                        } else {
+                            (0.0, 0.5)
+                        };
+                        assert_eq!((slab.min[1], slab.max[1]), (min_y, max_y));
+                    }
+                }
+            }
         }
     }
 

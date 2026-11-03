@@ -3642,7 +3642,9 @@ fn preview_3d_detail_shape_for_block(
     }
     let mut shape = model_shape_for_block_state(&query)
         .map(preview_3d_detail_shape_from_model_shape)
-        .filter(|shape| !preview_3d_shape_is_full_cube(shape))?;
+        .filter(|shape| {
+            model_family_has_detail_shape(&query.name) || !preview_3d_shape_is_full_cube(shape)
+        })?;
     if preview_3d_uses_full_inventory_texture_uv(state) {
         preview_3d_apply_full_texture_uv(&mut shape);
     }
@@ -3670,12 +3672,20 @@ fn preview_3d_resolved_detail_shape_for_block(
         }
     }
     let query = preview_3d_block_state_query(state);
+    // Detail-class blocks still need full-cube geometry for oriented UVs and
+    // material slots. Dropping it leaves no opaque-cube fallback in collection.
+    let keep_full_cube = matches!(
+        block_class,
+        Preview3dBlockClass::DetailOpaque | Preview3dBlockClass::DetailGlass
+    );
     // Exact registry state wins for non-contextual detail geometry. Incomplete
     // neighbor-driven states stay on the established wall/fence/stair logic.
     if let Some(shape) = repository
         .captured_shape(&query)
         .map(preview_3d_detail_shape_from_model_shape)
-        .filter(|shape| !shape.is_empty() && !preview_3d_shape_is_full_cube(shape))
+        .filter(|shape| {
+            !shape.is_empty() && (keep_full_cube || !preview_3d_shape_is_full_cube(shape))
+        })
     {
         return Some(shape);
     }
@@ -3697,7 +3707,7 @@ fn preview_3d_resolved_detail_shape_for_block(
     let geometry = resolved.geometry.as_ref()?;
     preview_3d_shape_from_block_geometry(geometry)
         .filter(|shape| !shape.is_empty())
-        .filter(|shape| !preview_3d_shape_is_full_cube(shape))
+        .filter(|shape| keep_full_cube || !preview_3d_shape_is_full_cube(shape))
 }
 
 fn preview_3d_block_state_query(state: &BlockState) -> BlockStateQuery {
@@ -5185,6 +5195,55 @@ mod tests {
     use super::*;
     use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
     use bedrock_block_model::canonical_block_name_for_state;
+
+    #[test]
+    fn full_cube_detail_states_emit_faces_in_cpu_and_gpu_streams() {
+        for name in [
+            "minecraft:furnace",
+            "minecraft:observer",
+            "minecraft:crafter",
+            "minecraft:blue_glazed_terracotta",
+            "minecraft:exposed_double_cut_copper_slab",
+        ] {
+            let mut indices = vec![0u16; 4096];
+            indices[::bedrock_world::block::block_storage_index(1, 1, 1)] = 1;
+            let data = test_render_chunk_with_subchunks(BTreeMap::from([(
+                0,
+                ::bedrock_world::SubChunk {
+                    y: 0,
+                    format: ::bedrock_world::SubChunkFormat::Paletted {
+                        version: 9,
+                        storages: vec![::bedrock_world::BlockPalette::with_unpacked_indices(
+                            vec![test_block_state("minecraft:air"), test_block_state(name)],
+                            indices,
+                            None,
+                        )],
+                    },
+                },
+            )]));
+            let blocks = preview_3d_collect_chunk_blocks_with_block_models(&data, None).unwrap();
+            let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+                dimension: data.pos.dimension,
+                min_chunk_x: 0,
+                max_chunk_x: 0,
+                min_chunk_z: 0,
+                max_chunk_z: 0,
+            });
+            builder.insert_stream_chunk(data.pos, blocks);
+            let cpu = builder.build_stream_faces(&[data.pos]);
+            assert_eq!(
+                cpu.iter().map(|chunk| chunk.faces.len()).sum::<usize>(),
+                6,
+                "{name}"
+            );
+            let gpu = builder.gpu_cube_bands(data.pos, None).unwrap();
+            assert_eq!(
+                gpu.iter().map(|band| band.faces.len()).sum::<usize>(),
+                6,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn streaming_face_generation_skips_only_retained_unaffected_bands() {
