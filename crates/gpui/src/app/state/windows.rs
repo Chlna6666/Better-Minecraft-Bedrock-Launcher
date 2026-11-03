@@ -30,14 +30,31 @@ impl App {
     /// functionality.
     pub fn open_window<V: 'static + Render>(
         &mut self,
-        options: crate::WindowOptions,
+        mut options: crate::WindowOptions,
         build_root_view: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
     ) -> anyhow::Result<WindowHandle<V>> {
         self.update(|cx| {
+            if options.inactive_frame_clock.is_none() {
+                // Nested popup creation takes the owner Window out of the
+                // SlotMap. Read the shared clock handle rather than the slot.
+                let parent = cx
+                    .window_update_stack
+                    .last()
+                    .copied()
+                    .or_else(|| cx.active_window().map(|handle| handle.window_id()));
+                if let Some(parent) = parent {
+                    options.inactive_frame_clock = cx
+                        .inactive_frame_clock_by_window
+                        .get(&parent)
+                        .and_then(|clock| clock.get());
+                }
+            }
             let id = cx.windows.insert(None);
             let handle = WindowHandle::new(id);
             match Window::new(handle.into(), options, cx) {
                 Ok(mut window) => {
+                    cx.inactive_frame_clock_by_window
+                        .insert(id, window.inactive_frame_clock.clone());
                     cx.window_update_stack.push(id);
                     let root_view = build_root_view(&mut window, cx);
                     cx.window_update_stack.pop();
@@ -57,6 +74,7 @@ impl App {
                     Ok(handle)
                 }
                 Err(e) => {
+                    cx.inactive_frame_clock_by_window.remove(&id);
                     cx.windows.remove(id);
                     Err(e)
                 }
@@ -104,6 +122,7 @@ impl App {
 
             if window.removed {
                 cx.window_handles.remove(&id);
+                cx.inactive_frame_clock_by_window.remove(&id);
                 cx.windows.remove(id);
 
                 cx.window_closed_observers.clone().retain(|callback| {
