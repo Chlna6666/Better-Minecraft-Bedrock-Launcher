@@ -53,10 +53,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.ref }}
 
-      - name: Setup Rust 1.95
+      - name: Setup Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
 
       - name: Prepare Windows native toolchain
         shell: pwsh
@@ -117,10 +117,10 @@ jobs:
       - name: Install Linux build and packaging dependencies
         run: ./scripts/setup-linux-release.sh
 
-      - name: Setup Rust 1.95
+      - name: Setup Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
 
       - name: Restore Cargo cache
         uses: actions/cache@v5

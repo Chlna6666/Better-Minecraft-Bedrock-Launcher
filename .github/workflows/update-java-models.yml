@@ -74,10 +74,10 @@ jobs:
             --output target/java-model-cache/current \
             --cache-dir target/java-model-cache/downloads
 
-      - name: Set up Rust 1.95
+      - name: Set up Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2

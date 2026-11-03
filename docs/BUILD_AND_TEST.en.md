@@ -5,7 +5,7 @@ workspace. Commands are PowerShell-first; Linux differences are noted.
 
 ## 1. Toolchain
 
-- Stable Rust with edition 2024 (CI pins a toolchain in `.github/workflows/compile-check.yml`).
+- Rust 1.99.1 stable (edition 2024), pinned by the root `rust-toolchain.toml` for local builds and CI. Rustup automatically selects or installs this toolchain inside the repository.
 - Windows: MSVC toolchain and Windows 10/11 SDK; default target `x86_64-pc-windows-msvc`.
 - Linux: `build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config`, plus
   `libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev`,
@@ -150,7 +150,7 @@ should avoid `unwrap()`, and every `unsafe` block needs a `// SAFETY:` explanati
 
 `.github/workflows/compile-check.yml` runs on Windows and Linux:
 
-1. validate the GPUI workspace layout;
+1. install the pinned Rust 1.99.1 toolchain;
 2. `cargo check -p bedrock-leveldb -p bedrock-world --all-features`;
 3. `cargo build --lib`;
 4. `cargo build --bin BMCBL`.
