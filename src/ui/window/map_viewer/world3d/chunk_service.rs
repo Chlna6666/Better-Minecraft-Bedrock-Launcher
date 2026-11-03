@@ -25,14 +25,16 @@ use bedrock_world::surface::{
 use bedrock_world::world::{OpenOptions, World};
 use bedrock_world::{SlimeChunkBounds, SubChunkDecodeMode};
 use gpui_3d::{AlphaMode, Material, Mesh, MeshId, MeshPart, TextureAsset, Vec2, Vec3, Vertex};
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+pub(super) mod material_audit;
 mod mesh_assets;
 mod pbr;
 mod water;
@@ -53,78 +55,10 @@ const FAR_LOD_SCALE: i32 = 4;
 const TEXTURE_MAX_DIMENSION: u32 = 4096;
 const CHUNK_MESH_ID_SALT: u64 = 0x574f_524c_4433_444d;
 
-fn mipmapped_texture(mut image: RgbaImage) -> Option<TextureAsset> {
-    let (width, height) = image.dimensions();
-    let mut levels = Vec::new();
-    loop {
-        let next = (image.width() != 1 || image.height() != 1).then(|| downsample_texture(&image));
-        levels.push(Arc::<[u8]>::from(image.into_raw()));
-        let Some(next) = next else {
-            break;
-        };
-        image = next;
-    }
-    // The unlit scene view writes directly to a UNORM target, so keep the source's
-    // display-encoded RGB values intact instead of applying an sRGB decode on upload.
-    TextureAsset::linear_rgba8_mip_chain(width, height, levels).ok()
-}
-
-fn downsample_texture(source: &RgbaImage) -> RgbaImage {
-    static SRGB_TO_LINEAR: OnceLock<[f32; 256]> = OnceLock::new();
-    static LINEAR_TO_SRGB: OnceLock<Box<[u8; 65536]>> = OnceLock::new();
-    let decode = SRGB_TO_LINEAR.get_or_init(|| {
-        std::array::from_fn(|index| {
-            let value = index as f32 / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        })
-    });
-    let encode = LINEAR_TO_SRGB.get_or_init(|| {
-        Box::new(std::array::from_fn(|index| {
-            let value = index as f32 / 65535.0;
-            let encoded = if value <= 0.0031308 {
-                value * 12.92
-            } else {
-                1.055 * value.powf(1.0 / 2.4) - 0.055
-            };
-            (encoded * 255.0).round() as u8
-        }))
-    });
-    let width = (source.width() / 2).max(1);
-    let height = (source.height() / 2).max(1);
-    RgbaImage::from_fn(width, height, |x, y| {
-        let (x0, x1) = (x * source.width() / width, (x + 1) * source.width() / width);
-        let (y0, y1) = (
-            y * source.height() / height,
-            (y + 1) * source.height() / height,
-        );
-        let mut linear = [0.0_f32; 3];
-        let mut alpha_sum = 0.0_f32;
-        let count = (x1 - x0) * (y1 - y0);
-        for sample_y in y0..y1 {
-            for sample_x in x0..x1 {
-                let pixel = source.get_pixel(sample_x, sample_y).0;
-                let alpha = f32::from(pixel[3]) / 255.0;
-                alpha_sum += alpha;
-                for channel in 0..3 {
-                    linear[channel] += decode[usize::from(pixel[channel])] * alpha;
-                }
-            }
-        }
-        let mut result = [0_u8; 4];
-        if alpha_sum > 0.0 {
-            for channel in 0..3 {
-                let value = (linear[channel] / alpha_sum).clamp(0.0, 1.0);
-                result[channel] = encode[(value * 65535.0).round() as usize];
-            }
-        }
-        result[3] = (alpha_sum * 255.0 / count as f32).round() as u8;
-        Rgba(result)
-    })
-}
+mod texture_mips;
+#[cfg(test)]
+use texture_mips::downsample_texture;
+use texture_mips::{mipmapped_data_texture, mipmapped_texture};
 
 fn texture_storage_bytes(texture: &TextureAsset) -> usize {
     (0..texture.mip_level_count())
@@ -267,7 +201,8 @@ impl ChunkCursor {
         radius: i32,
         forward_xz: [f32; 2],
     ) -> Option<ChunkPos> {
-        (self.ring <= radius).then(|| self.next_in_ring(dimension, center_x, center_z, forward_xz))
+        (self.ring <= radius)
+            .then(|| self.next_in_ring(dimension, center_x, center_z, radius, forward_xz))
     }
 
     fn next_in_ring(
@@ -275,6 +210,7 @@ impl ChunkCursor {
         dimension: Dimension,
         center_x: i32,
         center_z: i32,
+        radius: i32,
         forward_xz: [f32; 2],
     ) -> ChunkPos {
         if self.ring_positions.is_empty() {
@@ -290,6 +226,9 @@ impl ChunkCursor {
                     self.ring_positions.push((-r, dz));
                     self.ring_positions.push((r, dz));
                 }
+                self.ring_positions.retain(|&(dx, dz)| {
+                    super::chunk_range::contains(i64::from(dx), i64::from(dz), radius)
+                });
                 self.ring_positions.sort_by(|&(ax, az), &(bx, bz)| {
                     let a = ax as f32 * forward_xz[0] + az as f32 * forward_xz[1];
                     let b = bx as f32 * forward_xz[0] + bz as f32 * forward_xz[1];
@@ -322,6 +261,9 @@ fn desired_chunk_positions(
     let mut positions = BTreeSet::new();
     for dz in -radius..=radius {
         for dx in -radius..=radius {
+            if !super::chunk_range::contains(i64::from(dx), i64::from(dz), radius) {
+                continue;
+            }
             positions.insert(ChunkPos {
                 x: center_x + dx,
                 z: center_z + dz,
@@ -339,10 +281,14 @@ fn inside_cache_hysteresis(
     center_z: i32,
     radius: i32,
 ) -> bool {
-    let dx = (i64::from(pos.x) - i64::from(center_x)).abs();
-    let dz = (i64::from(pos.z) - i64::from(center_z)).abs();
     let margin = (radius / 4).clamp(1, CACHE_HYSTERESIS_CHUNKS);
-    pos.dimension == dimension && dx.max(dz) <= i64::from(radius.saturating_add(margin))
+    inside_view(
+        pos,
+        dimension,
+        center_x,
+        center_z,
+        radius.saturating_add(margin),
+    )
 }
 
 fn mesh_target_priority(
@@ -376,13 +322,10 @@ fn section_priority(pos: ChunkPos, section_y: i32, view: ViewState) -> (bool, u6
 fn coarse_lod_for_view(pos: ChunkPos, view: ViewState, _was_coarse: bool) -> bool {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
-    let distance = (i64::from(pos.x) - i64::from(center_x))
-        .abs()
-        .max((i64::from(pos.z) - i64::from(center_z)).abs());
-    // The selected square radius is the full-detail region. A coarse mesh must
+    // The selected circular radius is the full-detail region. A coarse mesh must
     // switch back immediately when it enters that region, even if it was already
     // coarse; hysteresis there would leave visibly inaccurate blocks inside it.
-    distance > i64::from(view.radius.max(1))
+    !inside_view(pos, view.dimension, center_x, center_z, view.radius.max(1))
 }
 
 fn partition_section_faces(
@@ -709,7 +652,7 @@ mod view_tests {
     }
 
     #[test]
-    fn coarse_lod_starts_outside_the_selected_square_radius() {
+    fn coarse_lod_starts_outside_the_selected_circular_radius() {
         let mut view = super::ViewState {
             generation: 1,
             dimension: Dimension::Overworld,
@@ -723,7 +666,7 @@ mod view_tests {
             view.radius = radius;
             let edge = ChunkPos {
                 x: radius,
-                z: radius,
+                z: 0,
                 dimension: Dimension::Overworld,
             };
             let outside = ChunkPos {
@@ -733,6 +676,11 @@ mod view_tests {
             for was_coarse in [false, true] {
                 assert!(!coarse_lod_for_view(edge, view, was_coarse));
                 assert!(coarse_lod_for_view(outside, view, was_coarse));
+                assert!(coarse_lod_for_view(
+                    ChunkPos { z: radius, ..edge },
+                    view,
+                    was_coarse
+                ));
             }
             view.camera[0] = 24.0;
             assert!(!coarse_lod_for_view(outside, view, true));
@@ -1100,8 +1048,8 @@ mod view_tests {
         assert!(contains(0, 8));
         assert!(contains(0, -4));
         assert!(contains(0, -8));
-        assert!(contains(-8, -8));
-        assert_eq!(positions.len(), 17 * 17);
+        assert!(!contains(-8, -8));
+        assert_eq!(positions.len(), 197);
         assert!(!contains(9, 0));
         assert!(contains(0, 0));
     }
@@ -1135,18 +1083,21 @@ mod view_tests {
     }
 
     #[test]
-    fn chunk_cursor_covers_each_square_once_and_supports_256() {
+    fn chunk_cursor_covers_each_circle_once_and_supports_256() {
         for radius in [4, 8, 12, 16, 24, 32, 256] {
             let mut cursor = ChunkCursor::default();
             let mut positions = std::collections::BTreeSet::new();
             while let Some(pos) = cursor.next(Dimension::Overworld, 10, -10, radius, [0.0, -1.0]) {
                 assert!(positions.insert(pos), "duplicate chunk at radius {radius}");
-                assert!((pos.x - 10).abs() <= radius);
-                assert!((pos.z + 10).abs() <= radius);
+                assert!(inside_view(pos, Dimension::Overworld, 10, -10, radius));
             }
             assert_eq!(
                 positions.len(),
-                usize::try_from((2 * radius + 1).pow(2)).unwrap()
+                super::super::chunk_range::column_count(radius)
+            );
+            assert_eq!(
+                positions,
+                desired_chunk_positions(Dimension::Overworld, 10, -10, radius)
             );
         }
     }
@@ -1164,7 +1115,7 @@ mod view_tests {
                 .iter()
                 .all(|pos| pos.x.abs().max(pos.z.abs()) <= 1)
         );
-        assert_eq!(positions.len(), 289);
+        assert_eq!(positions.len(), 197);
     }
 
     #[test]
@@ -1173,11 +1124,11 @@ mod view_tests {
         let positions =
             std::iter::from_fn(|| cursor.next(Dimension::Overworld, 0, 0, 1, [0.0, -1.0]))
                 .collect::<Vec<_>>();
-        assert_eq!(positions.len(), 9);
+        assert_eq!(positions.len(), 5);
         assert_eq!(positions[0].x, 0);
         assert_eq!(positions[0].z, 0);
-        assert!(positions[1..4].iter().all(|pos| pos.z == -1));
-        assert!(positions[6..9].iter().all(|pos| pos.z == 1));
+        assert_eq!(positions[1].z, -1);
+        assert_eq!(positions[4].z, 1);
     }
 
     #[test]
@@ -1301,6 +1252,38 @@ mod view_tests {
         assert!(!Arc::ptr_eq(&faces[0].material, &faces[1].material));
         intern_face_materials(&mut faces);
         assert!(Arc::ptr_eq(&faces[0].material, &faces[1].material));
+    }
+
+    #[test]
+    fn source_batch_deduplicates_equal_names_with_distinct_arcs_and_keeps_face_directions() {
+        let face = p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
+            corners: [[0.0; 3]; 4],
+            color: [1.0; 4],
+            shade: 1.0,
+            normal: [0, 1, 0],
+            material: Arc::from("minecraft_stone"),
+            uv: None,
+            pass: p3d::Preview3dStreamPass::Opaque,
+        };
+        let mut other = face.clone();
+        other.material = Arc::from("minecraft_stone");
+        assert!(!Arc::ptr_eq(&face.material, &other.material));
+        let mut side = other.clone();
+        side.normal = [1, 0, 0];
+        let mut cached = face.clone();
+        cached.material = Arc::from("minecraft_cached");
+        let cache =
+            std::collections::HashMap::from([((cached.material.to_string(), cached.normal), None)]);
+        let actual =
+            super::unresolved_material_sources(&[face.clone(), face, other, side, cached], &cache);
+        assert_eq!(
+            actual,
+            vec![
+                ("minecraft_stone".to_owned(), [0, 1, 0]),
+                ("minecraft_stone".to_owned(), [1, 0, 0])
+            ]
+        );
     }
 
     #[test]
@@ -1740,6 +1723,31 @@ fn trace_verbose() -> bool {
     std::env::var_os("BMCBL_WORLD3D_TRACE_VERBOSE").is_some()
 }
 
+fn unresolved_material_sources(
+    faces: &[p3d::Preview3dStreamFace],
+    cache: &HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
+) -> Vec<(String, [i32; 3])> {
+    let mut seen = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut unresolved = Vec::new();
+    for face in faces {
+        // Interned faces share an Arc: keep their cheap per-face pointer check.
+        if !seen.insert((face.material.as_ptr() as usize, face.normal)) {
+            continue;
+        }
+        let material = face.material.as_ref();
+        if material.starts_with(MAP_MATERIAL_PREFIX) || !seen_names.insert((material, face.normal))
+        {
+            continue;
+        }
+        let key = (material.to_owned(), face.normal);
+        if !cache.contains_key(&key) {
+            unresolved.push(key);
+        }
+    }
+    unresolved
+}
+
 fn cached_texture_source(
     cache: &mut HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
     key: &(String, [i32; 3]),
@@ -1917,38 +1925,12 @@ impl Worker {
             );
         }
         let resolver = ObjTextureResolver::with_pack_roots(&roots, "textures");
-        // Version the material index by the ordered pack set: path strings and
-        // directory mtimes, so any pack update rotates the cache file.
-        let stamp = {
-            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-            for root in &roots {
-                for value in [
-                    root.to_string_lossy().into_owned(),
-                    root.metadata()
-                        .and_then(|metadata| metadata.modified())
-                        .map(|modified| {
-                            modified
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|since| since.as_secs())
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0)
-                        .to_string(),
-                ] {
-                    for byte in value.as_bytes() {
-                        hash ^= u64::from(*byte);
-                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    hash ^= 0xff;
-                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-                }
-            }
-            hash
-        };
-        resolver.open_material_index(
-            &crate::utils::file_ops::cache_subdir("world3d/material_index"),
-            stamp,
-        );
+        if let Some(revision) = resolver.material_index_revision() {
+            resolver.open_material_index(
+                &crate::utils::file_ops::cache_subdir("world3d/material_index"),
+                revision,
+            );
+        }
         let resolver = Arc::new(resolver);
         let mut models = resolver.models().clone();
         if let Some(root) = discover_capture_library(&config.package_roots) {
@@ -2101,14 +2083,14 @@ impl Worker {
             .keys()
             .filter(|pos| inside_view(**pos, self.view.dimension, center_x, center_z, radius))
             .count();
-        let width = usize::try_from(2 * radius + 1).unwrap_or(0);
+        let target_columns = super::chunk_range::column_count(radius);
         ChunkServiceStatus {
             generation: self.view.generation,
             dimension: self.view.dimension,
             radius: self.view.radius,
             loaded_chunks: self.cache.len(),
             coarse_chunks: self.lod_modes.values().filter(|coarse| **coarse).count(),
-            pending_chunks: width.saturating_mul(width).saturating_sub(loaded_in_view),
+            pending_chunks: target_columns.saturating_sub(loaded_in_view),
             meshed_chunks: self.meshed_chunks,
             face_count: self.cache.values().map(|chunk| chunk.faces).sum(),
             texture_count,
@@ -2135,6 +2117,8 @@ impl Worker {
     }
 
     fn publish_status(&mut self, tx: &SyncSender<ChunkServiceEvent>) {
+        // Coalesce disk writes outside per-face and parallel material lookups.
+        self.resolver.flush_material_index();
         self.mesh_assets.prune();
         self.textures_by_path
             .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));
@@ -3513,21 +3497,7 @@ impl Worker {
     }
 
     fn resolve_chunk_texture_sources(&mut self, faces: &[p3d::Preview3dStreamFace]) {
-        let mut seen = HashSet::new();
-        let mut unresolved = Vec::new();
-        for face in faces {
-            if !seen.insert((face.material.as_ptr() as usize, face.normal)) {
-                continue;
-            }
-            let material = face.material.as_ref();
-            if material.starts_with(MAP_MATERIAL_PREFIX) {
-                continue;
-            }
-            let key = (material.to_owned(), face.normal);
-            if !self.resolved_texture_lookup.contains_key(&key) {
-                unresolved.push(key);
-            }
-        }
+        let unresolved = unresolved_material_sources(faces, &self.resolved_texture_lookup);
         if unresolved.len() < 4 {
             return;
         }
@@ -3557,7 +3527,6 @@ impl Worker {
         self.resolver_time += elapsed;
         self.resolved_texture_lookup
             .extend(unresolved.into_iter().zip(resolved));
-        self.resolver.flush_material_index();
     }
 
     fn resolve_texture(
@@ -3589,8 +3558,10 @@ impl Worker {
                     if trace_verbose() {
                         if let Some(resolved) = resolved.as_ref() {
                             eprintln!(
-                                "world3d texture {material} {:?} -> {}",
-                                normal, resolved.relative_path
+                                "world3d texture {material} {:?} -> {} pack={}",
+                                normal,
+                                resolved.relative_path,
+                                resolved.pack_root.display()
                             );
                         }
                     }
@@ -3651,7 +3622,21 @@ impl Worker {
         &mut self,
         resolved: bedrock_block_model::ObjResolvedTexture,
     ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
-        let cache_key = resolved.source_path.path().to_string_lossy().into_owned();
+        self.resolve_texture_path_with(resolved, false)
+    }
+
+    fn resolve_texture_path_with(
+        &mut self,
+        resolved: bedrock_block_model::ObjResolvedTexture,
+        is_data: bool,
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
+        let path = resolved.source_path.path().to_string_lossy();
+        // A file used as both color and data must not share alpha-weighted mips.
+        let cache_key = if is_data {
+            format!("data:{path}")
+        } else {
+            path.into_owned()
+        };
         if let Some(cached) = self.textures_by_path.get(&cache_key) {
             match cached {
                 Some(texture) => {
@@ -3723,7 +3708,11 @@ impl Worker {
             return None;
         }
         let content = texture_alpha_content(&image);
-        let asset = mipmapped_texture(image)?;
+        let asset = if is_data {
+            mipmapped_data_texture(image)
+        } else {
+            mipmapped_texture(image)
+        }?;
         let asset = Arc::new(asset);
         self.textures_by_path
             .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
@@ -3794,8 +3783,11 @@ pub(super) fn inside_view(
     radius: i32,
 ) -> bool {
     pos.dimension == dimension
-        && (pos.x - center_x).abs() <= radius
-        && (pos.z - center_z).abs() <= radius
+        && super::chunk_range::contains(
+            i64::from(pos.x) - i64::from(center_x),
+            i64::from(pos.z) - i64::from(center_z),
+            radius,
+        )
 }
 
 fn surrounded_chunk_candidates(
@@ -4394,4 +4386,5 @@ fn run_worker(
             }
         }
     }
+    worker.resolver.flush_material_index();
 }

@@ -35,8 +35,9 @@ impl Worker {
         let Some(set) = self.pbr.sets.get(&key).cloned().flatten() else {
             return [None, None, None];
         };
-        [set.color, set.normal, set.material].map(|layer| match layer? {
-            PbrTextureLayer::Image(source) => self.resolve_texture_path(source),
+        let mut layers = [set.color, set.normal, set.material];
+        std::array::from_fn(|index| match layers[index].take()? {
+            PbrTextureLayer::Image(source) => self.resolve_texture_path_with(source, index != 0),
             PbrTextureLayer::Constant(pixel) => {
                 let image = RgbaImage::from_pixel(1, 1, image::Rgba(pixel));
                 let content = texture_alpha_content(&image);

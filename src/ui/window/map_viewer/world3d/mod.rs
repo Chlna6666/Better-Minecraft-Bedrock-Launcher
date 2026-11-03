@@ -6,6 +6,7 @@
 
 pub(super) mod camera;
 pub(super) mod camera_overlay;
+mod chunk_range;
 pub(super) mod chunk_service;
 pub(super) mod editor;
 mod frame_display;
