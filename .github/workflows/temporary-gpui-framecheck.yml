@@ -1,4 +1,5 @@
 name: Temporary GPUI window-clock source validation
+# Repeat after applying rustfmt only to changed GPUI files.
 on:
   push:
     paths:
