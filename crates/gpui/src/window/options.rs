@@ -205,8 +205,14 @@ pub struct WindowOptions {
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
 
-    /// Per-window frame pacing. Defaults to the native system cadence.
+    /// Per-window foreground frame pacing. Defaults to the native system cadence.
     pub frame_clock: FrameClock,
+
+    /// Optional inactive-window presentation ceiling.
+    /// None inherits the creator window's policy when opened from a window;
+    /// otherwise the existing GPUI native inactive cadence remains unchanged.
+    /// Some(FrameClock::System) explicitly opts out of inheritance.
+    pub inactive_frame_clock: Option<FrameClock>,
 }
 
 /// The variables that can be configured when creating a new window
@@ -343,6 +349,7 @@ impl Default for WindowOptions {
             window_decorations: None,
             tabbing_identifier: None,
             frame_clock: default_frame_clock(),
+            inactive_frame_clock: None,
         }
     }
 }
