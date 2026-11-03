@@ -95,6 +95,12 @@ fn capture<D: Device + TextureTransferDevice>(
     );
     let image = TextureTransferDevice::read_texture(&mut device, color.texture).unwrap();
     assert!(image.bytes.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    if let Ok(Some(memory)) = gpui::process_memory_snapshot() {
+        eprintln!(
+            "world3d prepared_memory private_bytes={} working_set_bytes={}",
+            memory.private_bytes, memory.working_set_bytes
+        );
+    }
     let output = env_path("BMCBL_WORLD3D_TEST_SNAPSHOT")
         .unwrap_or_else(|| PathBuf::from("target/world3d-effects.png"));
     image::RgbaImage::from_raw(size.width(), size.height(), image.bytes)

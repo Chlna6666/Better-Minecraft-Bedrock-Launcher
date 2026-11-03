@@ -121,6 +121,11 @@ preparation as `renderer_extension_prepare`, a subset of `renderer_scene_prepare
 them together or interpret either as GPU execution time. Analyze `offscreen_render` and native
 backend waits separately.
 
+The map's 3D preview selects the latest available complete game installation's vanilla resource stack; fallback
+installations do not contribute cross-version overlays. The application owns image decoding and mip
+generation: color images filter alpha coverage, while normal and MER/MERS maps filter linear data
+channels. MERS alpha represents subsurface scattering, not opacity, and must not erase roughness.
+
 ## 5. Backend selection
 
 - Windows default build: DX11 (target dependency) + DX12 + Vulkan + OpenGL; the application
@@ -160,6 +165,13 @@ backend waits separately.
 
 The map window streams visible tiles from the current viewport with cancellable generation,
 decoding and caching; world writes require explicit confirmation and history capture.
+
+The 3D editor selects columns in a discrete circle with a maximum radius of 256 chunks,
+rejecting outside candidates before IO and meshing. A small neighboring cache margin is
+retained; crossing the circle changes visibility on the corresponding stable scene nodes.
+The application material-path cache is keyed by parsed resource definitions, resource-path
+catalogs, pack order and index schema. Lookups never write to disk; the background worker
+coalesces persistence.
 
 ## 8. Related documentation
 
