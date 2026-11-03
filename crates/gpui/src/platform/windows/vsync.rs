@@ -4,6 +4,7 @@
 )]
 
 use std::{
+    collections::HashMap,
     mem,
     sync::{
         Arc, Mutex,
@@ -67,6 +68,9 @@ pub(super) struct VSyncScheduler {
     thread: Mutex<Option<Thread>>,
     modal_frame: Mutex<Option<ModalFrameTarget>>,
     modal_task_wake_pending: AtomicBool,
+    /// Only opt-in windows influence the native background cadence.
+    /// Unconfigured windows retain the original background interval.
+    background_frame_intervals: Mutex<HashMap<u64, Duration>>,
 }
 
 struct ModalFrameTarget {
@@ -91,12 +95,52 @@ impl VSyncScheduler {
             thread: Mutex::new(None),
             modal_frame: Mutex::new(None),
             modal_task_wake_pending: AtomicBool::new(false),
+            background_frame_intervals: Mutex::new(HashMap::new()),
         }
     }
 
     pub(super) fn set_unpaced(&self, enabled: bool) {
         self.unpaced.store(enabled, Ordering::Release);
         self.unpark();
+    }
+
+    /// Update the native cadence requested by one window. A removed window
+    /// cannot retain a process-wide 60 Hz override.
+    pub(super) fn set_window_background_interval(&self, id: u64, interval: Option<Duration>) {
+        let mut intervals = self
+            .background_frame_intervals
+            .lock()
+            .expect("native background frame intervals mutex poisoned");
+        match interval.filter(|value| !value.is_zero()) {
+            Some(interval) => {
+                intervals.insert(id, interval);
+            }
+            None => {
+                intervals.remove(&id);
+            }
+        }
+        drop(intervals);
+        self.unpark();
+    }
+
+    fn background_interval(&self) -> Duration {
+        self.background_frame_intervals
+            .lock()
+            .expect("native background frame intervals mutex poisoned")
+            .values()
+            .copied()
+            .fold(BACKGROUND_FRAME_INTERVAL, Duration::min)
+    }
+
+    /// Return an override only when Windows is actually pacing the entire
+    /// process in the background, and a configured window requested faster
+    /// than the native 15 Hz baseline.
+    pub(super) fn raised_background_interval(&self) -> Option<Duration> {
+        if process_owns_foreground_window() {
+            return None;
+        }
+        let interval = self.background_interval();
+        (interval < BACKGROUND_FRAME_INTERVAL).then_some(interval)
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -386,7 +430,7 @@ fn wait_for_background_tick(
 ) -> Duration {
     let started_at = Instant::now();
     if let Some(last_tick) = *last_tick {
-        let deadline = last_tick + BACKGROUND_FRAME_INTERVAL;
+        let deadline = last_tick + scheduler.background_interval();
         loop {
             if scheduler.shutdown.load(Ordering::Acquire) || process_owns_foreground_window() {
                 break;
@@ -582,6 +626,20 @@ mod tests {
     #[test]
     fn background_frame_pacing_is_lower_than_normal_vsync() {
         assert!(BACKGROUND_FRAME_INTERVAL > DEFAULT_VSYNC_INTERVAL);
+    }
+
+    #[test]
+    fn background_fps_is_opt_in_and_removal_restores_native_default() {
+        let scheduler = VSyncScheduler::new();
+        assert_eq!(scheduler.background_interval(), BACKGROUND_FRAME_INTERVAL);
+        scheduler.set_window_background_interval(1, Some(Duration::from_micros(16_667)));
+        assert_eq!(scheduler.background_interval(), Duration::from_micros(16_667));
+        scheduler.set_window_background_interval(2, Some(Duration::from_micros(33_334)));
+        assert_eq!(scheduler.background_interval(), Duration::from_micros(16_667));
+        scheduler.set_window_background_interval(1, None);
+        assert_eq!(scheduler.background_interval(), Duration::from_micros(33_334));
+        scheduler.set_window_background_interval(2, None);
+        assert_eq!(scheduler.background_interval(), BACKGROUND_FRAME_INTERVAL);
     }
 
     #[test]
