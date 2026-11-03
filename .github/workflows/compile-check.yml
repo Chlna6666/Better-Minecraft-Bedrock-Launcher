@@ -37,10 +37,10 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Rust 1.95
+      - name: Setup Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
 
       - name: Show Rust versions
         shell: pwsh
@@ -117,10 +117,10 @@ jobs:
             libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libxrandr-dev nasm yasm
 
-      - name: Setup Rust 1.95
+      - name: Setup Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
 
       - name: Show Rust versions
         run: |

@@ -38,7 +38,7 @@ jobs:
             libxrandr-dev nasm yasm
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Apply patch

@@ -5,7 +5,7 @@ Linux 差异单独标注。
 
 ## 1. 工具链
 
-- Rust stable（edition 2024；CI 使用固定版本，见 `.github/workflows/compile-check.yml`）。
+- Rust 1.99.1 stable（edition 2024），由仓库根目录 `rust-toolchain.toml` 固定；本地与 CI 使用相同版本，rustup 会自动选择或安装。
 - Windows：MSVC 工具链、Windows 10/11 SDK；`cargo` 默认目标 `x86_64-pc-windows-msvc`。
 - Linux：`build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config`，
   以及 `libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev`、
@@ -148,7 +148,7 @@ pwsh -File scripts/check-naming.ps1
 
 `.github/workflows/compile-check.yml` 在 Windows 与 Linux 上：
 
-1. 校验 GPUI workspace layout；
+1. 安装固定的 Rust 1.99.1 工具链；
 2. `cargo check -p bedrock-leveldb -p bedrock-world --all-features`；
 3. `cargo build --lib`；
 4. `cargo build --bin BMCBL`。

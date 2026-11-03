@@ -27,10 +27,10 @@ jobs:
       - name: Apply sidedness integration
         run: python scripts/apply_model_plane_sidedness.py
 
-      - name: Set up Rust 1.95
+      - name: Set up Rust 1.99.1
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.1
           components: rustfmt
 
       - name: Format changed Rust
