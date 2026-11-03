@@ -41,7 +41,8 @@ impl App {
                     .window_update_stack
                     .last()
                     .copied()
-                    .or_else(|| cx.active_window().map(|handle| handle.window_id()));
+                    .or_else(|| cx.active_window().map(|handle| handle.window_id()))
+                    .or(cx.primary_window_id);
                 if let Some(parent) = parent {
                     options.inactive_frame_clock = cx
                         .inactive_frame_clock_by_window
@@ -53,6 +54,9 @@ impl App {
             let handle = WindowHandle::new(id);
             match Window::new(handle.into(), options, cx) {
                 Ok(mut window) => {
+                    if cx.primary_window_id.is_none() {
+                        cx.primary_window_id = Some(id);
+                    }
                     cx.inactive_frame_clock_by_window
                         .insert(id, window.inactive_frame_clock.clone());
                     cx.window_update_stack.push(id);
@@ -124,6 +128,9 @@ impl App {
                 cx.window_handles.remove(&id);
                 cx.inactive_frame_clock_by_window.remove(&id);
                 cx.windows.remove(id);
+                if cx.primary_window_id == Some(id) {
+                    cx.primary_window_id = cx.window_handles.keys().next().copied();
+                }
 
                 cx.window_closed_observers.clone().retain(|callback| {
                     callback(id, cx);
