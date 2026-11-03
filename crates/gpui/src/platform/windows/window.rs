@@ -2582,10 +2582,9 @@ impl Drop for WindowsWindow {
         // A stale child-window override must never raise the cadence of
         // unrelated, later-created windows after the child closes.
         if Rc::strong_count(&self.0) == 1 {
-            self.0.vsync_scheduler.set_window_background_interval(
-                self.0.handle.window_id().as_u64(),
-                None,
-            );
+            self.0
+                .vsync_scheduler
+                .set_window_background_interval(self.0.handle.window_id().as_u64(), None);
         }
     }
 }
@@ -2989,10 +2988,9 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn set_inactive_frame_interval(&self, interval: Option<Duration>) {
-        self.0.vsync_scheduler.set_window_background_interval(
-            self.0.handle.window_id().as_u64(),
-            interval,
-        );
+        self.0
+            .vsync_scheduler
+            .set_window_background_interval(self.0.handle.window_id().as_u64(), interval);
     }
 
     fn native_inactive_frame_clock_interval(&self) -> Option<Duration> {
