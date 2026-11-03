@@ -1,11 +1,11 @@
 //! Grid traversal with one probe-map lookup per crossed chunk instead of per voxel.
 
-use super::{Arc, BTreeMap, ChunkPos, Dimension, World3dChunkProbe, World3dTargetBlock};
+use super::{ChunkPos, Dimension, World3dChunkProbe, World3dTargetBlock};
 
 const MAX_STEPS: usize = 1024;
 
-pub(super) fn cast(
-    probes: &BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+pub(super) fn cast<'a>(
+    probe_for: impl Fn(ChunkPos) -> Option<&'a World3dChunkProbe>,
     dimension: Dimension,
     origin: [f64; 3],
     direction: [f64; 3],
@@ -26,7 +26,7 @@ pub(super) fn cast(
         };
         if previous_chunk != Some(chunk) {
             previous_chunk = Some(chunk);
-            probe = probes.get(&chunk);
+            probe = probe_for(chunk);
         }
         if let Some(block) = probe.and_then(|probe| probe.block_at(x, y, z)) {
             return Some(World3dTargetBlock {
@@ -121,6 +121,7 @@ mod tests {
     use super::*;
     use crate::ui::window::map_viewer::world3d::types::{PROBE_FLAG_SOLID, ProbingSubChunk};
     use bedrock_world::{BlockPalette, BlockState, SubChunk, SubChunkFormat};
+    use std::{collections::BTreeMap, sync::Arc};
 
     fn probes_at(position: [i32; 3]) -> BTreeMap<ChunkPos, Arc<World3dChunkProbe>> {
         let [x, y, z] = position;
@@ -165,8 +166,9 @@ mod tests {
     #[test]
     fn different_hit_faces_on_one_voxel_are_distinct_targets() {
         let probes = probes_at([0, 1, 0]);
+        let lookup = |pos| probes.get(&pos).map(Arc::as_ref);
         let north = cast(
-            &probes,
+            lookup,
             Dimension::Overworld,
             [0.5, 1.5, -1.0],
             [0.0, 0.0, 1.0],
@@ -174,7 +176,7 @@ mod tests {
         )
         .unwrap();
         let west = cast(
-            &probes,
+            lookup,
             Dimension::Overworld,
             [-1.0, 1.5, 0.5],
             [1.0, 0.0, 0.0],
@@ -190,21 +192,53 @@ mod tests {
     #[test]
     fn negative_chunk_coordinates_and_distance_limit_are_preserved() {
         let probes = probes_at([-1, 1, -1]);
+        let lookup = |pos| probes.get(&pos).map(Arc::as_ref);
         let origin = [-0.5, 1.5, -3.0];
         let direction = [0.0, 0.0, 1.0];
-        assert!(cast(&probes, Dimension::Overworld, origin, direction, 1.0).is_none());
-        let hit = cast(&probes, Dimension::Overworld, origin, direction, 16.0).unwrap();
+        assert!(cast(lookup, Dimension::Overworld, origin, direction, 1.0).is_none());
+        let hit = cast(lookup, Dimension::Overworld, origin, direction, 16.0).unwrap();
         assert_eq!(hit.position, [-1, 1, -1]);
         assert_eq!((hit.chunk.x, hit.chunk.z), (-1, -1));
     }
 
     #[test]
-    fn invalid_rays_do_not_traverse_the_probe_map() {
-        let probes = BTreeMap::new();
-        assert!(cast(&probes, Dimension::Overworld, [0.0; 3], [0.0; 3], 16.0).is_none());
+    fn circular_lookup_ignores_cached_corner_and_keeps_cardinal_boundary() {
+        let mut probes = probes_at([16, 1, 16]);
+        probes.extend(probes_at([16, 1, 0]));
+        let lookup = |pos: ChunkPos| {
+            super::super::super::chunk_range::contains(i64::from(pos.x), i64::from(pos.z), 1)
+                .then(|| probes.get(&pos).map(Arc::as_ref))
+                .flatten()
+        };
         assert!(
             cast(
-                &probes,
+                lookup,
+                Dimension::Overworld,
+                [0.5, 1.5, 0.5],
+                [1., 0., 1.],
+                64.
+            )
+            .is_none()
+        );
+        let hit = cast(
+            lookup,
+            Dimension::Overworld,
+            [0.5, 1.5, 0.5],
+            [1., 0., 0.],
+            64.,
+        )
+        .unwrap();
+        assert_eq!(hit.position, [16, 1, 0]);
+    }
+
+    #[test]
+    fn invalid_rays_do_not_traverse_the_probe_map() {
+        let lookup =
+            |_| -> Option<&World3dChunkProbe> { panic!("invalid ray must not look up a probe") };
+        assert!(cast(lookup, Dimension::Overworld, [0.0; 3], [0.0; 3], 16.0).is_none());
+        assert!(
+            cast(
+                lookup,
                 Dimension::Overworld,
                 [f64::NAN; 3],
                 [0.0, 0.0, 1.0],

@@ -174,6 +174,7 @@ pub struct World3dEditorView {
     poll_task: Option<Task<anyhow::Result<()>>>,
     stream_generation: u64,
     last_view_key: Option<(Dimension, i32, i32, i32)>,
+    scene_range_key: Option<(Dimension, i32, i32, i32)>,
     last_view_sent_at: Option<Instant>,
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
@@ -285,6 +286,7 @@ impl World3dEditorView {
             poll_task: None,
             stream_generation: 0,
             last_view_key: None,
+            scene_range_key: None,
             last_view_sent_at: None,
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
@@ -649,6 +651,7 @@ impl World3dEditorView {
     }
 
     fn maybe_update_view(&mut self, cx: &mut Context<Self>) {
+        self.scene_dirty |= self.scene_range_key != Some(self.current_view_key());
         if self.stream_scene_pending
             && self
                 .last_scene_build_at
@@ -742,6 +745,9 @@ impl World3dEditorView {
                 return;
             }
         };
+        let range_key = self.current_view_key();
+        self.scene_nodes.update_range(&mut scene, range_key);
+        self.scene_range_key = Some(range_key);
         if let Err(error) =
             self.scene_nodes
                 .update_lights(&mut scene, &self.chunk_lights, self.render_origin)
@@ -1243,8 +1249,14 @@ impl World3dEditorView {
     }
 
     fn raycast_world(&self, origin: [f64; 3], direction: [f64; 3]) -> Option<World3dTargetBlock> {
+        let (dimension, x, z, radius) = self.current_view_key();
         raycast::cast(
-            &self.probes,
+            |pos| {
+                if !super::chunk_service::inside_view(pos, dimension, x, z, radius) {
+                    return None;
+                }
+                self.probes.get(&pos).map(Arc::as_ref)
+            },
             self.dimension,
             origin,
             direction,
@@ -2089,7 +2101,11 @@ impl World3dEditorView {
         panel = panel.child(info_row(
             colors,
             "目标范围",
-            SharedString::from(format!("{} 列 · {} 方块宽", width * width, width * 16)),
+            SharedString::from(format!(
+                "圆形 {} 列 · {} 方块宽",
+                super::chunk_range::column_count(displayed_radius),
+                width * 16
+            )),
         ));
         panel = panel.child(info_row(
             colors,

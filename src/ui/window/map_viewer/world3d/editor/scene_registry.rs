@@ -4,6 +4,7 @@ use gpui_3d::{NodeId, SceneError};
 
 #[derive(Default)]
 pub(super) struct ChunkScene {
+    range: Option<(Dimension, i32, i32, i32)>,
     lights: BTreeMap<(ChunkPos, [i32; 4]), (NodeId, super::super::types::World3dLocalLight)>,
     nodes: BTreeMap<(ChunkPos, i32), (NodeId, Arc<World3dChunkMesh>)>,
 }
@@ -85,6 +86,24 @@ mod tests {
             before.node(id).unwrap().mesh.as_ref().unwrap().id(),
             after.node(id).unwrap().mesh.as_ref().unwrap().id()
         );
+        let mut outside = after.fork();
+        registry.update_range(&mut outside, (Dimension::Overworld, 1, 1, 1));
+        assert!(!outside.node(id).unwrap().visible);
+        assert!(after.node(id).unwrap().visible);
+        let mut replacement_meshes = meshes.clone();
+        replacement_meshes.insert((pos, 0), chunk.clone());
+        let mut refreshed = registry
+            .update(Some(&outside), &replacement_meshes, [0; 3])
+            .unwrap();
+        registry.update_range(&mut refreshed, (Dimension::Overworld, 1, 1, 1));
+        assert!(!refreshed.node(id).unwrap().visible);
+        let mut boundary = outside.fork();
+        registry.update_range(&mut boundary, (Dimension::Overworld, 1, 0, 1));
+        assert!(boundary.node(id).unwrap().visible);
+        assert_eq!(registry.nodes[&(pos, 0)].0, id);
+        let version = boundary.version();
+        registry.update_range(&mut boundary, (Dimension::Overworld, 1, 0, 1));
+        assert_eq!(boundary.version(), version);
         meshes.clear();
         let removed = registry.update(Some(&after), &meshes, [0; 3]).unwrap();
         assert!(removed.node(id).is_none());
@@ -93,6 +112,20 @@ mod tests {
 }
 
 impl ChunkScene {
+    pub(super) fn update_range(&mut self, scene: &mut Scene, range: (Dimension, i32, i32, i32)) {
+        if self.range == Some(range) {
+            return;
+        }
+        self.range = Some(range);
+        let (dimension, x, z, radius) = range;
+        for (&(pos, _), &(id, _)) in &self.nodes {
+            let visible = super::super::chunk_service::inside_view(pos, dimension, x, z, radius);
+            if scene.node(id).is_some_and(|node| node.visible != visible) {
+                scene.set_visible(id, visible);
+            }
+        }
+    }
+
     pub(super) fn update(
         &mut self,
         base: Option<&Scene>,
@@ -123,7 +156,10 @@ impl ChunkScene {
             {
                 continue;
             }
-            let node = chunk_node(mesh, origin);
+            let visible = self.range.is_none_or(|(dimension, x, z, radius)| {
+                super::super::chunk_service::inside_view(mesh.pos, dimension, x, z, radius)
+            });
+            let node = chunk_node(mesh, origin).with_visible(visible);
             let id = if let Some((id, _)) = self.nodes.get(key) {
                 *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = node;
                 *id
