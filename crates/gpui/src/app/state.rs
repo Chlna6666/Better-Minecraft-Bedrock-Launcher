@@ -77,6 +77,9 @@ pub struct App {
     /// taken out of the SlotMap during nested child-window creation.
     pub(crate) inactive_frame_clock_by_window:
         FxHashMap<WindowId, Rc<Cell<Option<crate::FrameClock>>>>,
+    /// First open window is the fallback inheritance source for popups
+    /// opened asynchronously while no window has OS focus.
+    pub(crate) primary_window_id: Option<WindowId>,
     pub(crate) new_entity_observers: SubscriberSet<TypeId, NewEntityListener>,
     pub(crate) windows: SlotMap<WindowId, Option<Box<Window>>>,
     pub(crate) window_handles: FxHashMap<WindowId, AnyWindowHandle>,
@@ -180,6 +183,7 @@ impl App {
                 windows: SlotMap::with_key(),
                 window_update_stack: Vec::new(),
                 inactive_frame_clock_by_window: FxHashMap::default(),
+                primary_window_id: None,
                 window_handles: FxHashMap::default(),
                 focus_handles: Arc::new(RwLock::new(SlotMap::with_key())),
                 keymap: Rc::new(RefCell::new(Keymap::default())),
