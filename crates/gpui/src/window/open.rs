@@ -80,6 +80,7 @@ impl Window {
             window_min_size,
             window_decorations,
             frame_clock,
+            inactive_frame_clock,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
         } = options;
@@ -114,6 +115,9 @@ impl Window {
             },
         )?;
         platform_window.set_frame_interval(frame_clock.interval());
+        platform_window.set_inactive_frame_interval(
+            inactive_frame_clock.and_then(|clock| clock.interval()),
+        );
 
         let tab_bar_visible = platform_window.tab_bar_visible();
         WindowTabRegistry::init_visible(cx, tab_bar_visible);
@@ -568,6 +572,7 @@ impl Window {
             long_press_timer: None,
             animation_time: Cell::new(now),
             frame_clock,
+            inactive_frame_clock: Rc::new(Cell::new(inactive_frame_clock)),
             frame_clock_state: RefCell::new(FrameClockState::default()),
             refreshing: false,
             dirty_frame_scheduled: false,
