@@ -89,8 +89,9 @@ the open archive after the resolver is dropped, including until OBJ export compl
 The 3D editor resolves mesh definitions by exact BlockState from an optional
 **per-installation** BedrockSceneCapture export. It never bundles old
 `captured_detail_models.bin` or `native_models.json` (those catalogs were
-incomplete and contained misleading geometry). Java Edition geometry is not
-used as an automatic replacement for Bedrock native shapes.
+incomplete and contained misleading geometry). Java Edition geometry, packed model databases, and their updater have been removed
+from the build. Only native BedrockSceneCapture data, Bedrock resource packs, and
+procedural Bedrock model-family fallbacks supply geometry.
 
 - Import a selected installation's `manifest.json` and `blocks.json` once when
   opening the 3D editor, then load `meshes/<sha256>.json` lazily on demand.

@@ -8,10 +8,6 @@ mod error;
 mod geometry;
 mod geometry_shape;
 mod item_icons;
-mod java;
-mod java_bake;
-mod java_db;
-mod java_runtime;
 mod json;
 mod lighting;
 mod material;
@@ -32,17 +28,6 @@ pub use error::{BlockModelError, Result};
 pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, GeometryUv};
 pub use geometry_shape::shape_from_geometry;
 pub use item_icons::{ItemEntry, item_icon_count, item_icon_entry, item_icon_name};
-pub use java::{
-    JavaBakedModel, JavaModelRepository, java_block_id_for_bedrock_state,
-    java_properties_for_bedrock_state,
-};
-pub use java_bake::{JAVA_MODEL_DB_SCHEMA, JavaModelBakeStats, bake_java_model_database};
-pub use java_db::{
-    JavaModelApplication, JavaModelAxis, JavaModelDatabase, JavaModelId, JavaPackedElement,
-    JavaPackedElementIter, JavaPackedFace, JavaPackedFaceIter, JavaPackedModel, JavaPropertySource,
-    vanilla_java_model_database,
-};
-pub use java_runtime::java_model_shape_for_bedrock_state;
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
 };
@@ -98,12 +83,11 @@ pub use voxel_shape::{
     VoxelBox, VoxelFaceCoverage, VoxelShape, VoxelShapeLibrary, vanilla_voxel_shapes,
 };
 
-/// Names whose Bedrock geometry is hardcoded in the engine, so the Java block model is the
-/// authoritative replacement (the vanilla Bedrock resource pack ships no block model).
-pub fn is_java_block_entity_model_block(name: &str) -> bool {
-    // Only beds keep their Java geometry. Signs, hanging signs, bells and lecterns use the
-    // Bedrock-layout family shapes so the renderer samples the Bedrock 64x32 sign atlas and the
-    // Bedrock bell/lectern art directly; no Java textures need to be distributed.
+/// Bedrock engine-rendered block entities that need a procedural geometry fallback when
+/// an exact native capture or resource-pack model is unavailable.
+pub fn is_engine_block_entity_model_block(name: &str) -> bool {
+    // Beds use Bedrock model-family geometry; signs, hanging signs, bells, and lecterns
+    // use Bedrock-layout shapes and locally resolved art.
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     name == "bed" || name.ends_with("_bed")
 }
@@ -114,6 +98,64 @@ pub fn is_java_block_entity_model_block(name: &str) -> bool {
 #[must_use]
 pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
     let mut shape = model_family::model_shape_for_block_state(state)?;
-    java_runtime::apply_double_plant_material_slots(state, &mut shape);
+    apply_double_plant_material_slots(state, &mut shape);
     Some(shape)
+}
+
+/// Preserve Bedrock double-plant face texture selection by block-state half.
+fn apply_double_plant_material_slots(state: &BlockStateQuery, shape: &mut ModelShape) {
+    let canonical = canonical_block_name_for_state(state);
+    let normalized = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
+    if !matches!(
+        normalized,
+        "tall_grass"
+            | "tallgrass"
+            | "large_fern"
+            | "sunflower"
+            | "lilac"
+            | "rose_bush"
+            | "peony"
+            | "pitcher_plant"
+            | "double_plant"
+    ) {
+        return;
+    }
+    let upper = state
+        .state("upper_block_bit")
+        .is_some_and(|value| value.is_truthy());
+    let slot = if upper { "up" } else { "down" };
+    for plane in &mut shape.planes {
+        plane.material_slot = Some(slot.to_owned());
+    }
+}
+
+
+#[cfg(test)]
+mod native_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn double_plant_slots_follow_bedrock_half_state() {
+        for (upper, expected) in [(false, "down"), (true, "up")] {
+            let state = BlockStateQuery::new("minecraft:sunflower")
+                .with_state("upper_block_bit", upper);
+            let mut shape = ModelShape::default().with_planes([ModelPlane::new(
+                [[0.0, 0.0, 0.0]; 4],
+                [0, 1, 0],
+            )]);
+            apply_double_plant_material_slots(&state, &mut shape);
+            assert_eq!(shape.planes[0].material_slot.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn non_plant_blocks_keep_original_material_slots() {
+        let state = BlockStateQuery::new("minecraft:stone");
+        let mut shape = ModelShape::default().with_planes([ModelPlane::new(
+            [[0.0, 0.0, 0.0]; 4],
+            [0, 1, 0],
+        ).with_material_slot("original")]);
+        apply_double_plant_material_slots(&state, &mut shape);
+        assert_eq!(shape.planes[0].material_slot.as_deref(), Some("original"));
+    }
 }

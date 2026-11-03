@@ -762,10 +762,9 @@ impl ObjTextureResolver {
 
     /// Resolves hardcoded Bedrock block-entity art (signs, beds) that has no terrain key.
     ///
-    /// Bedrock renders signs and beds with engine geometry and keeps their art in
-    /// `textures/entity/sign_*.png` and `textures/blocks/bed_*.png`; the Java block model only
-    /// supplies geometry and generic face slots. The slot remap happens in
-    /// `java_runtime::apply_block_entity_material_slots`.
+    /// Bedrock renders signs and beds with engine-defined geometry and keeps their art in
+    /// `textures/entity/sign_*.png` and `textures/blocks/bed_*.png`. Material slots
+    /// are resolved from native captures, resource packs, or procedural Bedrock shapes.
     fn block_entity_texture_for(
         &self,
         block: &str,

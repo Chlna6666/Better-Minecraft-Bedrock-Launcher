@@ -7,7 +7,7 @@ use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, detail_material_block_name_for_state, is_java_block_entity_model_block,
+    block_face_for_normal, detail_material_block_name_for_state, is_engine_block_entity_model_block,
     model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
     shape_from_geometry,
 };
@@ -3689,7 +3689,7 @@ fn preview_3d_resolved_detail_shape_for_block(
     {
         return Some(shape);
     }
-    if is_java_block_entity_model_block(&state.name)
+    if is_engine_block_entity_model_block(&state.name)
         && let Some(shape) = model_shape_for_block_state(&query)
             .map(preview_3d_detail_shape_from_model_shape)
             .filter(|shape| !shape.is_empty())
