@@ -55,9 +55,13 @@ pub(super) fn create_shader(
     entry: &str,
 ) -> gpui::Result<ShaderModuleId> {
     let artifact = match backend {
+        #[cfg(target_os = "windows")]
         BackendKind::Dx11 => artifacts::scene_view_dx11_shader(entry),
+        #[cfg(target_os = "windows")]
         BackendKind::Dx12 => artifacts::scene_view_dx12_shader(entry),
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         BackendKind::Vulkan => artifacts::scene_view_vulkan_shader(entry),
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         BackendKind::OpenGl => artifacts::scene_view_opengl_shader(entry),
         _ => None,
     }
