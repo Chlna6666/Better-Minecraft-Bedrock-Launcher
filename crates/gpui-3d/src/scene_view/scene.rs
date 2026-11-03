@@ -1292,10 +1292,13 @@ impl SceneResources {
             {
                 continue;
             }
-            // Indexed ranges still use direct draws, so retain their CPU frustum test.
+            // Reject single-instance batches before recording native commands, including
+            // indirect draws whose GPU instance count would otherwise only become zero.
+            // A multi-instance batch can contain visible instances after its first draw.
+            // Shadow casters use a separate camera and must not use the main frustum.
             if shadow.is_none()
                 && self.culling.is_some()
-                && !mesh.procedural_quads
+                && batch.instance_count == 1
                 && (!bounds_visible(draw.bounds) || !self.prepared.is_draw_in_culling_bounds(draw))
             {
                 continue;

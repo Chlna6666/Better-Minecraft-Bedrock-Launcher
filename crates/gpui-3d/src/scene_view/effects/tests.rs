@@ -202,6 +202,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         &target,
         &depth,
     );
+    reflections::verify_material_mips(&mut device, &mut renderer, &context, &view, &target, &depth);
     materials::verify_hidden_lines(&mut device, &context, &view, &target, &depth);
     materials::verify_water_animation(&mut device, &mut renderer, &context, &view, &target, &depth);
     water_waves::verify_water_waves(&mut device, &mut renderer, &context, &target, &depth);

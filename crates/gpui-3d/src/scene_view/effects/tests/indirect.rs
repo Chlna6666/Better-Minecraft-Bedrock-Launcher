@@ -84,6 +84,23 @@ pub(super) fn verify_indirect_updates<D: Device + TextureTransferDevice>(
     );
     let visible = draw(device, renderer, context, &view, target, depth);
     assert!(visible.chunks_exact(4).any(|pixel| pixel[0] > 0));
+    let mut steps = Vec::new();
+    renderer
+        .render(&invisible, device, context.clone(), &mut steps)
+        .unwrap();
+    let mut passes = Vec::new();
+    renderer.drain_render_passes(&mut passes);
+    assert!(
+        passes
+            .iter()
+            .flat_map(|pass| pass.commands().commands)
+            .chain(steps.iter())
+            .all(|command| !matches!(command, RenderCommand::DrawIndirect(_))),
+        "offscreen single-instance batches must not record zero-instance indirect draws"
+    );
+    // The inspected plan was deliberately not submitted; the next render must retry it.
+    let visible = draw(device, renderer, context, &view, target, depth);
+    assert!(visible.chunks_exact(4).any(|pixel| pixel[0] > 0));
     let mut submissions = Vec::new();
     for index in 0..4 {
         let sample = if index == 3 {
@@ -108,4 +125,30 @@ pub(super) fn verify_indirect_updates<D: Device + TextureTransferDevice>(
         pixels.chunks_exact(4).all(|pixel| pixel[..3] == [0; 3]),
         "in-flight fallback must preserve the last queued camera and GPU visibility"
     );
+    for mesh in [mesh, Arc::new(cube)] {
+        let mut instances = Scene::new();
+        let mut material = Material::new();
+        material.shading_model = crate::ShadingModel::Unlit;
+        let material = Arc::new(material);
+        for x in [10000., 0.] {
+            instances
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh.clone())
+                        .with_materials([material.clone()])
+                        .with_transform(crate::Transform {
+                            translation: Vec3::new(x, 0., 0.),
+                            ..crate::Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let view = view.with_scene(Arc::new(instances));
+        let pixels = draw(device, renderer, context, &view, target, depth);
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel[0] > 0),
+            "an offscreen first instance must not hide a visible batched instance"
+        );
+    }
 }
