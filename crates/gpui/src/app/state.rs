@@ -1,6 +1,6 @@
 use std::{
     any::{Any, TypeId},
-    cell::RefCell,
+    cell::{Cell, RefCell},
     mem,
     path::PathBuf,
     rc::{Rc, Weak},
@@ -73,6 +73,10 @@ pub struct App {
     pub(crate) globals_by_type: FxHashMap<TypeId, Box<dyn Any>>,
     pub(crate) entities: EntityMap,
     pub(crate) window_update_stack: Vec<WindowId>,
+    /// Shared per-window policy remains observable while its Window is temporarily
+    /// taken out of the SlotMap during nested child-window creation.
+    pub(crate) inactive_frame_clock_by_window:
+        FxHashMap<WindowId, Rc<Cell<Option<crate::FrameClock>>>>,
     pub(crate) new_entity_observers: SubscriberSet<TypeId, NewEntityListener>,
     pub(crate) windows: SlotMap<WindowId, Option<Box<Window>>>,
     pub(crate) window_handles: FxHashMap<WindowId, AnyWindowHandle>,
@@ -175,6 +179,7 @@ impl App {
                 new_entity_observers: SubscriberSet::new(),
                 windows: SlotMap::with_key(),
                 window_update_stack: Vec::new(),
+                inactive_frame_clock_by_window: FxHashMap::default(),
                 window_handles: FxHashMap::default(),
                 focus_handles: Arc::new(RwLock::new(SlotMap::with_key())),
                 keymap: Rc::new(RefCell::new(Keymap::default())),
