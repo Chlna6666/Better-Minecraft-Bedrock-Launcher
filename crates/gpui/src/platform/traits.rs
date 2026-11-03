@@ -271,6 +271,14 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
     /// Updates the cadence limit on an active renderer-owned animation packet.
     fn set_frame_interval(&self, _interval: Option<Duration>) {}
+    /// Registers this window's opt-in inactive cadence with its native scheduler.
+    /// None restores GPUI's normal, unconfigured inactive behavior.
+    fn set_inactive_frame_interval(&self, _interval: Option<Duration>) {}
+    /// Returns a raised native inactive cadence, when one has been requested
+    /// and this process is in the background. Other platforms return None.
+    fn native_inactive_frame_clock_interval(&self) -> Option<Duration> {
+        None
+    }
     /// Native UI-frame cadence, if the platform itself enforces a fixed interval.
     /// A matching per-window FrameClock must not schedule a *second* timer before
     /// entering this same cadence. Platforms that do not own fixed-rate UI
