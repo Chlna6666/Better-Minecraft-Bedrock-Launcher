@@ -29,6 +29,21 @@ pub(super) struct ObjResourcePack {
 }
 
 impl ObjResourcePack {
+    pub(super) fn hash_material_index(&self, state: &mut impl std::hash::Hasher) -> Option<()> {
+        use std::hash::Hash as _;
+        self.root.hash(state);
+        self.blocks.hash(state);
+        self.texture_data
+            .iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .hash(state);
+        self.item_texture_data
+            .iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .hash(state);
+        self.resources.hash_paths(state)
+    }
+
     pub(super) fn pbr_resource(&self, path: &Path) -> Option<ResourceFile> {
         self.resources.get(path)
     }

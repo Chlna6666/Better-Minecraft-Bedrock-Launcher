@@ -23,7 +23,9 @@ mod flipbook_tests;
 mod lighting;
 mod pbr;
 pub use lighting::LocalLightDefinition;
+mod material_index;
 mod resource_pack;
+use material_index::MaterialIndexFile;
 pub use pbr::{ObjResolvedPbrTextureSet, PbrTextureLayer};
 use resource_pack::ObjResourcePack;
 
@@ -455,77 +457,6 @@ impl PartialEq for ObjTextureResolver {
     }
 }
 
-/// One resolved-or-known-missing material lookup, persisted per pack stamp.
-type MaterialIndexEntry = Option<[String; 3]>;
-
-/// Disk-backed `(material, normal) -> resolved texture` index.
-///
-/// The stamp binds the file to one ordered pack-root set (paths and mtimes);
-/// a different stamp reads and writes a different file, so game-version or
-/// pack-list changes can never serve stale entries.
-#[derive(Debug, Default)]
-struct MaterialIndexFile {
-    stamp: u64,
-    directory: PathBuf,
-    entries: HashMap<String, MaterialIndexEntry>,
-    dirty: bool,
-}
-
-const MATERIAL_INDEX_FLUSH_INTERVAL: usize = 128;
-
-impl MaterialIndexFile {
-    fn path(&self) -> PathBuf {
-        self.directory
-            .join(format!("material_index_{:016x}.json", self.stamp))
-    }
-
-    fn load(&mut self) {
-        let Ok(text) = std::fs::read_to_string(self.path()) else {
-            return;
-        };
-        #[derive(serde::Deserialize)]
-        struct File {
-            entries: HashMap<String, MaterialIndexEntry>,
-        }
-        if let Ok(file) = serde_json::from_str::<File>(&text) {
-            self.entries = file.entries;
-        }
-    }
-
-    fn save_if_dirty(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        #[derive(serde::Serialize)]
-        struct File<'a> {
-            stamp: u64,
-            entries: &'a HashMap<String, MaterialIndexEntry>,
-        }
-        let Ok(text) = serde_json::to_string(&File {
-            stamp: self.stamp,
-            entries: &self.entries,
-        }) else {
-            return;
-        };
-        if std::fs::create_dir_all(&self.directory).is_ok()
-            && std::fs::write(self.path(), text).is_ok()
-        {
-            self.dirty = false;
-        }
-    }
-}
-
-fn material_index_key(material: &str, normal: [i32; 3]) -> String {
-    format!(
-        "{material}|{}",
-        normal
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObjTextureSlot {
     Up,
@@ -612,38 +543,6 @@ impl ObjTextureResolver {
         }
     }
 
-    /// Attaches a versioned material-index cache under `directory`.
-    ///
-    /// `stamp` must identify the ordered pack-root set (paths and mtimes); the
-    /// cache file is per-stamp, so changed packs never serve stale entries.
-    /// Later [`Self::texture_for`] calls hit the index first, persist new
-    /// results in batches, and [`Self::flush_material_index`] forces a write.
-    pub fn open_material_index(&self, directory: &Path, stamp: u64) {
-        let mut file = MaterialIndexFile {
-            stamp,
-            directory: directory.to_path_buf(),
-            entries: HashMap::new(),
-            dirty: false,
-        };
-        file.load();
-        *self
-            .material_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(file);
-    }
-
-    /// Writes pending material-index entries to disk; a no-op without a cache.
-    pub fn flush_material_index(&self) {
-        if let Some(file) = self
-            .material_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_mut()
-        {
-            file.save_if_dirty();
-        }
-    }
-
     #[must_use]
     pub fn with_package_roots<I, P>(package_roots: I, texture_directory_name: &str) -> Self
     where
@@ -689,85 +588,6 @@ impl ObjTextureResolver {
     pub fn missing_texture(&self) -> Option<ObjResolvedTexture> {
         self.texture_path_for_key("textures/misc/missing_texture")
             .map(|(pack, path)| pack.resolved_texture(&self.texture_directory_name, path))
-    }
-
-    /// Resolves one material face, consulting the versioned material-index cache
-    /// when one is attached. Cache hits skip the pack walk entirely, including
-    /// known-missing lookups; misses resolve and persist.
-    #[must_use]
-    pub fn texture_for(&self, material: &str, normal: [i32; 3]) -> Option<ObjResolvedTexture> {
-        let attached = self
-            .material_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .map(|file| {
-                (
-                    file.entries
-                        .contains_key(&material_index_key(material, normal)),
-                    file.path(),
-                )
-            });
-        if let Some((hit, _)) = attached {
-            let resolved = if hit {
-                let resolved = {
-                    let mut state = self
-                        .material_index
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let file = state.as_mut().expect("attached above");
-                    let entry = file
-                        .entries
-                        .get(&material_index_key(material, normal))
-                        .cloned()
-                        .flatten();
-                    entry.and_then(|entry| self.material_index_entry_texture(&entry))
-                };
-                if resolved.is_some() {
-                    return resolved;
-                }
-                // The pack set no longer carries the cached file; fall through
-                // and overwrite the stale entry below.
-            };
-            let resolved = self.texture_for_uncached(material, normal);
-            let entry = resolved.as_ref().and_then(|texture| {
-                let index = self
-                    .packs
-                    .iter()
-                    .position(|pack| pack.root == texture.pack_root)?;
-                let source = texture
-                    .source_path
-                    .path()
-                    .strip_prefix(&texture.pack_root)
-                    .ok()?
-                    .to_string_lossy()
-                    .into_owned();
-                Some([index.to_string(), source, texture.relative_path.clone()])
-            });
-            {
-                let mut state = self
-                    .material_index
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if let Some(file) = state.as_mut() {
-                    file.entries
-                        .insert(material_index_key(material, normal), entry);
-                    file.dirty = true;
-                    if file.entries.len() % MATERIAL_INDEX_FLUSH_INTERVAL == 0 {
-                        file.save_if_dirty();
-                    }
-                }
-            }
-            return resolved;
-        }
-        self.texture_for_uncached(material, normal)
-    }
-
-    fn material_index_entry_texture(&self, entry: &[String; 3]) -> Option<ObjResolvedTexture> {
-        let index: usize = entry[0].parse().ok()?;
-        let pack = self.packs.get(index)?;
-        let file = pack.texture_file_for_path(Path::new(&entry[1]))?;
-        Some(pack.resolved_texture(&self.texture_directory_name, file))
     }
 
     fn texture_for_uncached(&self, material: &str, normal: [i32; 3]) -> Option<ObjResolvedTexture> {
@@ -1871,6 +1691,7 @@ pub fn obj_material_uses_texture_alpha(material_name: &str) -> bool {
 #[must_use]
 pub fn item_texture_alias_paths(item: &str) -> &'static [&'static str] {
     match item {
+        "firework_star" => &["textures/items/fireworks_charge"],
         "ink_sac" => &[
             "textures/items/dye_powder_black",
             "textures/items/dye_powder_black_new",
@@ -5068,6 +4889,38 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing texture for {material}"));
             assert_eq!(resolved.relative_path, "textures/blocks/piston_top.png");
         }
+    }
+
+    #[test]
+    fn firework_star_uses_charge_icon_unless_the_pack_maps_it_explicitly() {
+        let pack = TestPack::new();
+        pack.write_bytes("textures/items/fireworks_charge.tga", b"tga");
+        let resolver = ObjTextureResolver::with_pack_roots([pack.path()], "textures");
+        let texture = resolver
+            .item_texture_for("minecraft:firework_star")
+            .unwrap();
+        assert!(
+            texture
+                .source_path
+                .path()
+                .ends_with("textures/items/fireworks_charge.tga")
+        );
+        pack.write(
+            "textures/item_texture.json",
+            r#"{
+            "texture_data":{"firework_star":{"textures":"textures/items/custom_star"}}
+        }"#,
+        );
+        pack.write_bytes("textures/items/custom_star.png", b"png");
+        let resolver = ObjTextureResolver::with_pack_roots([pack.path()], "textures");
+        assert!(
+            resolver
+                .item_texture_for("minecraft:firework_star")
+                .unwrap()
+                .source_path
+                .path()
+                .ends_with("textures/items/custom_star.png")
+        );
     }
 
     #[test]

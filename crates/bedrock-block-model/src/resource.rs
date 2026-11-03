@@ -107,7 +107,7 @@ impl PackResources {
             loose: None,
         };
         // Texture lookups probe many candidates across version overlays. Index loose paths once.
-        if root.join("textures").is_dir() {
+        {
             let mut loose = BTreeMap::new();
             let mut complete = true;
             let entries = WalkDir::new(root)
@@ -158,6 +158,22 @@ impl PackResources {
             }
         }
         Ok(resources)
+    }
+
+    pub(crate) fn hash_paths(&self, state: &mut impl std::hash::Hasher) -> Option<()> {
+        use std::hash::Hash as _;
+        let loose = self.loose.as_ref()?;
+        // Hash logical paths, not archive offsets or image bytes: cached entries
+        // restore sources against the current ordered resource catalogs.
+        loose.len().hash(state);
+        for path in loose.keys() {
+            path.hash(state);
+        }
+        self.archived.len().hash(state);
+        for path in self.archived.keys() {
+            path.hash(state);
+        }
+        Some(())
     }
 
     fn add_archive(&mut self, path: &Path, relative: &Path) -> Result<()> {
