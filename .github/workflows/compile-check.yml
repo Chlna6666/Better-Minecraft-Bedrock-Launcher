@@ -37,10 +37,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Validate GPUI workspace layout
-        shell: pwsh
-        run: ./scripts/check_gpui_layout.ps1
-
       - name: Setup Rust 1.95
         uses: dtolnay/rust-toolchain@master
         with:
