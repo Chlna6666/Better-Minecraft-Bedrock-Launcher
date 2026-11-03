@@ -651,6 +651,9 @@ pub struct Window {
     pub(super) long_press_timer: Option<Task<()>>,
     pub(super) animation_time: Cell<Instant>,
     pub(super) frame_clock: FrameClock,
+    /// Child-window inheritance sees the latest value without borrowing a
+    /// Window that may be in the middle of an App update.
+    pub(crate) inactive_frame_clock: Rc<Cell<Option<FrameClock>>>,
     pub(super) frame_clock_state: RefCell<FrameClockState>,
     pub(crate) refreshing: bool,
     pub(super) dirty_frame_scheduled: bool,
