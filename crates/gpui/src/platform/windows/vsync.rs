@@ -633,11 +633,20 @@ mod tests {
         let scheduler = VSyncScheduler::new();
         assert_eq!(scheduler.background_interval(), BACKGROUND_FRAME_INTERVAL);
         scheduler.set_window_background_interval(1, Some(Duration::from_micros(16_667)));
-        assert_eq!(scheduler.background_interval(), Duration::from_micros(16_667));
+        assert_eq!(
+            scheduler.background_interval(),
+            Duration::from_micros(16_667)
+        );
         scheduler.set_window_background_interval(2, Some(Duration::from_micros(33_334)));
-        assert_eq!(scheduler.background_interval(), Duration::from_micros(16_667));
+        assert_eq!(
+            scheduler.background_interval(),
+            Duration::from_micros(16_667)
+        );
         scheduler.set_window_background_interval(1, None);
-        assert_eq!(scheduler.background_interval(), Duration::from_micros(33_334));
+        assert_eq!(
+            scheduler.background_interval(),
+            Duration::from_micros(33_334)
+        );
         scheduler.set_window_background_interval(2, None);
         assert_eq!(scheduler.background_interval(), BACKGROUND_FRAME_INTERVAL);
     }
