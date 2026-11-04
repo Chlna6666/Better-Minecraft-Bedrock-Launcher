@@ -1794,6 +1794,28 @@ pub(crate) struct ActivePresentationTiming {
     pub(crate) renderer_post_present: Duration,
 }
 
+impl ActivePresentationTiming {
+    pub(crate) fn from_frame_start(frame_started_at: Instant) -> Self {
+        Self {
+            frame_pacing_wait: Duration::ZERO,
+            vsync_event_queue_delay: Duration::ZERO,
+            window_dispatch_delay: Duration::ZERO,
+            frame_started_at,
+            renderer_scene_prepare: Duration::ZERO,
+            renderer_extension_prepare: Duration::ZERO,
+            submission_prepare: Duration::ZERO,
+            retained_resource_prepare: Duration::ZERO,
+            frame_prepare_upload: Duration::ZERO,
+            command_prepare: Duration::ZERO,
+            buffer_upload: Duration::ZERO,
+            atlas_upload: Duration::ZERO,
+            offscreen_render: Duration::ZERO,
+            backend_present: Duration::ZERO,
+            renderer_post_present: Duration::ZERO,
+        }
+    }
+}
+
 pub(crate) type SceneAnimationCompletionSender =
     futures::channel::mpsc::UnboundedSender<SceneAnimationCompletion>;
 

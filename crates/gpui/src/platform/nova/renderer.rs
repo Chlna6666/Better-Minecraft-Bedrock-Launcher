@@ -523,12 +523,23 @@ impl NovaRenderer {
         {
             packet.merge_pending_damage_from(previous);
         }
+        let frame_started_at = Instant::now();
         let sampled_completions = packet.sample_animations(packet.frame_time);
         let started_at = Instant::now();
-        let mut presentation_timing = None;
+        let mut presentation_timing = Some(
+            crate::platform::frame::ActivePresentationTiming::from_frame_start(frame_started_at),
+        );
         let result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
+            if packet.has_time_dependent_extensions()
+                && let Some(timing) = presentation_timing
+            {
+                crate::diagnostics::performance_metrics::record_window_extension_present(
+                    packet.window_id,
+                    timing,
+                );
+            }
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(
@@ -604,13 +615,16 @@ impl NovaRenderer {
             return Ok(false);
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
-        let upload = self.pack_scene(
-            &packet.paint.scene,
-            &packet.paint.retained_paint,
-            packet.presentation_animation_values.as_slice(),
-            drawable_size,
-            backdrop_blur_quality,
-        );
+        let upload = {
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::PackScene);
+            self.pack_scene(
+                &packet.paint.scene,
+                &packet.paint.retained_paint,
+                packet.presentation_animation_values.as_slice(),
+                drawable_size,
+                backdrop_blur_quality,
+            )
+        };
         self.reconcile_gpu_layer_animation_damage(packet);
         // A native full Present is not a full Filter Source invalidation.
         // Track both independently to catch regressions in ClipReveal/Root.
@@ -640,7 +654,10 @@ impl NovaRenderer {
         }
         self.ensure_path_mask_target_for_frame()?;
         let extension_started = Instant::now();
-        self.prepare_renderer_extensions(packet.frame_time)?;
+        {
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
+            self.prepare_renderer_extensions(packet.frame_time)?;
+        }
         if let Some(timing) = presentation_timing.as_mut() {
             timing.renderer_extension_prepare = extension_started.elapsed();
         }
@@ -648,6 +665,7 @@ impl NovaRenderer {
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
+        let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
         self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
     }
 
@@ -1068,6 +1086,9 @@ impl NovaRenderer {
             packet.merge_pending_damage_from(previous);
         }
         let sampled_completions = packet.sample_animations(packet.frame_time);
+        let mut presentation_timing = Some(
+            crate::platform::frame::ActivePresentationTiming::from_frame_start(Instant::now()),
+        );
         let result = (|| {
             if !self.apply_pending_drawable_size(
                 Some(packet.paint.geometry.layout_epoch),
@@ -1105,13 +1126,16 @@ impl NovaRenderer {
                 return Ok(false);
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
-            let upload = self.pack_scene(
-                &packet.paint.scene,
-                &packet.paint.retained_paint,
-                packet.presentation_animation_values.as_slice(),
-                drawable_size,
-                backdrop_blur_quality,
-            );
+            let upload = {
+                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::PackScene);
+                self.pack_scene(
+                    &packet.paint.scene,
+                    &packet.paint.retained_paint,
+                    packet.presentation_animation_values.as_slice(),
+                    drawable_size,
+                    backdrop_blur_quality,
+                )
+            };
             self.reconcile_gpu_layer_animation_damage(&mut packet);
             log::trace!(
                 target: "gpui::diagnostics",
@@ -1140,12 +1164,15 @@ impl NovaRenderer {
                 return Ok(false);
             }
             self.ensure_path_mask_target_for_frame()?;
-            self.prepare_renderer_extensions(packet.frame_time)?;
+            {
+                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
+                self.prepare_renderer_extensions(packet.frame_time)?;
+            }
             self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
             if !self.frame_upload.backdrop_blurs.is_empty() {
                 self.ensure_backdrop_blur_targets()?;
             }
-            let mut presentation_timing = None;
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
             self.draw_present(
                 upload,
                 &mut packet,
@@ -1155,6 +1182,14 @@ impl NovaRenderer {
         })();
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
+            if packet.has_time_dependent_extensions()
+                && let Some(timing) = presentation_timing
+            {
+                crate::diagnostics::performance_metrics::record_window_extension_present(
+                    packet.window_id,
+                    timing,
+                );
+            }
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(
@@ -1217,7 +1252,9 @@ impl NovaRenderer {
         let sampled_completions = packet.sample_animations(now);
         let continues = packet.has_time_dependent_extensions()
             || !packet.presentation_animation_timelines.is_empty();
-        let mut presentation_timing = presentation_timing;
+        let mut presentation_timing = Some(presentation_timing.unwrap_or_else(|| {
+            crate::platform::frame::ActivePresentationTiming::from_frame_start(now)
+        }));
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = draw_result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
