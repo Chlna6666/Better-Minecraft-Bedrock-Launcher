@@ -335,6 +335,8 @@ impl SceneResources {
         let mut reordered_blends = None;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
+            let camera_phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CameraCull);
             let local_changes = self
                 .scene
                 .as_ref()
@@ -360,18 +362,26 @@ impl SceneResources {
                     projection.aspect(),
                 )?;
             }
+            drop(camera_phase);
             if let Some(started) = stage_started {
                 walk_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
             let stage_started = trace_timings().then(Instant::now);
-            validate_textures(&self.prepared, scene_view)?;
-            self.ensure_textures(device, scene_view)?;
-            self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
+            {
+                let _phase =
+                    gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+                validate_textures(&self.prepared, scene_view)?;
+                self.ensure_textures(device, scene_view)?;
+                self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
+            }
             if let Some(started) = stage_started {
                 assets_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
         } else if camera_changed || culling_bounds_changed {
             let camera_started = trace_timings().then(Instant::now);
+            let mut refresh_culled_assets = false;
+            let camera_phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CameraCull);
             let tracked_start = if gpu_culling {
                 self.prepared
                     .draws
@@ -414,22 +424,24 @@ impl SceneResources {
                     if gpu_culling && !voxel_shader_changed && !sampler_changed {
                         reordered_blends = Some(tracked_start);
                     }
-                    if reordered_blends.is_none() {
-                        // CPU re-culling can reveal assets not uploaded by earlier frames.
-                        self.ensure_textures(device, scene_view)?;
-                        self.ensure_meshes(
-                            device,
-                            context.backend_kind(),
-                            scene_view.voxel_shader,
-                        )?;
-                    }
+                    refresh_culled_assets = reordered_blends.is_none();
                 }
+            }
+            drop(camera_phase);
+            if refresh_culled_assets {
+                // CPU re-culling can reveal assets not uploaded by earlier frames.
+                let _phase =
+                    gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+                self.ensure_textures(device, scene_view)?;
+                self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
             }
             if let Some(started) = camera_started {
                 camera_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
         }
         if voxel_shader_changed && !draw_state_changed {
+            let _phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
             self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
         }
         let shading = projection.voxel_shading();
@@ -448,6 +460,7 @@ impl SceneResources {
         }
         if draw_list_changed && reordered_blends.is_none() {
             let batch_started = trace_timings().then(Instant::now);
+            let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
             self.batches = if gpu_culling {
                 super::batching::group_voxel_batches(&mut self.prepared.draws, &self.meshes)
             } else {
@@ -463,6 +476,8 @@ impl SceneResources {
                 batch_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
         }
+        let resource_phase =
+            gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
         if reordered_blends.is_some() {
             // The CPU order is already changed. A failed binding remap must rebuild
             // draw state next frame instead of accepting partially reordered bindings.
@@ -521,6 +536,8 @@ impl SceneResources {
         }
         if draw_list_changed {
             let buffer_started = trace_timings().then(Instant::now);
+            let _phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BufferEncode);
             let bind_group_layout = renderer.bind_group_layout()?;
             if let Some(start) = reordered_blends {
                 self.sync_reordered_blends(start)?;
@@ -586,6 +603,7 @@ impl SceneResources {
                     )?;
             }
         }
+        drop(resource_phase);
         self.scene = Some(scene_view.scene.clone());
         self.texture_table = Some(scene_view.textures.clone());
         self.animation = Some(scene_view.animation.clone());

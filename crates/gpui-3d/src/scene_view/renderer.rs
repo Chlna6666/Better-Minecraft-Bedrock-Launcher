@@ -306,9 +306,13 @@ impl RendererExtensionRenderer for Renderer {
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow!("GPUI 3D renderer received an unexpected extension type"))?;
         let scene_view = scene_view.sample_camera(context.frame_time());
-        self.sync_pipeline(device, &context)?;
-        self.begin_frame(context.frame_time());
-        self.retire_idle_scenes(device)?;
+        {
+            let _phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+            self.sync_pipeline(device, &context)?;
+            self.begin_frame(context.frame_time());
+            self.retire_idle_scenes(device)?;
+        }
         if !self.scenes.contains_key(&scene_view.id) {
             self.scenes.insert(
                 scene_view.id,
@@ -322,15 +326,23 @@ impl RendererExtensionRenderer for Renderer {
         scene.last_used_frame = self.frame_index;
         scene.last_used_at = Instant::now();
         let prepare_started = trace_timings().then(Instant::now);
-        scene.prepare(device, &mut self.resources, &scene_view, &context)?;
+        {
+            let _phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
+            scene.prepare(device, &mut self.resources, &scene_view, &context)?;
+        }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let first_step = steps.len();
-        self.command_cache
-            .entry(scene_view.id)
-            .or_default()
-            .append(scene.command_revision, steps, |steps| {
-                scene.append_steps(&self.resources, scene_view.voxel_shader, steps)
-            })?;
+        {
+            let _phase =
+                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CommandEncode);
+            self.command_cache
+                .entry(scene_view.id)
+                .or_default()
+                .append(scene.command_revision, steps, |steps| {
+                    scene.append_steps(&self.resources, scene_view.voxel_shader, steps)
+                })?;
+        }
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
                 prepare,
