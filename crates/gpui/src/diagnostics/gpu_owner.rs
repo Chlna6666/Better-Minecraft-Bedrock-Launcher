@@ -58,6 +58,7 @@ pub enum GpuOwnerJobOutcome {
 /// Exclusive wall time spent in each GPU-owner stage of one command, in microseconds.
 /// The sum can be below total job time because the final slow-job log runs after tracing ends.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GpuOwnerJobPhases {
     /// Work outside instrumented stages.
     pub other_us: u64,
@@ -75,6 +76,24 @@ pub struct GpuOwnerJobPhases {
     pub surface_resize_us: u64,
     /// Scene and extension preparation outside nested stages.
     pub render_prepare_us: u64,
+    /// GPUI scene packing before renderer extensions run.
+    pub pack_scene_us: u64,
+    /// Renderer extension preparation, excluding nested extension stages.
+    pub extension_prepare_us: u64,
+    /// Extension scene preparation outside its nested camera and resource stages.
+    pub extension_scene_prepare_us: u64,
+    /// Extension camera culling and draw selection.
+    pub extension_camera_cull_us: u64,
+    /// Extension GPU resource synchronization outside buffer encoding.
+    pub extension_resource_sync_us: u64,
+    /// Extension draw batch construction.
+    pub extension_batch_build_us: u64,
+    /// Extension draw, instance and light buffer encoding and upload.
+    pub extension_buffer_encode_us: u64,
+    /// Extension render command construction and cache lookup.
+    pub extension_command_encode_us: u64,
+    /// Draw and present work outside nested backend and publication stages.
+    pub draw_present_us: u64,
     /// Backend upload, command execution and present outside nested stages.
     pub backend_submit_us: u64,
     /// Publishing completed frame state.
@@ -98,6 +117,15 @@ impl From<phases::Durations> for GpuOwnerJobPhases {
             fence_wait_us: micros(value.fence_wait),
             surface_resize_us: micros(value.surface_resize),
             render_prepare_us: micros(value.render_prepare),
+            pack_scene_us: micros(value.pack_scene),
+            extension_prepare_us: micros(value.extension_prepare),
+            extension_scene_prepare_us: micros(value.extension_scene_prepare),
+            extension_camera_cull_us: micros(value.extension_camera_cull),
+            extension_resource_sync_us: micros(value.extension_resource_sync),
+            extension_batch_build_us: micros(value.extension_batch_build),
+            extension_buffer_encode_us: micros(value.extension_buffer_encode),
+            extension_command_encode_us: micros(value.extension_command_encode),
+            draw_present_us: micros(value.draw_present),
             backend_submit_us: micros(value.backend_submit),
             publication_us: micros(value.publication),
             diagnostics_us: micros(value.diagnostics),
@@ -105,6 +133,38 @@ impl From<phases::Durations> for GpuOwnerJobPhases {
             report_us: micros(value.report),
         }
     }
+}
+
+/// Stages a renderer extension can attribute within the GPU owner's frame preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuOwnerExtensionPhase {
+    /// Preparing an extension's retained scene.
+    ScenePrepare,
+    /// Selecting and culling draws for the current camera.
+    CameraCull,
+    /// Synchronizing extension GPU resources.
+    ResourceSync,
+    /// Grouping prepared draws into submission batches.
+    BatchBuild,
+    /// Encoding and uploading draw, instance, or light tables.
+    BufferEncode,
+    /// Constructing or looking up extension render commands.
+    CommandEncode,
+}
+
+/// Attributes work on the GPU owner thread until the returned guard is dropped.
+/// Calls outside an active owner job are inert.
+#[must_use]
+pub fn gpu_owner_extension_phase(phase: GpuOwnerExtensionPhase) -> impl Drop {
+    let phase = match phase {
+        GpuOwnerExtensionPhase::ScenePrepare => phases::Phase::ExtensionScenePrepare,
+        GpuOwnerExtensionPhase::CameraCull => phases::Phase::ExtensionCameraCull,
+        GpuOwnerExtensionPhase::ResourceSync => phases::Phase::ExtensionResourceSync,
+        GpuOwnerExtensionPhase::BatchBuild => phases::Phase::ExtensionBatchBuild,
+        GpuOwnerExtensionPhase::BufferEncode => phases::Phase::ExtensionBufferEncode,
+        GpuOwnerExtensionPhase::CommandEncode => phases::Phase::ExtensionCommandEncode,
+    };
+    phases::enter(phase)
 }
 
 /// One completed command. Times use monotonic profiling clocks, not animation samples.

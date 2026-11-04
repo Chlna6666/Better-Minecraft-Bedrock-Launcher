@@ -128,6 +128,15 @@ fn fence_and_backend_lock_phases_keep_separate_durations() {
         fence_poll: Duration::from_micros(11),
         fence_wait: Duration::from_micros(23),
         render_prepare: Duration::from_micros(31),
+        pack_scene: Duration::from_micros(37),
+        extension_prepare: Duration::from_micros(41),
+        draw_present: Duration::from_micros(43),
+        extension_scene_prepare: Duration::from_micros(45),
+        extension_camera_cull: Duration::from_micros(47),
+        extension_resource_sync: Duration::from_micros(53),
+        extension_batch_build: Duration::from_micros(57),
+        extension_buffer_encode: Duration::from_micros(58),
+        extension_command_encode: Duration::from_micros(59),
         ..Default::default()
     }
     .into();
@@ -135,6 +144,15 @@ fn fence_and_backend_lock_phases_keep_separate_durations() {
     assert_eq!(phases.fence_poll_us, 11);
     assert_eq!(phases.fence_wait_us, 23);
     assert_eq!(phases.render_prepare_us, 31);
+    assert_eq!(phases.pack_scene_us, 37);
+    assert_eq!(phases.extension_prepare_us, 41);
+    assert_eq!(phases.draw_present_us, 43);
+    assert_eq!(phases.extension_scene_prepare_us, 45);
+    assert_eq!(phases.extension_camera_cull_us, 47);
+    assert_eq!(phases.extension_resource_sync_us, 53);
+    assert_eq!(phases.extension_batch_build_us, 57);
+    assert_eq!(phases.extension_buffer_encode_us, 58);
+    assert_eq!(phases.extension_command_encode_us, 59);
 }
 
 #[test]
