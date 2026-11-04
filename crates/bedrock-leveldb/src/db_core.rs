@@ -1602,7 +1602,7 @@ fn take_manifest_file_number(manifest: &mut Manifest) -> Result<u64> {
 fn allocate_file_number(shared: &SharedDb) -> Result<u64> {
     shared
         .next_file_number
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |number| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |number| {
             number.checked_add(1)
         })
         .map_err(|_| LevelDbError::invalid_argument("database file number overflowed".to_string()))
