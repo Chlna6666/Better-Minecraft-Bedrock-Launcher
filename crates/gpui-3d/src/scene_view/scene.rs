@@ -48,6 +48,7 @@ pub(super) struct SceneResources {
     scene_transform: Option<Mat4>,
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
+    pub(super) command_revision: u64,
     batches: Vec<DrawBatchRange>,
     previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
     draw_buffer: BufferId,
@@ -239,6 +240,7 @@ impl SceneResources {
             scene_transform: None,
             projection: None,
             prepared: PreparedScene::default(),
+            command_revision: 0,
             batches: Vec::new(),
             previous_draws: Vec::new(),
             draw_buffer,
@@ -321,6 +323,9 @@ impl SceneResources {
         {
             return Ok(());
         }
+        // A changed frame can alter CPU culling, bindings, draw addresses or pipelines.
+        // Keep descriptors from the previous successful prepare out of the next frame.
+        self.command_revision = self.command_revision.wrapping_add(1);
         self.prepared.set_culling_bounds(scene_view.culling_bounds);
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
         let mut reordered_blends = None;

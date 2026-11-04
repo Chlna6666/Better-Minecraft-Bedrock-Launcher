@@ -24,6 +24,33 @@ struct RendererTimingTrace {
     gpu_resident_draws_max: usize,
 }
 
+#[derive(Default)]
+struct CachedCommands {
+    revision: Option<u64>,
+    commands: Vec<RenderCommand>,
+}
+
+impl CachedCommands {
+    fn append(
+        &mut self,
+        revision: u64,
+        steps: &mut Vec<RenderCommand>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision == Some(revision) {
+            steps.extend_from_slice(&self.commands);
+            return Ok(());
+        }
+        self.revision = None;
+        self.commands.clear();
+        let first = steps.len();
+        build(steps)?;
+        self.commands.extend_from_slice(&steps[first..]);
+        self.revision = Some(revision);
+        Ok(())
+    }
+}
+
 impl RendererTimingTrace {
     fn record(
         &mut self,
@@ -91,6 +118,7 @@ pub(super) struct Renderer {
     target_extent: gfx_core::Extent2d,
     resources: RendererResources,
     scenes: HashMap<SceneViewId, SceneResources>,
+    command_cache: HashMap<SceneViewId, CachedCommands>,
     frame_time: Option<Instant>,
     frame_index: u64,
     timing_trace: RendererTimingTrace,
@@ -109,6 +137,7 @@ impl Renderer {
             target_extent: context.viewport(),
             resources,
             scenes: HashMap::new(),
+            command_cache: HashMap::new(),
             frame_time: None,
             frame_index: 0,
             timing_trace: RendererTimingTrace::default(),
@@ -131,6 +160,7 @@ impl Renderer {
             return Ok(());
         }
         self.resources.replace_pipelines(device, context)?;
+        self.command_cache.clear();
         self.render_pass = context.render_pass();
         self.color_format = context.color_format();
         self.target_extent = next_target_extent;
@@ -186,6 +216,7 @@ impl Renderer {
         ids: Vec<SceneViewId>,
     ) -> gpui::Result<()> {
         for id in ids {
+            self.command_cache.remove(&id);
             if let Some(mut scene) = self.scenes.remove(&id) {
                 scene.destroy(device)?;
             }
@@ -196,9 +227,47 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCENE_MEMORY_TRIM_IDLE, should_trim_scene};
-    use gfx_core::MemoryTrimLevel;
+    use super::{CachedCommands, SCENE_MEMORY_TRIM_IDLE, should_trim_scene};
+    use gfx_core::{
+        DrawCommand, MemoryTrimLevel, RenderCommand, RenderPipelineId, bind_group_list,
+    };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn stable_scene_reuses_commands_and_changed_scene_rebuilds() {
+        let mut cache = CachedCommands::default();
+        let mut builds = 0;
+        let mut output = Vec::new();
+        for revision in [1, 1, 2] {
+            cache
+                .append(revision, &mut output, |steps| {
+                    builds += 1;
+                    steps.push(RenderCommand::Draw(DrawCommand {
+                        pipeline: RenderPipelineId::from_parts(revision as u32, 1),
+                        bind_groups: bind_group_list([]),
+                        vertex_count: 3,
+                        first_vertex: 0,
+                        instance_count: 1,
+                        first_instance: 0,
+                        scissor: None,
+                    }));
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(builds, 2);
+        assert_eq!(
+            output
+                .iter()
+                .map(|step| step.pipeline())
+                .collect::<Vec<_>>(),
+            [
+                RenderPipelineId::from_parts(1, 1),
+                RenderPipelineId::from_parts(1, 1),
+                RenderPipelineId::from_parts(2, 1),
+            ]
+        );
+    }
 
     #[test]
     fn memory_trim_preserves_recent_scenes_until_aggressive_trim() {
@@ -256,7 +325,12 @@ impl RendererExtensionRenderer for Renderer {
         scene.prepare(device, &mut self.resources, &scene_view, &context)?;
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let first_step = steps.len();
-        scene.append_steps(&self.resources, scene_view.voxel_shader, steps)?;
+        self.command_cache
+            .entry(scene_view.id)
+            .or_default()
+            .append(scene.command_revision, steps, |steps| {
+                scene.append_steps(&self.resources, scene_view.voxel_shader, steps)
+            })?;
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
                 prepare,
