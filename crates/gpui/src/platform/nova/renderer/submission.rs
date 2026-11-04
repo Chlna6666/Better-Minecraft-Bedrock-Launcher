@@ -218,6 +218,9 @@ impl NovaRenderer {
     }
 
     fn poll_pending_submissions(&mut self) -> Result<()> {
+        let _phase = crate::diagnostics::gpu_owner::phases::enter(
+            crate::diagnostics::gpu_owner::phases::Phase::FencePoll,
+        );
         let pending_before = self.pending_submissions.len();
         let mut index = 0;
         while index < self.pending_submissions.len() {
@@ -272,6 +275,9 @@ impl NovaRenderer {
     }
 
     pub(super) fn wait_pending_submissions(&mut self) -> Result<()> {
+        let _phase = crate::diagnostics::gpu_owner::phases::enter(
+            crate::diagnostics::gpu_owner::phases::Phase::FenceWait,
+        );
         while let Some(submission) = self
             .pending_submissions
             .first()
@@ -279,7 +285,11 @@ impl NovaRenderer {
         {
             while let Some(predecessor) = self.pending_submissions[0].predecessors.first().copied()
             {
+                let started_at = Instant::now();
                 let result = lock_backend(&self.backend).wait_submission(predecessor);
+                crate::diagnostics::performance_metrics::record_gpu_submission_wait(
+                    started_at.elapsed(),
+                );
                 if let Err(error) = result {
                     self.invalidate_failed_gpu_submission();
                     return Err(error.into());

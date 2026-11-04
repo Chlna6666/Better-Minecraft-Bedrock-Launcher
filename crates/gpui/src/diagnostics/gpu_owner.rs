@@ -55,6 +55,58 @@ pub enum GpuOwnerJobOutcome {
     Failed,
 }
 
+/// Exclusive wall time spent in each GPU-owner stage of one command, in microseconds.
+/// The sum can be below total job time because the final slow-job log runs after tracing ends.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GpuOwnerJobPhases {
+    /// Work outside instrumented stages.
+    pub other_us: u64,
+    /// Presentation readiness checks.
+    pub readiness_us: u64,
+    /// Native frame pacing checks.
+    pub native_pacing_us: u64,
+    /// Time acquiring the shared graphics backend lock.
+    pub backend_lock_us: u64,
+    /// Submission fence polling, excluding backend lock acquisition.
+    pub fence_poll_us: u64,
+    /// Submission or queue-idle fence waits, excluding backend lock acquisition.
+    pub fence_wait_us: u64,
+    /// Native surface resize work.
+    pub surface_resize_us: u64,
+    /// Scene and extension preparation outside nested stages.
+    pub render_prepare_us: u64,
+    /// Backend upload, command execution and present outside nested stages.
+    pub backend_submit_us: u64,
+    /// Publishing completed frame state.
+    pub publication_us: u64,
+    /// Post-present diagnostics.
+    pub diagnostics_us: u64,
+    /// In-job log formatting and output.
+    pub log_output_us: u64,
+    /// Owner result and schedule reporting.
+    pub report_us: u64,
+}
+
+impl From<phases::Durations> for GpuOwnerJobPhases {
+    fn from(value: phases::Durations) -> Self {
+        Self {
+            other_us: micros(value.other),
+            readiness_us: micros(value.readiness),
+            native_pacing_us: micros(value.native_pacing),
+            backend_lock_us: micros(value.backend_lock),
+            fence_poll_us: micros(value.fence_poll),
+            fence_wait_us: micros(value.fence_wait),
+            surface_resize_us: micros(value.surface_resize),
+            render_prepare_us: micros(value.render_prepare),
+            backend_submit_us: micros(value.backend_submit),
+            publication_us: micros(value.publication),
+            diagnostics_us: micros(value.diagnostics),
+            log_output_us: micros(value.log_output),
+            report_us: micros(value.report),
+        }
+    }
+}
+
 /// One completed command. Times use monotonic profiling clocks, not animation samples.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GpuOwnerJobSample {
@@ -88,6 +140,9 @@ pub struct GpuOwnerJobSample {
     /// Wall time in explicitly instrumented Nova wait_submission calls during this job.
     /// Excludes readiness callbacks, caller handshakes and unobserved driver-internal waits.
     pub owner_blocking_wait_us: u64,
+    /// Exclusive stage timings for this command. Older serialized samples default to zero.
+    #[serde(default)]
+    pub phases: GpuOwnerJobPhases,
     /// Autonomous scheduling deadline to execution start. The deadline is an earliest eligible
     /// cadence time, not a physical display deadline; None for queued commands.
     pub schedule_lateness_us: Option<u64>,

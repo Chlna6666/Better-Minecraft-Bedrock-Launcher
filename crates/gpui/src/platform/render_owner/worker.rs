@@ -255,7 +255,8 @@ impl Entry {
         }
         drop(diagnostics_scope);
         let completed_at = Instant::now();
-        if let Some(phases) = gpu_owner::phases::finish(completed_at) {
+        let phases = gpu_owner::phases::finish(completed_at);
+        if let Some(phases) = phases.as_ref() {
             if completed_at.duration_since(started_at) >= std::time::Duration::from_millis(16) {
                 // This summary's own sink cost is excluded; existing in-job logs are timed.
                 log::warn!(
@@ -294,6 +295,7 @@ impl Entry {
                 owner_blocking_wait_us: gpu_owner::micros(
                     gpu_owner::blocking_wait().saturating_sub(previous_wait),
                 ),
+                phases: phases.map(Into::into).unwrap_or_default(),
                 schedule_lateness_us: deadline
                     .map(|time| gpu_owner::micros(started_at.saturating_duration_since(time))),
             },

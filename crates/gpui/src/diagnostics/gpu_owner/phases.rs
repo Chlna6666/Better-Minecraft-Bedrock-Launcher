@@ -9,6 +9,9 @@ pub(crate) enum Phase {
     Other,
     Readiness,
     NativePacing,
+    BackendLock,
+    FencePoll,
+    FenceWait,
     SurfaceResize,
     RenderPrepare,
     BackendSubmit,
@@ -23,6 +26,9 @@ pub(crate) struct Durations {
     pub(crate) other: Duration,
     pub(crate) readiness: Duration,
     pub(crate) native_pacing: Duration,
+    pub(crate) backend_lock: Duration,
+    pub(crate) fence_poll: Duration,
+    pub(crate) fence_wait: Duration,
     pub(crate) surface_resize: Duration,
     pub(crate) render_prepare: Duration,
     pub(crate) backend_submit: Duration,
@@ -45,6 +51,9 @@ impl Trace {
             Phase::Other => &mut self.durations.other,
             Phase::Readiness => &mut self.durations.readiness,
             Phase::NativePacing => &mut self.durations.native_pacing,
+            Phase::BackendLock => &mut self.durations.backend_lock,
+            Phase::FencePoll => &mut self.durations.fence_poll,
+            Phase::FenceWait => &mut self.durations.fence_wait,
             Phase::SurfaceResize => &mut self.durations.surface_resize,
             Phase::RenderPrepare => &mut self.durations.render_prepare,
             Phase::BackendSubmit => &mut self.durations.backend_submit,
@@ -64,17 +73,13 @@ thread_local! {
 }
 
 pub(crate) fn start(started_at: Instant) {
-    #[cfg(target_os = "windows")]
-    if super::resize_trace_enabled() {
-        TRACE.with_borrow_mut(|trace| {
-            *trace = Some(Trace {
-                phase: Phase::Other,
-                since: started_at,
-                durations: Durations::default(),
-            })
-        });
-    }
-    let _ = started_at;
+    TRACE.with_borrow_mut(|trace| {
+        *trace = Some(Trace {
+            phase: Phase::Other,
+            since: started_at,
+            durations: Durations::default(),
+        })
+    });
 }
 
 /// Restores the outer phase on every exit, including errors and early returns.

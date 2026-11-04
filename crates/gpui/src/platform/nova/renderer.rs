@@ -1380,7 +1380,17 @@ impl NovaRenderer {
             && matches!(level, GpuiMemoryTrimLevel::Moderate)
             && self.renderer_registry.needs_gpu_completion()
         {
-            match lock_backend(&self.backend).wait_extension_gpu_completion() {
+            let wait_started = Instant::now();
+            let completion = {
+                let _phase = crate::diagnostics::gpu_owner::phases::enter(
+                    crate::diagnostics::gpu_owner::phases::Phase::FenceWait,
+                );
+                lock_backend(&self.backend).wait_extension_gpu_completion()
+            };
+            if !matches!(&completion, Ok(false)) {
+                crate::diagnostics::gpu_owner::record_blocking_wait(wait_started.elapsed());
+            }
+            match completion {
                 Ok(true) => self.renderer_registry.gpu_work_completed(),
                 Ok(false) => {}
                 Err(error) => log::debug!("extension GPU completion fence failed: {error}"),

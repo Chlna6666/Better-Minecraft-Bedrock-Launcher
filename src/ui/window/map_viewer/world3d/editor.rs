@@ -146,6 +146,7 @@ struct GpuSubmitStats {
     gated: usize,
     coalesced: u64,
     interval_p95_us: u64,
+    p95_job: Option<GpuOwnerJobSample>,
 }
 
 fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -> GpuSubmitStats {
@@ -155,6 +156,7 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
         gated: 0,
         coalesced: 0,
         interval_p95_us: 0,
+        p95_job: None,
     };
     let Some(age_ms) = sample_age_ms.filter(|age| *age < 1_000) else {
         return stats;
@@ -162,11 +164,13 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
     let latest_us = samples.last().map_or(0, |sample| sample.completed_at_us);
     let cutoff_us = latest_us.saturating_sub(1_000_000 - age_ms * 1_000);
     let mut intervals = Vec::new();
+    let mut recent_jobs = Vec::new();
     let mut previous_submit_us = None;
     for sample in samples
         .iter()
         .filter(|sample| sample.completed_at_us >= cutoff_us)
     {
+        recent_jobs.push(sample);
         stats.coalesced = stats.coalesced.saturating_add(sample.coalesced_count);
         match sample.outcome {
             GpuOwnerJobOutcome::Submitted => {
@@ -184,7 +188,45 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
     if !intervals.is_empty() {
         stats.interval_p95_us = intervals[(intervals.len() * 95).div_ceil(100) - 1];
     }
+    recent_jobs.sort_unstable_by_key(|sample| sample.owner_job_duration_us);
+    if !recent_jobs.is_empty() {
+        stats.p95_job = Some((*recent_jobs[(recent_jobs.len() * 95).div_ceil(100) - 1]).clone());
+    }
     stats
+}
+
+fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
+    let phases = sample.phases;
+    let mut stages = [
+        ("其他", phases.other_us),
+        ("就绪", phases.readiness_us),
+        ("原生节奏", phases.native_pacing_us),
+        ("后端锁", phases.backend_lock_us),
+        ("Fence轮询", phases.fence_poll_us),
+        ("Fence等待", phases.fence_wait_us),
+        ("尺寸", phases.surface_resize_us),
+        ("准备", phases.render_prepare_us),
+        ("后端提交", phases.backend_submit_us),
+        ("发布", phases.publication_us),
+        ("诊断", phases.diagnostics_us),
+        ("日志", phases.log_output_us),
+        ("回报", phases.report_us),
+    ];
+    stages.sort_unstable_by_key(|stage| std::cmp::Reverse(stage.1));
+    format!(
+        "Owner近1秒 p95 {:?}/{:?} {:.1} ms · 主耗时 {} {:.1} / {} {:.1} / {} {:.1} ms · Fence等待 {:.1} ms · 阻塞总计 {:.1} ms",
+        sample.kind,
+        sample.outcome,
+        sample.owner_job_duration_us as f64 / 1000.0,
+        stages[0].0,
+        stages[0].1 as f64 / 1000.0,
+        stages[1].0,
+        stages[1].1 as f64 / 1000.0,
+        stages[2].0,
+        stages[2].1 as f64 / 1000.0,
+        phases.fence_wait_us as f64 / 1000.0,
+        sample.owner_blocking_wait_us as f64 / 1000.0,
+    )
 }
 const RENDER_ORIGIN_GRID: f64 = 512.0;
 
@@ -356,6 +398,7 @@ pub struct World3dEditorView {
     backend_label: SharedString,
     gpu_diagnostics: String,
     frame_diagnostics: String,
+    owner_stage_diagnostics: String,
     gpu_stage_diagnostics: String,
     schedule_diagnostics: String,
     memory_diagnostics: String,
@@ -485,6 +528,7 @@ impl World3dEditorView {
                 .unwrap_or_else(|| SharedString::from("auto")),
             gpu_diagnostics: String::new(),
             frame_diagnostics: String::new(),
+            owner_stage_diagnostics: String::new(),
             gpu_stage_diagnostics: String::new(),
             schedule_diagnostics: String::new(),
             memory_diagnostics: String::new(),
@@ -2488,6 +2532,10 @@ impl World3dEditorView {
                 )
             },
         );
+        self.owner_stage_diagnostics = owner_stats
+            .as_ref()
+            .and_then(|stats| stats.p95_job.as_ref())
+            .map_or_else(|| "Owner阶段：待采样".to_string(), owner_phase_summary);
         self.gpu_stage_diagnostics = window_metrics.map_or_else(
             || "3D 呈现阶段：待采样".to_string(),
             |sample| {
@@ -2595,6 +2643,7 @@ impl World3dEditorView {
             .child(format!("配置后端: {} · 流式区块", self.backend_label))
             .child(self.gpu_diagnostics.clone())
             .child(self.frame_diagnostics.clone())
+            .child(self.owner_stage_diagnostics.clone())
             .child(self.gpu_stage_diagnostics.clone())
             .child(self.schedule_diagnostics.clone())
             .child(self.memory_diagnostics.clone())
@@ -3207,8 +3256,9 @@ mod texture_retention_tests {
             queue_wait_us: Some(0),
             pending_age_us: Some(0),
             coalesced_count,
-            owner_job_duration_us: 0,
+            owner_job_duration_us: completed_at_us,
             owner_blocking_wait_us: 0,
+            phases: gpui::GpuOwnerJobPhases::default(),
             schedule_lateness_us: None,
         };
         let samples = [
@@ -3224,6 +3274,10 @@ mod texture_retention_tests {
         assert_eq!(recent.gated, 1);
         assert_eq!(recent.coalesced, 2);
         assert_eq!(recent.interval_p95_us, 8_000);
+        assert_eq!(
+            recent.p95_job.as_ref().map(|job| job.completed_at_us),
+            Some(2_000_000)
+        );
         assert_eq!(gpu_submit_stats(&samples, Some(1_000)).submitted, 0);
     }
 

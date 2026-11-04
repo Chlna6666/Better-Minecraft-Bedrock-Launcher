@@ -26,6 +26,7 @@ fn sample(owner_id: u64, wait: Option<u64>, outcome: GpuOwnerJobOutcome) -> GpuO
         coalesced_count: 0,
         owner_job_duration_us: 100,
         owner_blocking_wait_us: 25,
+        phases: GpuOwnerJobPhases::default(),
         schedule_lateness_us: None,
     }
 }
@@ -118,6 +119,22 @@ fn submission_waits_only_accumulate_inside_the_owner_dispatch() {
     record_blocking_wait(Duration::from_micros(70));
     assert_eq!(blocking_wait(), Duration::from_micros(100));
     BLOCKING_WAIT.with(|wait| wait.set(None));
+}
+
+#[test]
+fn fence_and_backend_lock_phases_keep_separate_durations() {
+    let phases: GpuOwnerJobPhases = phases::Durations {
+        backend_lock: Duration::from_micros(7),
+        fence_poll: Duration::from_micros(11),
+        fence_wait: Duration::from_micros(23),
+        render_prepare: Duration::from_micros(31),
+        ..Default::default()
+    }
+    .into();
+    assert_eq!(phases.backend_lock_us, 7);
+    assert_eq!(phases.fence_poll_us, 11);
+    assert_eq!(phases.fence_wait_us, 23);
+    assert_eq!(phases.render_prepare_us, 31);
 }
 
 #[test]

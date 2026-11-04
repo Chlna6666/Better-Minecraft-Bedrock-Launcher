@@ -50,6 +50,9 @@ thread_local! {
 /// A panic while a backend operation held the lock does not make the device unusable, so the
 /// guard is recovered rather than propagated as a second panic.
 pub(super) fn lock_backend(backend: &SharedBackend) -> MutexGuard<'_, NovaBackend> {
+    let _phase = crate::diagnostics::gpu_owner::phases::enter(
+        crate::diagnostics::gpu_owner::phases::Phase::BackendLock,
+    );
     backend.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
