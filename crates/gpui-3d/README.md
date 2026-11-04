@@ -94,6 +94,13 @@ or GPU readback; it is not a copy of the Bedrock renderer or a measured FPS guar
 the scene. Nodes opt in with `Node::with_culling_origin`; the region uses inclusive minimum and
 exclusive maximum coordinates. Ray queries and other nodes are unaffected.
 
+`SceneView::with_continuous_presentation` opts a view into compositor-owned presentation frames
+even when its scene is unchanged. The window frame clock limits the rate, and these frames reuse
+the committed GUI view and layout. This option is disabled by default.
+`SceneView::with_camera_sampler` also enables continuous presentation and samples the camera
+on the renderer thread for each 3D frame. Input can change shared camera state without a GPUI
+view rebuild; the application remains responsible for synchronizing tools and streaming state.
+
 `VoxelMeshSource::with_ambient_occlusion` opts into corner AO for unit cell-boundary faces.
 The supplied mask selects full opaque instance classes; base cube grids treat occupied cells
 as opaque. GPU generation packs four corner factors into the existing 16-byte face descriptor;

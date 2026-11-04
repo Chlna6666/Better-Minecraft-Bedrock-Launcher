@@ -96,6 +96,12 @@ Wayland tracks current output modes, subsequent mode updates and output removal.
 uses screen-parameter notifications and the ProMotion maximum when available. X11 still
 reports X screen roots and no nominal refresh interval.
 
+`window_metrics_snapshot` includes p95 host timings for successful compositor frames driven
+by time-dependent renderer extensions. Scene preparation includes extension preparation;
+submission preparation, retained-resource preparation, frame upload, and backend present are
+separate stages. The per-frame "other" value covers work outside those non-overlapping stages.
+These timings do not measure GPU execution or physical display scanout.
+
 ## Core Concepts
 
 - `App` is the root context for globals, windows, entities, menus, key

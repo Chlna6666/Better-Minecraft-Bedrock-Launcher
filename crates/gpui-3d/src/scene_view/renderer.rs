@@ -236,6 +236,7 @@ impl RendererExtensionRenderer for Renderer {
         let scene_view = extension
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow!("GPUI 3D renderer received an unexpected extension type"))?;
+        let scene_view = scene_view.sample_camera(context.frame_time());
         self.sync_pipeline(device, &context)?;
         self.begin_frame(context.frame_time());
         self.retire_idle_scenes(device)?;
@@ -252,7 +253,7 @@ impl RendererExtensionRenderer for Renderer {
         scene.last_used_frame = self.frame_index;
         scene.last_used_at = Instant::now();
         let prepare_started = trace_timings().then(Instant::now);
-        scene.prepare(device, &mut self.resources, scene_view, &context)?;
+        scene.prepare(device, &mut self.resources, &scene_view, &context)?;
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let first_step = steps.len();
         scene.append_steps(&self.resources, scene_view.voxel_shader, steps)?;

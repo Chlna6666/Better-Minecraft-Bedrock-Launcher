@@ -71,6 +71,11 @@ GPU 体素剔除使用当前相机的 128x128 buffer Hi-Z 金字塔。只有明�
 `SceneView::with_culling_bounds` 可在不替换场景的情况下更新世界空间裁剪范围；节点通过
 `Node::with_culling_origin` 参与判断。范围最小值包含、最大值不包含；射线查询及其他节点不受影响。
 
+`SceneView::with_continuous_presentation` 让场景不变时也由合成器持续提交呈现帧。
+帧率受窗口帧时钟限制，这些帧复用已提交的 GUI 视图与布局。此选项默认关闭。
+`SceneView::with_camera_sampler` 同时启用连续呈现，在渲染线程逐帧采样相机。
+输入可以更新共享相机状态而不重建 GPUI 视图；工具与区块流的状态同步仍由应用负责。
+
 `VoxelMeshSource::with_ambient_occlusion` 为单位方块边界面启用角点 AO；掩码选择完整不透明
 实例类别，基础立方体网格将非空单元视为不透明。GPU 构网把四个角点亮度打包进现有的
 16 字节面描述符，CPU 回退使用相同的侧向/对角邻居规则。任意细节面、静态面保留调用方

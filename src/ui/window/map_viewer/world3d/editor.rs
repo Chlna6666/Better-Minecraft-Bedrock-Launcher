@@ -3,7 +3,7 @@
 //! This window never reuses or mutates the read-only 3D preview panel state. It owns its
 //! camera, focus, input capture, streaming worker, chunk meshes and GPU scene snapshot.
 
-use super::camera::World3dCamera;
+use super::camera::{World3dCamera, World3dNavigation};
 use super::chunk_service::{ChunkServiceConfig, ChunkServiceHandle, spawn_chunk_service};
 use super::import::{World3dImportAction, World3dImportPreview};
 use super::registry::{
@@ -44,8 +44,10 @@ const RIGHT_PANEL_WIDTH: f32 = 320.0;
 const MIN_WINDOW_WIDTH: f32 = 960.0;
 const MIN_WINDOW_HEIGHT: f32 = 620.0;
 const VIEW_UPDATE_INTERVAL: Duration = Duration::from_millis(120);
-const SNAPSHOT_PUBLISH_INTERVAL: Duration = Duration::from_millis(33);
+const SNAPSHOT_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
+const NAVIGATION_UI_INTERVAL: Duration = Duration::from_millis(100);
 const POLL_INTERVAL: Duration = Duration::from_millis(16);
+const PICK_INTERVAL: Duration = Duration::from_micros(33_334);
 const MAX_MESH_EVENTS_PER_POLL: usize = 16;
 const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
@@ -56,6 +58,133 @@ const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 fn stream_scene_interval(section_count: usize) -> Duration {
     let extra_ms = (section_count / 32).min(450) as u64;
     STREAM_SCENE_INTERVAL + Duration::from_millis(extra_ms)
+}
+
+fn is_pick_due(last_pick_at: Option<Instant>, now: Instant) -> bool {
+    last_pick_at.is_none_or(|at| now.saturating_duration_since(at) >= PICK_INTERVAL)
+}
+
+fn camera_snapshot_due(last_publish_at: Option<Instant>, now: Instant) -> bool {
+    last_publish_at.is_none_or(|at| now.saturating_duration_since(at) >= SNAPSHOT_PUBLISH_INTERVAL)
+}
+
+fn stream_event_updates_ui(event: &ChunkServiceEvent) -> bool {
+    matches!(
+        event,
+        ChunkServiceEvent::Ready(_)
+            | ChunkServiceEvent::Status(_)
+            | ChunkServiceEvent::Surface { .. }
+            | ChunkServiceEvent::Fatal { .. }
+    )
+}
+
+fn scene_publish_required(
+    previous: Option<&Arc<SceneView>>,
+    scene: &Arc<Scene>,
+    textures_changed: bool,
+) -> bool {
+    textures_changed || previous.is_none_or(|view| !Arc::ptr_eq(view.scene(), scene))
+}
+
+#[cfg(test)]
+mod stream_event_tests {
+    use super::{ChunkServiceEvent, ChunkServiceStatus, stream_event_updates_ui};
+
+    #[test]
+    fn chunk_events_wait_for_scene_publish_before_ui_refresh() {
+        assert!(!stream_event_updates_ui(&ChunkServiceEvent::Completed(
+            Vec::new()
+        )));
+        assert!(stream_event_updates_ui(&ChunkServiceEvent::Status(
+            ChunkServiceStatus::default()
+        )));
+    }
+}
+
+#[cfg(test)]
+mod scene_publish_tests {
+    use super::{Arc, Scene, SceneView, Vec3, scene_publish_required};
+    use gpui_3d::Camera;
+
+    #[test]
+    fn unchanged_scene_and_textures_do_not_publish() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let view = Arc::new(SceneView::new(scene.clone(), camera));
+        assert!(!scene_publish_required(Some(&view), &scene, false));
+        assert!(scene_publish_required(Some(&view), &scene, true));
+        assert!(scene_publish_required(
+            Some(&view),
+            &Arc::new(Scene::new()),
+            false
+        ));
+    }
+}
+
+#[cfg(test)]
+mod camera_snapshot_tests {
+    use super::{Duration, Instant, camera_snapshot_due};
+
+    #[test]
+    fn map_overlay_snapshot_is_limited_to_ten_updates_per_second() {
+        let now = Instant::now();
+        assert!(camera_snapshot_due(None, now));
+        assert!(!camera_snapshot_due(
+            Some(now),
+            now + Duration::from_millis(99)
+        ));
+        assert!(camera_snapshot_due(
+            Some(now),
+            now + Duration::from_millis(100)
+        ));
+    }
+}
+
+struct GpuSubmitStats {
+    submitted: usize,
+    deferred: usize,
+    gated: usize,
+    coalesced: u64,
+    interval_p95_us: u64,
+}
+
+fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -> GpuSubmitStats {
+    let mut stats = GpuSubmitStats {
+        submitted: 0,
+        deferred: 0,
+        gated: 0,
+        coalesced: 0,
+        interval_p95_us: 0,
+    };
+    let Some(age_ms) = sample_age_ms.filter(|age| *age < 1_000) else {
+        return stats;
+    };
+    let latest_us = samples.last().map_or(0, |sample| sample.completed_at_us);
+    let cutoff_us = latest_us.saturating_sub(1_000_000 - age_ms * 1_000);
+    let mut intervals = Vec::new();
+    let mut previous_submit_us = None;
+    for sample in samples
+        .iter()
+        .filter(|sample| sample.completed_at_us >= cutoff_us)
+    {
+        stats.coalesced = stats.coalesced.saturating_add(sample.coalesced_count);
+        match sample.outcome {
+            GpuOwnerJobOutcome::Submitted => {
+                stats.submitted += 1;
+                if let Some(previous_us) = previous_submit_us.replace(sample.completed_at_us) {
+                    intervals.push(sample.completed_at_us.saturating_sub(previous_us));
+                }
+            }
+            GpuOwnerJobOutcome::Deferred => stats.deferred += 1,
+            GpuOwnerJobOutcome::Control if sample.kind == GpuOwnerJobKind::Tick => stats.gated += 1,
+            _ => {}
+        }
+    }
+    intervals.sort_unstable();
+    if !intervals.is_empty() {
+        stats.interval_p95_us = intervals[(intervals.len() * 95).div_ceil(100) - 1];
+    }
+    stats
 }
 const RENDER_ORIGIN_GRID: f64 = 512.0;
 
@@ -162,14 +291,15 @@ pub struct World3dEditorView {
     window_handle: Option<AnyWindowHandle>,
     dimension: Dimension,
     camera: World3dCamera,
+    navigation: World3dNavigation,
     saved_cameras: BTreeMap<Dimension, World3dCamera>,
     focus: FocusHandle,
-    keys_down: HashSet<String>,
     look_drag: Option<LookDrag>,
     selection_drag: Option<SelectionDrag>,
     axis_drag: Option<gizmo::AxisDrag>,
     last_frame_at: Option<Instant>,
-    last_motion_at: Option<Instant>,
+    last_navigation_ui_at: Option<Instant>,
+    navigation_ui_dirty: bool,
     service: Option<ChunkServiceHandle>,
     poll_task: Option<Task<anyhow::Result<()>>>,
     stream_generation: u64,
@@ -208,6 +338,7 @@ pub struct World3dEditorView {
     pointer_position: Option<Point<Pixels>>,
     last_pick_camera: Option<World3dCameraSnapshot>,
     target_pick_dirty: bool,
+    pointer_pick_dirty: bool,
     hud_debug: bool,
     hud_visible: bool,
     chunk_clipboard_count: usize,
@@ -225,6 +356,8 @@ pub struct World3dEditorView {
     backend_label: SharedString,
     gpu_diagnostics: String,
     frame_diagnostics: String,
+    gpu_stage_diagnostics: String,
+    schedule_diagnostics: String,
     memory_diagnostics: String,
     last_gpu_sample_at: Option<Instant>,
     last_scene_build_ms: u64,
@@ -274,14 +407,15 @@ impl World3dEditorView {
             window_handle: None,
             dimension: init.dimension,
             camera,
+            navigation: World3dNavigation::new(camera),
             saved_cameras: BTreeMap::new(),
             focus: cx.focus_handle().tab_stop(true),
-            keys_down: HashSet::new(),
             look_drag: None,
             selection_drag: None,
             axis_drag: None,
             last_frame_at: None,
-            last_motion_at: None,
+            last_navigation_ui_at: None,
+            navigation_ui_dirty: false,
             service: None,
             poll_task: None,
             stream_generation: 0,
@@ -326,6 +460,7 @@ impl World3dEditorView {
             pointer_position: None,
             last_pick_camera: None,
             target_pick_dirty: true,
+            pointer_pick_dirty: false,
             hud_debug: false,
             hud_visible: true,
             chunk_clipboard_count: 0,
@@ -350,6 +485,8 @@ impl World3dEditorView {
                 .unwrap_or_else(|| SharedString::from("auto")),
             gpu_diagnostics: String::new(),
             frame_diagnostics: String::new(),
+            gpu_stage_diagnostics: String::new(),
+            schedule_diagnostics: String::new(),
             memory_diagnostics: String::new(),
             last_gpu_sample_at: None,
             last_scene_build_ms: 0,
@@ -363,6 +500,7 @@ impl World3dEditorView {
             _subscriptions: vec![cx.observe_global::<ThemeState>(|_this, cx| cx.notify())],
         };
         this.camera.view_distance = ((this.view_radius + 1) * 16).max(320) as f32;
+        this.navigation.set_camera(this.camera);
         this._subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
@@ -419,9 +557,14 @@ impl World3dEditorView {
                 };
                 if view
                     .update(cx, |this, cx| {
+                        this.sync_navigation_camera(cx);
                         this.poll_stream_events(cx);
                         this.maybe_update_view(cx);
                         this.publish_camera_snapshot(cx);
+                        if this.pointer_pick_dirty && is_pick_due(this.last_pick_at, Instant::now())
+                        {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -434,7 +577,7 @@ impl World3dEditorView {
 
     fn poll_stream_events(&mut self, cx: &mut Context<Self>) {
         let trace_started = super::chunk_service::trace_timings().then(Instant::now);
-        let mut changed = false;
+        let mut ui_changed = false;
         let mut meshes_added = 0usize;
         let mut textures_may_be_unused = false;
         let mut probes_changed = false;
@@ -445,6 +588,19 @@ impl World3dEditorView {
             let Some(event) = self.service.as_ref().and_then(ChunkServiceHandle::try_recv) else {
                 break;
             };
+            ui_changed |= stream_event_updates_ui(&event);
+            let event_trace = trace_started.map(|_| {
+                let (kind, items) = match &event {
+                    ChunkServiceEvent::Ready(_) => ("ready", 1),
+                    ChunkServiceEvent::Chunk(_) => ("chunk", 1),
+                    ChunkServiceEvent::Completed(items) => ("completed", items.len()),
+                    ChunkServiceEvent::Unloaded { .. } => ("unloaded", 1),
+                    ChunkServiceEvent::Status(_) => ("status", 1),
+                    ChunkServiceEvent::Surface { heights, .. } => ("surface", heights.len()),
+                    ChunkServiceEvent::Fatal { .. } => ("fatal", 1),
+                };
+                (Instant::now(), kind, items)
+            });
             match event {
                 ChunkServiceEvent::Ready(info) => {
                     self.worker_info = info;
@@ -453,18 +609,14 @@ impl World3dEditorView {
                         "资源就绪：{} 个方块模型 · {} 个资源包根",
                         self.worker_info.block_model_count, self.worker_info.resource_pack_count
                     ));
-                    changed = true;
                 }
+                ChunkServiceEvent::Chunk(payload)
+                    if payload.lighting != self.render_settings.lighting
+                        || payload.mesh.pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Chunk(payload) => {
-                    if payload.lighting != self.render_settings.lighting {
-                        continue;
-                    }
                     submitted_bytes =
                         submitted_bytes.saturating_add(payload.mesh.estimated_cpu_bytes());
                     let _ = payload.generation;
-                    if payload.mesh.pos.dimension != self.dimension {
-                        continue;
-                    }
                     for texture in payload.mesh.textures.iter() {
                         let id = texture.id();
                         if !self.textures.contains_key(&id) {
@@ -484,7 +636,6 @@ impl World3dEditorView {
                     }
                     meshes_added = meshes_added.saturating_add(1);
                     self.stream_scene_pending = true;
-                    changed = true;
                     if meshes_added >= MAX_MESH_EVENTS_PER_POLL {
                         break;
                     }
@@ -526,24 +677,19 @@ impl World3dEditorView {
                     }
                     textures_may_be_unused |= removed;
                     self.stream_scene_pending |= removed || restored;
-                    changed = true;
                 }
+                ChunkServiceEvent::Unloaded { pos, .. } if pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Unloaded { generation, pos } => {
                     let _ = generation;
-                    if pos.dimension != self.dimension {
-                        continue;
-                    }
                     self.stream_scene_pending |= self.chunk_lights.remove(&pos).is_some();
                     let removed = retain_chunk_sections(&mut self.chunk_meshes, pos, &[]);
                     textures_may_be_unused |= removed;
                     self.probes.remove(&pos);
                     probes_changed = true;
                     self.stream_scene_pending |= removed;
-                    changed = true;
                 }
                 ChunkServiceEvent::Status(status) => {
                     self.worker_status = status;
-                    changed = true;
                 }
                 ChunkServiceEvent::Surface {
                     request_id,
@@ -555,8 +701,9 @@ impl World3dEditorView {
                             heights.first().copied().flatten(),
                             self.nav_target_position(),
                         ) {
-                            self.camera
-                                .teleport_to_surface(target[0], surface, target[1]);
+                            self.camera = self.navigation.update_camera(|camera| {
+                                camera.teleport_to_surface(target[0], surface, target[1]);
+                            });
                             self.status = SharedString::from(format!(
                                 "已按地表安全高度传送到 Y {}",
                                 surface + 1
@@ -566,12 +713,23 @@ impl World3dEditorView {
                             self.request_view_update(true, cx);
                         }
                     }
-                    changed = true;
                 }
                 ChunkServiceEvent::Fatal { error } => {
                     self.status = SharedString::from(error);
                     self.status_kind = StatusKind::Error;
-                    changed = true;
+                }
+            }
+            if let Some((started, kind, items)) = event_trace {
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(16) {
+                    eprintln!(
+                        "world3d ui event ts={} kind={} items={} elapsed_ms={:.1} sections={}",
+                        super::chunk_service::trace_timestamp_ms(),
+                        kind,
+                        items,
+                        elapsed.as_secs_f64() * 1000.0,
+                        self.chunk_meshes.len(),
+                    );
                 }
             }
             if poll_started.elapsed() >= Duration::from_millis(2)
@@ -586,7 +744,7 @@ impl World3dEditorView {
         if meshes_added > 0 {
             self.last_chunk_update_at = Some(Instant::now());
         }
-        if changed {
+        if ui_changed {
             cx.notify();
         }
         if let Some(started) = trace_started {
@@ -616,7 +774,9 @@ impl World3dEditorView {
     fn set_view_radius(&mut self, radius: i32, cx: &mut Context<Self>) {
         self.pending_view_radius = None;
         self.view_radius = radius.clamp(1, WORLD3D_MAX_VIEW_RADIUS);
-        self.camera.view_distance = (self.view_radius + 1).saturating_mul(16).max(320) as f32;
+        self.camera = self.navigation.update_camera(|camera| {
+            camera.view_distance = (self.view_radius + 1).saturating_mul(16).max(320) as f32;
+        });
         self.last_view_key = None;
         self.request_view_update(true, cx);
     }
@@ -660,7 +820,9 @@ impl World3dEditorView {
             self.scene_dirty = true;
         }
         if self.scene_dirty {
-            self.ensure_scene(cx);
+            if self.ensure_scene(cx) {
+                cx.notify();
+            }
         }
         self.request_view_update(false, cx);
     }
@@ -675,12 +837,27 @@ impl World3dEditorView {
             .snapshot(self.dimension, aspect, self.stream_generation)
     }
 
+    fn sync_navigation_camera(&mut self, cx: &mut Context<Self>) {
+        let camera = self.navigation.camera();
+        if camera != self.camera {
+            self.camera = camera;
+            self.navigation_ui_dirty = true;
+        }
+        let now = Instant::now();
+        if self.navigation_ui_dirty
+            && self
+                .last_navigation_ui_at
+                .is_none_or(|last| now - last >= NAVIGATION_UI_INTERVAL)
+        {
+            self.last_navigation_ui_at = Some(now);
+            self.navigation_ui_dirty = false;
+            cx.notify();
+        }
+    }
+
     fn publish_camera_snapshot(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
-        if self
-            .last_publish_at
-            .is_some_and(|at| now - at < SNAPSHOT_PUBLISH_INTERVAL)
-        {
+        if !camera_snapshot_due(self.last_publish_at, now) {
             return;
         }
         let snapshot = self.camera_snapshot();
@@ -700,10 +877,10 @@ impl World3dEditorView {
         }
     }
 
-    fn ensure_scene(&mut self, cx: &mut Context<Self>) {
+    fn ensure_scene(&mut self, cx: &mut Context<Self>) -> bool {
         let _ = cx;
         if !self.scene_dirty {
-            return;
+            return false;
         }
         let started = Instant::now();
         self.scene_dirty = false;
@@ -722,6 +899,7 @@ impl World3dEditorView {
             (self.camera.position[2] / RENDER_ORIGIN_GRID).round() as i32
                 * RENDER_ORIGIN_GRID as i32,
         ];
+        self.navigation.set_origin(self.render_origin);
         if self.render_origin != previous_origin {
             self.update_target_scene();
         }
@@ -742,7 +920,7 @@ impl World3dEditorView {
             Err(error) => {
                 self.status = format!("更新世界场景失败：{error}").into();
                 self.status_kind = StatusKind::Error;
-                return;
+                return true;
             }
         };
         let range_key = self.current_view_key();
@@ -754,8 +932,9 @@ impl World3dEditorView {
         {
             self.status = format!("更新世界光源失败：{error}").into();
             self.status_kind = StatusKind::Error;
-            return;
+            return true;
         }
+        let mut status_changed = false;
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
             && let Err(error) = preview
@@ -764,6 +943,7 @@ impl World3dEditorView {
         {
             self.status = SharedString::from(format!("导入预览场景失败：{error}"));
             self.status_kind = StatusKind::Error;
+            status_changed = true;
         }
         let scene = match (self.scene_view.as_ref(), base) {
             (Some(view), Some(previous)) if previous.version() == scene.version() => {
@@ -772,32 +952,37 @@ impl World3dEditorView {
             _ => Arc::new(scene),
         };
         self.scene_has_preview = self.import_preview.is_some();
-        let camera = self.camera.gpu_camera(self.render_origin);
-        let base = match self.scene_view.as_ref() {
-            Some(view) => view.with_scene(scene).with_camera(camera),
-            None => SceneView::new(scene, camera),
+        let textures_changed = std::mem::take(&mut self.texture_table_dirty);
+        let published = scene_publish_required(self.scene_view.as_ref(), &scene, textures_changed);
+        if published {
+            let camera = self.camera.gpu_camera(self.render_origin);
+            let base = match self.scene_view.as_ref() {
+                Some(view) => view.with_scene(scene).with_camera(camera),
+                None => SceneView::new(scene, camera),
+            }
+            .with_sampling(TextureSampling::PixelArt)
+            .with_voxel_shader()
+            .with_continuous_presentation();
+            let scene_view = if textures_changed {
+                base.with_textures(
+                    self.textures
+                        .values()
+                        .cloned()
+                        .chain(self.worker_info.cloud_texture.iter().cloned())
+                        .chain(
+                            self.worker_info
+                                .water_textures
+                                .iter()
+                                .flatten()
+                                .map(|v| v.asset.clone()),
+                        ),
+                )
+                .unwrap_or(base)
+            } else {
+                base
+            };
+            self.scene_view = Some(Arc::new(scene_view));
         }
-        .with_sampling(TextureSampling::PixelArt)
-        .with_voxel_shader();
-        let scene_view = if std::mem::take(&mut self.texture_table_dirty) {
-            base.with_textures(
-                self.textures
-                    .values()
-                    .cloned()
-                    .chain(self.worker_info.cloud_texture.iter().cloned())
-                    .chain(
-                        self.worker_info
-                            .water_textures
-                            .iter()
-                            .flatten()
-                            .map(|v| v.asset.clone()),
-                    ),
-            )
-            .unwrap_or(base)
-        } else {
-            base
-        };
-        self.scene_view = Some(Arc::new(scene_view));
         self.last_scene_build_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if super::chunk_service::trace_timings() {
             self.trace_scene_build_count = self.trace_scene_build_count.saturating_add(1);
@@ -805,6 +990,7 @@ impl World3dEditorView {
                 .trace_scene_build_max_us
                 .max(started.elapsed().as_micros());
         }
+        published || status_changed
     }
 
     fn stage_aspect(&self) -> f32 {
@@ -1022,6 +1208,7 @@ impl World3dEditorView {
     }
 
     fn navigate(&mut self, target: WorldNavigationTarget, cx: &mut Context<Self>) {
+        self.camera = self.navigation.camera();
         self.finish_axis_drag(cx);
         self.selection_drag = None;
         self.nav_generation = target.request_generation;
@@ -1065,6 +1252,7 @@ impl World3dEditorView {
         };
         self.camera
             .teleport_to(target.block_x, y.clamp(-256.0, 900.0), target.block_z);
+        self.navigation.set_camera(self.camera);
         self.status = SharedString::from(format!(
             "{}传送到 X {} · Y {} · Z {}",
             dimension_label(target.dimension),
@@ -1105,6 +1293,7 @@ impl World3dEditorView {
         if dimension == self.dimension {
             return;
         }
+        self.camera = self.navigation.camera();
         self.finish_axis_drag(cx);
         self.selection_drag = None;
         self.saved_cameras.insert(self.dimension, self.camera);
@@ -1133,6 +1322,7 @@ impl World3dEditorView {
                 }
                 camera
             });
+        self.navigation.set_camera(self.camera);
         self.selection = None;
         self.target = None;
         self.scene_dirty = true;
@@ -1660,7 +1850,9 @@ impl World3dEditorView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
-                        this.camera.toggle_projection();
+                        this.camera = this
+                            .navigation
+                            .update_camera(|camera| camera.toggle_projection());
                         this.publish_camera_snapshot(cx);
                         cx.notify();
                     }),
@@ -2255,28 +2447,78 @@ impl World3dEditorView {
             .window_metrics
             .iter()
             .find(|sample| sample.window_id == window_id);
-        let present_fps = window_metrics.map(|sample| sample.present_fps_milli as f64 / 1000.0);
+        let owner = gpui::gpu_owner_metrics_snapshot()
+            .windows
+            .into_iter()
+            .find(|sample| sample.window_id == Some(window_id));
+        let owner_stats = owner
+            .as_ref()
+            .filter(|sample| sample.sample_age_ms.is_some_and(|age| age < 1_000))
+            .map(|sample| {
+                gpu_submit_stats(
+                    &gpui::gpu_owner_samples_since(sample.owner_id, 0),
+                    sample.sample_age_ms,
+                )
+            });
         let memory = gpui::memory_profile_snapshot();
         let device = memory
             .devices
             .iter()
             .find(|device| device.adapter_name == metrics.gpu_adapter_name);
         self.gpu_diagnostics = format!(
-            "本窗口提交 {} FPS · {} / {} · {}",
-            present_fps.map_or_else(|| "待采样".to_string(), |fps| format!("{fps:.1}")),
+            "GPU 实际提交 {} 次/秒 · {} / {} · {}",
+            owner_stats
+                .as_ref()
+                .map_or_else(|| "待采样".to_string(), |stats| stats.submitted.to_string()),
             device.map_or("未知", |device| device.backend.as_str()),
             metrics.gpu_adapter_name,
             metrics.gpu_surface_present_mode
         );
-        self.frame_diagnostics = window_metrics.map_or_else(
-            || "帧时序：待采样".to_string(),
+        self.frame_diagnostics = owner.as_ref().zip(owner_stats.as_ref()).map_or_else(
+            || "GPU 提交时序：待采样".to_string(),
+            |(owner, stats)| {
+                format!(
+                    "GPU 间隔 p95 {:.1} ms · 任务 p95 {:.1} ms · 排队 p95 {:.1} ms · 延期 {} · 门控 {} · 合并 {}",
+                    stats.interval_p95_us as f64 / 1000.0,
+                    owner.owner_job_duration.p95_us as f64 / 1000.0,
+                    owner.queue_wait.p95_us as f64 / 1000.0,
+                    stats.deferred,
+                    stats.gated,
+                    stats.coalesced,
+                )
+            },
+        );
+        self.gpu_stage_diagnostics = window_metrics.map_or_else(
+            || "3D 呈现阶段：待采样".to_string(),
+            |sample| {
+                let stage = &sample.extension_present;
+                if stage.sample_count == 0 {
+                    return "3D 呈现阶段：待采样".to_string();
+                }
+                format!(
+                    "3D 帧 p95 总 {:.1} ms · 场景准备 {:.1} ms (扩展 {:.1} ms) · 提交预备 {:.1} ms · 保留资源 {:.1} ms · 帧上传 {:.1} ms · 后端呈现 {:.1} ms · 其他 {:.1} ms / {} 帧",
+                    stage.total_p95_micros as f64 / 1000.0,
+                    stage.scene_prepare_p95_micros as f64 / 1000.0,
+                    stage.extension_prepare_p95_micros as f64 / 1000.0,
+                    stage.submission_prepare_p95_micros as f64 / 1000.0,
+                    stage.retained_prepare_p95_micros as f64 / 1000.0,
+                    stage.frame_upload_p95_micros as f64 / 1000.0,
+                    stage.backend_present_p95_micros as f64 / 1000.0,
+                    stage.other_p95_micros as f64 / 1000.0,
+                    stage.sample_count,
+                )
+            },
+        );
+        self.schedule_diagnostics = window_metrics.map_or_else(
+            || "调度时序：待采样".to_string(),
             |sample| {
                 format!(
-                    "绘制 p95 {:.1} ms · 提交间隔 p95 {:.1} ms · DWM 周期 {:.1} ms · 累计跳过 {}",
+                    "UI 绘制 p95 {:.1} ms · UI 帧计数间隔 p95 {:.1} ms · 唤醒 p95 {:.1} ms · DWM 周期 {:.1} ms · 窗口尝试 {}",
                     sample.frame_duration_p95_micros as f64 / 1000.0,
                     sample.present_interval_p95_micros as f64 / 1000.0,
+                    sample.native_vsync.wake_interval_p95_micros as f64 / 1000.0,
                     sample.native_vsync.refresh_period_p50_micros as f64 / 1000.0,
-                    sample.skipped_frame_count,
+                    sample.native_vsync.active_presentation_attempt_count,
                 )
             },
         );
@@ -2296,7 +2538,7 @@ impl World3dEditorView {
         );
         if super::chunk_service::trace_timings() {
             eprintln!(
-                "world3d ui ts={} gen={} camera={:.1},{:.1},{:.1} yaw_deg={:.1} pitch_deg={:.1} radius={} refresh_fps={:.1} present_fps={:.1} draw_p95_ms={:.1} present_gap_p95_ms={:.1} poll_count={} poll_max_ms={:.1} scene_build_count={} scene_build_max_ms={:.1} nodes={} lod_chunks={} cpu_mesh_mib={:.1} decoded_mib={:.1} gpu_mib={:.1}",
+                "world3d ui ts={} gen={} camera={:.1},{:.1},{:.1} yaw_deg={:.1} pitch_deg={:.1} radius={} refresh_fps={:.1} gpu_submits_1s={} ui_draw_p95_ms={:.1} ui_frame_gap_p95_ms={:.1} poll_count={} poll_max_ms={:.1} scene_build_count={} scene_build_max_ms={:.1} nodes={} lod_chunks={} cpu_mesh_mib={:.1} decoded_mib={:.1} gpu_mib={:.1}",
                 super::chunk_service::trace_timestamp_ms(),
                 self.stream_generation,
                 self.camera.position[0],
@@ -2306,7 +2548,7 @@ impl World3dEditorView {
                 self.camera.pitch.to_degrees(),
                 self.view_radius,
                 self.frame.fps,
-                present_fps.unwrap_or_default(),
+                owner_stats.as_ref().map_or(0, |stats| stats.submitted),
                 window_metrics.map_or(0.0, |sample| sample.frame_duration_p95_micros as f64
                     / 1000.0),
                 window_metrics.map_or(0.0, |sample| sample.present_interval_p95_micros as f64
@@ -2353,6 +2595,8 @@ impl World3dEditorView {
             .child(format!("配置后端: {} · 流式区块", self.backend_label))
             .child(self.gpu_diagnostics.clone())
             .child(self.frame_diagnostics.clone())
+            .child(self.gpu_stage_diagnostics.clone())
+            .child(self.schedule_diagnostics.clone())
             .child(self.memory_diagnostics.clone())
             .child(format!(
                 "UI 刷新 {:.1} 次/秒 · 间隔 {:.2} ms · 场景节点 {} · 场景构建 {} ms",
@@ -2482,7 +2726,9 @@ impl World3dEditorView {
                     snapshot
                 }
             };
-            let snapshot = Arc::new(snapshot);
+            let navigation = self.navigation.clone();
+            let snapshot =
+                Arc::new(snapshot.with_camera_sampler(move |now| navigation.sample_camera(now)));
             viewport = viewport.child(
                 div()
                     .absolute()
@@ -2506,9 +2752,17 @@ impl World3dEditorView {
             && let Some(scene_view) = self.target_scene_view.as_ref()
         {
             let camera = self.camera.gpu_camera(self.render_origin);
-            viewport = viewport.child(div().absolute().inset_0().child(gpui_3d::scene_view(
-                Arc::new(scene_view.with_camera(camera)),
-            )));
+            let navigation = self.navigation.clone();
+            viewport = viewport.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(gpui_3d::scene_view(Arc::new(
+                        scene_view
+                            .with_camera(camera)
+                            .with_camera_sampler(move |now| navigation.sample_camera(now)),
+                    ))),
+            );
         }
         viewport
             .child(self.render_axis_gizmo())
@@ -2614,7 +2868,7 @@ impl World3dEditorView {
                 self.selection = drag.previous;
                 self.update_target_scene();
             }
-            self.keys_down.clear();
+            self.navigation.clear_keys();
             if self.tool == World3dTool::Import && self.import_preview.is_some() {
                 self.request_import_action(World3dImportAction::Cancel, cx);
             }
@@ -2625,22 +2879,16 @@ impl World3dEditorView {
         if self.focus.is_focused(window)
             && self.axis_drag.is_none()
             && matches!(key.as_str(), "w" | "a" | "s" | "d" | "space")
-            && self.keys_down.insert(key)
+            && self.navigation.set_key(&key, true)
         {
-            self.last_motion_at = Some(Instant::now());
-            window.request_animation_frame();
-            cx.notify();
             cx.stop_propagation();
         }
     }
 
     fn handle_key_up(&mut self, event: &KeyUpEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.to_ascii_lowercase();
-        if self.keys_down.remove(&key) {
-            if self.keys_down.is_empty() {
-                self.last_motion_at = None;
-            }
-            cx.notify();
+        if self.navigation.set_key(&key, false) {
+            cx.stop_propagation();
         }
     }
 
@@ -2648,7 +2896,7 @@ impl World3dEditorView {
         &mut self,
         event: &ModifiersChangedEvent,
         window: &Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         if self.axis_drag.is_some() {
             return;
@@ -2657,60 +2905,20 @@ impl World3dEditorView {
             return;
         }
         if event.modifiers.shift {
-            let inserted = self.keys_down.insert("shift".to_string());
-            if inserted {
-                self.last_motion_at = Some(Instant::now());
-            }
-        } else if self.keys_down.remove("shift") {
-            if self.keys_down.is_empty() {
-                self.last_motion_at = None;
-            }
+            self.navigation.set_key("shift", true);
+        } else {
+            self.navigation.set_key("shift", false);
         }
-        cx.notify();
     }
 
     fn stop_navigation(&mut self, cx: &mut Context<Self>) {
         self.cancel_axis_drag(cx);
-        self.keys_down.clear();
-        self.last_motion_at = None;
+        self.navigation.clear_keys();
         self.look_drag = None;
         if self.selection_drag.take().is_some() {
             self.publish_selection_to_2d(cx);
         }
         cx.notify();
-    }
-
-    fn tick_motion(&mut self, now: Instant) -> bool {
-        if self.keys_down.is_empty() {
-            self.last_motion_at = None;
-            return false;
-        }
-        let delta_seconds = self
-            .last_motion_at
-            .map_or(1.0 / 60.0, |previous| (now - previous).as_secs_f32())
-            .clamp(1.0 / 240.0, 0.08);
-        let mut forward = 0.0_f64;
-        let mut strafe = 0.0_f64;
-        let mut vertical = 0.0_f64;
-        for key in &self.keys_down {
-            match key.as_str() {
-                "w" => forward += 1.0,
-                "s" => forward -= 1.0,
-                "a" => strafe -= 1.0,
-                "d" => strafe += 1.0,
-                "space" => vertical += 1.0,
-                "shift" => vertical -= 1.0,
-                _ => {}
-            }
-        }
-        if forward == 0.0 && strafe == 0.0 && vertical == 0.0 {
-            self.last_motion_at = Some(now);
-            return false;
-        }
-        self.camera
-            .move_by(forward, strafe, vertical, delta_seconds);
-        self.last_motion_at = Some(now);
-        true
     }
 }
 
@@ -2720,27 +2928,21 @@ impl Render for World3dEditorView {
         self.tick_lighting(now, window);
         self.frame.record(now);
         self.sample_gpu_diagnostics(now, window);
-        let moving = self.tick_motion(now);
         self.update_stage_size(window);
         let pick_camera = self.camera_snapshot();
         let pick_pending = self.target_pick_dirty || self.last_pick_camera != Some(pick_camera);
-        if pick_pending
-            && self
-                .last_pick_at
-                .is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_micros(33_334))
-        {
-            self.last_pick_at = Some(now);
-            self.target_pick_dirty = false;
-            self.last_pick_camera = Some(pick_camera);
-            if let Some(position) = self.pointer_position {
-                self.update_target_at(position, window);
-            }
-        }
         if pick_pending {
-            window.request_animation_frame();
-        }
-        if moving {
-            window.request_animation_frame();
+            if is_pick_due(self.last_pick_at, now) {
+                self.last_pick_at = Some(now);
+                self.target_pick_dirty = false;
+                self.pointer_pick_dirty = false;
+                self.last_pick_camera = Some(pick_camera);
+                if let Some(position) = self.pointer_position {
+                    self.update_target_at(position, window);
+                }
+            } else {
+                window.request_animation_frame();
+            }
         }
         let desired_origin = [
             (self.camera.position[0] / RENDER_ORIGIN_GRID).round() as i32
@@ -2834,11 +3036,13 @@ impl Render for World3dEditorView {
                                         let dx = (event.position.x - drag.last.x) / px(1.0);
                                         let dy = (event.position.y - drag.last.y) / px(1.0);
                                         if dx.abs() + dy.abs() > 0.0 {
-                                            this.camera.rotate_look(dx * 0.0035, dy * 0.0035);
+                                            this.camera = this.navigation.update_camera(|camera| {
+                                                camera.rotate_look(dx * 0.0035, dy * 0.0035);
+                                            });
+                                            this.navigation_ui_dirty = true;
                                             this.look_drag = Some(LookDrag {
                                                 last: event.position,
                                             });
-                                            cx.notify();
                                         }
                                     }
                                     if this.selection_drag.is_some() {
@@ -2847,7 +3051,7 @@ impl Render for World3dEditorView {
                                     } else if event.pressed_button.is_none() {
                                         this.pointer_position = Some(event.position);
                                         this.target_pick_dirty = true;
-                                        cx.notify();
+                                        this.pointer_pick_dirty = true;
                                     }
                                 },
                             ))
@@ -2865,9 +3069,8 @@ impl Render for World3dEditorView {
                             )
                             .on_mouse_up(
                                 MouseButton::Right,
-                                cx.listener(|this, _event, _window, cx| {
+                                cx.listener(|this, _event, _window, _cx| {
                                     this.look_drag = None;
-                                    cx.notify();
                                 }),
                             )
                             .on_mouse_up_out(
@@ -2893,19 +3096,20 @@ impl Render for World3dEditorView {
                                         return;
                                     }
                                     let delta = event.delta.pixel_delta(px(48.0));
-                                    if event.modifiers.alt {
-                                        if delta.y > px(0.0) {
-                                            this.camera.add_fov(2.0_f32.to_radians());
+                                    this.camera = this.navigation.update_camera(|camera| {
+                                        if event.modifiers.alt {
+                                            let direction =
+                                                if delta.y > px(0.0) { 1.0 } else { -1.0 };
+                                            camera.add_fov(direction * 2.0_f32.to_radians());
+                                        } else if event.modifiers.shift {
+                                            let factor = if delta.y > px(0.0) { 1.1 } else { 0.9 };
+                                            camera.add_ortho_height(factor);
                                         } else {
-                                            this.camera.add_fov(-2.0_f32.to_radians());
+                                            let factor =
+                                                if delta.y > px(0.0) { 1.15 } else { 0.87 };
+                                            camera.add_speed(factor);
                                         }
-                                    } else if event.modifiers.shift {
-                                        let factor = if delta.y > px(0.0) { 1.1 } else { 0.9 };
-                                        this.camera.add_ortho_height(factor);
-                                    } else {
-                                        let factor = if delta.y > px(0.0) { 1.15 } else { 0.87 };
-                                        this.camera.add_speed(factor);
-                                    }
+                                    });
                                     this.publish_camera_snapshot(cx);
                                     cx.notify();
                                 },
@@ -2985,9 +3189,54 @@ fn retain_chunk_textures(
 #[cfg(test)]
 mod texture_retention_tests {
     use super::{
-        Arc, BTreeMap, ChunkPos, Dimension, HashMap, Mesh, TextureAsset, World3dChunkMesh,
-        restore_retained_sections, retain_chunk_sections, retain_chunk_textures,
+        Arc, BTreeMap, ChunkPos, Dimension, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample,
+        HashMap, Mesh, TextureAsset, World3dChunkMesh, gpu_submit_stats, restore_retained_sections,
+        retain_chunk_sections, retain_chunk_textures,
     };
+
+    #[test]
+    fn gpu_submit_stats_counts_recent_completed_gpu_work() {
+        let sample = |completed_at_us, outcome, coalesced_count| GpuOwnerJobSample {
+            owner_id: 1,
+            window_id: Some(1),
+            job_id: 0,
+            kind: GpuOwnerJobKind::Tick,
+            outcome,
+            started_at_us: completed_at_us,
+            completed_at_us,
+            queue_wait_us: Some(0),
+            pending_age_us: Some(0),
+            coalesced_count,
+            owner_job_duration_us: 0,
+            owner_blocking_wait_us: 0,
+            schedule_lateness_us: None,
+        };
+        let samples = [
+            sample(900_000, GpuOwnerJobOutcome::Submitted, 0),
+            sample(1_500_000, GpuOwnerJobOutcome::Submitted, 0),
+            sample(1_508_000, GpuOwnerJobOutcome::Submitted, 0),
+            sample(1_516_000, GpuOwnerJobOutcome::Deferred, 2),
+            sample(2_000_000, GpuOwnerJobOutcome::Control, 0),
+        ];
+        let recent = gpu_submit_stats(&samples, Some(300));
+        assert_eq!(recent.submitted, 2);
+        assert_eq!(recent.deferred, 1);
+        assert_eq!(recent.gated, 1);
+        assert_eq!(recent.coalesced, 2);
+        assert_eq!(recent.interval_p95_us, 8_000);
+        assert_eq!(gpu_submit_stats(&samples, Some(1_000)).submitted, 0);
+    }
+
+    #[test]
+    fn hover_pick_refresh_waits_for_pick_interval() {
+        let last = std::time::Instant::now();
+        assert!(super::is_pick_due(None, last));
+        assert!(!super::is_pick_due(
+            Some(last),
+            last + super::PICK_INTERVAL - std::time::Duration::from_micros(1)
+        ));
+        assert!(super::is_pick_due(Some(last), last + super::PICK_INTERVAL));
+    }
 
     #[test]
     fn streaming_scene_coalesces_large_snapshots_without_unbounded_delay() {

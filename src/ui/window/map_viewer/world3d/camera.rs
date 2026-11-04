@@ -7,6 +7,11 @@ use super::types::{
 };
 use bedrock_render::Dimension;
 use gpui_3d::{Camera, Vec3};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::Instant,
+};
 
 const MAX_ABS_PITCH: f32 = 1.553_343; // 89 degrees
 const MIN_SPEED: f32 = 2.0;
@@ -17,7 +22,7 @@ const MIN_ORTHO_HEIGHT: f32 = 2.0;
 const MAX_ORTHO_HEIGHT: f32 = 512.0;
 
 /// Mutable world camera owned by one 3D editor window only.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct World3dCamera {
     /// Absolute world-space eye position in blocks.
     pub position: [f64; 3],
@@ -30,6 +35,101 @@ pub struct World3dCamera {
     pub projection: World3dProjectionKind,
     pub ortho_height: f32,
     pub speed: f32,
+}
+
+/// Navigation state sampled by the 3D renderer independently of GPUI view updates.
+#[derive(Clone)]
+pub(super) struct World3dNavigation(Arc<Mutex<NavigationState>>);
+
+struct NavigationState {
+    camera: World3dCamera,
+    render_origin: [i32; 3],
+    keys_down: HashSet<String>,
+    last_motion_at: Option<Instant>,
+}
+
+impl World3dNavigation {
+    pub(super) fn new(camera: World3dCamera) -> Self {
+        Self(Arc::new(Mutex::new(NavigationState {
+            camera,
+            render_origin: [0; 3],
+            keys_down: HashSet::new(),
+            last_motion_at: None,
+        })))
+    }
+
+    fn state(&self) -> MutexGuard<'_, NavigationState> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn camera(&self) -> World3dCamera {
+        self.state().camera
+    }
+
+    pub(super) fn set_camera(&self, camera: World3dCamera) {
+        let mut state = self.state();
+        state.camera = camera;
+        state.last_motion_at = Some(Instant::now());
+    }
+
+    pub(super) fn update_camera(&self, update: impl FnOnce(&mut World3dCamera)) -> World3dCamera {
+        let mut state = self.state();
+        update(&mut state.camera);
+        state.camera
+    }
+
+    pub(super) fn set_origin(&self, origin: [i32; 3]) {
+        self.state().render_origin = origin;
+    }
+
+    pub(super) fn set_key(&self, key: &str, pressed: bool) -> bool {
+        let mut state = self.state();
+        let changed = if pressed {
+            state.keys_down.insert(key.to_owned())
+        } else {
+            state.keys_down.remove(key)
+        };
+        if changed {
+            state.last_motion_at = (!state.keys_down.is_empty()).then(Instant::now);
+        }
+        changed
+    }
+
+    pub(super) fn clear_keys(&self) {
+        let mut state = self.state();
+        state.keys_down.clear();
+        state.last_motion_at = None;
+    }
+
+    pub(super) fn sample_camera(&self, now: Instant) -> Camera {
+        let mut state = self.state();
+        state.tick_motion(now);
+        state.camera.gpu_camera(state.render_origin)
+    }
+}
+
+impl NavigationState {
+    fn tick_motion(&mut self, now: Instant) {
+        if self.keys_down.is_empty() {
+            self.last_motion_at = None;
+            return;
+        }
+        let delta_seconds = self
+            .last_motion_at
+            .map_or(0.0, |previous| {
+                now.saturating_duration_since(previous).as_secs_f32()
+            })
+            .clamp(0.0, 0.08);
+        let forward =
+            f64::from(self.keys_down.contains("w")) - f64::from(self.keys_down.contains("s"));
+        let strafe =
+            f64::from(self.keys_down.contains("d")) - f64::from(self.keys_down.contains("a"));
+        let vertical = f64::from(self.keys_down.contains("space"))
+            - f64::from(self.keys_down.contains("shift"));
+        self.camera
+            .move_by(forward, strafe, vertical, delta_seconds);
+        self.last_motion_at = Some(now);
+    }
 }
 
 impl Default for World3dCamera {
@@ -301,6 +401,29 @@ mod tests {
         let gpu = camera.gpu_camera([9_984, 0, -40_000]);
         assert!((gpu.eye.x - 16.5).abs() < 1.0e-3);
         assert!((gpu.eye.z + 0.5).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn navigation_moves_on_renderer_samples_without_ui_render() {
+        let navigation = World3dNavigation::new(World3dCamera::default());
+        navigation.set_key("w", true);
+        let frame = Instant::now() + std::time::Duration::from_millis(16);
+        let initial_z = navigation.camera().position[2];
+        let sampled = navigation.sample_camera(frame);
+        assert!(sampled.eye.z < initial_z as f32);
+        navigation.clear_keys();
+        let stopped_z = navigation.camera().position[2];
+        navigation.sample_camera(frame + std::time::Duration::from_millis(16));
+        assert_eq!(navigation.camera().position[2], stopped_z);
+        navigation.update_camera(|camera| camera.position[0] = 512.5);
+        navigation.set_origin([512, 0, 0]);
+        assert_close(
+            navigation
+                .sample_camera(frame + std::time::Duration::from_millis(32))
+                .eye
+                .x,
+            0.5,
+        );
     }
 
     #[test]

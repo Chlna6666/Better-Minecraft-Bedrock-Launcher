@@ -1215,6 +1215,14 @@ impl NovaRenderer {
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = draw_result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
+            if packet.has_time_dependent_extensions()
+                && let Some(timing) = presentation_timing
+            {
+                crate::diagnostics::performance_metrics::record_window_extension_present(
+                    packet.window_id,
+                    timing,
+                );
+            }
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(

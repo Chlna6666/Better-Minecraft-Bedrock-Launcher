@@ -390,7 +390,8 @@ impl RendererExtensionRenderer for EffectsRenderer {
         let view = input
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow::anyhow!("invalid effects input"))?;
-        let result = self.render_scene(device, view, &context, steps);
+        let view = view.sample_camera(context.frame_time());
+        let result = self.render_scene(device, &view, &context, steps);
         if result.is_err() {
             self.passes.clear();
             for state in self.scenes.values_mut() {

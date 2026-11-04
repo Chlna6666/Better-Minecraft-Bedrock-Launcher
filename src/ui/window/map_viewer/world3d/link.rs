@@ -482,23 +482,31 @@ impl MapViewerWindowView {
         snapshot: Option<World3dCameraSnapshot>,
         cx: &mut Context<Self>,
     ) {
+        let mut notify_main = false;
         match snapshot {
             Some(snapshot) => {
                 let dimension_matches = snapshot.dimension == self.dimension;
+                let dimension_changed =
+                    self.world3d.camera.map(|camera| camera.dimension) != Some(snapshot.dimension);
                 self.world3d.camera = Some(snapshot);
                 if self.world3d.overlay_mode == CameraOverlayMode::Hidden
                     && !self.world3d.overlay_hidden_by_user
                 {
                     self.world3d.overlay_mode = CameraOverlayMode::PositionFrustum;
+                    notify_main = true;
                 }
                 if self.world3d.world_key.is_none() {
                     self.world3d.world_key = Some(self.current_world3d_key());
                 }
-                if !dimension_matches && self.world3d.overlay_mode.shows_frustum() {
+                if dimension_changed
+                    && !dimension_matches
+                    && self.world3d.overlay_mode.shows_frustum()
+                {
                     self.status = SharedString::from(format!(
                         "3D 摄像机位于{}，已隐藏 2D 视锥叠加",
                         super::types::dimension_label(snapshot.dimension)
                     ));
+                    notify_main = true;
                 }
                 if self.world3d.follow_3d && dimension_matches {
                     let center = (
@@ -520,7 +528,9 @@ impl MapViewerWindowView {
                 self.push_world3d_overlay(cx);
             }
         }
-        cx.notify();
+        if notify_main {
+            cx.notify();
+        }
     }
 
     fn push_world3d_overlay(&mut self, cx: &mut Context<Self>) {

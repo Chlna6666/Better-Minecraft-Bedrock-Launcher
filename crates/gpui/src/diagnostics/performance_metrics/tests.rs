@@ -732,6 +732,48 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
 }
 
 #[test]
+fn records_extension_only_presentation_stages_without_animation_samples() {
+    let _lock = lock_performance_metrics();
+    let window_id = 91_743;
+    for extension_us in [250, 750] {
+        super::window::record_window_extension_present(
+            window_id,
+            crate::ActivePresentationTiming {
+                frame_pacing_wait: Duration::ZERO,
+                vsync_event_queue_delay: Duration::ZERO,
+                window_dispatch_delay: Duration::ZERO,
+                frame_started_at: Instant::now() - Duration::from_millis(8),
+                renderer_scene_prepare: Duration::from_micros(900),
+                renderer_extension_prepare: Duration::from_micros(extension_us),
+                submission_prepare: Duration::from_micros(300),
+                retained_resource_prepare: Duration::from_micros(400),
+                frame_prepare_upload: Duration::from_millis(2),
+                command_prepare: Duration::ZERO,
+                buffer_upload: Duration::ZERO,
+                atlas_upload: Duration::ZERO,
+                offscreen_render: Duration::ZERO,
+                backend_present: Duration::from_millis(4),
+                renderer_post_present: Duration::ZERO,
+            },
+        );
+    }
+    let sample = window_metrics_snapshot()
+        .into_iter()
+        .find(|sample| sample.window_id == window_id)
+        .expect("extension presentation should have window metrics");
+    assert_eq!(sample.extension_present.sample_count, 2);
+    assert!(sample.extension_present.total_p95_micros >= 8_000);
+    assert_eq!(sample.extension_present.scene_prepare_p95_micros, 900);
+    assert_eq!(sample.extension_present.extension_prepare_p95_micros, 750);
+    assert_eq!(sample.extension_present.submission_prepare_p95_micros, 300);
+    assert_eq!(sample.extension_present.retained_prepare_p95_micros, 400);
+    assert_eq!(sample.extension_present.frame_upload_p95_micros, 2_000);
+    assert_eq!(sample.extension_present.backend_present_p95_micros, 4_000);
+    assert!(sample.extension_present.other_p95_micros >= 400);
+    assert_eq!(sample.animation_sampled_present_count, 0);
+}
+
+#[test]
 fn reports_active_animation_sample_history_overflow() {
     let _lock = lock_performance_metrics();
     use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};

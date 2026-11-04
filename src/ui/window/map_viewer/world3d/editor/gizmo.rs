@@ -171,7 +171,7 @@ impl World3dEditorView {
         let Some((target, _)) = self.axis_target() else {
             return false;
         };
-        self.keys_down.clear();
+        self.navigation.clear_keys();
         self.look_drag = None;
         self.axis_drag = Some(AxisDrag {
             axis: handle.axis,

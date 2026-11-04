@@ -7,12 +7,12 @@ use gpui::{
     IntoElement, RendererExtension, RendererExtensionContext, RendererExtensionRenderer, Styled,
     Window, canvas,
 };
-use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{borrow::Cow, collections::HashMap};
 
 #[cfg(test)]
 pub(crate) const SHADER: &str = concat!(
@@ -75,6 +75,7 @@ pub struct SceneView {
     pub(super) scene: Arc<Scene>,
     pub(super) scene_transform: Mat4,
     pub(super) camera: Camera,
+    camera_sampler: Option<CameraSampler>,
     pub(super) textures: Arc<HashMap<TextureAssetId, Arc<TextureAsset>>>,
     pub(super) animation: Arc<[TransformTrack]>,
     pub(super) animation_time: Duration,
@@ -85,10 +86,20 @@ pub struct SceneView {
     pub(super) anisotropy_enabled: bool,
     pub(super) sampling: crate::TextureSampling,
     pub(super) voxel_shader: bool,
+    pub(super) continuous_presentation: bool,
     pub(super) fog: Option<DistanceFog>,
     pub(super) voxel_shading: VoxelShading,
     pub(super) screen_effects: Option<ScreenEffects>,
     pub(super) culling_bounds: Option<crate::Aabb>,
+}
+
+#[derive(Clone)]
+struct CameraSampler(Arc<dyn Fn(Instant) -> Camera + Send + Sync>);
+
+impl std::fmt::Debug for CameraSampler {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CameraSampler")
+    }
 }
 
 /// Selects the rectangle used for the viewport's camera projection.
@@ -167,6 +178,7 @@ impl SceneView {
             scene,
             scene_transform: Mat4::IDENTITY,
             camera,
+            camera_sampler: None,
             textures: Arc::default(),
             animation: Arc::from([]),
             animation_time: Duration::ZERO,
@@ -177,6 +189,7 @@ impl SceneView {
             anisotropy_enabled: false,
             sampling: crate::TextureSampling::Linear,
             voxel_shader: false,
+            continuous_presentation: false,
             fog: None,
             voxel_shading: VoxelShading::default(),
             screen_effects: None,
@@ -195,6 +208,7 @@ impl SceneView {
             scene,
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: Arc::from([]),
             animation_time: Duration::ZERO,
@@ -205,6 +219,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -213,6 +228,7 @@ impl SceneView {
     }
 
     /// Returns a scene view with a new camera and the same scene-view identity.
+    /// An attached camera sampler remains active and overrides this snapshot at presentation.
     #[must_use]
     pub fn with_camera(&self, camera: Camera) -> Self {
         Self {
@@ -220,6 +236,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -230,10 +247,36 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+        }
+    }
+
+    /// Samples a camera on the renderer thread for each presented 3D frame.
+    /// Input handlers may update the source without rebuilding the GPUI element tree.
+    /// The callback runs on the renderer thread and should return promptly.
+    #[must_use]
+    pub fn with_camera_sampler(
+        &self,
+        sample: impl Fn(Instant) -> Camera + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            camera_sampler: Some(CameraSampler(Arc::new(sample))),
+            continuous_presentation: true,
+            ..self.clone()
+        }
+    }
+
+    fn sample_camera(&self, now: Instant) -> Cow<'_, Self> {
+        match &self.camera_sampler {
+            Some(sampler) => Cow::Owned(Self {
+                camera: (sampler.0)(now),
+                ..self.clone()
+            }),
+            None => Cow::Borrowed(self),
         }
     }
 
@@ -277,6 +320,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -287,6 +331,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -302,6 +347,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -312,6 +358,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -347,6 +394,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -357,6 +405,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -381,6 +430,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -391,6 +441,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -410,6 +461,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -420,6 +472,7 @@ impl SceneView {
             anisotropy_enabled: enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -439,6 +492,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -449,6 +503,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -467,6 +522,16 @@ impl SceneView {
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
+            ..self.clone()
+        }
+    }
+
+    /// Requests compositor-owned frames without notifying or rebuilding the GPUI view each frame.
+    /// The window frame clock remains an upper bound on the presentation rate.
+    #[must_use]
+    pub fn with_continuous_presentation(&self) -> Self {
+        Self {
+            continuous_presentation: true,
             ..self.clone()
         }
     }
@@ -494,6 +559,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation,
             animation_time: time,
@@ -504,6 +570,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -521,6 +588,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures: self.textures.clone(),
             animation: self.animation.clone(),
             animation_time: time,
@@ -531,6 +599,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -572,6 +641,7 @@ impl SceneView {
             scene: self.scene.clone(),
             scene_transform: self.scene_transform,
             camera: self.camera,
+            camera_sampler: self.camera_sampler.clone(),
             textures,
             animation: self.animation.clone(),
             animation_time: self.animation_time,
@@ -582,6 +652,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
@@ -734,9 +805,10 @@ pub fn scene_view(scene_view: Arc<SceneView>) -> impl IntoElement {
 
 impl RendererExtension for SceneView {
     fn is_time_dependent(&self) -> bool {
-        self.screen_effects.is_some_and(|effects| {
-            effects.water || effects.clouds && effects.cloud_texture.is_some()
-        })
+        self.continuous_presentation
+            || self.screen_effects.is_some_and(|effects| {
+                effects.water || effects.clouds && effects.cloud_texture.is_some()
+            })
     }
     fn renderer_type(&self) -> std::any::TypeId {
         if self.screen_effects.is_some() {
@@ -1117,6 +1189,49 @@ mod tests {
         });
         assert_eq!(scene_view.id, updated.id);
         assert!(Arc::ptr_eq(scene_view.scene(), updated.scene()));
+    }
+
+    #[test]
+    fn continuous_presentation_survives_scene_and_camera_updates() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let view = SceneView::new(scene.clone(), camera);
+        assert!(!view.is_time_dependent());
+
+        let continuous = view.with_continuous_presentation();
+        assert!(continuous.is_time_dependent());
+        assert_eq!(view.id, continuous.id);
+        assert!(Arc::ptr_eq(&scene, continuous.scene()));
+
+        let updated = continuous
+            .with_scene(Arc::new(Scene::new()))
+            .with_camera(camera)
+            .with_screen_effects(None)
+            .unwrap();
+        assert!(updated.is_time_dependent());
+        assert_eq!(continuous.id, updated.id);
+    }
+
+    #[test]
+    fn camera_sampler_updates_retained_scene_without_rebuilding_view() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let position = Arc::new(std::sync::Mutex::new(1.0_f32));
+        let shared = position.clone();
+        let view = SceneView::new(scene.clone(), camera)
+            .with_camera_sampler(move |_| {
+                let x = *shared.lock().unwrap();
+                Camera {
+                    eye: Vec3::new(x, 0.0, 0.0),
+                    ..camera
+                }
+            })
+            .with_scene(scene.clone());
+        assert!(view.is_time_dependent());
+        assert_eq!(view.sample_camera(Instant::now()).camera.eye.x, 1.0);
+        *position.lock().unwrap() = 2.0;
+        assert_eq!(view.sample_camera(Instant::now()).camera.eye.x, 2.0);
+        assert!(Arc::ptr_eq(&scene, view.scene()));
     }
 
     #[test]

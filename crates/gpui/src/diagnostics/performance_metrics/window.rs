@@ -20,6 +20,29 @@ pub(crate) use native_vsync::{
 pub use path_mask::WindowPathMaskMetricsSnapshot;
 pub(crate) use path_mask::record_window_path_mask;
 
+/// Recent successful compositor frames driven by a time-dependent renderer extension.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowExtensionPresentMetricsSnapshot {
+    /// Number of retained timing samples; zero means no measured submission.
+    pub sample_count: usize,
+    /// 95th percentile from GPU-owner frame start through submission, in microseconds.
+    pub total_p95_micros: usize,
+    /// 95th percentile scene packing and extension preparation, in microseconds.
+    pub scene_prepare_p95_micros: usize,
+    /// 95th percentile extension preparation within scene preparation, in microseconds.
+    pub extension_prepare_p95_micros: usize,
+    /// 95th percentile submission slot polling and presentation-buffer preparation, in microseconds.
+    pub submission_prepare_p95_micros: usize,
+    /// 95th percentile retained-resource preparation, in microseconds.
+    pub retained_prepare_p95_micros: usize,
+    /// 95th percentile command preparation, uploads and offscreen work, in microseconds.
+    pub frame_upload_p95_micros: usize,
+    /// 95th percentile backend main render and present call, in microseconds.
+    pub backend_present_p95_micros: usize,
+    /// 95th percentile of each frame's time outside the listed non-overlapping stages.
+    pub other_p95_micros: usize,
+}
+
 /// Metrics for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowMetricsSnapshot {
@@ -87,6 +110,8 @@ pub struct WindowMetricsSnapshot {
     pub animation_sample_interval_max_micros: usize,
     /// Number of recent active-animation presentation intervals retained.
     pub animation_sample_interval_sample_count: usize,
+    /// Timing of compositor frames driven by time-dependent renderer extensions.
+    pub extension_present: WindowExtensionPresentMetricsSnapshot,
     /// DWM pacing and active-presentation counters for this window.
     pub native_vsync: WindowVSyncMetricsSnapshot,
     /// Backend readiness wake counts and queue delay, separate from DWM pacing.
@@ -247,6 +272,41 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                     let present_interval = metrics.present_interval_samples.percentiles();
                     let animation_sample_interval =
                         metrics.animation_sample_interval_samples.percentiles();
+                    let extension_total = metrics.extension_present_total_samples.percentiles();
+                    let extension_present = WindowExtensionPresentMetricsSnapshot {
+                        sample_count: extension_total.count,
+                        total_p95_micros: extension_total.p95_micros as usize,
+                        scene_prepare_p95_micros: metrics
+                            .extension_scene_prepare_samples
+                            .percentiles()
+                            .p95_micros as usize,
+                        extension_prepare_p95_micros: metrics
+                            .extension_prepare_samples
+                            .percentiles()
+                            .p95_micros
+                            as usize,
+                        submission_prepare_p95_micros: metrics
+                            .extension_submission_prepare_samples
+                            .percentiles()
+                            .p95_micros
+                            as usize,
+                        retained_prepare_p95_micros: metrics
+                            .extension_retained_prepare_samples
+                            .percentiles()
+                            .p95_micros
+                            as usize,
+                        frame_upload_p95_micros: metrics
+                            .extension_frame_upload_samples
+                            .percentiles()
+                            .p95_micros as usize,
+                        backend_present_p95_micros: metrics
+                            .extension_backend_present_samples
+                            .percentiles()
+                            .p95_micros
+                            as usize,
+                        other_p95_micros: metrics.extension_other_samples.percentiles().p95_micros
+                            as usize,
+                    };
                     WindowMetricsSnapshot {
                         window_id,
                         present_fps_milli,
@@ -280,6 +340,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                             .max_micros()
                             as usize,
                         animation_sample_interval_sample_count: animation_sample_interval.count,
+                        extension_present,
                         native_vsync: native_vsync::snapshot(metrics),
                         backend_ready: backend_ready::snapshot(metrics),
                         path_mask: metrics.path_mask.snapshot(),
@@ -306,6 +367,43 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn record_window_extension_present(
+    window_id: u64,
+    timing: crate::ActivePresentationTiming,
+) {
+    let total = timing.frame_started_at.elapsed();
+    let measured = timing.renderer_scene_prepare
+        + timing.submission_prepare
+        + timing.retained_resource_prepare
+        + timing.frame_prepare_upload
+        + timing.backend_present;
+    if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
+        let metrics = window_metrics.entry(window_id).or_default();
+        metrics.extension_present_total_samples.record(total);
+        metrics
+            .extension_scene_prepare_samples
+            .record(timing.renderer_scene_prepare);
+        metrics
+            .extension_prepare_samples
+            .record(timing.renderer_extension_prepare);
+        metrics
+            .extension_submission_prepare_samples
+            .record(timing.submission_prepare);
+        metrics
+            .extension_retained_prepare_samples
+            .record(timing.retained_resource_prepare);
+        metrics
+            .extension_frame_upload_samples
+            .record(timing.frame_prepare_upload);
+        metrics
+            .extension_backend_present_samples
+            .record(timing.backend_present);
+        metrics
+            .extension_other_samples
+            .record(total.saturating_sub(measured));
+    }
 }
 
 /// Per-window frame accounting for one frame decision.

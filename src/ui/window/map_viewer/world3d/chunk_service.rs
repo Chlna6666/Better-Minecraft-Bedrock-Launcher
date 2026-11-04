@@ -54,6 +54,26 @@ const MESH_BAND_HEIGHT: f64 = MESH_BAND_BLOCKS as f64;
 const FAR_LOD_SCALE: i32 = 4;
 const TEXTURE_MAX_DIMENSION: u32 = 4096;
 const CHUNK_MESH_ID_SALT: u64 = 0x574f_524c_4433_444d;
+const MATERIAL_INDEX_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+
+fn material_index_flush_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= MATERIAL_INDEX_FLUSH_INTERVAL)
+}
+
+#[cfg(test)]
+#[test]
+fn material_index_flush_coalesces_status_updates() {
+    let first = Instant::now();
+    assert!(material_index_flush_due(None, first));
+    assert!(!material_index_flush_due(
+        Some(first),
+        first + MATERIAL_INDEX_FLUSH_INTERVAL - Duration::from_millis(1)
+    ));
+    assert!(material_index_flush_due(
+        Some(first),
+        first + MATERIAL_INDEX_FLUSH_INTERVAL
+    ));
+}
 
 mod texture_mips;
 #[cfg(test)]
@@ -1913,6 +1933,7 @@ struct Worker {
     last_texture_decode_ms: u64,
     info: ChunkServiceInfo,
     last_status_at: Option<Instant>,
+    last_material_index_flush_at: Option<Instant>,
 }
 
 impl Worker {
@@ -2029,6 +2050,7 @@ impl Worker {
             last_texture_decode_ms: 0,
             info,
             last_status_at: None,
+            last_material_index_flush_at: None,
         }
     }
 
@@ -2117,8 +2139,12 @@ impl Worker {
     }
 
     fn publish_status(&mut self, tx: &SyncSender<ChunkServiceEvent>) {
-        // Coalesce disk writes outside per-face and parallel material lookups.
-        self.resolver.flush_material_index();
+        // Material lookups are in memory; avoid rewriting the growing index on every status update.
+        let now = Instant::now();
+        if material_index_flush_due(self.last_material_index_flush_at, now) {
+            self.resolver.flush_material_index();
+            self.last_material_index_flush_at = Some(now);
+        }
         self.mesh_assets.prune();
         self.textures_by_path
             .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));

@@ -25,6 +25,10 @@ fn needs_presentation_clock_upload(upload: &FrameUpload) -> bool {
         || !upload.animated_primitives.is_empty()
 }
 
+fn extension_ranges_can_be_reclaimed(pending_before: usize, pending_after: usize) -> bool {
+    pending_before > 0 && pending_after == 0
+}
+
 fn submit_presentation_buffers(
     backend: &SharedBackend,
     batch: &BufferUploadBatch<'_>,
@@ -195,6 +199,7 @@ impl NovaRenderer {
     }
 
     fn poll_pending_submissions(&mut self) -> Result<()> {
+        let pending_before = self.pending_submissions.len();
         let mut index = 0;
         while index < self.pending_submissions.len() {
             while let Some(predecessor) = self.pending_submissions[index]
@@ -235,6 +240,14 @@ impl NovaRenderer {
                     return Err(gfx_core::Error::Backend(error).into());
                 }
             }
+        }
+        // The completed tail submission proves that all earlier extension reads on this
+        // renderer's ordered queue have finished. Reuse suballocated mesh ranges without
+        // forcing a queue-idle wait during normal chunk streaming.
+        if extension_ranges_can_be_reclaimed(pending_before, self.pending_submissions.len())
+            && self.renderer_registry.needs_gpu_completion()
+        {
+            self.renderer_registry.gpu_work_completed();
         }
         Ok(())
     }
@@ -514,6 +527,13 @@ mod presentation_clock_upload_tests {
 #[cfg(test)]
 mod resource_fence_recovery_tests {
     use super::*;
+
+    #[test]
+    fn extension_ranges_wait_for_all_tracked_submissions() {
+        assert!(!extension_ranges_can_be_reclaimed(0, 0));
+        assert!(!extension_ranges_can_be_reclaimed(2, 1));
+        assert!(extension_ranges_can_be_reclaimed(2, 0));
+    }
 
     #[test]
     fn failed_gpu_fence_requeues_complete_damage_in_latest_geometry() {
