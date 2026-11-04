@@ -3,7 +3,7 @@ use gpui_3d::{
     ProjectionRegion, Quat, RotationTrack, Scene, SceneView, ShadingModel, TextureAsset,
     TextureSampling, Transform, TransformTrack, TriangleEdgeMask, Vec2, Vec3, Vertex,
 };
-use image::{DynamicImage, GenericImageView as _};
+use image::{DynamicImage, GenericImageView as _, Rgba, RgbaImage};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,8 +14,8 @@ use super::custom_geometry::{
 };
 use super::custom_geometry_animation::CustomGeometryBoneRole;
 use super::geometry::{
-    ColorRun, CuboidSize, FaceGrid, SKIN_MIN_SIZE, SkinVertex,
-    face_rect_corners, face_region, skin_preview_faces,
+    ColorRun, CuboidSize, FaceGrid, SKIN_MIN_SIZE, SkinVertex, face_rect_corners, face_region,
+    skin_preview_faces,
 };
 use super::uv::{CuboidUv, TextureRegion, arm_uv, body_uv, head_uv, leg_uv};
 use crate::core::minecraft::skin_pack_preview::open_skin_texture;
@@ -40,6 +40,13 @@ pub(super) enum SkinLayerMode {
     Extruded,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CapePreviewMode {
+    Cape,
+    ElytraFolded,
+    ElytraSpread,
+}
+
 impl SkinLayerMode {
     pub(super) const fn is_extruded(self) -> bool {
         matches!(self, Self::Extruded)
@@ -56,7 +63,7 @@ pub(super) struct SkinPreviewGeometrySource {
 #[derive(Clone)]
 pub(super) struct SkinPreviewMeshes {
     scene_view: Arc<SceneView>,
-    texture: Arc<TextureAsset>,
+    _textures: Vec<Arc<TextureAsset>>,
     walk_period: Duration,
     walk_track_count: usize,
     front_yaw: f32,
@@ -111,6 +118,8 @@ pub(super) fn skin_player_mesh(
     slim_arms: bool,
     layer_mode: SkinLayerMode,
     geometry_source: Option<SkinPreviewGeometrySource>,
+    cape_texture_path: Option<&Path>,
+    cape_mode: CapePreviewMode,
 ) -> Result<Arc<SkinPreviewMeshes>, String> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<SkinPreviewMeshes>>>> = OnceLock::new();
 
@@ -119,7 +128,7 @@ pub(super) fn skin_player_mesh(
         |geometry| format!("geometry={}|id={}", geometry.path, geometry.identifier),
     );
     let cache_key = format!(
-        "{}|slim={slim_arms}|layer={layer_mode:?}|{geometry_cache_key}",
+        "{}|slim={slim_arms}|layer={layer_mode:?}|{geometry_cache_key}|cape={cape_texture_path:?}|cape_mode={cape_mode:?}",
         texture_path.to_string_lossy(),
     );
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -129,8 +138,18 @@ pub(super) fn skin_player_mesh(
         return Ok(meshes.clone());
     }
 
-    let image = open_skin_texture(texture_path).map_err(|error| format!("{error:#}"))?;
+    let image = if cape_texture_path.is_some() {
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, Rgba([145, 153, 161, 255])))
+    } else {
+        open_skin_texture(texture_path).map_err(|error| format!("{error:#}"))?
+    };
     let texture = skin_texture_asset(&image)?;
+    let cape_texture = cape_texture_path
+        .map(|path| open_skin_texture(path).map_err(|error| format!("{error:#}")))
+        .transpose()?
+        .as_ref()
+        .map(skin_texture_asset)
+        .transpose()?;
     let meshes = if let Some(geometry_source) = geometry_source.as_ref()
         && let Some(custom_mesh) = build_custom_geometry_mesh(
             &image,
@@ -139,7 +158,13 @@ pub(super) fn skin_player_mesh(
         )? {
         Arc::new(build_custom_geometry_meshes(image, texture, custom_mesh)?)
     } else {
-        Arc::new(build_skin_player_meshes(texture, slim_arms, layer_mode)?)
+        Arc::new(build_skin_player_meshes_with_cape(
+            texture,
+            slim_arms,
+            layer_mode,
+            cape_texture,
+            cape_mode,
+        )?)
     };
     if let Ok(mut cache) = cache.lock() {
         cache.insert(cache_key, meshes.clone());
@@ -294,6 +319,16 @@ fn build_skin_player_meshes(
     texture: Arc<TextureAsset>,
     slim_arms: bool,
     layer_mode: SkinLayerMode,
+ ) -> Result<SkinPreviewMeshes, String> {
+    build_skin_player_meshes_with_cape(texture, slim_arms, layer_mode, None, CapePreviewMode::Cape)
+}
+
+fn build_skin_player_meshes_with_cape(
+    texture: Arc<TextureAsset>,
+    slim_arms: bool,
+    layer_mode: SkinLayerMode,
+    cape_texture: Option<Arc<TextureAsset>>,
+    cape_mode: CapePreviewMode,
 ) -> Result<SkinPreviewMeshes, String> {
     let (width, height) = (texture.width(), texture.height());
     if width < SKIN_MIN_SIZE || height < 32 {
@@ -393,7 +428,13 @@ fn build_skin_player_meshes(
                 }),
             )
             .map_err(|error| error.to_string())?;
-        insert_mesh_node(&mut scene, node, mesh_offset, part.base_mesh, &base_material)?;
+        insert_mesh_node(
+            &mut scene,
+            node,
+            mesh_offset,
+            part.base_mesh,
+            &base_material,
+        )?;
         if let Some(layer_mesh) = part.layer_mesh {
             // The overlay shares its part's pivot so both meshes swing together.
             insert_mesh_node(&mut scene, node, mesh_offset, layer_mesh, &layer_material)?;
@@ -403,7 +444,80 @@ fn build_skin_player_meshes(
         }
     }
 
-    finish_skin_preview(scene, texture, tracks, VANILLA_PREVIEW_FRONT_YAW)
+    if let Some(cape_texture) = cape_texture.as_ref() {
+        insert_cape_preview(&mut scene, &mut tracks, cape_texture, cape_mode)?;
+    }
+    finish_skin_preview_with_cape(
+        scene,
+        texture,
+        cape_texture,
+        tracks,
+        VANILLA_PREVIEW_FRONT_YAW,
+    )
+}
+
+fn insert_cape_preview(
+    scene: &mut Scene,
+    tracks: &mut Vec<TransformTrack>,
+    texture: &Arc<TextureAsset>,
+    mode: CapePreviewMode,
+) -> Result<(), String> {
+    if texture.width() < 64 || texture.height() < 32 {
+        return Err("披风纹理尺寸过小".into());
+    }
+    let material = textured_skin_material(texture, AlphaMode::Mask);
+    let parts: &[(f32, u32, f32)] = match mode {
+        CapePreviewMode::Cape => &[(0.0, 0, 0.0)],
+        CapePreviewMode::ElytraFolded => &[(-2.5, 0, 0.0), (2.5, 5, 0.0)],
+        CapePreviewMode::ElytraSpread => &[(-2.5, 0, -0.9), (2.5, 5, 0.9)],
+    };
+    for &(x, uv_x, yaw) in parts {
+        let width = if mode == CapePreviewMode::Cape {
+            10.0
+        } else {
+            5.0
+        };
+        let mut uv = super::uv::uv_box(uv_x, 0, width as u32, 16, 1);
+        std::mem::swap(&mut uv.front, &mut uv.back);
+        let mesh = Arc::new(build_cuboid_mesh_atlas(
+            CuboidSize {
+                width,
+                height: 16.0,
+                depth: 1.0,
+            },
+            uv,
+            0.0,
+            32.0,
+        )?);
+        let rotation = Quat::from_axis_angle(Vec3::Y, yaw).ok_or("无效的鞘翅展开角度")?;
+        let pivot = scene
+            .insert(
+                None,
+                Node::new().with_transform(Transform {
+                    translation: Vec3::new(x, 10.0, -2.6),
+                    rotation,
+                    ..Transform::IDENTITY
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        insert_mesh_node(scene, pivot, [0.0, -8.0, 0.0], mesh, &material)?;
+        if mode == CapePreviewMode::Cape {
+            tracks.push(cape_motion_track(pivot)?);
+        }
+    }
+    Ok(())
+}
+
+fn cape_motion_track(node: gpui_3d::NodeId) -> Result<TransformTrack, String> {
+    let mut keys = Vec::with_capacity(5);
+    for step in 0..=4u64 {
+        let time = Duration::from_nanos((WALK_PERIOD.as_nanos() * u128::from(step) / 4) as u64);
+        let angle = if step % 2 == 0 { 0.08 } else { 0.2 };
+        let rotation = Quat::from_axis_angle(Vec3::X, angle).ok_or("无效的披风动画角度")?;
+        keys.push(Keyframe::new(time, rotation));
+    }
+    Ok(TransformTrack::new(node)
+        .with_rotation(RotationTrack::new(keys).map_err(|error| error.to_string())?))
 }
 
 /// Inserts one animated part: a pivot node plus one mesh node offset into place.
@@ -454,6 +568,16 @@ fn finish_skin_preview(
     tracks: Vec<TransformTrack>,
     front_yaw: f32,
 ) -> Result<SkinPreviewMeshes, String> {
+    finish_skin_preview_with_cape(scene, texture, None, tracks, front_yaw)
+}
+
+fn finish_skin_preview_with_cape(
+    scene: Scene,
+    texture: Arc<TextureAsset>,
+    cape_texture: Option<Arc<TextureAsset>>,
+    tracks: Vec<TransformTrack>,
+    front_yaw: f32,
+) -> Result<SkinPreviewMeshes, String> {
     let bounds = scene.bounds().map_err(|error| error.to_string())?;
     let walk_track_count = tracks.len();
     let camera = Camera::orthographic(
@@ -464,8 +588,12 @@ fn finish_skin_preview(
         0.1,
         100.0,
     );
+    let mut textures = vec![texture];
+    if let Some(cape_texture) = cape_texture {
+        textures.push(cape_texture);
+    }
     let scene_view = SceneView::new(Arc::new(scene), camera)
-        .with_textures([texture.clone()])
+        .with_textures(textures.clone())
         .map_err(|error| error.to_string())?
         .with_animation(tracks, Duration::ZERO)
         .map_err(|error| error.to_string())?
@@ -478,7 +606,7 @@ fn finish_skin_preview(
 
     Ok(SkinPreviewMeshes {
         scene_view: Arc::new(scene_view),
-        texture,
+        _textures: textures,
         walk_period: WALK_PERIOD,
         walk_track_count,
         front_yaw,
@@ -558,6 +686,15 @@ fn push_part(
 /// and another side quad per overlay texel. Neighbouring texel quads also overlapped along the
 /// texture's vertical axis, which produced the see-through seams in the preview.
 fn build_cuboid_mesh(size: CuboidSize, uv: CuboidUv, inflate: f32) -> Result<Mesh, String> {
+    build_cuboid_mesh_atlas(size, uv, inflate, SKIN_ATLAS_UNITS)
+}
+
+fn build_cuboid_mesh_atlas(
+    size: CuboidSize,
+    uv: CuboidUv,
+    inflate: f32,
+    atlas_height: f32,
+) -> Result<Mesh, String> {
     let grid = FaceGrid {
         width: 1,
         height: 1,
@@ -575,7 +712,7 @@ fn build_cuboid_mesh(size: CuboidSize, uv: CuboidUv, inflate: f32) -> Result<Mes
     for face in skin_preview_faces() {
         let region = face_region(uv, *face);
         let corners = face_rect_corners(size, *face, grid, run, inflate);
-        let texture = face_texture_rect(region);
+        let texture = face_texture_rect(region, atlas_height);
         let shade = shade_cuboid_face(*face);
         let base = u32::try_from(vertices.len()).map_err(|error| error.to_string())?;
         for corner in 0..4 {
@@ -595,11 +732,11 @@ fn build_cuboid_mesh(size: CuboidSize, uv: CuboidUv, inflate: f32) -> Result<Mes
 }
 
 /// Texture rectangle for one atlas face in the corner order used by [`face_rect_corners`].
-fn face_texture_rect(region: TextureRegion) -> [[f32; 2]; 4] {
+fn face_texture_rect(region: TextureRegion, atlas_height: f32) -> [[f32; 2]; 4] {
     let left = region.x as f32 / SKIN_ATLAS_UNITS;
     let right = (region.x + region.width) as f32 / SKIN_ATLAS_UNITS;
-    let top = region.y as f32 / SKIN_ATLAS_UNITS;
-    let bottom = (region.y + region.height) as f32 / SKIN_ATLAS_UNITS;
+    let top = region.y as f32 / atlas_height;
+    let bottom = (region.y + region.height) as f32 / atlas_height;
     [[left, bottom], [right, bottom], [right, top], [left, top]]
 }
 

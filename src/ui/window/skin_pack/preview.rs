@@ -1,5 +1,5 @@
 use super::mesh::{
-    SkinLayerMode, SkinPreviewGeometrySource, SkinPreviewMeshes, skin_player_mesh,
+    CapePreviewMode, SkinLayerMode, SkinPreviewGeometrySource, SkinPreviewMeshes, skin_player_mesh,
     skin_preview_scene_view,
 };
 use super::selector::{
@@ -53,6 +53,7 @@ pub struct SkinPreviewWindowSkin {
     pub preview_path: Option<SharedString>,
     pub geometry_path: Option<SharedString>,
     pub geometry_identifier: Option<SharedString>,
+    pub cape_texture_path: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -75,6 +76,7 @@ pub struct SkinPreviewWindowView {
     view_zoom: f32,
     drag_position: Option<Point<Pixels>>,
     layer_mode: SkinLayerMode,
+    cape_mode: CapePreviewMode,
     selector_expanded: bool,
     selector_page: usize,
     _subscriptions: Vec<Subscription>,
@@ -87,7 +89,14 @@ impl SkinPreviewWindowView {
                 cx.notify();
             }),
             cx.observe_global_in::<I18n>(window, |this, window, cx| {
-                let title = t!("SkinPreview.window_title", name = &this.title);
+                let title = if this
+                    .current_skin()
+                    .is_some_and(|skin| skin.cape_texture_path.is_some())
+                {
+                    t!("CapePreview.window_title", name = &this.title)
+                } else {
+                    t!("SkinPreview.window_title", name = &this.title)
+                };
                 window.set_title(title.as_ref());
                 cx.notify();
             }),
@@ -107,6 +116,7 @@ impl SkinPreviewWindowView {
             view_zoom: SKIN_PREVIEW_DEFAULT_ZOOM,
             drag_position: None,
             layer_mode: SkinLayerMode::Extruded,
+            cape_mode: CapePreviewMode::Cape,
             selector_expanded: false,
             selector_page,
             _subscriptions: subscriptions,
@@ -130,6 +140,8 @@ impl SkinPreviewWindowView {
             .as_ref()
             .is_some_and(|label| label.as_ref().eq_ignore_ascii_case("Alex"));
         let layer_mode = self.layer_mode;
+        let cape_mode = self.cape_mode;
+        let cape_texture_path = skin.cape_texture_path.map(|path| path.to_string());
         let geometry_source = skin
             .geometry_path
             .as_ref()
@@ -147,6 +159,8 @@ impl SkinPreviewWindowView {
                         slim_arms,
                         layer_mode,
                         geometry_source,
+                        cape_texture_path.as_deref().map(Path::new),
+                        cape_mode,
                     )
                 })
                 .await
@@ -234,6 +248,15 @@ impl SkinPreviewWindowView {
             SkinLayerMode::Flat
         } else {
             SkinLayerMode::Extruded
+        };
+        self.load_mesh(cx);
+    }
+
+    fn toggle_cape_mode(&mut self, cx: &mut Context<Self>) {
+        self.cape_mode = match self.cape_mode {
+            CapePreviewMode::Cape => CapePreviewMode::ElytraFolded,
+            CapePreviewMode::ElytraFolded => CapePreviewMode::ElytraSpread,
+            CapePreviewMode::ElytraSpread => CapePreviewMode::Cape,
         };
         self.load_mesh(cx);
     }
@@ -401,10 +424,7 @@ impl SkinPreviewWindowView {
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                         let line_height = window.line_height();
                         let delta_y = event.delta.pixel_delta(line_height).y / px(1.0);
-                        let factor = skin_preview_wheel_zoom_factor(
-                            delta_y,
-                            line_height / px(1.0),
-                        );
+                        let factor = skin_preview_wheel_zoom_factor(delta_y, line_height / px(1.0));
                         if (factor - 1.0).abs() > f32::EPSILON {
                             this.zoom_preview_by(factor, cx);
                         }
@@ -433,6 +453,14 @@ impl Render for SkinPreviewWindowView {
         let colors = self.theme_colors(now, cx);
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
+        let is_cape_preview = self
+            .current_skin()
+            .is_some_and(|skin| skin.cape_texture_path.is_some());
+        let cape_mode_label = match self.cape_mode {
+            CapePreviewMode::Cape => t!("CapePreview.mode_cape"),
+            CapePreviewMode::ElytraFolded => t!("CapePreview.mode_elytra_folded"),
+            CapePreviewMode::ElytraSpread => t!("CapePreview.mode_elytra_spread"),
+        };
         let layer_label = if self.layer_mode.is_extruded() {
             t!("SkinPreview.layer_3d")
         } else {
@@ -489,13 +517,15 @@ impl Render for SkinPreviewWindowView {
                                             .text_ellipsis()
                                             .text_size(px(11.))
                                             .text_color(colors.text_secondary)
-                                            .child(t!(
-                                                "SkinPreview.subtitle",
-                                                layer = &layer_label,
-                                                skin = &skin_label,
-                                                counter = &skin_counter,
-                                                model = &model_label
-                                            )),
+                                            .child(if is_cape_preview {
+                                                SharedString::from(format!("{skin_label} · {skin_counter} · {cape_mode_label}"))
+                                            } else {
+                                                t!("SkinPreview.subtitle",
+                                                    layer = &layer_label,
+                                                    skin = &skin_label,
+                                                    counter = &skin_counter,
+                                                    model = &model_label)
+                                            }),
                                     ),
                             ),
                     )
@@ -534,7 +564,13 @@ impl Render for SkinPreviewWindowView {
                                     ),
                                 )
                             })
-                            .child(
+                            .when(is_cape_preview, |this| this.child(
+                                self.render_button(&colors, "cape-preview-mode", lucide_gpui::icon!(wind), true)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.toggle_cape_mode(cx);
+                                    })),
+                            ))
+                            .when(!is_cape_preview, |this| this.child(
                                 self.render_button(
                                     &colors,
                                     "skin-preview-toggle-layer-mode",
@@ -547,7 +583,7 @@ impl Render for SkinPreviewWindowView {
                                         this.toggle_layer_mode(cx);
                                     }),
                                 ),
-                            )
+                            ))
                             .child(
                                 self.render_button(
                                     &colors,
@@ -614,7 +650,15 @@ impl Render for SkinPreviewWindowView {
 }
 
 pub fn open_skin_preview_window(init: SkinPreviewWindowInit, cx: &mut App) {
-    let title = t!("SkinPreview.window_title", name = &init.title).to_string();
+    let title = if init
+        .skins
+        .first()
+        .is_some_and(|skin| skin.cape_texture_path.is_some())
+    {
+        t!("CapePreview.window_title", name = &init.title).to_string()
+    } else {
+        t!("SkinPreview.window_title", name = &init.title).to_string()
+    };
     let options = skin_preview_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
@@ -671,7 +715,6 @@ fn centered_status(colors: &ThemeColors, label: SharedString) -> AnyElement {
         .into_any_element()
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -715,7 +758,8 @@ mod tests {
     #[test]
     fn wheel_zoom_clamps_single_event_spikes() {
         let clamped = skin_preview_wheel_zoom_factor(10_000.0, 16.0);
-        let expected = SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE.powf(SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT);
+        let expected =
+            SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE.powf(SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT);
         assert!((clamped - expected).abs() < 1.0e-6);
     }
 }
