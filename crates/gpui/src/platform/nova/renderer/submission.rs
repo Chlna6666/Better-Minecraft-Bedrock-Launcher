@@ -29,6 +29,10 @@ fn extension_ranges_can_be_reclaimed(pending_before: usize, pending_after: usize
     pending_before > 0 && pending_after == 0
 }
 
+fn should_poll_full_queue_before_pack(mode: GpuSubmissionMode, pending: usize) -> bool {
+    mode != GpuSubmissionMode::Synchronous && pending >= MAX_IN_FLIGHT_SUBMISSIONS
+}
+
 fn submit_presentation_buffers(
     backend: &SharedBackend,
     batch: &BufferUploadBatch<'_>,
@@ -87,6 +91,21 @@ fn mark_failed_submission_for_retry(
 }
 
 impl NovaRenderer {
+    /// Skip Scene packing when every deferred frame slot still has a GPU reader.
+    /// The full preflight remains after packing because path and atlas barriers
+    /// depend on the newly packed frame.
+    pub(super) fn defer_full_queue_before_pack(&mut self) -> Result<bool> {
+        if !should_poll_full_queue_before_pack(
+            self.presentation_submission_mode(),
+            self.pending_submissions.len(),
+        ) {
+            return Ok(false);
+        }
+        self.poll_pending_submissions()?;
+        self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS;
+        Ok(self.submission_retry_pending)
+    }
+
     /// Preflight before any target rebind or upload. Pending GPU readers keep their resources;
     /// the owner retries this packet without occupying the shared thread in a fence wait.
     pub(super) fn frame_submission_is_ready(&mut self, scene: &crate::Scene) -> Result<bool> {
@@ -527,6 +546,22 @@ mod presentation_clock_upload_tests {
 #[cfg(test)]
 mod resource_fence_recovery_tests {
     use super::*;
+
+    #[test]
+    fn full_deferred_queue_is_polled_before_scene_pack() {
+        assert!(!should_poll_full_queue_before_pack(
+            GpuSubmissionMode::Deferred,
+            MAX_IN_FLIGHT_SUBMISSIONS - 1,
+        ));
+        assert!(should_poll_full_queue_before_pack(
+            GpuSubmissionMode::Deferred,
+            MAX_IN_FLIGHT_SUBMISSIONS,
+        ));
+        assert!(!should_poll_full_queue_before_pack(
+            GpuSubmissionMode::Synchronous,
+            MAX_IN_FLIGHT_SUBMISSIONS,
+        ));
+    }
 
     #[test]
     fn extension_ranges_wait_for_all_tracked_submissions() {

@@ -600,6 +600,9 @@ impl NovaRenderer {
             // rectangles; the first successful frame must repaint the new extent.
             force_full_drawable_damage_after_resize(packet, self.active_size);
         }
+        if self.defer_full_queue_before_pack()? {
+            return Ok(false);
+        }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
             &packet.paint.scene,
@@ -1097,6 +1100,9 @@ impl NovaRenderer {
             resolve_surface_packet(&mut packet, !supports_partial);
             if self.swapchain_warmup_frames != 0 {
                 force_full_drawable_damage_after_resize(&mut packet, self.active_size);
+            }
+            if self.defer_full_queue_before_pack()? {
+                return Ok(false);
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
