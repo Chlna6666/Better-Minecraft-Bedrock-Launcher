@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::core::minecraft::capes::{CapePackInfo, import_pack, list_packs};
 use crate::core::minecraft::paths::GamePathOptions;
 use crate::core::minecraft::resource_packs::McPackInfo;
 use crate::core::minecraft::screenshots::McScreenshotInfo;
@@ -61,6 +62,20 @@ pub async fn load_version_config(folder_name: String) -> Result<VersionConfig, S
 pub async fn load_mods(version_folder: String) -> Result<Vec<ManagedModInfo>, String> {
     run_blocking(BlockingTaskOptions::hidden("读取 Mod"), move || {
         load_mods_blocking(&version_folder)
+    })
+    .await
+}
+
+pub async fn load_capes(options: GamePathOptions) -> Result<Vec<CapePackInfo>, String> {
+    run_blocking(BlockingTaskOptions::hidden("读取披风包"), move || {
+        Ok(list_packs(&options))
+    })
+    .await
+}
+
+pub async fn import_cape(options: GamePathOptions, path: PathBuf) -> Result<PathBuf, String> {
+    run_blocking(BlockingTaskOptions::hidden("导入披风包"), move || {
+        import_pack(&options, &path)
     })
     .await
 }

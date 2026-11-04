@@ -59,6 +59,7 @@ fn map_delete_type_to_dir(delete_type: &str) -> Option<&'static str> {
         "maps" => Some("minecraftWorlds"),
         "mapTemplates" => Some("world_templates"),
         "skins" => Some("skin_packs"),
+        "capes" => Some("capes"),
         "behaviorPacks" => Some("behavior_packs"),
         "resourcePacks" => Some("resource_packs"),
         _ => None,
@@ -88,7 +89,7 @@ fn resolve_delete_asset_path(payload: &DeleteAssetPayload) -> Result<PathBuf, St
 
     let is_shared_preferred = matches!(
         payload.delete_type.as_str(),
-        "resourcePacks" | "behaviorPacks" | "skins"
+        "resourcePacks" | "behaviorPacks" | "skins" | "capes"
     );
     let parent_dir = resolve_target_parent(&options, dir_name, is_shared_preferred)
         .ok_or_else(|| "Could not resolve target directory".to_string())?;

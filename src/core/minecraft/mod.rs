@@ -4,6 +4,7 @@ pub mod appx;
 #[path = "appx/utils.rs"]
 pub mod appx_utils;
 pub mod assets;
+pub mod capes;
 pub mod entity_avatar;
 pub mod gdk;
 pub mod import;
