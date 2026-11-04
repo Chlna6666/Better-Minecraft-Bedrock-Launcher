@@ -32,7 +32,7 @@ pub(crate) fn animation_queue_snapshot() -> AnimationQueueSnapshot {
 }
 
 fn atomic_saturating_sub(value: &AtomicUsize, amount: usize) {
-    let _ = value.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+    let _ = value.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
         Some(current.saturating_sub(amount))
     });
 }
@@ -102,7 +102,7 @@ impl AnimationStream {
     fn reserve_queued_frame(&self, byte_len: usize, capacity: usize) -> bool {
         if self
             .queued_frame_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 (queued < self.prefetch_frames).then_some(queued.saturating_add(1))
             })
             .is_err()

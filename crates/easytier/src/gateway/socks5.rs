@@ -166,7 +166,7 @@ type Socks5EntrySet = Arc<DashMap<Socks5Entry, Socks5EntryData>>;
 
 fn increment_entry_count(entry_count: &AtomicUsize) -> (usize, usize) {
     let old_entry_count = entry_count
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             count.checked_add(1)
         })
         .unwrap_or_else(|count| count);
@@ -184,7 +184,7 @@ fn decrement_entry_count_by(entry_count: &AtomicUsize, delta: usize) -> (usize, 
     }
 
     let old_entry_count = entry_count
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             Some(count.saturating_sub(delta))
         })
         .unwrap_or_else(|count| count);

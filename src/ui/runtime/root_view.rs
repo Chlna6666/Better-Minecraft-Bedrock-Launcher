@@ -3,6 +3,9 @@ use gpui::{
     Subscription, Window, div,
 };
 
+#[cfg(target_os = "linux")]
+use gpui::BorrowAppContext as _;
+
 pub struct RootView {
     window_id: u64,
     view: AnyView,
@@ -146,16 +149,16 @@ impl RootView {
                                 let runtime = cx
                                     .global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
                                 runtime.visible
-                            && runtime.status
-                                != crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
+                                    && runtime.status
+                                        != crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
                             };
                             if should_dismiss {
                                 cx.update_global(
-                            |runtime: &mut crate::ui::state::linux_runtime::LinuxRuntimeState,
-                             _cx| {
-                                runtime.dismiss();
-                            },
-                        );
+                                    |runtime: &mut crate::ui::state::linux_runtime::LinuxRuntimeState,
+                                     _cx| {
+                                        runtime.dismiss();
+                                    },
+                                );
                             }
                             cx.notify();
                         },
