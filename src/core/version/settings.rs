@@ -29,6 +29,8 @@ pub struct VersionConfig {
     // Disable mod loading/injection (managed by BLoader.dll). Default: false (load mods).
     #[serde(default)]
     pub disable_mod_loading: bool,
+    #[serde(default = "default_true")]
+    pub enable_cosmetics: bool,
     #[serde(default)]
     pub lock_mouse_on_launch: bool,
     #[serde(default = "default_unlock_hotkey")]
@@ -101,6 +103,7 @@ impl Default for VersionConfig {
             enable_redirection: false,
             editor_mode: false,
             disable_mod_loading: false,
+            enable_cosmetics: true,
             lock_mouse_on_launch: false,
             unlock_mouse_hotkey: "ALT".to_string(),
             reduce_pixels: 20,

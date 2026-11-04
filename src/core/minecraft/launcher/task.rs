@@ -313,6 +313,7 @@ fn ensure_file_in_dir(dir: &Path, filename: &str, content: &[u8]) -> Result<Path
 fn write_bloader_config(
     dir: &Path,
     disable_mod_loading: bool,
+    enable_cosmetics: bool,
     enable_debug_console: bool,
     enable_redirection: bool,
     file_redirections: Value,
@@ -329,6 +330,7 @@ fn write_bloader_config(
         "disable_mod_loading".to_string(),
         json!(disable_mod_loading),
     );
+    config.insert("enable_cosmetics".to_string(), json!(enable_cosmetics));
     config.insert(
         "enable_debug_console".to_string(),
         json!(enable_debug_console),
@@ -705,6 +707,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             let _ = write_bloader_config(
                 exe_dir,
                 version_config.disable_mod_loading,
+                version_config.enable_cosmetics,
                 version_config.enable_debug_console,
                 version_config.enable_redirection,
                 json!(file_redirections),
