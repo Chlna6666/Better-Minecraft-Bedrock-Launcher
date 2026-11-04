@@ -159,110 +159,126 @@ pub(super) fn render_tab_bar(
     let view_handle = cx.entity().downgrade();
     let _i18n = cx.global::<I18n>().clone();
 
-    UnderlineTabs::new(
-        "manage-primary-tabs",
-        colors,
-        vec![
-            TabItem::new(
-                "manage-tab-statistics",
-                t!("ManagePage.tabs.statistics"),
-                state.tab == ManageTab::Statistics,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::Statistics, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(activity)),
-            TabItem::new(
-                "manage-tab-mod",
-                t!("ManagePage.tabs.mods"),
-                state.tab == ManageTab::Mod,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::Mod, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(layers)),
-            TabItem::new(
-                "manage-tab-pack",
-                t!("ManagePage.tabs.resource"),
-                state.tab == ManageTab::ResourcePack,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::ResourcePack, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(package)),
-            TabItem::new(
-                "manage-tab-skin-pack",
-                t!("ManagePage.tabs.skins"),
-                state.tab == ManageTab::SkinPack,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::SkinPack, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(user)),
-            TabItem::new(
-                "manage-tab-map",
-                t!("ManagePage.tabs.maps"),
-                state.tab == ManageTab::Map,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::Map, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(map)),
-            TabItem::new(
-                "manage-tab-screenshot",
-                t!("ManagePage.tabs.screenshots"),
-                state.tab == ManageTab::Screenshot,
-                {
-                    let view_handle = view_handle.clone();
-                    move |_window, cx| {
-                        let _ = view_handle.update(cx, |this, cx| {
-                            this.set_tab(ManageTab::Screenshot, cx);
-                        });
-                    }
-                },
-            )
-            .icon(lucide_gpui::icon!(image)),
-            TabItem::new(
-                "manage-tab-server",
-                t!("ManagePage.tabs.servers"),
-                state.tab == ManageTab::Server,
+    let mut tabs = vec![
+        TabItem::new(
+            "manage-tab-statistics",
+            t!("ManagePage.tabs.statistics"),
+            state.tab == ManageTab::Statistics,
+            {
+                let view_handle = view_handle.clone();
                 move |_window, cx| {
                     let _ = view_handle.update(cx, |this, cx| {
-                        this.set_tab(ManageTab::Server, cx);
+                        this.set_tab(ManageTab::Statistics, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(activity)),
+    ];
+    tabs.extend(vec![
+        TabItem::new(
+            "manage-tab-mod",
+            t!("ManagePage.tabs.mods"),
+            state.tab == ManageTab::Mod,
+            {
+                let view_handle = view_handle.clone();
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::Mod, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(layers)),
+        TabItem::new(
+            "manage-tab-pack",
+            t!("ManagePage.tabs.resource"),
+            state.tab == ManageTab::ResourcePack,
+            {
+                let view_handle = view_handle.clone();
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::ResourcePack, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(package)),
+        TabItem::new(
+            "manage-tab-skin-pack",
+            t!("ManagePage.tabs.skins"),
+            state.tab == ManageTab::SkinPack,
+            {
+                let view_handle = view_handle.clone();
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::SkinPack, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(user)),
+        TabItem::new(
+            "manage-tab-map",
+            t!("ManagePage.tabs.maps"),
+            state.tab == ManageTab::Map,
+            {
+                let view_handle = view_handle.clone();
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::Map, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(map)),
+        TabItem::new(
+            "manage-tab-screenshot",
+            t!("ManagePage.tabs.screenshots"),
+            state.tab == ManageTab::Screenshot,
+            {
+                let view_handle = view_handle.clone();
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::Screenshot, cx);
+                    });
+                }
+            },
+        )
+        .icon(lucide_gpui::icon!(image)),
+        TabItem::new(
+            "manage-tab-server",
+            t!("ManagePage.tabs.servers"),
+            state.tab == ManageTab::Server,
+            move |_window, cx| {
+                let _ = view_handle.update(cx, |this, cx| {
+                    this.set_tab(ManageTab::Server, cx);
+                });
+            },
+        )
+        .icon(lucide_gpui::icon!(server)),
+    ]);
+    if state.version_config.enable_cosmetics {
+        let view_handle = cx.entity().downgrade();
+        tabs.insert(
+            4,
+            TabItem::new(
+                "manage-tab-cape",
+                t!("ManagePage.tabs.capes"),
+                state.tab == ManageTab::Cape,
+                move |_window, cx| {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.set_tab(ManageTab::Cape, cx);
                     });
                 },
             )
-            .icon(lucide_gpui::icon!(server)),
-        ],
-    )
-    .gap(px(8.))
-    .item_width(px(72.))
-    .into_any_element()
+            .icon(lucide_gpui::icon!(wind)),
+        );
+    }
+    UnderlineTabs::new("manage-primary-tabs", colors, tabs)
+        .gap(px(4.))
+        .item_width(px(68.))
+        .into_any_element()
 }
 
 pub(super) fn render_pack_subtype_switch(
@@ -549,7 +565,11 @@ pub(super) fn render_active_toolbar_actions(
 ) -> Vec<AnyElement> {
     match state.tab {
         ManageTab::Statistics => Vec::new(),
-        ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+        ManageTab::Mod
+        | ManageTab::ResourcePack
+        | ManageTab::SkinPack
+        | ManageTab::Cape
+        | ManageTab::Map => {
             vec![
                 render_sort_controls(colors, state, cx),
                 if state.selected_asset_keys.is_empty() {

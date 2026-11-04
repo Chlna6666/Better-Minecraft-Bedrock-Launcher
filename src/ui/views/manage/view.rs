@@ -843,9 +843,11 @@ impl ManagePageView {
         let filtered_servers = self.server_list_cache.filtered_indices();
         let active_count = match state.tab {
             ManageTab::Statistics => 0,
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
-                filtered_assets.len()
-            }
+            ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Cape
+            | ManageTab::Map => filtered_assets.len(),
             ManageTab::Screenshot => filtered_screenshots.len(),
             ManageTab::Server => filtered_servers.len(),
         };
@@ -874,6 +876,7 @@ impl ManagePageView {
                                 ManageTab::Mod
                                 | ManageTab::ResourcePack
                                 | ManageTab::SkinPack
+                                | ManageTab::Cape
                                 | ManageTab::Map => self.asset_search_input.as_ref(),
                                 ManageTab::Screenshot => self.screenshot_search_input.as_ref(),
                                 ManageTab::Server => self.server_search_input.as_ref(),
@@ -940,6 +943,25 @@ impl ManagePageView {
                     cx,
                 ),
                 ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => render_asset_list(
+                    colors,
+                    version,
+                    state,
+                    filtered_assets,
+                    &self.asset_scroll_handle,
+                    window,
+                    cx,
+                ),
+                ManageTab::Cape if !version_settings::supports_capes(version) => {
+                    let _i18n = cx.global::<I18n>().clone();
+                    empty_state(
+                        colors,
+                        "images/manage/empty.svg",
+                        t!("ManagePage.capes_unsupported"),
+                        t!("ManagePage.capes_unsupported_hint"),
+                    )
+                    .into_any_element()
+                }
+                ManageTab::Cape => render_asset_list(
                     colors,
                     version,
                     state,
@@ -1022,7 +1044,9 @@ impl ManagePageView {
                     .flex_1()
                     .min_h(px(0.))
                     .min_w(px(0.))
-                    .when(state.tab == ManageTab::Statistics, |this| this.overflow_hidden())
+                    .when(state.tab == ManageTab::Statistics, |this| {
+                        this.overflow_hidden()
+                    })
                     .child(content),
             )
             .into_any_element()

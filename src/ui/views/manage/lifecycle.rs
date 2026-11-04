@@ -98,22 +98,24 @@ impl ManageTabBodyRenderSignature {
     pub(super) fn from_state(state: &ManagePageState) -> Self {
         let data = match state.tab {
             ManageTab::Statistics => ManageTabBodyDataSignature::Statistics,
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
-                ManageTabBodyDataSignature::Assets {
-                    search_query: state.asset_search_query.clone(),
-                    pack_subtype: state.pack_subtype,
-                    pack_subtype_anim_seq: state.pack_subtype_anim_seq,
-                    asset_sort_key: state.asset_sort_key,
-                    asset_sort_desc: state.asset_sort_desc,
-                    selected_asset_keys: state.selected_asset_keys.clone(),
-                    assets_ptr: state.assets.as_ptr() as usize,
-                    assets_len: state.assets.len(),
-                    assets_loaded: state.assets_loaded,
-                    assets_loading: state.assets_loading,
-                    assets_error: state.assets_error.clone(),
-                    assets_request_id: state.assets_request_id,
-                }
-            }
+            ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Cape
+            | ManageTab::Map => ManageTabBodyDataSignature::Assets {
+                search_query: state.asset_search_query.clone(),
+                pack_subtype: state.pack_subtype,
+                pack_subtype_anim_seq: state.pack_subtype_anim_seq,
+                asset_sort_key: state.asset_sort_key,
+                asset_sort_desc: state.asset_sort_desc,
+                selected_asset_keys: state.selected_asset_keys.clone(),
+                assets_ptr: state.assets.as_ptr() as usize,
+                assets_len: state.assets.len(),
+                assets_loaded: state.assets_loaded,
+                assets_loading: state.assets_loading,
+                assets_error: state.assets_error.clone(),
+                assets_request_id: state.assets_request_id,
+            },
             ManageTab::Screenshot => ManageTabBodyDataSignature::Screenshots {
                 search_query: state.screenshot_search_query.clone(),
                 screenshots_ptr: state.screenshots.as_ptr() as usize,
@@ -533,7 +535,11 @@ impl ManagePageView {
 
         match snapshot.tab {
             ManageTab::Statistics => {}
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+            ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Cape
+            | ManageTab::Map => {
                 let assets_signature = AssetsLoadSignature {
                     folder: snapshot.folder.clone(),
                     tab: snapshot.tab,
@@ -875,7 +881,8 @@ impl ManagePageView {
             ManageTab::Statistics
             | ManageTab::Mod
             | ManageTab::ResourcePack
-            | ManageTab::SkinPack => {}
+            | ManageTab::SkinPack
+            | ManageTab::Cape => {}
         }
     }
 

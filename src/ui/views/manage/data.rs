@@ -25,9 +25,10 @@ use crate::core::version::settings::{
 };
 use crate::tasks::manage_service::{self, ManagedModInfo, PackKind};
 use crate::ui::views::manage::state::{
-    ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePackSubtype, ManageScreenshotEntry,
-    ManageServerEntry, ManageServerMotd, ManageServerMotdStatus, ManageServerMotdTarget,
-    ManageSkinPreviewEntry, ManageTab, ManageVersionConfig, ManagedVersionEntry,
+    ManageAssetEntry, ManageAssetKind, ManageCapePreviewEntry, ManageGdkUser, ManagePackSubtype,
+    ManageScreenshotEntry, ManageServerEntry, ManageServerMotd, ManageServerMotdStatus,
+    ManageServerMotdTarget, ManageSkinPreviewEntry, ManageTab, ManageVersionConfig,
+    ManagedVersionEntry,
 };
 use futures_util::stream::{self, StreamExt as _};
 use std::time::{Duration, Instant};
@@ -54,6 +55,7 @@ pub async fn save_manage_version_config(
     core_config.enable_redirection = config.enable_redirection;
     core_config.editor_mode = config.editor_mode;
     core_config.disable_mod_loading = config.disable_mod_loading;
+    core_config.enable_cosmetics = config.enable_cosmetics;
     core_config.lock_mouse_on_launch = config.lock_mouse_on_launch;
     core_config.unlock_mouse_hotkey = config.unlock_mouse_hotkey.to_string();
     core_config.reduce_pixels = config.reduce_pixels;
@@ -114,6 +116,7 @@ pub async fn load_assets(
             .await
         }
         ManageTab::SkinPack => load_skin_pack_assets(version, config, locale_code).await,
+        ManageTab::Cape => load_cape_assets(version, config).await,
         ManageTab::Map => load_map_assets(version, config, selected_gdk_user).await,
         ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => Ok(Vec::new()),
     }
@@ -131,12 +134,13 @@ pub fn start_delete_assets_task(
         ManageTab::Mod => {
             manage_service::start_delete_mods_task(version.folder.to_string(), folder_names)
         }
-        ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+        ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Cape | ManageTab::Map => {
             let build_type = version.build_type();
             let edition = version.edition();
             let delete_type = match tab {
                 ManageTab::Map => "maps",
                 ManageTab::SkinPack => "skins",
+                ManageTab::Cape => "capes",
                 ManageTab::ResourcePack => match pack_subtype {
                     ManagePackSubtype::Resource => "resourcePacks",
                     ManagePackSubtype::Behavior => "behaviorPacks",
@@ -458,6 +462,7 @@ fn manage_version_config_from_core(config: VersionConfig) -> ManageVersionConfig
         enable_redirection: config.enable_redirection,
         editor_mode: config.editor_mode,
         disable_mod_loading: config.disable_mod_loading,
+        enable_cosmetics: config.enable_cosmetics,
         lock_mouse_on_launch: config.lock_mouse_on_launch,
         unlock_mouse_hotkey: config.unlock_mouse_hotkey.into(),
         reduce_pixels: config.reduce_pixels,
@@ -522,6 +527,88 @@ async fn load_skin_pack_assets(
         .collect())
 }
 
+async fn load_cape_assets(
+    version: &ManagedVersionEntry,
+    config: &ManageVersionConfig,
+) -> Result<Vec<ManageAssetEntry>, String> {
+    let options = GamePathOptions {
+        build_type: version.build_type(),
+        edition: version.edition(),
+        version_name: version.folder.to_string(),
+        enable_isolation: config.enable_redirection,
+        user_id: None,
+        allow_shared_fallback: false,
+    };
+    Ok(manage_service::load_capes(options)
+        .await?
+        .into_iter()
+        .map(manage_asset_from_cape)
+        .collect())
+}
+
+fn manage_asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> ManageAssetEntry {
+    let folder_name = pack
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cape")
+        .to_string();
+    let icon_path = pack
+        .capes
+        .iter()
+        .find_map(|cape| cape.preview_path.as_ref())
+        .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+    let previews = pack
+        .capes
+        .iter()
+        .filter_map(|cape| {
+            Some(ManageCapePreviewEntry {
+                display_name: SharedString::from(cape.name.clone()),
+                texture_path: SharedString::from(
+                    cape.texture_path.as_ref()?.to_string_lossy().into_owned(),
+                ),
+                preview_path: SharedString::from(
+                    cape.preview_path.as_ref()?.to_string_lossy().into_owned(),
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    ManageAssetEntry {
+        key: SharedString::from(format!("cape:{}", pack.path.display())),
+        folder_name: SharedString::from(folder_name),
+        display_name: SharedString::from(pack.name),
+        detail: Some(SharedString::from(format!("{} 个披风", pack.capes.len()))),
+        description: None,
+        file_path: SharedString::from(pack.path.to_string_lossy().into_owned()),
+        open_path: SharedString::from(
+            pack.path
+                .parent()
+                .unwrap_or(&pack.path)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        icon_path,
+        modified_iso: None,
+        modified_label: None,
+        size_bytes: None,
+        size_label: None,
+        source: None,
+        edition: None,
+        gdk_user: None,
+        enabled: None,
+        mod_type: None,
+        inject_delay_ms: None,
+        resource_pack_count: None,
+        behavior_pack_count: None,
+        skin_count: None,
+        first_skin_full_texture_path: None,
+        first_skin_model_label: None,
+        skin_previews: None,
+        cape_previews: Some(Arc::from(previews)),
+        kind: ManageAssetKind::Cape,
+    }
+}
+
 async fn load_map_assets(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
@@ -576,6 +663,7 @@ fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
         first_skin_full_texture_path: None,
         first_skin_model_label: None,
         skin_previews: None,
+        cape_previews: None,
         kind: ManageAssetKind::Mod,
     }
 }
@@ -628,6 +716,7 @@ fn manage_asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> 
         first_skin_full_texture_path: None,
         first_skin_model_label: None,
         skin_previews: None,
+        cape_previews: None,
         kind: match pack_subtype {
             ManagePackSubtype::Resource | ManagePackSubtype::Behavior => {
                 ManageAssetKind::ResourcePack
@@ -684,6 +773,7 @@ fn manage_asset_from_skin_pack(pack: McSkinPackInfo) -> ManageAssetEntry {
         first_skin_full_texture_path,
         first_skin_model_label,
         skin_previews,
+        cape_previews: None,
         kind: ManageAssetKind::SkinPack,
     }
 }
@@ -752,6 +842,7 @@ fn manage_asset_from_world(world: WorldSummary) -> ManageAssetEntry {
         first_skin_full_texture_path: None,
         first_skin_model_label: None,
         skin_previews: None,
+        cape_previews: None,
         kind: ManageAssetKind::Map,
     }
 }

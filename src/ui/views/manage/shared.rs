@@ -662,7 +662,11 @@ pub(super) fn resolve_server_by_key(
 pub(super) fn is_asset_tab(tab: ManageTab) -> bool {
     matches!(
         tab,
-        ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map
+        ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Cape
+            | ManageTab::Map
     )
 }
 

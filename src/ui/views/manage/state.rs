@@ -16,6 +16,7 @@ pub enum ManageTab {
     Mod,
     ResourcePack,
     SkinPack,
+    Cape,
     Map,
     Screenshot,
     Server,
@@ -28,9 +29,10 @@ impl ManageTab {
             Self::Mod => 1,
             Self::ResourcePack => 2,
             Self::SkinPack => 3,
-            Self::Map => 4,
-            Self::Screenshot => 5,
-            Self::Server => 6,
+            Self::Cape => 4,
+            Self::Map => 5,
+            Self::Screenshot => 6,
+            Self::Server => 7,
         }
     }
 }
@@ -68,6 +70,7 @@ pub enum ManageAssetKind {
     Mod,
     ResourcePack,
     SkinPack,
+    Cape,
     Map,
 }
 
@@ -77,6 +80,7 @@ pub struct ManageVersionConfig {
     pub enable_redirection: bool,
     pub editor_mode: bool,
     pub disable_mod_loading: bool,
+    pub enable_cosmetics: bool,
     pub lock_mouse_on_launch: bool,
     pub unlock_mouse_hotkey: SharedString,
     pub reduce_pixels: i32,
@@ -91,6 +95,7 @@ impl Default for ManageVersionConfig {
             enable_redirection: false,
             editor_mode: false,
             disable_mod_loading: false,
+            enable_cosmetics: true,
             lock_mouse_on_launch: false,
             unlock_mouse_hotkey: SharedString::from("ALT"),
             reduce_pixels: 20,
@@ -108,6 +113,13 @@ pub struct ManageSkinPreviewEntry {
     pub model_label: SharedString,
     pub geometry_path: Option<SharedString>,
     pub geometry_identifier: Option<SharedString>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManageCapePreviewEntry {
+    pub display_name: SharedString,
+    pub texture_path: SharedString,
+    pub preview_path: SharedString,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +148,7 @@ pub struct ManageAssetEntry {
     pub first_skin_full_texture_path: Option<SharedString>,
     pub first_skin_model_label: Option<SharedString>,
     pub skin_previews: Option<Arc<[ManageSkinPreviewEntry]>>,
+    pub cape_previews: Option<Arc<[ManageCapePreviewEntry]>>,
     pub kind: ManageAssetKind,
 }
 
@@ -483,6 +496,7 @@ mod tests {
             first_skin_full_texture_path: None,
             first_skin_model_label: None,
             skin_previews: None,
+            cape_previews: None,
             kind: ManageAssetKind::Mod,
         }]
         .into();

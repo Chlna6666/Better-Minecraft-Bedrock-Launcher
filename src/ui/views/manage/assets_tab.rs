@@ -42,6 +42,7 @@ impl ManagePageView {
                         preview_path: skin.preview_path.clone(),
                         geometry_path: skin.geometry_path.clone(),
                         geometry_identifier: skin.geometry_identifier.clone(),
+                        cape_texture_path: None,
                     })
                     .collect::<Vec<_>>()
             })
@@ -58,6 +59,7 @@ impl ManagePageView {
                             preview_path: asset.icon_path.clone(),
                             geometry_path: None,
                             geometry_identifier: None,
+                            cape_texture_path: None,
                         }]
                     })
             });
@@ -70,6 +72,33 @@ impl ManagePageView {
             crate::ui::window::skin_pack::SkinPreviewWindowInit {
                 title: asset.display_name,
                 skins: Arc::from(skins.into_boxed_slice()),
+                selected_index: 0,
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn open_cape_preview_asset(&mut self, asset: ManageAssetEntry, cx: &mut App) {
+        let Some(capes) = asset.cape_previews.as_ref() else {
+            toast::error(cx, t!("AssetManager.cape_preview_unavailable"));
+            return;
+        };
+        let skins = capes
+            .iter()
+            .map(|cape| crate::ui::window::skin_pack::SkinPreviewWindowSkin {
+                display_name: cape.display_name.clone(),
+                texture_path: cape.texture_path.clone(),
+                model_label: None,
+                preview_path: Some(cape.preview_path.clone()),
+                geometry_path: None,
+                geometry_identifier: None,
+                cape_texture_path: Some(cape.texture_path.clone()),
+            })
+            .collect::<Vec<_>>();
+        crate::ui::window::skin_pack::open_skin_preview_window(
+            crate::ui::window::skin_pack::SkinPreviewWindowInit {
+                title: asset.display_name,
+                skins: Arc::from(skins),
                 selected_index: 0,
             },
             cx,
@@ -341,6 +370,7 @@ mod tests {
             first_skin_full_texture_path: None,
             first_skin_model_label: None,
             skin_previews: None,
+            cape_previews: None,
             kind: state::ManageAssetKind::ResourcePack,
         }
     }
@@ -780,6 +810,10 @@ pub(super) fn render_asset_list(
                 t!("AssetManager.empty_skin_pack"),
                 t!("AssetManager.empty_skin_pack_hint"),
             ),
+            ManageTab::Cape => (
+                t!("AssetManager.empty_cape_pack"),
+                t!("AssetManager.empty_cape_pack_hint"),
+            ),
             ManageTab::Map => (
                 t!("AssetManager.empty_map"),
                 t!("AssetManager.empty_map_hint"),
@@ -988,6 +1022,7 @@ pub(super) fn render_asset_row(
                 state::ManageAssetKind::Mod => lucide_gpui::icon!(layers),
                 state::ManageAssetKind::ResourcePack => lucide_gpui::icon!(package),
                 state::ManageAssetKind::SkinPack => lucide_gpui::icon!(user),
+                state::ManageAssetKind::Cape => lucide_gpui::icon!(wind),
                 state::ManageAssetKind::Map => lucide_gpui::icon!(map),
             };
 
@@ -1018,6 +1053,7 @@ pub(super) fn render_asset_row(
                 state::ManageAssetKind::Mod => lucide_gpui::icon!(layers),
                 state::ManageAssetKind::ResourcePack => lucide_gpui::icon!(package),
                 state::ManageAssetKind::SkinPack => lucide_gpui::icon!(user),
+                state::ManageAssetKind::Cape => lucide_gpui::icon!(wind),
                 state::ManageAssetKind::Map => lucide_gpui::icon!(map),
             };
             rounded_manage_thumbnail(colors, &icon_path, icon.into(), thumbnail_background)
@@ -1148,6 +1184,22 @@ pub(super) fn render_asset_row(
             append_mod_asset_actions(actions, colors, asset, &action_key, cx)
         }
         state::ManageAssetKind::ResourcePack => actions,
+        state::ManageAssetKind::Cape => actions.child(
+            compact_icon_button(
+                colors,
+                SharedString::from(format!("manage-cape-preview-{}", asset.key)),
+                lucide_gpui::icon!(box),
+            )
+            .on_mouse_down(MouseButton::Left, {
+                let key = action_key.clone();
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(asset) = resolve_asset_by_key(cx.global::<ManagePageState>(), &key)
+                    {
+                        this.open_cape_preview_asset(asset, cx);
+                    }
+                })
+            }),
+        ),
         state::ManageAssetKind::SkinPack => append_skin_pack_asset_actions(
             actions,
             colors,

@@ -27,6 +27,9 @@ impl ManagePageView {
             version_settings::VersionSettingsToggle::DisableModLoading => {
                 state.config.disable_mod_loading = !state.config.disable_mod_loading;
             }
+            version_settings::VersionSettingsToggle::EnableCosmetics => {
+                state.config.enable_cosmetics = !state.config.enable_cosmetics;
+            }
             version_settings::VersionSettingsToggle::LockMouseOnLaunch => {
                 state.config.lock_mouse_on_launch = !state.config.lock_mouse_on_launch;
             }
@@ -212,6 +215,7 @@ impl ManagePageView {
                 | ManageTab::Mod
                 | ManageTab::ResourcePack
                 | ManageTab::SkinPack
+                | ManageTab::Cape
                 | ManageTab::Server => {
                     state.asset_sort_key = ManageAssetSortKey::Name;
                     state.asset_sort_desc = false;
@@ -232,7 +236,11 @@ impl ManagePageView {
         // every hidden list here: Screenshot/Server can be reused instantly after visiting another
         // tab, while asset tabs automatically reload only when their AssetsLoadSignature changes.
         match tab {
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+            ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Cape
+            | ManageTab::Map => {
                 self.asset_scroll_handle.set_offset(point(px(0.), px(0.)));
             }
             ManageTab::Screenshot => {

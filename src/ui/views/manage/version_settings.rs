@@ -38,6 +38,7 @@ pub enum VersionSettingsToggle {
     Redirection,
     EditorMode,
     DisableModLoading,
+    EnableCosmetics,
     LockMouseOnLaunch,
     ShortcutSilentLaunch,
 }
@@ -135,6 +136,15 @@ pub fn render(
                                 t!("VersionSettingsModal.disable_mod_loading_desc"),
                                 state.config.disable_mod_loading,
                                 VersionSettingsToggle::DisableModLoading,
+                                view_handle.clone(),
+                            ))
+                            .child(render_toggle_card(
+                                "settings-enable-cosmetics",
+                                colors,
+                                t!("VersionSettingsModal.enable_cosmetics_label"),
+                                t!("VersionSettingsModal.enable_cosmetics_desc"),
+                                state.config.enable_cosmetics,
+                                VersionSettingsToggle::EnableCosmetics,
                                 view_handle.clone(),
                             ))
                             .when(can_use_editor, |this| {
@@ -457,6 +467,11 @@ fn render_mouse_lock_card(
 
 pub fn supports_editor_mode(version: &ManagedVersionEntry) -> bool {
     is_version_at_least(version.version.as_ref(), "1.19.80.20")
+}
+
+pub fn supports_capes(version: &ManagedVersionEntry) -> bool {
+    version.build_type() == crate::core::minecraft::paths::BuildType::Gdk
+        || is_version_at_least(version.version.as_ref(), "1.21.0.0")
 }
 
 fn is_version_at_least(current: &str, baseline: &str) -> bool {

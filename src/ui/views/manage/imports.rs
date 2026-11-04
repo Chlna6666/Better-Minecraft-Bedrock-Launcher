@@ -4,6 +4,7 @@ use super::*;
 
 const PACK_EXTENSIONS: &[&str] = &["mcpack", "mcaddon", "mctemplate", "zip"];
 const SKIN_PACK_EXTENSIONS: &[&str] = &["mcpack", "mcaddon", "zip"];
+const CAPE_PACK_EXTENSIONS: &[&str] = &["mccapes"];
 const MAP_EXTENSIONS: &[&str] = &["mcworld", "mctemplate", "zip"];
 const MOD_EXTENSIONS: &[&str] = &["dll"];
 
@@ -34,6 +35,56 @@ pub(super) struct ManageDropHoverState {
 }
 
 impl ManagePageView {
+    fn start_cape_import(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let state = cx.global::<ManagePageState>();
+        let Some(version) = self.selected_version(state) else {
+            return;
+        };
+        if !version_settings::supports_capes(version) {
+            toast::error(cx, t!("ManagePage.capes_unsupported"));
+            return;
+        }
+        let options = crate::core::minecraft::paths::GamePathOptions {
+            build_type: version.build_type(),
+            edition: version.edition(),
+            version_name: version.folder.to_string(),
+            enable_isolation: state.version_config.enable_redirection,
+            user_id: None,
+            allow_shared_fallback: false,
+        };
+        cx.spawn(async move |handle, cx| {
+            for path in paths {
+                let result = gpui_tokio::Tokio::spawn_result(cx, {
+                    let options = options.clone();
+                    async move {
+                        crate::tasks::manage_service::import_cape(options, path)
+                            .await
+                            .map_err(anyhow::Error::msg)
+                    }
+                })
+                .await;
+                let _ = handle.update(cx, |this, cx| {
+                    match result {
+                        Ok(_) => {
+                            toast::success(cx, t!("ManagePage.cape_imported"));
+                            this.last_assets_signature = None;
+                            cx.update_global(|state: &mut ManagePageState, _cx| {
+                                state.assets_loaded = false
+                            });
+                            this.sync_data_requests(cx);
+                        }
+                        Err(error) => {
+                            toast::error(cx, SharedString::from(error.to_string()));
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.defer(cx, move |window, cx| {
             let Some(path) = pick_file_path_with_filter_for_window(
@@ -87,7 +138,17 @@ impl ManagePageView {
 
         let view_handle = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
-            if import_context.tab == ManageTab::Mod {
+            if import_context.tab == ManageTab::Cape {
+                let paths = pick_file_paths_with_filter_for_window(
+                    window,
+                    picker.filter_name,
+                    picker.extensions,
+                );
+                if !paths.is_empty() {
+                    let paths = paths.into_iter().map(PathBuf::from).collect();
+                    let _ = view_handle.update(cx, |this, cx| this.start_cape_import(paths, cx));
+                }
+            } else if import_context.tab == ManageTab::Mod {
                 let paths = pick_file_paths_with_filter_for_window(
                     window,
                     picker.filter_name,
@@ -149,7 +210,9 @@ impl ManagePageView {
             return;
         }
 
-        if import_context.tab == ManageTab::Mod {
+        if import_context.tab == ManageTab::Cape {
+            self.start_cape_import(supported, cx);
+        } else if import_context.tab == ManageTab::Mod {
             self.begin_mod_import_confirmation(import_context.version, supported, window, cx);
         } else {
             crate::ui::window::import::open_import_overlay_batch(
@@ -251,7 +314,11 @@ impl ManagePageView {
         let target_ready = match target {
             ManageDropTarget::Versions => true,
             ManageDropTarget::Assets(
-                ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
+                ManageTab::Mod
+                | ManageTab::ResourcePack
+                | ManageTab::SkinPack
+                | ManageTab::Cape
+                | ManageTab::Map,
             ) => has_selected_version,
             ManageDropTarget::Assets(_) => false,
         };
@@ -276,7 +343,10 @@ impl ManagePageView {
                     .lookup("Manage.drop_preview_mod_hint")
                     .unwrap_or_else(|| SharedString::from("Configure every Mod before import")),
                 ManageDropTarget::Assets(
-                    ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
+                    ManageTab::ResourcePack
+                    | ManageTab::SkinPack
+                    | ManageTab::Cape
+                    | ManageTab::Map,
                 ) => i18n
                     .lookup("Manage.drop_preview_asset_hint")
                     .unwrap_or_else(|| {
@@ -400,6 +470,10 @@ fn asset_picker_spec(tab: ManageTab) -> Option<ImportPickerSpec> {
             filter_name: "Skin Packs",
             extensions: SKIN_PACK_EXTENSIONS,
         }),
+        ManageTab::Cape => Some(ImportPickerSpec {
+            filter_name: "Cape Packs",
+            extensions: CAPE_PACK_EXTENSIONS,
+        }),
         ManageTab::Map => Some(ImportPickerSpec {
             filter_name: "Maps",
             extensions: MAP_EXTENSIONS,
@@ -473,6 +547,7 @@ fn drop_target_label(target: ManageDropTarget, i18n: &I18n) -> SharedString {
         ManageDropTarget::Assets(ManageTab::Mod) => "ManagePage.tabs.mods",
         ManageDropTarget::Assets(ManageTab::ResourcePack) => "ManagePage.tabs.resource",
         ManageDropTarget::Assets(ManageTab::SkinPack) => "ManagePage.tabs.skins",
+        ManageDropTarget::Assets(ManageTab::Cape) => "ManagePage.tabs.capes",
         ManageDropTarget::Assets(ManageTab::Map) => "ManagePage.tabs.maps",
         ManageDropTarget::Assets(ManageTab::Statistics) => "ManagePage.tabs.statistics",
         ManageDropTarget::Assets(ManageTab::Screenshot) => "ManagePage.tabs.screenshots",
