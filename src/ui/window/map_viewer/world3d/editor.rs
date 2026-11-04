@@ -139,6 +139,7 @@ struct GpuSubmitStats {
     coalesced: u64,
     interval_p95_us: u64,
     p95_job: Option<GpuOwnerJobSample>,
+    p95_by_kind: [Option<GpuOwnerJobSample>; 3],
 }
 
 fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -> GpuSubmitStats {
@@ -149,6 +150,7 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
         coalesced: 0,
         interval_p95_us: 0,
         p95_job: None,
+        p95_by_kind: [None, None, None],
     };
     let Some(age_ms) = sample_age_ms.filter(|age| *age < 1_000) else {
         return stats;
@@ -157,12 +159,19 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
     let cutoff_us = latest_us.saturating_sub(1_000_000 - age_ms * 1_000);
     let mut intervals = Vec::new();
     let mut recent_jobs = Vec::new();
+    let mut jobs_by_kind: [Vec<&GpuOwnerJobSample>; 3] = std::array::from_fn(|_| Vec::new());
     let mut previous_submit_us = None;
     for sample in samples
         .iter()
         .filter(|sample| sample.completed_at_us >= cutoff_us)
     {
         recent_jobs.push(sample);
+        match sample.kind {
+            GpuOwnerJobKind::Draw => jobs_by_kind[0].push(sample),
+            GpuOwnerJobKind::Continue => jobs_by_kind[1].push(sample),
+            GpuOwnerJobKind::Tick => jobs_by_kind[2].push(sample),
+            _ => {}
+        }
         stats.coalesced = stats.coalesced.saturating_add(sample.coalesced_count);
         match sample.outcome {
             GpuOwnerJobOutcome::Submitted => {
@@ -184,11 +193,16 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
     if !recent_jobs.is_empty() {
         stats.p95_job = Some((*recent_jobs[(recent_jobs.len() * 95).div_ceil(100) - 1]).clone());
     }
+    for (index, jobs) in jobs_by_kind.iter_mut().enumerate() {
+        jobs.sort_unstable_by_key(|sample| sample.owner_job_duration_us);
+        if !jobs.is_empty() {
+            stats.p95_by_kind[index] = Some((*jobs[(jobs.len() * 95).div_ceil(100) - 1]).clone());
+        }
+    }
     stats
 }
 
-fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
-    let phases = sample.phases;
+fn owner_stage_ranking(phases: gpui::GpuOwnerJobPhases) -> [(&'static str, u64); 22] {
     let mut stages = [
         ("其他", phases.other_us),
         ("就绪", phases.readiness_us),
@@ -197,7 +211,16 @@ fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
         ("Fence轮询", phases.fence_poll_us),
         ("Fence等待", phases.fence_wait_us),
         ("尺寸", phases.surface_resize_us),
-        ("准备", phases.render_prepare_us),
+        ("准备其余", phases.render_prepare_us),
+        ("场景打包", phases.pack_scene_us),
+        ("扩展准备", phases.extension_prepare_us),
+        ("3D准备其余", phases.extension_scene_prepare_us),
+        ("3D相机剔除", phases.extension_camera_cull_us),
+        ("3D资源同步", phases.extension_resource_sync_us),
+        ("3D绘制分组", phases.extension_batch_build_us),
+        ("3D缓冲编码", phases.extension_buffer_encode_us),
+        ("3D命令编码", phases.extension_command_encode_us),
+        ("绘制呈现", phases.draw_present_us),
         ("后端提交", phases.backend_submit_us),
         ("发布", phases.publication_us),
         ("诊断", phases.diagnostics_us),
@@ -205,6 +228,12 @@ fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
         ("回报", phases.report_us),
     ];
     stages.sort_unstable_by_key(|stage| std::cmp::Reverse(stage.1));
+    stages
+}
+
+fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
+    let phases = sample.phases;
+    let stages = owner_stage_ranking(phases);
     format!(
         "Owner近1秒 p95 {:?}/{:?} {:.1} ms · 主耗时 {} {:.1} / {} {:.1} / {} {:.1} ms · Fence等待 {:.1} ms · 阻塞总计 {:.1} ms",
         sample.kind,
@@ -218,6 +247,17 @@ fn owner_phase_summary(sample: &GpuOwnerJobSample) -> String {
         stages[2].1 as f64 / 1000.0,
         phases.fence_wait_us as f64 / 1000.0,
         sample.owner_blocking_wait_us as f64 / 1000.0,
+    )
+}
+
+fn owner_path_summary(sample: &GpuOwnerJobSample) -> String {
+    let top = owner_stage_ranking(sample.phases)[0];
+    format!(
+        "{:?} {:.0}ms({} {:.0})",
+        sample.kind,
+        sample.owner_job_duration_us as f64 / 1000.0,
+        top.0,
+        top.1 as f64 / 1000.0,
     )
 }
 const RENDER_ORIGIN_GRID: f64 = 512.0;
@@ -2583,10 +2623,22 @@ impl World3dEditorView {
                 )
             },
         );
-        self.owner_stage_diagnostics = owner_stats
-            .as_ref()
-            .and_then(|stats| stats.p95_job.as_ref())
-            .map_or_else(|| "Owner阶段：待采样".to_string(), owner_phase_summary);
+        self.owner_stage_diagnostics = owner_stats.as_ref().map_or_else(
+            || "Owner阶段：待采样".to_string(),
+            |stats| {
+                let Some(overall) = stats.p95_job.as_ref() else {
+                    return "Owner阶段：待采样".to_string();
+                };
+                let paths = stats
+                    .p95_by_kind
+                    .iter()
+                    .flatten()
+                    .map(owner_path_summary)
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                format!("{} · 路径 p95 {paths}", owner_phase_summary(overall))
+            },
+        );
         self.gpu_stage_diagnostics = window_metrics.map_or_else(
             || "3D 呈现阶段：待采样".to_string(),
             |sample| {
@@ -3300,11 +3352,11 @@ mod texture_retention_tests {
 
     #[test]
     fn gpu_submit_stats_counts_recent_completed_gpu_work() {
-        let sample = |completed_at_us, outcome, coalesced_count| GpuOwnerJobSample {
+        let sample = |completed_at_us, kind, outcome, coalesced_count| GpuOwnerJobSample {
             owner_id: 1,
             window_id: Some(1),
             job_id: 0,
-            kind: GpuOwnerJobKind::Tick,
+            kind,
             outcome,
             started_at_us: completed_at_us,
             completed_at_us,
@@ -3317,11 +3369,36 @@ mod texture_retention_tests {
             schedule_lateness_us: None,
         };
         let samples = [
-            sample(900_000, GpuOwnerJobOutcome::Submitted, 0),
-            sample(1_500_000, GpuOwnerJobOutcome::Submitted, 0),
-            sample(1_508_000, GpuOwnerJobOutcome::Submitted, 0),
-            sample(1_516_000, GpuOwnerJobOutcome::Deferred, 2),
-            sample(2_000_000, GpuOwnerJobOutcome::Control, 0),
+            sample(
+                900_000,
+                GpuOwnerJobKind::Draw,
+                GpuOwnerJobOutcome::Submitted,
+                0,
+            ),
+            sample(
+                1_500_000,
+                GpuOwnerJobKind::Draw,
+                GpuOwnerJobOutcome::Submitted,
+                0,
+            ),
+            sample(
+                1_508_000,
+                GpuOwnerJobKind::Continue,
+                GpuOwnerJobOutcome::Submitted,
+                0,
+            ),
+            sample(
+                1_516_000,
+                GpuOwnerJobKind::Continue,
+                GpuOwnerJobOutcome::Deferred,
+                2,
+            ),
+            sample(
+                2_000_000,
+                GpuOwnerJobKind::Tick,
+                GpuOwnerJobOutcome::Control,
+                0,
+            ),
         ];
         let recent = gpu_submit_stats(&samples, Some(300));
         assert_eq!(recent.submitted, 2);
@@ -3331,6 +3408,24 @@ mod texture_retention_tests {
         assert_eq!(recent.interval_p95_us, 8_000);
         assert_eq!(
             recent.p95_job.as_ref().map(|job| job.completed_at_us),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            recent.p95_by_kind[0]
+                .as_ref()
+                .map(|job| job.completed_at_us),
+            Some(1_500_000)
+        );
+        assert_eq!(
+            recent.p95_by_kind[1]
+                .as_ref()
+                .map(|job| job.completed_at_us),
+            Some(1_516_000)
+        );
+        assert_eq!(
+            recent.p95_by_kind[2]
+                .as_ref()
+                .map(|job| job.completed_at_us),
             Some(2_000_000)
         );
         assert_eq!(gpu_submit_stats(&samples, Some(1_000)).submitted, 0);
