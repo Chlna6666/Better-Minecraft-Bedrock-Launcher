@@ -45,11 +45,13 @@ impl SceneResources {
         &self,
         draws: &[PreparedDraw],
         voxel_shader: bool,
-    ) -> gpui::Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(draws.len().max(1) * INSTANCE_STRIDE as usize);
-        encode_instance_records(draws, &mut bytes)?;
+        bytes: &mut Vec<u8>,
+    ) -> gpui::Result<()> {
+        bytes.clear();
+        bytes.reserve(draws.len().max(1).saturating_mul(INSTANCE_STRIDE as usize));
+        encode_instance_records(draws, bytes)?;
         if !voxel_shader {
-            return Ok(bytes);
+            return Ok(());
         }
         for (index, draw) in draws.iter().enumerate() {
             let mesh = self
@@ -74,7 +76,7 @@ impl SceneResources {
             let offset = index * INSTANCE_STRIDE as usize + 140;
             bytes[offset..offset + 4].copy_from_slice(&vertex_base.to_ne_bytes());
         }
-        Ok(bytes)
+        Ok(())
     }
 }
 

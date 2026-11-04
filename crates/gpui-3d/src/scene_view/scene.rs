@@ -4,8 +4,8 @@ use super::{
     gpu::{
         DrawBindingResources, MeshArena, MeshResources, PendingMeshUpload, TextureResources,
         buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set, create_mesh,
-        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, encode_draws,
-        encode_frame_params, encode_lights, grow_capacity,
+        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, encode_draws_into,
+        encode_frame_params, encode_lights_into, grow_capacity,
     },
     projection::FrameProjection,
     renderer::trace_timings,
@@ -62,11 +62,13 @@ pub(super) struct SceneResources {
     shadow: Option<super::shadow::Shadow>,
     light_pass: Option<light_pass::LightPass>,
     uploaded_tables: [Vec<u8>; 3],
+    scratch_tables: [Vec<u8>; 3],
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
     retired_meshes: Vec<MeshResources>,
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
+    seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     draw_resource_keys: Vec<DrawResourceKey>,
     draw_addresses: Vec<DrawAddress>,
@@ -254,11 +256,13 @@ impl SceneResources {
             shadow: None,
             light_pass: None,
             uploaded_tables: Default::default(),
+            scratch_tables: Default::default(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
+            seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_keys: Vec::new(),
             draw_addresses: Vec::new(),
@@ -685,9 +689,19 @@ impl SceneResources {
         let replace_draw = next_draw_capacity != self.draw_capacity;
         let replace_instances = next_instance_capacity != self.instance_capacity;
         let replace_lights = next_light_capacity != self.light_capacity;
-        let draw_bytes = encode_draws(&self.prepared)?;
-        let instance_bytes = self.encode_draw_instances(&self.prepared.draws, voxel_shader)?;
-        let light_bytes = encode_lights(&self.prepared.lights);
+        let [mut draw_bytes, mut instance_bytes, mut light_bytes] =
+            std::mem::take(&mut self.scratch_tables);
+        encode_draws_into(&self.prepared, &mut draw_bytes)?;
+        self.encode_draw_instances(&self.prepared.draws, voxel_shader, &mut instance_bytes)?;
+        light_bytes.clear();
+        light_bytes.reserve(
+            self.prepared
+                .lights
+                .len()
+                .max(1)
+                .saturating_mul(LIGHT_STRIDE as usize),
+        );
+        encode_lights_into(&self.prepared.lights, &mut light_bytes);
         let encode_ms = trace_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         let new_draw = if replace_draw {
             Some(create_storage_buffer(
@@ -785,7 +799,7 @@ impl SceneResources {
         .collect::<Vec<_>>();
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         // A failed write or later binding update may leave existing buffers partially changed.
-        self.uploaded_tables = Default::default();
+        let mut previous_tables = std::mem::take(&mut self.uploaded_tables);
         let write_result = if writes.is_empty() {
             Ok(())
         } else {
@@ -842,15 +856,17 @@ impl SceneResources {
             }
             return Err(error);
         }
-        self.draw_addresses = self
-            .batches
-            .iter()
-            .enumerate()
-            .map(|(index, batch)| DrawAddress {
-                arguments_offset: index as u64 * ARGUMENT_STRIDE,
-                first_instance: batch.first_instance,
-            })
-            .collect();
+        self.draw_addresses.clear();
+        self.draw_addresses
+            .extend(
+                self.batches
+                    .iter()
+                    .enumerate()
+                    .map(|(index, batch)| DrawAddress {
+                        arguments_offset: index as u64 * ARGUMENT_STRIDE,
+                        first_instance: batch.first_instance,
+                    }),
+            );
         self.sync_generated_draws(device, voxel_shader)?;
         let bind_ms = bind_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         if replace_draw {
@@ -876,6 +892,10 @@ impl SceneResources {
             );
         }
         self.uploaded_tables = [draw_bytes, instance_bytes, light_bytes];
+        for table in &mut previous_tables {
+            table.clear();
+        }
+        self.scratch_tables = previous_tables;
         Ok(())
     }
 
@@ -884,9 +904,12 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         scene_view: &SceneView,
     ) -> gpui::Result<()> {
-        let mut seen = HashSet::new();
+        self.seen_materials.clear();
         for draw in &self.prepared.draws {
-            if !seen.insert(Arc::as_ptr(&draw.material)) {
+            if !self
+                .seen_materials
+                .insert(Arc::as_ptr(&draw.material) as usize)
+            {
                 continue;
             }
             for id in [

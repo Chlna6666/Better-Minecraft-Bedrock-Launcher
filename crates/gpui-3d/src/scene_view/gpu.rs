@@ -1026,24 +1026,41 @@ pub(super) fn encode_frame_params(
 }
 
 /// Encodes per-draw material state that is independent of the camera and viewport.
+#[cfg(test)]
 pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     encode_draw_records(&scene.draws, scene.lights.len())
 }
 
+pub(crate) fn encode_draws_into(scene: &PreparedScene, bytes: &mut Vec<u8>) -> gpui::Result<()> {
+    encode_draw_records_into(&scene.draws, scene.lights.len(), bytes)
+}
+
+#[cfg(test)]
 pub(super) fn encode_draw_records(
     draws: &[crate::PreparedDraw],
     lights: usize,
 ) -> gpui::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(draws.len().max(1) * DRAW_PARAMS_STRIDE as usize);
+    encode_draw_records_into(draws, lights, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn encode_draw_records_into(
+    draws: &[crate::PreparedDraw],
+    lights: usize,
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
     let stride = DRAW_PARAMS_STRIDE as usize;
-    let mut bytes = Vec::with_capacity(draws.len().max(1) * stride);
+    bytes.clear();
+    bytes.reserve(draws.len().max(1).saturating_mul(stride));
     let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
     for draw in draws {
-        encode_draw_record(draw, light_count, &mut bytes, stride)?;
+        encode_draw_record(draw, light_count, bytes, stride)?;
     }
     if draws.is_empty() {
         bytes.resize(stride, 0);
     }
-    Ok(bytes)
+    Ok(())
 }
 
 /// Encodes one padded draw slot for a draw (or one representative per instanced batch).
@@ -1168,6 +1185,7 @@ pub(super) fn encode_instance_records(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len().max(1) * LIGHT_STRIDE as usize);
     encode_lights_into(lights, &mut bytes);
@@ -1300,8 +1318,36 @@ pub(super) fn write_u32(bytes: &mut Vec<u8>, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArenaPage, MeshArena, can_encode_voxel_mesh, encode_mesh, encode_voxel_mesh};
-    use crate::{Mesh, TriangleEdgeMask, Vec2, Vec3, Vertex};
+    use super::{
+        ArenaPage, MeshArena, can_encode_voxel_mesh, encode_draws, encode_draws_into, encode_mesh,
+        encode_voxel_mesh,
+    };
+    use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn draw_encoding_reuses_staging_capacity() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let expected = encode_draws(&prepared).unwrap();
+        let mut bytes = Vec::new();
+        encode_draws_into(&prepared, &mut bytes).unwrap();
+        assert_eq!(bytes, expected);
+        let pointer = bytes.as_ptr();
+        encode_draws_into(&prepared, &mut bytes).unwrap();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes, expected);
+    }
 
     fn vertices() -> Vec<Vertex> {
         [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(1.0, 1.0, 0.0)]
