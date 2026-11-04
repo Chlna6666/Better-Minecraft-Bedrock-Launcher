@@ -11,7 +11,7 @@ pub(super) struct ChunkScene {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arc, BTreeMap, ChunkPos, ChunkScene, Dimension, World3dChunkMesh};
+    use super::{Arc, BTreeMap, BTreeSet, ChunkPos, ChunkScene, Dimension, World3dChunkMesh};
     use gpui_3d::Mesh;
     #[test]
     fn invisible_emitters_keep_stable_nodes_without_geometry() {
@@ -32,18 +32,33 @@ mod tests {
             },
         };
         let mut registry = ChunkScene::default();
-        let mut scene = registry.update(None, &BTreeMap::new(), [0; 3]).unwrap();
+        let mut scene = registry
+            .update(None, &BTreeMap::new(), None, [0; 3])
+            .unwrap();
         let lights = BTreeMap::from([(pos, Arc::from([source]))]);
-        registry.update_lights(&mut scene, &lights, [0; 3]).unwrap();
+        registry
+            .update_lights(&mut scene, &lights, None, [0; 3])
+            .unwrap();
         let id = registry.lights[&(pos, [0; 4])].0;
         let mut next = registry
-            .update(Some(&scene), &BTreeMap::new(), [0; 3])
+            .update(Some(&scene), &BTreeMap::new(), None, [0; 3])
             .unwrap();
-        registry.update_lights(&mut next, &lights, [0; 3]).unwrap();
+        registry
+            .update_lights(&mut next, &lights, None, [0; 3])
+            .unwrap();
         assert_eq!(registry.lights[&(pos, [0; 4])].0, id);
         assert_eq!(scene.version(), next.version());
         registry
-            .update_lights(&mut next, &BTreeMap::new(), [0; 3])
+            .update_lights(&mut next, &BTreeMap::new(), Some(&BTreeSet::new()), [0; 3])
+            .unwrap();
+        assert!(next.node(id).is_some());
+        registry
+            .update_lights(
+                &mut next,
+                &BTreeMap::new(),
+                Some(&BTreeSet::from([pos])),
+                [0; 3],
+            )
             .unwrap();
         assert!(next.node(id).is_none());
         assert!(scene.node(id).is_some());
@@ -69,14 +84,18 @@ mod tests {
         });
         let mut registry = ChunkScene::default();
         let mut meshes = BTreeMap::from([((pos, 0), chunk.clone())]);
-        let before = registry.update(None, &meshes, [0; 3]).unwrap();
-        let unchanged = registry.update(Some(&before), &meshes, [0; 3]).unwrap();
+        let before = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        let unchanged = registry
+            .update(Some(&before), &meshes, None, [0; 3])
+            .unwrap();
         assert_eq!(unchanged.version(), before.version());
         let id = registry.nodes[&(pos, 0)].0;
         let mut replacement = (*chunk).clone();
         replacement.mesh = Arc::new(Mesh::cube());
         meshes.insert((pos, 0), Arc::new(replacement));
-        let after = registry.update(Some(&before), &meshes, [0; 3]).unwrap();
+        let after = registry
+            .update(Some(&before), &meshes, None, [0; 3])
+            .unwrap();
         assert_eq!(registry.nodes[&(pos, 0)].0, id);
         assert_eq!(
             before.node(id).unwrap().mesh.as_ref().unwrap().id(),
@@ -93,7 +112,7 @@ mod tests {
         let mut replacement_meshes = meshes.clone();
         replacement_meshes.insert((pos, 0), chunk.clone());
         let mut refreshed = registry
-            .update(Some(&outside), &replacement_meshes, [0; 3])
+            .update(Some(&outside), &replacement_meshes, None, [0; 3])
             .unwrap();
         registry.update_range(&mut refreshed, (Dimension::Overworld, 1, 1, 1));
         assert!(!refreshed.node(id).unwrap().visible);
@@ -105,9 +124,56 @@ mod tests {
         registry.update_range(&mut boundary, (Dimension::Overworld, 1, 0, 1));
         assert_eq!(boundary.version(), version);
         meshes.clear();
-        let removed = registry.update(Some(&after), &meshes, [0; 3]).unwrap();
+        let removed = registry
+            .update(Some(&after), &meshes, None, [0; 3])
+            .unwrap();
         assert!(removed.node(id).is_none());
         assert!(after.node(id).is_some());
+    }
+
+    #[test]
+    fn section_delta_updates_only_changed_section() {
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mesh = Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
+            pos,
+            section_y: 0,
+            origin: [0; 3],
+            mesh: Arc::new(Mesh::cube()),
+            materials: Arc::from([]),
+            textures: Arc::from([]),
+            triangles: 12,
+            faces: 6,
+            missing_texture_faces: 0,
+        });
+        let mut meshes = BTreeMap::from([((pos, 0), mesh.clone())]);
+        let mut registry = ChunkScene::default();
+        let before = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        let original = registry.nodes[&(pos, 0)].0;
+        let next = Arc::new(World3dChunkMesh {
+            section_y: 1,
+            ..mesh.as_ref().clone()
+        });
+        meshes.insert((pos, 1), next);
+        let changed = BTreeSet::from([(pos, 1)]);
+        let added = registry
+            .update(Some(&before), &meshes, Some(&changed), [0; 3])
+            .unwrap();
+        assert_eq!(registry.nodes[&(pos, 0)].0, original);
+        assert!(added.node(original).is_some());
+        let added_id = registry.nodes[&(pos, 1)].0;
+        meshes.remove(&(pos, 1));
+        let removed = registry
+            .update(Some(&added), &meshes, Some(&changed), [0; 3])
+            .unwrap();
+        assert_eq!(registry.nodes[&(pos, 0)].0, original);
+        assert!(removed.node(original).is_some());
+        assert!(removed.node(added_id).is_none());
+        assert!(added.node(added_id).is_some());
     }
 }
 
@@ -130,12 +196,22 @@ impl ChunkScene {
         &mut self,
         base: Option<&Scene>,
         meshes: &BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+        changed: Option<&BTreeSet<(ChunkPos, i32)>>,
         origin: [i32; 3],
     ) -> Result<Scene, SceneError> {
         let mut scene = base.map_or_else(Scene::new, Scene::fork);
         if base.is_none() {
             self.nodes.clear();
             self.lights.clear();
+        } else if let Some(changed) = changed {
+            for key in changed {
+                if let Some(mesh) = meshes.get(key) {
+                    self.update_mesh(&mut scene, *key, mesh, origin)?;
+                } else {
+                    self.remove_mesh(&mut scene, key)?;
+                }
+            }
+            return Ok(scene);
         }
         let removed = self
             .nodes
@@ -144,42 +220,74 @@ impl ChunkScene {
             .copied()
             .collect::<Vec<_>>();
         for key in removed {
-            if let Some((id, _)) = self.nodes.remove(&key) {
-                scene.remove(id)?;
-            }
+            self.remove_mesh(&mut scene, &key)?;
         }
         for (key, mesh) in meshes {
-            if self
-                .nodes
-                .get(key)
-                .is_some_and(|(_, old)| Arc::ptr_eq(old, mesh))
-            {
-                continue;
-            }
-            let visible = self.range.is_none_or(|(dimension, x, z, radius)| {
-                super::super::chunk_service::inside_view(mesh.pos, dimension, x, z, radius)
-            });
-            let node = chunk_node(mesh, origin).with_visible(visible);
-            let id = if let Some((id, _)) = self.nodes.get(key) {
-                *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = node;
-                *id
-            } else {
-                scene.insert(None, node)?
-            };
-            self.nodes.insert(*key, (id, mesh.clone()));
+            self.update_mesh(&mut scene, *key, mesh, origin)?;
         }
         Ok(scene)
+    }
+
+    fn remove_mesh(&mut self, scene: &mut Scene, key: &(ChunkPos, i32)) -> Result<(), SceneError> {
+        if let Some((id, _)) = self.nodes.remove(key) {
+            scene.remove(id)?;
+        }
+        Ok(())
+    }
+
+    fn update_mesh(
+        &mut self,
+        scene: &mut Scene,
+        key: (ChunkPos, i32),
+        mesh: &Arc<World3dChunkMesh>,
+        origin: [i32; 3],
+    ) -> Result<(), SceneError> {
+        if self
+            .nodes
+            .get(&key)
+            .is_some_and(|(_, old)| Arc::ptr_eq(old, mesh))
+        {
+            return Ok(());
+        }
+        let visible = self.range.is_none_or(|(dimension, x, z, radius)| {
+            super::super::chunk_service::inside_view(mesh.pos, dimension, x, z, radius)
+        });
+        let node = chunk_node(mesh, origin).with_visible(visible);
+        let id = if let Some((id, _)) = self.nodes.get(&key) {
+            *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = node;
+            *id
+        } else {
+            scene.insert(None, node)?
+        };
+        self.nodes.insert(key, (id, mesh.clone()));
+        Ok(())
     }
 
     pub(super) fn update_lights(
         &mut self,
         scene: &mut Scene,
         lights: &BTreeMap<ChunkPos, Arc<[super::super::types::World3dLocalLight]>>,
+        changed: Option<&BTreeSet<ChunkPos>>,
         origin: [i32; 3],
     ) -> Result<(), SceneError> {
-        let mut active = HashSet::new();
-        for (&pos, sources) in lights {
-            for source in sources.iter() {
+        let all_positions;
+        let positions = if let Some(changed) = changed {
+            changed
+        } else {
+            all_positions = lights
+                .keys()
+                .copied()
+                .chain(self.lights.keys().map(|(pos, _)| *pos))
+                .collect::<BTreeSet<_>>();
+            &all_positions
+        };
+        for &pos in positions {
+            let mut active = HashSet::new();
+            for source in lights
+                .get(&pos)
+                .into_iter()
+                .flat_map(|sources| sources.iter())
+            {
                 let key = (pos, source.key);
                 active.insert(key);
                 if self.lights.get(&key).is_some_and(|(_, old)| old == source) {
@@ -203,16 +311,15 @@ impl ChunkScene {
                 };
                 self.lights.insert(key, (id, source.clone()));
             }
-        }
-        let removed = self
-            .lights
-            .keys()
-            .filter(|key| !active.contains(key))
-            .copied()
-            .collect::<Vec<_>>();
-        for key in removed {
-            if let Some((id, _)) = self.lights.remove(&key) {
-                scene.remove(id)?;
+            let removed = self
+                .lights
+                .range((pos, [i32::MIN; 4])..=(pos, [i32::MAX; 4]))
+                .filter_map(|(key, _)| (!active.contains(key)).then_some(*key))
+                .collect::<Vec<_>>();
+            for key in removed {
+                if let Some((id, _)) = self.lights.remove(&key) {
+                    scene.remove(id)?;
+                }
             }
         }
         Ok(())

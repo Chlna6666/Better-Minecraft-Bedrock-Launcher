@@ -30,7 +30,7 @@ use gpui_3d::{
     Aabb, AlphaMode, Material, Mesh, Node, Scene, SceneView, ShadingModel, TextureAsset,
     TextureSampling, Transform, Vec3,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,14 +51,6 @@ const PICK_INTERVAL: Duration = Duration::from_micros(33_334);
 const MAX_MESH_EVENTS_PER_POLL: usize = 16;
 const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
-
-// A streamed section replaces the immutable scene snapshot. Large snapshots make
-// the GPU owner rebuild many draw records, so coalesce arrivals while still
-// publishing the first scene immediately and keeping explicit edits responsive.
-fn stream_scene_interval(section_count: usize) -> Duration {
-    let extra_ms = (section_count / 32).min(450) as u64;
-    STREAM_SCENE_INTERVAL + Duration::from_millis(extra_ms)
-}
 
 fn is_pick_due(last_pick_at: Option<Instant>, now: Instant) -> bool {
     last_pick_at.is_none_or(|at| now.saturating_duration_since(at) >= PICK_INTERVAL)
@@ -351,7 +343,9 @@ pub struct World3dEditorView {
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
     chunk_lights: BTreeMap<ChunkPos, Arc<[super::types::World3dLocalLight]>>,
+    dirty_light_chunks: BTreeSet<ChunkPos>,
     chunk_meshes: BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+    dirty_sections: BTreeSet<(ChunkPos, i32)>,
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
     texture_bytes: usize,
@@ -367,6 +361,8 @@ pub struct World3dEditorView {
     target_outline_mesh: Option<Arc<Mesh>>,
     target_outline_material: Arc<Material>,
     scene_dirty: bool,
+    scene_rebuild_required: bool,
+    scene_retry_at: Option<Instant>,
     stream_scene_pending: bool,
     last_scene_build_at: Option<Instant>,
     import_preview: Option<World3dImportPreview>,
@@ -468,7 +464,9 @@ impl World3dEditorView {
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
             chunk_lights: BTreeMap::new(),
+            dirty_light_chunks: BTreeSet::new(),
             chunk_meshes: BTreeMap::new(),
+            dirty_sections: BTreeSet::new(),
             probes: BTreeMap::new(),
             textures: HashMap::new(),
             texture_bytes: 0,
@@ -484,6 +482,8 @@ impl World3dEditorView {
             target_outline_mesh: block_outline_mesh().map(Arc::new),
             target_outline_material: selection_material(AlphaMode::Blend),
             scene_dirty: true,
+            scene_rebuild_required: false,
+            scene_retry_at: None,
             stream_scene_pending: false,
             last_scene_build_at: None,
             import_preview: None,
@@ -671,13 +671,11 @@ impl World3dEditorView {
                     }
                     self.probes.insert(payload.mesh.pos, payload.probe.clone());
                     probes_changed = true;
-                    if self
-                        .chunk_meshes
-                        .insert((payload.mesh.pos, payload.mesh.section_y), payload.mesh)
-                        .is_some()
-                    {
+                    let key = (payload.mesh.pos, payload.mesh.section_y);
+                    if self.chunk_meshes.insert(key, payload.mesh).is_some() {
                         textures_may_be_unused = true;
                     }
+                    self.dirty_sections.insert(key);
                     meshes_added = meshes_added.saturating_add(1);
                     self.stream_scene_pending = true;
                     if meshes_added >= MAX_MESH_EVENTS_PER_POLL {
@@ -695,24 +693,29 @@ impl World3dEditorView {
                             continue;
                         }
                         if completion.lights.is_empty() {
-                            self.stream_scene_pending |=
-                                self.chunk_lights.remove(&completion.pos).is_some();
+                            if self.chunk_lights.remove(&completion.pos).is_some() {
+                                self.dirty_light_chunks.insert(completion.pos);
+                                self.stream_scene_pending = true;
+                            }
                         } else if self
                             .chunk_lights
                             .get(&completion.pos)
                             .is_none_or(|old| old.as_ref() != completion.lights.as_ref())
                         {
                             self.chunk_lights.insert(completion.pos, completion.lights);
+                            self.dirty_light_chunks.insert(completion.pos);
                             self.stream_scene_pending = true;
                         }
                         restored |= restore_retained_sections(
                             &mut self.chunk_meshes,
+                            &mut self.dirty_sections,
                             &mut self.textures,
                             &mut self.texture_bytes,
                             completion.retained_meshes,
                         );
                         removed |= retain_chunk_sections(
                             &mut self.chunk_meshes,
+                            &mut self.dirty_sections,
                             completion.pos,
                             &completion.sections,
                         );
@@ -725,8 +728,16 @@ impl World3dEditorView {
                 ChunkServiceEvent::Unloaded { pos, .. } if pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Unloaded { generation, pos } => {
                     let _ = generation;
-                    self.stream_scene_pending |= self.chunk_lights.remove(&pos).is_some();
-                    let removed = retain_chunk_sections(&mut self.chunk_meshes, pos, &[]);
+                    if self.chunk_lights.remove(&pos).is_some() {
+                        self.dirty_light_chunks.insert(pos);
+                        self.stream_scene_pending = true;
+                    }
+                    let removed = retain_chunk_sections(
+                        &mut self.chunk_meshes,
+                        &mut self.dirty_sections,
+                        pos,
+                        &[],
+                    );
                     textures_may_be_unused |= removed;
                     self.probes.remove(&pos);
                     probes_changed = true;
@@ -859,7 +870,7 @@ impl World3dEditorView {
         if self.stream_scene_pending
             && self
                 .last_scene_build_at
-                .is_none_or(|last| last.elapsed() >= stream_scene_interval(self.chunk_meshes.len()))
+                .is_none_or(|last| last.elapsed() >= STREAM_SCENE_INTERVAL)
         {
             self.scene_dirty = true;
         }
@@ -926,9 +937,13 @@ impl World3dEditorView {
         if !self.scene_dirty {
             return false;
         }
+        if self
+            .scene_retry_at
+            .is_some_and(|retry_at| Instant::now() < retry_at)
+        {
+            return false;
+        }
         let started = Instant::now();
-        self.scene_dirty = false;
-        self.stream_scene_pending = false;
         self.last_scene_build_at = Some(Instant::now());
         if std::mem::take(&mut self.texture_prune_pending) {
             let previous_count = self.textures.len();
@@ -936,32 +951,34 @@ impl World3dEditorView {
             self.texture_table_dirty |= self.textures.len() != previous_count;
         }
         let previous_origin = self.render_origin;
-        self.render_origin = [
+        let next_origin = [
             (self.camera.position[0] / RENDER_ORIGIN_GRID).round() as i32
                 * RENDER_ORIGIN_GRID as i32,
             0,
             (self.camera.position[2] / RENDER_ORIGIN_GRID).round() as i32
                 * RENDER_ORIGIN_GRID as i32,
         ];
-        self.navigation.set_origin(self.render_origin);
-        if self.render_origin != previous_origin {
-            self.update_target_scene();
-        }
         let base = self
             .scene_view
             .as_ref()
             .filter(|_| {
-                previous_origin == self.render_origin
+                !self.scene_rebuild_required
+                    && previous_origin == next_origin
                     && self.import_preview.is_none()
                     && !self.scene_has_preview
             })
             .map(|view| view.scene().as_ref());
-        let mut scene = match self
-            .scene_nodes
-            .update(base, &self.chunk_meshes, self.render_origin)
-        {
+        let mut scene = match self.scene_nodes.update(
+            base,
+            &self.chunk_meshes,
+            Some(&self.dirty_sections),
+            next_origin,
+        ) {
             Ok(scene) => scene,
             Err(error) => {
+                self.scene_nodes = scene_registry::ChunkScene::default();
+                self.scene_rebuild_required = true;
+                self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
                 self.status = format!("更新世界场景失败：{error}").into();
                 self.status_kind = StatusKind::Error;
                 return true;
@@ -969,25 +986,31 @@ impl World3dEditorView {
         };
         let range_key = self.current_view_key();
         self.scene_nodes.update_range(&mut scene, range_key);
-        self.scene_range_key = Some(range_key);
-        if let Err(error) =
-            self.scene_nodes
-                .update_lights(&mut scene, &self.chunk_lights, self.render_origin)
-        {
+        if let Err(error) = self.scene_nodes.update_lights(
+            &mut scene,
+            &self.chunk_lights,
+            base.map(|_| &self.dirty_light_chunks),
+            next_origin,
+        ) {
+            self.scene_nodes = scene_registry::ChunkScene::default();
+            self.scene_rebuild_required = true;
+            self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
             self.status = format!("更新世界光源失败：{error}").into();
             self.status_kind = StatusKind::Error;
             return true;
         }
-        let mut status_changed = false;
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
             && let Err(error) = preview
                 .mesh
-                .append_world_preview(&mut scene, preview.scene_transform(self.render_origin))
+                .append_world_preview(&mut scene, preview.scene_transform(next_origin))
         {
+            self.scene_nodes = scene_registry::ChunkScene::default();
+            self.scene_rebuild_required = true;
+            self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
             self.status = SharedString::from(format!("导入预览场景失败：{error}"));
             self.status_kind = StatusKind::Error;
-            status_changed = true;
+            return true;
         }
         let scene = match (self.scene_view.as_ref(), base) {
             (Some(view), Some(previous)) if previous.version() == scene.version() => {
@@ -995,11 +1018,10 @@ impl World3dEditorView {
             }
             _ => Arc::new(scene),
         };
-        self.scene_has_preview = self.import_preview.is_some();
-        let textures_changed = std::mem::take(&mut self.texture_table_dirty);
+        let textures_changed = self.texture_table_dirty;
         let published = scene_publish_required(self.scene_view.as_ref(), &scene, textures_changed);
         if published {
-            let camera = self.camera.gpu_camera(self.render_origin);
+            let camera = self.camera.gpu_camera(next_origin);
             let base = match self.scene_view.as_ref() {
                 Some(view) => view.with_scene(scene).with_camera(camera),
                 None => SceneView::new(scene, camera),
@@ -1008,7 +1030,7 @@ impl World3dEditorView {
             .with_voxel_shader()
             .with_continuous_presentation();
             let scene_view = if textures_changed {
-                base.with_textures(
+                match base.with_textures(
                     self.textures
                         .values()
                         .cloned()
@@ -1020,13 +1042,36 @@ impl World3dEditorView {
                                 .flatten()
                                 .map(|v| v.asset.clone()),
                         ),
-                )
-                .unwrap_or(base)
+                ) {
+                    Ok(view) => view,
+                    Err(error) => {
+                        self.scene_nodes = scene_registry::ChunkScene::default();
+                        self.scene_rebuild_required = true;
+                        self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
+                        self.status = format!("更新世界纹理失败：{error}").into();
+                        self.status_kind = StatusKind::Error;
+                        return true;
+                    }
+                }
             } else {
                 base
             };
             self.scene_view = Some(Arc::new(scene_view));
         }
+        self.render_origin = next_origin;
+        self.navigation.set_origin(next_origin);
+        if next_origin != previous_origin {
+            self.update_target_scene();
+        }
+        self.scene_range_key = Some(range_key);
+        self.scene_has_preview = self.import_preview.is_some();
+        self.texture_table_dirty = false;
+        self.dirty_sections.clear();
+        self.dirty_light_chunks.clear();
+        self.scene_dirty = false;
+        self.scene_rebuild_required = false;
+        self.scene_retry_at = None;
+        self.stream_scene_pending = false;
         self.last_scene_build_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if super::chunk_service::trace_timings() {
             self.trace_scene_build_count = self.trace_scene_build_count.saturating_add(1);
@@ -1034,7 +1079,7 @@ impl World3dEditorView {
                 .trace_scene_build_max_us
                 .max(started.elapsed().as_micros());
         }
-        published || status_changed
+        published
     }
 
     fn stage_aspect(&self) -> f32 {
@@ -1260,13 +1305,16 @@ impl World3dEditorView {
             self.saved_cameras.insert(self.dimension, self.camera);
             self.dimension = target.dimension;
             self.chunk_meshes.clear();
+            self.dirty_sections.clear();
             self.chunk_lights.clear();
+            self.dirty_light_chunks.clear();
             self.probes.clear();
             self.textures.clear();
             self.texture_bytes = 0;
             self.texture_prune_pending = false;
             self.texture_table_dirty = true;
             self.scene_view = None;
+            self.scene_retry_at = None;
             self.target_scene_view = None;
             self.target = None;
             self.scene_dirty = true;
@@ -1343,13 +1391,16 @@ impl World3dEditorView {
         self.saved_cameras.insert(self.dimension, self.camera);
         self.dimension = dimension;
         self.chunk_meshes.clear();
+        self.dirty_sections.clear();
         self.chunk_lights.clear();
+        self.dirty_light_chunks.clear();
         self.probes.clear();
         self.textures.clear();
         self.texture_bytes = 0;
         self.texture_prune_pending = false;
         self.texture_table_dirty = true;
         self.scene_view = None;
+        self.scene_retry_at = None;
         self.target_scene_view = None;
         self.scene_dirty = true;
         self.camera = self
@@ -3184,6 +3235,7 @@ fn texture_storage_bytes(texture: &TextureAsset) -> usize {
 
 fn restore_retained_sections(
     meshes: &mut BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+    changed: &mut BTreeSet<(ChunkPos, i32)>,
     textures: &mut HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
     texture_bytes: &mut usize,
     retained: Vec<Arc<World3dChunkMesh>>,
@@ -3201,6 +3253,7 @@ fn restore_retained_sections(
             }
         }
         meshes.insert(key, mesh);
+        changed.insert(key);
         restored = true;
     }
     restored
@@ -3208,6 +3261,7 @@ fn restore_retained_sections(
 
 fn retain_chunk_sections(
     meshes: &mut BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+    changed: &mut BTreeSet<(ChunkPos, i32)>,
     pos: ChunkPos,
     sections: &[i32],
 ) -> bool {
@@ -3217,6 +3271,7 @@ fn retain_chunk_sections(
         .collect::<Vec<_>>();
     for key in &stale {
         meshes.remove(key);
+        changed.insert(*key);
     }
     !stale.is_empty()
 }
@@ -3238,9 +3293,9 @@ fn retain_chunk_textures(
 #[cfg(test)]
 mod texture_retention_tests {
     use super::{
-        Arc, BTreeMap, ChunkPos, Dimension, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample,
-        HashMap, Mesh, TextureAsset, World3dChunkMesh, gpu_submit_stats, restore_retained_sections,
-        retain_chunk_sections, retain_chunk_textures,
+        Arc, BTreeMap, BTreeSet, ChunkPos, Dimension, GpuOwnerJobKind, GpuOwnerJobOutcome,
+        GpuOwnerJobSample, HashMap, Mesh, TextureAsset, World3dChunkMesh, gpu_submit_stats,
+        restore_retained_sections, retain_chunk_sections, retain_chunk_textures,
     };
 
     #[test]
@@ -3293,13 +3348,11 @@ mod texture_retention_tests {
     }
 
     #[test]
-    fn streaming_scene_coalesces_large_snapshots_without_unbounded_delay() {
-        let initial = super::stream_scene_interval(0);
-        let medium = super::stream_scene_interval(4_000);
-        let large = super::stream_scene_interval(16_000);
-        assert!(initial < medium && medium < large);
-        assert_eq!(large, super::stream_scene_interval(usize::MAX));
-        assert!(large <= std::time::Duration::from_millis(500));
+    fn streaming_scene_coalescing_has_fixed_latency() {
+        assert_eq!(
+            super::STREAM_SCENE_INTERVAL,
+            std::time::Duration::from_millis(50)
+        );
     }
 
     #[test]
@@ -3329,18 +3382,22 @@ mod texture_retention_tests {
         });
         let mut meshes = BTreeMap::new();
         let mut textures = HashMap::new();
+        let mut changed = BTreeSet::new();
         let mut bytes = 0;
         assert!(restore_retained_sections(
             &mut meshes,
+            &mut changed,
             &mut textures,
             &mut bytes,
             vec![old.clone()]
         ));
         assert!(Arc::ptr_eq(&meshes[&(pos, 0)], &old));
         assert_eq!(bytes, 4);
+        assert!(changed.contains(&(pos, 0)));
         meshes.insert((pos, 0), newer.clone());
         assert!(!restore_retained_sections(
             &mut meshes,
+            &mut changed,
             &mut textures,
             &mut bytes,
             vec![old]
@@ -3407,11 +3464,13 @@ mod texture_retention_tests {
             ((pos, 1), mesh.clone()),
             ((neighbor, 0), mesh),
         ]);
-        assert!(retain_chunk_sections(&mut meshes, pos, &[1]));
+        let mut changed = BTreeSet::new();
+        assert!(retain_chunk_sections(&mut meshes, &mut changed, pos, &[1]));
         assert_eq!(meshes.len(), 2);
+        assert_eq!(changed, BTreeSet::from([(pos, 0)]));
         assert!(meshes.contains_key(&(pos, 1)));
         assert!(meshes.contains_key(&(neighbor, 0)));
-        assert!(!retain_chunk_sections(&mut meshes, pos, &[1]));
+        assert!(!retain_chunk_sections(&mut meshes, &mut changed, pos, &[1]));
     }
 }
 
