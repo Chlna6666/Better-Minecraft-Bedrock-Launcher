@@ -38,32 +38,59 @@ impl PreparedScene {
         let groups = self
             .candidate_groups
             .iter()
-            .filter_map(|group| {
+            .enumerate()
+            .filter_map(|(index, group)| {
                 let id = self.candidates[group.start].node;
                 changed
                     .contains(&id)
-                    .then_some((group.start..group.end, id))
+                    .then_some((index, group.start..group.end, id))
             })
             .collect::<Vec<_>>();
         let mut inserted = replacements.keys().copied().collect::<HashSet<_>>();
-        for (_, id) in &groups {
+        for (_, _, id) in &groups {
             inserted.remove(id);
         }
         // New roots are visited first by the full walker. Existing roots without
         // candidates (e.g. a hidden node becoming visible) can require a full walk.
         let mut prefix = Vec::new();
+        let mut next_groups = Vec::with_capacity(self.candidate_groups.len() + inserted.len());
         for &id in scene.roots().iter().rev() {
             if !inserted.remove(&id) {
                 break;
             }
             if let Some(draws) = replacements.remove(&id) {
+                if let Some(group) = candidate_group(&draws, prefix.len()) {
+                    next_groups.push(group);
+                }
                 prefix.extend(draws);
             }
         }
         if !inserted.is_empty() {
             return None;
         }
-        for (range, id) in groups.into_iter().rev() {
+        let mut next_start = prefix.len();
+        let mut changed_groups = groups.iter().peekable();
+        for (index, group) in self.candidate_groups.iter().enumerate() {
+            if changed_groups
+                .peek()
+                .is_some_and(|(changed_index, _, _)| *changed_index == index)
+            {
+                let (_, _, id) = changed_groups.next()?;
+                if let Some(draws) = replacements.get(id)
+                    && let Some(next) = candidate_group(draws, next_start)
+                {
+                    next_start = next.end;
+                    next_groups.push(next);
+                }
+            } else {
+                let mut next = group.clone();
+                next.end = next_start + group.end - group.start;
+                next.start = next_start;
+                next_start = next.end;
+                next_groups.push(next);
+            }
+        }
+        for (_, range, id) in groups.into_iter().rev() {
             self.candidates
                 .splice(range, replacements.remove(&id).unwrap_or_default());
         }
@@ -72,31 +99,26 @@ impl PreparedScene {
         }
         self.occluders.retain(|id, _| !changed.contains(id));
         self.occluders.extend(partial.occluders);
-        self.rebuild_groups();
+        self.candidate_groups = next_groups;
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
         Some(changed.len())
     }
+}
 
-    fn rebuild_groups(&mut self) {
-        self.candidate_groups.clear();
-        for (index, draw) in self.candidates.iter().enumerate() {
-            if let Some(group) = self.candidate_groups.last_mut()
-                && self.candidates[group.start].node == draw.node
-            {
-                group.end = index + 1;
-                group.bounds.min = group.bounds.min.min(draw.bounds.min);
-                group.bounds.max = group.bounds.max.max(draw.bounds.max);
-            } else {
-                self.candidate_groups.push(CandidateGroup {
-                    start: index,
-                    end: index + 1,
-                    bounds: draw.bounds,
-                    culling_origin: draw.culling_origin,
-                });
-            }
-        }
+fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGroup> {
+    let first = draws.first()?;
+    let mut bounds = first.bounds;
+    for draw in &draws[1..] {
+        bounds.min = bounds.min.min(draw.bounds.min);
+        bounds.max = bounds.max.max(draw.bounds.max);
     }
+    Some(CandidateGroup {
+        start,
+        end: start + draws.len(),
+        bounds,
+        culling_origin: first.culling_origin,
+    })
 }
 
 #[cfg(test)]
@@ -129,6 +151,18 @@ mod tests {
         prepared.update_camera(camera, 1.).unwrap();
         let complete = PreparedScene::new(&next, camera, 1.).unwrap();
         assert_eq!(prepared.draws.len(), complete.draws.len());
+        assert_eq!(
+            prepared
+                .candidate_groups
+                .iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>(),
+            complete
+                .candidate_groups
+                .iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             prepared
                 .draws
