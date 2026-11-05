@@ -153,6 +153,8 @@ pub struct PreparedScene {
     /// A camera move keeps this list and only re-culls and re-sorts it, so dragging an orbit camera
     /// does not re-walk the scene graph or rebuild world transforms for every node.
     candidates: Vec<PreparedDraw>,
+    /// Reusable workspace for linear incremental scene updates.
+    candidate_scratch: Vec<PreparedDraw>,
     candidate_groups: Vec<CandidateGroup>,
     visible_candidates: Vec<usize>,
     next_visible_candidates: Vec<usize>,
@@ -593,6 +595,8 @@ impl PreparedScene {
     /// Releases retained traversal and output capacity after a large scene is no longer needed.
     pub fn trim(&mut self) {
         self.draws.shrink_to_fit();
+        self.candidates.shrink_to_fit();
+        self.candidate_scratch.shrink_to_fit();
         self.lights.shrink_to_fit();
         self.walk_stack.shrink_to_fit();
         self.candidate_groups.shrink_to_fit();

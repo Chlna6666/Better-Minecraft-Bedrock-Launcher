@@ -90,13 +90,33 @@ impl PreparedScene {
                 next_groups.push(next);
             }
         }
-        for (_, range, id) in groups.into_iter().rev() {
-            self.candidates
-                .splice(range, replacements.remove(&id).unwrap_or_default());
+        // Repeated Vec::splice shifts the entire suffix for every changed section.
+        // Merge the retained candidates once instead, moving unchanged draws and
+        // replacement draws in O(total_draws + changed_nodes). Keep the spare vector
+        // allocated across updates so section streaming does not churn the allocator.
+        self.candidate_scratch.clear();
+        self.candidate_scratch.reserve(next_start);
+        self.candidate_scratch.extend(prefix);
+        let mut previous = self.candidates.drain(..);
+        let mut changed_groups = groups.into_iter().peekable();
+        for (index, group) in self.candidate_groups.iter().enumerate() {
+            let current = previous.by_ref().take(group.end - group.start);
+            if changed_groups
+                .peek()
+                .is_some_and(|(changed_index, _, _)| *changed_index == index)
+            {
+                let (_, _, id) = changed_groups.next()?;
+                // The old root has been replaced or removed.
+                for _ in current {}
+                self.candidate_scratch
+                    .extend(replacements.remove(&id).unwrap_or_default());
+            } else {
+                self.candidate_scratch.extend(current);
+            }
         }
-        if !prefix.is_empty() {
-            self.candidates.splice(0..0, prefix);
-        }
+        debug_assert!(previous.next().is_none());
+        drop(previous);
+        std::mem::swap(&mut self.candidates, &mut self.candidate_scratch);
         self.occluders.retain(|id, _| !changed.contains(id));
         self.occluders.extend(partial.occluders);
         self.candidate_groups = next_groups;
@@ -124,6 +144,53 @@ fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGrou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn many_changed_sections_match_a_full_walk_without_repeated_splicing() {
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 10.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        let ids = (0..512)
+            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .collect::<Vec<_>>();
+        let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
+        let step = 0;
+        {
+            let mut next = scene.fork();
+            for index in (step..512).step_by(7) {
+                if index % 5 == 0 {
+                    next.remove(ids[index]).unwrap();
+                } else {
+                    next.node_mut(ids[index]).unwrap().transform.translation.x = step as f32 + 1.;
+                }
+            }
+            let changes = next.changed_nodes(&scene).unwrap();
+            assert!(changes.len() > 50);
+            assert_eq!(
+                prepared.update_nodes(&next, changes, Mat4::IDENTITY),
+                Some(changes.len())
+            );
+            prepared.update_camera(camera, 1.).unwrap();
+            let full = PreparedScene::new(&next, camera, 1.).unwrap();
+            assert_eq!(
+                prepared.candidates.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+                full.candidates.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                prepared.candidate_groups.iter()
+                    .map(|group| (group.start, group.end, group.bounds))
+                    .collect::<Vec<_>>(),
+                full.candidate_groups.iter()
+                    .map(|group| (group.start, group.end, group.bounds))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(prepared.draws.len(), full.draws.len());
+            assert!(prepared.candidate_scratch.capacity() >= full.candidates.len());
+        }
+    }
 
     #[test]
     fn root_replacement_prepares_only_changed_nodes_and_preserves_snapshots() {
