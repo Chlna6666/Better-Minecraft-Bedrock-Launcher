@@ -1078,6 +1078,116 @@ pub(super) struct DrawRecordCache {
 }
 
 impl DrawRecordCache {
+    /// Directly resolve logical draws into persistent physical GPU DrawParams
+    /// slots. The transient logical 80-byte-per-draw table is never constructed.
+    ///
+    /// An empty `output` with matching `next_keys` means the committed CPU
+    /// snapshot is reusable after successful GPU upload/binding preparation.
+    /// The retained material snapshot cache owns immutable Arc<Material> values:
+    /// mutating a material via Arc::make_mut necessarily changes its identity.
+    pub(super) fn encode_stable(
+        &mut self,
+        draws: &[PreparedDraw],
+        lights: usize,
+        mapping: &[u32],
+        high_water: usize,
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        next_keys: &mut Vec<DrawParamKey>,
+        output: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+    ) -> gpui::Result<usize> {
+        const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
+        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
+        if self.light_count != Some(light_count) {
+            self.records.clear();
+            self.light_count = Some(light_count);
+        }
+        if draws.len() != mapping.len() {
+            return Err(anyhow!("GPUI 3D physical draw mapping length mismatch").into());
+        }
+        let byte_len = high_water.max(1)
+            .checked_mul(STRIDE)
+            .ok_or_else(|| anyhow!("GPUI 3D physical DrawParams table overflows usize"))?;
+        next_keys.clear();
+        next_keys.extend_from_slice(&previous_keys[..previous_keys.len().min(high_water)]);
+        let mut dirty = Vec::<(usize, [u8; STRIDE])>::new();
+        for (draw, &slot) in draws.iter().zip(mapping) {
+            let slot = slot as usize;
+            if slot >= high_water {
+                return Err(anyhow!("GPUI 3D physical draw slot outside table").into());
+            }
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let cache_key = (material, uv_regions);
+            let (key, record) = if let Some(cached) = self.records.get(&cache_key)
+                && std::sync::Arc::ptr_eq(&cached.material, &draw.material)
+            {
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: cached.generation,
+                        uv_regions,
+                        light_count,
+                    },
+                    cached.bytes,
+                )
+            } else {
+                scratch.clear();
+                encode_draw_record(draw, light_count, scratch, STRIDE)?;
+                let record: [u8; STRIDE] = scratch[..STRIDE]
+                    .try_into()
+                    .expect("DrawParams encoder must write one complete record");
+                self.next_generation = self.next_generation.wrapping_add(1);
+                let generation = self.next_generation;
+                // Retain the same bounded snapshot policy as dense encoding.
+                if self.records.len() < 8192 || self.records.contains_key(&cache_key) {
+                    self.records.insert(cache_key, MaterialRecord {
+                        material: draw.material.clone(),
+                        bytes: record,
+                        generation,
+                    });
+                }
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: generation,
+                        uv_regions,
+                        light_count,
+                    },
+                    record,
+                )
+            };
+            let start = slot * STRIDE;
+            if previous_keys.get(slot) != Some(&key)
+                || previous_bytes.get(start..start + STRIDE).is_none()
+            {
+                dirty.push((slot, record));
+            }
+            if slot >= next_keys.len() {
+                next_keys.resize(slot + 1, key);
+            }
+            next_keys[slot] = key;
+        }
+
+        output.clear();
+        if dirty.is_empty()
+            && next_keys == previous_keys
+            && previous_bytes.len() == byte_len
+        {
+            return Ok(0);
+        }
+        // Material changes are infrequent: copy the old physical table only if
+        // actual records changed or the table's occupied extent changed.
+        output.extend_from_slice(previous_bytes);
+        output.resize(byte_len, 0);
+        for (slot, record) in &dirty {
+            let start = slot * STRIDE;
+            output[start..start + STRIDE].copy_from_slice(record);
+        }
+        Ok(dirty.len())
+    }
+
     pub(super) fn encode(
         &mut self,
         draws: &[PreparedDraw],

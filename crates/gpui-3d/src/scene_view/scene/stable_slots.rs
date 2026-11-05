@@ -6,7 +6,7 @@
 //! Freed slots are reused before new capacity is allocated.
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 struct BaseIdentity {
@@ -55,14 +55,19 @@ impl StableDrawSlots {
         let mut next = self.clone();
         let mut occurrences = HashMap::<BaseIdentity, u32>::new();
         let mut wanted = Vec::with_capacity(draws.len());
-        let mut active = HashSet::with_capacity(draws.len());
+        // The old physical slots are dense integer IDs. Mark their liveness
+        // in a compact byte vector rather than allocating a HashSet and hashing
+        // every SlotIdentity a second time on each incremental update.
+        let mut live_slots = vec![false; self.identities.len()];
         for draw in draws {
             let base = BaseIdentity::of(draw);
             let count = occurrences.entry(base).or_default();
             let identity = SlotIdentity { base, occurrence: *count };
             *count = count.checked_add(1)
                 .ok_or_else(|| anyhow!("GPUI 3D duplicate draw identity overflow"))?;
-            active.insert(identity);
+            if let Some(&slot) = self.occupied.get(&identity) {
+                live_slots[slot] = true;
+            }
             wanted.push(identity);
         }
 
@@ -70,7 +75,7 @@ impl StableDrawSlots {
         // reuse holes without raising the high-water mark unnecessarily.
         for (index, resident) in next.identities.iter_mut().enumerate() {
             if let Some(id) = *resident
-                && !active.contains(&id)
+                && !live_slots[index]
             {
                 next.occupied.remove(&id);
                 *resident = None;
@@ -249,4 +254,68 @@ mod tests {
         assert_eq!(next.high_water(), 8);
         assert_eq!(mapping.len(), 8);
     }
+    #[test]
+    fn physical_draw_encoder_avoids_intermediate_table_and_keeps_dirty_rows() {
+        let original = draws(40);
+        let (slots, first_map) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut cache = gpu::DrawRecordCache::default();
+        let mut keys = Vec::new();
+        let mut bytes = Vec::new();
+        let mut scratch = Vec::new();
+        let encoded = cache.encode_stable(
+            &original, 0, &first_map, slots.high_water(),
+            &[], &[], &mut keys, &mut bytes, &mut scratch
+        ).unwrap();
+        assert_eq!(encoded, 40);
+        let mut baseline = Vec::new();
+        let mut baseline_keys = Vec::new();
+        gpu::DrawRecordCache::default()
+            .encode(&original, 0, &mut baseline, &mut baseline_keys)
+            .unwrap();
+        for (logical, &physical) in first_map.iter().enumerate() {
+            let stride = DRAW_PARAMS_STRIDE as usize;
+            assert_eq!(
+                &bytes[physical as usize * stride..(physical as usize + 1) * stride],
+                &baseline[logical * stride..(logical + 1) * stride]
+            );
+        }
+
+        let mut reordered = original.clone();
+        reordered.reverse();
+        reordered.remove(11);
+        let (next_slots, remap) = slots.plan(&reordered).unwrap();
+        let mut next_keys = Vec::new();
+        let mut next_bytes = Vec::new();
+        let unchanged = cache.encode_stable(
+            &reordered, 0, &remap, next_slots.high_water(),
+            &keys, &bytes, &mut next_keys, &mut next_bytes, &mut scratch
+        ).unwrap();
+        assert_eq!(unchanged, 0);
+        assert!(next_bytes.is_empty(), "logical reorder must not copy the physical table");
+        assert_eq!(next_keys, keys);
+
+        // One immutable Arc snapshot changes while every other physical
+        // DrawParams record and material identity remains resident.
+        Arc::make_mut(&mut reordered[3].material).base_color = [0.3, 0.2, 0.7, 1.0];
+        let (last_slots, last_map) = next_slots.plan(&reordered).unwrap();
+        let dirty = cache.encode_stable(
+            &reordered, 0, &last_map, last_slots.high_water(),
+            &keys, &bytes, &mut next_keys, &mut next_bytes, &mut scratch
+        ).unwrap();
+        assert_eq!(dirty, 1, "only the modified material's slot should be rebuilt");
+        for &slot in &last_map {
+            let stride = DRAW_PARAMS_STRIDE as usize;
+            let start = slot as usize * stride;
+            if slot != last_map[3] {
+                assert_eq!(
+                    &next_bytes[start..start + stride],
+                    &bytes[start..start + stride],
+                    "unchanged physical records are bit-for-bit reused"
+                );
+            } else {
+                assert_ne!(&next_bytes[start..start + stride], &bytes[start..start + stride]);
+            }
+        }
+    }
+
 }

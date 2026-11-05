@@ -862,18 +862,24 @@ impl SceneResources {
         let [mut draw_bytes, mut instance_bytes, mut light_bytes] =
             std::mem::take(&mut self.scratch_tables);
         let mut next_draw_keys = std::mem::take(&mut self.scratch_draw_slot_keys);
-        self.draw_record_cache.encode(
-            &self.prepared.draws,
-            self.prepared.lights.len(),
-            &mut draw_bytes,
-            &mut next_draw_keys,
-        )?;
         let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
         let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
         let encoded_instance_rows = if let Some((slots, mapping)) = next_slots.as_ref() {
-            // Only changed physical instance records are re-encoded. Reordering
-            // untouched Sections causes no 144-byte CPU/GPU record movement.
-            let encoded = self.encode_stable_instances(
+            // Encode material snapshots directly into physical GPU slots. No
+            // intermediate dense logical 80-byte table and no second reorder
+            // copy are needed for the common streaming Section update.
+            self.draw_record_cache.encode_stable(
+                &self.prepared.draws,
+                self.prepared.lights.len(),
+                mapping,
+                slots.high_water(),
+                &self.draw_slot_keys,
+                &self.uploaded_tables[0],
+                &mut next_draw_keys,
+                &mut draw_bytes,
+                &mut self.scratch_packed_draws,
+            )?;
+            self.encode_stable_instances(
                 mapping,
                 slots.high_water(),
                 &self.instance_slot_keys,
@@ -881,50 +887,15 @@ impl SceneResources {
                 &mut next_instance_keys,
                 &mut instance_bytes,
                 &mut dirty_instance_run,
-            )?;
-            let mut packed = std::mem::take(&mut self.scratch_packed_draws);
-            let mut physical_keys = self.draw_slot_keys.clone();
-            physical_keys.truncate(slots.high_water());
-            for (logical, &slot) in mapping.iter().enumerate() {
-                let slot = slot as usize;
-                let key = next_draw_keys[logical];
-                if slot >= physical_keys.len() {
-                    physical_keys.resize(slot + 1, key);
-                }
-                physical_keys[slot] = key;
-            }
-            // Most camera-only reorder / unchanged Section publications only
-            // alter the 4-byte logical slot map. Keep the committed 80-byte
-            // physical table in place when every material snapshot is identical.
-            // The old CPU bytes are moved into the next snapshot after successful
-            // GPU writes and BindGroup preparation, not copied here.
-            let stride = DRAW_PARAMS_STRIDE as usize;
-            let snapshot_reused = !replace_draw
-                && physical_keys == self.draw_slot_keys
-                && self.uploaded_tables[0].len() == physical_count * stride;
-            packed.clear();
-            if !snapshot_reused {
-                packed.extend_from_slice(&self.uploaded_tables[0]);
-                packed.resize(physical_count * stride, 0);
-                for (logical, &slot) in mapping.iter().enumerate() {
-                    let slot = slot as usize;
-                    let to = slot * stride;
-                    if self.draw_slot_keys.get(slot) == Some(&next_draw_keys[logical])
-                        && self.uploaded_tables[0].get(to..to + stride).is_some()
-                    {
-                        continue;
-                    }
-                    let from = logical * stride;
-                    packed[to..to + stride].copy_from_slice(&draw_bytes[from..from + stride]);
-                }
-            }
-            self.scratch_packed_draws = draw_bytes;
-            draw_bytes = packed;
-            self.scratch_draw_slot_keys = next_draw_keys;
-            next_draw_keys = physical_keys;
-            encoded
+            )?
         } else {
-            let result = self.encode_draw_instances_cached(
+            self.draw_record_cache.encode(
+                &self.prepared.draws,
+                self.prepared.lights.len(),
+                &mut draw_bytes,
+                &mut next_draw_keys,
+            )?;
+            self.encode_draw_instances_cached(
                 &self.prepared.draws,
                 voxel_shader,
                 &self.instance_slot_keys,
@@ -932,8 +903,7 @@ impl SceneResources {
                 &mut next_instance_keys,
                 &mut instance_bytes,
                 &mut dirty_instance_run,
-            );
-            result?
+            )?
         };
         self.dirty_instance_run = dirty_instance_run;
         let mut slot_bytes = std::mem::take(&mut self.scratch_slot_map);
