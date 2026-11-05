@@ -3080,6 +3080,7 @@ impl Worker {
                 }
                 forget_published_sections(&mut self.published_sections, pos, &sections);
                 completions.push(World3dChunkCompletion {
+                    generation,
                     lights: self
                         .light_fields
                         .get(&pos)

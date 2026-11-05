@@ -51,6 +51,30 @@ const PICK_INTERVAL: Duration = Duration::from_micros(33_334);
 const MAX_MESH_EVENTS_PER_POLL: usize = 16;
 const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
+const SECTION_EPOCH_MAX_TOMBSTONES: usize = 32_768;
+
+/// Preserve Section upsert/remove ordering across queued background results.
+/// The worker's generation is a view epoch, not a content hash: older results
+/// are still useful until a newer event for the SAME chunk column arrives.
+fn accept_section_epoch(
+    latest: &mut HashMap<ChunkPos, u64>,
+    pos: ChunkPos,
+    generation: u64,
+) -> bool {
+    match latest.entry(pos) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if generation < *entry.get() {
+                return false;
+            }
+            *entry.get_mut() = generation;
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(generation);
+        }
+    }
+    true
+}
+
 
 fn is_pick_due(last_pick_at: Option<Instant>, now: Instant) -> bool {
     last_pick_at.is_none_or(|at| now.saturating_duration_since(at) >= PICK_INTERVAL)
@@ -132,6 +156,37 @@ mod camera_snapshot_tests {
     }
 }
 
+
+#[cfg(test)]
+mod section_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn older_upsert_and_completion_cannot_override_newer_unload() {
+        let pos = ChunkPos { x: 4, z: -9, dimension: Dimension::Overworld };
+        let mut epochs = HashMap::new();
+        assert!(accept_section_epoch(&mut epochs, pos, 7));
+        assert!(!accept_section_epoch(&mut epochs, pos, 6));
+        assert_eq!(epochs[&pos], 7);
+        assert!(accept_section_epoch(&mut epochs, pos, 8));
+        assert!(!accept_section_epoch(&mut epochs, pos, 7));
+        // Same-epoch remeshing and completions are valid, ordered FIFO.
+        assert!(accept_section_epoch(&mut epochs, pos, 8));
+        assert!(accept_section_epoch(&mut epochs, pos, 9));
+        assert_eq!(epochs[&pos], 9);
+    }
+
+    #[test]
+    fn newer_event_for_other_column_does_not_reject_useful_older_section() {
+        let a = ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld };
+        let b = ChunkPos { x: 1, z: 0, dimension: Dimension::Overworld };
+        let mut epochs = HashMap::new();
+        assert!(accept_section_epoch(&mut epochs, b, 25));
+        assert!(accept_section_epoch(&mut epochs, a, 24));
+        assert_eq!(epochs[&a], 24);
+        assert_eq!(epochs[&b], 25);
+    }
+}
 struct GpuSubmitStats {
     submitted: usize,
     deferred: usize,
@@ -384,6 +439,9 @@ pub struct World3dEditorView {
     chunk_lights: BTreeMap<ChunkPos, Arc<[super::types::World3dLocalLight]>>,
     dirty_light_chunks: BTreeSet<ChunkPos>,
     chunk_meshes: BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+    /// Per-column epoch ledger, including recent unload tombstones. Prevents
+    /// queued stale Section payloads from resurrecting GPU-resident geometry.
+    section_epochs: HashMap<ChunkPos, u64>,
     dirty_sections: BTreeSet<(ChunkPos, i32)>,
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
@@ -504,6 +562,7 @@ impl World3dEditorView {
             chunk_lights: BTreeMap::new(),
             dirty_light_chunks: BTreeSet::new(),
             chunk_meshes: BTreeMap::new(),
+            section_epochs: HashMap::new(),
             dirty_sections: BTreeSet::new(),
             probes: BTreeMap::new(),
             textures: HashMap::new(),
@@ -696,10 +755,14 @@ impl World3dEditorView {
                     if payload.lighting != self.render_settings.lighting
                         || payload.mesh.pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Chunk(payload) => {
+                    if !accept_section_epoch(
+                        &mut self.section_epochs, payload.mesh.pos, payload.generation,
+                    ) {
+                        continue;
+                    }
                     // Time-budget pressure follows newly resident data, not the same
                     // texture bytes multiplied by every section which references it.
                     let geometry_bytes = payload.mesh.estimated_geometry_cpu_bytes();
-                    let _ = payload.generation;
                     let mut new_texture_bytes = 0usize;
                     for texture in payload.mesh.textures.iter() {
                         let id = texture.id();
@@ -733,7 +796,13 @@ impl World3dEditorView {
                         if completion.lighting != self.render_settings.lighting {
                             continue;
                         }
-                        if completion.pos.dimension != self.dimension {
+                        if completion.pos.dimension != self.dimension
+                            || !accept_section_epoch(
+                                &mut self.section_epochs,
+                                completion.pos,
+                                completion.generation,
+                            )
+                        {
                             continue;
                         }
                         if completion.lights.is_empty() {
@@ -771,7 +840,9 @@ impl World3dEditorView {
                 }
                 ChunkServiceEvent::Unloaded { pos, .. } if pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Unloaded { generation, pos } => {
-                    let _ = generation;
+                    if !accept_section_epoch(&mut self.section_epochs, pos, generation) {
+                        continue;
+                    }
                     if self.chunk_lights.remove(&pos).is_some() {
                         self.dirty_light_chunks.insert(pos);
                         self.stream_scene_pending = true;

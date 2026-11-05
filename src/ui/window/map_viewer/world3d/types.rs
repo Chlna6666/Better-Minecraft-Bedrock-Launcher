@@ -399,6 +399,9 @@ pub(super) struct World3dLocalLight {
 pub struct World3dChunkCompletion {
     pub(super) lights: Arc<[World3dLocalLight]>,
     pub(super) lighting: super::rendering::LightingMode,
+    /// Streaming view epoch, shared with Chunk(upsert) and Unloaded(remove).
+    /// An older completion must not replace a newer resident Section.
+    pub generation: u64,
     pub pos: ChunkPos,
     pub sections: Vec<i32>,
     /// Previously published meshes reused by this completion, retained until it is consumed.
