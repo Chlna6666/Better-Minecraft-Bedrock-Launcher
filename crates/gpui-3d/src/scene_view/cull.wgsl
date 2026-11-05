@@ -8,6 +8,7 @@ struct Bounds {
 };
 struct Arguments { vertex_count: atomic<u32>, instance_count: atomic<u32>, first_vertex: u32, first_instance: u32 };
 struct Frame { view_projection: mat4x4<f32> };
+// minimum.w = 1 when Hi-Z has resident occluders, 0 when it is empty.
 struct CullRange { minimum: vec4<f32>, maximum: vec4<f32> };
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> bounds: array<Bounds>;
@@ -53,6 +54,9 @@ fn is_visible(box: Bounds) -> bool {
         let positive = select(box.bounds_min.xyz, box.bounds_max.xyz, normal.xyz >= vec3<f32>(0.0));
         if (dot(normal.xyz, positive) + normal.w < 0.0) { return false; }
     }
+    // Empty Hi-Z means no occluder can reject a draw. Preserve frustum/range
+    // tests while avoiding eight clip transforms and four depth reads per draw.
+    if (range.minimum.w == 0.0) { return true; }
     return !is_occluded(box);
 }
 

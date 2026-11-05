@@ -84,7 +84,7 @@ pub(super) struct CullResources {
     bounds: BufferId,
     pub(super) batches: BufferId,
     range: BufferId,
-    range_bounds: Option<Option<Aabb>>,
+    range_bounds: Option<(Option<Aabb>, bool)>,
     pub(super) arguments: BufferId,
     pub(super) visible_instances: BufferId,
     pub(super) instance_capacity: usize,
@@ -296,16 +296,17 @@ impl CullResources {
                 [range.max.x, range.max.y, range.max.z],
             )
         });
+        let occlusion_enabled = self.hiz.has_occluders();
         let mut range_bytes = [0; 32];
         for (chunk, value) in range_bytes
             .chunks_exact_mut(4)
-            .zip([min[0], min[1], min[2], 0.0, max[0], max[1], max[2], 0.0])
+            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], 0.0])
         {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
-        if self.range_bounds != Some(range) {
+        if self.range_bounds != Some((range, occlusion_enabled)) {
             device.write_buffer(self.range, 0, &range_bytes)?;
-            self.range_bounds = Some(range);
+            self.range_bounds = Some((range, occlusion_enabled));
         }
         let bindings = [
             compute_binding(

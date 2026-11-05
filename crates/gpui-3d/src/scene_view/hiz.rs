@@ -20,6 +20,10 @@ pub(super) struct HiZ {
 }
 
 impl HiZ {
+    pub(super) fn has_occluders(&self) -> bool {
+        self.count != 0
+    }
+
     pub(super) fn create(
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
