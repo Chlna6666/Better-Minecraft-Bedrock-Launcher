@@ -93,6 +93,58 @@ fn encode_bounds_cached(
     ).expect("bounds record encoder is infallible")
 }
 
+/// Resolve a Scene/Section delta into stable physical GPU storage addresses.
+/// No old 48-byte Bounds row is moved; only a changed identity or a newly
+/// allocated physical slot needs an upload.
+fn plan_resident_bounds(
+    previous: &StableDrawSlots,
+    draws: &[PreparedDraw],
+) -> gpui::Result<(StableDrawSlots, Vec<u32>, Vec<Option<BoundsRecordKey>>)> {
+    let (next_slots, mapping) = previous.plan(draws)?;
+    let mut keys = vec![None; next_slots.high_water()];
+    for (draw, &physical) in draws.iter().zip(&mapping) {
+        keys[physical as usize] = Some(BoundsRecordKey::from_draw(draw));
+    }
+    Ok((next_slots, mapping, keys))
+}
+
+/// Materialize only dirty 48-byte GPU pages from exact record-key bits.
+/// Empty/retired slots are deliberately zeroed to prevent stale visibility.
+fn resident_bounds_patches(
+    previous: &[Option<BoundsRecordKey>],
+    next: &[Option<BoundsRecordKey>],
+) -> Vec<(u64, Vec<u8>)> {
+    super::uploads::changed_ranges_for_keys(
+        previous, next, previous.len() * BOUNDS_STRIDE, BOUNDS_STRIDE, 12, 3,
+    ).into_iter().map(|range| {
+        let mut bytes = vec![0u8; range.len()];
+        for (row, key) in next[range.start / BOUNDS_STRIDE..range.end / BOUNDS_STRIDE]
+            .iter().enumerate()
+        {
+            if let Some(key) = key {
+                let start = row * BOUNDS_STRIDE;
+                for (word, bits) in key.0.iter().enumerate() {
+                    bytes[start + word * 4..start + word * 4 + 4]
+                        .copy_from_slice(&bits.to_le_bytes());
+                }
+            }
+        }
+        (range.start as u64, bytes)
+    }).collect()
+}
+
+/// Logical batch reorder affects only four-byte indirection entries.
+fn resident_mapping_patches(previous: &[u32], next: &[u32]) -> Vec<(u64, Vec<u8>)> {
+    super::uploads::changed_ranges_for_u32_records(previous, next, 1, 12, 3)
+        .into_iter().map(|range| {
+            let mut bytes = Vec::with_capacity(range.len());
+            for &physical in &next[range.start / 4..range.end / 4] {
+                bytes.extend_from_slice(&physical.to_le_bytes());
+            }
+            (range.start as u64, bytes)
+        }).collect()
+}
+
 pub(super) struct CullResources {
     pub(super) hiz: super::hiz::HiZ,
     backend: BackendKind,
@@ -222,15 +274,10 @@ impl CullResources {
         // The shared stable-slot identity is (Node, Mesh, Material, Part,
         // occurrence). A Section deletion retires only its corresponding slot;
         // surviving bounds stay resident at their previous GPU addresses.
-        let (next_slots, logical_to_physical) = self.resident_slots.plan(draws)?;
+        let (next_slots, logical_to_physical, next_bounds_keys) =
+            plan_resident_bounds(&self.resident_slots, draws)?;
         if next_slots.high_water() > self.instance_capacity {
             return Err(anyhow!("GPU culling physical slot capacity exceeded").into());
-        }
-        let mut next_bounds_keys = std::mem::take(&mut self.scratch_bounds_keys);
-        next_bounds_keys.clear();
-        next_bounds_keys.resize(next_slots.high_water(), None);
-        for (draw, &slot) in draws.iter().zip(&logical_to_physical) {
-            next_bounds_keys[slot as usize] = Some(BoundsRecordKey::from_draw(draw));
         }
         let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
         let [mut bounds_scratch, mut batch_bytes] = std::mem::take(&mut self.scratch_inputs);
@@ -248,43 +295,12 @@ impl CullResources {
         // Generate bounded dirty regions from 48-byte record identities.
         // Materialize ONLY these regions, never the entire resident bounds
         // table. A removed physical slot is zeroed and reused transactionally.
-        let bounds_ranges = super::uploads::changed_ranges_for_keys(
-            &self.bounds_keys,
-            &next_bounds_keys,
-            self.bounds_keys.len() * BOUNDS_STRIDE,
-            BOUNDS_STRIDE, 12, 3,
-        );
-        let mut bounds_patches = Vec::with_capacity(bounds_ranges.len());
-        for range in bounds_ranges {
-            let mut bytes = vec![0u8; range.len()];
-            for (row, key) in next_bounds_keys[
-                range.start / BOUNDS_STRIDE..range.end / BOUNDS_STRIDE
-            ].iter().enumerate() {
-                if let Some(key) = key {
-                    let start = row * BOUNDS_STRIDE;
-                    for (word, bits) in key.0.iter().enumerate() {
-                        bytes[start + word * 4..start + word * 4 + 4]
-                            .copy_from_slice(&bits.to_le_bytes());
-                    }
-                }
-            }
-            bounds_patches.push((range.start as u64, bytes));
-        }
+        let bounds_patches = resident_bounds_patches(&self.bounds_keys, &next_bounds_keys);
 
-        // The shader uses a compact u32 indirection table. Reordering Section
-        // batches modifies only these four-byte records, not their 48-byte
-        // bounds. Avoid serializing unchanged mapping rows.
-        let mapping_ranges = super::uploads::changed_ranges_for_u32_records(
-            &self.uploaded_slot_map, &logical_to_physical, 1, 12, 3,
+        // The compact map is the only data affected by logical reordering.
+        let mapping_patches = resident_mapping_patches(
+            &self.uploaded_slot_map, &logical_to_physical,
         );
-        let mut mapping_patches = Vec::with_capacity(mapping_ranges.len());
-        for range in mapping_ranges {
-            let mut bytes = Vec::with_capacity(range.len());
-            for slot in &logical_to_physical[range.start / 4..range.end / 4] {
-                bytes.extend_from_slice(&slot.to_le_bytes());
-            }
-            mapping_patches.push((range.start as u64, bytes));
-        }
 
         let mut writes = Vec::with_capacity(bounds_patches.len() + mapping_patches.len() + 12);
         for (offset, data) in &bounds_patches {
@@ -787,6 +803,80 @@ mod bounds_cache_tests {
         assert_eq!(removed_count, 0);
         encode_batches_into(&draws, removed, None, &mut reference).unwrap();
         assert_eq!(bytes, reference);
+    }
+
+    fn apply_sparse_patches(mut bytes: Vec<u8>, patches: &[(u64, Vec<u8>)], len: usize) -> Vec<u8> {
+        bytes.resize(len, 0);
+        for (offset, data) in patches {
+            let start = *offset as usize;
+            bytes[start..start + data.len()].copy_from_slice(data);
+        }
+        bytes
+    }
+
+    #[test]
+    fn streamed_sections_keep_resident_gpu_bounds_across_reorder_and_removal() {
+        let draws = sample_draws();
+        let (slots, first_map, initial_keys) =
+            plan_resident_bounds(&StableDrawSlots::default(), &draws).unwrap();
+        assert_eq!(first_map.len(), draws.len());
+        let first_upload = resident_bounds_patches(&[], &initial_keys);
+        let first_bytes = apply_sparse_patches(
+            Vec::new(), &first_upload, slots.high_water() * BOUNDS_STRIDE,
+        );
+        for (draw, &physical) in draws.iter().zip(&first_map) {
+            let expected = encode_bounds(std::slice::from_ref(draw));
+            let start = physical as usize * BOUNDS_STRIDE;
+            assert_eq!(&first_bytes[start..start + BOUNDS_STRIDE], expected);
+        }
+        let mut reordered = draws.clone();
+        reordered.reverse();
+        reordered.remove(3);
+        let (next_slots, next_map, next_keys) =
+            plan_resident_bounds(&slots, &reordered).unwrap();
+        for (draw, &physical) in reordered.iter().zip(&next_map) {
+            let original_index = draws.iter().position(|other| other.node == draw.node).unwrap();
+            assert_eq!(physical, first_map[original_index]);
+        }
+        assert_eq!(next_slots.high_water(), slots.high_water());
+        let changes = resident_bounds_patches(&initial_keys, &next_keys);
+        assert_eq!(changes.iter().map(|(_, b)| b.len()).sum::<usize>(), BOUNDS_STRIDE);
+        let next_bytes = apply_sparse_patches(
+            first_bytes, &changes, next_slots.high_water() * BOUNDS_STRIDE,
+        );
+        for (draw, &physical) in reordered.iter().zip(&next_map) {
+            let expected = encode_bounds(std::slice::from_ref(draw));
+            let start = physical as usize * BOUNDS_STRIDE;
+            assert_eq!(&next_bytes[start..start + BOUNDS_STRIDE], expected);
+        }
+        assert!(!resident_mapping_patches(&first_map, &next_map).is_empty());
+        let empty_change = resident_bounds_patches(&next_keys, &next_keys);
+        assert!(empty_change.is_empty(), "unchanged Section bounds must not be uploaded");
+    }
+
+    #[test]
+    fn only_changed_section_bounds_are_uploaded_and_slots_reused() {
+        let draws = sample_draws();
+        let (original_slots, original_map, original_keys) =
+            plan_resident_bounds(&StableDrawSlots::default(), &draws).unwrap();
+        let mut next = draws.clone();
+        next[4].bounds.max.x += 0.125;
+        let (slots, next_map, keys) = plan_resident_bounds(&original_slots, &next).unwrap();
+        assert_eq!(slots.high_water(), original_slots.high_water());
+        assert_eq!(next_map, original_map);
+        let changed = resident_bounds_patches(&original_keys, &keys);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0, original_map[4] as u64 * BOUNDS_STRIDE as u64);
+        assert_eq!(changed[0].1.len(), BOUNDS_STRIDE);
+        assert!(resident_mapping_patches(&original_map, &next_map).is_empty());
+        // A subsequent add reuses a free physical slot instead of reallocating
+        // every unchanged resident Section.
+        next.remove(0);
+        let (removed, _, _) = plan_resident_bounds(&slots, &next).unwrap();
+        next.push(draws[0].clone());
+        let (restored, restored_mapping, _) = plan_resident_bounds(&removed, &next).unwrap();
+        assert_eq!(restored.high_water(), original_slots.high_water());
+        assert_eq!(restored_mapping.last(), original_map.first());
     }
 
 }
