@@ -105,6 +105,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Validate release-note generation
+        run: python3 -m unittest discover -s scripts/tests -p 'test_release_notes.py'
+
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update

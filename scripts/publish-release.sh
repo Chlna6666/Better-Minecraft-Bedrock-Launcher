@@ -27,17 +27,25 @@ Linux artifacts include DEB, RPM, AppImage and Flatpak packages.
 EOF
 fi
 
-append_changes() {
-  git log --no-merges --pretty='%s%x09%h' "$@" \
-    | awk -F '\t' 'tolower($1) !~ /^ci(\([^)]*\))?!?:[[:space:]]/ { printf "- %s (%s)\n", $1, $2 }' \
-    >> "$notes"
-}
+stable_base="$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -Fxv "$RELEASE_TAG" | head -n 1 || true)"
+previous="$stable_base"
 
-previous="$(git tag --list 'v*' --sort=-version:refname | grep -Ev 'nightly' | grep -Fxv "$RELEASE_TAG" | head -n 1 || true)"
+# Previous nightly releases and their tags are deleted by cleanup. A separate
+# moving baseline tag preserves the actual last-published commit between runs.
+if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+  if git ls-remote --exit-code --refs origin refs/tags/bmcbl-nightly-baseline >/dev/null 2>&1; then
+    git fetch --force origin '+refs/tags/bmcbl-nightly-baseline:refs/tags/bmcbl-nightly-baseline'
+    previous="bmcbl-nightly-baseline"
+  else
+    previous="$(git tag --list 'v*-nightly.*' --sort=-creatordate | grep -Fxv "$RELEASE_TAG" | head -n 1 || true)"
+    if [[ -z "$previous" ]]; then previous="$stable_base"; fi
+  fi
+fi
+
 if [[ -n "$previous" ]]; then
-  append_changes "$previous..$RELEASE_REF"
+  python3 scripts/release_notes.py --format release --since "$previous" --until "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" >> "$notes"
 else
-  append_changes -n 100 "$RELEASE_REF"
+  python3 scripts/release_notes.py --format release --until "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" >> "$notes"
 fi
 
 if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -58,6 +66,12 @@ else
     create_args+=(--verify-tag --latest)
   fi
   gh release create "${create_args[@]}"
+fi
+
+# Advance only after publishing successfully; the tag is not a v* release tag.
+if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+  git tag -f bmcbl-nightly-baseline "$RELEASE_REF"
+  git push --force origin refs/tags/bmcbl-nightly-baseline
 fi
 
 if [[ "$CLEANUP_OLD_NIGHTLIES" == "true" ]]; then
