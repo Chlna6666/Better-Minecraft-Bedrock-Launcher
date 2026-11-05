@@ -14,13 +14,14 @@ English mirrors. Crate `README.md` files are English with a Chinese `README.zh-C
 | [CRATES](CRATES.en.md) | Workspace crate catalog: role, status, boundaries, maintenance |
 | [CLI](CLI.en.md) | Terminal subcommands, output format and exit codes |
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.en.md) | Startup arguments for shortcuts, file associations and the updater, plus legacy aliases |
+| [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.en.md) | Cape pack manifests, textures, icons, localization and import formats |
 | [NAMING](NAMING.md) | Naming rules (Chinese; wgpu-aligned vocabulary) |
 | [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) | gpui / nova-gfx boundary decision (Chinese) |
 
 Chinese originals: [README.md](README.md) · [ARCHITECTURE.md](ARCHITECTURE.md) ·
 [BUILD_AND_TEST.md](BUILD_AND_TEST.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CRATES.md](CRATES.md) ·
 [CLI.md](CLI.md) ·
-[STARTUP_ARGUMENTS.md](STARTUP_ARGUMENTS.md)
+[STARTUP_ARGUMENTS.md](STARTUP_ARGUMENTS.md) · [CAPE_PACK_FORMAT.md](CAPE_PACK_FORMAT.md)
 
 ## Reading paths
 

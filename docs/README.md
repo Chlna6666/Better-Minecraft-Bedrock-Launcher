@@ -14,6 +14,7 @@
 | [CRATES](CRATES.md) | 工作区 crate 目录：职责、状态、边界与维护方式 |
 | [CLI](CLI.md) | 终端命令行子命令、输出格式与退出码 |
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.md) | 快捷方式/文件关联/更新器使用的启动参数与兼容参数 |
+| [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.md) | 披风包清单、纹理、图标、本地化和导入格式 |
 | [NAMING](NAMING.md) | 命名规范（wgpu 对齐、动词族、公共/内部接口） |
 | [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) | gpui 与 nova-gfx 的边界决策 |
 
@@ -21,7 +22,7 @@
 [README.en.md](README.en.md) · [ARCHITECTURE.en.md](ARCHITECTURE.en.md) ·
 [BUILD_AND_TEST.en.md](BUILD_AND_TEST.en.md) · [CONTRIBUTING.en.md](CONTRIBUTING.en.md) ·
 [CRATES.en.md](CRATES.en.md) · [CLI.en.md](CLI.en.md) ·
-[STARTUP_ARGUMENTS.en.md](STARTUP_ARGUMENTS.en.md)
+[STARTUP_ARGUMENTS.en.md](STARTUP_ARGUMENTS.en.md) · [CAPE_PACK_FORMAT.en.md](CAPE_PACK_FORMAT.en.md)
 
 ## 推荐阅读路径
 

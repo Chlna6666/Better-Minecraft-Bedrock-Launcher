@@ -66,9 +66,12 @@ pub async fn load_mods(version_folder: String) -> Result<Vec<ManagedModInfo>, St
     .await
 }
 
-pub async fn load_capes(options: GamePathOptions) -> Result<Vec<CapePackInfo>, String> {
+pub async fn load_capes(
+    options: GamePathOptions,
+    lang: String,
+) -> Result<Vec<CapePackInfo>, String> {
     run_blocking(BlockingTaskOptions::hidden("读取披风包"), move || {
-        Ok(list_packs(&options))
+        Ok(list_packs(&options, &lang))
     })
     .await
 }

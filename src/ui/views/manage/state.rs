@@ -119,6 +119,7 @@ pub struct ManageSkinPreviewEntry {
 pub struct ManageCapePreviewEntry {
     pub display_name: SharedString,
     pub texture_path: SharedString,
+    pub elytra_texture_path: Option<SharedString>,
     pub preview_path: SharedString,
 }
 

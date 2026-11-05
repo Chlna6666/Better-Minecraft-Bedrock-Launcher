@@ -116,7 +116,7 @@ pub async fn load_assets(
             .await
         }
         ManageTab::SkinPack => load_skin_pack_assets(version, config, locale_code).await,
-        ManageTab::Cape => load_cape_assets(version, config).await,
+        ManageTab::Cape => load_cape_assets(version, config, locale_code).await,
         ManageTab::Map => load_map_assets(version, config, selected_gdk_user).await,
         ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => Ok(Vec::new()),
     }
@@ -530,6 +530,7 @@ async fn load_skin_pack_assets(
 async fn load_cape_assets(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
+    locale_code: &str,
 ) -> Result<Vec<ManageAssetEntry>, String> {
     let options = GamePathOptions {
         build_type: version.build_type(),
@@ -539,7 +540,7 @@ async fn load_cape_assets(
         user_id: None,
         allow_shared_fallback: false,
     };
-    Ok(manage_service::load_capes(options)
+    Ok(manage_service::load_capes(options, locale_code.to_string())
         .await?
         .into_iter()
         .map(manage_asset_from_cape)
@@ -554,9 +555,8 @@ fn manage_asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> 
         .unwrap_or("cape")
         .to_string();
     let icon_path = pack
-        .capes
-        .iter()
-        .find_map(|cape| cape.preview_path.as_ref())
+        .icon_path
+        .or_else(|| pack.capes.iter().find_map(|cape| cape.preview_path.clone()))
         .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
     let previews = pack
         .capes
@@ -567,6 +567,10 @@ fn manage_asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> 
                 texture_path: SharedString::from(
                     cape.texture_path.as_ref()?.to_string_lossy().into_owned(),
                 ),
+                elytra_texture_path: cape
+                    .elytra_texture_path
+                    .as_ref()
+                    .map(|path| SharedString::from(path.to_string_lossy().into_owned())),
                 preview_path: SharedString::from(
                     cape.preview_path.as_ref()?.to_string_lossy().into_owned(),
                 ),

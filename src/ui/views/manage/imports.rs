@@ -4,7 +4,7 @@ use super::*;
 
 const PACK_EXTENSIONS: &[&str] = &["mcpack", "mcaddon", "mctemplate", "zip"];
 const SKIN_PACK_EXTENSIONS: &[&str] = &["mcpack", "mcaddon", "zip"];
-const CAPE_PACK_EXTENSIONS: &[&str] = &["mccapes"];
+const CAPE_PACK_EXTENSIONS: &[&str] = &["mccapes", "zip", "png"];
 const MAP_EXTENSIONS: &[&str] = &["mcworld", "mctemplate", "zip"];
 const MOD_EXTENSIONS: &[&str] = &["dll"];
 

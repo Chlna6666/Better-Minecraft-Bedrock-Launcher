@@ -87,6 +87,19 @@ fn resolve_delete_asset_path(payload: &DeleteAssetPayload) -> Result<PathBuf, St
         allow_shared_fallback: false,
     };
 
+    if payload.delete_type == "capes" {
+        if let Some(path) = crate::core::minecraft::paths::game_target_dirs(
+            &options,
+            crate::core::minecraft::paths::GameTargetDir::Capes,
+        )
+        .into_iter()
+        .map(|root| root.join(&payload.name))
+        .find(|path| path.exists())
+        {
+            return Ok(path);
+        }
+    }
+
     let is_shared_preferred = matches!(
         payload.delete_type.as_str(),
         "resourcePacks" | "behaviorPacks" | "skins" | "capes"
@@ -200,8 +213,14 @@ fn delete_assets_transactionally(
 
     // All selected resources are now atomically absent from their canonical locations.
     // Complete cleanup even when cancellation arrives after this commit boundary.
+    // Cape packs may be single archive files, so tombstones are not always directories.
     for (_, tombstone) in &staged {
-        fs::remove_dir_all(tombstone).map_err(|error| {
+        let removed = if tombstone.is_dir() {
+            fs::remove_dir_all(tombstone)
+        } else {
+            fs::remove_file(tombstone)
+        };
+        removed.map_err(|error| {
             format!("清理资源删除暂存目录失败 {}: {error}", tombstone.display())
         })?;
     }
