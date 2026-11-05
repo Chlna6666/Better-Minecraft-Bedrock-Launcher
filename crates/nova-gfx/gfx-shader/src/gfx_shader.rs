@@ -111,6 +111,30 @@ impl WgslModule {
         Ok(ShaderBinary::spirv(stage, entry_point, spirv))
     }
 
+    /// Returns the exact entry point emitted by Naga's HLSL namer. HLSL has a
+    /// different reserved identifier set, and Naga may rename WGSL functions
+    /// (including names ending in numeric suffixes). The native compiler must
+    /// consume this reflected identifier, not the original WGSL name.
+    fn reflected_hlsl_entry(
+        &self,
+        reflection: &hlsl::ReflectionInfo,
+        stage: ShaderStage,
+        requested: &str,
+    ) -> Result<String> {
+        let index = self.module.entry_points.iter().position(|ep| {
+            ep.stage == shader_stage_to_naga(stage) && ep.name == requested
+        }).ok_or_else(|| ShaderError::Hlsl(format!(
+            "missing WGSL entry point {requested}"
+        )))?;
+        reflection.entry_point_names.get(index)
+            .ok_or_else(|| ShaderError::Hlsl(format!(
+                "missing HLSL reflection for {requested}"
+            )))?
+            .as_ref()
+            .map_err(|error| ShaderError::Hlsl(error.to_string()))
+            .cloned()
+    }
+
     /// Compiles one entry point to HLSL source.
     ///
     /// # Errors
@@ -132,14 +156,13 @@ impl WgslModule {
             entry_point: Some((shader_stage_to_naga(stage), entry_point.to_string())),
         };
         let mut source = String::new();
-        {
+        let reflection = {
             let mut writer = hlsl::Writer::new(&mut source, &options, &pipeline_options);
-            writer
-                .write(&self.module, &self.info, None)
-                .map_err(|error| ShaderError::Hlsl(error.to_string()))?;
-        }
-
-        Ok(ShaderBinary::hlsl(stage, entry_point, source))
+            writer.write(&self.module, &self.info, None)
+                .map_err(|error| ShaderError::Hlsl(error.to_string()))?
+        };
+        let translated_entry = self.reflected_hlsl_entry(&reflection, stage, entry_point)?;
+        Ok(ShaderBinary::hlsl(stage, translated_entry, source))
     }
 
     /// Translates an entry point to D3D11 Shader Model 5.0 with static resource slots.
@@ -215,12 +238,13 @@ impl WgslModule {
             entry_point: Some((shader_stage_to_naga(stage), entry_point.to_owned())),
         };
         let mut source = String::new();
-        hlsl::Writer::new(&mut source, &options, &pipeline)
+        let reflection = hlsl::Writer::new(&mut source, &options, &pipeline)
             .write(&self.module, &self.info, None)
             .map_err(|error| ShaderError::Hlsl(error.to_string()))?;
+        let translated_entry = self.reflected_hlsl_entry(&reflection, stage, entry_point)?;
         Ok(ShaderBinary::hlsl(
             stage,
-            entry_point,
+            translated_entry,
             dx11::declarations(&source)?,
         ))
     }
@@ -655,4 +679,27 @@ mod tests {
             "unexpected MSL output:\n{source}"
         );
     }
+    #[test]
+    fn hlsl_reflection_resolves_compute_entrypoint_with_numeric_suffix() {
+        let module = WgslModule::parse(
+            "@compute @workgroup_size(32) fn cs_hiz_raster_32(@builtin(global_invocation_id) id: vec3<u32>) { let n = id.x; }\n\
+             @compute @workgroup_size(64) fn cs_hiz_raster_64(@builtin(global_invocation_id) id: vec3<u32>) { let n = id.x; }"
+        ).expect("valid compute WGSL");
+        for name in ["cs_hiz_raster_32", "cs_hiz_raster_64"] {
+            for binary in [
+                module.compile_hlsl(ShaderStage::Compute, name).expect("DX12 HLSL"),
+                module.compile_hlsl_dx11(ShaderStage::Compute, name).expect("DX11 HLSL"),
+            ] {
+                let gfx_core::ShaderCode::Hlsl(source) = binary.code else {
+                    panic!("expected translated HLSL");
+                };
+                assert!(
+                    source.contains(&format!("{}(", binary.entry_point)),
+                    "reflected {name} -> {} must exist in HLSL",
+                    binary.entry_point
+                );
+            }
+        }
+    }
+
 }

@@ -399,7 +399,7 @@ impl ShaderSet {
                         "DX11 translation did not produce HLSL".into(),
                     ));
                 };
-                let bytecode = compile_hlsl_to_dxbc(&hlsl, entry_point, stage, true)
+                let bytecode = compile_hlsl_to_dxbc(&hlsl, &binary.entry_point, stage, true)
                     .map_err(|message| Error::Compile {
                         shader: shader.name.clone(),
                         entry_point: entry_point.to_owned(),
@@ -413,8 +413,17 @@ impl ShaderSet {
                 Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None))
             }
             Backend::Dx12 => {
-                let hlsl = translate(&prepared.module, entry_point, stage, shader)?;
-                match compile_hlsl_to_dxbc(&hlsl, entry_point, stage, false).map_err(|message| {
+                let binary = prepared.module.compile_hlsl(stage, entry_point)
+                    .map_err(|error| Error::Translate {
+                        shader: shader.name.clone(),
+                        entry_point: entry_point.to_owned(),
+                        message: error.to_string(),
+                    })?;
+                let native_entry = binary.entry_point;
+                let gfx_core::ShaderCode::Hlsl(hlsl) = binary.code else {
+                    return Err(Error::Invalid("DX12 translation did not produce HLSL".into()));
+                };
+                match compile_hlsl_to_dxbc(&hlsl, &native_entry, stage, false).map_err(|message| {
                     Error::Compile {
                         shader: shader.name.clone(),
                         entry_point: entry_point.to_string(),
