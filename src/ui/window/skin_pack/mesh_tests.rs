@@ -165,10 +165,22 @@ fn cuboid_face_uvs_address_the_authored_atlas_region() {
     let max_u = front.iter().map(|v| v.uv.x).fold(f32::MIN, f32::max);
     let min_v = front.iter().map(|v| v.uv.y).fold(f32::MAX, f32::min);
     let max_v = front.iter().map(|v| v.uv.y).fold(f32::MIN, f32::max);
-    assert!((min_u - 0.125).abs() < 1.0e-5, "unexpected front u min {min_u}");
-    assert!((max_u - 0.25).abs() < 1.0e-5, "unexpected front u max {max_u}");
-    assert!((min_v - 0.125).abs() < 1.0e-5, "unexpected front v min {min_v}");
-    assert!((max_v - 0.25).abs() < 1.0e-5, "unexpected front v max {max_v}");
+    assert!(
+        (min_u - 0.125).abs() < 1.0e-5,
+        "unexpected front u min {min_u}"
+    );
+    assert!(
+        (max_u - 0.25).abs() < 1.0e-5,
+        "unexpected front u max {max_u}"
+    );
+    assert!(
+        (min_v - 0.125).abs() < 1.0e-5,
+        "unexpected front v min {min_v}"
+    );
+    assert!(
+        (max_v - 0.25).abs() < 1.0e-5,
+        "unexpected front v max {max_v}"
+    );
 }
 
 #[test]
@@ -177,12 +189,8 @@ fn prepared_skin_preview_binds_the_skin_texture_to_every_part() {
     let texture = skin_texture_asset(&image).expect("skin texture asset should build");
     let preview = build_skin_player_meshes(texture.clone(), false, SkinLayerMode::Extruded)
         .expect("extruded skin preview should build");
-    let prepared = PreparedScene::new(
-        preview.scene_view.scene(),
-        preview.scene_view.camera(),
-        1.0,
-    )
-    .expect("preview scene should prepare");
+    let prepared = PreparedScene::new(preview.scene_view.scene(), preview.scene_view.camera(), 1.0)
+        .expect("preview scene should prepare");
 
     assert_eq!(prepared.draws.len(), 12);
     let mut opaque = 0;
@@ -216,14 +224,10 @@ fn layered_and_flat_modes_use_the_authored_layer_alpha() {
     let extruded = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)
         .expect("extruded skin preview should build");
 
-    let flat_draws = PreparedScene::new(
-        flat.scene_view.scene(),
-        flat.scene_view.camera(),
-        1.0,
-    )
-    .expect("flat scene should prepare")
-    .draws
-    .len();
+    let flat_draws = PreparedScene::new(flat.scene_view.scene(), flat.scene_view.camera(), 1.0)
+        .expect("flat scene should prepare")
+        .draws
+        .len();
     let extruded_draws = PreparedScene::new(
         extruded.scene_view.scene(),
         extruded.scene_view.camera(),
@@ -247,12 +251,8 @@ fn prepared_skin_preview_geometry_stays_small() {
     let texture = skin_texture_asset(&image).expect("skin texture asset should build");
     let preview = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)
         .expect("extruded skin preview should build");
-    let prepared = PreparedScene::new(
-        preview.scene_view.scene(),
-        preview.scene_view.camera(),
-        1.0,
-    )
-    .expect("preview scene should prepare");
+    let prepared = PreparedScene::new(preview.scene_view.scene(), preview.scene_view.camera(), 1.0)
+        .expect("preview scene should prepare");
 
     let triangles = prepared
         .draws
@@ -333,8 +333,7 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
         mesh,
         &material,
     )?;
-    let meshes =
-        finish_skin_preview(scene, texture, Vec::new(), VANILLA_PREVIEW_FRONT_YAW)?;
+    let meshes = finish_skin_preview(scene, texture, Vec::new(), VANILLA_PREVIEW_FRONT_YAW)?;
     let base = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.0, Duration::ZERO)?;
     let rotated = skin_preview_scene_view(&meshes, 0.4, -0.2, 1.0, Duration::ZERO)?;
     let zoomed = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.2, Duration::ZERO)?;
@@ -512,7 +511,10 @@ fn custom_geometry_without_limb_roles_stays_static() -> Result<(), String> {
     let preview = build_custom_geometry_meshes(image, texture, custom_mesh)?;
     assert!(!preview.has_walk_animation());
     assert_eq!(preview.walk_track_count, 0);
-    assert_eq!(preview.walk_clip_time(Duration::from_secs(5)), Duration::ZERO);
+    assert_eq!(
+        preview.walk_clip_time(Duration::from_secs(5)),
+        Duration::ZERO
+    );
     Ok(())
 }
 
