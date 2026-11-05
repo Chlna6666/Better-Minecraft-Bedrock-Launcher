@@ -1648,6 +1648,72 @@ mod tests {
     }
 
     #[test]
+    fn full_material_cache_preserves_unchanged_resident_gpu_records() {
+        use std::sync::Arc;
+        let mut scene = Scene::new();
+        scene.insert(None, Node::new().with_mesh(Arc::new(Mesh::cube()))).unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        ).unwrap();
+        let draw = prepared.draws[0].clone();
+        let mut cache = super::DrawRecordCache::default();
+        cache.light_count = Some(0);
+        // Keep all simulated Section material snapshots alive: they must not
+        // be evicted as stale, so the active cache remains at its 8192 limit.
+        let mut live = Vec::with_capacity(8_192);
+        for _ in 0..8_192 {
+            let material = Arc::new(crate::Material::new());
+            cache.records.insert(
+                (material.id(), false, Arc::as_ptr(&material) as usize),
+                super::MaterialRecord {
+                    material: Arc::clone(&material),
+                    bytes: [0; super::DRAW_PARAMS_STRIDE as usize],
+                    generation: 0,
+                },
+            );
+            live.push(material);
+        }
+        assert_eq!(cache.records.len(), 8_192);
+        let mapping = [0u32];
+        let mut next_keys = Vec::new();
+        let mut next_bytes = Vec::new();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            cache.encode_stable(
+                std::slice::from_ref(&draw), 0, &mapping, 1,
+                &[], &[], &mut next_keys, &mut next_bytes, &mut scratch,
+            ).unwrap(), 1
+        );
+        let old_keys = next_keys.clone();
+        let old_bytes = next_bytes.clone();
+        assert_eq!(cache.records.len(), 8_192);
+        assert_eq!(
+            cache.encode_stable(
+                std::slice::from_ref(&draw), 0, &mapping, 1,
+                &old_keys, &old_bytes, &mut next_keys, &mut next_bytes, &mut scratch,
+            ).unwrap(), 0,
+            "a full material cache must not redirty identical resident draw data"
+        );
+        assert_eq!(next_keys, old_keys);
+        assert!(next_bytes.is_empty(), "GPU resident buffer must be reused");
+        let mut changed = draw;
+        let mut cloned = (*changed.material).clone();
+        cloned.base_color = [0.5, 0.2, 0.1, 1.0];
+        changed.material = Arc::new(cloned);
+        assert_eq!(
+            cache.encode_stable(
+                &[changed.clone()], 0, &mapping, 1,
+                &old_keys, &old_bytes, &mut next_keys, &mut next_bytes, &mut scratch,
+            ).unwrap(), 1
+        );
+        assert_ne!(next_keys, old_keys);
+        assert_eq!(next_bytes, super::encode_draw_records(&[changed], 0).unwrap());
+        assert_eq!(live.len(), 8_192);
+    }
+
+    #[test]
     fn draw_cache_keys_track_light_count_even_for_identical_material_snapshots() {
         let mut scene = Scene::new();
         scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
