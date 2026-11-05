@@ -319,6 +319,8 @@ pub(super) struct DrawBindingResources<'a> {
     pub(super) material_sampler: SamplerId,
     pub(super) frame_buffer: BufferId,
     pub(super) visible_instances: Option<(BufferId, u64)>,
+    pub(super) draw_slots: BufferId,
+    pub(super) draw_slot_capacity: usize,
 }
 
 pub(crate) struct EncodedMesh {
@@ -757,6 +759,8 @@ pub(super) fn create_draw_resource_set(
         material_sampler,
         frame_buffer,
         visible_instances,
+        draw_slots,
+        draw_slot_capacity,
     } = bindings;
     let draw_bytes = draw_capacity
         .checked_mul(DRAW_PARAMS_STRIDE as usize)
@@ -778,6 +782,16 @@ pub(super) fn create_draw_resource_set(
         label: Some("gpui-3d mesh draw resource set".into()),
         layout: bind_group_layout,
         entries: vec![
+            BindGroupEntry {
+                binding: 16,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: draw_slots,
+                    offset: 0,
+                    size: u64::try_from(draw_slot_capacity.max(1) * 4)
+                        .context("3D draw slot mapping buffer exceeds address range")?,
+                    stride: Some(4),
+                }),
+            },
             BindGroupEntry {
                 binding: 14,
                 resource: BindingResource::Buffer(BufferBinding {

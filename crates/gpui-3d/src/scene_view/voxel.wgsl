@@ -73,6 +73,8 @@ const PI:f32=3.141592653589793;
 @group(0) @binding(8) var<storage, read> instances: array<Instance>;
 @group(0) @binding(9) var<uniform> frame: FrameParams;
 @group(0) @binding(11) var<storage, read> visible_instances: array<u32>;
+// Culling/batch order is logical; Section records use stable physical slots.
+@group(0) @binding(16) var<storage, read> draw_slot_indices: array<u32>;
 struct GeneratedTemplate { info:vec4<u32>, vertices:array<VoxelVertex,4> };
 struct GeneratedTemplates {origin:vec4<f32>,size:vec4<u32>,faces:array<GeneratedTemplate>};
 struct GeneratedFace {cell:u32,model_face:u32,height:f32,padding:u32};
@@ -138,7 +140,8 @@ fn template_position(v:VoxelVertex,height:f32)->vec3<f32> {return vec3<f32>(v.po
 
 @vertex
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
-    let base=instances[instance_index].vertex_base & 0x7fffffffu;
+    let physical_slot = draw_slot_indices[instance_index];
+    let base=instances[physical_slot].vertex_base & 0x7fffffffu;
     let descriptor=generated_faces[base+index/6u];
     let corners=array<u32,6>(0u,1u,2u,0u,2u,3u);
     var vertex=generated_templates.faces[descriptor.model_face].vertices[corners[index%6u]];
@@ -150,12 +153,12 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     vertex.position_x+=position.x;
     vertex.position_y=vertex.position_y*descriptor.height+position.y;
     vertex.position_z+=position.z;
-    var shaded=shade_voxel_value(vertex,instance_index);
+    var shaded=shade_voxel_value(vertex,physical_slot);
     let face=generated_templates.faces[descriptor.model_face];
     let a=template_position(face.vertices[0],descriptor.height);
     let b=template_position(face.vertices[1],descriptor.height);
     let c=template_position(face.vertices[2],descriptor.height);
-    if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance_index);}
+    if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,physical_slot);}
     shaded.quad_uv=quad_coordinates(corners[index%6u]);
     if(frame.voxel_settings.y!=1.0 && generated_templates.size.w!=0u){
         var light=vec2<f32>(0.0);
@@ -185,7 +188,7 @@ fn vs_voxel(
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VoxelOutput {
-    return shade_voxel(vertex_index, instance_index);
+    return shade_voxel(vertex_index, draw_slot_indices[instance_index]);
 }
 
 @vertex
@@ -194,10 +197,11 @@ fn vs_voxel_gpu(@builtin(vertex_index) vertex_index: u32,
     // Direct indexed ranges keep their original instance index. Only procedural
     // quad batches reserve this bit and consume the compute-compacted instance list.
     // Every slot within a quad batch has that bit set before compaction.
-    if ((instances[visible_index].vertex_base & 0x80000000u) == 0u) {
-        return shade_voxel(vertex_index, visible_index);
+    let direct_slot = draw_slot_indices[visible_index];
+    if ((instances[direct_slot].vertex_base & 0x80000000u) == 0u) {
+        return shade_voxel(vertex_index, direct_slot);
     }
-    let instance_index = visible_instances[visible_index];
+    let instance_index = draw_slot_indices[visible_instances[visible_index]];
     // normal_matrix is unused by the unlit voxel shader; its first word carries
     // the real vertex count for variable-size parts in a shared indirect batch.
     let vertex_count = bitcast<u32>(instances[instance_index].normal_matrix[0].x);

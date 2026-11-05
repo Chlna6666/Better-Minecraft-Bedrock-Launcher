@@ -6,7 +6,7 @@ use gpui::RendererExtensionContext;
 pub(super) struct LightPass {
     frame: BufferId,
     culling: CullResources,
-    groups: HashMap<(DrawResourceKey, BufferId, BufferId), BindGroupId>,
+    groups: HashMap<(DrawResourceKey, BufferId, BufferId, BufferId), BindGroupId>,
 }
 impl LightPass {
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -121,7 +121,7 @@ impl SceneResources {
             let mut key = self.draw_resource_keys[index];
             key.visible_instances = Some(pass.culling.visible_instances);
             key.shadow = None;
-            let key = (key, self.draw_buffer, self.instance_buffer);
+            let key = (key, self.draw_buffer, self.instance_buffer, self.draw_slot_buffer);
             active.insert(key);
             let group = if let Some(group) = pass.groups.get(&key) {
                 *group
@@ -154,6 +154,8 @@ impl SceneResources {
                             pass.culling.visible_instances,
                             pass.culling.instance_capacity as u64 * 4,
                         )),
+                        draw_slots: self.draw_slot_buffer,
+                        draw_slot_capacity: self.draw_slot_capacity,
                     },
                 )?;
                 pass.groups.insert(key, group);

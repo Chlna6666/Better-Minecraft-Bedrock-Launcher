@@ -56,6 +56,13 @@ pub(super) struct SceneResources {
     previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
     draw_buffer: BufferId,
     draw_capacity: usize,
+    /// Dense logical-to-stable-physical draw slot map for voxel shaders.
+    draw_slot_buffer: BufferId,
+    draw_slot_capacity: usize,
+    stable_slots: stable_slots::StableDrawSlots,
+    uploaded_slot_map: Vec<u8>,
+    scratch_slot_map: Vec<u8>,
+    scratch_packed_draws: Vec<u8>,
     instance_buffer: BufferId,
     instance_capacity: usize,
     light_buffer: BufferId,
@@ -99,6 +106,7 @@ const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 mod assets;
 mod instance_cache;
+mod stable_slots;
 mod generated;
 mod light_pass;
 mod reorder;
@@ -225,6 +233,21 @@ impl SceneResources {
                 return Err(error);
             }
         };
+        let draw_slot_capacity = 1;
+        let draw_slot_buffer = match create_storage_buffer(
+            device,
+            "gpui-3d logical-to-physical draw slots",
+            draw_slot_capacity * 4,
+            buffer_memory_location(backend),
+        ) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                device.destroy_buffer(instance_buffer)?;
+                device.destroy_buffer(light_buffer)?;
+                device.destroy_buffer(draw_buffer)?;
+                return Err(error);
+            }
+        };
         let frame_buffer = match device.create_buffer(&BufferDescriptor {
             label: Some("gpui-3d frame params".into()),
             size: FRAME_PARAMS_STRIDE as u64,
@@ -233,6 +256,7 @@ impl SceneResources {
         }) {
             Ok(buffer) => buffer,
             Err(error) => {
+                device.destroy_buffer(draw_slot_buffer)?;
                 device.destroy_buffer(instance_buffer)?;
                 device.destroy_buffer(light_buffer)?;
                 device.destroy_buffer(draw_buffer)?;
@@ -264,6 +288,12 @@ impl SceneResources {
             previous_draws: Vec::new(),
             draw_buffer,
             draw_capacity,
+            draw_slot_buffer,
+            draw_slot_capacity,
+            stable_slots: stable_slots::StableDrawSlots::default(),
+            uploaded_slot_map: Vec::new(),
+            scratch_slot_map: Vec::new(),
+            scratch_packed_draws: Vec::new(),
             instance_buffer,
             instance_capacity,
             light_buffer,
@@ -803,15 +833,32 @@ impl SceneResources {
         defer_binding_cleanup: bool,
     ) -> gpui::Result<()> {
         let trace_started = trace_timings().then(Instant::now);
-        let draw_count = self.prepared.draws.len().max(1);
-        let instance_count = draw_count;
+        // Culling retains its dense logical order; voxel DrawParams/Instance
+        // live in persistent physical slots. The u32 mapping is the only
+        // dense table that moves when an earlier Section is inserted.
+        let next_slots = if voxel_shader {
+            Some(self.stable_slots.plan(&self.prepared.draws)?)
+        } else {
+            None
+        };
+        let physical_count = next_slots.as_ref().map_or(
+            self.prepared.draws.len(),
+            |(slots, _)| slots.high_water(),
+        ).max(1);
+        let draw_count = physical_count;
+        let instance_count = physical_count;
         let light_count = self.prepared.lights.len().max(1);
         let next_draw_capacity = grow_capacity(self.draw_capacity, draw_count)?;
         let next_instance_capacity = grow_capacity(self.instance_capacity, instance_count)?;
         let next_light_capacity = grow_capacity(self.light_capacity, light_count)?;
+        let next_slot_capacity = grow_capacity(
+            self.draw_slot_capacity,
+            self.prepared.draws.len().max(1),
+        )?;
         let replace_draw = next_draw_capacity != self.draw_capacity;
         let replace_instances = next_instance_capacity != self.instance_capacity;
         let replace_lights = next_light_capacity != self.light_capacity;
+        let replace_slot_map = next_slot_capacity != self.draw_slot_capacity;
         let [mut draw_bytes, mut instance_bytes, mut light_bytes] =
             std::mem::take(&mut self.scratch_tables);
         let mut next_draw_keys = std::mem::take(&mut self.scratch_draw_slot_keys);
@@ -823,23 +870,70 @@ impl SceneResources {
         )?;
         let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
         let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
-        let instance_result = self.encode_draw_instances_cached(
-            &self.prepared.draws,
-            voxel_shader,
-            &self.instance_slot_keys,
-            &self.uploaded_tables[1],
-            &mut next_instance_keys,
-            &mut instance_bytes,
-            &mut dirty_instance_run,
-        );
-        self.dirty_instance_run = dirty_instance_run;
-        let encoded_instance_rows = match instance_result {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                self.scratch_instance_keys = next_instance_keys;
-                return Err(error);
+        let encoded_instance_rows = if let Some((slots, mapping)) = next_slots.as_ref() {
+            // Only changed physical instance records are re-encoded. Reordering
+            // untouched Sections causes no 144-byte CPU/GPU record movement.
+            let encoded = self.encode_stable_instances(
+                mapping,
+                slots.high_water(),
+                &self.instance_slot_keys,
+                &self.uploaded_tables[1],
+                &mut next_instance_keys,
+                &mut instance_bytes,
+                &mut dirty_instance_run,
+            )?;
+            let mut packed = std::mem::take(&mut self.scratch_packed_draws);
+            packed.clear();
+            packed.extend_from_slice(&self.uploaded_tables[0]);
+            packed.resize(physical_count * DRAW_PARAMS_STRIDE as usize, 0);
+            let mut physical_keys = self.draw_slot_keys.clone();
+            physical_keys.truncate(slots.high_water());
+            for (logical, &slot) in mapping.iter().enumerate() {
+                let slot = slot as usize;
+                let stride = DRAW_PARAMS_STRIDE as usize;
+                let from = logical * stride;
+                let to = slot * stride;
+                packed[to..to + stride].copy_from_slice(&draw_bytes[from..from + stride]);
+                let key = next_draw_keys[logical];
+                if slot >= physical_keys.len() {
+                    physical_keys.resize(slot + 1, key);
+                }
+                physical_keys[slot] = key;
             }
+            self.scratch_packed_draws = draw_bytes;
+            draw_bytes = packed;
+            self.scratch_draw_slot_keys = next_draw_keys;
+            next_draw_keys = physical_keys;
+            encoded
+        } else {
+            let result = self.encode_draw_instances_cached(
+                &self.prepared.draws,
+                voxel_shader,
+                &self.instance_slot_keys,
+                &self.uploaded_tables[1],
+                &mut next_instance_keys,
+                &mut instance_bytes,
+                &mut dirty_instance_run,
+            );
+            result?
         };
+        self.dirty_instance_run = dirty_instance_run;
+        let mut slot_bytes = std::mem::take(&mut self.scratch_slot_map);
+        slot_bytes.clear();
+        if let Some((_, mapping)) = next_slots.as_ref() {
+            for &slot in mapping {
+                slot_bytes.extend_from_slice(&slot.to_le_bytes());
+            }
+        } else {
+            for logical in 0..self.prepared.draws.len() {
+                let index = u32::try_from(logical)
+                    .context("GPUI 3D logical draw index exceeds u32")?;
+                slot_bytes.extend_from_slice(&index.to_le_bytes());
+            }
+        }
+        if slot_bytes.is_empty() {
+            slot_bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
         light_bytes.clear();
         light_bytes.reserve(
             self.prepared
@@ -899,9 +993,34 @@ impl SceneResources {
         } else {
             None
         };
+        let new_slot_map = if replace_slot_map {
+            match create_storage_buffer(
+                device,
+                "gpui-3d logical draw slot mapping",
+                next_slot_capacity * 4,
+                buffer_memory_location(self.backend),
+            ) {
+                Ok(buffer) => Some(buffer),
+                Err(error) => {
+                    if let Some(buffer) = new_instances {
+                        device.destroy_buffer(buffer)?;
+                    }
+                    if let Some(buffer) = new_lights {
+                        device.destroy_buffer(buffer)?;
+                    }
+                    if let Some(buffer) = new_draw {
+                        device.destroy_buffer(buffer)?;
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let draw_buffer = new_draw.unwrap_or(self.draw_buffer);
         let instance_buffer = new_instances.unwrap_or(self.instance_buffer);
         let light_buffer = new_lights.unwrap_or(self.light_buffer);
+        let slot_map_buffer = new_slot_map.unwrap_or(self.draw_slot_buffer);
         let write_started = trace_started.map(|_| Instant::now());
         let writes = [
             (
@@ -969,9 +1088,27 @@ impl SceneResources {
             })
         })
         .collect::<Vec<_>>();
+        let mut writes = writes;
+        // Only four bytes per logical draw move when a Section is inserted
+        // before another. The 80+144-byte physical records remain resident.
+        for range in uploads::changed_ranges(
+            if replace_slot_map { &[] } else { &self.uploaded_slot_map },
+            &slot_bytes,
+            4,
+            16,
+            4,
+        ) {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: slot_map_buffer,
+                    offset: range.start as u64,
+                },
+                data: &slot_bytes[range],
+            });
+        }
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         let write_count = writes.len();
-        let encoded_bytes = draw_bytes.len() + instance_bytes.len() + light_bytes.len();
+        let encoded_bytes = draw_bytes.len() + instance_bytes.len() + light_bytes.len() + slot_bytes.len();
         // A failed write or later binding update may leave existing buffers partially changed.
         let mut previous_tables = std::mem::take(&mut self.uploaded_tables);
         let write_result = if writes.is_empty() {
@@ -980,6 +1117,9 @@ impl SceneResources {
             device.write_buffer_batch(&writes).map(|_| ())
         };
         if let Err(error) = write_result {
+            if let Some(buffer) = new_slot_map {
+                device.destroy_buffer(buffer)?;
+            }
             if let Some(buffer) = new_draw {
                 device.destroy_buffer(buffer)?;
             }
@@ -994,12 +1134,16 @@ impl SceneResources {
         let write_ms = write_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         let old_draw = self.draw_buffer;
         let old_draw_capacity = self.draw_capacity;
+        let old_slot_map = self.draw_slot_buffer;
+        let old_slot_capacity = self.draw_slot_capacity;
         let old_instances = self.instance_buffer;
         let old_instance_capacity = self.instance_capacity;
         let old_lights = self.light_buffer;
         let old_light_capacity = self.light_capacity;
         self.draw_buffer = draw_buffer;
         self.draw_capacity = next_draw_capacity;
+        self.draw_slot_buffer = slot_map_buffer;
+        self.draw_slot_capacity = next_slot_capacity;
         self.instance_buffer = instance_buffer;
         self.instance_capacity = next_instance_capacity;
         self.light_buffer = light_buffer;
@@ -1010,16 +1154,21 @@ impl SceneResources {
             renderer,
             bind_group_layout,
             sampler,
-            sampler_changed || replace_draw || replace_instances || replace_lights,
+            sampler_changed || replace_draw || replace_instances || replace_lights || replace_slot_map,
             voxel_shader,
             defer_binding_cleanup,
         ) {
             self.draw_buffer = old_draw;
             self.draw_capacity = old_draw_capacity;
+            self.draw_slot_buffer = old_slot_map;
+            self.draw_slot_capacity = old_slot_capacity;
             self.instance_buffer = old_instances;
             self.instance_capacity = old_instance_capacity;
             self.light_buffer = old_lights;
             self.light_capacity = old_light_capacity;
+            if replace_slot_map {
+                device.destroy_buffer(slot_map_buffer)?;
+            }
             if replace_draw {
                 device.destroy_buffer(draw_buffer)?;
             }
@@ -1043,6 +1192,15 @@ impl SceneResources {
                     }),
             );
         self.sync_generated_draws(device, voxel_shader)?;
+        if let Some((slots, _)) = next_slots {
+            self.stable_slots = slots;
+        } else {
+            // The standard scene shader uses dense indexing directly.
+            self.stable_slots = stable_slots::StableDrawSlots::default();
+        }
+        let mut previous_slot_bytes = std::mem::replace(&mut self.uploaded_slot_map, slot_bytes);
+        previous_slot_bytes.clear();
+        self.scratch_slot_map = previous_slot_bytes;
         let mut old_draw_keys = std::mem::replace(&mut self.draw_slot_keys, next_draw_keys);
         old_draw_keys.clear();
         self.scratch_draw_slot_keys = old_draw_keys;
@@ -1053,6 +1211,9 @@ impl SceneResources {
         prior_keys.clear();
         self.scratch_instance_keys = prior_keys;
         let bind_ms = bind_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
+        if replace_slot_map {
+            device.destroy_buffer(old_slot_map)?;
+        }
         if replace_draw {
             device.destroy_buffer(old_draw)?;
         }
@@ -1406,6 +1567,8 @@ impl SceneResources {
                     mesh,
                     draw_buffer: self.draw_buffer,
                     draw_capacity: self.draw_capacity,
+                    draw_slots: self.draw_slot_buffer,
+                    draw_slot_capacity: self.draw_slot_capacity,
                     instance_buffer: self.instance_buffer,
                     instance_count,
                     light_buffer: self.light_buffer,
@@ -1683,6 +1846,7 @@ impl SceneResources {
             destroy_texture(device, texture)?;
         }
         device.destroy_buffer(self.draw_buffer)?;
+        device.destroy_buffer(self.draw_slot_buffer)?;
         device.destroy_buffer(self.instance_buffer)?;
         device.destroy_buffer(self.light_buffer)?;
         device.destroy_buffer(self.frame_buffer)?;

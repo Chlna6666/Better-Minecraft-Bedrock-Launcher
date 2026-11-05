@@ -68,6 +68,11 @@ impl RendererResources {
                                 stages: ShaderStages::FRAGMENT,
                             },
                             BindGroupLayoutEntry {
+                                binding: 16,
+                                binding_type: BindingType::StorageBuffer,
+                                stages: ShaderStages::VERTEX,
+                            },
+                            BindGroupLayoutEntry {
                                 binding: 14,
                                 binding_type: BindingType::StorageBuffer,
                                 stages: ShaderStages::VERTEX,

@@ -163,6 +163,23 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
         let (_, buffer, size) = buffers[0];
         buffers.push((15, buffer, size));
     }
+    if !buffers.iter().any(|entry| entry.0 == 16) {
+        // Native shader tests predate stable GPU draw slots. Supply an
+        // identity mapping so their expected pixels remain directly comparable
+        // to the new logical-to-physical indexing pipeline.
+        let instance_count = buffers
+            .iter()
+            .find(|entry| entry.0 == 8)
+            .map_or(1, |entry| (entry.2 / INSTANCE_STRIDE as u64).max(1));
+        let mut identity = Vec::new();
+        for index in 0..instance_count {
+            identity.extend_from_slice(
+                &u32::try_from(index).expect("native test draw count exceeds u32").to_le_bytes()
+            );
+        }
+        let slot_buffer = upload(device, &identity, BufferUsage::STORAGE);
+        buffers.push((16, slot_buffer, identity.len() as u64));
+    }
     for &(binding, buffer, size) in &buffers {
         entries.push(BindGroupEntry {
             binding,

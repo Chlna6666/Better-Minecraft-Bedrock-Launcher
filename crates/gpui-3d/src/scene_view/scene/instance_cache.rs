@@ -64,7 +64,7 @@ impl InstanceSlotKey {
 }
 
 impl SceneResources {
-    fn instance_key(
+    pub(super) fn instance_key(
         &self,
         draw: &PreparedDraw,
         voxel_shader: bool,

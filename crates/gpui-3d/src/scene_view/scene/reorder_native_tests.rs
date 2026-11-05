@@ -61,7 +61,7 @@ fn pipelines(
         device,
         &BindGroupLayoutDescriptor {
             label: None,
-            entries: (0..16)
+            entries: (0..17)
                 .map(|binding| BindGroupLayoutEntry {
                     binding,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
@@ -271,7 +271,7 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
         .unwrap(),
     );
     state
-        .sync_buffers(&mut device, &renderer, layout, sampler, true, true)
+        .sync_buffers(&mut device, &renderer, layout, sampler, true, true, false)
         .unwrap();
     let frame = Mat4::IDENTITY
         .columns()
@@ -293,7 +293,7 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
         state.sync_reordered_blends(start).unwrap();
         if index == 1 {
             state
-                .sync_draw_resources(&mut device, &renderer, layout, sampler, true, true)
+                .sync_draw_resources(&mut device, &renderer, layout, sampler, true, true, false)
                 .unwrap();
         }
         let retained = render(&mut device, &mut state, &renderer, cs, pass, target);
@@ -309,7 +309,7 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
             )
             .unwrap();
         state
-            .sync_buffers(&mut device, &renderer, layout, sampler, true, true)
+            .sync_buffers(&mut device, &renderer, layout, sampler, true, true, false)
             .unwrap();
         let reference = render(&mut device, &mut state, &renderer, cs, pass, target);
         assert_eq!(
