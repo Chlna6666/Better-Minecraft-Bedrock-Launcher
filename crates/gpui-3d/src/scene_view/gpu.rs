@@ -1114,6 +1114,14 @@ impl DrawRecordCache {
             .ok_or_else(|| anyhow!("GPUI 3D physical DrawParams table overflows usize"))?;
         next_keys.clear();
         next_keys.extend_from_slice(&previous_keys[..previous_keys.len().min(high_water)]);
+        // Avoid the 8,192-material hard ceiling turning every unchanged
+        // resident Section into a new GPU upload. Size the cache to the live
+        // draw working set and discard snapshots held only by this cache.
+        // This cleanup runs once per publication, never inside the draw loop.
+        let cache_limit = draws.len().saturating_mul(2).clamp(8_192, 65_536);
+        if self.records.len() >= cache_limit {
+            self.records.retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
         let mut dirty = Vec::<(usize, [u8; STRIDE])>::new();
         for (draw, &slot) in draws.iter().zip(mapping) {
             let slot = slot as usize;
@@ -1127,6 +1135,7 @@ impl DrawRecordCache {
                 uv_regions,
                 std::sync::Arc::as_ptr(&draw.material) as usize,
             );
+            let start = slot * STRIDE;
             let (key, record) = if let Some(cached) = self.records.get(&cache_key)
                 && std::sync::Arc::ptr_eq(&cached.material, &draw.material)
             {
@@ -1145,10 +1154,26 @@ impl DrawRecordCache {
                 let record: [u8; STRIDE] = scratch[..STRIDE]
                     .try_into()
                     .expect("DrawParams encoder must write one complete record");
-                self.next_generation = self.next_generation.wrapping_add(1);
-                let generation = self.next_generation;
-                // Retain the same bounded snapshot policy as dense encoding.
-                if self.records.len() < 8192 || self.records.contains_key(&cache_key) {
+                // Even when the snapshot cache is full, identical 80-byte
+                // content at the same stable physical slot is NOT dirty.
+                // Reuse its previously committed key to avoid publishing an
+                // artificial generation change and re-uploading the GPU table.
+                let same_resident_record = previous_keys.get(slot)
+                    .filter(|prev| {
+                        prev.material == material
+                            && prev.uv_regions == uv_regions
+                            && prev.light_count == light_count
+                    })
+                    .filter(|_| {
+                        previous_bytes.get(start..start + STRIDE) == Some(record.as_slice())
+                    });
+                let generation = if let Some(key) = same_resident_record {
+                    key.snapshot_generation
+                } else {
+                    self.next_generation = self.next_generation.wrapping_add(1);
+                    self.next_generation
+                };
+                if self.records.len() < cache_limit || self.records.contains_key(&cache_key) {
                     self.records.insert(cache_key, MaterialRecord {
                         material: draw.material.clone(),
                         bytes: record,
@@ -1165,7 +1190,6 @@ impl DrawRecordCache {
                     record,
                 )
             };
-            let start = slot * STRIDE;
             if previous_keys.get(slot) != Some(&key)
                 || previous_bytes.get(start..start + STRIDE).is_none()
             {
