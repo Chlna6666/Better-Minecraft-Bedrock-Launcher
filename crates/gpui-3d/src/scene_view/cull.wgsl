@@ -18,6 +18,9 @@ struct CullRange { minimum: vec4<f32>, maximum: vec4<f32> };
 @group(0) @binding(5) var<uniform> range: CullRange;
 @group(0) @binding(6) var<storage, read> generated: array<vec4<u32>>;
 @group(0) @binding(7) var<storage, read> hiz: array<u32>;
+// The CPU publishes only 4-byte logical order changes, while resident Bounds
+// remain in stable physical GPU slots across Section inserts and deletions.
+@group(0) @binding(8) var<storage, read> logical_to_physical: array<u32>;
 var<workgroup> planes: array<vec4<f32>, 6>;
 var<workgroup> visible_count: atomic<u32>;
 var<workgroup> largest_mesh: atomic<u32>;
@@ -81,9 +84,10 @@ fn cs_cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_in
     // their result without workgroup synchronization or an instance-list atomic.
     if (batch.y == 1u) {
         if (lane == 0u) {
-            var source = vec4<u32>(bounds[batch.w].vertex_count, 1u, batch.z, batch.w);
+            let resident = bounds[logical_to_physical[batch.w]];
+            var source = vec4<u32>(resident.vertex_count, 1u, batch.z, batch.w);
             if (batch.x != 0u) { source = generated[index]; }
-            let visible = is_visible(bounds[batch.w]);
+            let visible = is_visible(resident);
             if (visible && batch.x == 0u) { visible_instances[batch.w] = batch.w; }
             atomicStore(&arguments[index].vertex_count, select(0u, source.x, visible));
             atomicStore(&arguments[index].instance_count, select(0u, source.y, visible));
@@ -96,8 +100,9 @@ fn cs_cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_in
     var vertex_count = 0u;
     for (var local = lane; local < batch.y; local += 64u) {
         let instance = batch.w + local;
-        if (is_visible(bounds[instance])) {
-            vertex_count = max(vertex_count, bounds[instance].vertex_count);
+        let resident = bounds[logical_to_physical[instance]];
+        if (is_visible(resident)) {
+            vertex_count = max(vertex_count, resident.vertex_count);
             let slot = atomicAdd(&visible_count, 1u);
             visible_instances[batch.w + slot] = instance;
         }

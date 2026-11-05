@@ -38,20 +38,20 @@ impl BaseIdentity {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct StableDrawSlots {
+pub(in crate::scene_view) struct StableDrawSlots {
     occupied: HashMap<SlotIdentity, usize>,
     identities: Vec<Option<SlotIdentity>>,
     free: Vec<usize>,
 }
 
 impl StableDrawSlots {
-    pub(super) fn high_water(&self) -> usize {
+    pub(in crate::scene_view) fn high_water(&self) -> usize {
         self.identities.len()
     }
 
     /// Construct a transactional next state. No slot may be recycled until
     /// all draws from the previous scene have been accounted for.
-    pub(super) fn plan(&self, draws: &[PreparedDraw]) -> gpui::Result<(Self, Vec<u32>)> {
+    pub(in crate::scene_view) fn plan(&self, draws: &[PreparedDraw]) -> gpui::Result<(Self, Vec<u32>)> {
         let mut occurrences = HashMap::<BaseIdentity, u32>::new();
         let mut wanted = Vec::with_capacity(draws.len());
         let mut live_slots = vec![false; self.identities.len()];

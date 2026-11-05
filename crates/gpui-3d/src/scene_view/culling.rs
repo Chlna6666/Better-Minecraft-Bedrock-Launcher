@@ -8,6 +8,7 @@ use gfx_core::{
     ComputeBufferBinding, ComputeDispatch, MemoryLocation, ShaderModuleId,
 };
 use gpui::ExtensionDevice;
+use super::scene::stable_slots::StableDrawSlots;
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 const BOUNDS_STRIDE: usize = 48;
@@ -107,11 +108,18 @@ pub(super) struct CullResources {
     instances: usize,
     uploaded_inputs: [Vec<u8>; 2],
     scratch_inputs: [Vec<u8>; 2],
-    bounds_keys: Vec<BoundsRecordKey>,
-    scratch_bounds_keys: Vec<BoundsRecordKey>,
+    bounds_keys: Vec<Option<BoundsRecordKey>>,
+    scratch_bounds_keys: Vec<Option<BoundsRecordKey>>,
     batch_keys: Vec<BatchRecordKey>,
     scratch_batch_keys: Vec<BatchRecordKey>,
-    bounds_encode_scratch: Vec<u8>,
+    // Persistent per-Section draw addresses. Bounds stay at physical slots,
+    // while this compact logical->physical map follows batch ordering.
+    resident_slots: StableDrawSlots,
+    slot_map: BufferId,
+    uploaded_slot_map: Vec<u32>,
+    // Commit only after the entire native upload batch succeeds.
+    // The committed bounds-key table doubles as the authoritative CPU mirror;
+    // full 48-byte bounds staging arrays are no longer needed.
 }
 
 impl CullResources {
@@ -159,6 +167,7 @@ impl CullResources {
             arguments: buffers[2],
             visible_instances: buffers[3],
             range: buffers[4],
+            slot_map: buffers[5],
             range_bounds: None,
             count: 0,
             instances: 0,
@@ -168,7 +177,8 @@ impl CullResources {
             scratch_bounds_keys: Vec::new(),
             batch_keys: Vec::new(),
             scratch_batch_keys: Vec::new(),
-            bounds_encode_scratch: Vec::new(),
+            resident_slots: StableDrawSlots::default(),
+            uploaded_slot_map: Vec::new(),
             instance_capacity,
             batch_capacity,
         };
@@ -188,7 +198,9 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<()> {
-        if draws.len() <= self.instance_capacity && batches.len() <= self.batch_capacity {
+        if draws.len() <= self.instance_capacity
+            && self.resident_slots.high_water() <= self.instance_capacity
+            && batches.len() <= self.batch_capacity {
             self.write_inputs(device, draws, batches, meshes)?;
             return Ok(());
         }
@@ -207,120 +219,133 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<()> {
-        // Reuse both encoded staging vectors. Streaming sections may publish a new
-        // scene every few frames, and allocating full draw/cull tables on every
-        // update becomes expensive when the scene contains many material parts.
-        let [mut bounds, mut bytes] = std::mem::take(&mut self.scratch_inputs);
+        // The shared stable-slot identity is (Node, Mesh, Material, Part,
+        // occurrence). A Section deletion retires only its corresponding slot;
+        // surviving bounds stay resident at their previous GPU addresses.
+        let (next_slots, logical_to_physical) = self.resident_slots.plan(draws)?;
+        if next_slots.high_water() > self.instance_capacity {
+            return Err(anyhow!("GPU culling physical slot capacity exceeded").into());
+        }
         let mut next_bounds_keys = std::mem::take(&mut self.scratch_bounds_keys);
-        let mut run_scratch = std::mem::take(&mut self.bounds_encode_scratch);
-        let bounds_encoded = encode_bounds_cached(
-            draws,
-            &self.bounds_keys,
-            &self.uploaded_inputs[0],
-            &mut next_bounds_keys,
-            &mut bounds,
-            &mut run_scratch,
-        );
-        self.bounds_encode_scratch = run_scratch;
+        next_bounds_keys.clear();
+        next_bounds_keys.resize(next_slots.high_water(), None);
+        for (draw, &slot) in draws.iter().zip(&logical_to_physical) {
+            next_bounds_keys[slot as usize] = Some(BoundsRecordKey::from_draw(draw));
+        }
         let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
+        let [mut bounds_scratch, mut batch_bytes] = std::mem::take(&mut self.scratch_inputs);
         if let Err(error) = encode_batches_cached(
-            draws,
-            batches,
-            meshes,
-            &self.batch_keys,
-            &self.uploaded_inputs[1],
-            &mut next_batch_keys,
-            &mut bytes,
+            draws, batches, meshes,
+            &self.batch_keys, &self.uploaded_inputs[1],
+            &mut next_batch_keys, &mut batch_bytes,
         ) {
             self.scratch_bounds_keys = next_bounds_keys;
             self.scratch_batch_keys = next_batch_keys;
-            self.scratch_inputs = [bounds, bytes];
+            self.scratch_inputs = [bounds_scratch, batch_bytes];
             return Err(error);
         }
-        let write_result = {
-            let writes = [
-                (self.bounds, bounds.as_slice(), BOUNDS_STRIDE),
-                (self.batches, bytes.as_slice(), ARGUMENT_STRIDE as usize),
-            ]
-            .into_iter()
-            .enumerate()
-            .flat_map(|(i, (buffer, data, stride))| {
-                (if i == 0 {
-                    super::uploads::changed_ranges_for_keys(
-                        &self.bounds_keys,
-                        &next_bounds_keys,
-                        self.uploaded_inputs[i].len(),
-                        stride,
-                        12,
-                        4,
-                    )
-                } else {
-                    super::uploads::changed_ranges_for_keys(
-                        &self.batch_keys,
-                        &next_batch_keys,
-                        self.uploaded_inputs[i].len(),
-                        stride,
-                        12,
-                        4,
-                    )
-                })
-                .into_iter()
-                .map(move |range| gfx_core::BufferWrite {
-                    descriptor: gfx_core::BufferWriteDescriptor {
-                        buffer,
-                        offset: range.start as u64,
-                    },
-                    data: &data[range],
-                })
-            })
-            .collect::<Vec<_>>();
-            if writes.is_empty() {
-                Ok(())
-            } else {
-                device.write_buffer_batch(&writes).map(|_| ())
+
+        // Generate bounded dirty regions from 48-byte record identities.
+        // Materialize ONLY these regions, never the entire resident bounds
+        // table. A removed physical slot is zeroed and reused transactionally.
+        let bounds_ranges = super::uploads::changed_ranges_for_keys(
+            &self.bounds_keys,
+            &next_bounds_keys,
+            self.bounds_keys.len() * BOUNDS_STRIDE,
+            BOUNDS_STRIDE, 12, 3,
+        );
+        let mut bounds_patches = Vec::with_capacity(bounds_ranges.len());
+        for range in bounds_ranges {
+            let mut bytes = vec![0u8; range.len()];
+            for (row, key) in next_bounds_keys[
+                range.start / BOUNDS_STRIDE..range.end / BOUNDS_STRIDE
+            ].iter().enumerate() {
+                if let Some(key) = key {
+                    let start = row * BOUNDS_STRIDE;
+                    for (word, bits) in key.0.iter().enumerate() {
+                        bytes[start + word * 4..start + word * 4 + 4]
+                            .copy_from_slice(&bits.to_le_bytes());
+                    }
+                }
             }
+            bounds_patches.push((range.start as u64, bytes));
+        }
+
+        // The shader uses a compact u32 indirection table. Reordering Section
+        // batches modifies only these four-byte records, not their 48-byte
+        // bounds. Avoid serializing unchanged mapping rows.
+        let mapping_ranges = super::uploads::changed_ranges_for_u32_records(
+            &self.uploaded_slot_map, &logical_to_physical, 1, 12, 3,
+        );
+        let mut mapping_patches = Vec::with_capacity(mapping_ranges.len());
+        for range in mapping_ranges {
+            let mut bytes = Vec::with_capacity(range.len());
+            for slot in &logical_to_physical[range.start / 4..range.end / 4] {
+                bytes.extend_from_slice(&slot.to_le_bytes());
+            }
+            mapping_patches.push((range.start as u64, bytes));
+        }
+
+        let mut writes = Vec::with_capacity(bounds_patches.len() + mapping_patches.len() + 12);
+        for (offset, data) in &bounds_patches {
+            writes.push(gfx_core::BufferWrite {
+                descriptor: gfx_core::BufferWriteDescriptor {
+                    buffer: self.bounds, offset: *offset,
+                },
+                data,
+            });
+        }
+        for (offset, data) in &mapping_patches {
+            writes.push(gfx_core::BufferWrite {
+                descriptor: gfx_core::BufferWriteDescriptor {
+                    buffer: self.slot_map, offset: *offset,
+                },
+                data,
+            });
+        }
+        for range in super::uploads::changed_ranges_for_keys(
+            &self.batch_keys, &next_batch_keys,
+            self.uploaded_inputs[1].len(), ARGUMENT_STRIDE as usize, 12, 4,
+        ) {
+            writes.push(gfx_core::BufferWrite {
+                descriptor: gfx_core::BufferWriteDescriptor {
+                    buffer: self.batches, offset: range.start as u64,
+                },
+                data: &batch_bytes[range],
+            });
+        }
+        let write_result = if writes.is_empty() {
+            Ok(())
+        } else {
+            device.write_buffer_batch(&writes).map(|_| ())
         };
         if let Err(error) = write_result {
-            // Keep the last successfully uploaded snapshot for the retry.
+            // Keep committed residency and CPU mirrors unchanged on upload
+            // failure; the next Scene publication can safely retry every delta.
             self.scratch_bounds_keys = next_bounds_keys;
             self.scratch_batch_keys = next_batch_keys;
-            self.scratch_inputs = [bounds, bytes];
+            bounds_scratch.clear();
+            self.scratch_inputs = [bounds_scratch, batch_bytes];
             return Err(error.into());
         }
-        let mut old_keys = std::mem::replace(&mut self.bounds_keys, next_bounds_keys);
-        old_keys.clear();
-        self.scratch_bounds_keys = old_keys;
-        let mut old_batch_keys = std::mem::replace(&mut self.batch_keys, next_batch_keys);
-        old_batch_keys.clear();
-        self.scratch_batch_keys = old_batch_keys;
-        let mut old = std::mem::replace(&mut self.uploaded_inputs, [bounds, bytes]);
-        if self.uploaded_inputs[0].is_empty()
-            && self.bounds_keys.len() == draws.len()
-            && old[0].len() == draws.len() * BOUNDS_STRIDE
-        {
-            // The no-change sentinel is only produced after exact key and
-            // byte-extent equality. Move ownership of the immutable snapshot;
-            // GPU input data was already resident, so no copy or upload.
-            self.uploaded_inputs[0] = std::mem::take(&mut old[0]);
-        }
+
+        self.resident_slots = next_slots;
+        self.uploaded_slot_map = logical_to_physical;
+        std::mem::swap(&mut self.bounds_keys, &mut next_bounds_keys);
+        next_bounds_keys.clear();
+        self.scratch_bounds_keys = next_bounds_keys;
+        std::mem::swap(&mut self.batch_keys, &mut next_batch_keys);
+        next_batch_keys.clear();
+        self.scratch_batch_keys = next_batch_keys;
+        let mut old = std::mem::replace(&mut self.uploaded_inputs[1], batch_bytes);
         if self.uploaded_inputs[1].is_empty()
-            && self.batch_keys.len() == batches.len()
-            && old[1].len() == batches.len() * ARGUMENT_STRIDE as usize
+            && old.len() == batches.len() * ARGUMENT_STRIDE as usize
         {
-            self.uploaded_inputs[1] = std::mem::take(&mut old[1]);
+            self.uploaded_inputs[1] = std::mem::take(&mut old);
         }
-        if super::renderer::trace_timings() && bounds_encoded > 0 && bounds_encoded < draws.len() {
-            eprintln!(
-                "gpui3d cull_bounds_cache rows={} encoded={} reused={}",
-                draws.len(),
-                bounds_encoded,
-                draws.len() - bounds_encoded,
-            );
-        }
-        for input in &mut old {
-            input.clear();
-        }
-        self.scratch_inputs = old;
+        old.clear();
+        bounds_scratch.clear();
+        self.scratch_inputs = [bounds_scratch, old];
         self.count = batches.len();
         self.instances = draws.len();
         Ok(())
@@ -366,7 +391,7 @@ impl CullResources {
             compute_binding(
                 1,
                 self.bounds,
-                (self.instances * BOUNDS_STRIDE) as u64,
+                (self.resident_slots.high_water().max(1) * BOUNDS_STRIDE) as u64,
                 ComputeBufferAccess::ReadOnly,
             ),
             compute_binding(
@@ -402,6 +427,12 @@ impl CullResources {
                 (super::hiz::WORDS * 4) as u64,
                 ComputeBufferAccess::ReadOnly,
             ),
+            compute_binding(
+                8,
+                self.slot_map,
+                (self.instances.max(1) * 4) as u64,
+                ComputeBufferAccess::ReadOnly,
+            ),
         ];
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
         let grid = device.compute_capabilities().plan_linear_dispatch_2d(count)?;
@@ -420,6 +451,7 @@ impl CullResources {
         device.destroy_buffer(self.arguments)?;
         device.destroy_buffer(self.visible_instances)?;
         device.destroy_buffer(self.range)?;
+        device.destroy_buffer(self.slot_map)?;
         Ok(())
     }
 }
@@ -468,7 +500,7 @@ fn create_buffers(
     instances: usize,
     batches: usize,
     memory_location: MemoryLocation,
-) -> gpui::Result<[BufferId; 5]> {
+) -> gpui::Result<[BufferId; 6]> {
     let read = BufferUsage::STORAGE | BufferUsage::COPY_DST;
     let write = BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE;
     let specs = [
@@ -480,8 +512,9 @@ fn create_buffers(
         ),
         (instances as u64 * 4, write),
         (32, BufferUsage::UNIFORM | BufferUsage::COPY_DST),
+        (instances as u64 * 4, read),
     ];
-    let mut buffers = Vec::with_capacity(5);
+    let mut buffers = Vec::with_capacity(6);
     for (size, usage) in specs {
         match device.create_buffer(&BufferDescriptor {
             label: Some("gpui-3d GPU culling".into()),

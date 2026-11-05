@@ -109,7 +109,7 @@ const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 mod assets;
 mod instance_cache;
-mod stable_slots;
+pub(in crate::scene_view) mod stable_slots;
 mod generated;
 mod light_pass;
 mod reorder;
