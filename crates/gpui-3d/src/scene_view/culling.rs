@@ -26,6 +26,7 @@ pub(super) struct CullResources {
     count: usize,
     instances: usize,
     uploaded_inputs: [Vec<u8>; 2],
+    scratch_inputs: [Vec<u8>; 2],
 }
 
 impl CullResources {
@@ -77,6 +78,7 @@ impl CullResources {
             count: 0,
             instances: 0,
             uploaded_inputs: Default::default(),
+            scratch_inputs: Default::default(),
             instance_capacity,
             batch_capacity,
         };
@@ -115,30 +117,49 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<()> {
-        let bytes = encode_batches(draws, batches, meshes)?;
-        let bounds = encode_bounds(draws);
-        let writes = [
-            (self.bounds, bounds.as_slice(), BOUNDS_STRIDE),
-            (self.batches, bytes.as_slice(), ARGUMENT_STRIDE as usize),
-        ]
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, (buffer, data, stride))| {
-            let range = super::uploads::changed_range(&self.uploaded_inputs[i], data, stride)?;
-            Some(gfx_core::BufferWrite {
-                descriptor: gfx_core::BufferWriteDescriptor {
-                    buffer,
-                    offset: range.start as u64,
-                },
-                data: &data[range],
-            })
-        })
-        .collect::<Vec<_>>();
-        self.uploaded_inputs = Default::default();
-        if !writes.is_empty() {
-            device.write_buffer_batch(&writes)?;
+        // Reuse both encoded staging vectors. Streaming sections may publish a new
+        // scene every few frames, and allocating full draw/cull tables on every
+        // update becomes expensive when the scene contains many material parts.
+        let [mut bounds, mut bytes] = std::mem::take(&mut self.scratch_inputs);
+        encode_bounds_into(draws, &mut bounds);
+        if let Err(error) = encode_batches_into(draws, batches, meshes, &mut bytes) {
+            self.scratch_inputs = [bounds, bytes];
+            return Err(error);
         }
-        self.uploaded_inputs = [bounds, bytes];
+        let write_result = {
+            let writes = [
+                (self.bounds, bounds.as_slice(), BOUNDS_STRIDE),
+                (self.batches, bytes.as_slice(), ARGUMENT_STRIDE as usize),
+            ]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, (buffer, data, stride))| {
+                let range = super::uploads::changed_range(&self.uploaded_inputs[i], data, stride)?;
+                Some(gfx_core::BufferWrite {
+                    descriptor: gfx_core::BufferWriteDescriptor {
+                        buffer,
+                        offset: range.start as u64,
+                    },
+                    data: &data[range],
+                })
+            })
+            .collect::<Vec<_>>();
+            if writes.is_empty() {
+                Ok(())
+            } else {
+                device.write_buffer_batch(&writes).map(|_| ())
+            }
+        };
+        if let Err(error) = write_result {
+            // Keep the last successfully uploaded snapshot for the retry.
+            self.scratch_inputs = [bounds, bytes];
+            return Err(error.into());
+        }
+        let mut old = std::mem::replace(&mut self.uploaded_inputs, [bounds, bytes]);
+        for input in &mut old {
+            input.clear();
+        }
+        self.scratch_inputs = old;
         self.count = batches.len();
         self.instances = draws.len();
         Ok(())
@@ -242,8 +263,16 @@ impl CullResources {
     }
 }
 
+#[cfg(test)]
 fn encode_bounds(draws: &[PreparedDraw]) -> Vec<u8> {
-    let mut bounds = Vec::with_capacity(draws.len() * BOUNDS_STRIDE);
+    let mut bytes = Vec::new();
+    encode_bounds_into(draws, &mut bytes);
+    bytes
+}
+
+fn encode_bounds_into(draws: &[PreparedDraw], bounds: &mut Vec<u8>) {
+    bounds.clear();
+    bounds.reserve(draws.len() * BOUNDS_STRIDE);
     for draw in draws {
         for value in [draw.bounds.min.x, draw.bounds.min.y, draw.bounds.min.z] {
             bounds.extend_from_slice(&value.to_le_bytes());
@@ -271,7 +300,6 @@ fn encode_bounds(draws: &[PreparedDraw]) -> Vec<u8> {
             bounds.extend_from_slice(&value.to_le_bytes());
         }
     }
-    bounds
 }
 
 fn create_buffers(
@@ -336,16 +364,18 @@ fn compute_binding(
     }
 }
 
-fn encode_batches(
+fn encode_batches_into(
     draws: &[PreparedDraw],
     batches: &[DrawBatchRange],
     meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
-) -> gpui::Result<Vec<u8>> {
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
     let capacity = batches
         .len()
         .checked_mul(ARGUMENT_STRIDE as usize)
         .ok_or_else(|| anyhow!("GPU bounds size overflow"))?;
-    let mut bytes = Vec::with_capacity(capacity);
+    bytes.clear();
+    bytes.reserve(capacity);
     for batch in batches {
         let end = batch
             .first_instance
@@ -372,7 +402,7 @@ fn encode_batches(
             bytes.extend_from_slice(&value.to_le_bytes());
         }
     }
-    Ok(bytes)
+    Ok(())
 }
 
 #[cfg(all(test, target_os = "windows"))]
