@@ -490,33 +490,59 @@ impl Dx12Device {
             );
         }
         let mut index = 0;
+        // Most voxel draws read adjacent 16-byte records from the SAME GPU
+        // culling argument buffer and use the same native pipeline signature.
+        // Cache the last native handles to avoid per-draw arena lookup, COM
+        // reference clone and redundant state tracking. Changing either ID
+        // still goes through the full validation and transition path.
+        let mut last_source: Option<(BufferId, ID3D12Resource)> = None;
+        let mut last_signature: Option<(RenderPipelineId, ID3D12CommandSignature)> = None;
         for step in steps {
             let RenderCommand::DrawIndirect(draw) = step else {
                 continue;
             };
-            let pipeline = self.render_pipelines.get(draw.pipeline)?;
-            let signature = pipeline
-                .indirect_signature
-                .as_ref()
-                .ok_or_else(|| Error::Backend("missing indirect command signature".into()))?;
-            let buffer = self.buffers.get(draw.arguments)?;
-            let source = buffer
-                .resource
-                .as_ref()
-                .ok_or_else(|| Error::Backend("missing indirect argument buffer".into()))?;
-            if buffer.state != D3D12_RESOURCE_STATE_GENERIC_READ {
-                self.command_encoders
-                    .get_mut(encoder)?
-                    .buffer_states
-                    .entry(draw.arguments)
-                    .or_insert(buffer.state);
-                record_transition_barrier(
-                    command,
-                    source,
-                    buffer.state,
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                );
+            if last_source.as_ref().is_none_or(|(id, _)| *id != draw.arguments) {
+                let buffer = self.buffers.get(draw.arguments)?;
+                let source = buffer
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing indirect argument buffer".into()))?
+                    .clone();
+                if buffer.state != D3D12_RESOURCE_STATE_GENERIC_READ {
+                    self.command_encoders
+                        .get_mut(encoder)?
+                        .buffer_states
+                        .entry(draw.arguments)
+                        .or_insert(buffer.state);
+                    record_transition_barrier(
+                        command,
+                        &source,
+                        buffer.state,
+                        D3D12_RESOURCE_STATE_GENERIC_READ,
+                    );
+                    self.buffers.get_mut(draw.arguments)?.state =
+                        D3D12_RESOURCE_STATE_GENERIC_READ;
+                }
+                last_source = Some((draw.arguments, source));
             }
+            let source = &last_source
+                .as_ref()
+                .expect("validated indirect source must be cached")
+                .1;
+            let signature = if let Some((id, signature)) = &last_signature
+                && *id == draw.pipeline
+            {
+                signature.clone()
+            } else {
+                let pipeline = self.render_pipelines.get(draw.pipeline)?;
+                let signature = pipeline
+                    .indirect_signature
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing indirect command signature".into()))?
+                    .clone();
+                last_signature = Some((draw.pipeline, signature.clone()));
+                signature
+            };
             // Portable 16B record -> 2 root constants + native draw args with zero starts.
             // SAFETY: source ranges were validated; each 32B destination is disjoint and
             // the zero upload allocation was initialized at device creation.
@@ -531,8 +557,7 @@ impl Dx12Device {
                     8,
                 );
             }
-            self.buffers.get_mut(draw.arguments)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
-            indirect.signatures.push(signature.clone());
+            indirect.signatures.push(signature);
             index += 1;
         }
         record_transition_barrier(
