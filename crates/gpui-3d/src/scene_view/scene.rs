@@ -1340,12 +1340,12 @@ impl SceneResources {
         voxel_shader: bool,
         incremental: bool,
     ) -> gpui::Result<()> {
-        let mut pending = Vec::new();
+        let mut pending = Vec::<StagedMesh>::new();
+        let mut pending_gpu = Vec::<((MeshId, bool), Arc<Mesh>)>::new();
         let mut pending_ids = HashSet::new();
         let mut pending_bytes = 0usize;
-        // Device limits cannot change within the lifetime of this backend.
-        // Query the virtual device only once per asset publication.
-        let compute_caps = device.compute_capabilities();
+        let gpu_meshing = device.compute_capabilities().voxel_execution_path()
+            == gfx_core::VoxelExecutionPath::GpuDriven;
         let draws: &[PreparedDraw] = if incremental {
             self.prepared.incremental_asset_draws()
         } else {
@@ -1354,66 +1354,61 @@ impl SceneResources {
         for draw in draws {
             let id = mesh_key(draw, voxel_shader);
             let generation = draw.mesh.generation();
-            if self
-                .meshes
-                .get(&id)
-                .is_some_and(|mesh| mesh.generation == generation)
-            {
+            if self.meshes.get(&id).is_some_and(|mesh| mesh.generation == generation) {
                 continue;
             }
             if !pending_ids.insert((id, generation)) {
                 continue;
             }
-            let creation = (|| {
-                if id.1
-                    && draw.mesh.gpu_voxels().is_some()
-                    && compute_caps.voxel_execution_path()
-                        == gfx_core::VoxelExecutionPath::GpuDriven
-                {
-                    if self.mesh_shader.is_none() {
-                        self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);
-                    }
-                    super::generated::create(
-                        device,
-                        &draw.mesh,
-                        self.mesh_shader
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("missing meshing shader"))?,
-                    )
-                    .map(|mesh| (mesh, None))
-                } else {
-                    create_mesh(device, &draw.mesh, backend, id.1, &mut self.arena)
+            if id.1 && gpu_meshing && let Some(source) = draw.mesh.gpu_voxels() {
+                if self.mesh_shader.is_none() {
+                    self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);
                 }
-            })();
-            let (mesh, upload) = match creation {
-                Ok(created) => created,
-                Err(error) => {
+                // Budget temporary input and worst-case resident output, not
+                // just already-packed CPU geometry upload bytes.
+                pending_bytes = pending_bytes.saturating_add(
+                    source.cells.len().saturating_mul(4)
+                        .saturating_add(source.templates.len().saturating_mul(112))
+                        .saturating_add(source.capacity().saturating_mul(16)),
+                );
+                pending_gpu.push((id, Arc::clone(&draw.mesh)));
+            } else {
+                let (mesh, upload) = match create_mesh(
+                    device, &draw.mesh, backend, id.1, &mut self.arena,
+                ) {
+                    Ok(created) => created,
+                    Err(error) => {
+                        discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+                        return Err(error);
+                    }
+                };
+                pending_bytes = pending_bytes
+                    .saturating_add(upload.as_ref().map_or(0, |upload| upload.bytes.len()));
+                pending.push((id, mesh, upload));
+            }
+            if pending_bytes >= MESH_UPLOAD_BATCH_BYTES
+                || pending_gpu.len() >= 16
+                || pending.len() + pending_gpu.len() >= 256
+            {
+                if let Err(error) = flush_pending_generated_meshes(
+                    device, &mut pending_gpu, self.mesh_shader.as_ref(),
+                    &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+                ) {
                     discard_pending_meshes(device, &mut pending, &mut self.arena)?;
                     return Err(error);
                 }
-            };
-            pending_bytes = pending_bytes
-                .saturating_add(upload.as_ref().map_or(0, |upload| upload.bytes.len()));
-            pending.push((id, mesh, upload));
-            if pending_bytes >= MESH_UPLOAD_BATCH_BYTES || pending.len() >= 256 {
-                upload_pending_meshes(
-                    device,
-                    &mut pending,
-                    &mut self.meshes,
-                    &mut self.retired_meshes,
-                    &mut self.arena,
-                )?;
                 pending_ids.clear();
                 pending_bytes = 0;
             }
         }
-        upload_pending_meshes(
-            device,
-            &mut pending,
-            &mut self.meshes,
-            &mut self.retired_meshes,
-            &mut self.arena,
-        )
+        if let Err(error) = flush_pending_generated_meshes(
+            device, &mut pending_gpu, self.mesh_shader.as_ref(),
+            &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+        ) {
+            discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn retire_meshes(&mut self, active: &HashSet<MeshId>) {
@@ -1874,6 +1869,33 @@ impl SceneResources {
 }
 
 type StagedMesh = ((MeshId, bool), MeshResources, Option<PendingMeshUpload>);
+
+/// Collect independently decoded Section upserts, perform one ordered compute
+/// submission for the group, then commit persistent buffers by stable MeshId.
+fn flush_pending_generated_meshes(
+    device: &mut dyn ExtensionDevice,
+    staged_gpu: &mut Vec<((MeshId, bool), Arc<Mesh>)>,
+    shaders: Option<&super::generated::Shaders>,
+    pending: &mut Vec<StagedMesh>,
+    meshes: &mut HashMap<(MeshId, bool), MeshResources>,
+    retired_meshes: &mut Vec<MeshResources>,
+    arena: &mut MeshArena,
+) -> gpui::Result<()> {
+    if !staged_gpu.is_empty() {
+        let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
+        let created = if staged_gpu.len() == 1 {
+            vec![super::generated::create(device, &staged_gpu[0].1, shaders)?]
+        } else {
+            let inputs = staged_gpu.iter().map(|(_, mesh)| mesh.as_ref())
+                .collect::<Vec<_>>();
+            super::generated::create_many(device, &inputs, shaders)?
+        };
+        for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
+            pending.push((id, resource, None));
+        }
+    }
+    upload_pending_meshes(device, pending, meshes, retired_meshes, arena)
+}
 
 fn discard_pending_meshes(
     device: &mut dyn ExtensionDevice,
