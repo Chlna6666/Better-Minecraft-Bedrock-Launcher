@@ -260,9 +260,18 @@ impl World3dChunkMesh {
     /// pixels again. Texture residency is accounted separately by unique asset ID.
     #[must_use]
     pub fn estimated_geometry_cpu_bytes(&self) -> usize {
+        // Queue pressure follows the actual immutable Section payload, not
+        // hypothetical expanded CPU triangle geometry. GPU voxel Sections
+        // retain compact cells and reusable templates.
         std::mem::size_of::<Self>()
             .saturating_add(std::mem::size_of_val(self.occluders.as_ref()))
-            .saturating_add(self.triangles.saturating_mul(3 * 32))
+            .saturating_add(self.mesh.geometry_storage_bytes())
+            .saturating_add(self.materials.len().saturating_mul(
+                std::mem::size_of::<Arc<Material>>(),
+            ))
+            .saturating_add(self.textures.len().saturating_mul(
+                std::mem::size_of::<Arc<TextureAsset>>(),
+            ))
     }
 
     #[must_use]
