@@ -2969,7 +2969,7 @@ impl Worker {
                     if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
                         self.build_gpu_cube_mesh(pos, band, &faces, None)
                     } else {
-                        self.build_chunk_mesh(pos, section_y, &faces)
+                        self.build_static_gpu_mesh(pos, section_y, &faces, None)
                     }
                 } else if let Some(band) = gpu_bands.remove(&(pos, section_y)) {
                     match light {
@@ -2978,21 +2978,9 @@ impl Worker {
                     }
                 } else {
                     match light {
-                        Ok(light) => {
-                            self.build_chunk_mesh(pos, section_y, &faces)
-                                .and_then(|mesh| {
-                                    mesh.map(|mut mesh| {
-                                        let source = light.static_source(&mesh.mesh)?;
-                                        mesh.mesh =
-                                            Arc::new(Mesh::from_gpu_voxels(source).with_identity(
-                                                chunk_mesh_id(pos, section_y),
-                                                self.mesh_generation,
-                                            ));
-                                        Ok(mesh)
-                                    })
-                                    .transpose()
-                                })
-                        }
+                        Ok(light) => self.build_static_gpu_mesh(
+                            pos, section_y, &faces, Some(light),
+                        ),
                         Err(error) => Err(error.clone()),
                     }
                 };
@@ -3213,13 +3201,38 @@ impl Worker {
         Ok(chunk)
     }
 
-    fn build_chunk_mesh(
+    /// Detail-only Sections (stairs, plants, signs and arbitrary model faces)
+    /// share the same GPU resident path as cube Sections. Decode materials and
+    /// templates directly; do not build a CPU Mesh then unpack it into the
+    /// same GPU templates. CPU fallback remains lazy in VoxelMeshSource.
+    fn build_static_gpu_mesh(
         &mut self,
         pos: ChunkPos,
         section_y: i32,
         faces: &[p3d::Preview3dStreamFace],
+        light: Option<&lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
-        self.build_chunk_mesh_with_templates(pos, section_y, faces, None, 0)
+        let mut templates = Vec::with_capacity(faces.len());
+        let Some(mut output) = self.build_chunk_mesh_with_templates(
+            pos, section_y, faces, Some(&mut templates), 0,
+        )? else {
+            return Ok(None);
+        };
+        let source = if let Some(light) = light {
+            light.static_source_faces(templates)?
+        } else {
+            gpui_3d::VoxelMeshSource::new(
+                [3, 3, 3], Vec3::ZERO, vec![0u32; 27], Vec::new(),
+            )
+            .and_then(|source| source.with_static_faces(templates))
+            .map_err(|error| format!("GPU 静态模型输入无效: {error}"))?
+        };
+        let mesh = Mesh::from_gpu_voxels(source)
+            .with_identity(chunk_mesh_id(pos, section_y), self.mesh_generation);
+        output.faces = mesh.index_count() / 6;
+        output.triangles = output.faces.saturating_mul(2);
+        output.mesh = Arc::new(mesh);
+        Ok(Some(output))
     }
     fn build_chunk_mesh_with_templates(
         &mut self,
