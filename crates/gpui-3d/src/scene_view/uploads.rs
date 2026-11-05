@@ -182,6 +182,36 @@ pub(super) fn changed_ranges_for_keys<K: PartialEq>(
     )
 }
 
+/// Compute byte upload ranges directly from fixed-size u32 record slices.
+///
+/// This is used for GPU-generated draw mappings (four u32 words per mapping).
+/// It avoids allocating two intermediate vectors of comparison keys just to
+/// identify dirty records. Returns byte offsets suitable for BufferWrite.
+pub(super) fn changed_ranges_for_u32_records(
+    previous: &[u32],
+    next: &[u32],
+    words_per_record: usize,
+    max_ranges: usize,
+    coalesce_gap_records: usize,
+) -> Vec<Range<usize>> {
+    assert!(words_per_record > 0);
+    assert!(next.len().is_multiple_of(words_per_record));
+    let stride = words_per_record
+        .checked_mul(std::mem::size_of::<u32>())
+        .expect("mapping record stride overflow");
+    dirty_record_ranges(
+        next.len() / words_per_record,
+        stride,
+        max_ranges,
+        coalesce_gap_records,
+        |index| {
+            let start = index * words_per_record;
+            let end = start + words_per_record;
+            previous.get(start..end) != Some(&next[start..end])
+        },
+    )
+}
+
 fn dirty_record_ranges(
     count: usize,
     stride: usize,
@@ -329,4 +359,23 @@ mod tests {
         assert!(changed_ranges(&old, &old, 4, 8, 0).is_empty());
         assert_eq!(changed_ranges(&[], &old, 4, 8, 0), vec![0..8]);
     }
+    #[test]
+    fn direct_u32_dirty_record_ranges_match_grouped_key_comparisons() {
+        let old = (0..512u32).collect::<Vec<_>>();
+        let mut next = old.clone();
+        for index in [0, 8, 155, 408, 511] {
+            next[index] ^= 0x100;
+        }
+        let old_keys = old.chunks_exact(4)
+            .map(|x| [x[0], x[1], x[2], x[3]]).collect::<Vec<_>>();
+        let next_keys = next.chunks_exact(4)
+            .map(|x| [x[0], x[1], x[2], x[3]]).collect::<Vec<_>>();
+        assert_eq!(
+            changed_ranges_for_u32_records(&old, &next, 4, 12, 2),
+            changed_ranges_for_keys(&old_keys, &next_keys, old.len() * 4, 16, 12, 2),
+        );
+        assert!(changed_ranges_for_u32_records(&old, &old, 4, 12, 2).is_empty());
+        assert!(changed_ranges_for_u32_records(&old, &old[..28], 4, 12, 2).is_empty());
+    }
+
 }

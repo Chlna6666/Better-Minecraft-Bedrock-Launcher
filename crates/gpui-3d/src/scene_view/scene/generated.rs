@@ -30,20 +30,10 @@ struct MappingPatch {
 /// changed output buffer does not invalidate unchanged GPU input mapping data.
 fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
     debug_assert!(current.len().is_multiple_of(4));
-    // Compare full 16-byte mapping records, not their individual words.
-    // Exact sequence equality is checked by the common dirty-range planner.
-    // Coalesce short gaps; cap scatter uploads to avoid excessive driver calls.
-    let previous_records = previous.chunks_exact(4).map(|r| [r[0], r[1], r[2], r[3]])
-        .collect::<Vec<_>>();
-    let current_records = current.chunks_exact(4).map(|r| [r[0], r[1], r[2], r[3]])
-        .collect::<Vec<_>>();
-    super::super::uploads::changed_ranges_for_keys(
-        &previous_records,
-        &current_records,
-        previous.len() * 4,
-        16,
-        12,
-        2,
+    // Directly compare groups of four u32 words, with no temporary comparison
+    // tables. A bounded number of 16-byte aligned uploads is produced.
+    super::super::uploads::changed_ranges_for_u32_records(
+        previous, current, 4, 12, 2,
     ).into_iter().map(|range| {
         let mut bytes = Vec::with_capacity(range.len());
         for &word in &current[range.start / 4..range.end / 4] {
