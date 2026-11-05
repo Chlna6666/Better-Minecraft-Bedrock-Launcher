@@ -44,6 +44,8 @@ pub(super) fn capabilities() -> ComputeCapabilities {
         max_workgroups: [65535; 3],
         // D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP.
         max_invocations_per_workgroup: 1024,
+        max_workgroup_size: [1024, 1024, 64],
+        max_workgroup_shared_memory_bytes: 32 * 1024,
         indirect_draw: true,
     }
 }

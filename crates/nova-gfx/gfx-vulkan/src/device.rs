@@ -294,6 +294,9 @@ impl VulkanDevice {
             },
             max_invocations_per_workgroup:
                 adapter_properties.limits.max_compute_work_group_invocations,
+            max_workgroup_size: adapter_properties.limits.max_compute_work_group_size,
+            max_workgroup_shared_memory_bytes:
+                adapter_properties.limits.max_compute_shared_memory_size,
             indirect_draw: native_features.draw_indirect_first_instance == vk::TRUE,
         };
         let (

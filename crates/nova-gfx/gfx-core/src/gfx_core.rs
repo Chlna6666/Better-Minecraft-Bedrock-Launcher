@@ -31,6 +31,7 @@ mod memory;
 mod texture_copy;
 pub use compute::{
     ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
+    ComputeKernelProfile,
 };
 pub use texture_copy::TextureCopy;
 

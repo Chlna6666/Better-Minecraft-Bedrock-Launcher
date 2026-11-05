@@ -13,7 +13,7 @@ pub(super) struct HiZ {
     shaders: [ShaderModuleId; 5],
     // Selected from projected occluder coverage; Shader variants are compiled at build time.
     raster_threads: u32,
-    max_raster_threads: u32,
+    compute_caps: ComputeCapabilities,
     count: usize,
     clear_pending: bool,
     selection_eye: Option<Vec3>,
@@ -48,10 +48,10 @@ impl HiZ {
     ) -> gpui::Result<Self> {
         // Workgroup size is a compiled shader property. Pick only precompiled
         // variants supported by this device, never the largest reported size.
-        let max_invocations = device.compute_capabilities().max_invocations_per_workgroup;
-        let max_raster_threads = if max_invocations >= 128 { 128 }
-            else if max_invocations >= 64 { 64 }
-            else { 32 };
+        let compute_caps = device.compute_capabilities();
+        let profiles = raster_profiles();
+        let default_variant = compute_caps.select_precompiled_kernel(&profiles, 64)
+            .ok_or_else(|| anyhow::anyhow!("no supported Hi-Z raster workgroup"))?;
         let words = if shadow { 512 * 512 } else { WORDS };
         let max_boxes = if shadow { 2048 } else { MAX_BOXES };
         let mut buffers = Vec::new();
@@ -116,8 +116,8 @@ impl HiZ {
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("missing Hi-Z shaders"))?,
             count: 0,
-            raster_threads: 64.min(max_raster_threads),
-            max_raster_threads,
+            raster_threads: profiles[default_variant].invocations(),
+            compute_caps,
             clear_pending: false,
             selection_eye: None,
             words,
@@ -166,12 +166,12 @@ impl HiZ {
             };
             coverage_sum += (span * span / denominator).min(1.0);
         }
-        self.raster_threads = if count == 0 {
-            64
-        } else {
-            choose_raster_threads(coverage_sum / count as f32)
-                .min(self.max_raster_threads)
-        };
+        let desired = if count == 0 { 64 }
+            else { choose_raster_threads(coverage_sum / count as f32) };
+        let profiles = raster_profiles();
+        let choice = self.compute_caps.select_precompiled_kernel(&profiles, desired)
+            .ok_or_else(|| anyhow::anyhow!("Hi-Z raster variant exceeds device limits"))?;
+        self.raster_threads = profiles[choice].invocations();
         let mut bytes = encode_header(count, forward).to_vec();
         bytes.reserve(count * 32);
         for b in bounds {
@@ -308,6 +308,15 @@ fn binding(
 // This is an inexpensive workload heuristic, not a claim of optimal hardware
 // occupancy. The 32/64/128 variants stay below Vulkan's guaranteed minimum
 // 128 invocations/workgroup; backend-specific wave widths are not yet exposed.
+// Four aligned vec3 vertices, two uvec2 bounds and control words, rounded
+// upward to 128 bytes to cover workgroup address-space layout padding.
+fn raster_profiles() -> [ComputeKernelProfile; 3] {
+    [32, 64, 128].map(|threads| ComputeKernelProfile {
+        workgroup_size: [threads, 1, 1],
+        shared_memory_bytes: 128,
+    })
+}
+
 fn choose_raster_threads(mean_coverage: f32) -> u32 {
     if !mean_coverage.is_finite() { return 64; }
     if mean_coverage < 0.0025 { 32 }
@@ -325,7 +334,15 @@ mod adaptive_raster_tests {
         assert_eq!(choose_raster_threads(0.01), 64);
         assert_eq!(choose_raster_threads(0.25), 128);
         assert_eq!(choose_raster_threads(f32::NAN), 64);
-        assert_eq!(choose_raster_threads(0.25).min(64), 64);
-        assert_eq!(choose_raster_threads(0.25).min(32), 32);
+        let profiles = super::raster_profiles();
+        let caps = ComputeCapabilities {
+            max_workgroups: [65535; 3],
+            max_invocations_per_workgroup: 64,
+            max_workgroup_size: [64, 64, 64],
+            max_workgroup_shared_memory_bytes: 1024,
+            indirect_draw: true,
+        };
+        assert_eq!(caps.select_precompiled_kernel(&profiles, 128), Some(1));
+        assert_eq!(caps.select_precompiled_kernel(&profiles, 32), Some(0));
     }
  }

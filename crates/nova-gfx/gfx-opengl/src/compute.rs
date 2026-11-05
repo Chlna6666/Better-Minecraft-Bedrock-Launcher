@@ -33,6 +33,13 @@ impl State {
                     gl.get_parameter_i32(glow::MAX_COMPUTE_WORK_GROUP_INVOCATIONS)
                         .max(0) as u32
                 },
+                max_workgroup_size: unsafe {
+                    std::array::from_fn(|i| gl.get_parameter_indexed_i32(
+                        glow::MAX_COMPUTE_WORK_GROUP_SIZE, i as u32).max(0) as u32)
+                },
+                max_workgroup_shared_memory_bytes: unsafe {
+                    gl.get_parameter_i32(glow::MAX_COMPUTE_SHARED_MEMORY_SIZE).max(0) as u32
+                },
                 indirect_draw: gl
                     .supported_extensions()
                     .contains("GL_ARB_shader_draw_parameters"),

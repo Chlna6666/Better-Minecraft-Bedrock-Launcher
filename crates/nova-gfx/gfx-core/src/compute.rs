@@ -12,8 +12,108 @@ pub struct ComputeCapabilities {
     /// This is separate from max_workgroups (dispatch grid dimensions).
     /// Zero means the backend does not expose a compute limit.
     pub max_invocations_per_workgroup: u32,
+    /// Maximum local workgroup X, Y and Z sizes. Distinct from dispatch grid counts.
+    /// Zero means the backend cannot report the limit.
+    pub max_workgroup_size: [u32; 3],
+    /// Maximum bytes available to WGSL `var<workgroup>` per workgroup.
+    /// Zero means unavailable or unknown.
+    pub max_workgroup_shared_memory_bytes: u32,
     /// Whether render passes accept GPU-generated non-indexed draw arguments.
     pub indirect_draw: bool,
+}
+
+/// Requirements of one *precompiled* compute shader entry point.
+///
+/// Workgroup size is baked into WGSL. Changing the dispatch grid does not change
+/// the entry point's local thread count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComputeKernelProfile {
+    /// Shader-local workgroup dimensions: WGSL `@workgroup_size(x, y, z)`.
+    pub workgroup_size: [u32; 3],
+    /// Shader-local workgroup shared memory footprint, in bytes.
+    pub shared_memory_bytes: u32,
+}
+
+impl ComputeKernelProfile {
+    /// Construct a simple one-dimensional shader profile with no shared memory.
+    #[must_use]
+    pub const fn one_dimensional(threads: u32) -> Self {
+        Self { workgroup_size: [threads, 1, 1], shared_memory_bytes: 0 }
+    }
+
+    /// Return the total number of shader invocations, or zero if invalid.
+    #[must_use]
+    pub fn invocations(self) -> u32 {
+        self.workgroup_size.iter()
+            .try_fold(1u32, |count, &size| count.checked_mul(size))
+            .unwrap_or(0)
+    }
+}
+
+impl ComputeCapabilities {
+    /// Whether ordered buffer compute is supported by this device.
+    #[must_use]
+    pub fn supports_compute(self) -> bool {
+        !self.max_workgroups.contains(&0)
+    }
+
+    /// Check per-axis limits, combined thread count and shared memory.
+    ///
+    /// Unknown limits are rejected instead of silently assuming that a shader
+    /// will compile. This validates *legality*, not GPU occupancy/performance.
+    #[must_use]
+    pub fn supports_kernel(self, kernel: ComputeKernelProfile) -> bool {
+        let threads = kernel.invocations();
+        self.supports_compute()
+            && threads > 0
+            && self.max_invocations_per_workgroup > 0
+            && threads <= self.max_invocations_per_workgroup
+            && kernel.workgroup_size.iter().zip(self.max_workgroup_size)
+                .all(|(&requested, limit)| requested > 0 && requested <= limit)
+            && self.max_workgroup_shared_memory_bytes > 0
+            && kernel.shared_memory_bytes <= self.max_workgroup_shared_memory_bytes
+    }
+
+    /// Select the nearest legal *compiled* shader variant, returning its index.
+    ///
+    /// A tie prefers the smaller workgroup. This is a deterministic heuristic,
+    /// not a substitute for benchmarking on the actual GPU.
+    #[must_use]
+    pub fn select_precompiled_kernel(
+        self,
+        profiles: &[ComputeKernelProfile],
+        preferred_threads: u32,
+    ) -> Option<usize> {
+        profiles.iter().enumerate()
+            .filter(|(_, profile)| self.supports_kernel(**profile))
+            .min_by_key(|(_, profile)| {
+                let threads = profile.invocations();
+                (threads.abs_diff(preferred_threads), threads)
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// Plan a linear set of logical workgroups on an X/Y grid.
+    ///
+    /// Shader index: `workgroup_id.x + workgroup_id.y * num_workgroups.x`.
+    /// The shader must reject padded indices at the end of the grid.
+    /// Zero logical groups returns [0,1,1]; skip dispatch in that case.
+    ///
+    /// # Errors
+    /// Returns an error when compute is unavailable or two dimensions cannot
+    /// represent the requested number of groups.
+    pub fn plan_linear_dispatch_2d(self, logical_groups: u32) -> Result<[u32; 3]> {
+        if !self.supports_compute() {
+            return Err(Error::Unavailable("buffer compute is unsupported".into()));
+        }
+        if logical_groups == 0 { return Ok([0, 1, 1]); }
+        let x = logical_groups.min(self.max_workgroups[0]);
+        let y = logical_groups.div_ceil(x);
+        if y > self.max_workgroups[1] {
+            return Err(Error::InvalidInput("2D compute dispatch exceeds device limits".into()));
+        }
+        Ok([x, y, 1])
+    }
 }
 
 /// Access used by one compute buffer binding.
@@ -102,6 +202,8 @@ mod tests {
         let caps = ComputeCapabilities {
             max_workgroups: [65535; 3],
             max_invocations_per_workgroup: 128,
+            max_workgroup_size: [128, 128, 64],
+            max_workgroup_shared_memory_bytes: 32768,
             indirect_draw: true,
         };
         let binding = ComputeBufferBinding {
@@ -136,4 +238,57 @@ mod tests {
             Err(Error::Unavailable(_))
         ));
     }
+    fn mock_caps() -> ComputeCapabilities {
+        ComputeCapabilities {
+            max_workgroups: [7, 4, 1],
+            max_invocations_per_workgroup: 128,
+            max_workgroup_size: [128, 8, 4],
+            max_workgroup_shared_memory_bytes: 16 * 1024,
+            indirect_draw: false,
+        }
+    }
+
+    #[test]
+    fn compiled_kernel_limits_are_independent_of_dispatch_grid() {
+        let caps = mock_caps();
+        assert!(caps.supports_kernel(ComputeKernelProfile {
+            workgroup_size: [32, 4, 1],
+            shared_memory_bytes: 1024,
+        }));
+        for kernel in [
+            ComputeKernelProfile::one_dimensional(0),
+            ComputeKernelProfile::one_dimensional(129),
+            ComputeKernelProfile { workgroup_size: [32, 8, 1], shared_memory_bytes: 0 },
+            ComputeKernelProfile { workgroup_size: [32, 4, 1], shared_memory_bytes: 20000 },
+        ] {
+            assert!(!caps.supports_kernel(kernel));
+        }
+        assert!(!ComputeCapabilities::default()
+            .supports_kernel(ComputeKernelProfile::one_dimensional(32)));
+    }
+
+    #[test]
+    fn precompiled_shader_selection_falls_back_without_exceeding_limits() {
+        let variants = [32, 64, 128, 256].map(ComputeKernelProfile::one_dimensional);
+        let caps = mock_caps();
+        assert_eq!(caps.select_precompiled_kernel(&variants, 256), Some(2));
+        assert_eq!(caps.select_precompiled_kernel(&variants, 48), Some(0));
+        assert_eq!(caps.select_precompiled_kernel(&variants, 96), Some(1));
+        assert_eq!(ComputeCapabilities::default()
+            .select_precompiled_kernel(&variants, 64), None);
+    }
+
+    #[test]
+    fn linear_dispatch_plan_respects_y_limit_and_padding() {
+        let caps = mock_caps();
+        for (count, expected) in [
+            (0, [0, 1, 1]), (7, [7, 1, 1]),
+            (20, [7, 3, 1]), (28, [7, 4, 1]),
+        ] {
+            assert_eq!(caps.plan_linear_dispatch_2d(count).unwrap(), expected);
+        }
+        assert!(caps.plan_linear_dispatch_2d(29).is_err());
+        assert!(ComputeCapabilities::default().plan_linear_dispatch_2d(1).is_err());
+    }
+
 }
