@@ -378,7 +378,6 @@ pub struct World3dEditorView {
     poll_task: Option<Task<anyhow::Result<()>>>,
     stream_generation: u64,
     last_view_key: Option<(Dimension, i32, i32, i32)>,
-    scene_range_key: Option<(Dimension, i32, i32, i32)>,
     last_view_sent_at: Option<Instant>,
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
@@ -499,7 +498,6 @@ impl World3dEditorView {
             poll_task: None,
             stream_generation: 0,
             last_view_key: None,
-            scene_range_key: None,
             last_view_sent_at: None,
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
@@ -912,7 +910,8 @@ impl World3dEditorView {
     }
 
     fn maybe_update_view(&mut self, cx: &mut Context<Self>) {
-        self.scene_dirty |= self.scene_range_key != Some(self.current_view_key());
+        // Camera/radius changes update SceneView::culling_bounds and trigger
+        // GPU visibility, not a full CPU Scene fork and Section-visible walk.
         if self.stream_scene_pending
             && self
                 .last_scene_build_at
@@ -1030,8 +1029,6 @@ impl World3dEditorView {
                 return true;
             }
         };
-        let range_key = self.current_view_key();
-        self.scene_nodes.update_range(&mut scene, range_key);
         if let Err(error) = self.scene_nodes.update_lights(
             &mut scene,
             &self.chunk_lights,
@@ -1109,7 +1106,6 @@ impl World3dEditorView {
         if next_origin != previous_origin {
             self.update_target_scene();
         }
-        self.scene_range_key = Some(range_key);
         self.scene_has_preview = self.import_preview.is_some();
         self.texture_table_dirty = false;
         self.dirty_sections.clear();
