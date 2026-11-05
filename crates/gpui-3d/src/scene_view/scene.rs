@@ -66,6 +66,10 @@ pub(super) struct SceneResources {
     uploaded_tables: [Vec<u8>; 3],
     scratch_tables: [Vec<u8>; 3],
     draw_record_cache: DrawRecordCache,
+    /// Previous committed 144-byte GPU instance row identities.
+    instance_slot_keys: Vec<instance_cache::InstanceSlotKey>,
+    scratch_instance_keys: Vec<instance_cache::InstanceSlotKey>,
+    dirty_instance_run: Vec<u8>,
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
     retired_meshes: Vec<MeshResources>,
@@ -90,6 +94,7 @@ pub(super) struct SceneResources {
 const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 mod assets;
+mod instance_cache;
 mod generated;
 mod light_pass;
 mod reorder;
@@ -265,6 +270,9 @@ impl SceneResources {
             uploaded_tables: Default::default(),
             scratch_tables: Default::default(),
             draw_record_cache: DrawRecordCache::default(),
+            instance_slot_keys: Vec::new(),
+            scratch_instance_keys: Vec::new(),
+            dirty_instance_run: Vec::new(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
             retired_meshes: Vec::new(),
@@ -774,7 +782,25 @@ impl SceneResources {
             self.prepared.lights.len(),
             &mut draw_bytes,
         )?;
-        self.encode_draw_instances(&self.prepared.draws, voxel_shader, &mut instance_bytes)?;
+        let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
+        let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
+        let instance_result = self.encode_draw_instances_cached(
+            &self.prepared.draws,
+            voxel_shader,
+            &self.instance_slot_keys,
+            &self.uploaded_tables[1],
+            &mut next_instance_keys,
+            &mut instance_bytes,
+            &mut dirty_instance_run,
+        );
+        self.dirty_instance_run = dirty_instance_run;
+        let encoded_instance_rows = match instance_result {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                self.scratch_instance_keys = next_instance_keys;
+                return Err(error);
+            }
+        };
         light_bytes.clear();
         light_bytes.reserve(
             self.prepared
@@ -954,6 +980,12 @@ impl SceneResources {
                     }),
             );
         self.sync_generated_draws(device, voxel_shader)?;
+        // Commit slot identities only after the corresponding GPU upload and
+        // binding preparation have both completed. A failed update must not
+        // make future frames reuse records that were never committed.
+        let mut prior_keys = std::mem::replace(&mut self.instance_slot_keys, next_instance_keys);
+        prior_keys.clear();
+        self.scratch_instance_keys = prior_keys;
         let bind_ms = bind_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         if replace_draw {
             device.destroy_buffer(old_draw)?;
@@ -968,8 +1000,9 @@ impl SceneResources {
             && started.elapsed() >= std::time::Duration::from_millis(16)
         {
             eprintln!(
-                "gpui3d buffer_detail draws={} bytes={} prepared_bytes={} writes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
+                "gpui3d buffer_detail draws={} instance_encoded={} bytes={} prepared_bytes={} writes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
                 draw_count,
+                encoded_instance_rows,
                 uploaded_bytes,
                 encoded_bytes,
                 write_count,
@@ -1551,6 +1584,9 @@ impl SceneResources {
         self.draw_resource_keys.clear();
         self.spare_draw_resources.clear();
         self.spare_draw_resource_keys.clear();
+        self.instance_slot_keys.clear();
+        self.scratch_instance_keys.clear();
+        self.dirty_instance_run.clear();
         self.draw_addresses.clear();
         for bind_group in self.binding_cache.drain().map(|(_, binding)| binding) {
             device.destroy_bind_group(bind_group)?;
