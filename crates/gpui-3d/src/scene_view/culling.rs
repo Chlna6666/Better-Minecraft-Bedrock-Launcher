@@ -99,13 +99,15 @@ fn encode_bounds_cached(
 fn plan_resident_bounds(
     previous: &StableDrawSlots,
     draws: &[PreparedDraw],
-) -> gpui::Result<(StableDrawSlots, Vec<u32>, Vec<Option<BoundsRecordKey>>)> {
+    keys: &mut Vec<Option<BoundsRecordKey>>,
+) -> gpui::Result<(StableDrawSlots, Vec<u32>)> {
     let (next_slots, mapping) = previous.plan(draws)?;
-    let mut keys = vec![None; next_slots.high_water()];
+    keys.clear();
+    keys.resize(next_slots.high_water(), None);
     for (draw, &physical) in draws.iter().zip(&mapping) {
         keys[physical as usize] = Some(BoundsRecordKey::from_draw(draw));
     }
-    Ok((next_slots, mapping, keys))
+    Ok((next_slots, mapping))
 }
 
 /// Materialize only dirty 48-byte GPU pages from exact record-key bits.
@@ -274,8 +276,9 @@ impl CullResources {
         // The shared stable-slot identity is (Node, Mesh, Material, Part,
         // occurrence). A Section deletion retires only its corresponding slot;
         // surviving bounds stay resident at their previous GPU addresses.
-        let (next_slots, logical_to_physical, next_bounds_keys) =
-            plan_resident_bounds(&self.resident_slots, draws)?;
+        let mut next_bounds_keys = std::mem::take(&mut self.scratch_bounds_keys);
+        let (next_slots, logical_to_physical) =
+            plan_resident_bounds(&self.resident_slots, draws, &mut next_bounds_keys)?;
         if next_slots.high_water() > self.instance_capacity {
             return Err(anyhow!("GPU culling physical slot capacity exceeded").into());
         }
@@ -817,8 +820,9 @@ mod bounds_cache_tests {
     #[test]
     fn streamed_sections_keep_resident_gpu_bounds_across_reorder_and_removal() {
         let draws = sample_draws();
-        let (slots, first_map, initial_keys) =
-            plan_resident_bounds(&StableDrawSlots::default(), &draws).unwrap();
+        let mut initial_keys = Vec::new();
+        let (slots, first_map) =
+            plan_resident_bounds(&StableDrawSlots::default(), &draws, &mut initial_keys).unwrap();
         assert_eq!(first_map.len(), draws.len());
         let first_upload = resident_bounds_patches(&[], &initial_keys);
         let first_bytes = apply_sparse_patches(
@@ -832,8 +836,9 @@ mod bounds_cache_tests {
         let mut reordered = draws.clone();
         reordered.reverse();
         reordered.remove(3);
-        let (next_slots, next_map, next_keys) =
-            plan_resident_bounds(&slots, &reordered).unwrap();
+        let mut next_keys = Vec::new();
+        let (next_slots, next_map) =
+            plan_resident_bounds(&slots, &reordered, &mut next_keys).unwrap();
         for (draw, &physical) in reordered.iter().zip(&next_map) {
             let original_index = draws.iter().position(|other| other.node == draw.node).unwrap();
             assert_eq!(physical, first_map[original_index]);
@@ -857,11 +862,14 @@ mod bounds_cache_tests {
     #[test]
     fn only_changed_section_bounds_are_uploaded_and_slots_reused() {
         let draws = sample_draws();
-        let (original_slots, original_map, original_keys) =
-            plan_resident_bounds(&StableDrawSlots::default(), &draws).unwrap();
+        let mut original_keys = Vec::new();
+        let (original_slots, original_map) =
+            plan_resident_bounds(&StableDrawSlots::default(), &draws, &mut original_keys).unwrap();
         let mut next = draws.clone();
         next[4].bounds.max.x += 0.125;
-        let (slots, next_map, keys) = plan_resident_bounds(&original_slots, &next).unwrap();
+        let mut keys = Vec::new();
+        let (slots, next_map) =
+            plan_resident_bounds(&original_slots, &next, &mut keys).unwrap();
         assert_eq!(slots.high_water(), original_slots.high_water());
         assert_eq!(next_map, original_map);
         let changed = resident_bounds_patches(&original_keys, &keys);
@@ -872,9 +880,10 @@ mod bounds_cache_tests {
         // A subsequent add reuses a free physical slot instead of reallocating
         // every unchanged resident Section.
         next.remove(0);
-        let (removed, _, _) = plan_resident_bounds(&slots, &next).unwrap();
+        let (removed, _) = plan_resident_bounds(&slots, &next, &mut keys).unwrap();
         next.push(draws[0].clone());
-        let (restored, restored_mapping, _) = plan_resident_bounds(&removed, &next).unwrap();
+        let (restored, restored_mapping) =
+            plan_resident_bounds(&removed, &next, &mut keys).unwrap();
         assert_eq!(restored.high_water(), original_slots.high_water());
         assert_eq!(restored_mapping.last(), original_map.first());
     }
