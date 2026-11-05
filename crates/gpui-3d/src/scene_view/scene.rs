@@ -384,7 +384,7 @@ impl SceneResources {
                 let _phase =
                     gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
                 if incremental_asset_sync {
-                    validate_draw_textures(&self.prepared.incremental_asset_draws(), scene_view)?;
+                    validate_draw_textures(self.prepared.incremental_asset_draws(), scene_view)?;
                 } else {
                     validate_textures(&self.prepared, scene_view)?;
                 }
@@ -977,8 +977,8 @@ impl SceneResources {
         incremental: bool,
     ) -> gpui::Result<()> {
         self.seen_materials.clear();
-        let draws = if incremental {
-            &self.prepared.incremental_asset_draws()
+        let draws: &[PreparedDraw] = if incremental {
+            self.prepared.incremental_asset_draws()
         } else {
             &self.prepared.draws
         };
@@ -1049,8 +1049,8 @@ impl SceneResources {
         let mut pending = Vec::new();
         let mut pending_ids = HashSet::new();
         let mut pending_bytes = 0usize;
-        let draws = if incremental {
-            &self.prepared.incremental_asset_draws()
+        let draws: &[PreparedDraw] = if incremental {
+            self.prepared.incremental_asset_draws()
         } else {
             &self.prepared.draws
         };
