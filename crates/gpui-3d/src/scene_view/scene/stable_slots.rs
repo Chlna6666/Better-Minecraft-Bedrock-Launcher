@@ -258,7 +258,7 @@ mod tests {
     fn physical_draw_encoder_avoids_intermediate_table_and_keeps_dirty_rows() {
         let original = draws(40);
         let (slots, first_map) = StableDrawSlots::default().plan(&original).unwrap();
-        let mut cache = gpu::DrawRecordCache::default();
+        let mut cache = DrawRecordCache::default();
         let mut keys = Vec::new();
         let mut bytes = Vec::new();
         let mut scratch = Vec::new();
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(encoded, 40);
         let mut baseline = Vec::new();
         let mut baseline_keys = Vec::new();
-        gpu::DrawRecordCache::default()
+        DrawRecordCache::default()
             .encode(&original, 0, &mut baseline, &mut baseline_keys)
             .unwrap();
         for (logical, &physical) in first_map.iter().enumerate() {
