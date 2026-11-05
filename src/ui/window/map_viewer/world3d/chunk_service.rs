@@ -3222,7 +3222,21 @@ impl Worker {
             light.static_source_faces(templates)?
         } else {
             gpui_3d::VoxelMeshSource::new(
-                [3, 3, 3], Vec3::ZERO, vec![0u32; 27], Vec::new(),
+                [3, 3, 3],
+                {
+                    let min = templates.iter()
+                        .flat_map(|face| face.vertices.iter())
+                        .fold(Vec3::new(f32::MAX, f32::MAX, f32::MAX), |min, vertex| {
+                            min.min(vertex.position)
+                        });
+                    Vec3::new(
+                        min.x.floor() - 1.0,
+                        min.y.floor() - 1.0,
+                        min.z.floor() - 1.0,
+                    )
+                },
+                vec![0u32; 27],
+                Vec::new(),
             )
             .and_then(|source| source.with_static_faces(templates))
             .map_err(|error| format!("GPU 静态模型输入无效: {error}"))?
