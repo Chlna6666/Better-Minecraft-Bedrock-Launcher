@@ -449,6 +449,31 @@ impl Default for Material {
 }
 
 impl Material {
+    /// Compare all GPU-visible material properties without the allocation
+    /// identity. Workers recreate Material::new() while re-reading unchanged
+    /// Sections; their new MaterialId must not force regenerating resident
+    /// meshes or re-encoding GPU DrawParams. Texture references remain
+    /// identity-sensitive because a new texture requires a new GPU binding.
+    #[must_use]
+    pub fn render_content_eq(&self, other: &Self) -> bool {
+        self.surface == other.surface
+            && self.base_color == other.base_color
+            && self.metallic == other.metallic
+            && self.roughness == other.roughness
+            && self.emissive == other.emissive
+            && self.alpha_mode == other.alpha_mode
+            && self.alpha_cutoff == other.alpha_cutoff
+            && self.shading_model == other.shading_model
+            && self.double_sided == other.double_sided
+            && self.front_face == other.front_face
+            && self.albedo_texture == other.albedo_texture
+            && self.normal_texture == other.normal_texture
+            && self.occlusion_texture == other.occlusion_texture
+            && self.metallic_roughness_texture == other.metallic_roughness_texture
+            && self.pbr_texture_layout == other.pbr_texture_layout
+            && self.occlusion_strength == other.occlusion_strength
+    }
+
     /// Creates a white, non-metallic, medium-roughness material.
     pub fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -578,5 +603,25 @@ mod tests {
             TextureAsset::rgba8_mip_chain(1, 1, [vec![0; 4], vec![0; 4]]).unwrap_err(),
             TextureError::TooManyMipLevels
         );
+    }
+}
+
+#[cfg(test)]
+mod render_content_identity_tests {
+    use super::*;
+
+    #[test]
+    fn different_material_ids_with_same_gpu_state_are_equivalent() {
+        let original = Material::new();
+        let another = Material::new();
+        assert_ne!(original.id(), another.id());
+        assert_ne!(original, another);
+        assert!(original.render_content_eq(&another));
+        let mut changed = another.clone();
+        changed.base_color = [0.7, 0.8, 0.9, 1.0];
+        assert!(!original.render_content_eq(&changed));
+        let mut changed = another.clone();
+        changed.double_sided = true;
+        assert!(!original.render_content_eq(&changed));
     }
 }

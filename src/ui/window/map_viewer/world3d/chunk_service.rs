@@ -434,7 +434,12 @@ fn same_chunk_mesh_contents(left: &World3dChunkMesh, right: &World3dChunkMesh) -
         && left.faces == right.faces
         && left.triangles == right.triangles
         && left.missing_texture_faces == right.missing_texture_faces
-        && left.materials == right.materials
+        // A fresh Material::new() has a different ID even when its shader
+        // parameters and all texture bindings are bit-for-bit identical.
+        // Treat only actual visual changes as Section-content invalidation.
+        && left.materials.len() == right.materials.len()
+        && left.materials.iter().zip(right.materials.iter())
+            .all(|(a, b)| a.render_content_eq(b))
         && left.textures.iter().map(|texture| texture.id())
             .eq(right.textures.iter().map(|texture| texture.id()))
         && left.mesh.same_voxel_quad_geometry(&right.mesh)
@@ -450,7 +455,11 @@ fn reuse_section_gpu_mesh(
     if !same_chunk_mesh_contents(previous, updated) {
         return false;
     }
-    Arc::make_mut(updated).mesh = Arc::clone(&previous.mesh);
+    let resident = Arc::make_mut(updated);
+    resident.mesh = Arc::clone(&previous.mesh);
+    // Reuse immutable MaterialId snapshots as well: otherwise the newly
+    // allocated IDs would dirty DrawParams on every unchanged remesh.
+    resident.materials = Arc::clone(&previous.materials);
     true
 }
 
@@ -589,6 +598,11 @@ mod view_tests {
         assert!(!same_chunk_render_geometry(&original, &changed));
         let mut changed_material = (*same).clone();
         changed_material.materials = Arc::from([Arc::new(Material::new())]);
+        assert!(same_chunk_render_geometry(&original, &changed_material),
+            "new MaterialId alone must not invalidate resident GPU geometry");
+        let mut truly_changed = Material::new();
+        truly_changed.base_color = [0.25, 0.5, 0.75, 1.0];
+        changed_material.materials = Arc::from([Arc::new(truly_changed)]);
         assert!(!same_chunk_render_geometry(&original, &changed_material));
         let mut changed_occlusion = (*same).clone();
         changed_occlusion.occluders = Arc::from([gpui_3d::Occluder {
@@ -600,6 +614,7 @@ mod view_tests {
         let mut update = Arc::new(changed_occlusion);
         assert!(super::reuse_section_gpu_mesh(&original, &mut update));
         assert!(Arc::ptr_eq(&update.mesh, &original.mesh));
+        assert!(Arc::ptr_eq(&update.materials, &original.materials));
         assert_ne!(update.occluders, original.occluders);
         let other = build(1, quad);
         let mut published = std::collections::BTreeMap::from([
