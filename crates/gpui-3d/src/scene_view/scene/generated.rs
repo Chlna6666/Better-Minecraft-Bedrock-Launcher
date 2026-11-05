@@ -15,7 +15,42 @@ struct Update {
     source_size: usize,
     input: BufferId,
     entries: Vec<u32>,
+    patches: Vec<MappingPatch>,
+}
+
+/// One record-aligned dirty region in a persistent generated-draw mapping.
+/// The output Argument Buffer may change without touching this source mapping.
+struct MappingPatch {
+    offset: u64,
     bytes: Vec<u8>,
+}
+
+/// Build bounded, record-aligned uploads without materializing the entire
+/// logical mapping as a byte vector. Four u32 words describe each draw; a
+/// changed output buffer does not invalidate unchanged GPU input mapping data.
+fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
+    debug_assert!(current.len().is_multiple_of(4));
+    // Compare full 16-byte mapping records, not their individual words.
+    // Exact sequence equality is checked by the common dirty-range planner.
+    // Coalesce short gaps; cap scatter uploads to avoid excessive driver calls.
+    let previous_records = previous.chunks_exact(4).map(|r| [r[0], r[1], r[2], r[3]])
+        .collect::<Vec<_>>();
+    let current_records = current.chunks_exact(4).map(|r| [r[0], r[1], r[2], r[3]])
+        .collect::<Vec<_>>();
+    super::super::uploads::changed_ranges_for_keys(
+        &previous_records,
+        &current_records,
+        previous.len() * 4,
+        16,
+        12,
+        2,
+    ).into_iter().map(|range| {
+        let mut bytes = Vec::with_capacity(range.len());
+        for &word in &current[range.start / 4..range.end / 4] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        MappingPatch { offset: range.start as u64, bytes }
+    }).collect()
 }
 
 impl SceneResources {
@@ -118,13 +153,19 @@ impl SceneResources {
                 }
             }
             let input = self.generated_mappings[&source].buffer;
-            let bytes = entries.iter().flat_map(|v| v.to_le_bytes()).collect();
+            // `output` can change on capacity growth even when the source
+            // mapping is bit-for-bit identical. Re-dispatch the kernel but do
+            // not re-upload the already resident input buffer in that case.
+            let patches = mapping_patches(
+                &self.generated_mappings[&source].entries,
+                &entries,
+            );
             updates.push(Update {
                 source,
                 source_size,
                 input,
                 entries,
-                bytes,
+                patches,
             });
         }
         if updates.is_empty() {
@@ -132,15 +173,19 @@ impl SceneResources {
         }
         let writes = updates
             .iter()
-            .map(|update| gfx_core::BufferWrite {
-                descriptor: gfx_core::BufferWriteDescriptor {
-                    buffer: update.input,
-                    offset: 0,
-                },
-                data: &update.bytes,
+            .flat_map(|update| {
+                update.patches.iter().map(move |patch| gfx_core::BufferWrite {
+                    descriptor: gfx_core::BufferWriteDescriptor {
+                        buffer: update.input,
+                        offset: patch.offset,
+                    },
+                    data: patch.bytes.as_slice(),
+                })
             })
             .collect::<Vec<_>>();
-        device.write_buffer_batch(&writes)?;
+        if !writes.is_empty() {
+            device.write_buffer_batch(&writes)?;
+        }
         let bindings = updates
             .iter()
             .map(|update| {
@@ -152,7 +197,7 @@ impl SceneResources {
                     ),
                     (
                         update.input,
-                        update.bytes.len(),
+                        update.entries.len() * 4,
                         ComputeBufferAccess::ReadOnly,
                     ),
                     (output, capacity * 16, ComputeBufferAccess::ReadWrite),
@@ -361,5 +406,56 @@ mod tests {
         resources.sync_generated_draws(&mut device, true).unwrap();
         assert!(resources.generated_mappings.is_empty());
         resources.destroy(&mut device).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod mapping_patch_tests {
+    use super::mapping_patches;
+
+    fn materialize(previous: &[u32], next: &[u32]) -> (Vec<u32>, usize) {
+        let patches = mapping_patches(previous, next);
+        let mut bytes = previous.iter().flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
+        bytes.resize(next.len() * 4, 0);
+        for patch in &patches {
+            let from = patch.offset as usize;
+            bytes[from..from + patch.bytes.len()].copy_from_slice(&patch.bytes);
+        }
+        (
+            bytes.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect::<Vec<_>>(),
+            patches.len(),
+        )
+    }
+
+    #[test]
+    fn output_reallocation_does_not_reupload_unchanged_input_mapping() {
+        let map = [0, 3, 8, 0, 1, 9, 11, 0];
+        let (bytes, writes) = materialize(&map, &map);
+        assert_eq!(bytes, map);
+        assert_eq!(writes, 0);
+    }
+
+    #[test]
+    fn sparse_mapping_changes_upload_only_affected_draw_records() {
+        let previous = (0..512u32).collect::<Vec<_>>();
+        let mut updated = previous.clone();
+        updated[40] ^= 0x20;
+        updated[360] ^= 0x40;
+        let patches = mapping_patches(&previous, &updated);
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches.iter().map(|p| p.bytes.len()).sum::<usize>(), 32);
+        assert_eq!(materialize(&previous, &updated).0, updated);
+    }
+
+    #[test]
+    fn appended_and_removed_mapping_entries_keep_exact_live_prefix() {
+        let old = (0..48u32).collect::<Vec<_>>();
+        let appended = (0..80u32).collect::<Vec<_>>();
+        assert_eq!(materialize(&old, &appended).0, appended);
+        let (truncated, writes) = materialize(&old, &old[..28]);
+        assert_eq!(truncated, old[..28]);
+        assert_eq!(writes, 0, "retired suffix does not need a GPU upload");
     }
 }
