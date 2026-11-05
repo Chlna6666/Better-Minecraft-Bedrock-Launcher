@@ -70,8 +70,12 @@ fn main() {
             Shader::new("hiz")
                 .wgsl_file("src/scene_view/hiz.wgsl")
                 .entry("cs_hiz_clear", ShaderStage::Compute)
-                .entry("cs_hiz_raster", ShaderStage::Compute)
-                .entry("cs_shadow_raster", ShaderStage::Compute)
+                .entry("cs_hiz_raster_32", ShaderStage::Compute)
+                .entry("cs_shadow_raster_32", ShaderStage::Compute)
+                .entry("cs_hiz_raster_64", ShaderStage::Compute)
+                .entry("cs_shadow_raster_64", ShaderStage::Compute)
+                .entry("cs_hiz_raster_128", ShaderStage::Compute)
+                .entry("cs_shadow_raster_128", ShaderStage::Compute)
                 .entry("cs_hiz_reduce", ShaderStage::Compute),
         )
         .shader(

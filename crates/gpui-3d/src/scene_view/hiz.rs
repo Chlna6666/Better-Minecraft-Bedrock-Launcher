@@ -10,7 +10,9 @@ pub(super) struct HiZ {
     pub(super) depths: BufferId,
     boxes: BufferId,
     levels: BufferId,
-    shaders: [ShaderModuleId; 3],
+    shaders: [ShaderModuleId; 5],
+    // Selected from projected occluder coverage; Shader variants are compiled at build time.
+    raster_threads: u32,
     count: usize,
     clear_pending: bool,
     selection_eye: Option<Vec3>,
@@ -68,11 +70,9 @@ impl HiZ {
             }
             for entry in [
                 "cs_hiz_clear",
-                if shadow {
-                    "cs_shadow_raster"
-                } else {
-                    "cs_hiz_raster"
-                },
+                if shadow { "cs_shadow_raster_32" } else { "cs_hiz_raster_32" },
+                if shadow { "cs_shadow_raster_64" } else { "cs_hiz_raster_64" },
+                if shadow { "cs_shadow_raster_128" } else { "cs_hiz_raster_128" },
                 "cs_hiz_reduce",
             ] {
                 shaders.push(super::generated::create_shader(device, backend, entry)?);
@@ -109,6 +109,7 @@ impl HiZ {
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("missing Hi-Z shaders"))?,
             count: 0,
+            raster_threads: 64,
             clear_pending: false,
             selection_eye: None,
             words,
@@ -142,6 +143,26 @@ impl HiZ {
             bounds.truncate(self.max_boxes);
         }
         let count = bounds.len();
+        // Estimate tile cost from occluder footprint, not just box count. Shadow
+        // uses a 96-unit orthographic view; perspective Hi-Z uses distance to the
+        // nearest point on the AABB as a conservative cost proxy. No GPU readback.
+        let mut coverage_sum = 0.0_f32;
+        for b in &bounds {
+            let extent = b.bounds.max - b.bounds.min;
+            let span = extent.x.max(extent.y).max(extent.z).max(0.0);
+            let denominator = if self.shadow {
+                96.0_f32 * 96.0
+            } else {
+                (eye.max(b.bounds.min).min(b.bounds.max) - eye)
+                    .length_squared().max(1.0)
+            };
+            coverage_sum += (span * span / denominator).min(1.0);
+        }
+        self.raster_threads = if count == 0 {
+            64
+        } else {
+            choose_raster_threads(coverage_sum / count as f32)
+        };
         let mut bytes = encode_header(count, forward).to_vec();
         bytes.reserve(count * 32);
         for b in bounds {
@@ -208,7 +229,7 @@ impl HiZ {
             depth,
         ];
         device.dispatch_compute(&ComputeDispatch {
-            shader: self.shaders[1],
+            shader: self.shaders[match self.raster_threads { 32 => 1, 128 => 3, _ => 2 }],
             bindings: &raster,
             workgroups: [(self.count * 6) as u32, 1, 1],
         })?;
@@ -225,7 +246,7 @@ impl HiZ {
                 ),
             ];
             device.dispatch_compute(&ComputeDispatch {
-                shader: self.shaders[2],
+                shader: self.shaders[4],
                 bindings: &bindings,
                 workgroups: [(size * size).div_ceil(64), 1, 1],
             })?;
@@ -274,3 +295,26 @@ fn binding(
         access,
     }
 }
+
+// This is an inexpensive workload heuristic, not a claim of optimal hardware
+// occupancy. The 32/64/128 variants stay below Vulkan's guaranteed minimum
+// 128 invocations/workgroup; backend-specific wave widths are not yet exposed.
+fn choose_raster_threads(mean_coverage: f32) -> u32 {
+    if !mean_coverage.is_finite() { return 64; }
+    if mean_coverage < 0.0025 { 32 }
+    else if mean_coverage < 0.04 { 64 }
+    else { 128 }
+ }
+
+#[cfg(test)]
+mod adaptive_raster_tests {
+    use super::choose_raster_threads;
+
+    #[test]
+    fn picks_safe_precompiled_sizes_for_estimated_pixel_cost() {
+        assert_eq!(choose_raster_threads(0.0001), 32);
+        assert_eq!(choose_raster_threads(0.01), 64);
+        assert_eq!(choose_raster_threads(0.25), 128);
+        assert_eq!(choose_raster_threads(f32::NAN), 64);
+    }
+ }

@@ -18,25 +18,47 @@ fn inside(a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,d:vec2<f32>,p:vec2<f32>)->bool {
 fn cs_hiz_clear(@builtin(global_invocation_id) id:vec3<u32>) {
     if(id.x<arrayLength(&depths)){atomicStore(&depths[id.x],bitcast<u32>(1.0));}
 }
-@compute @workgroup_size(64)
-fn cs_hiz_raster(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    raster_box(group,lane,false);
+// The host selects one precompiled variant: no runtime Shader compilation.
+@compute @workgroup_size(32)
+fn cs_hiz_raster_32(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,false,32u);
 }
+// The host selects one precompiled variant: no runtime Shader compilation.
+@compute @workgroup_size(32)
+fn cs_shadow_raster_32(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,true,32u);
+}
+// The host selects one precompiled variant: no runtime Shader compilation.
 @compute @workgroup_size(64)
-fn cs_shadow_raster(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    raster_box(group,lane,true);
+fn cs_hiz_raster_64(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,false,64u);
+}
+// The host selects one precompiled variant: no runtime Shader compilation.
+@compute @workgroup_size(64)
+fn cs_shadow_raster_64(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,true,64u);
+}
+// The host selects one precompiled variant: no runtime Shader compilation.
+@compute @workgroup_size(128)
+fn cs_hiz_raster_128(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,false,128u);
+}
+// The host selects one precompiled variant: no runtime Shader compilation.
+@compute @workgroup_size(128)
+fn cs_shadow_raster_128(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    raster_box(group,lane,true,128u);
 }
 
- // Eight bounding-box projections are identical in all 64 invocations of a face
- // workgroup. Share one projection/clip test, then rasterize tiles in parallel.
- // This also preserves the old rule that *all eight* corners must pass clip.
+// Eight bounding-box projections are shared across all invocations of a face
+// workgroup. Share one projection/clip test, then rasterize tiles in parallel.
+// This also preserves the old rule that *all eight* corners must pass clip.
 var<workgroup> raster_quad: array<vec3<f32>, 4>;
 var<workgroup> raster_lower: vec2<u32>;
 var<workgroup> raster_upper: vec2<u32>;
 var<workgroup> raster_depth: u32;
 var<workgroup> raster_ready: u32;
 
- fn raster_box(group:vec3<u32>,lane:u32,shadow:bool) {
+fn raster_box(group:vec3<u32>,lane:u32,shadow:bool,lane_count:u32) {
     let dimension=select(128u,512u,shadow);
     if(lane==0u){
         raster_ready=0u;
@@ -85,7 +107,7 @@ var<workgroup> raster_ready: u32;
             }
         }
     }
-    // No storage-dependent return may bypass this barrier: all 64 lanes
+    // No storage-dependent return may bypass this barrier: all lanes
     // participate even when the face is masked, clipped or out of range.
     workgroupBarrier();
     if(raster_ready==0u){return;}
@@ -96,7 +118,7 @@ var<workgroup> raster_ready: u32;
     let count=width*(hi.y-lo.y);
     var area=0.0;
     if(shadow){area=edge(a.xy,b.xy,c.xy);}
-    for(var i=lane;i<count;i+=64u){
+    for(var i=lane;i<count;i+=lane_count){
         let tile=lo+vec2<u32>(i%width,i/width);
         let q=vec2<f32>(tile);
         if(shadow){
