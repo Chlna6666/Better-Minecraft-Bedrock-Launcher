@@ -10,7 +10,7 @@ pub(super) struct HiZ {
     pub(super) depths: BufferId,
     boxes: BufferId,
     levels: BufferId,
-    shaders: [ShaderModuleId; 5],
+    shaders: [Option<ShaderModuleId>; 5],
     // Selected from projected occluder coverage; Shader variants are compiled at build time.
     raster_threads: u32,
     compute_caps: ComputeCapabilities,
@@ -50,6 +50,12 @@ impl HiZ {
         // variants supported by this device, never the largest reported size.
         let compute_caps = device.compute_capabilities();
         let profiles = raster_profiles();
+        // Clear/reduce still use 64 threads, regardless of raster variant.
+        // Reject unsupported compute up front instead of creating invalid
+        // shader modules. Raster variants are independently capability-gated.
+        if !compute_caps.supports_kernel(ComputeKernelProfile::one_dimensional(64)) {
+            return Err(anyhow::anyhow!("Hi-Z requires a 64-thread compute workgroup"));
+        }
         let default_variant = compute_caps.select_precompiled_kernel(&profiles, 64)
             .ok_or_else(|| anyhow::anyhow!("no supported Hi-Z raster workgroup"))?;
         let words = if shadow { 512 * 512 } else { WORDS };
@@ -75,14 +81,22 @@ impl HiZ {
                     memory_location: super::gpu::buffer_memory_location(backend),
                 })?);
             }
-            for entry in [
+            for (index, entry) in [
                 "cs_hiz_clear",
                 if shadow { "cs_shadow_raster_32" } else { "cs_hiz_raster_32" },
                 if shadow { "cs_shadow_raster_64" } else { "cs_hiz_raster_64" },
                 if shadow { "cs_shadow_raster_128" } else { "cs_hiz_raster_128" },
                 "cs_hiz_reduce",
-            ] {
-                shaders.push(super::generated::create_shader(device, backend, entry)?);
+            ].into_iter().enumerate() {
+                let supported = match index {
+                    0 | 4 => true, // fixed 64-thread kernels were validated above
+                    raster => compute_caps.supports_kernel(profiles[raster - 1]),
+                };
+                shaders.push(if supported {
+                    Some(super::generated::create_shader(device, backend, entry)?)
+                } else {
+                    None
+                });
             }
             device.write_buffer(
                 buffers[0],
@@ -100,7 +114,7 @@ impl HiZ {
             Ok(())
         })();
         if let Err(error) = result {
-            for shader in shaders {
+            for shader in shaders.into_iter().flatten() {
                 let _ = device.destroy_shader_module(shader);
             }
             for buffer in buffers {
@@ -212,7 +226,8 @@ impl HiZ {
             ComputeBufferAccess::ReadWrite,
         );
         device.dispatch_compute(&ComputeDispatch {
-            shader: self.shaders[0],
+            shader: self.shaders[0]
+                .ok_or_else(|| anyhow::anyhow!("Hi-Z clear shader is unavailable"))?,
             bindings: &[depth],
             workgroups: [(self.words as u32).div_ceil(64), 1, 1],
         })?;
@@ -238,7 +253,8 @@ impl HiZ {
             depth,
         ];
         device.dispatch_compute(&ComputeDispatch {
-            shader: self.shaders[match self.raster_threads { 32 => 1, 128 => 3, _ => 2 }],
+            shader: self.shaders[match self.raster_threads { 32 => 1, 128 => 3, _ => 2 }]
+                .ok_or_else(|| anyhow::anyhow!("selected Hi-Z raster shader is unavailable"))?,
             bindings: &raster,
             workgroups: [(self.count * 6) as u32, 1, 1],
         })?;
@@ -255,7 +271,8 @@ impl HiZ {
                 ),
             ];
             device.dispatch_compute(&ComputeDispatch {
-                shader: self.shaders[4],
+                shader: self.shaders[4]
+                    .ok_or_else(|| anyhow::anyhow!("Hi-Z reduction shader is unavailable"))?,
                 bindings: &bindings,
                 workgroups: [(size * size).div_ceil(64), 1, 1],
             })?;
@@ -264,7 +281,7 @@ impl HiZ {
     }
 
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        for shader in self.shaders {
+        for shader in self.shaders.into_iter().flatten() {
             device.destroy_shader_module(shader)?;
         }
         for buffer in [self.depths, self.boxes, self.levels] {
@@ -344,5 +361,7 @@ mod adaptive_raster_tests {
         };
         assert_eq!(caps.select_precompiled_kernel(&profiles, 128), Some(1));
         assert_eq!(caps.select_precompiled_kernel(&profiles, 32), Some(0));
+        assert!(!caps.supports_kernel(profiles[2]),
+            "128-thread shader must not be created on a 64-thread device");
     }
  }
