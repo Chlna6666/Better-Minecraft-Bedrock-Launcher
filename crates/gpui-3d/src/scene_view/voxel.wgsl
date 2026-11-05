@@ -130,9 +130,9 @@ fn corner_cell_light(cell:u32,delta:i32,local:vec3<f32>)->vec2<f32> {
 
 fn quad_coordinates(corner:u32)->vec2<f32> {return array<vec2<f32>,4>(vec2<f32>(0.0),vec2<f32>(1.0,0.0),vec2<f32>(1.0),vec2<f32>(0.0,1.0))[corner];}
 
-fn quad_normal(a:vec3<f32>,b:vec3<f32>,c:vec3<f32>,instance:u32)->vec3<f32> {
-    let x=(instances[instance].model*vec4<f32>(b-a,0.0)).xyz;
-    let y=(instances[instance].model*vec4<f32>(c-a,0.0)).xyz;
+fn quad_normal(a:vec3<f32>,b:vec3<f32>,c:vec3<f32>,model:mat4x4<f32>)->vec3<f32> {
+    let x=(model*vec4<f32>(b-a,0.0)).xyz;
+    let y=(model*vec4<f32>(c-a,0.0)).xyz;
     let n=cross(x,y);return n/max(length(n),0.00001);
 }
 
@@ -141,7 +141,8 @@ fn template_position(v:VoxelVertex,height:f32)->vec3<f32> {return vec3<f32>(v.po
 @vertex
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
     let physical_slot = draw_slot_indices[instance_index];
-    let base=instances[physical_slot].vertex_base & 0x7fffffffu;
+    let instance = instances[physical_slot];
+    let base=instance.vertex_base & 0x7fffffffu;
     let descriptor=generated_faces[base+index/6u];
     let corners=array<u32,6>(0u,1u,2u,0u,2u,3u);
     var vertex=generated_templates.faces[descriptor.model_face].vertices[corners[index%6u]];
@@ -153,12 +154,12 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     vertex.position_x+=position.x;
     vertex.position_y=vertex.position_y*descriptor.height+position.y;
     vertex.position_z+=position.z;
-    var shaded=shade_voxel_value(vertex,physical_slot);
+    var shaded=shade_voxel_value(vertex,instance,physical_slot);
     let face=generated_templates.faces[descriptor.model_face];
     let a=template_position(face.vertices[0],descriptor.height);
     let b=template_position(face.vertices[1],descriptor.height);
     let c=template_position(face.vertices[2],descriptor.height);
-    if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,physical_slot);}
+    if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance.model);}
     shaded.quad_uv=quad_coordinates(corners[index%6u]);
     if(frame.voxel_settings.y!=1.0 && generated_templates.size.w!=0u){
         var light=vec2<f32>(0.0);
@@ -188,7 +189,8 @@ fn vs_voxel(
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VoxelOutput {
-    return shade_voxel(vertex_index, draw_slot_indices[instance_index]);
+    let slot = draw_slot_indices[instance_index];
+    return shade_voxel(vertex_index, slot, instances[slot]);
 }
 
 @vertex
@@ -198,23 +200,27 @@ fn vs_voxel_gpu(@builtin(vertex_index) vertex_index: u32,
     // quad batches reserve this bit and consume the compute-compacted instance list.
     // Every slot within a quad batch has that bit set before compaction.
     let direct_slot = draw_slot_indices[visible_index];
-    if ((instances[direct_slot].vertex_base & 0x80000000u) == 0u) {
-        return shade_voxel(vertex_index, direct_slot);
+    let direct_instance = instances[direct_slot];
+    if ((direct_instance.vertex_base & 0x80000000u) == 0u) {
+        return shade_voxel(vertex_index, direct_slot, direct_instance);
     }
     let instance_index = draw_slot_indices[visible_instances[visible_index]];
+    let instance = instances[instance_index];
     // normal_matrix is unused by the unlit voxel shader; its first word carries
     // the real vertex count for variable-size parts in a shared indirect batch.
-    let vertex_count = bitcast<u32>(instances[instance_index].normal_matrix[0].x);
+    let vertex_count = bitcast<u32>(instance.normal_matrix[0].x);
     if (vertex_index >= vertex_count) {
         var clipped: VoxelOutput;
         clipped.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return clipped;
     }
-    return shade_voxel(vertex_index, instance_index);
+    return shade_voxel(vertex_index, instance_index, instance);
 }
 
-fn shade_voxel(vertex_index: u32, instance_index: u32) -> VoxelOutput {
-    let instance = instances[instance_index];
+// Forward one loaded physical instance to vertex expansion, transform and
+// normal calculation. Indirect batches previously fetched the same 144-byte
+// instance row separately for vertex count, base address and transformation.
+fn shade_voxel(vertex_index: u32, instance_index: u32, instance:Instance) -> VoxelOutput {
     let quad_expansion = (instance.vertex_base & 0x80000000u) != 0u;
     let base = instance.vertex_base & 0x7fffffffu;
     let corners = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
@@ -224,17 +230,16 @@ fn shade_voxel(vertex_index: u32, instance_index: u32) -> VoxelOutput {
         quad_expansion,
     );
     let vertex = vertices[local_vertex + base];
-    var shaded=shade_voxel_value(vertex,instance_index);
+    var shaded=shade_voxel_value(vertex,instance,instance_index);
     shaded.quad_uv=quad_coordinates(local_vertex%4u);
     if(quad_expansion && frame.voxel_settings.y==2.0){
         let q=local_vertex/4u*4u+base;
-        shaded.surface_normal=quad_normal(template_position(vertices[q],1.0),template_position(vertices[q+1u],1.0),template_position(vertices[q+2u],1.0),instance_index);
+        shaded.surface_normal=quad_normal(template_position(vertices[q],1.0),template_position(vertices[q+1u],1.0),template_position(vertices[q+2u],1.0),instance.model);
     }
     return shaded;
 }
 
-fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
-    let instance=instances[instance_index];
+fn shade_voxel_value(vertex:VoxelVertex,instance:Instance,instance_index:u32)->VoxelOutput {
     let world_position = instance.model * vec4<f32>(
         vertex.position_x, vertex.position_y, vertex.position_z, 1.0,
     );
@@ -305,8 +310,10 @@ fn element_bounds_coverage(screen_position: vec2<f32>) -> f32 {
     return clamp(edge_distance_pixels / frame.blend_edge_feather_px, 0.0, 1.0);
 }
 
-fn voxel_color(input:VoxelOutput)->vec4<f32> {
-    let draw = draws[input.draw_index];
+// Material parameters are fetched once at each fragment entry point and
+// threaded through alpha, material, lighting and capture helpers. Otherwise
+// nested helpers can each independently load the same 80-byte DrawParams row.
+fn voxel_color(input:VoxelOutput,draw:DrawParams)->vec4<f32> {
     var color = draw.base_color * input.vertex_color;
     if (frame.voxel_settings.x==0.0 && (draw.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u) {
         var texel=vec4<f32>(1.0);
@@ -320,8 +327,8 @@ fn voxel_color(input:VoxelOutput)->vec4<f32> {
     }
     return color;
 }
-fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
-    let draw=draws[input.draw_index];let color=voxel_color(input);
+fn voxel_fragment(input:VoxelOutput,draw:DrawParams)->vec4<f32> {
+    let color=voxel_color(input,draw);
     let alpha = clamp(color.a, 0.0, 1.0);
     if (draw.alpha_mode == ALPHA_MODE_MASK && alpha < draw.alpha_cutoff) {
         discard;
@@ -348,14 +355,16 @@ fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
     }
     return vec4<f32>(rgb, 1.0);
 }
-@fragment fn fs_voxel(input:VoxelOutput)->@location(0) vec4<f32>{return voxel_fragment(input);}
+@fragment fn fs_voxel(input:VoxelOutput)->@location(0) vec4<f32>{
+    return voxel_fragment(input,draws[input.draw_index]);
+}
 @fragment fn fs_voxel_capture(input:VoxelOutput)->@location(0) vec4<f32>{
     let draw=draws[input.draw_index];
     if(draw.alpha_mode==ALPHA_MODE_BLEND && (draw.texture_flags&192u)!=0u){discard;}
-    return voxel_fragment(input);
+    return voxel_fragment(input,draw);
 }
-fn test_voxel_alpha(input:VoxelOutput)->vec4<f32> {
-    let color=voxel_color(input);let draw=draws[input.draw_index];
+fn test_voxel_alpha(input:VoxelOutput,draw:DrawParams)->vec4<f32> {
+    let color=voxel_color(input,draw);
     if(draw.alpha_mode==ALPHA_MODE_MASK && color.a<draw.alpha_cutoff || color.a<0.001){discard;}
     return color;
 }
@@ -364,7 +373,9 @@ fn encode_normal(n:vec3<f32>)->vec2<f32>{
     return select(p.xy,(vec2<f32>(1.0)-abs(p.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),p.xy>=vec2<f32>(0.0)),p.z<0.0);
 }
 @fragment fn fs_voxel_surface(input:VoxelOutput)->@location(0) vec4<f32>{
-    let color=test_voxel_alpha(input);let draw=draws[input.draw_index];var roughness=draw.roughness;var metallic=draw.metallic;
+    let draw=draws[input.draw_index];
+    let color=test_voxel_alpha(input,draw);
+    var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){let p=textureSample(material_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
     // Coverage does not imply transmission: ordinary alpha-blended surfaces stay diffuse.
     let blended=draw.alpha_mode==ALPHA_MODE_BLEND;
@@ -374,11 +385,13 @@ fn encode_normal(n:vec3<f32>)->vec2<f32>{
     return vec4<f32>(encode_normal(surface_normal(input,draw)),clamp(roughness,0.06,1.0),kind);
 }
 @fragment fn fs_voxel_albedo(input:VoxelOutput)->@location(0) vec4<f32>{
-    let color=test_voxel_alpha(input);
+    let draw=draws[input.draw_index];
+    let color=test_voxel_alpha(input,draw);
     let base=select(color.rgb,srgb_linear(color.rgb),frame.sun_color.w>0.5);
     return vec4<f32>(base,clamp(color.a,0.0,1.0));
 }
 @fragment fn fs_voxel_shadow(input:VoxelOutput)->@location(0) vec4<f32>{
-    if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}
-    let color=test_voxel_alpha(input);return vec4<f32>(1.0);
+    let draw=draws[input.draw_index];
+    if(draw.alpha_mode==ALPHA_MODE_BLEND){discard;}
+    let color=test_voxel_alpha(input,draw);return vec4<f32>(1.0);
 }
