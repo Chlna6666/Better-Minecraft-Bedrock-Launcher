@@ -3350,7 +3350,8 @@ impl Worker {
                     .or_insert_with(|| auxiliary.clone());
             }
             let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
-            if !gpu_source && alpha_mode == AlphaMode::Opaque
+            if (!gpu_source || template_local_faces == 0)
+                && alpha_mode == AlphaMode::Opaque
                 && let Some(proxy) = occluders::face_proxy_with_template_origin(
                     face,
                     origin,
@@ -3465,7 +3466,10 @@ impl Worker {
             .map_err(|error| format!("构造 GPU Section 元数据失败: {error}"))?
             .with_identity(chunk_mesh_id(pos, section_y), self.mesh_generation);
             return Ok(Some(World3dChunkMesh {
-                occluders: Arc::from([]),
+                // Detail-only GPU Sections retain the same opaque occluder
+                // proxies as the legacy CPU Mesh path. Cube-grid Sections
+                // replace these with optimized occluder boxes afterwards.
+                occluders: occluders::merge_boxes(opaque_proxies),
                 pos,
                 section_y,
                 origin,
