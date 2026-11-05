@@ -6,7 +6,7 @@ use super::{
     VOXEL_VERTEX_STRIDE,
 };
 use crate::{
-    AlphaMode, Camera, Mat4, Mesh, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
+    AlphaMode, Camera, Mat4, MaterialId, Mesh, NodeId, PreparedDraw, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
     TextureColorSpace, TriangleEdgeMask, Vertex,
 };
 use anyhow::{Context as _, anyhow};
@@ -19,7 +19,7 @@ use gfx_core::{
 };
 use gpui::Bounds;
 use gpui::ExtensionDevice;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::TryFrom;
 
 const ALPHA_MODE_OPAQUE: u32 = 0;
@@ -1031,6 +1031,55 @@ pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     encode_draw_records(&scene.draws, scene.lights.len())
 }
 
+/// Retained immutable draw parameter records. A large streamed world can render
+/// thousands of draws sharing the same material; their 80-byte GPU parameters
+/// need not be rebuilt from the material's fields for every draw on every delta.
+#[derive(Default)]
+pub(super) struct DrawRecordCache {
+    light_count: Option<u32>,
+    records: HashMap<(MaterialId, bool), [u8; DRAW_PARAMS_STRIDE as usize]>,
+}
+
+impl DrawRecordCache {
+    pub(super) fn encode(
+        &mut self,
+        draws: &[PreparedDraw],
+        lights: usize,
+        bytes: &mut Vec<u8>,
+    ) -> gpui::Result<()> {
+        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
+        if self.light_count != Some(light_count) {
+            self.records.clear();
+            self.light_count = Some(light_count);
+        }
+        let stride = DRAW_PARAMS_STRIDE as usize;
+        bytes.clear();
+        bytes.reserve(draws.len().max(1).saturating_mul(stride));
+        for draw in draws {
+            let key = (draw.material.id(), draw.mesh.uses_uv_regions());
+            if let Some(record) = self.records.get(&key) {
+                bytes.extend_from_slice(record);
+                continue;
+            }
+            let start = bytes.len();
+            encode_draw_record(draw, light_count, bytes, stride)?;
+            let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
+                .try_into()
+                .expect("draw encoder must write exactly one aligned record");
+            // Material and mesh are immutable; the UV-coverage bit is part of
+            // the key. All remaining fields depend only on the material and
+            // global light count. Never cache unbounded historical material IDs.
+            if self.records.len() < 8192 {
+                self.records.insert(key, record);
+            }
+        }
+        if draws.is_empty() {
+            bytes.resize(stride, 0);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn encode_draws_into(scene: &PreparedScene, bytes: &mut Vec<u8>) -> gpui::Result<()> {
     encode_draw_records_into(&scene.draws, scene.lights.len(), bytes)
 }
@@ -1161,11 +1210,22 @@ pub(super) fn encode_instance_records(
     bytes: &mut Vec<u8>,
 ) -> gpui::Result<()> {
     let start_len = bytes.len();
+    // A streamed section commonly emits many material parts from one node.
+    // Matrix inversion is independent of the material part, so compute it only
+    // once per node/world transform for each table encode.
+    let mut inverses = HashMap::<NodeId, (Mat4, Mat4)>::new();
     for draw in draws {
-        let inverse = draw
-            .world
-            .inverse()
-            .ok_or_else(|| anyhow!("GPUI 3D draw has a singular world transform"))?;
+        let inverse = match inverses.get(&draw.node) {
+            Some((world, inverse)) if *world == draw.world => *inverse,
+            _ => {
+                let inverse = draw
+                    .world
+                    .inverse()
+                    .ok_or_else(|| anyhow!("GPUI 3D draw has a singular world transform"))?;
+                inverses.insert(draw.node, (draw.world, inverse));
+                inverse
+            }
+        };
         write_matrix(bytes, draw.world.columns());
         write_matrix(bytes, transpose(inverse).columns());
         write_vec4(
@@ -1323,6 +1383,54 @@ mod tests {
         encode_voxel_mesh,
     };
     use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn cached_draw_records_match_full_encoder_across_light_counts() {
+        let mut scene = Scene::new();
+        scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        ).unwrap();
+        let repeated = [prepared.draws[0].clone(), prepared.draws[0].clone()];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        for light_count in [0, 0, 2, 2, 0] {
+            cache.encode(&repeated, light_count, &mut bytes).unwrap();
+            assert_eq!(bytes, super::encode_draw_records(&repeated, light_count).unwrap());
+        }
+        cache.encode(&[], 0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0; super::DRAW_PARAMS_STRIDE as usize]);
+    }
+
+    #[test]
+    fn repeated_node_instance_transform_matches_individual_encoding() {
+        let mut scene = Scene::new();
+        scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        ).unwrap();
+        let mut repeated = vec![prepared.draws[0].clone(); 4];
+        let mut shifted = repeated[0].clone();
+        shifted.world = crate::Transform {
+            translation: Vec3::new(8.0, 1.0, -3.0),
+            ..crate::Transform::IDENTITY
+        }.matrix();
+        repeated.push(shifted);
+        let mut expected = Vec::new();
+        for draw in &repeated {
+            let inverse = draw.world.inverse().unwrap();
+            super::write_matrix(&mut expected, draw.world.columns());
+            super::write_matrix(&mut expected, super::transpose(inverse).columns());
+            super::write_vec4(&mut expected, [draw.pixel_offset.x, draw.pixel_offset.y, draw.depth_bias, 0.0]);
+        }
+        let mut actual = Vec::new();
+        super::encode_instance_records(&repeated, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn draw_encoding_reuses_staging_capacity() {

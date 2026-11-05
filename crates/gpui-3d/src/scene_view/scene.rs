@@ -4,7 +4,7 @@ use super::{
     gpu::{
         DrawBindingResources, MeshArena, MeshResources, PendingMeshUpload, TextureResources,
         buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set, create_mesh,
-        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, encode_draws_into,
+        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, DrawRecordCache,
         encode_frame_params, encode_lights_into, grow_capacity,
     },
     projection::FrameProjection,
@@ -65,6 +65,7 @@ pub(super) struct SceneResources {
     light_pass: Option<light_pass::LightPass>,
     uploaded_tables: [Vec<u8>; 3],
     scratch_tables: [Vec<u8>; 3],
+    draw_record_cache: DrawRecordCache,
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
     retired_meshes: Vec<MeshResources>,
@@ -260,6 +261,7 @@ impl SceneResources {
             light_pass: None,
             uploaded_tables: Default::default(),
             scratch_tables: Default::default(),
+            draw_record_cache: DrawRecordCache::default(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
             retired_meshes: Vec::new(),
@@ -762,7 +764,11 @@ impl SceneResources {
         let replace_lights = next_light_capacity != self.light_capacity;
         let [mut draw_bytes, mut instance_bytes, mut light_bytes] =
             std::mem::take(&mut self.scratch_tables);
-        encode_draws_into(&self.prepared, &mut draw_bytes)?;
+        self.draw_record_cache.encode(
+            &self.prepared.draws,
+            self.prepared.lights.len(),
+            &mut draw_bytes,
+        )?;
         self.encode_draw_instances(&self.prepared.draws, voxel_shader, &mut instance_bytes)?;
         light_bytes.clear();
         light_bytes.reserve(
