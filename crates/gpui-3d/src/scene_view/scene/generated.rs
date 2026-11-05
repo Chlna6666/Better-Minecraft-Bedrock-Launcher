@@ -8,6 +8,9 @@ pub(super) struct Mapping {
     pub buffer: BufferId,
     capacity: usize,
     entries: Vec<u32>,
+    // Recycled staging vector for the next Scene/Section publication.
+    // Keep the last committed entries immutable for dirty-range comparison.
+    scratch_entries: Vec<u32>,
     output: Option<BufferId>,
 }
 struct Update {
@@ -68,9 +71,17 @@ impl SceneResources {
             };
             let part = generated_part_index(draw.mesh.parts(), draw.part)
                 .ok_or_else(|| anyhow!("missing generated material part"))?;
-            let (_, mapping) = groups
-                .entry(generated.arguments)
-                .or_insert_with(|| (draw.mesh.parts().len() * 16, Vec::new()));
+            let (_, mapping) = match groups.entry(generated.arguments) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut scratch = self.generated_mappings
+                        .get_mut(&generated.arguments)
+                        .map(|mapping| std::mem::take(&mut mapping.scratch_entries))
+                        .unwrap_or_default();
+                    scratch.clear();
+                    entry.insert((draw.mesh.parts().len() * 16, scratch))
+                }
+            };
             mapping.extend([
                 part as u32,
                 index as u32,
@@ -121,6 +132,11 @@ impl SceneResources {
                 .get(&source)
                 .is_some_and(|mapping| mapping.entries == entries && mapping.output == Some(output))
             {
+                // No upload or compute needed; retain the allocated work area
+                // instead of dropping a Vec for each unchanged generated mesh.
+                if let Some(mapping) = self.generated_mappings.get_mut(&source) {
+                    mapping.scratch_entries = entries;
+                }
                 continue;
             }
             let needed = entries.len() * 4;
@@ -142,6 +158,7 @@ impl SceneResources {
                         buffer,
                         capacity,
                         entries: Vec::new(),
+                        scratch_entries: Vec::new(),
                         output: None,
                     },
                 ) {
@@ -237,7 +254,10 @@ impl SceneResources {
                 .generated_mappings
                 .get_mut(&update.source)
                 .ok_or_else(|| anyhow!("generated draw mapping disappeared"))?;
-            mapping.entries = update.entries;
+            let old_entries = std::mem::replace(&mut mapping.entries, update.entries);
+            // The formerly committed allocation becomes the next staging
+            // buffer; no whole-table clone or allocator churn on updates.
+            mapping.scratch_entries = old_entries;
             mapping.output = Some(output);
         }
         Ok(())
@@ -389,6 +409,10 @@ mod tests {
             before
         );
         assert_eq!(resources.generated_mappings[&source].buffer, input);
+        assert!(
+            resources.generated_mappings[&source].scratch_entries.capacity() > 0,
+            "unchanged generated mapping must retain its staging allocation",
+        );
         device.destroy_buffer(output).unwrap();
         resources.generated_arguments = None;
         resources.sync_generated_draws(&mut device, true).unwrap();
