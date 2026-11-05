@@ -5,10 +5,10 @@
 //! positions retain their previous bytes. GPU buffer layouts are unchanged.
 
 use super::*;
+use crate::scene_view::uploads::encode_cached_records;
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    ops::Range,
 };
 
 /// CPU and GPU mesh fields contributing to one 144-byte instance record.
@@ -25,105 +25,6 @@ pub(super) struct InstanceSlotKey {
 
 /// Copy matching encoded records; encode contiguous dirty rows as one run.
 /// This preserves the canonical encoder's cross-part inverse-matrix sharing.
-pub(super) fn encode_cached_records<K: PartialEq, E>(
-    current: &[K],
-    previous: &[K],
-    previous_bytes: &[u8],
-    stride: usize,
-    output: &mut Vec<u8>,
-    fingerprint: impl Fn(&K) -> u64,
-    mut encode_range: impl FnMut(Range<usize>, &mut Vec<u8>) -> Result<(), E>,
-) -> Result<usize, E> {
-    debug_assert!(stride > 0);
-    output.clear();
-    output.reserve(current.len().max(1).saturating_mul(stride));
-
-    // Fast path: most section updates preserve the ordinal of every draw.
-    // Do not allocate a relocation table until a real insertion, removal or
-    // nearby reorder indicates that existing rows have shifted positions.
-    let mut relocated: Option<(HashMap<u64, usize>, Vec<usize>)> = None;
-    let mut dirty_start = None;
-    let mut encoded = 0usize;
-    for (index, key) in current.iter().enumerate() {
-        let start = index * stride;
-        let end = start + stride;
-        let same_slot = previous.get(index) == Some(key)
-            && previous_bytes.get(start..end).is_some();
-        let source = if same_slot {
-            Some(index)
-        } else {
-            // Adjacent section insertion/removal shifts records by only a few
-            // slots. Check nearby previous locations first, without allocating
-            // a map or hashing an entire large scene.
-            let nearby = [1isize, -1, 2, -2, 3, -3, 4, -4]
-                .into_iter()
-                .filter_map(|delta| index.checked_add_signed(delta))
-                .find(|&old| {
-                    previous.get(old) == Some(key)
-                        && previous_bytes
-                            .get(old * stride..(old + 1) * stride)
-                            .is_some()
-                });
-            if nearby.is_some() {
-                nearby
-            } else {
-                let shift_hint = current.len() != previous.len()
-                    || (index > 0 && previous.get(index - 1) == Some(key))
-                    || previous.get(index + 1) == Some(key);
-                if shift_hint && relocated.is_none() && !previous.is_empty() {
-                    // One allocation for the hash heads and one for the
-                    // collision chains; not a Vec allocation for every one of
-                    // the thousands of distinct drawn sections.
-                    let mut heads = HashMap::<u64, usize>::with_capacity(previous.len());
-                    let mut chains = Vec::with_capacity(previous.len());
-                    for (old_index, old_key) in previous.iter().enumerate() {
-                        let old_start = old_index * stride;
-                        let next = if previous_bytes
-                            .get(old_start..old_start + stride)
-                            .is_some()
-                        {
-                            heads.insert(fingerprint(old_key), old_index)
-                                .unwrap_or(usize::MAX)
-                        } else {
-                            usize::MAX
-                        };
-                        chains.push(next);
-                    }
-                    relocated = Some((heads, chains));
-                }
-                relocated.as_ref().and_then(|(heads, chains)| {
-                    let mut old = *heads.get(&fingerprint(key))?;
-                    while old != usize::MAX {
-                        if previous.get(old) == Some(key) {
-                            return Some(old);
-                        }
-                        old = chains[old];
-                    }
-                    None
-                })
-            }
-        };
-        if let Some(source) = source {
-            if let Some(first) = dirty_start.take() {
-                encode_range(first..index, output)?;
-                encoded += index - first;
-            }
-            let old_start = source * stride;
-            output.extend_from_slice(&previous_bytes[old_start..old_start + stride]);
-        } else if dirty_start.is_none() {
-            dirty_start = Some(index);
-        }
-    }
-    if let Some(first) = dirty_start {
-        encode_range(first..current.len(), output)?;
-        encoded += current.len() - first;
-    }
-    if current.is_empty() {
-        output.resize(stride, 0);
-    }
-    debug_assert_eq!(output.len(), current.len().max(1) * stride);
-    Ok(encoded)
-}
 
 impl InstanceSlotKey {
     /// Hash all GPU-visible fields, including the relocated vertex address.

@@ -8,9 +8,75 @@ use gfx_core::{
     ComputeBufferBinding, ComputeDispatch, MemoryLocation, ShaderModuleId,
 };
 use gpui::ExtensionDevice;
+use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 const BOUNDS_STRIDE: usize = 48;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
+
+
+/// Byte-accurate identity of a 48-byte GPU culling bounds record.
+/// Converting floats to their bit patterns distinguishes signed zeros and
+/// prevents a cache hit from silently changing the generated GPU bytes.
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+struct BoundsRecordKey([u32; 12]);
+
+impl BoundsRecordKey {
+    fn from_draw(draw: &PreparedDraw) -> Self {
+        let origin = draw.culling_origin;
+        Self([
+            draw.bounds.min.x.to_bits(),
+            draw.bounds.min.y.to_bits(),
+            draw.bounds.min.z.to_bits(),
+            draw.part.index_count(),
+            draw.bounds.max.x.to_bits(),
+            draw.bounds.max.y.to_bits(),
+            draw.bounds.max.z.to_bits(),
+            (if draw.depth_bias != 0.0 || draw.pixel_offset != crate::Vec2::ZERO {
+                1.0_f32
+            } else {
+                0.0_f32
+            }).to_bits(),
+            origin.map_or(0.0, |v| v.x).to_bits(),
+            origin.map_or(0.0, |v| v.y).to_bits(),
+            origin.map_or(0.0, |v| v.z).to_bits(),
+            (if origin.is_some() { 1.0_f32 } else { 0.0_f32 }).to_bits(),
+        ])
+    }
+
+    fn fingerprint(&self) -> u64 {
+        let mut hash = DefaultHasher::new();
+        self.hash(&mut hash);
+        hash.finish()
+    }
+}
+
+/// Use previously encoded records after section insertion/removal, while
+/// preserving the original culling shader's exact packed record layout.
+fn encode_bounds_cached(
+    draws: &[PreparedDraw],
+    previous_keys: &[BoundsRecordKey],
+    previous_bytes: &[u8],
+    next_keys: &mut Vec<BoundsRecordKey>,
+    output: &mut Vec<u8>,
+    run_scratch: &mut Vec<u8>,
+) -> usize {
+    next_keys.clear();
+    next_keys.reserve(draws.len());
+    next_keys.extend(draws.iter().map(BoundsRecordKey::from_draw));
+    super::uploads::encode_cached_records(
+        next_keys,
+        previous_keys,
+        previous_bytes,
+        BOUNDS_STRIDE,
+        output,
+        BoundsRecordKey::fingerprint,
+        |range, out| {
+            encode_bounds_into(&draws[range], run_scratch);
+            out.extend_from_slice(run_scratch);
+            Ok::<(), std::convert::Infallible>(())
+        },
+    ).expect("bounds record encoder is infallible")
+}
 
 pub(super) struct CullResources {
     pub(super) hiz: super::hiz::HiZ,
@@ -27,6 +93,9 @@ pub(super) struct CullResources {
     instances: usize,
     uploaded_inputs: [Vec<u8>; 2],
     scratch_inputs: [Vec<u8>; 2],
+    bounds_keys: Vec<BoundsRecordKey>,
+    scratch_bounds_keys: Vec<BoundsRecordKey>,
+    bounds_encode_scratch: Vec<u8>,
 }
 
 impl CullResources {
@@ -79,6 +148,9 @@ impl CullResources {
             instances: 0,
             uploaded_inputs: Default::default(),
             scratch_inputs: Default::default(),
+            bounds_keys: Vec::new(),
+            scratch_bounds_keys: Vec::new(),
+            bounds_encode_scratch: Vec::new(),
             instance_capacity,
             batch_capacity,
         };
@@ -121,8 +193,19 @@ impl CullResources {
         // scene every few frames, and allocating full draw/cull tables on every
         // update becomes expensive when the scene contains many material parts.
         let [mut bounds, mut bytes] = std::mem::take(&mut self.scratch_inputs);
-        encode_bounds_into(draws, &mut bounds);
+        let mut next_bounds_keys = std::mem::take(&mut self.scratch_bounds_keys);
+        let mut run_scratch = std::mem::take(&mut self.bounds_encode_scratch);
+        let bounds_encoded = encode_bounds_cached(
+            draws,
+            &self.bounds_keys,
+            &self.uploaded_inputs[0],
+            &mut next_bounds_keys,
+            &mut bounds,
+            &mut run_scratch,
+        );
+        self.bounds_encode_scratch = run_scratch;
         if let Err(error) = encode_batches_into(draws, batches, meshes, &mut bytes) {
+            self.scratch_bounds_keys = next_bounds_keys;
             self.scratch_inputs = [bounds, bytes];
             return Err(error);
         }
@@ -159,10 +242,22 @@ impl CullResources {
         };
         if let Err(error) = write_result {
             // Keep the last successfully uploaded snapshot for the retry.
+            self.scratch_bounds_keys = next_bounds_keys;
             self.scratch_inputs = [bounds, bytes];
             return Err(error.into());
         }
+        let mut old_keys = std::mem::replace(&mut self.bounds_keys, next_bounds_keys);
+        old_keys.clear();
+        self.scratch_bounds_keys = old_keys;
         let mut old = std::mem::replace(&mut self.uploaded_inputs, [bounds, bytes]);
+        if super::renderer::trace_timings() && bounds_encoded > 0 && bounds_encoded < draws.len() {
+            eprintln!(
+                "gpui3d cull_bounds_cache rows={} encoded={} reused={}",
+                draws.len(),
+                bounds_encoded,
+                draws.len() - bounds_encoded,
+            );
+        }
         for input in &mut old {
             input.clear();
         }
@@ -415,3 +510,75 @@ fn encode_batches_into(
 #[cfg(all(test, target_os = "windows"))]
 #[path = "culling_tests.rs"]
 pub(super) mod tests;
+
+
+#[cfg(test)]
+mod bounds_cache_tests {
+    use super::*;
+    use crate::{Camera, Mesh, Node, Scene, Transform, Vec3};
+    use std::sync::Arc;
+
+    fn sample_draws() -> Vec<PreparedDraw> {
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        for index in 0..16 {
+            scene.insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_transform(Transform {
+                        translation: Vec3::new(index as f32 * 0.6, 0.0, 0.0),
+                        ..Transform::IDENTITY
+                    }),
+            ).unwrap();
+        }
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 40.0), Vec3::ZERO, Vec3::Y, 1.0, 0.1, 100.0,
+        );
+        crate::PreparedScene::new(&scene, camera, 1.0).unwrap().draws
+    }
+
+    #[test]
+    fn cached_bounds_match_canonical_encoder_on_shift_and_edit() {
+        let draws = sample_draws();
+        assert!(draws.len() >= 8);
+        let mut old_keys = Vec::new();
+        let mut next_keys = Vec::new();
+        let mut encoded = Vec::new();
+        let mut scratch = Vec::new();
+        let first_count = encode_bounds_cached(
+            &draws, &old_keys, &[], &mut next_keys, &mut encoded, &mut scratch,
+        );
+        assert_eq!(first_count, draws.len());
+        assert_eq!(encoded, encode_bounds(&draws));
+
+        let old_bytes = encoded.clone();
+        std::mem::swap(&mut old_keys, &mut next_keys);
+        let mut shifted = draws.clone();
+        shifted.remove(2);
+        let count = encode_bounds_cached(
+            &shifted, &old_keys, &old_bytes, &mut next_keys, &mut encoded, &mut scratch,
+        );
+        assert_eq!(count, 0, "shifted unchanged bounds should reuse resident bytes");
+        assert_eq!(encoded, encode_bounds(&shifted));
+
+        let shifted_bytes = encoded.clone();
+        std::mem::swap(&mut old_keys, &mut next_keys);
+        shifted[3].bounds.max.x += 0.5;
+        let count = encode_bounds_cached(
+            &shifted, &old_keys, &shifted_bytes, &mut next_keys, &mut encoded, &mut scratch,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(encoded, encode_bounds(&shifted));
+    }
+
+    #[test]
+    fn bitwise_key_preserves_culling_record_bytes() {
+        let draws = sample_draws();
+        for draw in &draws {
+            let key = BoundsRecordKey::from_draw(draw);
+            let encoded_key = key.0.iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>();
+            assert_eq!(encoded_key, encode_bounds(std::slice::from_ref(draw)));
+        }
+    }
+}
