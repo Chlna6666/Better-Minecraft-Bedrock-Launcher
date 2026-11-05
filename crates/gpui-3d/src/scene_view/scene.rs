@@ -13,7 +13,7 @@ use super::{
     uploads,
 };
 use crate::{
-    Aabb, AlphaMode, AnimationScratch, Camera, Mat4, MaterialId, MeshId, MeshPart, NodeId,
+    Aabb, AlphaMode, AnimationScratch, Camera, Mat4, MaterialId, Mesh, MeshId, MeshPart, NodeId,
     PreparedDraw, PreparedScene, Scene, ShadingModel, TextureAssetId,
 };
 use anyhow::{Context as _, anyhow, bail};
