@@ -366,11 +366,12 @@ impl SceneResources {
             || culling_mode_changed
             || (camera_changed && self.prepared.uses_lod())
             || self.scene_transform != Some(scene_view.scene_transform)
-            || self
-                .animation
-                .as_ref()
-                .is_none_or(|animation| !Arc::ptr_eq(animation, &scene_view.animation))
-            || self.animation_time != Some(scene_view.animation_time);
+            || animation_affects_draws(
+                self.animation.as_ref(),
+                self.animation_time,
+                &scene_view.animation,
+                scene_view.animation_time,
+            );
         let frame_changed = camera_changed
             || self.frame_state.is_none_or(|state| {
                 state.camera != scene_view.camera || state.projection != projection
@@ -2439,6 +2440,24 @@ fn validate_draw_textures(draws: &[PreparedDraw], scene_view: &SceneView) -> any
     Ok(())
 }
 
+/// Animation clock advances without changing a static scene. Only the
+/// transition into/out of active tracks, changing the track snapshot, or
+/// advancing an actively sampled clip invalidates CPU draw preparation.
+fn animation_affects_draws(
+    previous: Option<&Arc<[crate::TransformTrack]>>,
+    previous_time: Option<Duration>,
+    current: &Arc<[crate::TransformTrack]>,
+    current_time: Duration,
+) -> bool {
+    if current.is_empty() {
+        // Two empty track sets are semantically equivalent regardless of Arc
+        // allocation identity or clock time.
+        return previous.is_some_and(|tracks| !tracks.is_empty());
+    }
+    previous.is_none_or(|tracks| !Arc::ptr_eq(tracks, current))
+        || previous_time != Some(current_time)
+}
+
 fn update_prepared(
     prepared: &mut PreparedScene,
     animation_scratch: &mut AnimationScratch,
@@ -2528,5 +2547,48 @@ mod command_visibility_tests {
         assert!(update_command_visibility(&mut mask, []));
         assert!(mask.is_empty());
         assert!(!update_command_visibility(&mut mask, []));
+    }
+}
+
+#[cfg(test)]
+mod animation_invalidation_tests {
+    use super::*;
+
+    #[test]
+    fn empty_animation_clock_changes_do_not_rebuild_static_draws() {
+        let first: Arc<[crate::TransformTrack]> = Arc::from([]);
+        let second: Arc<[crate::TransformTrack]> = Arc::from([]);
+        assert!(!animation_affects_draws(
+            Some(&first), Some(Duration::ZERO), &second, Duration::from_secs(500),
+        ));
+        assert!(!animation_affects_draws(
+            None, None, &first, Duration::from_secs(1),
+        ));
+    }
+
+    #[test]
+    fn active_tracks_invalidate_on_clip_time_or_snapshot_change() {
+        let mut scene = Scene::new();
+        let node = scene.insert(None, crate::Node::new()).unwrap();
+        let active: Arc<[crate::TransformTrack]> =
+            Arc::from([crate::TransformTrack::new(node)]);
+        assert!(animation_affects_draws(
+            None, None, &active, Duration::ZERO
+        ));
+        assert!(!animation_affects_draws(
+            Some(&active), Some(Duration::ZERO), &active, Duration::ZERO,
+        ));
+        assert!(animation_affects_draws(
+            Some(&active), Some(Duration::ZERO), &active, Duration::from_millis(16),
+        ));
+        let different: Arc<[crate::TransformTrack]> =
+            Arc::from([crate::TransformTrack::new(node)]);
+        assert!(animation_affects_draws(
+            Some(&active), Some(Duration::ZERO), &different, Duration::ZERO,
+        ));
+        let empty: Arc<[crate::TransformTrack]> = Arc::from([]);
+        assert!(animation_affects_draws(
+            Some(&active), Some(Duration::ZERO), &empty, Duration::ZERO,
+        ));
     }
 }
