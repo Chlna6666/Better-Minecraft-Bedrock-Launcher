@@ -33,6 +33,6 @@ capepack.my_capes=My Capes
 cape.my_capes.blue=Blue Cape
 ```
 
-Texture layout: cape textures use the standard 10×16×1 box unwrap with the outer face (seen from behind) at (1,1)-(11,17) and the inner face at (12,1)-(22,17); elytra textures use the standard `texOffs(34, 0)` 10×20×2 unwrap with the front face at (36,2)-(46,22) and the back face at (48,2)-(58,22). Icons are arbitrary-size PNGs (64×64 recommended). The retired dev layouts — legacy `pack.json` manifests and bare `cape.json` + `cape.png` single capes — are no longer read and are skipped as invalid packs.
+Texture layout: cape textures use the standard 10×16×1 box unwrap with the outer face (seen from behind) at (1,1)-(11,17) and the inner face at (12,1)-(22,17); the cape texture carries the embedded elytra wing region: a single-wing silhouette at (34,0)-(46,22) inside the vanilla `texOffs(22,0)` 10×20×2 unwrap (the renderer mirrors the second wing; do NOT paint a Java-style second face at (48,2)-(58,22)). The optional `elytra` field accepts a standalone wing texture with the same layout and should only be used when explicitly requested; without it the launcher samples the embedded region at (34,0)-(46,22). Icons are arbitrary-size PNGs (64×64 recommended). The retired dev layouts — legacy `pack.json` manifests and bare `cape.json` + `cape.png` single capes — are no longer read and are skipped as invalid packs.
 
 Capes are enabled by default in version settings. Disabling them hides the manager tab. UWP versions below 1.21 use an older loader path and display an unsupported notice.
