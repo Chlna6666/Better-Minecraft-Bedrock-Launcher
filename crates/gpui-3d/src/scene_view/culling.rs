@@ -579,7 +579,7 @@ fn encode_batches_cached(
         .checked_mul(ARGUMENT_STRIDE as usize)
         .ok_or_else(|| anyhow!("GPU batch descriptor size overflow"))?;
     let dirty = next.iter().enumerate()
-        .filter(|(index, key)| previous.get(*index) != Some(key))
+        .filter(|(index, key)| previous.get(*index).copied() != Some(**key))
         .count();
     output.clear();
     if dirty == 0 && previous == next && previous_bytes.len() == size {
