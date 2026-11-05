@@ -883,22 +883,40 @@ impl SceneResources {
                 &mut dirty_instance_run,
             )?;
             let mut packed = std::mem::take(&mut self.scratch_packed_draws);
-            packed.clear();
-            packed.extend_from_slice(&self.uploaded_tables[0]);
-            packed.resize(physical_count * DRAW_PARAMS_STRIDE as usize, 0);
             let mut physical_keys = self.draw_slot_keys.clone();
             physical_keys.truncate(slots.high_water());
             for (logical, &slot) in mapping.iter().enumerate() {
                 let slot = slot as usize;
-                let stride = DRAW_PARAMS_STRIDE as usize;
-                let from = logical * stride;
-                let to = slot * stride;
-                packed[to..to + stride].copy_from_slice(&draw_bytes[from..from + stride]);
                 let key = next_draw_keys[logical];
                 if slot >= physical_keys.len() {
                     physical_keys.resize(slot + 1, key);
                 }
                 physical_keys[slot] = key;
+            }
+            // Most camera-only reorder / unchanged Section publications only
+            // alter the 4-byte logical slot map. Keep the committed 80-byte
+            // physical table in place when every material snapshot is identical.
+            // The old CPU bytes are moved into the next snapshot after successful
+            // GPU writes and BindGroup preparation, not copied here.
+            let stride = DRAW_PARAMS_STRIDE as usize;
+            let snapshot_reused = !replace_draw
+                && physical_keys == self.draw_slot_keys
+                && self.uploaded_tables[0].len() == physical_count * stride;
+            packed.clear();
+            if !snapshot_reused {
+                packed.extend_from_slice(&self.uploaded_tables[0]);
+                packed.resize(physical_count * stride, 0);
+                for (logical, &slot) in mapping.iter().enumerate() {
+                    let slot = slot as usize;
+                    let to = slot * stride;
+                    if self.draw_slot_keys.get(slot) == Some(&next_draw_keys[logical])
+                        && self.uploaded_tables[0].get(to..to + stride).is_some()
+                    {
+                        continue;
+                    }
+                    let from = logical * stride;
+                    packed[to..to + stride].copy_from_slice(&draw_bytes[from..from + stride]);
+                }
             }
             self.scratch_packed_draws = draw_bytes;
             draw_bytes = packed;
@@ -1238,6 +1256,20 @@ impl SceneResources {
                 bind_ms.unwrap_or_default(),
                 replace_draw || replace_instances || replace_lights,
             );
+        }
+        // Empty new tables are intentional sentinels used only when the
+        // physical keys and table extents matched the committed snapshot.
+        // Move the proven-good CPU storage after successful GPU updates rather
+        // than memcpy'ing every resident row on a logical-only Section reorder.
+        if voxel_shader && !replace_draw && draw_bytes.is_empty()
+            && previous_tables[0].len() == physical_count * DRAW_PARAMS_STRIDE as usize
+        {
+            draw_bytes = std::mem::take(&mut previous_tables[0]);
+        }
+        if voxel_shader && !replace_instances && instance_bytes.is_empty()
+            && previous_tables[1].len() == physical_count * INSTANCE_STRIDE as usize
+        {
+            instance_bytes = std::mem::take(&mut previous_tables[1]);
         }
         self.uploaded_tables = [draw_bytes, instance_bytes, light_bytes];
         for table in &mut previous_tables {

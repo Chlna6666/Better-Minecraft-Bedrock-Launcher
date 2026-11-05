@@ -116,29 +116,42 @@ impl SceneResources {
         const STRIDE: usize = INSTANCE_STRIDE as usize;
         next.clear();
         next.extend_from_slice(previous);
-        output.clear();
-        output.extend_from_slice(previous_bytes);
-        output.resize(high_water.max(1) * STRIDE, 0);
-        let mut changed = 0;
+        // Resolve exact physical record identities first. When none changed,
+        // the last committed dense CPU snapshot can be moved after successful
+        // GPU/BindGroup work instead of copied at all.
+        let mut dirty = Vec::new();
         for (logical, &physical) in mapping.iter().enumerate() {
             let physical = physical as usize;
             let draw = &self.prepared.draws[logical];
             let key = self.instance_key(draw, true)?;
             let start = physical * STRIDE;
             let end = start + STRIDE;
-            let cached = previous.get(physical) == Some(&key)
-                && previous_bytes.get(start..end).is_some();
-            if !cached {
-                self.encode_draw_instances(std::slice::from_ref(draw), true, scratch)?;
-                output[start..end].copy_from_slice(scratch);
-                changed += 1;
+            if previous.get(physical) != Some(&key)
+                || previous_bytes.get(start..end).is_none()
+            {
+                dirty.push((logical, physical));
             }
             if physical >= next.len() {
                 next.resize(physical + 1, key);
             }
             next[physical] = key;
         }
-        Ok(changed)
+        output.clear();
+        if dirty.is_empty()
+            && next == previous
+            && previous_bytes.len() == high_water.max(1) * STRIDE
+        {
+            return Ok(0);
+        }
+        output.extend_from_slice(previous_bytes);
+        output.resize(high_water.max(1) * STRIDE, 0);
+        for &(logical, physical) in &dirty {
+            let start = physical * STRIDE;
+            let draw = &self.prepared.draws[logical];
+            self.encode_draw_instances(std::slice::from_ref(draw), true, scratch)?;
+            output[start..start + STRIDE].copy_from_slice(scratch);
+        }
+        Ok(dirty.len())
     }
 }
 
