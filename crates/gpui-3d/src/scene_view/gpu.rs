@@ -1073,7 +1073,10 @@ struct MaterialRecord {
 #[derive(Default)]
 pub(super) struct DrawRecordCache {
     light_count: Option<u32>,
-    records: HashMap<(MaterialId, bool), MaterialRecord>,
+    // MaterialId survives Arc::make_mut. Different immutable snapshots with
+    // the same logical ID must not evict one another on every draw; retained
+    // Arc references keep the snapshot pointer identity stable while cached.
+    records: HashMap<(MaterialId, bool, usize), MaterialRecord>,
     next_generation: u64,
 }
 
@@ -1119,7 +1122,11 @@ impl DrawRecordCache {
             }
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
-            let cache_key = (material, uv_regions);
+            let cache_key = (
+                material,
+                uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
             let (key, record) = if let Some(cached) = self.records.get(&cache_key)
                 && std::sync::Arc::ptr_eq(&cached.material, &draw.material)
             {
@@ -1208,7 +1215,11 @@ impl DrawRecordCache {
         for draw in draws {
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
-            let key = (material, uv_regions);
+            let key = (
+                material,
+                uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
             if let Some(record) = self.records.get(&key)
                 && std::sync::Arc::ptr_eq(&record.material, &draw.material)
             {
