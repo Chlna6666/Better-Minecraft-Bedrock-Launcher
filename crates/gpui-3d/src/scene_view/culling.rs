@@ -217,13 +217,24 @@ impl CullResources {
             .into_iter()
             .enumerate()
             .flat_map(|(i, (buffer, data, stride))| {
-                super::uploads::changed_ranges(
-                    &self.uploaded_inputs[i],
-                    data,
-                    stride,
-                    12,
-                    4,
-                )
+                (if i == 0 {
+                    super::uploads::changed_ranges_for_keys(
+                        &self.bounds_keys,
+                        &next_bounds_keys,
+                        self.uploaded_inputs[i].len(),
+                        stride,
+                        12,
+                        4,
+                    )
+                } else {
+                    super::uploads::changed_ranges(
+                        &self.uploaded_inputs[i],
+                        data,
+                        stride,
+                        12,
+                        4,
+                    )
+                })
                 .into_iter()
                 .map(move |range| gfx_core::BufferWrite {
                     descriptor: gfx_core::BufferWriteDescriptor {

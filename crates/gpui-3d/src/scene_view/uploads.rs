@@ -138,18 +138,68 @@ pub(super) fn changed_ranges(
     max_ranges: usize,
     coalesce_gap_records: usize,
 ) -> Vec<Range<usize>> {
-    debug_assert!(stride > 0 && next.len().is_multiple_of(stride));
+    assert!(stride > 0);
+    debug_assert!(next.len().is_multiple_of(stride));
+    dirty_record_ranges(
+        next.len() / stride,
+        stride,
+        max_ranges,
+        coalesce_gap_records,
+        |index| {
+            let start = index * stride;
+            let end = start + stride;
+            previous.get(start..end) != Some(&next[start..end])
+        },
+    )
+}
+
+/// The encoding cache has already identified the exact GPU-visible row identity.
+/// Compare those keys (rather than re-reading 144 or 48 bytes per record) to
+/// compute upload spans. A relocated row has the same identity but a different
+/// ordinal, so it must still be uploaded at the new offset.
+///
+/// The key must compare every GPU-visible bit, and must have been committed
+/// only after the prior write succeeded. The existing bytewise diff remains
+/// the fallback for tables without such committed identities.
+pub(super) fn changed_ranges_for_keys<K: PartialEq>(
+    previous_keys: &[K],
+    next_keys: &[K],
+    uploaded_bytes: usize,
+    stride: usize,
+    max_ranges: usize,
+    coalesce_gap_records: usize,
+) -> Vec<Range<usize>> {
+    assert!(stride > 0);
+    dirty_record_ranges(
+        next_keys.len(),
+        stride,
+        max_ranges,
+        coalesce_gap_records,
+        |index| {
+            let end = (index + 1) * stride;
+            uploaded_bytes < end || previous_keys.get(index) != Some(&next_keys[index])
+        },
+    )
+}
+
+fn dirty_record_ranges(
+    count: usize,
+    stride: usize,
+    max_ranges: usize,
+    coalesce_gap_records: usize,
+    mut is_dirty: impl FnMut(usize) -> bool,
+) -> Vec<Range<usize>> {
     let mut ranges = Vec::<Range<usize>>::new();
     let mut first_dirty = None;
     let mut final_dirty_end = 0;
     let mut fragmented = false;
     let max_gap_bytes = coalesce_gap_records.saturating_mul(stride);
-    for (index, record) in next.chunks_exact(stride).enumerate() {
-        let offset = index * stride;
-        let end = offset + stride;
-        if previous.get(offset..end) == Some(record) {
+    for index in 0..count {
+        if !is_dirty(index) {
             continue;
         }
+        let offset = index * stride;
+        let end = offset + stride;
         first_dirty.get_or_insert(offset);
         final_dirty_end = end;
         if fragmented {
@@ -217,6 +267,57 @@ mod tests {
             patched[range.clone()].copy_from_slice(&next[range]);
         }
         assert_eq!(patched, next);
+    }
+
+    #[test]
+    fn identity_diff_matches_byte_diff_for_encoded_records() {
+        let previous = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let next = [1u32, 2, 20, 4, 5, 60, 7, 8, 9];
+        let encode = |values: &[u32]| {
+            values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>()
+        };
+        let old_bytes = encode(&previous);
+        let new_bytes = encode(&next);
+        let by_bytes = changed_ranges(&old_bytes, &new_bytes, 4, 16, 0);
+        let by_keys = changed_ranges_for_keys(&previous, &next, old_bytes.len(), 4, 16, 0);
+        assert_eq!(by_keys, by_bytes);
+        let mut patched = old_bytes;
+        patched.resize(new_bytes.len(), 0);
+        for range in &by_keys {
+            patched[range.clone()].copy_from_slice(&new_bytes[range.clone()]);
+        }
+        assert_eq!(patched, new_bytes);
+
+        let relocated = [3u32, 4, 5, 6, 7, 8];
+        let relocated_bytes = encode(&relocated);
+        let key_ranges = changed_ranges_for_keys(&next, &relocated, patched.len(), 4, 16, 0);
+        let byte_ranges = changed_ranges(&patched, &relocated_bytes, 4, 16, 0);
+        assert_eq!(key_ranges, byte_ranges);
+        assert!(changed_ranges_for_keys(&relocated, &relocated, relocated_bytes.len(), 4, 16, 0).is_empty());
+        assert_eq!(changed_ranges_for_keys(&[], &relocated, 0, 4, 16, 0), vec![0..24]);
+    }
+
+    #[test]
+    fn identity_diff_bounds_driver_writes_and_keeps_truncated_tail_idle() {
+        let previous = (0..48u32).collect::<Vec<_>>();
+        let mut next = previous.clone();
+        next[3] = 100;
+        next[18] = 200;
+        next[37] = 300;
+        assert_eq!(
+            changed_ranges_for_keys(&previous, &next, previous.len() * 144, 144, 16, 0),
+            vec![432..576, 2592..2736, 5328..5472]
+        );
+        assert_eq!(
+            changed_ranges_for_keys(&previous, &next, previous.len() * 144, 144, 2, 0),
+            vec![432..5472]
+        );
+        assert!(changed_ranges_for_keys(&previous, &next[..12], previous.len() * 144, 144, 16, 0)
+            == vec![432..576]);
+        assert_eq!(
+            changed_ranges_for_keys(&previous, &next, 0, 144, 16, 0),
+            vec![0..next.len()*144]
+        );
     }
 
     #[test]

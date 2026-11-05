@@ -13,7 +13,7 @@ use std::{
 
 /// CPU and GPU mesh fields contributing to one 144-byte instance record.
 /// Mesh relocation and procedural geometry are reflected in vertex_word.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub(super) struct InstanceSlotKey {
     node: NodeId,
     world: Mat4,
@@ -22,6 +22,23 @@ pub(super) struct InstanceSlotKey {
     vertex_word: u32,
     index_count_override: Option<u32>,
 }
+
+// Default float PartialEq treats +0.0 and -0.0 as equal even though their
+// GPU bytes differ. Compare packed bits so an identical cache key guarantees
+// byte-identical instance records, including signed zero and NaN payloads.
+impl PartialEq for InstanceSlotKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+            && self.world.columns().into_iter().flatten().map(f32::to_bits)
+                .eq(other.world.columns().into_iter().flatten().map(f32::to_bits))
+            && self.pixel_offset.x.to_bits() == other.pixel_offset.x.to_bits()
+            && self.pixel_offset.y.to_bits() == other.pixel_offset.y.to_bits()
+            && self.depth_bias.to_bits() == other.depth_bias.to_bits()
+            && self.vertex_word == other.vertex_word
+            && self.index_count_override == other.index_count_override
+    }
+}
+impl Eq for InstanceSlotKey {}
 
 /// Copy matching encoded records; encode contiguous dirty rows as one run.
 /// This preserves the canonical encoder's cross-part inverse-matrix sharing.
@@ -119,6 +136,39 @@ impl SceneResources {
 #[cfg(test)]
 mod tests {
     use super::encode_cached_records;
+
+    #[test]
+    fn signed_zero_changes_are_not_reused_as_equal_gpu_bytes() {
+        let mut scene = crate::Scene::new();
+        let node = scene.insert(None, crate::Node::new()).unwrap();
+        let negative = super::InstanceSlotKey {
+            node,
+            world: crate::Mat4::IDENTITY,
+            pixel_offset: crate::Vec2::new(-0.0, 0.0),
+            depth_bias: 0.0,
+            vertex_word: 0,
+            index_count_override: None,
+        };
+        let positive = super::InstanceSlotKey {
+            pixel_offset: crate::Vec2::ZERO,
+            ..negative
+        };
+        assert!(negative != positive, "GPU byte identity must distinguish signed zero");
+        assert_ne!(negative.fingerprint(), positive.fingerprint());
+        let mut output = Vec::new();
+        let mut encoded = 0;
+        let count = encode_cached_records(
+            &[positive], &[negative], &[0u8; 4], 4, &mut output,
+            super::InstanceSlotKey::fingerprint,
+            |range, bytes| {
+                encoded += range.len();
+                bytes.extend_from_slice(&[2u8; 4]);
+                Ok::<_, ()>(())
+            },
+        ).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(encoded, 1);
+    }
 
     #[test]
     fn stable_slots_skip_encoding_and_shifted_slots_reencode() {

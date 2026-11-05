@@ -922,13 +922,26 @@ impl SceneResources {
             // The full draw/instance layout is unchanged; only CPU->GPU transfer
             // becomes sparse. Keep at most 16 writes per table in one batch to
             // avoid trading bandwidth savings for excessive driver calls.
-            uploads::changed_ranges(
-                if replace { &[] } else { &self.uploaded_tables[i] },
-                data,
-                stride,
-                16,
-                4,
-            )
+            (if i == 1 {
+                // Instance rows already carry bit-exact GPU-visible keys.
+                // Avoid comparing the complete 144-byte table a second time.
+                uploads::changed_ranges_for_keys(
+                    if replace { &[] } else { &self.instance_slot_keys },
+                    &next_instance_keys,
+                    if replace { 0 } else { self.uploaded_tables[i].len() },
+                    stride,
+                    16,
+                    4,
+                )
+            } else {
+                uploads::changed_ranges(
+                    if replace { &[] } else { &self.uploaded_tables[i] },
+                    data,
+                    stride,
+                    16,
+                    4,
+                )
+            })
             .into_iter()
             .map(move |range| BufferWrite {
                 descriptor: BufferWriteDescriptor {
