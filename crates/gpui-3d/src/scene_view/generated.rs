@@ -317,15 +317,16 @@ pub(super) fn create(
                 (5, jobs.len().div_ceil(64)),
             ]);
         }
+        let compute_caps = device.compute_capabilities();
         let dispatches = stages
             .into_iter()
             .map(|(stage, count)| {
                 let count = u32::try_from(count).context("voxel dispatch overflow")?;
-                let width = count.min(device.compute_capabilities().max_workgroups[0]);
+                let grid = compute_caps.plan_linear_dispatch_2d(count)?;
                 Ok(ComputeDispatch {
                     shader: shaders.0[stage],
                     bindings: &bindings,
-                    workgroups: [width, count.div_ceil(width), 1],
+                    workgroups: grid,
                 })
             })
             .collect::<gpui::Result<Vec<_>>>()?;

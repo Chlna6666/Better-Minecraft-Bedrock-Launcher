@@ -59,3 +59,24 @@ where
 
 - [nova-gfx](../README.zh-CN.md)
 - [crate 目录](../../../docs/CRATES.md)
+
+## Compute Shader 硬件能力查询
+
+`ResourceDevice::compute_capabilities()` 提供 **Dispatch 网格上限**、
+**Workgroup 各轴线程上限**、**工作组总线程上限**、**工作组共享内存字节上限**。
+Vulkan/OpenGL 读取实际设备或上下文限制；D3D11/D3D12 使用 Shader Model
+规定的资源限制。未支持或无法提供的限制用零表示。
+
+注意：WGSL `@workgroup_size(x,y,z)` 是 **编译期 Shader 属性**，
+`ComputeDispatch.workgroups` 是运行时的 **工作组数量**，两者不是一回事。
+
+- `ComputeKernelProfile`：描述预编译计算 Shader 的线程形状与共享内存需求。
+- `supports_kernel`：验证某一预编译内核能否合法运行。
+- `select_precompiled_kernel`：在多个预编译变体间安全选择，并返回索引。
+- `plan_linear_dispatch_2d`：按设备的 X/Y 网格上限规划 Dispatch；Shader 应将
+  `workgroup_id.x + workgroup_id.y * num_workgroups.x` 作为线性工作组索引，
+  并忽略网格末尾多派发的工作组。
+
+这些接口只验证 **合法性与启发式选择**，不能推导最优 Occupancy 或性能；
+Subgroup/Wave 宽度、寄存器压力、显存带宽和实际 GPU 耗时仍需要硬件基准。
+Shader 变体须预编译，不会在绘制过程中动态编译。

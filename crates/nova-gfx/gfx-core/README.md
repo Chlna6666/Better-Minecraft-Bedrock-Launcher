@@ -67,3 +67,44 @@ Use `Device` only for code that genuinely needs the full device contract.
 `0.1.x` is an early breaking API line. The traits in this crate are the
 maintained public contract; backend crates should implement these traits instead
 of exposing duplicate public inherent methods.
+
+## Compute Shader Hardware Limits
+
+`ResourceDevice::compute_capabilities()` exposes the **actual compute dispatch
+grid limits**, **per-axis local workgroup limits**, **total local invocations**
+and **workgroup-shared memory budget**. Vulkan and OpenGL query the physical
+adapter/context, while D3D11/D3D12 expose their Shader Model contractual
+limits. Zero means a limit is unavailable.
+
+Shader local workgroup size is defined in the **compiled entry point** (WGSL
+`@workgroup_size`), not the number of workgroups passed to
+`ComputeDispatch`. Changing dispatch counts cannot resize a compiled shader.
+
+```rust
+use gfx_core::{ComputeKernelProfile, ResourceDevice, Result};
+
+fn choose_compute_kernel<D: ResourceDevice>(device: &D) -> Result<([u32; 3], usize)> {
+    let caps = device.compute_capabilities();
+    // These must correspond to separately precompiled shader modules.
+    let variants = [32, 64, 128].map(|threads| ComputeKernelProfile {
+        workgroup_size: [threads, 1, 1],
+        shared_memory_bytes: 128,
+    });
+    let index = caps.select_precompiled_kernel(&variants, 64)
+        .ok_or_else(|| gfx_core::Error::Unavailable(
+            "no compute variant fits device limits".into()
+        ))?;
+    let grid = caps.plan_linear_dispatch_2d(10_000)?;
+    Ok((grid, index))
+}
+```
+
+`supports_kernel` validates local dimensions, total threads and declared
+shared memory. `plan_linear_dispatch_2d` prevents oversized dispatches:
+the shader must flatten `workgroup_id.x + workgroup_id.y *
+num_workgroups.x` and discard padded groups.
+
+**Limits are not optimal performance targets.** Subgroup/wave sizes,
+register occupancy, bandwidth, cache behavior and GPU timestamp benchmarks
+still require separate backend-specific profiling. These APIs do not compile
+shader variants at runtime or promise automated performance tuning.

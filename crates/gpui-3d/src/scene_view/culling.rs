@@ -355,13 +355,12 @@ impl CullResources {
                 ComputeBufferAccess::ReadOnly,
             ),
         ];
-        let limit = device.compute_capabilities().max_workgroups[0];
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
-        let width = count.min(limit.max(1));
+        let grid = device.compute_capabilities().plan_linear_dispatch_2d(count)?;
         device.dispatch_compute(&ComputeDispatch {
             shader,
             bindings: &bindings,
-            workgroups: [width, count.div_ceil(width), 1],
+            workgroups: grid,
         })?;
         Ok(())
     }
