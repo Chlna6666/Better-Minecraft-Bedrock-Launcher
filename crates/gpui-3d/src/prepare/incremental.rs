@@ -170,7 +170,7 @@ mod tests {
             let changes = next.changed_nodes(&scene).unwrap();
             assert!(changes.len() > 50);
             assert_eq!(
-                prepared.update_nodes(&next, changes, Mat4::IDENTITY),
+                prepared.update_nodes(&next, changes.as_ref(), Mat4::IDENTITY),
                 Some(changes.len())
             );
             prepared.update_camera(camera, 1.).unwrap();
@@ -212,7 +212,7 @@ mod tests {
         next.insert(None, Node::new().with_mesh(mesh)).unwrap();
         let changed = next.changed_nodes(&scene).unwrap();
         assert_eq!(
-            prepared.update_nodes(&next, changed, Mat4::IDENTITY),
+            prepared.update_nodes(&next, changed.as_ref(), Mat4::IDENTITY),
             Some(3)
         );
         prepared.update_camera(camera, 1.).unwrap();

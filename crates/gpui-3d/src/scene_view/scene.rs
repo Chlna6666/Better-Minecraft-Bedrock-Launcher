@@ -352,7 +352,7 @@ impl SceneResources {
                 .and_then(|previous| scene_view.scene.changed_nodes(previous));
             let updated = local_changes.and_then(|nodes| {
                 self.prepared
-                    .update_nodes(&scene_view.scene, nodes, scene_view.scene_transform)
+                    .update_nodes(&scene_view.scene, nodes.as_ref(), scene_view.scene_transform)
             });
             if updated.is_some() {
                 self.prepared

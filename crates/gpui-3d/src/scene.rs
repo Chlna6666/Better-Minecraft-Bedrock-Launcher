@@ -276,6 +276,15 @@ struct NodeSlot {
     node: Option<Node>,
 }
 
+/// Delta for one completed scene snapshot. Only IDs are retained, never meshes
+/// or node pages; this permits renderers to skip intermediate scene revisions.
+#[derive(Clone, Debug)]
+struct SceneRevisionDelta {
+    from: (u64, u64),
+    to: (u64, u64),
+    nodes: Vec<NodeId>,
+}
+
 /// Mutable 3D scene graph with generational handles and shared immutable assets.
 #[derive(Debug)]
 pub struct Scene {
@@ -288,6 +297,8 @@ pub struct Scene {
     environment: Option<Arc<EnvironmentMap>>,
     base: Option<(u64, u64)>,
     changes: Option<Vec<NodeId>>,
+    /// Bounded deltas from previous published revisions. Does not retain old scene graphs.
+    revision_history: Arc<[SceneRevisionDelta]>,
 }
 
 static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -304,6 +315,7 @@ impl Default for Scene {
             environment: None,
             base: None,
             changes: None,
+            revision_history: Arc::from([]),
         }
     }
 }
