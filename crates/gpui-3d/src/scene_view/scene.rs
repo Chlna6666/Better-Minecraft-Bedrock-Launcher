@@ -67,6 +67,9 @@ pub(super) struct SceneResources {
     uploaded_tables: [Vec<u8>; 3],
     scratch_tables: [Vec<u8>; 3],
     draw_record_cache: DrawRecordCache,
+    /// Committed identities for 80-byte GPU DrawParams records.
+    draw_slot_keys: Vec<super::gpu::DrawParamKey>,
+    scratch_draw_slot_keys: Vec<super::gpu::DrawParamKey>,
     /// Previous committed 144-byte GPU instance row identities.
     instance_slot_keys: Vec<instance_cache::InstanceSlotKey>,
     scratch_instance_keys: Vec<instance_cache::InstanceSlotKey>,
@@ -272,6 +275,8 @@ impl SceneResources {
             uploaded_tables: Default::default(),
             scratch_tables: Default::default(),
             draw_record_cache: DrawRecordCache::default(),
+            draw_slot_keys: Vec::new(),
+            scratch_draw_slot_keys: Vec::new(),
             instance_slot_keys: Vec::new(),
             scratch_instance_keys: Vec::new(),
             dirty_instance_run: Vec::new(),
@@ -809,10 +814,12 @@ impl SceneResources {
         let replace_lights = next_light_capacity != self.light_capacity;
         let [mut draw_bytes, mut instance_bytes, mut light_bytes] =
             std::mem::take(&mut self.scratch_tables);
+        let mut next_draw_keys = std::mem::take(&mut self.scratch_draw_slot_keys);
         self.draw_record_cache.encode(
             &self.prepared.draws,
             self.prepared.lights.len(),
             &mut draw_bytes,
+            &mut next_draw_keys,
         )?;
         let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
         let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
@@ -922,9 +929,19 @@ impl SceneResources {
             // The full draw/instance layout is unchanged; only CPU->GPU transfer
             // becomes sparse. Keep at most 16 writes per table in one batch to
             // avoid trading bandwidth savings for excessive driver calls.
-            (if i == 1 {
+            (if i == 0 {
+                // DrawParams have immutable material-snapshot identities.
+                // Scan compact keys instead of comparing 80 bytes per draw.
+                uploads::changed_ranges_for_keys(
+                    if replace { &[] } else { &self.draw_slot_keys },
+                    &next_draw_keys,
+                    if replace { 0 } else { self.uploaded_tables[i].len() },
+                    stride,
+                    16,
+                    4,
+                )
+            } else if i == 1 {
                 // Instance rows already carry bit-exact GPU-visible keys.
-                // Avoid comparing the complete 144-byte table a second time.
                 uploads::changed_ranges_for_keys(
                     if replace { &[] } else { &self.instance_slot_keys },
                     &next_instance_keys,
@@ -1026,6 +1043,9 @@ impl SceneResources {
                     }),
             );
         self.sync_generated_draws(device, voxel_shader)?;
+        let mut old_draw_keys = std::mem::replace(&mut self.draw_slot_keys, next_draw_keys);
+        old_draw_keys.clear();
+        self.scratch_draw_slot_keys = old_draw_keys;
         // Commit slot identities only after the corresponding GPU upload and
         // binding preparation have both completed. A failed update must not
         // make future frames reuse records that were never committed.
@@ -1636,6 +1656,8 @@ impl SceneResources {
         }
         self.draw_resources.clear();
         self.draw_resource_keys.clear();
+        self.draw_slot_keys.clear();
+        self.scratch_draw_slot_keys.clear();
         self.spare_draw_resources.clear();
         self.spare_draw_resource_keys.clear();
         self.instance_slot_keys.clear();

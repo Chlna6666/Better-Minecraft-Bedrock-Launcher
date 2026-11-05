@@ -1034,10 +1034,33 @@ pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
 /// Retained immutable draw parameter records. A large streamed world can render
 /// thousands of draws sharing the same material; their 80-byte GPU parameters
 /// need not be rebuilt from the material's fields for every draw on every delta.
+/// Exact identity of an encoded GPU DrawParams record.
+///
+/// MaterialId is stable across Material::clone, including cloned variants with
+/// changed fields. A per-snapshot generation therefore distinguishes immutable
+/// Arc<Material> snapshots while retaining the previous fast shared-material
+/// record cache. UV support and the number of lights also affect GPU bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DrawParamKey {
+    material: MaterialId,
+    snapshot_generation: u64,
+    uv_regions: bool,
+    light_count: u32,
+}
+
+struct MaterialRecord {
+    // Keep the underlying snapshot resident: Arc::make_mut will clone instead
+    // of mutating it behind a committed GPU record's identity.
+    material: std::sync::Arc<crate::Material>,
+    bytes: [u8; DRAW_PARAMS_STRIDE as usize],
+    generation: u64,
+}
+
 #[derive(Default)]
 pub(super) struct DrawRecordCache {
     light_count: Option<u32>,
-    records: HashMap<(MaterialId, bool), [u8; DRAW_PARAMS_STRIDE as usize]>,
+    records: HashMap<(MaterialId, bool), MaterialRecord>,
+    next_generation: u64,
 }
 
 impl DrawRecordCache {
@@ -1046,6 +1069,7 @@ impl DrawRecordCache {
         draws: &[PreparedDraw],
         lights: usize,
         bytes: &mut Vec<u8>,
+        keys: &mut Vec<DrawParamKey>,
     ) -> gpui::Result<()> {
         let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
         if self.light_count != Some(light_count) {
@@ -1055,23 +1079,46 @@ impl DrawRecordCache {
         let stride = DRAW_PARAMS_STRIDE as usize;
         bytes.clear();
         bytes.reserve(draws.len().max(1).saturating_mul(stride));
+        keys.clear();
+        keys.reserve(draws.len());
         for draw in draws {
-            let key = (draw.material.id(), draw.mesh.uses_uv_regions());
-            if let Some(record) = self.records.get(&key) {
-                bytes.extend_from_slice(record);
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let key = (material, uv_regions);
+            if let Some(record) = self.records.get(&key)
+                && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+            {
+                bytes.extend_from_slice(&record.bytes);
+                keys.push(DrawParamKey {
+                    material,
+                    snapshot_generation: record.generation,
+                    uv_regions,
+                    light_count,
+                });
                 continue;
             }
             let start = bytes.len();
             encode_draw_record(draw, light_count, bytes, stride)?;
+            self.next_generation = self.next_generation.wrapping_add(1);
+            let generation = self.next_generation;
             let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
                 .try_into()
                 .expect("draw encoder must write exactly one aligned record");
-            // Material and mesh are immutable; the UV-coverage bit is part of
-            // the key. All remaining fields depend only on the material and
-            // global light count. Never cache unbounded historical material IDs.
-            if self.records.len() < 8192 {
-                self.records.insert(key, record);
+            // Never retain unbounded historical snapshots. Existing IDs may
+            // be refreshed even if the cache is at capacity.
+            if self.records.len() < 8192 || self.records.contains_key(&key) {
+                self.records.insert(key, MaterialRecord {
+                    material: draw.material.clone(),
+                    bytes: record,
+                    generation,
+                });
             }
+            keys.push(DrawParamKey {
+                material,
+                snapshot_generation: generation,
+                uv_regions,
+                light_count,
+            });
         }
         if draws.is_empty() {
             bytes.resize(stride, 0);
@@ -1396,12 +1443,71 @@ mod tests {
         let repeated = [prepared.draws[0].clone(), prepared.draws[0].clone()];
         let mut cache = super::DrawRecordCache::default();
         let mut bytes = Vec::new();
+        let mut keys = Vec::new();
         for light_count in [0, 0, 2, 2, 0] {
-            cache.encode(&repeated, light_count, &mut bytes).unwrap();
+            cache.encode(&repeated, light_count, &mut bytes, &mut keys).unwrap();
             assert_eq!(bytes, super::encode_draw_records(&repeated, light_count).unwrap());
+            assert_eq!(keys.len(), repeated.len());
         }
-        cache.encode(&[], 0, &mut bytes).unwrap();
+        cache.encode(&[], 0, &mut bytes, &mut keys).unwrap();
         assert_eq!(bytes, vec![0; super::DRAW_PARAMS_STRIDE as usize]);
+    }
+
+    #[test]
+    fn draw_cache_invalidates_cloned_material_with_same_id() {
+        let mut scene = Scene::new();
+        scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        ).unwrap();
+        let initial = prepared.draws[0].clone();
+        let mut modified = initial.clone();
+        let mut changed_material = (*initial.material).clone();
+        changed_material.base_color = [0.1, 0.2, 0.3, 0.4];
+        modified.material = std::sync::Arc::new(changed_material);
+        assert_eq!(modified.material.id(), initial.material.id());
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        cache.encode(&[initial.clone()], 0, &mut bytes, &mut keys).unwrap();
+        let old_key = keys[0];
+        let old_bytes = bytes.clone();
+        cache.encode(&[modified.clone()], 0, &mut bytes, &mut keys).unwrap();
+        assert_ne!(old_key, keys[0]);
+        assert_ne!(old_bytes, bytes);
+        assert_eq!(bytes, super::encode_draw_records(&[modified.clone()], 0).unwrap());
+
+        let new_key = keys[0];
+        cache.encode(&[modified.clone(), modified.clone()], 0, &mut bytes, &mut keys).unwrap();
+        assert_eq!(keys, vec![new_key; 2]);
+        assert_eq!(bytes, super::encode_draw_records(&[modified.clone(), modified], 0).unwrap());
+        cache.encode(&[initial.clone()], 0, &mut bytes, &mut keys).unwrap();
+        assert_ne!(keys[0], old_key, "revisited snapshot must not alias an overwritten cache generation");
+        assert_eq!(bytes, super::encode_draw_records(&[initial], 0).unwrap());
+    }
+
+    #[test]
+    fn draw_cache_keys_track_light_count_even_for_identical_material_snapshots() {
+        let mut scene = Scene::new();
+        scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        ).unwrap();
+        let draws = [prepared.draws[0].clone()];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        cache.encode(&draws, 0, &mut bytes, &mut keys).unwrap();
+        let first = keys[0];
+        cache.encode(&draws, 0, &mut bytes, &mut keys).unwrap();
+        assert_eq!(keys[0], first);
+        cache.encode(&draws, 2, &mut bytes, &mut keys).unwrap();
+        assert_ne!(keys[0], first);
+        assert_eq!(bytes, super::encode_draw_records(&draws, 2).unwrap());
     }
 
     #[test]
