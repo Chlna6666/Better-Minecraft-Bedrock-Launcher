@@ -227,21 +227,12 @@ impl VoxelMeshSource {
             }
             *capacities.entry(face.material_slot).or_default() += frequencies[index / 6];
         }
-        // Reuse vertex validation, but only for the small template table.
-        let validation = Mesh::from_voxel_quads_without_raycast(
-            templates.iter().map(|face| face.vertices),
-            if templates.is_empty() {
-                vec![]
-            } else {
-                vec![MeshPart::new(
-                    0,
-                    u32::try_from(templates.len() * 6).map_err(|_| MeshError::TooLarge)?,
-                    0,
-                )]
-            },
-        )?;
-        if !validation.has_unorm_colors() {
-            return Err(MeshError::InvalidParts);
+        // A Section can be model/instance-only with no six-face cube
+        // templates. Validate non-empty template records directly; do not
+        // construct a temporary CPU Mesh, index array and packed vertex table
+        // just to verify GPU compute input.
+        if !templates.is_empty() {
+            validate_voxel_templates(&templates)?;
         }
         let mut parts = Vec::new();
         let mut first = 0u32;
@@ -471,4 +462,17 @@ mod template_validation_tests {
         ));
         validate_voxel_templates(&[original]).unwrap();
     }
+    #[test]
+    fn empty_cube_template_table_is_valid_for_gpu_instance_only_source() {
+        // Instance-only source Section data does not require standard cube
+        // templates. GPU model faces may be added by with_instances later.
+        let size = [3, 3, 3];
+        let cells = vec![0u32; (size[0] * size[1] * size[2]) as usize];
+        let created = VoxelMeshSource::new(size, Vec3::ZERO, cells, Vec::new());
+        assert!(created.is_ok());
+        let source = created.unwrap();
+        assert_eq!(source.templates.len(), 0);
+        assert!(source.fallback.get().is_none());
+    }
+
 }
