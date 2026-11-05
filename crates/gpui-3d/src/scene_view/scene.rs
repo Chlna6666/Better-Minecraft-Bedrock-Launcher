@@ -852,7 +852,17 @@ impl SceneResources {
         // live in persistent physical slots. The u32 mapping is the only
         // dense table that moves when an earlier Section is inserted.
         let next_slots = if voxel_shader {
-            Some(self.stable_slots.plan(&self.prepared.draws)?)
+            // Culling is synced before this resource stage. It owns the same
+            // stable Node/Mesh/Material/Part identities as the voxel draw
+            // buffers, so share its committed physical layout rather than
+            // constructing a second HashMap and re-planning all resident
+            // Section slots on each delta.
+            Some(match self.culling.as_ref().filter(|culling| {
+                culling.counts().1 == self.prepared.draws.len()
+            }) {
+                Some(culling) => culling.committed_slot_layout(),
+                None => self.stable_slots.plan(&self.prepared.draws)?,
+            })
         } else {
             None
         };

@@ -177,6 +177,13 @@ pub(super) struct CullResources {
 }
 
 impl CullResources {
+    /// The culler has already planned and uploaded the stable Section address
+    /// table. Reuse that same physical layout for DrawParams/Instances instead
+    /// of hashing every Draw identity a second time in SceneResources.
+    pub(super) fn committed_slot_layout(&self) -> (StableDrawSlots, Vec<u32>) {
+        (self.resident_slots.clone(), self.uploaded_slot_map.clone())
+    }
+
     pub(super) fn counts(&self) -> (usize, usize) {
         (self.count, self.instances)
     }
