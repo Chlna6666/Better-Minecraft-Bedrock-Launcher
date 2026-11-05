@@ -17,6 +17,9 @@ pub(super) struct HiZ {
     count: usize,
     clear_pending: bool,
     selection_eye: Option<Vec3>,
+    // Last successfully uploaded Hi-Z box header. Tracking the exact encoded
+    // bytes avoids a tiny driver upload on otherwise unchanged camera samples.
+    uploaded_header: Option<[u8; 16]>,
     words: usize,
     max_boxes: usize,
     shadow: bool,
@@ -134,6 +137,7 @@ impl HiZ {
             compute_caps,
             clear_pending: false,
             selection_eye: None,
+            uploaded_header: None,
             words,
             max_boxes,
             shadow,
@@ -153,7 +157,11 @@ impl HiZ {
                 .selection_eye
                 .is_some_and(|previous| (previous - eye).length_squared() < 256.)
         {
-            device.write_buffer(self.boxes, 0, &encode_header(self.count, forward))?;
+            let header = encode_header(self.count, forward);
+            if self.uploaded_header != Some(header) {
+                device.write_buffer(self.boxes, 0, &header)?;
+                self.uploaded_header = Some(header);
+            }
             return Ok(());
         }
         let mut bounds = bounds
@@ -186,7 +194,8 @@ impl HiZ {
         let choice = self.compute_caps.select_precompiled_kernel(&profiles, desired)
             .ok_or_else(|| anyhow::anyhow!("Hi-Z raster variant exceeds device limits"))?;
         self.raster_threads = profiles[choice].invocations();
-        let mut bytes = encode_header(count, forward).to_vec();
+        let header = encode_header(count, forward);
+        let mut bytes = header.to_vec();
         bytes.reserve(count * 32);
         for b in bounds {
             let bounds = b.bounds;
@@ -204,6 +213,7 @@ impl HiZ {
             bytes.extend(u32::from(b.faces & 63).to_le_bytes());
         }
         device.write_buffer(self.boxes, 0, &bytes)?;
+        self.uploaded_header = Some(header);
         self.clear_pending |= self.count > 0;
         self.count = count;
         self.selection_eye = Some(eye);
