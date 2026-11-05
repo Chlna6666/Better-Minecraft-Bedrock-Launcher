@@ -136,6 +136,35 @@ pub struct VoxelMeshSource {
     fallback: OnceLock<Mesh>,
 }
 
+/// Validate the immutable GPU input data without allocating or encoding a
+/// temporary full CPU triangle Mesh. Both compute and lazy CPU fallback need
+/// exactly the same finite-position/normal/UV and UNORM-color invariants.
+fn validate_voxel_templates(faces: &[VoxelFaceTemplate]) -> Result<(), MeshError> {
+    if faces.is_empty() {
+        return Err(MeshError::InvalidParts);
+    }
+    let index_count = faces.len().checked_mul(6).ok_or(MeshError::TooLarge)?;
+    u32::try_from(index_count).map_err(|_| MeshError::TooLarge)?;
+    let vertices = faces.len().checked_mul(4).ok_or(MeshError::TooLarge)?;
+    u32::try_from(vertices).map_err(|_| MeshError::TooLarge)?;
+    for face in faces {
+        for vertex in &face.vertices {
+            if !vertex.position.is_finite()
+                || !vertex.normal.is_finite()
+                || !vertex.uv.x.is_finite()
+                || !vertex.uv.y.is_finite()
+                || vertex.color.iter().any(|value| !value.is_finite())
+            {
+                return Err(MeshError::NonFiniteVertex);
+            }
+            if vertex.color.iter().any(|value| !(0.0..=1.0).contains(value)) {
+                return Err(MeshError::InvalidVoxelColor);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl VoxelMeshSource {
     /// Validates a padded grid and computes conservative per-material output capacities.
     /// No faces or triangle vertices are generated here.
@@ -283,17 +312,7 @@ impl VoxelMeshSource {
         if faces.is_empty() {
             return Ok(self);
         }
-        let validation = Mesh::from_voxel_quads_without_raycast(
-            faces.iter().map(|face| face.vertices),
-            vec![MeshPart::new(
-                0,
-                u32::try_from(faces.len() * 6).map_err(|_| MeshError::TooLarge)?,
-                0,
-            )],
-        )?;
-        if !validation.has_unorm_colors() {
-            return Err(MeshError::InvalidParts);
-        }
+        validate_voxel_templates(&faces)?;
         let mut capacities = self
             .parts
             .iter()
@@ -413,5 +432,43 @@ impl VoxelMeshSource {
             Mesh::from_voxel_quads_without_raycast(quads, self.parts.to_vec())
                 .expect("validated voxel templates and bounded material regions")
         })
+    }
+}
+
+#[cfg(test)]
+mod template_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validating_gpu_faces_does_not_materialize_cpu_geometry() {
+        let source = tests::source();
+        let templates = source.templates.to_vec();
+        assert!(source.fallback.get().is_none());
+        validate_voxel_templates(&templates).unwrap();
+        assert!(source.fallback.get().is_none());
+    }
+
+    #[test]
+    fn gpu_face_validator_preserves_compact_mesh_input_errors() {
+        let original = tests::source().templates[0].clone();
+        let mut broken = original.clone();
+        broken.vertices[0].position.x = f32::NAN;
+        assert!(matches!(
+            validate_voxel_templates(&[broken]), Err(MeshError::NonFiniteVertex)
+        ));
+        let mut broken = original.clone();
+        broken.vertices[0].uv.y = f32::INFINITY;
+        assert!(matches!(
+            validate_voxel_templates(&[broken]), Err(MeshError::NonFiniteVertex)
+        ));
+        let mut broken = original.clone();
+        broken.vertices[0].color[3] = 1.2;
+        assert!(matches!(
+            validate_voxel_templates(&[broken]), Err(MeshError::InvalidVoxelColor)
+        ));
+        assert!(matches!(
+            validate_voxel_templates(&[]), Err(MeshError::InvalidParts)
+        ));
+        validate_voxel_templates(&[original]).unwrap();
     }
 }

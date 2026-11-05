@@ -110,18 +110,7 @@ impl VoxelMeshSource {
         if instances.is_empty() {
             return Ok(self);
         }
-        let validation = Mesh::from_voxel_quads_without_raycast(
-            faces.iter().map(|face| face.vertices),
-            vec![MeshPart::new(
-                0,
-                u32::try_from(faces.len().checked_mul(6).ok_or(MeshError::TooLarge)?)
-                    .map_err(|_| MeshError::TooLarge)?,
-                0,
-            )],
-        )?;
-        if !validation.has_unorm_colors() {
-            return Err(MeshError::InvalidParts);
-        }
+        validate_voxel_templates(&faces)?;
         let mut capacities = self
             .parts
             .iter()
