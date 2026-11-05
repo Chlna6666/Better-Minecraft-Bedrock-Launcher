@@ -43,6 +43,7 @@ impl ManagePageView {
                         geometry_path: skin.geometry_path.clone(),
                         geometry_identifier: skin.geometry_identifier.clone(),
                         cape_texture_path: None,
+                        cape_elytra_texture_path: None,
                     })
                     .collect::<Vec<_>>()
             })
@@ -60,6 +61,7 @@ impl ManagePageView {
                             geometry_path: None,
                             geometry_identifier: None,
                             cape_texture_path: None,
+                            cape_elytra_texture_path: None,
                         }]
                     })
             });
@@ -93,6 +95,7 @@ impl ManagePageView {
                 geometry_path: None,
                 geometry_identifier: None,
                 cape_texture_path: Some(cape.texture_path.clone()),
+                cape_elytra_texture_path: cape.elytra_texture_path.clone(),
             })
             .collect::<Vec<_>>();
         crate::ui::window::skin_pack::open_skin_preview_window(

@@ -33,6 +33,24 @@ const CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW: f32 = std::f32::consts::PI;
 /// Atlas size assumed by the vanilla skin UV layout.
 const SKIN_ATLAS_UNITS: f32 = 64.0;
 const SKIN_LAYER_ALPHA_CUTOFF: f32 = 0.04;
+/// Vanilla elytra wings follow the modern model (skinview3d `ElytraObject`): a 10x20x2 box
+/// sampled at texOffs(22, 0) and inflated by one unit per side into a flat 12x22 plane.
+const ELYTRA_WING_INFLATE: f32 = 1.0;
+/// Vanilla rest pose (`ElytraModel.createLayer`): xRot = zRot = PI/12 on both wings.
+const ELYTRA_WING_REST_TILT: f32 = std::f32::consts::PI / 12.0;
+/// Spread pose: wings rotated near-horizontal around their shoulder pivot.
+const ELYTRA_WING_SPREAD_ANGLE: f32 = 1.25;
+/// Mirrored yaw separating the two overlapping wing planes (skinview3d uses 0.01 rad).
+const ELYTRA_WING_YAW_JITTER: f32 = 0.01;
+/// The cape hangs from the body top (y = 8) one unit behind the torso back plane.
+const CAPE_PIVOT_Y: f32 = 8.0;
+const CAPE_PIVOT_Z: f32 = -2.6;
+/// Wing groups pivot five units from the spine at the body top; both wing planes are centered
+/// on the spine (mesh offset ∓5, −10, −1 inside the group) and rotated ±PI/12 around Z.
+const ELYTRA_PIVOT_X: f32 = 5.0;
+const ELYTRA_PIVOT_Z: f32 = -2.0;
+/// Wing box offset inside its pivot group, per the skinview3d reference model.
+const ELYTRA_WING_MESH_OFFSET: [f32; 3] = [-5.0, -10.0, -1.0];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SkinLayerMode {
@@ -119,6 +137,7 @@ pub(super) fn skin_player_mesh(
     layer_mode: SkinLayerMode,
     geometry_source: Option<SkinPreviewGeometrySource>,
     cape_texture_path: Option<&Path>,
+    cape_elytra_texture_path: Option<&Path>,
     cape_mode: CapePreviewMode,
 ) -> Result<Arc<SkinPreviewMeshes>, String> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<SkinPreviewMeshes>>>> = OnceLock::new();
@@ -128,7 +147,7 @@ pub(super) fn skin_player_mesh(
         |geometry| format!("geometry={}|id={}", geometry.path, geometry.identifier),
     );
     let cache_key = format!(
-        "{}|slim={slim_arms}|layer={layer_mode:?}|{geometry_cache_key}|cape={cape_texture_path:?}|cape_mode={cape_mode:?}",
+        "{}|slim={slim_arms}|layer={layer_mode:?}|{geometry_cache_key}|cape={cape_texture_path:?}|elytra={cape_elytra_texture_path:?}|cape_mode={cape_mode:?}",
         texture_path.to_string_lossy(),
     );
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -150,6 +169,12 @@ pub(super) fn skin_player_mesh(
         .as_ref()
         .map(skin_texture_asset)
         .transpose()?;
+    let cape_elytra_texture = cape_elytra_texture_path
+        .map(|path| open_skin_texture(path).map_err(|error| format!("{error:#}")))
+        .transpose()?
+        .as_ref()
+        .map(skin_texture_asset)
+        .transpose()?;
     let meshes = if let Some(geometry_source) = geometry_source.as_ref()
         && let Some(custom_mesh) = build_custom_geometry_mesh(
             &image,
@@ -163,6 +188,7 @@ pub(super) fn skin_player_mesh(
             slim_arms,
             layer_mode,
             cape_texture,
+            cape_elytra_texture,
             cape_mode,
         )?)
     };
@@ -307,20 +333,22 @@ fn build_custom_geometry_meshes(
         }
     }
 
-    finish_skin_preview(
-        scene,
-        texture,
-        tracks,
-        CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW,
-    )
+    finish_skin_preview(scene, texture, tracks, CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW)
 }
 
 fn build_skin_player_meshes(
     texture: Arc<TextureAsset>,
     slim_arms: bool,
     layer_mode: SkinLayerMode,
- ) -> Result<SkinPreviewMeshes, String> {
-    build_skin_player_meshes_with_cape(texture, slim_arms, layer_mode, None, CapePreviewMode::Cape)
+) -> Result<SkinPreviewMeshes, String> {
+    build_skin_player_meshes_with_cape(
+        texture,
+        slim_arms,
+        layer_mode,
+        None,
+        None,
+        CapePreviewMode::Cape,
+    )
 }
 
 fn build_skin_player_meshes_with_cape(
@@ -328,6 +356,7 @@ fn build_skin_player_meshes_with_cape(
     slim_arms: bool,
     layer_mode: SkinLayerMode,
     cape_texture: Option<Arc<TextureAsset>>,
+    cape_elytra_texture: Option<Arc<TextureAsset>>,
     cape_mode: CapePreviewMode,
 ) -> Result<SkinPreviewMeshes, String> {
     let (width, height) = (texture.width(), texture.height());
@@ -445,65 +474,156 @@ fn build_skin_player_meshes_with_cape(
     }
 
     if let Some(cape_texture) = cape_texture.as_ref() {
-        insert_cape_preview(&mut scene, &mut tracks, cape_texture, cape_mode)?;
+        insert_cape_preview(
+            &mut scene,
+            &mut tracks,
+            cape_texture,
+            cape_elytra_texture.as_ref(),
+            cape_mode,
+        )?;
     }
     finish_skin_preview_with_cape(
         scene,
         texture,
         cape_texture,
+        cape_elytra_texture,
         tracks,
         VANILLA_PREVIEW_FRONT_YAW,
     )
 }
 
+/// Inserts the cape panel or vanilla-shaped elytra wings behind the body.
+///
+/// Cape mode hangs one 10x16x1 panel from the body top with its outer face (1, 1)-(11, 17)
+/// toward a viewer behind the player (Bedrock's cape bone is rotated 180° versus Java).
+/// Elytra modes place two vanilla wings, mirroring the skinview3d `ElytraObject` reference:
+/// both 12x22 planes are centered on the spine, each group pivots ±5 from it at the body top,
+/// and the right wing is a mirrored copy of the left. The wing samples the pack's elytra
+/// texture when the pack ships one, otherwise the wing region embedded in the cape texture.
 fn insert_cape_preview(
     scene: &mut Scene,
     tracks: &mut Vec<TransformTrack>,
-    texture: &Arc<TextureAsset>,
+    cape_texture: &Arc<TextureAsset>,
+    elytra_texture: Option<&Arc<TextureAsset>>,
     mode: CapePreviewMode,
 ) -> Result<(), String> {
-    if texture.width() < 64 || texture.height() < 32 {
+    if cape_texture.width() < 64 || cape_texture.height() < 32 {
         return Err("披风纹理尺寸过小".into());
     }
-    let material = textured_skin_material(texture, AlphaMode::Mask);
-    let parts: &[(f32, u32, f32)] = match mode {
-        CapePreviewMode::Cape => &[(0.0, 0, 0.0)],
-        CapePreviewMode::ElytraFolded => &[(-2.5, 0, 0.0), (2.5, 5, 0.0)],
-        CapePreviewMode::ElytraSpread => &[(-2.5, 0, -0.9), (2.5, 5, 0.9)],
-    };
-    for &(x, uv_x, yaw) in parts {
-        let width = if mode == CapePreviewMode::Cape {
-            10.0
-        } else {
-            5.0
-        };
-        let mut uv = super::uv::uv_box(uv_x, 0, width as u32, 16, 1);
+    if mode == CapePreviewMode::Cape {
+        // Bedrock's geometry.cape rotates the cape bone by 180 degrees, so the face a viewer
+        // behind the player sees samples the unwrap's front region (1, 1)-(11, 17) — the
+        // opposite of the Java/skinview3d cape orientation. Keep the face swap.
+        let mut uv = super::uv::uv_box(0, 0, 10, 16, 1);
         std::mem::swap(&mut uv.front, &mut uv.back);
         let mesh = Arc::new(build_cuboid_mesh_atlas(
             CuboidSize {
-                width,
+                width: 10.0,
                 height: 16.0,
                 depth: 1.0,
             },
             uv,
             0.0,
-            32.0,
+            cape_texture.width() as f32,
+            cape_texture.height() as f32,
+            false,
         )?);
-        let rotation = Quat::from_axis_angle(Vec3::Y, yaw).ok_or("无效的鞘翅展开角度")?;
         let pivot = scene
             .insert(
                 None,
                 Node::new().with_transform(Transform {
-                    translation: Vec3::new(x, 10.0, -2.6),
-                    rotation,
+                    translation: Vec3::new(0.0, CAPE_PIVOT_Y, CAPE_PIVOT_Z),
                     ..Transform::IDENTITY
                 }),
             )
             .map_err(|error| error.to_string())?;
-        insert_mesh_node(scene, pivot, [0.0, -8.0, 0.0], mesh, &material)?;
-        if mode == CapePreviewMode::Cape {
-            tracks.push(cape_motion_track(pivot)?);
+        insert_mesh_node(
+            scene,
+            pivot,
+            [0.0, -8.0, 0.0],
+            mesh,
+            &textured_skin_material(cape_texture, AlphaMode::Mask),
+        )?;
+        tracks.push(cape_motion_track(pivot)?);
+        return Ok(());
+    }
+
+    let material = match elytra_texture {
+        Some(texture) => {
+            if texture.width() < 64 || texture.height() < 32 {
+                return Err("鞘翅纹理尺寸过小".into());
+            }
+            textured_skin_material(texture, AlphaMode::Mask)
         }
+        None => textured_skin_material(cape_texture, AlphaMode::Mask),
+    };
+    for side in [-1.0, 1.0] {
+        // +1 is the player's left wing (pivot at +5). Both wings sample the vanilla
+        // texOffs(22, 0) unwrap — the back region (36, 2)-(46, 22) lands on the face a viewer
+        // behind the player sees, where the vanilla and community wing art is authored.
+        let atlas = match elytra_texture {
+            Some(texture) => (texture.width() as f32, texture.height() as f32),
+            None => (cape_texture.width() as f32, cape_texture.height() as f32),
+        };
+        let uv = super::uv::uv_box(22, 0, 10, 20, 2);
+        let mesh = Arc::new(build_cuboid_mesh_atlas(
+            CuboidSize {
+                width: 10.0,
+                height: 20.0,
+                depth: 2.0,
+            },
+            uv,
+            ELYTRA_WING_INFLATE,
+            atlas.0,
+            atlas.1,
+            side < 0.0,
+        )?);
+        let flare = side
+            * match mode {
+                CapePreviewMode::ElytraSpread => ELYTRA_WING_SPREAD_ANGLE,
+                _ => ELYTRA_WING_REST_TILT,
+            };
+        // three.js Euler XYZ applies Z first, then Y, then X, so the hierarchy nests
+        // X (parent) → Y → Z (child). The tiny mirrored yaw is skinview3d's z-fighting
+        // guard for the two overlapping wing planes.
+        let pivot = scene
+            .insert(
+                None,
+                Node::new().with_transform(Transform {
+                    translation: Vec3::new(side * ELYTRA_PIVOT_X, CAPE_PIVOT_Y, ELYTRA_PIVOT_Z),
+                    rotation: Quat::from_axis_angle(Vec3::X, ELYTRA_WING_REST_TILT)
+                        .ok_or("无效的鞘翅展开角度")?,
+                    ..Transform::IDENTITY
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        let yaw = scene
+            .insert(
+                Some(pivot),
+                Node::new().with_transform(Transform {
+                    rotation: Quat::from_axis_angle(Vec3::Y, side * ELYTRA_WING_YAW_JITTER)
+                        .ok_or("无效的鞘翅展开角度")?,
+                    ..Transform::IDENTITY
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        let flare_node = scene
+            .insert(
+                Some(yaw),
+                Node::new().with_transform(Transform {
+                    rotation: Quat::from_axis_angle(Vec3::Z, flare)
+                        .ok_or("无效的鞘翅展开角度")?,
+                    ..Transform::IDENTITY
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        // Both wing planes hang centered on the spine; the mirrored right wing keeps the
+        // same offset with its geometry flipped, exactly like skinview3d's scale.x = -1.
+        let mut offset = ELYTRA_WING_MESH_OFFSET;
+        if side < 0.0 {
+            offset[0] = -offset[0];
+        }
+        insert_mesh_node(scene, flare_node, offset, mesh, &material)?;
     }
     Ok(())
 }
@@ -568,13 +688,14 @@ fn finish_skin_preview(
     tracks: Vec<TransformTrack>,
     front_yaw: f32,
 ) -> Result<SkinPreviewMeshes, String> {
-    finish_skin_preview_with_cape(scene, texture, None, tracks, front_yaw)
+    finish_skin_preview_with_cape(scene, texture, None, None, tracks, front_yaw)
 }
 
 fn finish_skin_preview_with_cape(
     scene: Scene,
     texture: Arc<TextureAsset>,
     cape_texture: Option<Arc<TextureAsset>>,
+    cape_elytra_texture: Option<Arc<TextureAsset>>,
     tracks: Vec<TransformTrack>,
     front_yaw: f32,
 ) -> Result<SkinPreviewMeshes, String> {
@@ -591,6 +712,9 @@ fn finish_skin_preview_with_cape(
     let mut textures = vec![texture];
     if let Some(cape_texture) = cape_texture {
         textures.push(cape_texture);
+    }
+    if let Some(cape_elytra_texture) = cape_elytra_texture {
+        textures.push(cape_elytra_texture);
     }
     let scene_view = SceneView::new(Arc::new(scene), camera)
         .with_textures(textures.clone())
@@ -686,14 +810,18 @@ fn push_part(
 /// and another side quad per overlay texel. Neighbouring texel quads also overlapped along the
 /// texture's vertical axis, which produced the see-through seams in the preview.
 fn build_cuboid_mesh(size: CuboidSize, uv: CuboidUv, inflate: f32) -> Result<Mesh, String> {
-    build_cuboid_mesh_atlas(size, uv, inflate, SKIN_ATLAS_UNITS)
+    build_cuboid_mesh_atlas(size, uv, inflate, SKIN_ATLAS_UNITS, SKIN_ATLAS_UNITS, false)
 }
 
+/// Builds one textured cuboid; `mirror` flips the geometry in X (same UVs), matching
+/// skinview3d's `scale.x = -1` wing mirror.
 fn build_cuboid_mesh_atlas(
     size: CuboidSize,
     uv: CuboidUv,
     inflate: f32,
+    atlas_width: f32,
     atlas_height: f32,
+    mirror: bool,
 ) -> Result<Mesh, String> {
     let grid = FaceGrid {
         width: 1,
@@ -712,12 +840,16 @@ fn build_cuboid_mesh_atlas(
     for face in skin_preview_faces() {
         let region = face_region(uv, *face);
         let corners = face_rect_corners(size, *face, grid, run, inflate);
-        let texture = face_texture_rect(region, atlas_height);
+        let texture = face_texture_rect(region, atlas_width, atlas_height);
         let shade = shade_cuboid_face(*face);
         let base = u32::try_from(vertices.len()).map_err(|error| error.to_string())?;
         for corner in 0..4 {
+            let mut position = corners[corner];
+            if mirror {
+                position[0] = -position[0];
+            }
             vertices.push(Vertex {
-                position: vec3(corners[corner]),
+                position: vec3(position),
                 normal: cuboid_face_normal(*face),
                 uv: Vec2::new(texture[corner][0], texture[corner][1]),
                 color: [shade, shade, shade, 1.0],
@@ -732,9 +864,9 @@ fn build_cuboid_mesh_atlas(
 }
 
 /// Texture rectangle for one atlas face in the corner order used by [`face_rect_corners`].
-fn face_texture_rect(region: TextureRegion, atlas_height: f32) -> [[f32; 2]; 4] {
-    let left = region.x as f32 / SKIN_ATLAS_UNITS;
-    let right = (region.x + region.width) as f32 / SKIN_ATLAS_UNITS;
+fn face_texture_rect(region: TextureRegion, atlas_width: f32, atlas_height: f32) -> [[f32; 2]; 4] {
+    let left = region.x as f32 / atlas_width;
+    let right = (region.x + region.width) as f32 / atlas_width;
     let top = region.y as f32 / atlas_height;
     let bottom = (region.y + region.height) as f32 / atlas_height;
     [[left, bottom], [right, bottom], [right, top], [left, top]]

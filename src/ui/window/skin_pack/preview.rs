@@ -54,6 +54,7 @@ pub struct SkinPreviewWindowSkin {
     pub geometry_path: Option<SharedString>,
     pub geometry_identifier: Option<SharedString>,
     pub cape_texture_path: Option<SharedString>,
+    pub cape_elytra_texture_path: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -142,6 +143,11 @@ impl SkinPreviewWindowView {
         let layer_mode = self.layer_mode;
         let cape_mode = self.cape_mode;
         let cape_texture_path = skin.cape_texture_path.map(|path| path.to_string());
+        let cape_elytra_texture_path = skin
+            .cape_elytra_texture_path
+            .as_ref()
+            .filter(|_| cape_texture_path.is_some())
+            .map(|path| path.to_string());
         let geometry_source = skin
             .geometry_path
             .as_ref()
@@ -160,6 +166,7 @@ impl SkinPreviewWindowView {
                         layer_mode,
                         geometry_source,
                         cape_texture_path.as_deref().map(Path::new),
+                        cape_elytra_texture_path.as_deref().map(Path::new),
                         cape_mode,
                     )
                 })
