@@ -43,6 +43,16 @@ fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
     }).collect()
 }
 
+/// Mesh parts are validated as contiguous, strictly increasing index
+/// ranges at construction. Resolve the generated part in O(log N) rather than
+/// scanning every material part again for each generated Draw batch.
+fn generated_part_index(parts: &[MeshPart], target: MeshPart) -> Option<usize> {
+    parts
+        .binary_search_by_key(&target.first_index(), |part| part.first_index())
+        .ok()
+        .filter(|&index| parts[index] == target)
+}
+
 impl SceneResources {
     pub(super) fn sync_generated_draws(
         &mut self,
@@ -56,11 +66,7 @@ impl SceneResources {
             let Some(generated) = &mesh.generated else {
                 continue;
             };
-            let part = draw
-                .mesh
-                .parts()
-                .iter()
-                .position(|part| *part == draw.part)
+            let part = generated_part_index(draw.mesh.parts(), draw.part)
                 .ok_or_else(|| anyhow!("missing generated material part"))?;
             let (_, mapping) = groups
                 .entry(generated.arguments)
@@ -447,5 +453,34 @@ mod mapping_patch_tests {
         let (truncated, writes) = materialize(&old, &old[..28]);
         assert_eq!(truncated, old[..28]);
         assert_eq!(writes, 0, "retired suffix does not need a GPU upload");
+    }
+}
+
+#[cfg(test)]
+mod generated_part_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn binary_part_lookup_matches_linear_oracle_for_many_material_ranges() {
+        let mut parts = Vec::new();
+        let mut next_first = 0;
+        for index in 0..512u32 {
+            let count = (index % 9 + 1) * 6;
+            parts.push(MeshPart::new(next_first, count, index % 16));
+            next_first += count;
+        }
+        for (expected, &part) in parts.iter().enumerate() {
+            assert_eq!(generated_part_index(&parts, part), Some(expected));
+            assert_eq!(
+                generated_part_index(&parts, part),
+                parts.iter().position(|old| *old == part),
+            );
+        }
+        let changed_material = MeshPart::new(
+            parts[50].first_index(), parts[50].index_count(), 999,
+        );
+        assert_eq!(generated_part_index(&parts, changed_material), None);
+        assert_eq!(generated_part_index(&parts, MeshPart::new(next_first, 6, 0)), None);
+        assert_eq!(generated_part_index(&[], MeshPart::new(0, 6, 0)), None);
     }
 }
