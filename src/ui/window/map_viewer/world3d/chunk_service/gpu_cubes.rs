@@ -26,19 +26,19 @@ impl Worker {
         };
         let vertices = output.mesh.vertices();
         let mut templates = vec![None; faces.len()];
+        // Packed quads and MeshPart ranges are both monotonic. A cursor avoids
+        // scanning every material part for every face in a large chunk section.
+        let mut part_cursor = 0usize;
         for (quad, &original) in order.iter().enumerate() {
-            let part = output
-                .mesh
-                .parts()
-                .iter()
-                .find(|part| {
-                    part.first_index() as usize <= quad * 6
-                        && quad * 6 < (part.first_index() + part.index_count()) as usize
-                })
-                .ok_or_else(|| "GPU 方块模板缺少材质分段".to_string())?;
+            let material_slot = packed_quad_material_slot(
+                output.mesh.parts(),
+                quad,
+                &mut part_cursor,
+            )
+            .ok_or_else(|| "GPU 方块模板缺少材质分段".to_string())?;
             templates[original] = Some(gpui_3d::VoxelFaceTemplate {
                 vertices: std::array::from_fn(|corner| vertices[quad * 4 + corner]),
-                material_slot: part.material_slot(),
+                material_slot,
                 neighbour: if original < band.template_faces {
                     band.neighbours[original]
                 } else {
@@ -90,5 +90,54 @@ impl Worker {
         output.mesh = Arc::new(mesh);
         output.occluders = occluders;
         Ok(Some(output))
+    }
+}
+
+
+/// Resolve monotonically packed quads to their material part in O(quads + parts).
+fn packed_quad_material_slot(
+    parts: &[MeshPart],
+    quad: usize,
+    cursor: &mut usize,
+) -> Option<u32> {
+    let first_index = quad.checked_mul(6)?;
+    while let Some(part) = parts.get(*cursor) {
+        let end = (part.first_index() as usize).checked_add(part.index_count() as usize)?;
+        if first_index < end {
+            break;
+        }
+        *cursor += 1;
+    }
+    parts.get(*cursor)
+        .filter(|part| first_index >= part.first_index() as usize)
+        .map(|part| part.material_slot())
+}
+
+#[cfg(test)]
+mod material_cursor_tests {
+    use super::{MeshPart, packed_quad_material_slot};
+
+    #[test]
+    fn packed_material_cursor_crosses_section_part_boundaries() {
+        let parts = [
+            MeshPart::new(0, 12, 4),
+            MeshPart::new(12, 6, 9),
+            MeshPart::new(18, 18, 2),
+        ];
+        let mut cursor = 0;
+        let mapped = (0..6)
+            .map(|quad| packed_quad_material_slot(&parts, quad, &mut cursor))
+            .collect::<Vec<_>>();
+        assert_eq!(mapped, vec![Some(4), Some(4), Some(9), Some(2), Some(2), Some(2)]);
+        assert_eq!(cursor, 2);
+        assert_eq!(packed_quad_material_slot(&parts, 6, &mut cursor), None);
+    }
+
+    #[test]
+    fn packed_material_cursor_rejects_unmapped_or_gapped_quads() {
+        let parts = [MeshPart::new(6, 6, 7)];
+        let mut cursor = 0;
+        assert_eq!(packed_quad_material_slot(&parts, 0, &mut cursor), None);
+        assert_eq!(packed_quad_material_slot(&parts, 1, &mut cursor), Some(7));
     }
 }

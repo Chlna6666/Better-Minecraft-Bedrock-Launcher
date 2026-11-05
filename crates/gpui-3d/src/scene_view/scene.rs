@@ -49,6 +49,8 @@ pub(super) struct SceneResources {
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     pub(super) command_revision: u64,
+    // Cached native commands remain valid while camera motion leaves CPU-pruned batches unchanged.
+    command_visibility: Vec<bool>,
     batches: Vec<DrawBatchRange>,
     previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
     draw_buffer: BufferId,
@@ -243,6 +245,7 @@ impl SceneResources {
             projection: None,
             prepared: PreparedScene::default(),
             command_revision: 0,
+            command_visibility: Vec::new(),
             batches: Vec::new(),
             previous_draws: Vec::new(),
             draw_buffer,
@@ -327,9 +330,9 @@ impl SceneResources {
         {
             return Ok(());
         }
-        // A changed frame can alter CPU culling, bindings, draw addresses or pipelines.
-        // Keep descriptors from the previous successful prepare out of the next frame.
-        self.command_revision = self.command_revision.wrapping_add(1);
+        // Camera-only movement normally changes uniforms and GPU cull arguments, not
+        // the native draw command list. Invalidate commands below only when their
+        // bindings, draw batches or CPU-pruned visibility actually change.
         self.prepared.set_culling_bounds(scene_view.culling_bounds);
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
         let mut reordered_blends = None;
@@ -604,6 +607,17 @@ impl SceneResources {
             }
         }
         drop(resource_phase);
+        let command_visibility_changed = self.refresh_command_visibility();
+        if draw_list_changed
+            || sampler_changed
+            || shadow_created
+            || voxel_shader_changed
+            || wire_changed
+            || (shadow_enabled && frame_changed)
+            || command_visibility_changed
+        {
+            self.command_revision = self.command_revision.wrapping_add(1);
+        }
         self.scene = Some(scene_view.scene.clone());
         self.texture_table = Some(scene_view.textures.clone());
         self.animation = Some(scene_view.animation.clone());
@@ -631,6 +645,26 @@ impl SceneResources {
             }
         }
         Ok(())
+    }
+
+    /// Tracks the native command inclusion mask for single-instance GPU-culling
+    /// batches. GPU indirect arguments can change each frame without replacing
+    /// their draw commands, but CPU frustum-pruned batches must invalidate the list.
+    /// The scratch allocation is retained across frames and section growth.
+    fn refresh_command_visibility(&mut self) -> bool {
+        let gpu_culling = self.culling.is_some();
+        let prepared = &self.prepared;
+        let visible = prepared.bounds_visibility();
+        update_command_visibility(
+            &mut self.command_visibility,
+            self.batches.iter().map(|batch| {
+                !gpu_culling
+                    || batch.instance_count != 1
+                    || prepared.draws.get(batch.first_instance).is_some_and(|draw| {
+                        visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw)
+                    })
+            }),
+        )
     }
 
     /// Uploads the camera, viewport, and extension-bounds values shared by every draw.
@@ -2091,4 +2125,60 @@ fn update_prepared(
             .context("preparing animated GPUI 3D scene")?;
     }
     Ok(())
+}
+
+
+/// Update a retained native-command inclusion mask without per-frame allocation.
+/// A camera movement that leaves the mask unchanged can reuse the previous commands.
+fn update_command_visibility(
+    previous: &mut Vec<bool>,
+    current: impl IntoIterator<Item = bool>,
+) -> bool {
+    let mut changed = false;
+    let mut len = 0;
+    for included in current {
+        if let Some(old) = previous.get_mut(len) {
+            if *old != included {
+                *old = included;
+                changed = true;
+            }
+        } else {
+            previous.push(included);
+            changed = true;
+        }
+        len += 1;
+    }
+    if previous.len() != len {
+        previous.truncate(len);
+        changed = true;
+    }
+    changed
+}
+
+#[cfg(test)]
+mod command_visibility_tests {
+    use super::update_command_visibility;
+
+    #[test]
+    fn camera_motion_reuses_commands_until_batch_visibility_changes() {
+        let mut mask = Vec::new();
+        assert!(update_command_visibility(&mut mask, [true, false, true]));
+        assert!(!update_command_visibility(&mut mask, [true, false, true]));
+        assert_eq!(mask, [true, false, true]);
+        assert!(update_command_visibility(&mut mask, [true, true, true]));
+        assert_eq!(mask, [true, true, true]);
+        assert!(!update_command_visibility(&mut mask, [true, true, true]));
+    }
+
+    #[test]
+    fn mask_tracks_section_growth_and_removal() {
+        let mut mask = vec![true, false, true];
+        assert!(update_command_visibility(&mut mask, [true, false]));
+        assert_eq!(mask, [true, false]);
+        assert!(update_command_visibility(&mut mask, [true, false, false]));
+        assert_eq!(mask, [true, false, false]);
+        assert!(update_command_visibility(&mut mask, []));
+        assert!(mask.is_empty());
+        assert!(!update_command_visibility(&mut mask, []));
+    }
 }
