@@ -590,30 +590,6 @@ fn validate(set_name: &str, shaders: &[&Shader]) -> Result<(), Error> {
     Ok(())
 }
 
-fn translate(
-    module: &gfx_shader::WgslModule,
-    entry_point: &str,
-    stage: ShaderStage,
-    shader: &Shader,
-) -> Result<String, Error> {
-    let binary = module
-        .compile_hlsl(stage, entry_point)
-        .map_err(|error| Error::Translate {
-            shader: shader.name.clone(),
-            entry_point: entry_point.to_string(),
-            message: error.to_string(),
-        })?;
-
-    match binary.code {
-        gfx_core::ShaderCode::Hlsl(hlsl) => Ok(hlsl),
-        _ => Err(Error::Translate {
-            shader: shader.name.clone(),
-            entry_point: entry_point.to_string(),
-            message: "WGSL translation did not produce HLSL source".to_string(),
-        }),
-    }
-}
-
 fn translate_metal(
     module: &gfx_shader::WgslModule,
     entry_point: &str,
@@ -971,20 +947,10 @@ mod tests {
             .entry("fs_main", ShaderStage::Fragment);
         let prepared = PreparedShader::new(&shader).expect("WGSL bundle should validate once");
 
-        let vertex = translate(
-            &prepared.module,
-            "vs_main",
-            ShaderStage::Vertex,
-            prepared.shader,
-        )
-        .expect("validated module should translate vertex entry");
-        let fragment = translate(
-            &prepared.module,
-            "fs_main",
-            ShaderStage::Fragment,
-            prepared.shader,
-        )
-        .expect("validated module should translate fragment entry");
+        let vertex = prepared.module.compile_hlsl(ShaderStage::Vertex, "vs_main")
+            .expect("validated module should translate vertex entry");
+        let fragment = prepared.module.compile_hlsl(ShaderStage::Fragment, "fs_main")
+            .expect("validated module should translate fragment entry");
 
         assert!(!vertex.is_empty());
         assert!(!fragment.is_empty());

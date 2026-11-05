@@ -111,25 +111,34 @@ impl WgslModule {
         Ok(ShaderBinary::spirv(stage, entry_point, spirv))
     }
 
-    /// Returns the exact entry point emitted by Naga's HLSL namer. HLSL has a
-    /// different reserved identifier set, and Naga may rename WGSL functions
-    /// (including names ending in numeric suffixes). The native compiler must
-    /// consume this reflected identifier, not the original WGSL name.
+    /// Returns the actual entry point emitted by Naga's HLSL namer.
+    ///
+    /// Both HLSL writers below use PipelineOptions::entry_point = Some(...).
+    /// In this mode Naga returns exactly ONE reflected name for the selected
+    /// entry point, not a list indexed by Module::entry_points. Indexing by
+    /// the module position breaks every shader except the first in a WGSL
+    /// bundle (e.g. gpui's fs_solid_quad and gpui-3d's fs_effects).
+    /// Retain the reflected name because HLSL reserved names may be renamed.
     fn reflected_hlsl_entry(
         &self,
         reflection: &hlsl::ReflectionInfo,
         stage: ShaderStage,
         requested: &str,
     ) -> Result<String> {
-        let index = self.module.entry_points.iter().position(|ep| {
+        if !self.module.entry_points.iter().any(|ep| {
             ep.stage == shader_stage_to_naga(stage) && ep.name == requested
-        }).ok_or_else(|| ShaderError::Hlsl(format!(
-            "missing WGSL entry point {requested}"
-        )))?;
-        reflection.entry_point_names.get(index)
-            .ok_or_else(|| ShaderError::Hlsl(format!(
-                "missing HLSL reflection for {requested}"
-            )))?
+        }) {
+            return Err(ShaderError::Hlsl(format!(
+                "missing WGSL entry point {requested}"
+            )));
+        }
+        let [reflected_name] = reflection.entry_point_names.as_slice() else {
+            return Err(ShaderError::Hlsl(format!(
+                "expected one HLSL reflection entry for {requested}, got {}",
+                reflection.entry_point_names.len()
+            )));
+        };
+        reflected_name
             .as_ref()
             .map_err(|error| ShaderError::Hlsl(error.to_string()))
             .cloned()
@@ -701,5 +710,45 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn hlsl_entry_reflection_is_relative_to_selected_entry_not_module_index() {
+        let module = WgslModule::parse(r#"
+            @vertex fn vs_first() -> @builtin(position) vec4<f32> {
+                return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            }
+            @fragment fn fs_solid_quad() -> @location(0) vec4<f32> {
+                return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+            }
+            @fragment fn fs_effects() -> @location(0) vec4<f32> {
+                return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+            }
+            @compute @workgroup_size(32) fn cs_hiz_raster_32() {}
+            @compute @workgroup_size(64) fn cs_hiz_raster_64() {}
+        "#).expect("multi-entry WGSL must parse");
+
+        for (stage, entry) in [
+            (ShaderStage::Vertex, "vs_first"),
+            (ShaderStage::Fragment, "fs_solid_quad"),
+            (ShaderStage::Fragment, "fs_effects"),
+            (ShaderStage::Compute, "cs_hiz_raster_32"),
+            (ShaderStage::Compute, "cs_hiz_raster_64"),
+        ] {
+            for binary in [
+                module.compile_hlsl(stage, entry).expect("DX12 translation"),
+                module.compile_hlsl_dx11(stage, entry).expect("DX11 translation"),
+            ] {
+                let gfx_core::ShaderCode::Hlsl(source) = binary.code else {
+                    panic!("expected HLSL source for {entry}");
+                };
+                assert!(
+                    source.contains(&format!("{}(", binary.entry_point)),
+                    "{entry}: reflected name '{}' is not present in the HLSL source",
+                    binary.entry_point,
+                );
+            }
+        }
+    }
+
 
 }
