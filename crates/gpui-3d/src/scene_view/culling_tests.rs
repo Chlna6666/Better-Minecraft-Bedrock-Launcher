@@ -502,6 +502,12 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
             (super::super::hiz::WORDS * 4) as u64,
             ComputeBufferAccess::ReadOnly,
         ),
+        compute_binding(
+            8,
+            culling.slot_map,
+            prepared.draws.len() as u64 * 4,
+            ComputeBufferAccess::ReadOnly,
+        ),
     ];
     ResourceDevice::dispatch_compute(
         &mut device,
