@@ -20,6 +20,11 @@ pub(super) const ARGUMENT_STRIDE: u64 = 16;
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 struct BoundsRecordKey([u32; 12]);
 
+/// Exact 16-byte GPU culling batch descriptor. This remains identical when
+/// unrelated Section deltas arrive, so the existing GPU buffer stays resident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BatchRecordKey([u32; 4]);
+
 impl BoundsRecordKey {
     fn from_draw(draw: &PreparedDraw) -> Self {
         let origin = draw.culling_origin;
@@ -104,6 +109,8 @@ pub(super) struct CullResources {
     scratch_inputs: [Vec<u8>; 2],
     bounds_keys: Vec<BoundsRecordKey>,
     scratch_bounds_keys: Vec<BoundsRecordKey>,
+    batch_keys: Vec<BatchRecordKey>,
+    scratch_batch_keys: Vec<BatchRecordKey>,
     bounds_encode_scratch: Vec<u8>,
 }
 
@@ -159,6 +166,8 @@ impl CullResources {
             scratch_inputs: Default::default(),
             bounds_keys: Vec::new(),
             scratch_bounds_keys: Vec::new(),
+            batch_keys: Vec::new(),
+            scratch_batch_keys: Vec::new(),
             bounds_encode_scratch: Vec::new(),
             instance_capacity,
             batch_capacity,
@@ -213,8 +222,18 @@ impl CullResources {
             &mut run_scratch,
         );
         self.bounds_encode_scratch = run_scratch;
-        if let Err(error) = encode_batches_into(draws, batches, meshes, &mut bytes) {
+        let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
+        if let Err(error) = encode_batches_cached(
+            draws,
+            batches,
+            meshes,
+            &self.batch_keys,
+            &self.uploaded_inputs[1],
+            &mut next_batch_keys,
+            &mut bytes,
+        ) {
             self.scratch_bounds_keys = next_bounds_keys;
+            self.scratch_batch_keys = next_batch_keys;
             self.scratch_inputs = [bounds, bytes];
             return Err(error);
         }
@@ -236,9 +255,10 @@ impl CullResources {
                         4,
                     )
                 } else {
-                    super::uploads::changed_ranges(
-                        &self.uploaded_inputs[i],
-                        data,
+                    super::uploads::changed_ranges_for_keys(
+                        &self.batch_keys,
+                        &next_batch_keys,
+                        self.uploaded_inputs[i].len(),
                         stride,
                         12,
                         4,
@@ -263,12 +283,16 @@ impl CullResources {
         if let Err(error) = write_result {
             // Keep the last successfully uploaded snapshot for the retry.
             self.scratch_bounds_keys = next_bounds_keys;
+            self.scratch_batch_keys = next_batch_keys;
             self.scratch_inputs = [bounds, bytes];
             return Err(error.into());
         }
         let mut old_keys = std::mem::replace(&mut self.bounds_keys, next_bounds_keys);
         old_keys.clear();
         self.scratch_bounds_keys = old_keys;
+        let mut old_batch_keys = std::mem::replace(&mut self.batch_keys, next_batch_keys);
+        old_batch_keys.clear();
+        self.scratch_batch_keys = old_batch_keys;
         let mut old = std::mem::replace(&mut self.uploaded_inputs, [bounds, bytes]);
         if self.uploaded_inputs[0].is_empty()
             && self.bounds_keys.len() == draws.len()
@@ -278,6 +302,12 @@ impl CullResources {
             // byte-extent equality. Move ownership of the immutable snapshot;
             // GPU input data was already resident, so no copy or upload.
             self.uploaded_inputs[0] = std::mem::take(&mut old[0]);
+        }
+        if self.uploaded_inputs[1].is_empty()
+            && self.batch_keys.len() == batches.len()
+            && old[1].len() == batches.len() * ARGUMENT_STRIDE as usize
+        {
+            self.uploaded_inputs[1] = std::mem::take(&mut old[1]);
         }
         if super::renderer::trace_timings() && bounds_encoded > 0 && bounds_encoded < draws.len() {
             eprintln!(
@@ -495,18 +525,16 @@ fn compute_binding(
     }
 }
 
-fn encode_batches_into(
+/// Resolve the logical culling batch metadata once, with no intermediate
+/// 16-byte-per-batch staging array.
+fn batch_record_keys(
     draws: &[PreparedDraw],
     batches: &[DrawBatchRange],
     meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
-    bytes: &mut Vec<u8>,
+    keys: &mut Vec<BatchRecordKey>,
 ) -> gpui::Result<()> {
-    let capacity = batches
-        .len()
-        .checked_mul(ARGUMENT_STRIDE as usize)
-        .ok_or_else(|| anyhow!("GPU bounds size overflow"))?;
-    bytes.clear();
-    bytes.reserve(capacity);
+    keys.clear();
+    keys.reserve(batches.len());
     for batch in batches {
         let end = batch
             .first_instance
@@ -524,13 +552,70 @@ fn encode_batches_into(
         if generated && batch.instance_count != 1 {
             return Err(anyhow!("generated mesh culling requires singleton batches"));
         }
-        for value in [
+        keys.push(BatchRecordKey([
             u32::from(generated),
             u32::try_from(batch.instance_count)?,
             0,
             u32::try_from(batch.first_instance)?,
-        ] {
-            bytes.extend_from_slice(&value.to_le_bytes());
+        ]));
+    }
+    Ok(())
+}
+
+/// Preserve the previous GPU Batch table and patch only records affected by
+/// Section addition/removal or generated-mesh changes. An empty output when
+/// keys/extent match is a sentinel for reusing the already committed buffer.
+fn encode_batches_cached(
+    draws: &[PreparedDraw],
+    batches: &[DrawBatchRange],
+    meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
+    previous: &[BatchRecordKey],
+    previous_bytes: &[u8],
+    next: &mut Vec<BatchRecordKey>,
+    output: &mut Vec<u8>,
+) -> gpui::Result<usize> {
+    batch_record_keys(draws, batches, meshes, next)?;
+    let size = batches.len()
+        .checked_mul(ARGUMENT_STRIDE as usize)
+        .ok_or_else(|| anyhow!("GPU batch descriptor size overflow"))?;
+    let dirty = next.iter().enumerate()
+        .filter(|(index, key)| previous.get(*index) != Some(key))
+        .count();
+    output.clear();
+    if dirty == 0 && previous == next && previous_bytes.len() == size {
+        return Ok(0);
+    }
+    output.extend_from_slice(previous_bytes);
+    output.resize(size, 0);
+    for (index, key) in next.iter().enumerate() {
+        if previous.get(index) == Some(key)
+            && previous_bytes.len() >= (index + 1) * ARGUMENT_STRIDE as usize
+        {
+            continue;
+        }
+        let start = index * ARGUMENT_STRIDE as usize;
+        for (word, value) in key.0.iter().enumerate() {
+            output[start + word * 4..start + word * 4 + 4]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    Ok(dirty)
+}
+
+#[cfg(test)]
+fn encode_batches_into(
+    draws: &[PreparedDraw],
+    batches: &[DrawBatchRange],
+    meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    let mut keys = Vec::new();
+    batch_record_keys(draws, batches, meshes, &mut keys)?;
+    bytes.clear();
+    bytes.reserve(keys.len() * ARGUMENT_STRIDE as usize);
+    for key in keys {
+        for word in key.0 {
+            bytes.extend_from_slice(&word.to_le_bytes());
         }
     }
     Ok(())
@@ -619,4 +704,56 @@ mod bounds_cache_tests {
             assert_eq!(encoded_key, encode_bounds(std::slice::from_ref(draw)));
         }
     }
+    #[test]
+    fn incremental_batch_upload_only_encodes_changed_records() {
+        let draws = sample_draws();
+        let batches = (0..draws.len()).map(|i| DrawBatchRange {
+            first_instance: i,
+            instance_count: 1,
+        }).collect::<Vec<_>>();
+        let mut old_keys = Vec::new();
+        let mut keys = Vec::new();
+        let mut bytes = Vec::new();
+        let mut reference = Vec::new();
+        let first = encode_batches_cached(
+            &draws, &batches, None, &[], &[],
+            &mut keys, &mut bytes,
+        ).unwrap();
+        assert_eq!(first, batches.len());
+        encode_batches_into(&draws, &batches, None, &mut reference).unwrap();
+        assert_eq!(bytes, reference);
+        let previous_bytes = bytes.clone();
+        std::mem::swap(&mut old_keys, &mut keys);
+        let identical = encode_batches_cached(
+            &draws, &batches, None, &old_keys, &previous_bytes,
+            &mut keys, &mut bytes,
+        ).unwrap();
+        assert_eq!(identical, 0);
+        assert!(bytes.is_empty(), "unchanged batch input must reuse GPU-resident data");
+
+        let mut appended = batches.clone();
+        appended.push(DrawBatchRange { first_instance: 0, instance_count: 1 });
+        let appended_count = encode_batches_cached(
+            &draws, &appended, None, &old_keys, &previous_bytes,
+            &mut keys, &mut bytes,
+        ).unwrap();
+        assert_eq!(appended_count, 1);
+        encode_batches_into(&draws, &appended, None, &mut reference).unwrap();
+        assert_eq!(bytes, reference);
+        let ranges = super::super::uploads::changed_ranges_for_keys(
+            &old_keys, &keys, previous_bytes.len(),
+            ARGUMENT_STRIDE as usize, 12, 4,
+        );
+        assert_eq!(ranges, vec![previous_bytes.len()..reference.len()]);
+
+        let removed = &batches[..batches.len() - 3];
+        let removed_count = encode_batches_cached(
+            &draws, removed, None, &old_keys, &previous_bytes,
+            &mut keys, &mut bytes,
+        ).unwrap();
+        assert_eq!(removed_count, 0);
+        encode_batches_into(&draws, removed, None, &mut reference).unwrap();
+        assert_eq!(bytes, reference);
+    }
+
 }
