@@ -63,6 +63,15 @@ fn encode_bounds_cached(
     next_keys.clear();
     next_keys.reserve(draws.len());
     next_keys.extend(draws.iter().map(BoundsRecordKey::from_draw));
+    // Most section publications preserve every culling AABB byte. Avoid
+    // reconstructing the full 64-byte-per-instance staging table: the
+    // committed CPU Vec can be moved into the next snapshot after upload.
+    if next_keys == previous_keys
+        && previous_bytes.len() == draws.len() * BOUNDS_STRIDE
+    {
+        output.clear();
+        return 0;
+    }
     super::uploads::encode_cached_records(
         next_keys,
         previous_keys,
@@ -261,6 +270,15 @@ impl CullResources {
         old_keys.clear();
         self.scratch_bounds_keys = old_keys;
         let mut old = std::mem::replace(&mut self.uploaded_inputs, [bounds, bytes]);
+        if self.uploaded_inputs[0].is_empty()
+            && self.bounds_keys.len() == draws.len()
+            && old[0].len() == draws.len() * BOUNDS_STRIDE
+        {
+            // The no-change sentinel is only produced after exact key and
+            // byte-extent equality. Move ownership of the immutable snapshot;
+            // GPU input data was already resident, so no copy or upload.
+            self.uploaded_inputs[0] = std::mem::take(&mut old[0]);
+        }
         if super::renderer::trace_timings() && bounds_encoded > 0 && bounds_encoded < draws.len() {
             eprintln!(
                 "gpui3d cull_bounds_cache rows={} encoded={} reused={}",
@@ -564,6 +582,15 @@ mod bounds_cache_tests {
         assert_eq!(encoded, encode_bounds(&draws));
 
         let old_bytes = encoded.clone();
+        let preserved_keys = next_keys.clone();
+        let unchanged = encode_bounds_cached(
+            &draws, &preserved_keys, &old_bytes,
+            &mut next_keys, &mut encoded, &mut scratch,
+        );
+        assert_eq!(unchanged, 0);
+        assert!(encoded.is_empty(),
+            "unchanged bounds should reuse resident CPU staging without a full copy");
+        assert_eq!(next_keys, preserved_keys);
         std::mem::swap(&mut old_keys, &mut next_keys);
         let mut shifted = draws.clone();
         shifted.remove(2);
