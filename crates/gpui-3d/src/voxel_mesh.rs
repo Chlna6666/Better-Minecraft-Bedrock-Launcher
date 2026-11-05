@@ -65,8 +65,48 @@ pub(crate) mod tests {
         assert_eq!(visible(&source().with_y_range(0.0, 0.5).unwrap()), 2);
         let mesh = Mesh::from_gpu_voxels(source());
         assert!(mesh.gpu_voxels().unwrap().fallback.get().is_none());
-        assert_eq!(mesh.vertex_count(), 48);
-        assert_eq!(mesh.vertices().len(), 48);
+        // Adjacent solid faces are not reserved in the GPU output. 2 cubes
+        // share one internal plane: 12 theoretical faces -> 10 actual faces.
+        assert_eq!(mesh.vertex_count(), 40);
+        assert_eq!(mesh.vertices().len(), 40);
+    }
+
+    #[test]
+    fn dense_voxel_sections_reserve_only_surface_output_capacity() {
+        // A padded 4x4x4 solid cube emits 6*4*4 exterior quads, not the old
+        // 6*4*4*4 worst-case inner+hidden face allocation.
+        let size = [6, 6, 6];
+        let mut cells = vec![0u32; 6 * 6 * 6];
+        for z in 1..5 {
+            for y in 1..5 {
+                for x in 1..5 {
+                    cells[(z * 6 + y) * 6 + x] = 1;
+                }
+            }
+        }
+        let templates = source().templates.to_vec();
+        let packed = VoxelMeshSource::new(size, Vec3::ZERO, cells, templates).unwrap();
+        assert_eq!(packed.capacity(), 96);
+        assert_eq!(visible(&packed), 96);
+        assert!(packed.part_bounds(0).max.x.is_finite());
+    }
+
+    #[test]
+    fn fully_occluded_single_voxel_reserves_no_gpu_faces() {
+        let size = [5, 5, 5];
+        let mut cells = vec![0u32; 125];
+        let center = (2 * 5 + 2) * 5 + 2;
+        cells[center] = 1;
+        // Six halo occluders suppress all faces without emitting geometry.
+        for neighbor in [center - 1, center + 1, center - 5, center + 5, center - 25, center + 25] {
+            cells[neighbor] = VOXEL_OCCLUDER;
+        }
+        let packed = VoxelMeshSource::new(
+            size, Vec3::ZERO, cells, source().templates.to_vec()
+        ).unwrap();
+        assert_eq!(packed.capacity(), 0);
+        assert!(packed.parts.is_empty());
+        assert_eq!(visible(&packed), 0);
     }
     #[test]
     fn rejects_emitting_halo_and_invalid_cell_models() {
@@ -189,50 +229,53 @@ impl VoxelMeshSource {
         {
             return Err(MeshError::InvalidParts);
         }
-        let mut frequencies = vec![0usize; templates.len() / 6];
+        // CPU only bounds GPU storage; it does not generate faces or issue a
+        // visibility decision. The old estimate reserved all six faces of
+        // every occupied voxel, even if its neighbours fully hid them. On
+        // solid terrain this could reserve 4-6x the required GPU output.
+        // Count the same conservative neighbour-empty condition as cs_mesh
+        // and reserve only those possible faces, per material.
+        if !templates.is_empty() {
+            validate_voxel_templates(&templates)?;
+        }
+        let mut capacities = BTreeMap::<u32, usize>::new();
+        let sx = size[0] as usize;
+        let sy = size[1] as usize;
+        let xy = sx.checked_mul(sy).ok_or(MeshError::TooLarge)?;
         for (index, &kind) in cells.iter().enumerate() {
             if kind == 0 || kind == VOXEL_OCCLUDER {
                 continue;
             }
-            let x = index as u32 % size[0];
-            let y = index as u32 / size[0] % size[1];
-            let z = index as u32 / size[0] / size[1];
-            if x == 0
-                || x + 1 == size[0]
-                || y == 0
-                || y + 1 == size[1]
-                || z == 0
-                || z + 1 == size[2]
+            let x = index % sx;
+            let y = index / sx % sy;
+            let z = index / xy;
+            if x == 0 || x + 1 == sx
+                || y == 0 || y + 1 == sy
+                || z == 0 || z + 1 == size[2] as usize
             {
                 return Err(MeshError::InvalidParts);
             }
-            let Some(frequency) = frequencies.get_mut((kind - 1) as usize) else {
-                return Err(MeshError::InvalidParts);
-            };
-            *frequency += 1;
-        }
-        let mut capacities = BTreeMap::<u32, usize>::new();
-        for (index, face) in templates.iter().enumerate() {
-            if ![
-                [1, 0, 0],
-                [-1, 0, 0],
-                [0, 1, 0],
-                [0, -1, 0],
-                [0, 0, 1],
-                [0, 0, -1],
-            ]
-            .contains(&face.neighbour)
-            {
-                return Err(MeshError::InvalidParts);
+            let offset = (kind as usize - 1)
+                .checked_mul(6)
+                .ok_or(MeshError::TooLarge)?;
+            let faces = templates.get(offset..offset + 6)
+                .ok_or(MeshError::InvalidParts)?;
+            for face in faces {
+                let [dx, dy, dz] = face.neighbour;
+                // Validate face-direction classes before reading an adjacent
+                // padded cell. Only the six axis-aligned neighbours are valid.
+                if dx.unsigned_abs() + dy.unsigned_abs() + dz.unsigned_abs() != 1 {
+                    return Err(MeshError::InvalidParts);
+                }
+                let nx = (x as i32 + dx) as usize;
+                let ny = (y as i32 + dy) as usize;
+                let nz = (z as i32 + dz) as usize;
+                let neighbour = (nz * sy + ny) * sx + nx;
+                if cells[neighbour] == 0 {
+                    let capacity = capacities.entry(face.material_slot).or_default();
+                    *capacity = capacity.checked_add(1).ok_or(MeshError::TooLarge)?;
+                }
             }
-            *capacities.entry(face.material_slot).or_default() += frequencies[index / 6];
-        }
-        // A Section can be model/instance-only with no six-face cube
-        // templates. Validate non-empty template records directly; do not
-        // construct a temporary CPU Mesh, index array and packed vertex table
-        // just to verify GPU compute input.
-        if !templates.is_empty() {
-            validate_voxel_templates(&templates)?;
         }
         let mut parts = Vec::new();
         let mut first = 0u32;
