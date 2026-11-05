@@ -141,11 +141,58 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     (bytes, static_counts)
 }
 
-pub(super) fn create(
+/// Section-scoped GPU resources prepared for one shared native compute batch.
+/// The three meshing scratch/input buffers are released only AFTER the batch
+/// dispatch completes. The immutable generated output/argument/template buffers
+/// remain resident for subsequent frames.
+struct PendingGenerated {
+    buffers: Vec<BufferId>,
+    bindings: Vec<ComputeBufferBinding>,
+    stages: Vec<(usize, [u32; 3])>,
+    generation: u64,
+    output_bytes: usize,
+    template_bytes: u64,
+}
+
+impl PendingGenerated {
+    fn into_resources(self) -> MeshResources {
+        MeshResources {
+            generation: self.generation,
+            vertices: self.buffers[2],
+            vertex_binding_bytes: self.output_bytes,
+            vertex_stride: 16,
+            vertex_base: 0,
+            tangents: None,
+            tangent_bytes: 0,
+            indices: self.buffers[3],
+            index_format: IndexFormat::Uint16,
+            index_offset: 0,
+            procedural_quads: true,
+            allocation: None,
+            generated: Some(GeneratedMesh {
+                templates: self.buffers[1],
+                arguments: self.buffers[3],
+                template_bytes: self.template_bytes,
+            }),
+        }
+    }
+}
+
+fn discard_pending_generated(device: &mut dyn ExtensionDevice, pending: &[PendingGenerated]) {
+    for mesh in pending {
+        for &buffer in &mesh.buffers {
+            let _ = device.destroy_buffer(buffer);
+        }
+    }
+}
+
+/// Allocate and upload only the changed Section's immutable compact source.
+/// No Compute submission occurs here, allowing multiple independent Sections
+/// to share one GPU command submission instead of one submission per mesh.
+fn prepare_generated(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
-    shaders: &Shaders,
-) -> gpui::Result<MeshResources> {
+) -> gpui::Result<PendingGenerated> {
     let source = mesh
         .gpu_voxels()
         .ok_or_else(|| anyhow!("missing voxel source"))?;
@@ -318,53 +365,97 @@ pub(super) fn create(
             ]);
         }
         let compute_caps = device.compute_capabilities();
-        let dispatches = stages
+        let stage_grids = stages
             .into_iter()
             .map(|(stage, count)| {
                 let count = u32::try_from(count).context("voxel dispatch overflow")?;
-                let grid = compute_caps.plan_linear_dispatch_2d(count)?;
-                Ok(ComputeDispatch {
-                    shader: shaders.0[stage],
-                    bindings: &bindings,
-                    workgroups: grid,
-                })
+                Ok((stage, compute_caps.plan_linear_dispatch_2d(count)?))
             })
             .collect::<gpui::Result<Vec<_>>>()?;
-        device.dispatch_compute_batch(&dispatches)?;
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>((bindings, stage_grids))
     })();
-    if let Err(error) = result {
-        for buffer in buffers {
-            let _ = device.destroy_buffer(buffer);
+    let (bindings, stages) = match result {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            for buffer in buffers {
+                let _ = device.destroy_buffer(buffer);
+            }
+            return Err(error);
         }
+    };
+    Ok(PendingGenerated {
+        buffers,
+        bindings,
+        stages,
+        generation: mesh.generation(),
+        output_bytes,
+        template_bytes: templates.len() as u64,
+    })
+}
+
+/// Prepare independent changed Sections, then submit all meshing stages through
+/// the common cross-backend ordered ComputeDispatch API. Per-Section output
+/// buffers remain stable and are not recreated for unchanged Scene snapshots.
+pub(super) fn create_many(
+    device: &mut dyn ExtensionDevice,
+    meshes: &[&Mesh],
+    shaders: &Shaders,
+) -> gpui::Result<Vec<MeshResources>> {
+    if meshes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut pending = Vec::with_capacity(meshes.len());
+    for mesh in meshes {
+        match prepare_generated(device, mesh) {
+            Ok(mesh) => pending.push(mesh),
+            Err(error) => {
+                discard_pending_generated(device, &pending);
+                return Err(error);
+            }
+        }
+    }
+    let mut dispatches = Vec::new();
+    for mesh in &pending {
+        for &(stage, workgroups) in &mesh.stages {
+            dispatches.push(ComputeDispatch {
+                shader: shaders.0[stage],
+                bindings: &mesh.bindings,
+                workgroups,
+            });
+        }
+    }
+    let submitted = if dispatches.is_empty() {
+        Ok(())
+    } else {
+        device.dispatch_compute_batch(&dispatches).map_err(anyhow::Error::from)
+    };
+    drop(dispatches);
+    if let Err(error) = submitted {
+        discard_pending_generated(device, &pending);
         return Err(error);
     }
-    let generated = GeneratedMesh {
-        templates: buffers[1],
-        arguments: buffers[3],
-        template_bytes: templates.len() as u64,
-    };
-    if let Err(error) = device.destroy_buffer_batch(&[buffers[0], buffers[4], buffers[5]]) {
-        for index in [0, 1, 2, 3, 4, 5] {
-            let _ = device.destroy_buffer(buffers[index]);
-        }
+    // All compute reads of the source buffers have been ordered ahead of
+    // retiring their scratch allocations. Each Section retains only its
+    // generated faces, template table and native draw argument buffer.
+    let mut scratch = Vec::with_capacity(pending.len() * 3);
+    for mesh in &pending {
+        scratch.extend([mesh.buffers[0], mesh.buffers[4], mesh.buffers[5]]);
+    }
+    if let Err(error) = device.destroy_buffer_batch(&scratch) {
+        discard_pending_generated(device, &pending);
         return Err(error.into());
     }
-    Ok(MeshResources {
-        generation: mesh.generation(),
-        vertices: buffers[2],
-        vertex_binding_bytes: output_bytes,
-        vertex_stride: 16,
-        vertex_base: 0,
-        tangents: None,
-        tangent_bytes: 0,
-        indices: buffers[3],
-        index_format: IndexFormat::Uint16,
-        index_offset: 0,
-        procedural_quads: true,
-        allocation: None,
-        generated: Some(generated),
-    })
+    Ok(pending.into_iter().map(PendingGenerated::into_resources).collect())
+}
+
+pub(super) fn create(
+    device: &mut dyn ExtensionDevice,
+    mesh: &Mesh,
+    shaders: &Shaders,
+) -> gpui::Result<MeshResources> {
+    create_many(device, &[mesh], shaders)?
+        .pop()
+        .ok_or_else(|| anyhow!("missing generated Section output"))
 }
 
 #[cfg(test)]
