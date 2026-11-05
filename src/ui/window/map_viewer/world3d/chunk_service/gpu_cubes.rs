@@ -11,16 +11,14 @@ impl Worker {
     ) -> Result<Option<World3dChunkMesh>, String> {
         let lighting = lighting.filter(|_| self.lighting.is_lit());
         let levels = lighting.map(|light| light.gpu_levels(pos, &band));
-        let mut faces = faces.to_vec();
-        for face in &mut faces[..band.template_faces] {
-            for corner in &mut face.corners {
-                corner[0] += f64::from(pos.x) * 16.0;
-                corner[2] += f64::from(pos.z) * 16.0;
-            }
-        }
         let mut order = Vec::new();
-        let Some(mut output) =
-            self.build_chunk_mesh_with_order(pos, band.section_y, &faces, Some(&mut order))?
+        let Some(mut output) = self.build_chunk_mesh_with_order(
+            pos,
+            band.section_y,
+            faces,
+            Some(&mut order),
+            band.template_faces,
+        )?
         else {
             return Ok(None);
         };

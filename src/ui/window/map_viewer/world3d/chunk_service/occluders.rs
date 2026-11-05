@@ -13,15 +13,25 @@ pub(super) fn face_proxy(
     face: &p3d::Preview3dStreamFace,
     origin: [i32; 3],
 ) -> Option<gpui_3d::Occluder> {
+    face_proxy_with_template_origin(face, origin, false)
+}
+
+/// GPU cube templates are local in X/Z; regular faces are world-space.
+/// Preserve the old translated proxy semantics without cloning each face.
+pub(super) fn face_proxy_with_template_origin(
+    face: &p3d::Preview3dStreamFace,
+    origin: [i32; 3],
+    local_template: bool,
+) -> Option<gpui_3d::Occluder> {
     if face.pass != p3d::Preview3dStreamPass::Opaque {
         return None;
     }
     let (min, max, axis) = quad_bounds(face.corners, face.normal, gpui_3d::FrontFace::Cw)?;
     let local = |p: [f64; 3]| {
         Vec3::new(
-            (p[0] - f64::from(origin[0])) as f32,
+            (p[0] - if local_template { 0. } else { f64::from(origin[0]) }) as f32,
             (p[1] - f64::from(origin[1])) as f32,
-            (p[2] - f64::from(origin[2])) as f32,
+            (p[2] - if local_template { 0. } else { f64::from(origin[2]) }) as f32,
         )
     };
     Some(gpui_3d::Occluder {
@@ -72,6 +82,38 @@ mod tests {
             "certification must agree with material front-face winding"
         );
     }
+    #[test]
+    fn local_template_occluder_matches_translated_world_face() {
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mut builder = p3d::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, p3d::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]));
+        let faces = builder.build_stream_faces(&[pos]).remove(0).faces;
+        let origin = [16, 0, 32];
+        for local in &faces {
+            let mut world = local.clone();
+            for corner in &mut world.corners {
+                corner[0] += f64::from(origin[0]);
+                corner[2] += f64::from(origin[2]);
+            }
+            let old = face_proxy(&world, origin).expect("world face is an occluder");
+            let new = face_proxy_with_template_origin(local, origin, true)
+                .expect("local template is an occluder");
+            assert_eq!(new.bounds.min, old.bounds.min);
+            assert_eq!(new.bounds.max, old.bounds.max);
+            assert_eq!(new.faces, old.faces);
+        }
+    }
+
     #[test]
     fn planar_proxy_merging_preserves_roof_holes_and_outer_face_masks() {
         let roof = || (0..16).flat_map(|x| (0..16).map(move |z| ([x, 0, z], 8)));

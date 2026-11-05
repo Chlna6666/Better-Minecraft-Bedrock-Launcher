@@ -3216,7 +3216,7 @@ impl Worker {
         section_y: i32,
         faces: &[p3d::Preview3dStreamFace],
     ) -> Result<Option<World3dChunkMesh>, String> {
-        self.build_chunk_mesh_with_order(pos, section_y, faces, None)
+        self.build_chunk_mesh_with_order(pos, section_y, faces, None, 0)
     }
     fn build_chunk_mesh_with_order(
         &mut self,
@@ -3224,6 +3224,7 @@ impl Worker {
         section_y: i32,
         faces: &[p3d::Preview3dStreamFace],
         order: Option<&mut Vec<usize>>,
+        template_local_faces: usize,
     ) -> Result<Option<World3dChunkMesh>, String> {
         if faces.is_empty() {
             return Ok(None);
@@ -3329,7 +3330,11 @@ impl Worker {
             }
             let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
             if alpha_mode == AlphaMode::Opaque
-                && let Some(proxy) = occluders::face_proxy(face, origin)
+                && let Some(proxy) = occluders::face_proxy_with_template_origin(
+                    face,
+                    origin,
+                    face_index < template_local_faces,
+                )
             {
                 opaque_proxies.push(proxy);
             }
@@ -3454,10 +3459,13 @@ impl Worker {
                     .uv
                     .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
                 std::array::from_fn(|index| Vertex {
-                    position: Vec3::new(
-                        (face.corners[index][0] - origin_f64[0]) as f32,
-                        (face.corners[index][1] - origin_f64[1]) as f32,
-                        (face.corners[index][2] - origin_f64[2]) as f32,
+                    // GPU cube templates are stored in local X/Z coordinates.
+                    // Apply the offset while packing, without cloning and
+                    // rewriting the full Preview3dStreamFace array.
+                    position: chunk_mesh_corner(
+                        face.corners[index],
+                        origin_f64,
+                        face_index < template_local_faces,
                     ),
                     normal,
                     uv: Vec2::new(uv[index][0], uv[index][1]),
@@ -4103,6 +4111,19 @@ fn collect_cached_chunk(
     }))
 }
 
+/// Convert either a world-space face or a GPU cube's local template to a
+/// chunk-relative vertex. The offset order matches the former face-clone path.
+#[inline]
+fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], local_template: bool) -> Vec3 {
+    let dx = if local_template { origin[0] } else { 0. };
+    let dz = if local_template { origin[2] } else { 0. };
+    Vec3::new(
+        (corner[0] + dx - origin[0]) as f32,
+        (corner[1] - origin[1]) as f32,
+        (corner[2] + dz - origin[2]) as f32,
+    )
+}
+
 fn intern_face_materials(faces: &mut [p3d::Preview3dStreamFace]) {
     let mut names = HashMap::<Arc<str>, Arc<str>>::new();
     for face in faces {
@@ -4413,4 +4434,22 @@ fn run_worker(
         }
     }
     worker.resolver.flush_material_index();
+}
+
+
+#[cfg(test)]
+mod local_gpu_template_tests {
+    use super::chunk_mesh_corner;
+
+    #[test]
+    fn template_corners_match_translated_world_corners() {
+        let local = [0.25, 32.5, 1.75];
+        for origin in [[16., 0., 32.], [-512., 0., -64.], [0., 0., 0.]] {
+            let world = [local[0] + origin[0], local[1], local[2] + origin[2]];
+            assert_eq!(
+                chunk_mesh_corner(local, origin, true),
+                chunk_mesh_corner(world, origin, false),
+            );
+        }
+    }
 }
