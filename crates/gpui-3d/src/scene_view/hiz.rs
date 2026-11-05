@@ -235,16 +235,7 @@ impl HiZ {
             self.words * 4,
             ComputeBufferAccess::ReadWrite,
         );
-        device.dispatch_compute(&ComputeDispatch {
-            shader: self.shaders[0]
-                .ok_or_else(|| anyhow::anyhow!("Hi-Z clear shader is unavailable"))?,
-            bindings: &[depth],
-            workgroups: [(self.words as u32).div_ceil(64), 1, 1],
-        })?;
-        self.clear_pending = false;
-        if self.count == 0 {
-            return Ok(());
-        }
+        let clear = [depth];
         let raster = [
             binding(
                 0,
@@ -262,31 +253,58 @@ impl HiZ {
             ),
             depth,
         ];
-        device.dispatch_compute(&ComputeDispatch {
-            shader: self.shaders[match self.raster_threads { 32 => 1, 128 => 3, _ => 2 }]
+        // All seven mip reduction bindings are tiny fixed-size arrays. Keep
+        // them on the stack and submit their ordered stages as one batch.
+        // Vulkan and D3D12 record one native command buffer with inter-stage
+        // barriers; D3D11/OpenGL retain the ordered single-dispatch fallback.
+        let reduction_bindings: [[ComputeBufferBinding; 2]; 7] =
+            std::array::from_fn(|index| {
+                let level = index + 1;
+                [
+                    depth,
+                    binding(
+                        3,
+                        self.levels,
+                        level * 256,
+                        16,
+                        ComputeBufferAccess::Uniform,
+                    ),
+                ]
+            });
+        let mut dispatches = Vec::with_capacity(if self.shadow { 2 } else { 9 });
+        dispatches.push(ComputeDispatch {
+            shader: self.shaders[0]
+                .ok_or_else(|| anyhow::anyhow!("Hi-Z clear shader is unavailable"))?,
+            bindings: &clear,
+            workgroups: [(self.words as u32).div_ceil(64), 1, 1],
+        });
+        if self.count != 0 {
+            dispatches.push(ComputeDispatch {
+                shader: self.shaders[match self.raster_threads {
+                    32 => 1, 128 => 3, _ => 2,
+                }]
                 .ok_or_else(|| anyhow::anyhow!("selected Hi-Z raster shader is unavailable"))?,
-            bindings: &raster,
-            workgroups: [(self.count * 6) as u32, 1, 1],
-        })?;
-        for level in 1..if self.shadow { 1 } else { 8 } {
-            let size = 128u32 >> level;
-            let bindings = [
-                depth,
-                binding(
-                    3,
-                    self.levels,
-                    level * 256,
-                    16,
-                    ComputeBufferAccess::Uniform,
-                ),
-            ];
-            device.dispatch_compute(&ComputeDispatch {
-                shader: self.shaders[4]
-                    .ok_or_else(|| anyhow::anyhow!("Hi-Z reduction shader is unavailable"))?,
-                bindings: &bindings,
-                workgroups: [(size * size).div_ceil(64), 1, 1],
-            })?;
+                bindings: &raster,
+                workgroups: [(self.count * 6) as u32, 1, 1],
+            });
+            if !self.shadow {
+                let reduce_shader = self.shaders[4]
+                    .ok_or_else(|| anyhow::anyhow!("Hi-Z reduction shader is unavailable"))?;
+                for (index, bindings) in reduction_bindings.iter().enumerate() {
+                    let size = 128u32 >> (index + 1);
+                    dispatches.push(ComputeDispatch {
+                        shader: reduce_shader,
+                        bindings,
+                        workgroups: [(size * size).div_ceil(64), 1, 1],
+                    });
+                }
+            }
         }
+        // Dependence: clear -> raster -> mip1 -> ... -> mip7. Do not merge
+        // the shaders themselves: the native backends insert memory barriers
+        // between ordered dispatches in this single submission.
+        device.dispatch_compute_batch(&dispatches)?;
+        self.clear_pending = false;
         Ok(())
     }
 
