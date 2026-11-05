@@ -42,6 +42,8 @@ pub(super) struct Indirect {
 pub(super) fn capabilities() -> ComputeCapabilities {
     ComputeCapabilities {
         max_workgroups: [65535; 3],
+        // D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP.
+        max_invocations_per_workgroup: 1024,
         indirect_draw: true,
     }
 }

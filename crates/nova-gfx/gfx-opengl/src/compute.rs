@@ -29,6 +29,10 @@ impl State {
         Self {
             capabilities: ComputeCapabilities {
                 max_workgroups,
+                max_invocations_per_workgroup: unsafe {
+                    gl.get_parameter_i32(glow::MAX_COMPUTE_WORK_GROUP_INVOCATIONS)
+                        .max(0) as u32
+                },
                 indirect_draw: gl
                     .supported_extensions()
                     .contains("GL_ARB_shader_draw_parameters"),

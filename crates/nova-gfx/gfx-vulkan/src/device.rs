@@ -292,6 +292,8 @@ impl VulkanDevice {
             } else {
                 [0; 3]
             },
+            max_invocations_per_workgroup:
+                adapter_properties.limits.max_compute_work_group_invocations,
             indirect_draw: native_features.draw_indirect_first_instance == vk::TRUE,
         };
         let (

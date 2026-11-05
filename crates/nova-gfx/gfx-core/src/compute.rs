@@ -7,6 +7,11 @@ use crate::{BufferBinding, Error, Result, ShaderModuleId};
 pub struct ComputeCapabilities {
     /// Maximum workgroup counts accepted by an ordered dispatch; zero means unsupported.
     pub max_workgroups: [u32; 3],
+    /// Maximum total invocations in a single shader workgroup.
+    ///
+    /// This is separate from max_workgroups (dispatch grid dimensions).
+    /// Zero means the backend does not expose a compute limit.
+    pub max_invocations_per_workgroup: u32,
     /// Whether render passes accept GPU-generated non-indexed draw arguments.
     pub indirect_draw: bool,
 }
@@ -96,6 +101,7 @@ mod tests {
     fn dispatch_rejects_aliases_and_oversized_groups() {
         let caps = ComputeCapabilities {
             max_workgroups: [65535; 3],
+            max_invocations_per_workgroup: 128,
             indirect_draw: true,
         };
         let binding = ComputeBufferBinding {

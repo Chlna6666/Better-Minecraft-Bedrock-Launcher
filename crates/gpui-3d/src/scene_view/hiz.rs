@@ -13,6 +13,7 @@ pub(super) struct HiZ {
     shaders: [ShaderModuleId; 5],
     // Selected from projected occluder coverage; Shader variants are compiled at build time.
     raster_threads: u32,
+    max_raster_threads: u32,
     count: usize,
     clear_pending: bool,
     selection_eye: Option<Vec3>,
@@ -45,6 +46,12 @@ impl HiZ {
         backend: BackendKind,
         shadow: bool,
     ) -> gpui::Result<Self> {
+        // Workgroup size is a compiled shader property. Pick only precompiled
+        // variants supported by this device, never the largest reported size.
+        let max_invocations = device.compute_capabilities().max_invocations_per_workgroup;
+        let max_raster_threads = if max_invocations >= 128 { 128 }
+            else if max_invocations >= 64 { 64 }
+            else { 32 };
         let words = if shadow { 512 * 512 } else { WORDS };
         let max_boxes = if shadow { 2048 } else { MAX_BOXES };
         let mut buffers = Vec::new();
@@ -109,7 +116,8 @@ impl HiZ {
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("missing Hi-Z shaders"))?,
             count: 0,
-            raster_threads: 64,
+            raster_threads: 64.min(max_raster_threads),
+            max_raster_threads,
             clear_pending: false,
             selection_eye: None,
             words,
@@ -162,6 +170,7 @@ impl HiZ {
             64
         } else {
             choose_raster_threads(coverage_sum / count as f32)
+                .min(self.max_raster_threads)
         };
         let mut bytes = encode_header(count, forward).to_vec();
         bytes.reserve(count * 32);
@@ -316,5 +325,7 @@ mod adaptive_raster_tests {
         assert_eq!(choose_raster_threads(0.01), 64);
         assert_eq!(choose_raster_threads(0.25), 128);
         assert_eq!(choose_raster_threads(f32::NAN), 64);
+        assert_eq!(choose_raster_threads(0.25).min(64), 64);
+        assert_eq!(choose_raster_threads(0.25).min(32), 32);
     }
  }
