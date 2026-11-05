@@ -74,6 +74,9 @@ pub(super) struct SceneResources {
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     draw_resource_keys: Vec<DrawResourceKey>,
+    /// Spare capacity for batch/resource lists, recycled across scene publications.
+    spare_draw_resources: Vec<BindGroupId>,
+    spare_draw_resource_keys: Vec<DrawResourceKey>,
     draw_addresses: Vec<DrawAddress>,
     reorder_positions: Vec<usize>,
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
@@ -270,6 +273,8 @@ impl SceneResources {
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_keys: Vec::new(),
+            spare_draw_resources: Vec::new(),
+            spare_draw_resource_keys: Vec::new(),
             draw_addresses: Vec::new(),
             reorder_positions: Vec::new(),
             binding_cache: HashMap::new(),
@@ -855,17 +860,19 @@ impl SceneResources {
         ]
         .into_iter()
         .enumerate()
-        .filter_map(|(i, (buffer, data, replace, stride))| {
-            let range = uploads::changed_range(
-                if replace {
-                    &[]
-                } else {
-                    &self.uploaded_tables[i]
-                },
+        .flat_map(|(i, (buffer, data, replace, stride))| {
+            // The full draw/instance layout is unchanged; only CPU->GPU transfer
+            // becomes sparse. Keep at most 16 writes per table in one batch to
+            // avoid trading bandwidth savings for excessive driver calls.
+            uploads::changed_ranges(
+                if replace { &[] } else { &self.uploaded_tables[i] },
                 data,
                 stride,
-            )?;
-            Some(BufferWrite {
+                16,
+                4,
+            )
+            .into_iter()
+            .map(move |range| BufferWrite {
                 descriptor: BufferWriteDescriptor {
                     buffer,
                     offset: range.start as u64,
@@ -875,6 +882,8 @@ impl SceneResources {
         })
         .collect::<Vec<_>>();
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
+        let write_count = writes.len();
+        let encoded_bytes = draw_bytes.len() + instance_bytes.len() + light_bytes.len();
         // A failed write or later binding update may leave existing buffers partially changed.
         let mut previous_tables = std::mem::take(&mut self.uploaded_tables);
         let write_result = if writes.is_empty() {
@@ -959,9 +968,11 @@ impl SceneResources {
             && started.elapsed() >= std::time::Duration::from_millis(16)
         {
             eprintln!(
-                "gpui3d buffer_detail draws={} bytes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
+                "gpui3d buffer_detail draws={} bytes={} prepared_bytes={} writes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
                 draw_count,
                 uploaded_bytes,
+                encoded_bytes,
+                write_count,
                 encode_ms.unwrap_or_default(),
                 write_ms.unwrap_or_default(),
                 bind_ms.unwrap_or_default(),
@@ -1183,8 +1194,12 @@ impl SceneResources {
         force: bool,
         voxel_shader: bool,
     ) -> gpui::Result<()> {
-        let mut next = Vec::with_capacity(self.batches.len());
-        let mut next_keys = Vec::with_capacity(self.batches.len());
+        let mut next = std::mem::take(&mut self.spare_draw_resources);
+        let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
+        next.clear();
+        next_keys.clear();
+        next.reserve(self.batches.len());
+        next_keys.reserve(self.batches.len());
         let mut created = HashMap::new();
         // Bind the allocated range so culling alone does not invalidate every bind group.
         let instance_count = self.instance_capacity;
@@ -1323,8 +1338,11 @@ impl SceneResources {
                 }
             }
         }
-        self.draw_resources = next;
-        self.draw_resource_keys = next_keys;
+        // Keep the previous Vec allocations as reusable scratch storage.
+        std::mem::swap(&mut self.draw_resources, &mut next);
+        std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
+        self.spare_draw_resources = next;
+        self.spare_draw_resource_keys = next_keys;
         if force {
             for bind_group in self.binding_cache.values().copied() {
                 device.destroy_bind_group(bind_group)?;
@@ -1531,6 +1549,8 @@ impl SceneResources {
         }
         self.draw_resources.clear();
         self.draw_resource_keys.clear();
+        self.spare_draw_resources.clear();
+        self.spare_draw_resource_keys.clear();
         self.draw_addresses.clear();
         for bind_group in self.binding_cache.drain().map(|(_, binding)| binding) {
             device.destroy_bind_group(bind_group)?;

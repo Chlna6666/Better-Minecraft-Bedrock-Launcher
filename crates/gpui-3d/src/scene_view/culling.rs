@@ -133,9 +133,16 @@ impl CullResources {
             ]
             .into_iter()
             .enumerate()
-            .filter_map(|(i, (buffer, data, stride))| {
-                let range = super::uploads::changed_range(&self.uploaded_inputs[i], data, stride)?;
-                Some(gfx_core::BufferWrite {
+            .flat_map(|(i, (buffer, data, stride))| {
+                super::uploads::changed_ranges(
+                    &self.uploaded_inputs[i],
+                    data,
+                    stride,
+                    12,
+                    4,
+                )
+                .into_iter()
+                .map(move |range| gfx_core::BufferWrite {
                     descriptor: gfx_core::BufferWriteDescriptor {
                         buffer,
                         offset: range.start as u64,
