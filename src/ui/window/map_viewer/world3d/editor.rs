@@ -908,6 +908,16 @@ impl World3dEditorView {
                 break;
             }
         }
+        // Bound stale unload tombstones while keeping epochs for resident Sections.
+        if self.section_epochs.len() > SECTION_EPOCH_MAX_TOMBSTONES {
+            let recent = self.stream_generation.saturating_sub(64);
+            let resident = self.chunk_meshes.keys()
+                .map(|(pos, _)| *pos)
+                .collect::<HashSet<_>>();
+            self.section_epochs.retain(|pos, generation| {
+                resident.contains(pos) || *generation >= recent
+            });
+        }
         self.texture_prune_pending |= textures_may_be_unused;
         self.texture_table_dirty |= self.textures.len() != previous_texture_count;
         self.target_pick_dirty |= probes_changed;
