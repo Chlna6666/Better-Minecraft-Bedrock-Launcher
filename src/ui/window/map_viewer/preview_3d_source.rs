@@ -630,6 +630,13 @@ struct Preview3dPlane {
     uv: Option<[[f32; 2]; 4]>,
 }
 
+fn preview_3d_detail_shape_from_model_shape_ref(shape: &ModelShape) -> Preview3dDetailShape {
+    Preview3dDetailShape {
+        cuboids: shape.cuboids.iter().cloned().map(preview_3d_cuboid_from_model_cuboid).collect(),
+        planes: shape.planes.iter().cloned().map(preview_3d_plane_from_model_plane).collect(),
+    }
+}
+
 fn preview_3d_detail_shape_from_model_shape(shape: ModelShape) -> Preview3dDetailShape {
     Preview3dDetailShape {
         cuboids: shape
@@ -3681,8 +3688,8 @@ fn preview_3d_resolved_detail_shape_for_block(
     // Exact registry state wins for non-contextual detail geometry. Incomplete
     // neighbor-driven states stay on the established wall/fence/stair logic.
     if let Some(shape) = repository
-        .captured_shape(&query)
-        .map(preview_3d_detail_shape_from_model_shape)
+        .captured_shape_shared(&query)
+        .map(|shape| preview_3d_detail_shape_from_model_shape_ref(&shape))
         .filter(|shape| {
             !shape.is_empty() && (keep_full_cube || !preview_3d_shape_is_full_cube(shape))
         })

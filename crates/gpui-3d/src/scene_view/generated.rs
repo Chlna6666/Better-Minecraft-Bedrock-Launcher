@@ -4,6 +4,7 @@ use crate::{Mesh, VoxelMeshSource};
 use anyhow::{Context as _, anyhow};
 use gfx_core::*;
 use gpui::ExtensionDevice;
+use std::collections::HashMap;
 
 #[cfg(all(test, target_os = "windows"))]
 #[path = "generated_tests.rs"]
@@ -72,6 +73,16 @@ pub(super) fn create_shader(
     })?)
 }
 
+/// Map a face material to its first matching part. Preserve the existing
+/// fallback to part zero for malformed or missing material references.
+fn material_part_lookup(source: &VoxelMeshSource) -> HashMap<u32, usize> {
+    let mut lookup = HashMap::with_capacity(source.parts.len());
+    for (index, part) in source.parts.iter().enumerate() {
+        lookup.entry(part.material_slot()).or_insert(index);
+    }
+    lookup
+}
+
 fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     let mut bytes = Vec::with_capacity(32 + source.templates.len() * 112);
     for value in [
@@ -86,12 +97,11 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
         bytes.extend(value.to_le_bytes());
     }
     let mut static_counts = vec![0u32; source.parts.len()];
+    // The previous per-template .position() scanned all material parts for
+    // every face. Resolve each material slot once, independent of face count.
+    let material_parts = material_part_lookup(source);
     for (index, face) in source.templates.iter().enumerate() {
-        let part = source
-            .parts
-            .iter()
-            .position(|p| p.material_slot() == face.material_slot)
-            .unwrap_or(0);
+        let part = material_parts.get(&face.material_slot).copied().unwrap_or(0);
         let center = face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
         let address = if index < source.static_start {
             source.neighbour_delta(face) as u32
@@ -354,4 +364,31 @@ pub(super) fn create(
         allocation: None,
         generated: Some(generated),
     })
+}
+
+#[cfg(test)]
+mod material_part_tests {
+    use super::*;
+
+    #[test]
+    fn template_material_lookup_matches_original_first_part_semantics() {
+        let mut source = crate::voxel_mesh::tests::source();
+        let mut faces = source.templates.to_vec();
+        faces[0].material_slot = 7;
+        faces[1].material_slot = 3;
+        faces[2].material_slot = 7;
+        faces[3].material_slot = 99;
+        // Rebuild the source via the public API so material parts are validated.
+        source = VoxelMeshSource::new(source.size, source.origin, source.cells.to_vec(), faces)
+            .expect("valid source");
+        let lookup = material_part_lookup(&source);
+        for face in source.templates.iter() {
+            assert_eq!(
+                lookup.get(&face.material_slot).copied().unwrap_or(0),
+                source.parts.iter().position(|part| part.material_slot() == face.material_slot)
+                    .unwrap_or(0),
+            );
+        }
+        assert_eq!(lookup.get(&u32::MAX), None);
+    }
 }
