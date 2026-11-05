@@ -92,6 +92,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn malformed_neighbour_offsets_are_rejected_without_overflow() {
+        let mut templates = source().templates.to_vec();
+        templates[0].neighbour = [i32::MIN, i32::MIN, i32::MIN];
+        let result = VoxelMeshSource::new(
+            [4, 3, 3], Vec3::ZERO,
+            {
+                let mut cells = vec![0; 4 * 3 * 3];
+                cells[17] = 1;
+                cells
+            },
+            templates,
+        );
+        assert!(matches!(result, Err(MeshError::InvalidParts)));
+    }
+
+    #[test]
     fn fully_occluded_single_voxel_reserves_no_gpu_faces() {
         let size = [5, 5, 5];
         let mut cells = vec![0u32; 125];
@@ -262,9 +278,12 @@ impl VoxelMeshSource {
                 .ok_or(MeshError::InvalidParts)?;
             for face in faces {
                 let [dx, dy, dz] = face.neighbour;
-                // Validate face-direction classes before reading an adjacent
-                // padded cell. Only the six axis-aligned neighbours are valid.
-                if dx.unsigned_abs() + dy.unsigned_abs() + dz.unsigned_abs() != 1 {
+                // Check canonical offsets explicitly: unsigned_abs sums may
+                // overflow for malformed i32::MIN neighbours in debug builds.
+                if !matches!(face.neighbour,
+                    [1, 0, 0] | [-1, 0, 0] | [0, 1, 0] |
+                    [0, -1, 0] | [0, 0, 1] | [0, 0, -1]
+                ) {
                     return Err(MeshError::InvalidParts);
                 }
                 let nx = (x as i32 + dx) as usize;
