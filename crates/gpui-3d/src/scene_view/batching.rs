@@ -153,11 +153,17 @@ pub(super) fn group_voxel_batches_into(
         }
     }
     debug_assert_eq!(workspace.order.len(), opaque);
-    crate::prepare::apply_order(
-        &mut draws[..opaque],
-        &workspace.order,
-        &mut workspace.positions,
-    );
+    // Material and voxel-page grouping often produces the same ordered draw
+    // sequence on consecutive Section publications. Avoid building a second
+    // N-entry inverse permutation table and walking N swaps in that case.
+    // The comparison is allocation-free and preserves stable sort semantics.
+    if workspace.order.iter().enumerate().any(|(index, &source)| index != source) {
+        crate::prepare::apply_order(
+            &mut draws[..opaque],
+            &workspace.order,
+            &mut workspace.positions,
+        );
+    }
 
     // Transparent draws are already depth sorted. Never group or permute
     // them, even when their material and geometry keys happen to match.
@@ -318,4 +324,24 @@ mod tests {
         compare(Vec::new(), &mut workspace, &meshes);
         compare(prepare(&scene), &mut workspace, &meshes);
     }
+    #[test]
+    fn identity_grouped_draw_order_does_not_allocate_inverse_permutation() {
+        let (scene, _) = fixture();
+        let meshes = HashMap::new();
+        let mut draws = prepare(&scene);
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        // First pass establishes stable material/mesh ordering.
+        group_voxel_batches_into(&mut draws, &meshes, &mut workspace, &mut batches);
+        workspace.positions.clear();
+        workspace.positions.shrink_to_fit();
+        // Identical input must produce an identity permutation and leave the
+        // inverse-position scratch empty instead of allocating one entry/draw.
+        let before = draws.iter().map(|d| d.node).collect::<Vec<_>>();
+        group_voxel_batches_into(&mut draws, &meshes, &mut workspace, &mut batches);
+        assert_eq!(draws.iter().map(|d| d.node).collect::<Vec<_>>(), before);
+        assert!(workspace.positions.is_empty(),
+            "no inverse permutation is needed for an identity order");
+    }
+
 }
