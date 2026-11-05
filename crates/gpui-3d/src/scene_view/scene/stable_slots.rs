@@ -52,12 +52,8 @@ impl StableDrawSlots {
     /// Construct a transactional next state. No slot may be recycled until
     /// all draws from the previous scene have been accounted for.
     pub(super) fn plan(&self, draws: &[PreparedDraw]) -> gpui::Result<(Self, Vec<u32>)> {
-        let mut next = self.clone();
         let mut occurrences = HashMap::<BaseIdentity, u32>::new();
         let mut wanted = Vec::with_capacity(draws.len());
-        // The old physical slots are dense integer IDs. Mark their liveness
-        // in a compact byte vector rather than allocating a HashSet and hashing
-        // every SlotIdentity a second time on each incremental update.
         let mut live_slots = vec![false; self.identities.len()];
         for draw in draws {
             let base = BaseIdentity::of(draw);
@@ -65,44 +61,47 @@ impl StableDrawSlots {
             let identity = SlotIdentity { base, occurrence: *count };
             *count = count.checked_add(1)
                 .ok_or_else(|| anyhow!("GPUI 3D duplicate draw identity overflow"))?;
-            if let Some(&slot) = self.occupied.get(&identity) {
+            let old_slot = self.occupied.get(&identity).copied();
+            if let Some(slot) = old_slot {
                 live_slots[slot] = true;
             }
-            wanted.push(identity);
+            wanted.push((identity, old_slot));
         }
 
-        // Retire stale slots before assigning new identities; replacements
-        // reuse holes without raising the high-water mark unnecessarily.
-        for (index, resident) in next.identities.iter_mut().enumerate() {
-            if let Some(id) = *resident
-                && !live_slots[index]
-            {
-                next.occupied.remove(&id);
-                *resident = None;
+        // Clone only compact physical metadata. The previous HashMap clone
+        // rehashed every resident draw before removing missing ones; construct
+        // only the live successor entries instead.
+        let mut next = Self {
+            occupied: HashMap::with_capacity(wanted.len()),
+            identities: self.identities.clone(),
+            free: self.free.clone(),
+        };
+        // Recycle all retired identities before assigning new slots. Preserve
+        // deterministic old LIFO free-list order and transactional semantics.
+        for (index, identity) in next.identities.iter_mut().enumerate() {
+            if identity.is_some() && !live_slots[index] {
+                *identity = None;
                 next.free.push(index);
             }
         }
 
         let mut mapping = Vec::with_capacity(wanted.len());
-        for id in wanted {
-            let slot = if let Some(&slot) = next.occupied.get(&id) {
-                slot
-            } else {
-                let slot = next.free.pop().unwrap_or_else(|| {
+        for (id, old_slot) in wanted {
+            let slot = old_slot.unwrap_or_else(|| {
+                next.free.pop().unwrap_or_else(|| {
                     let slot = next.identities.len();
                     next.identities.push(None);
                     slot
-                });
-                next.identities[slot] = Some(id);
-                next.occupied.insert(id, slot);
-                slot
-            };
+                })
+            });
+            next.identities[slot] = Some(id);
+            let replaced = next.occupied.insert(id, slot);
+            debug_assert!(replaced.is_none(), "draw occurrences must be unique");
             mapping.push(u32::try_from(slot)
                 .map_err(|_| anyhow!("GPUI 3D draw slot index exceeds u32"))?);
         }
         Ok((next, mapping))
-    }
-}
+    }}
 
 
 impl SceneResources {
@@ -315,6 +314,33 @@ mod tests {
             } else {
                 assert_ne!(&next_bytes[start..start + stride], &bytes[start..start + stride]);
             }
+        }
+    }
+
+    #[test]
+    fn incremental_plan_keeps_exact_one_to_one_resident_slot_state() {
+        let original = draws(128);
+        let (mut slots, _) = StableDrawSlots::default().plan(&original).unwrap();
+        for round in 0..7 {
+            let mut changed = original.clone();
+            let rotate = (round * 13) % changed.len();
+            changed.rotate_left(rotate);
+            changed.drain(5..(9 + round));
+            changed.push(changed[0].clone());
+            let (next, mapping) = slots.plan(&changed).unwrap();
+            assert_eq!(next.occupied.len(), changed.len());
+            assert_eq!(mapping.len(), changed.len());
+            for (&slot, draw) in mapping.iter().zip(&changed) {
+                let expected = BaseIdentity::of(draw);
+                let resident = next.identities[slot as usize]
+                    .expect("active physical slot must have identity");
+                assert_eq!(resident.base, expected);
+                assert_eq!(next.occupied.get(&resident), Some(&(slot as usize)));
+            }
+            for &hole in &next.free {
+                assert!(next.identities[hole].is_none());
+            }
+            slots = next;
         }
     }
 
