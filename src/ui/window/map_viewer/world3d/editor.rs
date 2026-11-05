@@ -698,17 +698,23 @@ impl World3dEditorView {
                     if payload.lighting != self.render_settings.lighting
                         || payload.mesh.pos.dimension != self.dimension => {}
                 ChunkServiceEvent::Chunk(payload) => {
-                    submitted_bytes =
-                        submitted_bytes.saturating_add(payload.mesh.estimated_cpu_bytes());
+                    // Time-budget pressure follows newly resident data, not the same
+                    // texture bytes multiplied by every section which references it.
+                    let geometry_bytes = payload.mesh.estimated_geometry_cpu_bytes();
                     let _ = payload.generation;
+                    let mut new_texture_bytes = 0usize;
                     for texture in payload.mesh.textures.iter() {
                         let id = texture.id();
                         if !self.textures.contains_key(&id) {
                             let bytes = texture_storage_bytes(texture);
+                            new_texture_bytes = new_texture_bytes.saturating_add(bytes);
                             self.texture_bytes = self.texture_bytes.saturating_add(bytes);
                             self.textures.insert(id, texture.clone());
                         }
                     }
+                    submitted_bytes = submitted_bytes
+                        .saturating_add(geometry_bytes)
+                        .saturating_add(new_texture_bytes);
                     self.probes.insert(payload.mesh.pos, payload.probe.clone());
                     probes_changed = true;
                     let key = (payload.mesh.pos, payload.mesh.section_y);

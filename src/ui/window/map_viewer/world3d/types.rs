@@ -256,11 +256,18 @@ pub struct World3dChunkMesh {
 }
 
 impl World3dChunkMesh {
+    /// Approximate the bytes of one queued mesh without charging shared texture
+    /// pixels again. Texture residency is accounted separately by unique asset ID.
     #[must_use]
-    pub fn estimated_cpu_bytes(&self) -> usize {
+    pub fn estimated_geometry_cpu_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(std::mem::size_of_val(self.occluders.as_ref()))
             .saturating_add(self.triangles.saturating_mul(3 * 32))
+    }
+
+    #[must_use]
+    pub fn estimated_cpu_bytes(&self) -> usize {
+        self.estimated_geometry_cpu_bytes()
             .saturating_add(
                 self.textures
                     .iter()
