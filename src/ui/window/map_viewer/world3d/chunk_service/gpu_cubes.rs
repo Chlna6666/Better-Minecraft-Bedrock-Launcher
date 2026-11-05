@@ -55,17 +55,13 @@ impl Worker {
                 )
             })
             .map_err(|error| format!("GPU 构网输入无效: {error}"))?;
-        let compact = !self.lighting.is_lit();
-        #[cfg(test)]
-        let compact = compact && std::env::var("BMCBL_WORLD3D_TEST_GPU_MESH").as_deref() != Ok("1");
-        let mesh = if compact {
-            source
-                .compact_mesh()
-                .map_err(|error| format!("构造紧凑网格失败: {error}"))?
-        } else {
-            Mesh::from_gpu_voxels(source)
-        }
-        .with_identity(chunk_mesh_id(pos, band.section_y), self.mesh_generation);
+        // Publish the exact compact cell/face-template source on both lit and
+        // unlit paths. The GPU owner selects Compute+Indirect by gfx-core
+        // capabilities and never performs CPU meshing for supported devices.
+        // The Mesh source retains a lazy CPU fallback for APIs/devices without
+        // those capabilities; do not eagerly expand unlit Sections here.
+        let mesh = Mesh::from_gpu_voxels(source)
+            .with_identity(chunk_mesh_id(pos, band.section_y), self.mesh_generation);
         output.pos = pos;
         output.section_y = band.section_y;
         output.origin = [pos.x * 16, 0, pos.z * 16];
