@@ -306,6 +306,7 @@ impl SceneResources {
         let mut walk_ms = 0.0;
         let mut assets_ms = 0.0;
         let mut batch_ms = 0.0;
+        let mut retirement_scan = false;
         let projection = FrameProjection::new(scene_view, context)?;
         let sampler =
             renderer.sampler(device, scene_view.sampling, scene_view.anisotropy_enabled)?;
@@ -317,6 +318,12 @@ impl SceneResources {
         // A camera-only update can reuse the retained draw list unless distance-based LOD may
         // select a different mesh. In that case re-walk the scene before uploading draw state.
         let gpu_culling = scene_view.voxel_shader && renderer.cull_shader.is_some();
+        // A resized/recreated culling buffer invalidates old bind groups even
+        // if the scene change only added assets.
+        let previous_visible_instances = self
+            .culling
+            .as_ref()
+            .map(|culling| culling.visible_instances);
         let culling_mode_changed = self.prepared.set_gpu_culling(gpu_culling);
         let draw_state_changed = assets_changed
             || culling_mode_changed
@@ -586,6 +593,7 @@ impl SceneResources {
                     sampler,
                     sampler_changed,
                     scene_view.voxel_shader,
+                    assets_changed,
                 )?;
             }
             if let Some(started) = buffer_started {
@@ -599,16 +607,33 @@ impl SceneResources {
                 sampler,
                 sampler_changed,
                 scene_view.voxel_shader,
+                false,
             )?;
         }
         if assets_changed {
-            // Keep scene-owned meshes resident across camera culling and hidden warm-cache nodes.
-            self.active_assets
+            // The common streaming update only adds new section meshes. No
+            // existing GPU resource can become unreachable from an add-only
+            // scene delta, so avoid repeatedly walking every resident
+            // bind group, texture, and mesh. Keep the full sweep for removed
+            // references, GPU mesh replacement, or culling buffer relocation.
+            let references_removed = self
+                .active_assets
                 .sync(self.scene.as_deref(), scene_view.scene());
-            let (active_meshes, active_textures) = self.active_assets.ids();
-            self.retire_bindings(device, &active_meshes, &active_textures)?;
-            self.retire_textures(device, &active_textures)?;
-            self.retire_meshes(&active_meshes);
+            let visible_instances_changed = previous_visible_instances
+                != self
+                    .culling
+                    .as_ref()
+                    .map(|culling| culling.visible_instances);
+            let mesh_replaced = !self.retired_meshes.is_empty();
+            if references_removed || mesh_replaced || visible_instances_changed {
+                retirement_scan = true;
+                let (active_meshes, active_textures) = self.active_assets.ids();
+                self.retire_bindings(device, &active_meshes, &active_textures)?;
+                if references_removed {
+                    self.retire_textures(device, &active_textures)?;
+                    self.retire_meshes(&active_meshes);
+                }
+            }
         }
         for mesh in self.retired_meshes.drain(..) {
             destroy_mesh(device, mesh, &mut self.arena)?;
@@ -666,9 +691,10 @@ impl SceneResources {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             if total_ms >= 16.0 {
                 eprintln!(
-                    "gpui3d prepare_detail draws={} assets_changed={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2}",
+                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2}",
                     self.prepared.draws.len(),
                     assets_changed,
+                    retirement_scan,
                     camera_ms,
                     walk_ms,
                     assets_ms,
@@ -764,6 +790,7 @@ impl SceneResources {
         sampler: SamplerId,
         sampler_changed: bool,
         voxel_shader: bool,
+        defer_binding_cleanup: bool,
     ) -> gpui::Result<()> {
         let trace_started = trace_timings().then(Instant::now);
         let draw_count = self.prepared.draws.len().max(1);
@@ -950,6 +977,7 @@ impl SceneResources {
             sampler,
             sampler_changed || replace_draw || replace_instances || replace_lights,
             voxel_shader,
+            defer_binding_cleanup,
         ) {
             self.draw_buffer = old_draw;
             self.draw_capacity = old_draw_capacity;
@@ -1226,6 +1254,7 @@ impl SceneResources {
         sampler: SamplerId,
         force: bool,
         voxel_shader: bool,
+        defer_binding_cleanup: bool,
     ) -> gpui::Result<()> {
         let mut next = std::mem::take(&mut self.spare_draw_resources);
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
@@ -1384,29 +1413,35 @@ impl SceneResources {
         } else {
             self.binding_cache.extend(created);
         }
-        let resident_voxel_pages = self
-            .meshes
-            .iter()
-            .filter(|((_, compact), _)| *compact)
-            .map(|(_, mesh)| mesh.vertices)
-            .collect::<HashSet<_>>();
-        let stale = self
-            .binding_cache
-            .iter()
-            .filter_map(|(key, &binding)| {
-                (!key.is_resident(
-                    &self.meshes,
-                    &resident_voxel_pages,
-                    self.culling
-                        .as_ref()
-                        .map(|culling| culling.visible_instances),
-                ))
-                .then_some((*key, binding))
-            })
-            .collect::<Vec<_>>();
-        for (key, binding) in stale {
-            device.destroy_bind_group(binding)?;
-            self.binding_cache.remove(&key);
+        // Binding validation is already performed by retire_bindings after
+        // asset changes. Do not perform the same full cache walk twice for
+        // every streamed section. A forced rebind replaces the entire cache
+        // with freshly created entries and also needs no second scan.
+        if !defer_binding_cleanup && !force {
+            let resident_voxel_pages = self
+                .meshes
+                .iter()
+                .filter(|((_, compact), _)| *compact)
+                .map(|(_, mesh)| mesh.vertices)
+                .collect::<HashSet<_>>();
+            let stale = self
+                .binding_cache
+                .iter()
+                .filter_map(|(key, &binding)| {
+                    (!key.is_resident(
+                        &self.meshes,
+                        &resident_voxel_pages,
+                        self.culling
+                            .as_ref()
+                            .map(|culling| culling.visible_instances),
+                    ))
+                    .then_some((*key, binding))
+                })
+                .collect::<Vec<_>>();
+            for (key, binding) in stale {
+                device.destroy_bind_group(binding)?;
+                self.binding_cache.remove(&key);
+            }
         }
         if let Some(started) = trace_started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1418,12 +1453,13 @@ impl SceneResources {
             {
                 let (arena_pages, arena_capacity, arena_live, arena_dead) = self.arena.stats();
                 eprintln!(
-                    "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={}",
+                    "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} deferred_prune={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={}",
                     self.batches.len(),
                     reused,
                     positional_reused,
                     created_count,
                     self.binding_cache.len(),
+                    defer_binding_cleanup,
                     elapsed_ms,
                     arena_pages,
                     arena_capacity,
