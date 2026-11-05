@@ -354,6 +354,16 @@ impl SceneResources {
                 self.prepared
                     .update_nodes(&scene_view.scene, nodes.as_ref(), scene_view.scene_transform)
             });
+            // A successful local update contains the complete new visible leaf set.
+            // Unchanged leaves already have resident GPU meshes and textures.
+            // Fall back to full scanning if a texture table or shader mode changes.
+            let incremental_asset_sync = updated.is_some()
+                && gpu_culling
+                && !voxel_shader_changed
+                && self
+                    .texture_table
+                    .as_ref()
+                    .is_some_and(|old| Arc::ptr_eq(old, &scene_view.textures));
             if updated.is_some() {
                 self.prepared
                     .update_camera(scene_view.camera, projection.aspect())?;
@@ -373,9 +383,18 @@ impl SceneResources {
             {
                 let _phase =
                     gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
-                validate_textures(&self.prepared, scene_view)?;
-                self.ensure_textures(device, scene_view)?;
-                self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
+                if incremental_asset_sync {
+                    validate_draw_textures(&self.prepared.incremental_asset_draws(), scene_view)?;
+                } else {
+                    validate_textures(&self.prepared, scene_view)?;
+                }
+                self.ensure_textures(device, scene_view, incremental_asset_sync)?;
+                self.ensure_meshes_for_draws(
+                    device,
+                    context.backend_kind(),
+                    scene_view.voxel_shader,
+                    incremental_asset_sync,
+                )?;
             }
             if let Some(started) = stage_started {
                 assets_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -435,7 +454,7 @@ impl SceneResources {
                 // CPU re-culling can reveal assets not uploaded by earlier frames.
                 let _phase =
                     gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
-                self.ensure_textures(device, scene_view)?;
+                self.ensure_textures(device, scene_view, false)?;
                 self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
             }
             if let Some(started) = camera_started {
@@ -955,9 +974,15 @@ impl SceneResources {
         &mut self,
         device: &mut dyn ExtensionDevice,
         scene_view: &SceneView,
+        incremental: bool,
     ) -> gpui::Result<()> {
         self.seen_materials.clear();
-        for draw in &self.prepared.draws {
+        let draws = if incremental {
+            &self.prepared.incremental_asset_draws()
+        } else {
+            &self.prepared.draws
+        };
+        for draw in draws {
             if !self
                 .seen_materials
                 .insert(Arc::as_ptr(&draw.material) as usize)
@@ -1011,10 +1036,25 @@ impl SceneResources {
         backend: BackendKind,
         voxel_shader: bool,
     ) -> gpui::Result<()> {
+        self.ensure_meshes_for_draws(device, backend, voxel_shader, false)
+    }
+
+    fn ensure_meshes_for_draws(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        voxel_shader: bool,
+        incremental: bool,
+    ) -> gpui::Result<()> {
         let mut pending = Vec::new();
         let mut pending_ids = HashSet::new();
         let mut pending_bytes = 0usize;
-        for draw in &self.prepared.draws {
+        let draws = if incremental {
+            &self.prepared.incremental_asset_draws()
+        } else {
+            &self.prepared.draws
+        };
+        for draw in draws {
             let id = mesh_key(draw, voxel_shader);
             let generation = draw.mesh.generation();
             if self
@@ -2036,8 +2076,12 @@ fn scene_assets_changed(
 }
 
 fn validate_textures(prepared: &PreparedScene, scene_view: &SceneView) -> anyhow::Result<()> {
+    validate_draw_textures(&prepared.draws, scene_view)
+}
+
+fn validate_draw_textures(draws: &[PreparedDraw], scene_view: &SceneView) -> anyhow::Result<()> {
     let mut seen = HashSet::new();
-    for draw in &prepared.draws {
+    for draw in draws {
         if draw.material.shading_model == ShadingModel::MetallicRoughness
             && draw.material.normal_texture.is_some()
             && draw

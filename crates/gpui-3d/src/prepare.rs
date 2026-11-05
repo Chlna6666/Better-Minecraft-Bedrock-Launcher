@@ -155,6 +155,9 @@ pub struct PreparedScene {
     candidates: Vec<PreparedDraw>,
     /// Reusable workspace for linear incremental scene updates.
     candidate_scratch: Vec<PreparedDraw>,
+    // Draws from the last successful incremental update. Only these leaves need
+    // resource validation and uploads when the texture table and shader mode stay stable.
+    changed_asset_draws: Vec<PreparedDraw>,
     candidate_groups: Vec<CandidateGroup>,
     visible_candidates: Vec<usize>,
     next_visible_candidates: Vec<usize>,
@@ -179,6 +182,10 @@ struct CandidateGroup {
 impl PreparedScene {
     pub(crate) fn blended_order(&self) -> &[usize] {
         &self.blend_order
+    }
+    /// Only visible leaf draws introduced or updated by the last incremental scene delta.
+    pub(crate) fn incremental_asset_draws(&self) -> &[PreparedDraw] {
+        &self.changed_asset_draws
     }
     /// Iterates adjacent draws that can be submitted together with one instance draw.
     ///
@@ -363,6 +370,7 @@ impl PreparedScene {
         camera: Camera,
     ) -> Result<(), CameraError> {
         self.candidates.clear();
+        self.changed_asset_draws.clear();
         self.occluders.clear();
         self.blend_order.clear();
         self.blend_positions.clear();
@@ -597,6 +605,7 @@ impl PreparedScene {
         self.draws.shrink_to_fit();
         self.candidates.shrink_to_fit();
         self.candidate_scratch.shrink_to_fit();
+        self.changed_asset_draws.shrink_to_fit();
         self.lights.shrink_to_fit();
         self.walk_stack.shrink_to_fit();
         self.candidate_groups.shrink_to_fit();

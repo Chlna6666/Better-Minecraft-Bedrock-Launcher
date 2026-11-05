@@ -11,6 +11,7 @@ impl PreparedScene {
     ) -> Option<usize> {
         let camera = self.camera?;
         if nodes.is_empty() {
+            self.changed_asset_draws.clear();
             return Some(0);
         }
         if nodes.iter().any(|&id| {
@@ -32,7 +33,7 @@ impl PreparedScene {
             .walk_pending(scene, |_, node| node.transform, camera)
             .ok()?;
         let mut replacements = std::collections::HashMap::<NodeId, Vec<PreparedDraw>>::new();
-        for draw in partial.candidates {
+        for draw in partial.candidates.iter().cloned() {
             replacements.entry(draw.node).or_default().push(draw);
         }
         let groups = self
@@ -94,6 +95,8 @@ impl PreparedScene {
         // Merge the retained candidates once instead, moving unchanged draws and
         // replacement draws in O(total_draws + changed_nodes). Keep the spare vector
         // allocated across updates so section streaming does not churn the allocator.
+        self.changed_asset_draws.clear();
+        self.changed_asset_draws.extend(partial.candidates);
         self.candidate_scratch.clear();
         self.candidate_scratch.reserve(next_start);
         self.candidate_scratch.extend(prefix);
@@ -189,6 +192,8 @@ mod tests {
             );
             assert_eq!(prepared.draws.len(), full.draws.len());
             assert!(prepared.candidate_scratch.capacity() >= full.candidates.len());
+            assert!(prepared.changed_asset_draws.iter().all(|draw| changes.contains(&draw.node)));
+            assert!(prepared.changed_asset_draws.len() < full.candidates.len());
         }
     }
 
