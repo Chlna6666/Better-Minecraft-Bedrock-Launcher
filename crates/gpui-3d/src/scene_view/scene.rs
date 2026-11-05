@@ -68,6 +68,9 @@ pub(super) struct SceneResources {
     light_buffer: BufferId,
     light_capacity: usize,
     frame_buffer: BufferId,
+    // Last committed GPU frame uniform bytes. Section updates often preserve
+    // the camera, shadow matrix and render settings; skip redundant uploads.
+    uploaded_frame_params: Vec<u8>,
     frame_state: Option<FrameState>,
     shadow: Option<super::shadow::Shadow>,
     light_pass: Option<light_pass::LightPass>,
@@ -299,6 +302,7 @@ impl SceneResources {
             light_buffer,
             light_capacity,
             frame_buffer,
+            uploaded_frame_params: Vec::new(),
             frame_state: None,
             shadow: None,
             light_pass: None,
@@ -819,7 +823,12 @@ impl SceneResources {
             };
             bytes[268..272].copy_from_slice(&flags.to_le_bytes());
         }
-        device.write_buffer(self.frame_buffer, 0, &bytes)?;
+        if self.uploaded_frame_params != bytes {
+            device.write_buffer(self.frame_buffer, 0, &bytes)?;
+            // Commit the exact byte identity only after the native upload
+            // succeeds; failed writes must be retried on the next update.
+            self.uploaded_frame_params = bytes;
+        }
         Ok(())
     }
 
@@ -1329,6 +1338,9 @@ impl SceneResources {
         let mut pending = Vec::new();
         let mut pending_ids = HashSet::new();
         let mut pending_bytes = 0usize;
+        // Device limits cannot change within the lifetime of this backend.
+        // Query the virtual device only once per asset publication.
+        let compute_caps = device.compute_capabilities();
         let draws: &[PreparedDraw] = if incremental {
             self.prepared.incremental_asset_draws()
         } else {
@@ -1347,12 +1359,11 @@ impl SceneResources {
             if !pending_ids.insert((id, generation)) {
                 continue;
             }
-            let caps = device.compute_capabilities();
             let creation = (|| {
                 if id.1
                     && draw.mesh.gpu_voxels().is_some()
-                    && caps.indirect_draw
-                    && !caps.max_workgroups.contains(&0)
+                    && compute_caps.indirect_draw
+                    && compute_caps.supports_compute()
                 {
                     if self.mesh_shader.is_none() {
                         self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);
