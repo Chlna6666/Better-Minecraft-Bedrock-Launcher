@@ -420,21 +420,38 @@ fn forget_published_sections(
     }
 }
 
+/// Render state also includes Hi-Z occluder boxes. A change in those boxes
+/// needs a new Scene snapshot but does NOT require re-uploading the same voxel
+/// mesh to the GPU. Keep the two comparisons separate.
 fn same_chunk_render_geometry(left: &World3dChunkMesh, right: &World3dChunkMesh) -> bool {
+    left.occluders == right.occluders && same_chunk_mesh_contents(left, right)
+}
+
+fn same_chunk_mesh_contents(left: &World3dChunkMesh, right: &World3dChunkMesh) -> bool {
     left.pos == right.pos
-        && left.occluders == right.occluders
         && left.section_y == right.section_y
         && left.origin == right.origin
         && left.faces == right.faces
         && left.triangles == right.triangles
         && left.missing_texture_faces == right.missing_texture_faces
         && left.materials == right.materials
-        && left
-            .textures
-            .iter()
-            .map(|texture| texture.id())
+        && left.textures.iter().map(|texture| texture.id())
             .eq(right.textures.iter().map(|texture| texture.id()))
         && left.mesh.same_voxel_quad_geometry(&right.mesh)
+}
+
+/// Preserve the existing MeshId/generation and native GPU geometry even if
+/// the Section's Hi-Z boxes changed after a neighbouring column was loaded.
+/// New scene occluders still flow through the ordinary Section update.
+fn reuse_section_gpu_mesh(
+    previous: &World3dChunkMesh,
+    updated: &mut Arc<World3dChunkMesh>,
+) -> bool {
+    if !same_chunk_mesh_contents(previous, updated) {
+        return false;
+    }
+    Arc::make_mut(updated).mesh = Arc::clone(&previous.mesh);
+    true
 }
 
 fn take_visible_dirty_meshes(
@@ -573,6 +590,17 @@ mod view_tests {
         let mut changed_material = (*same).clone();
         changed_material.materials = Arc::from([Arc::new(Material::new())]);
         assert!(!same_chunk_render_geometry(&original, &changed_material));
+        let mut changed_occlusion = (*same).clone();
+        changed_occlusion.occluders = Arc::from([gpui_3d::Occluder {
+            bounds: gpui_3d::Aabb::new(Vec3::ZERO, Vec3::ONE).unwrap(),
+            faces: 63,
+        }]);
+        assert!(!same_chunk_render_geometry(&original, &changed_occlusion));
+        assert!(super::same_chunk_mesh_contents(&original, &changed_occlusion));
+        let mut update = Arc::new(changed_occlusion);
+        assert!(super::reuse_section_gpu_mesh(&original, &mut update));
+        assert!(Arc::ptr_eq(&update.mesh, &original.mesh));
+        assert_ne!(update.occluders, original.occluders);
         let other = build(1, quad);
         let mut published = std::collections::BTreeMap::from([
             ((pos, 0), Arc::downgrade(&original)),
@@ -2994,17 +3022,22 @@ impl Worker {
                         if let Some(sections) = completed_sections.get_mut(&pos) {
                             sections.push(section_y);
                         }
-                        let mesh = Arc::new(mesh);
+                        let mut mesh = Arc::new(mesh);
                         let key = (pos, section_y);
-                        if let Some(old) = self
-                            .published_sections
-                            .get(&key)
-                            .and_then(Weak::upgrade)
+                        let previous = self.published_sections
+                            .get(&key).and_then(Weak::upgrade);
+                        if let Some(old) = previous
+                            .as_ref()
                             .filter(|old| same_chunk_render_geometry(old, &mesh))
                         {
                             reused_sections += 1;
-                            retained_sections.entry(pos).or_default().push(old);
+                            retained_sections.entry(pos).or_default().push(old.clone());
                         } else {
+                            if let Some(old) = previous.as_ref() {
+                                // Occluder-only Section deltas must not retire
+                                // or regenerate already resident GPU geometry.
+                                reuse_section_gpu_mesh(old, &mut mesh);
+                            }
                             self.published_sections.insert(key, Arc::downgrade(&mesh));
                             let payload = World3dChunkPayload {
                                 lighting: self.lighting,
