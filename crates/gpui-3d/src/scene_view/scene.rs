@@ -358,7 +358,12 @@ impl SceneResources {
         let culling_bounds_changed = self.culling_bounds != scene_view.culling_bounds;
         // A camera-only update can reuse the retained draw list unless distance-based LOD may
         // select a different mesh. In that case re-walk the scene before uploading draw state.
-        let gpu_culling = scene_view.voxel_shader && renderer.cull_shader.is_some();
+        // Device-neutral GPU path: DX11, DX12, Vulkan and OpenGL use the
+        // same capability policy and WGSL shader modules.
+        let gpu_culling = scene_view.voxel_shader
+            && device.compute_capabilities().voxel_execution_path()
+                == gfx_core::VoxelExecutionPath::GpuDriven
+            && renderer.cull_shader.is_some();
         // A resized/recreated culling buffer invalidates old bind groups even
         // if the scene change only added assets.
         let previous_visible_instances = self
@@ -1362,8 +1367,8 @@ impl SceneResources {
             let creation = (|| {
                 if id.1
                     && draw.mesh.gpu_voxels().is_some()
-                    && compute_caps.indirect_draw
-                    && compute_caps.supports_compute()
+                    && compute_caps.voxel_execution_path()
+                        == gfx_core::VoxelExecutionPath::GpuDriven
                 {
                     if self.mesh_shader.is_none() {
                         self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);

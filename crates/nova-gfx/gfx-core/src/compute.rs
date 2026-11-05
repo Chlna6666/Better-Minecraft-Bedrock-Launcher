@@ -22,6 +22,20 @@ pub struct ComputeCapabilities {
     pub indirect_draw: bool,
 }
 
+/// Backend-neutral selection of the voxel rendering pipeline.
+///
+/// All four desktop APIs (D3D11, D3D12, Vulkan and OpenGL) use the same
+/// decoded-section inputs and the same WGSL programs. Native backends only
+/// advertise compute/indirect capabilities, never select visible chunks on CPU.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VoxelExecutionPath {
+    /// Compute/indirect support is unavailable; use a lazy CPU geometry fallback.
+    #[default]
+    CpuFallback,
+    /// Compute-generated triangles, GPU frustum/Hi-Z culling, indirect draws.
+    GpuDriven,
+}
+
 /// Requirements of one *precompiled* compute shader entry point.
 ///
 /// Workgroup size is baked into WGSL. Changing the dispatch grid does not change
@@ -51,6 +65,21 @@ impl ComputeKernelProfile {
 }
 
 impl ComputeCapabilities {
+    /// Resolve the same geometry execution policy on D3D11, D3D12, Vulkan and
+    /// OpenGL, using real device limits instead of choosing by backend name.
+    /// The current compute mesher and frustum culler both use 64 threads;
+    /// shader variants must remain consistent with this requirement.
+    #[must_use]
+    pub fn voxel_execution_path(self) -> VoxelExecutionPath {
+        if self.indirect_draw
+            && self.supports_kernel(ComputeKernelProfile::one_dimensional(64))
+        {
+            VoxelExecutionPath::GpuDriven
+        } else {
+            VoxelExecutionPath::CpuFallback
+        }
+    }
+
     /// Whether ordered buffer compute is supported by this device.
     #[must_use]
     pub fn supports_compute(self) -> bool {
@@ -289,6 +318,33 @@ mod tests {
         }
         assert!(caps.plan_linear_dispatch_2d(29).is_err());
         assert!(ComputeCapabilities::default().plan_linear_dispatch_2d(1).is_err());
+    }
+
+    #[test]
+    fn voxel_execution_selects_gpu_by_capabilities_not_api_name() {
+        let capable = ComputeCapabilities {
+            max_workgroups: [65535; 3],
+            max_invocations_per_workgroup: 1024,
+            max_workgroup_size: [1024, 1024, 64],
+            max_workgroup_shared_memory_bytes: 32 * 1024,
+            indirect_draw: true,
+        };
+        // This can represent any supported backend, including D3D11 and
+        // OpenGL 4.3+, without a platform-specific branch.
+        assert_eq!(capable.voxel_execution_path(), VoxelExecutionPath::GpuDriven);
+        assert_eq!(
+            ComputeCapabilities { indirect_draw: false, ..capable }.voxel_execution_path(),
+            VoxelExecutionPath::CpuFallback,
+        );
+        assert_eq!(
+            ComputeCapabilities { max_invocations_per_workgroup: 32, ..capable }
+                .voxel_execution_path(),
+            VoxelExecutionPath::CpuFallback,
+        );
+        assert_eq!(
+            ComputeCapabilities::default().voxel_execution_path(),
+            VoxelExecutionPath::CpuFallback,
+        );
     }
 
 }

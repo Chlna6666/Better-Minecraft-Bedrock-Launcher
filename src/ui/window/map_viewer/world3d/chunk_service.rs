@@ -1,7 +1,9 @@
 //! Background chunk streaming, textured meshing and probe construction for the 3D editor.
 //!
-//! All LevelDB reads and CPU meshing happen on this worker thread. The UI thread only
-//! receives immutable mesh/probe payloads and never blocks on world I/O.
+//! LevelDB reads, block-state decoding and material resolution happen on this worker.
+//! GPU-capable sections publish compact voxel cells and face templates directly,
+//! without first constructing and encoding a full CPU triangle mesh. The UI receives
+//! immutable section deltas and never blocks on world I/O.
 
 use super::frame_display::{FrameDisplay, ITEM_MATERIAL_PREFIX, MAP_MATERIAL_PREFIX};
 use super::types::{
@@ -3216,18 +3218,23 @@ impl Worker {
         section_y: i32,
         faces: &[p3d::Preview3dStreamFace],
     ) -> Result<Option<World3dChunkMesh>, String> {
-        self.build_chunk_mesh_with_order(pos, section_y, faces, None, 0)
+        self.build_chunk_mesh_with_templates(pos, section_y, faces, None, 0)
     }
-    fn build_chunk_mesh_with_order(
+    fn build_chunk_mesh_with_templates(
         &mut self,
         pos: ChunkPos,
         section_y: i32,
         faces: &[p3d::Preview3dStreamFace],
-        order: Option<&mut Vec<usize>>,
+        mut gpu_templates: Option<&mut Vec<gpui_3d::VoxelFaceTemplate>>,
         template_local_faces: usize,
     ) -> Result<Option<World3dChunkMesh>, String> {
         if faces.is_empty() {
             return Ok(None);
+        }
+        let gpu_source = gpu_templates.is_some();
+        if let Some(templates) = gpu_templates.as_deref_mut() {
+            templates.clear();
+            templates.reserve(faces.len());
         }
         let build_started = Instant::now();
         let origin = [pos.x * 16, 0, pos.z * 16];
@@ -3329,7 +3336,7 @@ impl Worker {
                     .or_insert_with(|| auxiliary.clone());
             }
             let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
-            if alpha_mode == AlphaMode::Opaque
+            if !gpu_source && alpha_mode == AlphaMode::Opaque
                 && let Some(proxy) = occluders::face_proxy_with_template_origin(
                     face,
                     origin,
@@ -3398,14 +3405,6 @@ impl Worker {
                 material_map.insert(key, index);
                 index
             };
-            let bucket_index = *bucket_map
-                .entry((face_band_y(face), slot))
-                .or_insert_with(|| {
-                    let index = buckets.len();
-                    buckets.push(FaceBucket::new());
-                    bucket_material_slots.push(slot);
-                    index
-                });
             let color = face_vertex_color(
                 face,
                 texture.is_some(),
@@ -3413,7 +3412,56 @@ impl Worker {
                 properties.opaque_glass,
                 properties.alpha_content,
             );
-            buckets[bucket_index].faces.push((face_index, color));
+            if let Some(templates) = gpu_templates.as_deref_mut() {
+                // Source faces are already in the template/instance/static order
+                // provided by the streaming decoder. Keep that order and write
+                // only the four materialized template corners. Do NOT construct
+                // a full CPU Mesh, index buffer or packed vertex array only to
+                // read its vertices back for the GPU compute mesher.
+                let material_slot = u32::try_from(slot)
+                    .map_err(|_| "区块材质过多".to_string())?;
+                templates.push(gpui_3d::VoxelFaceTemplate {
+                    vertices: world3d_face_vertices(
+                        face, origin_f64, face_index < template_local_faces, color,
+                    ),
+                    material_slot,
+                    neighbour: face.normal,
+                });
+            } else {
+                let bucket_index = *bucket_map
+                    .entry((face_band_y(face), slot))
+                    .or_insert_with(|| {
+                        let index = buckets.len();
+                        buckets.push(FaceBucket::new());
+                        bucket_material_slots.push(slot);
+                        index
+                    });
+                buckets[bucket_index].faces.push((face_index, color));
+            }
+        }
+        if gpu_source {
+            // This placeholder is never published: build_gpu_cube_mesh replaces
+            // it with Mesh::from_gpu_voxels (or the explicitly requested compact
+            // fallback). The material and texture data already have final IDs.
+            self.mesh_generation = self.mesh_generation.saturating_add(1);
+            let empty = Mesh::from_voxel_quads_without_raycast(
+                std::iter::empty::<[Vertex; 4]>(),
+                Vec::<MeshPart>::new(),
+            )
+            .map_err(|error| format!("构造 GPU Section 元数据失败: {error}"))?
+            .with_identity(chunk_mesh_id(pos, section_y), self.mesh_generation);
+            return Ok(Some(World3dChunkMesh {
+                occluders: Arc::from([]),
+                pos,
+                section_y,
+                origin,
+                mesh: Arc::new(empty),
+                materials: Arc::from(materials),
+                textures: Arc::from(used_textures.into_values().collect::<Vec<_>>()),
+                triangles: faces.len().saturating_mul(2),
+                faces: faces.len(),
+                missing_texture_faces,
+            }));
         }
         if buckets.is_empty() {
             return Err("区块网格没有材质".to_string());
@@ -3440,43 +3488,14 @@ impl Worker {
                 .checked_add(index_count)
                 .ok_or_else(|| "区块网格过大".to_string())?;
         }
-        if let Some(order) = order {
-            order.extend(
-                buckets
-                    .iter()
-                    .flat_map(|bucket| bucket.faces.iter().map(|(index, _)| *index)),
-            );
-        }
         let quads = buckets.into_iter().flat_map(|bucket| {
             bucket.faces.into_iter().map(|(face_index, color)| {
-                let face = &faces[face_index];
-                let normal = Vec3::new(
-                    f32::from(i16::try_from(face.normal[0]).unwrap_or(0)),
-                    f32::from(i16::try_from(face.normal[1]).unwrap_or(0)),
-                    f32::from(i16::try_from(face.normal[2]).unwrap_or(0)),
-                );
-                let uv = face
-                    .uv
-                    .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-                std::array::from_fn(|index| Vertex {
-                    // GPU cube templates are stored in local X/Z coordinates.
-                    // Apply the offset while packing, without cloning and
-                    // rewriting the full Preview3dStreamFace array.
-                    position: chunk_mesh_corner(
-                        face.corners[index],
-                        origin_f64,
-                        face_index < template_local_faces,
-                    ),
-                    normal,
-                    uv: Vec2::new(uv[index][0], uv[index][1]),
-                    color: std::array::from_fn(|channel| {
-                        if channel < 3 {
-                            color[channel] * face.ambient_light[index]
-                        } else {
-                            color[channel]
-                        }
-                    }),
-                })
+                world3d_face_vertices(
+                    &faces[face_index],
+                    origin_f64,
+                    face_index < template_local_faces,
+                    color,
+                )
             })
         });
         let bucket_time = build_started.elapsed();
@@ -4113,6 +4132,27 @@ fn collect_cached_chunk(
 
 /// Convert either a world-space face or a GPU cube's local template to a
 /// chunk-relative vertex. The offset order matches the former face-clone path.
+/// Shared CPU packed-mesh fallback and GPU source-template vertex semantics.
+#[inline]
+fn world3d_face_vertices(
+    face: &p3d::Preview3dStreamFace,
+    origin: [f64; 3],
+    local_template: bool,
+    color: [f32; 4],
+) -> [Vertex; 4] {
+    let normal = Vec3::new(face.normal[0] as f32, face.normal[1] as f32, face.normal[2] as f32);
+    let uv = face.uv.unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    std::array::from_fn(|corner| Vertex {
+        position: chunk_mesh_corner(face.corners[corner], origin, local_template),
+        normal,
+        uv: Vec2::new(uv[corner][0], uv[corner][1]),
+        color: std::array::from_fn(|channel| {
+            if channel < 3 { color[channel] * face.ambient_light[corner] }
+            else { color[channel] }
+        }),
+    })
+}
+
 #[inline]
 fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], local_template: bool) -> Vec3 {
     let dx = if local_template { origin[0] } else { 0. };

@@ -31,7 +31,7 @@ mod memory;
 mod texture_copy;
 pub use compute::{
     ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
-    ComputeKernelProfile,
+    ComputeKernelProfile, VoxelExecutionPath,
 };
 pub use texture_copy::TextureCopy;
 

@@ -11,43 +11,30 @@ impl Worker {
     ) -> Result<Option<World3dChunkMesh>, String> {
         let lighting = lighting.filter(|_| self.lighting.is_lit());
         let levels = lighting.map(|light| light.gpu_levels(pos, &band));
-        let mut order = Vec::new();
-        let Some(mut output) = self.build_chunk_mesh_with_order(
+        let mut templates = Vec::with_capacity(faces.len());
+        let Some(mut output) = self.build_chunk_mesh_with_templates(
             pos,
             band.section_y,
             faces,
-            Some(&mut order),
+            Some(&mut templates),
             band.template_faces,
         )?
         else {
             return Ok(None);
         };
-        let vertices = output.mesh.vertices();
-        let mut templates = vec![None; faces.len()];
-        // Packed quads and MeshPart ranges are both monotonic. A cursor avoids
-        // scanning every material part for every face in a large chunk section.
-        let mut part_cursor = 0usize;
-        for (quad, &original) in order.iter().enumerate() {
-            let material_slot = packed_quad_material_slot(
-                output.mesh.parts(),
-                quad,
-                &mut part_cursor,
-            )
-            .ok_or_else(|| "GPU 方块模板缺少材质分段".to_string())?;
-            templates[original] = Some(gpui_3d::VoxelFaceTemplate {
-                vertices: std::array::from_fn(|corner| vertices[quad * 4 + corner]),
-                material_slot,
-                neighbour: if original < band.template_faces {
-                    band.neighbours[original]
-                } else {
-                    faces[original].normal
-                },
-            });
+        // Neighbour offsets for canonical cube faces come from the decoded
+        // compact grid, not from the visual face normal. Extra/static faces
+        // keep their original normal; GPU source validation handles each type.
+        for (template, &neighbour) in templates
+            .iter_mut()
+            .take(band.template_faces)
+            .zip(band.neighbours.iter())
+        {
+            template.neighbour = neighbour;
         }
-        let mut templates = templates
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| "GPU 方块模板不完整".to_string())?;
+        if templates.len() != faces.len() || band.neighbours.len() != band.template_faces {
+            return Err("GPU 方块模板与区块面数不匹配".to_string());
+        }
         let occluders = super::occluders::gpu_boxes(&band, &templates, &output.materials);
         let extra = templates.split_off(band.template_faces);
         let instance_templates = templates.split_off(band.model_faces);
@@ -91,51 +78,38 @@ impl Worker {
     }
 }
 
-
-/// Resolve monotonically packed quads to their material part in O(quads + parts).
-fn packed_quad_material_slot(
-    parts: &[MeshPart],
-    quad: usize,
-    cursor: &mut usize,
-) -> Option<u32> {
-    let first_index = quad.checked_mul(6)?;
-    while let Some(part) = parts.get(*cursor) {
-        let end = (part.first_index() as usize).checked_add(part.index_count() as usize)?;
-        if first_index < end {
-            break;
-        }
-        *cursor += 1;
-    }
-    parts.get(*cursor)
-        .filter(|part| first_index >= part.first_index() as usize)
-        .map(|part| part.material_slot())
-}
-
 #[cfg(test)]
-mod material_cursor_tests {
-    use super::{MeshPart, packed_quad_material_slot};
+mod direct_template_tests {
+    use super::*;
 
     #[test]
-    fn packed_material_cursor_crosses_section_part_boundaries() {
-        let parts = [
-            MeshPart::new(0, 12, 4),
-            MeshPart::new(12, 6, 9),
-            MeshPart::new(18, 18, 2),
-        ];
-        let mut cursor = 0;
-        let mapped = (0..6)
-            .map(|quad| packed_quad_material_slot(&parts, quad, &mut cursor))
-            .collect::<Vec<_>>();
-        assert_eq!(mapped, vec![Some(4), Some(4), Some(9), Some(2), Some(2), Some(2)]);
-        assert_eq!(cursor, 2);
-        assert_eq!(packed_quad_material_slot(&parts, 6, &mut cursor), None);
-    }
-
-    #[test]
-    fn packed_material_cursor_rejects_unmapped_or_gapped_quads() {
-        let parts = [MeshPart::new(6, 6, 7)];
-        let mut cursor = 0;
-        assert_eq!(packed_quad_material_slot(&parts, 0, &mut cursor), None);
-        assert_eq!(packed_quad_material_slot(&parts, 1, &mut cursor), Some(7));
+    fn direct_gpu_template_matches_cpu_packed_quad_geometry() {
+        let face = p3d::Preview3dStreamFace {
+            ambient_light: [1.0; 4],
+            corners: [
+                [0.0, 4.0, 0.0], [1.0, 4.0, 0.0],
+                [1.0, 4.0, 1.0], [0.0, 4.0, 1.0],
+            ],
+            color: [1.0; 4],
+            shade: 1.0,
+            normal: [0, 1, 0],
+            material: Arc::from("unit_test"),
+            uv: Some([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+            pass: p3d::Preview3dStreamPass::Opaque,
+        };
+        for local in [false, true] {
+            let quad = world3d_face_vertices(
+                &face, [128.0, 0.0, 256.0], local, [1.0; 4]
+            );
+            let mesh = Mesh::from_voxel_quads_without_raycast(
+                [quad], vec![MeshPart::new(0, 6, 0)],
+            ).unwrap();
+            let template = gpui_3d::VoxelFaceTemplate {
+                vertices: quad, material_slot: 0, neighbour: face.normal,
+            };
+            assert_eq!(mesh.vertices(), template.vertices.as_slice());
+            assert_eq!(mesh.parts()[0].material_slot(), template.material_slot);
+            assert_eq!(mesh.index_count(), 6);
+        }
     }
 }
