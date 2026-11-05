@@ -52,6 +52,7 @@ pub(super) struct SceneResources {
     // Cached native commands remain valid while camera motion leaves CPU-pruned batches unchanged.
     command_visibility: Vec<bool>,
     batches: Vec<DrawBatchRange>,
+    batch_workspace: super::batching::BatchWorkspace,
     previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
     draw_buffer: BufferId,
     draw_capacity: usize,
@@ -256,6 +257,7 @@ impl SceneResources {
             command_revision: 0,
             command_visibility: Vec::new(),
             batches: Vec::new(),
+            batch_workspace: super::batching::BatchWorkspace::default(),
             previous_draws: Vec::new(),
             draw_buffer,
             draw_capacity,
@@ -505,17 +507,20 @@ impl SceneResources {
         if draw_list_changed && reordered_blends.is_none() {
             let batch_started = trace_timings().then(Instant::now);
             let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
-            self.batches = if gpu_culling {
-                super::batching::group_voxel_batches(&mut self.prepared.draws, &self.meshes)
+            if gpu_culling {
+                super::batching::group_voxel_batches_into(
+                    &mut self.prepared.draws,
+                    &self.meshes,
+                    &mut self.batch_workspace,
+                    &mut self.batches,
+                );
             } else {
-                self.prepared
-                    .draw_batches()
-                    .map(|batch| DrawBatchRange {
-                        first_instance: batch.first_instance(),
-                        instance_count: batch.draws().len(),
-                    })
-                    .collect()
-            };
+                self.batches.clear();
+                self.batches.extend(self.prepared.draw_batches().map(|batch| DrawBatchRange {
+                    first_instance: batch.first_instance(),
+                    instance_count: batch.draws().len(),
+                }));
+            }
             if let Some(started) = batch_started {
                 batch_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
