@@ -1942,3 +1942,75 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod voxel_clip_fast_path_tests {
+    // CPU differential of the algebra used by voxel.wgsl. The native headless
+    // renderer tests additionally compare the production shader's actual pixels.
+    fn old_projection(
+        clip: [f32; 4], origin: [f32; 2], bounds: [f32; 2],
+        target: [f32; 2], offset: [f32; 2], depth_bias: f32,
+    ) -> [f32; 4] {
+        let w = clip[3];
+        let safe_w = if w >= 0.0 { w.max(0.0001) } else { w.min(-0.0001) };
+        let mut result = [0.0; 4];
+        for axis in 0..2 {
+            let normalized = (origin[axis]
+                + (clip[axis] / safe_w * if axis == 0 { 0.5 } else { -0.5 } + 0.5)
+                    * bounds[axis] + offset[axis]) / target[axis].max(1.0);
+            result[axis] = (normalized * if axis == 0 { 2.0 } else { -2.0 }
+                + if axis == 0 { -1.0 } else { 1.0 }) * w;
+        }
+        result[2] = (clip[2] / safe_w - depth_bias) * w;
+        result[3] = w;
+        result
+    }
+
+    fn new_projection(
+        clip: [f32; 4], origin: [f32; 2], bounds: [f32; 2],
+        target: [f32; 2], offset: [f32; 2], depth_bias: f32,
+    ) -> [f32; 4] {
+        if clip[3].abs() < 0.0001 {
+            return old_projection(clip, origin, bounds, target, offset, depth_bias);
+        }
+        let mut result = [0.0; 4];
+        for axis in 0..2 {
+            let scale = bounds[axis] / target[axis].max(1.0);
+            let center = origin[axis] + bounds[axis] * 0.5 + offset[axis];
+            let bias = center / target[axis].max(1.0)
+                * if axis == 0 { 2.0 } else { -2.0 }
+                + if axis == 0 { -1.0 } else { 1.0 };
+            result[axis] = clip[axis] * scale + bias * clip[3];
+        }
+        result[2] = clip[2] - depth_bias * clip[3];
+        result[3] = clip[3];
+        result
+    }
+
+    #[test]
+    fn clip_space_viewport_fold_matches_original_for_camera_and_pixel_offsets() {
+        for clip in [
+            [0.2, -0.4, 0.5, 1.0],
+            [-4.0, 2.0, 11.0, 20.0],
+            [1.2, -0.2, -1.0, -3.0],
+            [0.5, -0.3, 0.2, 0.000001],
+            [0.5, -0.3, 0.2, -0.000001],
+            [0.0, 0.0, 0.0, 0.0],
+        ] {
+            for (origin, bounds, target, offset, bias) in [
+                ([0.0, 0.0], [1920.0, 1080.0], [1920.0, 1080.0], [0.0, 0.0], 0.0),
+                ([37.0, 28.0], [500.0, 320.0], [1920.0, 1080.0], [0.3, -2.0], 0.002),
+                ([0.0, 80.0], [180.0, 240.0], [1.0, 800.0], [15.0, -1.0], -0.15),
+            ] {
+                let original = old_projection(clip, origin, bounds, target, offset, bias);
+                let optimized = new_projection(clip, origin, bounds, target, offset, bias);
+                for axis in 0..4 {
+                    let tolerance = 0.0002 * original[axis].abs().max(1.0);
+                    assert!((original[axis] - optimized[axis]).abs() <= tolerance,
+                        "clip={clip:?} axis={axis} old={} new={}",
+                        original[axis], optimized[axis]);
+                }
+            }
+        }
+    }
+}

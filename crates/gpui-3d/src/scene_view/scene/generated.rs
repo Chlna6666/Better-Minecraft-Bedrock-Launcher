@@ -175,17 +175,18 @@ impl SceneResources {
         let shader = self
             .mesh_draw_shader
             .ok_or_else(|| anyhow!("missing generated draw shader"))?;
+        let compute_caps = device.compute_capabilities();
         let dispatches = updates
             .iter()
             .zip(&bindings)
             .map(|(update, bindings)| {
                 let count = u32::try_from(update.entries.len().div_ceil(4 * 64))
                     .context("generated draw dispatch overflow")?;
-                let width = count.min(device.compute_capabilities().max_workgroups[0]);
+                let grid = compute_caps.plan_linear_dispatch_2d(count)?;
                 Ok(ComputeDispatch {
                     shader,
                     bindings,
-                    workgroups: [width, count.div_ceil(width), 1],
+                    workgroups: grid,
                 })
             })
             .collect::<gpui::Result<Vec<_>>>()?;

@@ -239,26 +239,43 @@ fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
         vertex.position_x, vertex.position_y, vertex.position_z, 1.0,
     );
     let clip_position = frame.view_projection * world_position;
-    let safe_clip_w = select(
-        min(clip_position.w, -0.0001),
-        max(clip_position.w, 0.0001),
-        clip_position.w >= 0.0,
-    );
-    let ndc = clip_position.xyz / safe_clip_w;
-    let screen_position_pixels = frame.element_bounds_origin
-        + (ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5)) * frame.element_bounds_size
-        + instance.pixel_offset;
-    let normalized_target_position = screen_position_pixels
-        / max(frame.render_target_size, vec2<f32>(1.0));
+    // Algebraically combine the element viewport and render-target transforms
+    // in clip space. For ordinary vertices (|w| >= epsilon), the previous path
+    // divided by clip.w only to multiply by clip.w again. Avoid three per-vertex
+    // perspective divisions, and preserve per-instance pixel/depth offsets.
+    let target_size = max(frame.render_target_size, vec2<f32>(1.0));
+    let viewport_scale = frame.element_bounds_size / target_size;
+    let viewport_center = frame.element_bounds_origin
+        + frame.element_bounds_size * 0.5 + instance.pixel_offset;
+    let viewport_bias = (viewport_center / target_size) * vec2<f32>(2.0, -2.0)
+        + vec2<f32>(-1.0, 1.0);
+    var clip_target: vec4<f32>;
+    if (abs(clip_position.w) < 0.0001) {
+        // Keep the original safe-divide behavior for vertices at the eye plane.
+        // A direct clip-space transform is not equivalent when w is clamped.
+        let safe_clip_w = select(-0.0001, 0.0001, clip_position.w >= 0.0);
+        let ndc = clip_position.xyz / safe_clip_w;
+        let screen = frame.element_bounds_origin
+            + (ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5))
+                * frame.element_bounds_size + instance.pixel_offset;
+        let normalized = screen / target_size;
+        clip_target = vec4<f32>(
+            (normalized * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0))
+                * clip_position.w,
+            (ndc.z - instance.depth_bias) * clip_position.w,
+            clip_position.w,
+        );
+    } else {
+        clip_target = vec4<f32>(
+            clip_position.xy * viewport_scale + viewport_bias * clip_position.w,
+            clip_position.z - instance.depth_bias * clip_position.w,
+            clip_position.w,
+        );
+    }
 
     var output: VoxelOutput;
     output.draw_index = instance_index;
-    output.position = vec4<f32>(
-        (normalized_target_position * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0))
-            * clip_position.w,
-        (ndc.z - instance.depth_bias) * clip_position.w,
-        clip_position.w,
-    );
+    output.position = clip_target;
     output.vertex_color = vec4<f32>(
         f32(vertex.color_rgba8 & 255u),
         f32((vertex.color_rgba8 >> 8u) & 255u),
@@ -266,7 +283,11 @@ fn shade_voxel_value(vertex:VoxelVertex,instance_index:u32)->VoxelOutput {
         f32((vertex.color_rgba8 >> 24u) & 255u),
     ) / 255.0;
     output.uv = vertex.uv;
-    output.fog_distance = distance(world_position.xyz, frame.camera_position);
+    // Fog is usually disabled; avoid a square-root per vertex when unused.
+    output.fog_distance = 0.0;
+    if (frame.fog_color.a > 0.0 && frame.shadow_settings.w <= 0.5) {
+        output.fog_distance = distance(world_position.xyz, frame.camera_position);
+    }
     output.world_position=world_position.xyz;output.surface_normal=vec3<f32>(0.0);output.quad_uv=vec2<f32>(0.0);
     return output;
 }
@@ -305,8 +326,12 @@ fn voxel_fragment(input:VoxelOutput)->vec4<f32> {
     if (draw.alpha_mode == ALPHA_MODE_MASK && alpha < draw.alpha_cutoff) {
         discard;
     }
-    let fog = clamp((input.fog_distance - frame.fog_range.x)
-        / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0) * frame.fog_color.a*select(1.0,0.0,frame.shadow_settings.w>0.5);
+    var fog = 0.0;
+    if (frame.fog_color.a > 0.0 && frame.shadow_settings.w <= 0.5) {
+        fog = clamp((input.fog_distance - frame.fog_range.x)
+            / max(frame.fog_range.y - frame.fog_range.x, 0.0001), 0.0, 1.0)
+            * frame.fog_color.a;
+    }
     var lit=color.rgb+draw.emissive.rgb*draw.emissive.a;
     if(frame.voxel_settings.y==2.0){lit=shade_surface(input,draw,color.rgb);}
     var rgb = mix(lit, frame.fog_color.rgb, fog);
