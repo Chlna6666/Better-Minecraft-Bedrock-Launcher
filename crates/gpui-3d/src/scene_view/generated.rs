@@ -229,10 +229,17 @@ fn prepare_generated(
             job.occlusion_mask,
         ]);
     }
-    let cells = words
+    let mut cells = words
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect::<Vec<_>>();
+    // A static-only Section has no cube cells or instance jobs. D3D12 and
+    // Vulkan cannot portably create/bind a zero-byte storage buffer, yet the
+    // shared mesher layout always declares binding 0. Keep a single inert
+    // word to preserve the same 6-binding cross-backend pipeline.
+    if cells.is_empty() {
+        cells.extend_from_slice(&0u32.to_le_bytes());
+    }
     let args = static_counts
         .into_iter()
         .flat_map(|count| [0u32, 1, 0, count])
