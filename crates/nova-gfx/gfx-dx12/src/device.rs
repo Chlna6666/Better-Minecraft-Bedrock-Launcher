@@ -711,10 +711,11 @@ mod platform {
         /// Returns [`Error`] when validation fails.
         fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             desc.validate()?;
-            if desc.dimension != TextureDimension::D2 {
-                return Err(Error::InvalidInput(
-                    "only 2D textures are supported".to_string(),
-                ));
+            if let TextureDimension::D2Array { layers } = desc.dimension {
+                self.texture_array_capabilities().plan(
+                    desc.size.width(), desc.size.height(), layers,
+                    desc.mip_level_count, desc.format,
+                )?;
             }
             let resource = create_texture_resource(&self.device, desc)?;
             Ok(self.textures.insert(Dx12Texture {
@@ -730,6 +731,9 @@ mod platform {
         ///
         /// Returns [`Error`] when upload resources or command recording fail.
         fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
+            if self.textures.get(desc.texture)?.desc.dimension != TextureDimension::D2 {
+                return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+            }
             let copy = self.prepare_texture_copy(desc, data)?;
             let fence_value = self.upload_textures_2d(std::slice::from_ref(&copy))?;
             self.upload_ring.retire_used_pages(fence_value);
@@ -1014,6 +1018,9 @@ mod platform {
         ) -> Result<Dx12TextureCopyPlan<'a>> {
             let desc = write.descriptor;
             let texture = self.textures.get(desc.texture)?;
+            if texture.desc.dimension != TextureDimension::D2 {
+                return Err(Error::InvalidInput("batch 2D upload cannot write a D2Array".into()));
+            }
             desc.validate_against(&texture.desc, write.data.len())?;
             let texture_resource = texture
                 .resource
@@ -1045,6 +1052,7 @@ mod platform {
                 texture: plan.texture,
                 old_state: plan.old_state,
                 desc,
+                subresource_index: desc.mip_level,
                 format: plan.format,
                 upload_offset: upload.allocation.offset,
                 row_pitch: upload.row_pitch,
@@ -4358,12 +4366,14 @@ mod platform {
 
     impl ResourceDevice for Dx12Device {
         fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
-            // D3D12 required texture resource limits; the current
-            // abstraction still creates single-slice D2 resources only.
+            // Required DX12 resource limits; dynamic indexed sampling for
+            // Generated Mesh stays disabled until its shader path is wired.
             gfx_core::TextureArrayCapabilities {
                 max_dimension_2d: 16_384,
                 max_array_layers: 2_048,
-                ..Default::default()
+                array_resources: true,
+                layer_uploads: true,
+                indexed_sampling: false,
             }
         }
 
@@ -5136,7 +5146,8 @@ mod platform {
             Alignment: 0,
             Width: u64::from(desc.size.width()),
             Height: desc.size.height(),
-            DepthOrArraySize: 1,
+            DepthOrArraySize: u16::try_from(desc.dimension.layers())
+                .map_err(|_| Error::InvalidInput("D3D12 texture array layer count exceeds u16".into()))?,
             MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
                 Error::InvalidInput(format!("texture mip level count overflow: {error}"))
             })?,
@@ -5331,7 +5342,7 @@ mod platform {
                 pResource: core::mem::ManuallyDrop::new(Some(copy.texture.clone())),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: copy.desc.mip_level,
+                    SubresourceIndex: copy.subresource_index,
                 },
             };
             // SAFETY: Command list is open and copy locations reference live resources.
@@ -6043,6 +6054,7 @@ mod platform {
         texture: ID3D12Resource,
         old_state: D3D12_RESOURCE_STATES,
         desc: TextureWriteDescriptor,
+        subresource_index: u32,
         format: Format,
         upload_offset: u64,
         row_pitch: u32,
