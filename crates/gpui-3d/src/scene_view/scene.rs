@@ -758,7 +758,7 @@ impl SceneResources {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             if total_ms >= 16.0 {
                 eprintln!(
-                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2}",
+                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2} batches={} merged_instances={}",
                     self.prepared.draws.len(),
                     assets_changed,
                     retirement_scan,
@@ -768,6 +768,8 @@ impl SceneResources {
                     batch_ms,
                     buffer_ms,
                     total_ms,
+                    self.batches.len(),
+                    self.prepared.draws.len().saturating_sub(self.batches.len()),
                 );
             }
         }
