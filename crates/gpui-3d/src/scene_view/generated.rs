@@ -18,6 +18,9 @@ pub(super) struct GeneratedMesh {
     pub templates: BufferId,
     pub arguments: BufferId,
     pub template_bytes: u64,
+    /// Aligned suballocation within one shared GPU template storage page.
+    pub template_offset: u64,
+    pub template_allocation: Option<ArenaAllocation>,
 }
 pub(super) struct Shaders(pub [ShaderModuleId; 6]);
 pub(super) fn create_shaders(
@@ -155,6 +158,8 @@ struct PendingGenerated {
     // A generated section occupies an independently retired slice of a
     // page shared with other Section outputs. Legacy GPU tests use None.
     allocation: Option<ArenaAllocation>,
+    template_allocation: Option<ArenaAllocation>,
+    template_offset: u64,
     vertex_base: u32,
     vertex_binding_bytes: usize,
 }
@@ -178,6 +183,8 @@ impl PendingGenerated {
                 templates: self.buffers[1],
                 arguments: self.buffers[3],
                 template_bytes: self.template_bytes,
+                template_offset: self.template_offset,
+                template_allocation: self.template_allocation,
             }),
         }
     }
@@ -190,14 +197,19 @@ fn discard_pending_generated(
 ) {
     for mesh in pending {
         for (slot, &buffer) in mesh.buffers.iter().enumerate() {
-            if slot != 2 || mesh.allocation.is_none() {
+            if (slot != 2 || mesh.allocation.is_none())
+                && (slot != 1 || mesh.template_allocation.is_none())
+            {
                 let _ = device.destroy_buffer(buffer);
             }
         }
-        if let Some(allocation) = mesh.allocation
-            && let Some(arena) = arena.as_deref_mut()
-        {
-            let _ = arena.release(device, allocation);
+        if let Some(arena) = arena.as_deref_mut() {
+            if let Some(allocation) = mesh.template_allocation {
+                let _ = arena.release(device, allocation);
+            }
+            if let Some(allocation) = mesh.allocation {
+                let _ = arena.release(device, allocation);
+            }
         }
     }
 }
@@ -331,21 +343,30 @@ fn prepare_generated(
     ];
     let mut buffers = Vec::new();
     let mut pooled_allocation = None;
+    let mut template_allocation = None;
+    let mut template_offset = 0u64;
     let mut pooled_offset = 0u64;
     let mut pooled_capacity = output_bytes;
     let result = (|| {
         for (slot, (size, usage)) in specs.into_iter().enumerate() {
-            if slot == 2 && let Some((pool, backend)) = arena.as_mut() {
+            if (slot == 1 || slot == 2) && let Some((pool, backend)) = arena.as_mut() {
                 let (allocation, buffer, offset, capacity) =
                     pool.allocate(device, *backend, size as u64)?;
-                // Record ownership immediately: later validation/write errors
-                // must release this slice rather than destroy the entire page.
-                pooled_allocation = Some(allocation);
-                pooled_offset = offset;
-                pooled_capacity = usize::try_from(capacity)
-                    .context("generated face page exceeds host address space")?;
-                if offset / 16 >= 0x8000_0000 {
-                    return Err(anyhow!("generated face pool exceeds vertex address range"));
+                // Both immutable template inputs and generated face outputs
+                // live in GPU-owner shared pages, but occupy disjoint slices.
+                // Compute uses offset-qualified bindings while the shader
+                // continues to address each Section relative to its slice.
+                if slot == 1 {
+                    template_allocation = Some(allocation);
+                    template_offset = offset;
+                } else {
+                    pooled_allocation = Some(allocation);
+                    pooled_offset = offset;
+                    pooled_capacity = usize::try_from(capacity)
+                        .context("generated face page exceeds host address space")?;
+                    if offset / 16 >= 0x8000_0000 {
+                        return Err(anyhow!("generated face pool exceeds vertex address range"));
+                    }
                 }
                 buffers.push(buffer);
             } else {
@@ -362,7 +383,7 @@ fn prepare_generated(
                 BufferWrite {
                     descriptor: BufferWriteDescriptor {
                         buffer: buffers[slot],
-                        offset: 0,
+                        offset: if slot == 1 { template_offset } else { 0 },
                     },
                     data: data.as_slice(),
                 }
@@ -375,7 +396,11 @@ fn prepare_generated(
                 binding: slot as u32,
                 buffer: BufferBinding {
                     buffer: buffers[slot],
-                    offset: if slot == 2 { pooled_offset } else { 0 },
+                    offset: match slot {
+                        1 => template_offset,
+                        2 => pooled_offset,
+                        _ => 0,
+                    },
                     size: *size as u64,
                     stride: None,
                 },
@@ -420,14 +445,19 @@ fn prepare_generated(
         Ok(prepared) => prepared,
         Err(error) => {
             for (slot, buffer) in buffers.into_iter().enumerate() {
-                if slot != 2 || pooled_allocation.is_none() {
+                if (slot != 2 || pooled_allocation.is_none())
+                    && (slot != 1 || template_allocation.is_none())
+                {
                     let _ = device.destroy_buffer(buffer);
                 }
             }
-            if let Some(allocation) = pooled_allocation
-                && let Some((pool, _)) = arena
-            {
-                let _ = pool.release(device, allocation);
+            if let Some((pool, _)) = arena {
+                if let Some(allocation) = template_allocation {
+                    let _ = pool.release(device, allocation);
+                }
+                if let Some(allocation) = pooled_allocation {
+                    let _ = pool.release(device, allocation);
+                }
             }
             return Err(error);
         }
@@ -442,6 +472,8 @@ fn prepare_generated(
         vertex_base: (pooled_offset / 16) as u32,
         vertex_binding_bytes: pooled_capacity,
         allocation: pooled_allocation,
+        template_allocation,
+        template_offset,
     })
 }
 

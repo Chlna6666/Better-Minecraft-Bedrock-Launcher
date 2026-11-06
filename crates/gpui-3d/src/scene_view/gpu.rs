@@ -846,7 +846,7 @@ pub(super) fn create_draw_resource_set(
                 binding: 14,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: mesh.generated.as_ref().map_or(draw_buffer, |m| m.templates),
-                    offset: 0,
+                    offset: mesh.generated.as_ref().map_or(0, |m| m.template_offset),
                     size: mesh.generated.as_ref().map_or(16, |m| m.template_bytes),
                     stride: None,
                 }),
@@ -875,7 +875,7 @@ pub(super) fn create_draw_resource_set(
                         .generated
                         .as_ref()
                         .map_or(draw_buffer, |mesh| mesh.templates),
-                    offset: 0,
+                    offset: mesh.generated.as_ref().map_or(0, |mesh| mesh.template_offset),
                     size: mesh
                         .generated
                         .as_ref()
@@ -1021,9 +1021,15 @@ pub(super) fn destroy_mesh(
 ) -> gpui::Result<()> {
     if let Some(allocation) = mesh.allocation {
         if let Some(generated) = &mesh.generated {
-            // The generated output is a range of a shared writable pool.
-            // Template and indirect argument buffers remain mesh-local.
-            device.destroy_buffer_batch(&[generated.templates, generated.arguments])?;
+            // Mesh output and template source each have an independently
+            // retired slice of the device-level generated page pool. Never
+            // destroy the page while other Sections still reference it.
+            if let Some(template_allocation) = generated.template_allocation {
+                device.destroy_buffer(generated.arguments)?;
+                generated_arena.release(device, template_allocation)?;
+            } else {
+                device.destroy_buffer_batch(&[generated.templates, generated.arguments])?;
+            }
             return generated_arena.release(device, allocation);
         }
         return arena.release(device, allocation);
