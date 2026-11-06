@@ -4427,6 +4427,48 @@ mod platform {
             Self::write_texture(self, desc, data)
         }
 
+        fn write_texture_array_layer(
+            &mut self,
+            desc: gfx_core::TextureArrayLayerWriteDescriptor,
+            data: &[u8],
+        ) -> Result<()> {
+            let (resource, old_state, format, mip_levels) = {
+                let texture = self.textures.get(desc.texture)?;
+                desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
+                (
+                    texture.resource.clone().ok_or_else(|| {
+                        Error::Backend("DX12 layered texture has no resource".into())
+                    })?,
+                    texture.state,
+                    texture.desc.format,
+                    texture.desc.mip_level_count,
+                )
+            };
+            let slice = desc.upload;
+            let descriptor = TextureWriteDescriptor {
+                texture: desc.texture,
+                mip_level: slice.mip_level,
+                origin: slice.origin,
+                size: slice.extent,
+                layout: slice.layout,
+            };
+            let upload_layout = texture_upload_layout(descriptor, format, data.len())?;
+            let allocation = self.upload_ring.allocate(upload_layout.upload_size)?;
+            let plan = Dx12TextureCopyPlan {
+                write: TextureWrite { descriptor, data },
+                texture: resource,
+                old_state,
+                format,
+                upload_layout,
+            };
+            let mut copy = self.stage_texture_copy(plan, allocation)?;
+            copy.subresource_index = desc.subresource_index(mip_levels)?;
+            let fence = self.upload_textures_2d(std::slice::from_ref(&copy))?;
+            self.upload_ring.retire_used_pages(fence);
+            self.textures.get_mut(desc.texture)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            Ok(())
+        }
+
         fn write_texture_batch<'a>(
             &mut self,
             writes: impl IntoIterator<Item = TextureWrite<'a>>,
