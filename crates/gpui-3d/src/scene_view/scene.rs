@@ -495,6 +495,7 @@ impl SceneResources {
         self.prepared.set_culling_bounds(scene_view.culling_bounds);
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
         let mut reordered_blends = None;
+        let mut reused_resident_slots = false;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
             let camera_phase =
@@ -701,6 +702,7 @@ impl SceneResources {
                         Some(&self.meshes),
                     )?;
                 }
+                reused_resident_slots = reused;
             } else {
                 self.culling = Some(CullResources::create(
                     device,
@@ -749,15 +751,26 @@ impl SceneResources {
             if let Some(start) = reordered_blends {
                 self.sync_reordered_blends(start)?;
             } else {
-                self.sync_buffers(
-                    device,
-                    renderer,
-                    bind_group_layout,
-                    sampler,
-                    sampler_changed,
-                    scene_view.voxel_shader,
-                    assets_changed,
-                )?;
+                // Fixed-layout opaque Candidate Deltas have already updated
+                // only their resident GPU Bounds rows in CullResources. Use
+                // the same physical slots for sparse DrawParams/Instance
+                // uploads, preserving all native and indirect draw addresses.
+                // If the CPU mirrors, capacities or layout cannot be proven
+                // stable, sync_buffers() safely re-plans the entire table.
+                let updated = if reused_resident_slots {
+                    self.sync_resident_draw_delta(
+                        device, renderer, bind_group_layout, sampler,
+                        sampler_changed, assets_changed,
+                    )?
+                } else {
+                    false
+                };
+                if !updated {
+                    self.sync_buffers(
+                        device, renderer, bind_group_layout, sampler,
+                        sampler_changed, scene_view.voxel_shader, assets_changed,
+                    )?;
+                }
             }
             if let Some(started) = buffer_started {
                 buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
