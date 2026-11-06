@@ -20,13 +20,13 @@ fn cs_pack_native_indirect(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let source = params.source_word + index * 4u;
-    let target = params.destination_word + index * 8u;
-    native_args[target] = portable[source + 2u];
-    native_args[target + 1u] = portable[source + 3u];
-    native_args[target + 2u] = portable[source];
-    native_args[target + 3u] = portable[source + 1u];
-    native_args[target + 4u] = 0u;
-    native_args[target + 5u] = 0u;
-    native_args[target + 6u] = 0u;
-    native_args[target + 7u] = 0u;
+    let dest_word = params.destination_word + index * 8u;
+    native_args[dest_word] = portable[source + 2u];
+    native_args[dest_word + 1u] = portable[source + 3u];
+    native_args[dest_word + 2u] = portable[source];
+    native_args[dest_word + 3u] = portable[source + 1u];
+    native_args[dest_word + 4u] = 0u;
+    native_args[dest_word + 5u] = 0u;
+    native_args[dest_word + 6u] = 0u;
+    native_args[dest_word + 7u] = 0u;
 }
