@@ -111,6 +111,17 @@ pub(super) struct SceneResources {
 
 const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
+/// Native Vulkan/DX12 uploads stage all buffer slices in a single command
+/// submission. Large scene deltas benefit from retaining more sparse spans,
+/// while the smaller budget avoids excessive per-write work on DX11/GL.
+fn sparse_upload_range_budget(backend: BackendKind, draw_count: usize) -> usize {
+    if draw_count >= 32_768 && matches!(backend, BackendKind::Vulkan | BackendKind::Dx12) {
+        64
+    } else {
+        16
+    }
+}
+
 mod assets;
 mod instance_cache;
 pub(in crate::scene_view) mod stable_slots;
@@ -1041,6 +1052,8 @@ impl SceneResources {
         let light_buffer = new_lights.unwrap_or(self.light_buffer);
         let slot_map_buffer = new_slot_map.unwrap_or(self.draw_slot_buffer);
         let write_started = trace_started.map(|_| Instant::now());
+        let upload_range_budget =
+            sparse_upload_range_budget(self.backend, self.prepared.draws.len());
         let writes = [
             (
                 draw_buffer,
@@ -1065,8 +1078,9 @@ impl SceneResources {
         .enumerate()
         .flat_map(|(i, (buffer, data, replace, stride))| {
             // The full draw/instance layout is unchanged; only CPU->GPU transfer
-            // becomes sparse. Keep at most 16 writes per table in one batch to
-            // avoid trading bandwidth savings for excessive driver calls.
+            // becomes sparse. Batch modern GPU-copy backends can carry more
+            // patches in one native submission; keep a tighter limit for
+            // legacy drivers to bound their per-write overhead.
             (if i == 0 {
                 // DrawParams have immutable material-snapshot identities.
                 // Scan compact keys instead of comparing 80 bytes per draw.
@@ -1075,7 +1089,7 @@ impl SceneResources {
                     &next_draw_keys,
                     if replace { 0 } else { self.uploaded_tables[i].len() },
                     stride,
-                    16,
+                    upload_range_budget,
                     4,
                 )
             } else if i == 1 {
@@ -1085,7 +1099,7 @@ impl SceneResources {
                     &next_instance_keys,
                     if replace { 0 } else { self.uploaded_tables[i].len() },
                     stride,
-                    16,
+                    upload_range_budget,
                     4,
                 )
             } else {
@@ -1093,7 +1107,7 @@ impl SceneResources {
                     if replace { &[] } else { &self.uploaded_tables[i] },
                     data,
                     stride,
-                    16,
+                    upload_range_budget,
                     4,
                 )
             })
@@ -1114,7 +1128,7 @@ impl SceneResources {
             if replace_slot_map { &[] } else { &self.uploaded_slot_map },
             &slot_bytes,
             4,
-            16,
+            upload_range_budget,
             4,
         ) {
             writes.push(BufferWrite {
@@ -2609,6 +2623,20 @@ fn update_command_visibility(
         changed = true;
     }
     changed
+}
+
+#[cfg(test)]
+mod sparse_upload_budget_tests {
+    use super::*;
+
+    #[test]
+    fn high_draw_count_uses_more_ranges_only_for_batched_native_uploads() {
+        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 103_305), 64);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Dx12, 103_305), 64);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 10_000), 16);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Dx11, 103_305), 16);
+        assert_eq!(sparse_upload_range_budget(BackendKind::OpenGl, 103_305), 16);
+    }
 }
 
 #[cfg(test)]
