@@ -979,6 +979,119 @@ impl SceneResources {
         Ok(())
     }
 
+    /// Section Delta -> retained GPU Draw Slot update. The Culler has
+    /// already validated and committed stable opaque singleton identities.
+    /// We write only changed DrawParams/Instance records at their physical
+    /// addresses, leaving the logical slot map and native command addresses
+    /// untouched. Any unexpected capacity/layout change uses sync_buffers().
+    fn sync_resident_draw_delta(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        renderer: &RendererResources,
+        bind_group_layout: BindGroupLayoutId,
+        sampler: SamplerId,
+        sampler_changed: bool,
+        defer_binding_cleanup: bool,
+    ) -> gpui::Result<bool> {
+        let Some(dirty) = self.prepared.resident_delta_draws() else {
+            return Ok(false);
+        };
+        let Some(culler) = &self.culling else {
+            return Ok(false);
+        };
+        let (high_water, mapping) = culler.committed_slot_layout();
+        let capacity = high_water.max(1);
+        if high_water == 0
+            || mapping.len() != self.prepared.draws.len()
+            || self.draw_slot_keys.len() != high_water
+            || self.instance_slot_keys.len() != high_water
+            || self.uploaded_tables[0].len() != capacity * DRAW_PARAMS_STRIDE as usize
+            || self.uploaded_tables[1].len() != capacity * INSTANCE_STRIDE as usize
+            || self.draw_capacity < capacity
+            || self.instance_capacity < capacity
+            || self.uploaded_slot_map.len() != self.prepared.draws.len() * 4
+            || self.draw_addresses.len() != self.batches.len()
+            || self.prepared.draws.len() != self.batches.len()
+            || dirty.len().saturating_mul(4) > self.prepared.draws.len()
+        {
+            return Ok(false);
+        }
+        let trace_started = trace_timings().then(Instant::now);
+        let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
+        let draw_result = self.draw_record_cache.encode_resident_delta(
+            &self.prepared.draws, self.prepared.lights.len(),
+            mapping, dirty,
+            &self.draw_slot_keys, &self.uploaded_tables[0], &mut scratch,
+        );
+        self.scratch_packed_draws = scratch;
+        let draw_patches = draw_result?;
+        let mut scratch = std::mem::take(&mut self.dirty_instance_run);
+        let instance_result = self.encode_resident_instance_delta(
+            mapping, dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
+            &mut scratch,
+        );
+        self.dirty_instance_run = scratch;
+        let instance_patches = instance_result?;
+
+        let mut writes = Vec::with_capacity(draw_patches.len() + instance_patches.len());
+        for (slot, _, bytes) in &draw_patches {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.draw_buffer,
+                    offset: *slot as u64 * DRAW_PARAMS_STRIDE as u64,
+                },
+                data: &bytes[..],
+            });
+        }
+        for (slot, _, bytes) in &instance_patches {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.instance_buffer,
+                    offset: *slot as u64 * INSTANCE_STRIDE as u64,
+                },
+                data: &bytes[..],
+            });
+        }
+        if !writes.is_empty() {
+            device.write_buffer_batch(&writes)?;
+        }
+        // A new Mesh generation can change shared Page bindings and GPU Part
+        // Counts even when DrawParams bytes remain identical. Keep the same
+        // binding/mapping lifecycle as the full sync path.
+        self.sync_draw_resources(
+            device, renderer, bind_group_layout, sampler,
+            sampler_changed, true, defer_binding_cleanup,
+        )?;
+        self.sync_generated_draws(device, true)?;
+
+        // Commit exact CPU mirrors only after the GPU updates and resource
+        // bindings have succeeded. A failed operation must be retried against
+        // the previous committed snapshot, not silently skipped.
+        for (slot, key, bytes) in draw_patches {
+            self.draw_slot_keys[slot] = key;
+            let start = slot * DRAW_PARAMS_STRIDE as usize;
+            self.uploaded_tables[0][start..start + DRAW_PARAMS_STRIDE as usize]
+                .copy_from_slice(&bytes);
+        }
+        for (slot, key, bytes) in instance_patches {
+            self.instance_slot_keys[slot] = key;
+            let start = slot * INSTANCE_STRIDE as usize;
+            self.uploaded_tables[1][start..start + INSTANCE_STRIDE as usize]
+                .copy_from_slice(&bytes);
+        }
+        if let Some(started) = trace_started {
+            eprintln!(
+                "gpui3d resident_delta draws={} dirty={} draw_patches={} instance_patches={} uploaded_bytes={} ms={:.2}",
+                self.prepared.draws.len(), dirty.len(),
+                writes.iter().filter(|write| write.descriptor.buffer == self.draw_buffer).count(),
+                writes.iter().filter(|write| write.descriptor.buffer == self.instance_buffer).count(),
+                writes.iter().map(|write| write.data.len()).sum::<usize>(),
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        Ok(true)
+    }
+
     fn sync_buffers(
         &mut self,
         device: &mut dyn ExtensionDevice,
