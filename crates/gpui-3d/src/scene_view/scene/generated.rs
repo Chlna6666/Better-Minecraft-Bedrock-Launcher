@@ -513,6 +513,7 @@ impl SceneResources {
         let (output, capacity) = self
             .generated_arguments
             .ok_or_else(|| anyhow!("missing generated draw output"))?;
+        let touched_pages = groups.len();
         let mut updates = Vec::new();
         let binding_limits = device.buffer_binding_limits();
         for (source, (source_size, entries)) in groups.drain() {
@@ -625,6 +626,7 @@ impl SceneResources {
                 })
             })
             .collect::<Vec<_>>();
+        let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
             device.write_buffer_batch(&writes)?;
         }
@@ -681,6 +683,13 @@ impl SceneResources {
         // Such a structural Section reorder needs uploads but no compute.
         if !dispatches.is_empty() {
             device.dispatch_compute_batch(&dispatches)?;
+        }
+        if partial && super::super::renderer::trace_timings() {
+            eprintln!(
+                "gpui3d generated_page_delta touched_pages={} changed_pages={} uploaded_bytes={} compute_dispatches={} output_capacity={}",
+                touched_pages, updates.len(), uploaded_bytes,
+                dispatches.len(), capacity,
+            );
         }
         for update in updates {
             let mapping = self

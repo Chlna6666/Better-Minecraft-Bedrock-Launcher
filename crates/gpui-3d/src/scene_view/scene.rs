@@ -2316,7 +2316,7 @@ impl SceneResources {
         let mut created = HashMap::<DrawResourceKey, BindGroupId>::new();
         let mut old_cursor = 0usize;
         let mut inserted = 0usize;
-        let mut append_survivors = |range: std::ops::Range<usize>,
+        let append_survivors = |range: std::ops::Range<usize>,
                                     bindings: &mut Vec<BindGroupId>,
                                     keys: &mut Vec<DrawResourceKey>,
                                     sources: &mut Vec<((MeshId, bool), u64)>,
