@@ -49,6 +49,20 @@ impl StableDrawSlots {
         self.identities.len()
     }
 
+    /// Validate a retained physical slot before applying a sparse Section
+    /// change. Material, mesh and part identity changes require a complete
+    /// transactional re-plan (including duplicate occurrence assignment).
+    pub(in crate::scene_view) fn matches_resident_draw(
+        &self,
+        slot: u32,
+        draw: &PreparedDraw,
+    ) -> bool {
+        self.identities
+            .get(slot as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|identity| identity.base == BaseIdentity::of(draw))
+    }
+
     /// Construct a transactional next state. No slot may be recycled until
     /// all draws from the previous scene have been accounted for.
     pub(in crate::scene_view) fn plan(&self, draws: &[PreparedDraw]) -> gpui::Result<(Self, Vec<u32>)> {
