@@ -170,6 +170,13 @@ pub struct PreparedScene {
     culling_bounds: Option<Aabb>,
     gpu_culling: bool,
     gpu_candidates_dirty: bool,
+    /// The resident GPU draw array follows candidate order only for an
+    /// entirely opaque GPU-culled scene. Transparent ordering and CPU
+    /// visibility never use the direct Section->Draw Slot path.
+    opaque_resident_order: bool,
+    /// Dirty logical draws from the most recent fixed-layout Section Delta.
+    /// Empty means no changed GPU record; None means a full update is needed.
+    resident_delta_draws: Option<Vec<usize>>,
     blend_order: Vec<usize>,
     blend_positions: Vec<usize>,
 }
@@ -185,6 +192,12 @@ struct CandidateGroup {
 impl PreparedScene {
     pub(crate) fn blended_order(&self) -> &[usize] {
         &self.blend_order
+    }
+
+    /// Exact logical indices needing GPU resident record refresh. Available
+    /// only when every retained opaque Draw keeps its previous logical slot.
+    pub(crate) fn resident_delta_draws(&self) -> Option<&[usize]> {
+        self.resident_delta_draws.as_deref()
     }
     /// Only visible leaf draws introduced or updated by the last incremental scene delta.
     pub(crate) fn incremental_asset_draws(&self) -> &[PreparedDraw] {
@@ -326,6 +339,10 @@ impl PreparedScene {
         let changed = self.gpu_culling != enabled;
         self.gpu_culling = enabled;
         self.gpu_candidates_dirty |= changed;
+        if changed {
+            self.opaque_resident_order = false;
+            self.resident_delta_draws = None;
+        }
         changed
     }
 
@@ -378,6 +395,8 @@ impl PreparedScene {
         self.blend_order.clear();
         self.blend_positions.clear();
         self.gpu_candidates_dirty = true;
+        self.opaque_resident_order = false;
+        self.resident_delta_draws = None;
         self.candidate_groups.clear();
         self.candidate_group_index.clear();
         self.draws.clear();
@@ -598,6 +617,13 @@ impl PreparedScene {
         self.camera = Some(camera);
         self.aspect = Some(aspect);
         self.gpu_candidates_dirty = false;
+        // Full GPU culling emits every candidate, and an entirely opaque
+        // scene preserves their identity/order. Compute this only on an
+        // already-full publication; sparse deltas keep the proven state.
+        self.opaque_resident_order = self.gpu_culling
+            && self.draws.len() == self.candidates.len()
+            && self.draws.iter().all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
+        self.resident_delta_draws = None;
         Ok(())
     }
 
