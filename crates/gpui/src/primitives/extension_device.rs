@@ -305,6 +305,14 @@ where
         ResourceDevice::write_texture(self, desc, data)
     }
 
+    fn write_texture_array_layer(
+        &mut self,
+        desc: gfx_core::TextureArrayLayerWriteDescriptor,
+        data: &[u8],
+    ) -> Result<()> {
+        ResourceDevice::write_texture_array_layer(self, desc, data)
+    }
+
     fn write_texture_batch(&mut self, writes: &[TextureWrite<'_>]) -> Result<()> {
         ResourceDevice::write_texture_batch(self, writes.iter().copied())
     }
