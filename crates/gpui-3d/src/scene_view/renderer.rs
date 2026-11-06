@@ -1,10 +1,15 @@
-use super::{SceneView, SceneViewId, resources::RendererResources, scene::SceneResources};
+use super::{
+    SceneView, SceneViewId, gpu::MeshArena,
+    resources::RendererResources, scene::SceneResources,
+};
 use anyhow::{anyhow, bail};
 use gfx_core::{BackendKind, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    rc::Rc,
     sync::OnceLock,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -117,6 +122,9 @@ pub(super) struct Renderer {
     color_format: gfx_core::Format,
     target_extent: gfx_core::Extent2d,
     resources: RendererResources,
+    /// Resident writable face pages live on the renderer's GPU owner and are
+    /// reused by all SceneViews that share this device.
+    generated_arena: Rc<RefCell<MeshArena>>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
     frame_time: Option<Instant>,
@@ -157,6 +165,9 @@ impl Renderer {
             color_format: context.color_format(),
             target_extent: context.viewport(),
             resources,
+            generated_arena: Rc::new(RefCell::new(
+                MeshArena::generated_output(device.buffer_binding_limits()),
+            )),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
             frame_time: None,
@@ -305,12 +316,12 @@ mod tests {
 
 impl RendererExtensionRenderer for Renderer {
     fn needs_gpu_completion(&self) -> bool {
-        self.scenes
-            .values()
-            .any(SceneResources::has_retired_arena_ranges)
+        self.generated_arena.borrow().has_retired_ranges()
+            || self.scenes.values().any(SceneResources::has_retired_arena_ranges)
     }
 
     fn gpu_work_completed(&mut self) {
+        self.generated_arena.borrow_mut().reclaim_after_gpu_idle();
         for scene in self.scenes.values_mut() {
             scene.reclaim_arena_after_gpu_idle();
         }
@@ -337,7 +348,9 @@ impl RendererExtensionRenderer for Renderer {
         if !self.scenes.contains_key(&scene_view.id) {
             self.scenes.insert(
                 scene_view.id,
-                SceneResources::new(device, context.backend_kind())?,
+                SceneResources::new_shared(
+                    device, context.backend_kind(), Rc::clone(&self.generated_arena),
+                )?,
             );
         }
         let scene = self

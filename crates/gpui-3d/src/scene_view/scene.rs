@@ -26,6 +26,8 @@ use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 use std::{
     collections::{HashMap, HashSet},
+    cell::RefCell,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -86,7 +88,9 @@ pub(super) struct SceneResources {
     dirty_instance_run: Vec<u8>,
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
-    generated_arena: MeshArena,
+    /// GPU-owner-local arena shared by SceneViews on one renderer/device.
+    /// No global GPU handles or cross-device sharing.
+    generated_arena: Rc<RefCell<MeshArena>>,
     retired_meshes: Vec<MeshResources>,
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
@@ -238,16 +242,27 @@ impl SceneResources {
         self.culling.as_ref().map_or((0, 0), CullResources::counts)
     }
     pub(super) fn has_retired_arena_ranges(&self) -> bool {
-        self.arena.has_retired_ranges() || self.generated_arena.has_retired_ranges()
+        self.arena.has_retired_ranges()
     }
 
     pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
         self.arena.reclaim_after_gpu_idle();
-        self.generated_arena.reclaim_after_gpu_idle();
     }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
+    ) -> gpui::Result<Self> {
+        Self::new_shared(
+            device,
+            backend,
+            Rc::new(RefCell::new(MeshArena::generated_output(device.buffer_binding_limits()))),
+        )
+    }
+
+    pub(super) fn new_shared(
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        shared_generated_arena: Rc<RefCell<MeshArena>>,
     ) -> gpui::Result<Self> {
         let draw_capacity = 1;
         let light_capacity = 1;
@@ -363,7 +378,7 @@ impl SceneResources {
             dirty_instance_run: Vec::new(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
-            generated_arena: MeshArena::generated_output(device.buffer_binding_limits()),
+            generated_arena: shared_generated_arena,
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
@@ -753,7 +768,7 @@ impl SceneResources {
             }
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
         }
         if gpu_culling {
             if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
@@ -1488,7 +1503,7 @@ impl SceneResources {
                 ) {
                     Ok(created) => created,
                     Err(error) => {
-                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
+                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
                         return Err(error);
                     }
                 };
@@ -1503,9 +1518,9 @@ impl SceneResources {
                 if let Err(error) = flush_pending_generated_meshes(
                     device, &mut pending_gpu, self.mesh_shader.as_ref(),
                     &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
-                    &mut self.generated_arena, backend,
+                    &mut *self.generated_arena.borrow_mut(), backend,
                 ) {
-                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
+                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
                     return Err(error);
                 }
                 pending_ids.clear();
@@ -1515,9 +1530,9 @@ impl SceneResources {
         if let Err(error) = flush_pending_generated_meshes(
             device, &mut pending_gpu, self.mesh_shader.as_ref(),
             &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
-            &mut self.generated_arena, backend,
+            &mut *self.generated_arena.borrow_mut(), backend,
         ) {
-            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
+            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
             return Err(error);
         }
         Ok(())
@@ -1880,7 +1895,7 @@ impl SceneResources {
             {
                 let (arena_pages, arena_capacity, arena_live, arena_dead) = self.arena.stats();
                 let (generated_pages, generated_capacity, generated_live, generated_dead) =
-                    self.generated_arena.stats();
+                    self.generated_arena.borrow().stats();
                 eprintln!(
                     "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} deferred_prune={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={} generated_pages={} generated_capacity_bytes={} generated_live_bytes={} generated_dead_bytes={}",
                     self.batches.len(),
@@ -2090,10 +2105,10 @@ impl SceneResources {
             pass.destroy(device)?;
         }
         for (_, mesh) in self.meshes.drain() {
-            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut())?;
         }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
