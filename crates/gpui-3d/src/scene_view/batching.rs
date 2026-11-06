@@ -7,11 +7,26 @@ use super::{
 use crate::{AlphaMode, MeshId, PreparedDraw};
 use std::collections::HashMap;
 
-// A draw's material constants live in its own GPU DrawParams slot. Native
-// bindings depend on texture resources, while the raster pipeline depends on
-// front-face/cull state. MaterialId is therefore intentionally NOT part of
-// the grouping key: different block materials can share one quad submission.
-type BatchKey = (bool, [Option<u64>; 4], u64, u32, u8);
+// Quad batches use the exact GPU binding + raster identity, not MaterialId;
+// their material constants are fetched from independent DrawParams slots.
+// Generated/regular meshes cannot share a single native binding and remain
+// singleton draws. Keep their key compact and in the original sort order:
+// computing four texture IDs for every generated Section would be a regression.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum BatchKey {
+    Quad {
+        textures: [Option<u64>; 4],
+        page: u64,
+        size_class: u32,
+        raster: u8,
+    },
+    Singleton {
+        material: u64,
+        mesh: u64,
+        size_class: u32,
+        mirrored: bool,
+    },
+}
 
 /// Persistent scratch for streaming batch updates. Group by one computed key
 /// per draw, retain previously sorted distinct keys, and sort only newly
@@ -66,7 +81,7 @@ pub(super) fn group_voxel_batches_into(
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
-                    && !key.0
+                    && matches!(key, BatchKey::Quad { .. })
                 {
                     batch.instance_count += 1;
                     continue;
@@ -137,7 +152,7 @@ pub(super) fn group_voxel_batches_into(
             let draw = &draws[source_index];
             if let Some(batch) = batches.last_mut() {
                 if last_key == Some(key)
-                    && !key.0
+                    && matches!(key, BatchKey::Quad { .. })
                 {
                     batch.instance_count += 1;
                     workspace.order.push(source_index);
@@ -181,14 +196,17 @@ fn batch_key(
 ) -> BatchKey {
     let resource = meshes.get(&mesh_key(draw, true));
     let quad = resource.is_some_and(|mesh| mesh.procedural_quads && mesh.generated.is_none());
-    let page = if quad {
-        resource.map_or(0, |mesh| mesh.vertices.raw())
-    } else {
-        draw.mesh.id().0
-    };
     // Round up to a power-of-two vertex-count class: padding costs less than 2x vertex
     // invocations per instance instead of a large part forcing every tiny part to its size.
     let size_class = u32::BITS - draw.part.index_count().saturating_sub(1).leading_zeros();
+    if !quad {
+        return BatchKey::Singleton {
+            material: draw.material.id().0,
+            mesh: draw.mesh.id().0,
+            size_class,
+            mirrored: !draw.material.double_sided && draw.is_mirrored(),
+        };
+    }
     // One canonical raster state: double-sided draws ignore the stored front
     // face, while single-sided draws account for mirrored transforms.
     let raster = match draw.raster_front_face() {
@@ -196,18 +214,17 @@ fn batch_key(
         Some(gfx_core::FrontFace::Ccw) => 1,
         Some(gfx_core::FrontFace::Cw) => 2,
     };
-    (
-        !quad,
-        [
+    BatchKey::Quad {
+        textures: [
             draw.material.albedo_texture.map(|id| id.0),
             draw.material.normal_texture.map(|id| id.0),
             draw.material.occlusion_texture.map(|id| id.0),
             draw.material.metallic_roughness_texture.map(|id| id.0),
         ],
-        page,
+        page: resource.expect("quad resource was found").vertices.raw(),
         size_class,
         raster,
-    )
+    }
 }
 
 #[cfg(test)]
@@ -231,7 +248,7 @@ mod tests {
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
-                    && !key.0
+                    && matches!(key, BatchKey::Quad { .. })
                 {
                     batch.instance_count += 1;
                     continue;
