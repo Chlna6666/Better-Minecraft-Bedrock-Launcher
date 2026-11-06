@@ -159,6 +159,9 @@ pub struct PreparedScene {
     // resource validation and uploads when the texture table and shader mode stay stable.
     changed_asset_draws: Vec<PreparedDraw>,
     candidate_groups: Vec<CandidateGroup>,
+    /// Stable lookup for sparse Section deltas; recomputed only when the
+    /// structural order of candidate groups changes.
+    candidate_group_index: std::collections::HashMap<NodeId, usize>,
     visible_candidates: Vec<usize>,
     next_visible_candidates: Vec<usize>,
     camera: Option<Camera>,
@@ -376,6 +379,7 @@ impl PreparedScene {
         self.blend_positions.clear();
         self.gpu_candidates_dirty = true;
         self.candidate_groups.clear();
+        self.candidate_group_index.clear();
         self.draws.clear();
         self.visible_candidates.clear();
         self.lights.clear();
@@ -462,6 +466,7 @@ impl PreparedScene {
                 if group_start < self.candidates.len()
                     && let Some(bounds) = mesh.bounds()
                 {
+                    let group_index = self.candidate_groups.len();
                     self.candidate_groups.push(CandidateGroup {
                         start: group_start,
                         end: self.candidates.len(),
@@ -470,6 +475,7 @@ impl PreparedScene {
                             .cull_by_origin
                             .then(|| world.transform_point(Vec3::ZERO)),
                     });
+                    self.candidate_group_index.insert(id, group_index);
                 }
             }
             if let Some(children) = scene.children(id) {
