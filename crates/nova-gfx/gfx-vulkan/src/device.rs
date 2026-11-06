@@ -7030,6 +7030,12 @@ mod tests {
         second.origin.x = 2;
         second.mip_level = 1;
         assert!(!texture_uploads_overlap(&first, &second));
+        second.mip_level = 0;
+        second.layer = 1;
+        assert!(!texture_uploads_overlap(&first, &second),
+            "copies to different array slices must not alias");
+        second.layer = 0;
+        assert!(texture_uploads_overlap(&first, &second));
     }
 
     #[test]
