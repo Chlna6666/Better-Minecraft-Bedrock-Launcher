@@ -84,11 +84,12 @@ impl SceneResources {
                 &self.batches,
                 Some(&self.meshes),
             )?;
-            pass.culling.dispatch(
+            pass.culling.dispatch_optimized(
                 device,
                 renderer
                     .cull_shader
                     .ok_or_else(|| anyhow!("shadow culling requires compute"))?,
+                renderer.singleton_cull_shader,
                 pass.frame,
                 self.culling_bounds,
                 self.generated_arguments,
