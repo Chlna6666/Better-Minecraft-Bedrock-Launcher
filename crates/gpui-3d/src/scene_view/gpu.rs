@@ -1268,6 +1268,90 @@ pub(super) struct DrawRecordCache {
 }
 
 impl DrawRecordCache {
+    /// Resolve only the material records explicitly changed by a fixed-layout
+    /// Candidate Delta. The committed physical key table and the GPU bytes
+    /// are read-only here; the caller commits rows only after successful GPU
+    /// uploads and bind-group synchronization.
+    pub(super) fn encode_resident_delta(
+        &mut self,
+        draws: &[PreparedDraw],
+        lights: usize,
+        mapping: &[u32],
+        dirty: &[usize],
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
+        const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
+        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
+        if self.light_count != Some(light_count)
+            || mapping.len() != draws.len()
+            || previous_bytes.len() != previous_keys.len() * STRIDE
+        {
+            return Err(anyhow!("GPUI 3D dirty DrawParams require a committed stable layout").into());
+        }
+        let cache_limit = material_record_cache_limit(draws.len());
+        if self.records.len() >= cache_limit {
+            self.records.retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
+        let mut patches = Vec::with_capacity(dirty.len());
+        let mut seen = std::collections::HashSet::with_capacity(dirty.len());
+        for &logical in dirty {
+            if !seen.insert(logical) { continue; }
+            let draw = draws.get(logical)
+                .ok_or_else(|| anyhow!("dirty DrawParams logical index outside scene"))?;
+            let slot = *mapping.get(logical)
+                .ok_or_else(|| anyhow!("missing resident DrawParams slot"))? as usize;
+            let prev = *previous_keys.get(slot)
+                .ok_or_else(|| anyhow!("resident DrawParams slot outside cache"))?;
+            let start = slot * STRIDE;
+            let old_bytes = previous_bytes.get(start..start + STRIDE)
+                .ok_or_else(|| anyhow!("resident DrawParams bytes missing"))?;
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let cache_key = (
+                material, uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
+            let (key, bytes) = if let Some(record) = self.records.get(&cache_key)
+                && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+            {
+                (DrawParamKey {
+                    material,
+                    snapshot_generation: record.generation,
+                    uv_regions,
+                    light_count,
+                }, record.bytes)
+            } else {
+                scratch.clear();
+                encode_draw_record(draw, light_count, scratch, STRIDE)?;
+                let bytes: [u8; STRIDE] = scratch[..STRIDE].try_into()
+                    .expect("one complete resident DrawParams record");
+                let generation = if prev.material == material
+                    && prev.uv_regions == uv_regions
+                    && prev.light_count == light_count
+                    && old_bytes == bytes.as_slice()
+                {
+                    prev.snapshot_generation
+                } else {
+                    self.next_generation = self.next_generation.wrapping_add(1);
+                    self.next_generation
+                };
+                if self.records.len() < cache_limit || self.records.contains_key(&cache_key) {
+                    self.records.insert(cache_key, MaterialRecord {
+                        material: draw.material.clone(), bytes, generation,
+                    });
+                }
+                (DrawParamKey { material, snapshot_generation: generation,
+                    uv_regions, light_count }, bytes)
+            };
+            if prev != key {
+                patches.push((slot, key, bytes));
+            }
+        }
+        Ok(patches)
+    }
+
     /// Directly resolve logical draws into persistent physical GPU DrawParams
     /// slots. The transient logical 80-byte-per-draw table is never constructed.
     ///
