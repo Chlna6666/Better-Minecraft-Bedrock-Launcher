@@ -12,8 +12,12 @@ impl PreparedScene {
         let camera = self.camera?;
         if nodes.is_empty() {
             self.changed_asset_draws.clear();
+            self.resident_delta_draws = self.opaque_resident_order.then(Vec::new);
             return Some(0);
         }
+        // Until all delta preconditions are established, an early-return
+        // failure must never reuse an old resident GPU dirty-index list.
+        self.resident_delta_draws = None;
         if nodes.iter().any(|&id| {
             scene.node(id).is_some_and(|node| {
                 scene.parent(id).is_some()
@@ -58,12 +62,34 @@ impl PreparedScene {
         // slices instead of moving the entire scene through a scratch Vec.
         // Use the partial walk's exact group bounds (not a union of part
         // bounds), so the result matches a complete scene traversal.
-        if inserted.is_empty()
+        let fixed_layout = inserted.is_empty()
             && groups.iter().all(|(_, range, id)| {
                 replacements.get(id).is_some_and(|draws| draws.len() == range.len())
                     && partial.candidate_group_index.contains_key(id)
-            })
-        {
+            });
+        if fixed_layout {
+            // Stable GPU Draw Slots can be updated directly only if their
+            // opaque candidate ordering and per-part identity are unchanged.
+            // A material replacement, mesh topology change, or transparency
+            // transition falls back to the existing full GPU layout planner.
+            let stable_gpu_layout = self.gpu_culling
+                && self.opaque_resident_order
+                && self.draws.len() == self.candidates.len()
+                && groups.iter().all(|(_, range, id)| {
+                    replacements.get(id).is_some_and(|draws| {
+                        self.draws[range.clone()].iter().zip(draws).all(|(old, new)| {
+                            old.node == new.node
+                                && old.mesh.id() == new.mesh.id()
+                                && old.part == new.part
+                                && old.material.id() == new.material.id()
+                                && old.material.alpha_mode != AlphaMode::Blend
+                                && new.material.alpha_mode != AlphaMode::Blend
+                        })
+                    })
+                });
+            let mut dirty = stable_gpu_layout.then(|| Vec::with_capacity(
+                groups.iter().map(|(_, range, _)| range.len()).sum(),
+            ));
             self.changed_asset_draws.clear();
             self.changed_asset_draws.extend(partial.candidates);
             for (index, range, id) in groups {
@@ -74,12 +100,24 @@ impl PreparedScene {
                 self.candidate_groups[index] = group;
                 let replacement = replacements.remove(&id)
                     .expect("equal-length group must retain its replacement");
+                if let Some(dirty) = &mut dirty {
+                    dirty.extend(range.clone());
+                    self.draws[range.clone()].clone_from_slice(&replacement);
+                }
                 self.candidates[range].clone_from_slice(&replacement);
             }
             self.occluders.retain(|id, _| !changed.contains(id));
             self.occluders.extend(partial.occluders);
-            self.visible_candidates.clear();
-            self.gpu_candidates_dirty = true;
+            if stable_gpu_layout {
+                // apply_camera() sees an already-valid GPU opaque candidate
+                // order and only refreshes camera uniforms; the changed
+                // resident slots are published to SceneResources.
+                self.resident_delta_draws = dirty;
+            } else {
+                self.visible_candidates.clear();
+                self.gpu_candidates_dirty = true;
+                self.opaque_resident_order = false;
+            }
             return Some(changed.len());
         }
         // New roots are visited first by the full walker. Existing roots without
@@ -163,6 +201,7 @@ impl PreparedScene {
         }
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
+        self.opaque_resident_order = false;
         Some(changed.len())
     }
 }
@@ -186,6 +225,40 @@ fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGrou
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn exact_opaque_section_delta_keeps_gpu_logical_slot_indices() {
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        let ids = (0..64).map(|_| {
+            scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap()
+        }).collect::<Vec<_>>();
+        let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
+        assert!(prepared.set_gpu_culling(true));
+        prepared.update_camera(camera, 1.).unwrap();
+        assert!(prepared.opaque_resident_order);
+        let mut next = scene.fork();
+        next.node_mut(ids[13]).unwrap().transform.translation.x = 2.;
+        next.node_mut(ids[38]).unwrap().transform.translation.z = -1.;
+        let changed = next.changed_nodes(&scene).unwrap();
+        assert_eq!(
+            prepared.update_nodes(&next, changed.as_ref(), Mat4::IDENTITY),
+            Some(2)
+        );
+        let dirty = prepared.resident_delta_draws().unwrap();
+        assert_eq!(dirty.len(), 2);
+        assert!(dirty.iter().all(|&index| changed.contains(&prepared.draws[index].node)));
+        prepared.update_camera(camera, 1.).unwrap();
+        assert_eq!(prepared.resident_delta_draws().unwrap(), dirty);
+        let full = PreparedScene::new(&next, camera, 1.).unwrap();
+        assert_eq!(
+            prepared.draws.iter().map(|draw| (draw.node, draw.bounds, draw.world)).collect::<Vec<_>>(),
+            full.draws.iter().map(|draw| (draw.node, draw.bounds, draw.world)).collect::<Vec<_>>(),
+        );
+    }
 
     #[test]
     fn unchanged_part_count_updates_only_affected_candidate_storage() {
