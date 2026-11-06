@@ -149,6 +149,58 @@ fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
     }).collect()
 }
 
+/// The GPU count output is keyed by a stable physical slot under culling.
+/// Reordering 16-byte mapping records still requires an input-buffer upload,
+/// but must NOT recompute an unchanged output count. Resolve the previous
+/// per-slot source once and mark only newly assigned/changed output targets.
+///
+/// Without GPU culling, output records are densely indexed and include the
+/// logical first_instance. In that mode retain ordinary positional patches.
+fn generated_output_dirty_patches(
+    previous: &[u32],
+    current: &[u32],
+    physical_slots: bool,
+) -> Vec<MappingPatch> {
+    if !physical_slots {
+        return mapping_patches(previous, current);
+    }
+    debug_assert!(previous.len().is_multiple_of(4));
+    debug_assert!(current.len().is_multiple_of(4));
+    let mut old = HashMap::<u32, [u32; 4]>::with_capacity(previous.len() / 4);
+    for record in previous.chunks_exact(4) {
+        let value = [record[0], record[1], record[2], record[3]];
+        if old.insert(value[1], value).is_some() {
+            // A corrupted non-unique output mapping cannot be safely
+            // deduplicated by destination. Fall back to positional dispatch.
+            return mapping_patches(previous, current);
+        }
+    }
+    let mut seen = std::collections::HashSet::with_capacity(current.len() / 4);
+    let mut patches = Vec::<MappingPatch>::new();
+    for (index, record) in current.chunks_exact(4).enumerate() {
+        let key = record[1];
+        if !seen.insert(key) {
+            return mapping_patches(previous, current);
+        }
+        if old.get(&key).is_some_and(|prior| prior.as_slice() == record) {
+            continue;
+        }
+        let offset = index as u64 * 16;
+        let mut bytes = Vec::with_capacity(16);
+        for word in record {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        if let Some(previous) = patches.last_mut()
+            && previous.offset + previous.bytes.len() as u64 == offset
+        {
+            previous.bytes.extend_from_slice(&bytes);
+        } else {
+            patches.push(MappingPatch { offset, bytes });
+        }
+    }
+    patches
+}
+
 /// Immutable Generated Page metadata for one native DrawBatch. Produced
 /// alongside BindGroups, so the subsequent GPU mapping pass reads resident
 /// offsets instead of resolving MeshId and material parts a second time.
@@ -391,6 +443,17 @@ impl SceneResources {
                 &entries,
             );
             let output_changed = self.generated_mappings[&source].output != Some(output);
+            // The input mapping is positional, but the computed geometry
+            // count is keyed by physical Draw Slot. A Section insertion can
+            // shuffle many input records while leaving all survivor output
+            // values unchanged. Keep these two dirty domains independent.
+            let output_dirty = self.culling.as_ref().map(|_| {
+                generated_output_dirty_patches(
+                    &self.generated_mappings[&source].entries,
+                    &entries,
+                    true,
+                )
+            });
             // Removing a suffix leaves every surviving GPU argument intact.
             // Commit the shorter mapping without uploading or dispatching it.
             if patches.is_empty() && !output_changed {
@@ -400,8 +463,9 @@ impl SceneResources {
                 mapping.scratch_entries = old_entries;
                 continue;
             }
+            let compute_dirty = output_dirty.as_deref().unwrap_or(&patches);
             let dispatch_ranges = mapping_dispatch_ranges(
-                &patches, entries.len() * 4, output_changed, binding_limits,
+                compute_dirty, entries.len() * 4, output_changed, binding_limits,
             )?;
             updates.push(Update {
                 source,
@@ -480,7 +544,11 @@ impl SceneResources {
                 workgroups,
             })
             .collect::<Vec<_>>();
-        device.dispatch_compute_batch(&dispatches)?;
+        // All input records may have moved while no generated count changed.
+        // Such a structural Section reorder needs uploads but no compute.
+        if !dispatches.is_empty() {
+            device.dispatch_compute_batch(&dispatches)?;
+        }
         for update in updates {
             let mapping = self
                 .generated_mappings
@@ -663,7 +731,7 @@ mod tests {
 
 #[cfg(test)]
 mod mapping_patch_tests {
-    use super::{mapping_patches, mapping_dispatch_ranges, MappingDispatchRange};
+    use super::{mapping_patches, mapping_dispatch_ranges, generated_output_dirty_patches, MappingDispatchRange};
     use gfx_core::BufferBindingLimits;
 
     fn limits(alignment: u64, maximum: u64) -> BufferBindingLimits {
@@ -729,6 +797,40 @@ mod mapping_patch_tests {
         let unknown = gfx_core::BufferId::from_parts(13, 1);
         super::invalidate_argument_page(&mut mappings, unknown);
         assert_eq!(mappings.len(), 1);
+    }
+
+    #[test]
+    fn structural_mapping_reorder_uploads_input_without_recomputing_stable_counts() {
+        let previous = vec![
+            17, 5, 0, 0,
+            21, 11, 0, 0,
+            25, 29, 0, 0,
+        ];
+        let reordered = vec![
+            25, 29, 0, 0,
+            17, 5, 0, 0,
+            21, 11, 0, 0,
+        ];
+        assert!(!mapping_patches(&previous, &reordered).is_empty());
+        assert!(generated_output_dirty_patches(&previous, &reordered, true).is_empty());
+        // A dense Batch-indexed source cannot safely skip this reorder.
+        assert!(!generated_output_dirty_patches(&previous, &reordered, false).is_empty());
+        let inserted = vec![
+            25, 29, 0, 0,
+            39, 9, 0, 0,
+            17, 5, 0, 0,
+            21, 11, 0, 0,
+        ];
+        let compute = generated_output_dirty_patches(&previous, &inserted, true);
+        assert_eq!(compute.len(), 1);
+        assert_eq!(compute[0].offset, 16);
+        assert_eq!(compute[0].bytes.len(), 16);
+        let windows = mapping_dispatch_ranges(
+            &compute, inserted.len() * 4, false, limits(256, 1 << 20),
+        ).unwrap();
+        assert_eq!(windows, [
+            MappingDispatchRange { offset: 0, size: 32 },
+        ]);
     }
 
     #[test]
