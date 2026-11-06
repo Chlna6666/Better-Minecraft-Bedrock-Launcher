@@ -15,14 +15,19 @@ const BOUNDS_STRIDE: usize = 48;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
 
 
-// Shader ABI: cs_cull_singletons uses @workgroup_size(64) and distributes
-// each invocation to one independent DrawBatchRange. The group width is a
-// compile-time shader property, not a guessed GPU capability limit.
-fn culling_dispatch_groups(count: u32, all_singletons: bool, shader_available: bool) -> (bool, u32) {
-    if all_singletons && shader_available {
-        (true, count.div_ceil(64))
+// The shader-compiled workgroup width is an ABI property, not a guessed
+// per-GPU limit. Batches are stable in logical order; a contiguous trailing
+// singleton range can be dispatched with one thread per draw. The leading
+// segment (potentially containing real instancing) uses the original kernel.
+// Avoid two dispatches if the tail cannot save at least one workgroup.
+const SINGLETON_CULL_WORKGROUP_WIDTH: u32 = 64;
+
+fn culling_dispatch_groups(count: u32, tail_start: u32, shader_available: bool) -> (u32, u32) {
+    let tail_count = count.saturating_sub(tail_start);
+    if shader_available && tail_count > SINGLETON_CULL_WORKGROUP_WIDTH {
+        (tail_start, tail_count.div_ceil(SINGLETON_CULL_WORKGROUP_WIDTH))
     } else {
-        (false, count)
+        (count, 0)
     }
 }
 
@@ -164,9 +169,9 @@ pub(super) struct CullResources {
     bounds: BufferId,
     pub(super) batches: BufferId,
     range: BufferId,
-    range_bounds: Option<(Option<Aabb>, bool, usize)>,
-    singleton_batches: bool,
-    last_singleton_report: Option<bool>,
+    range_bounds: Option<(Option<Aabb>, bool, usize, usize)>,
+    singleton_start: usize,
+    last_singleton_report: Option<(usize, usize)>,
     pub(super) arguments: BufferId,
     pub(super) visible_instances: BufferId,
     pub(super) instance_capacity: usize,
@@ -245,7 +250,7 @@ impl CullResources {
             range: buffers[4],
             slot_map: buffers[5],
             range_bounds: None,
-            singleton_batches: false,
+            singleton_start: 0,
             last_singleton_report: None,
             count: 0,
             instances: 0,
@@ -391,7 +396,14 @@ impl CullResources {
         self.scratch_inputs = [bounds_scratch, old];
         self.count = batches.len();
         self.instances = draws.len();
-        self.singleton_batches = batches.iter().all(|batch| batch.instance_count == 1);
+        // Batching emits all Quad keys before Singleton keys. The last
+        // multi-instance range marks the beginning of the largest contiguous
+        // singleton tail. The prefix may also contain singleton batches, but
+        // the tail *never* contains instancing, so no cross-Section results
+        // or indirect instance addresses need to be rearranged.
+        self.singleton_start = batches.iter()
+            .rposition(|batch| batch.instance_count > 1)
+            .map_or(0, |index| index + 1);
         Ok(())
     }
 
@@ -430,16 +442,27 @@ impl CullResources {
         });
         let occlusion_enabled = self.hiz.has_occluders();
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
-        let mut range_bytes = [0; 32];
+        let tail_start = u32::try_from(self.singleton_start)
+            .context("GPU culling singleton tail exceeds u32")?;
+        let (normal_groups, singleton_groups) = culling_dispatch_groups(
+            count, tail_start, singleton_shader.is_some(),
+        );
+        let compact_start = if singleton_groups == 0 { count } else { tail_start };
+        let mut range_bytes = [0; 48];
         for (chunk, value) in range_bytes
             .chunks_exact_mut(4)
-            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], count as f32])
+            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], 0.0])
         {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
-        if self.range_bounds != Some((range, occlusion_enabled, self.count)) {
+        for (bytes, value) in range_bytes[32..48].chunks_exact_mut(4)
+            .zip([count, compact_start, 0, 0])
+        {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        if self.range_bounds != Some((range, occlusion_enabled, self.count, compact_start as usize)) {
             device.write_buffer(self.range, 0, &range_bytes)?;
-            self.range_bounds = Some((range, occlusion_enabled, self.count));
+            self.range_bounds = Some((range, occlusion_enabled, self.count, compact_start as usize));
         }
         let bindings = [
             compute_binding(
@@ -472,7 +495,7 @@ impl CullResources {
                 self.count as u64 * ARGUMENT_STRIDE,
                 ComputeBufferAccess::ReadOnly,
             ),
-            compute_binding(5, self.range, 32, ComputeBufferAccess::Uniform),
+            compute_binding(5, self.range, 48, ComputeBufferAccess::Uniform),
             compute_binding(
                 6,
                 generated.map_or(self.batches, |(buffer, _)| buffer),
@@ -494,33 +517,39 @@ impl CullResources {
                 ComputeBufferAccess::ReadOnly,
             ),
         ];
-        // A streamed generated world often has 50K+ *singleton* batches.
-        // The original 64-lane kernel wastes 63 lanes per singleton. The
-        // specialized kernel processes 64 distinct draws in each workgroup,
-        // retaining the same indirect argument and visibility buffer ABI.
-        let (singletons, logical_groups) = culling_dispatch_groups(
-            count, self.singleton_batches, singleton_shader.is_some(),
-        );
-        let selected_shader = if singletons {
-            singleton_shader.expect("singleton shader exists when selected")
-        } else {
-            shader
-        };
+        // When Quad instancing and GeneratedMesh singletons coexist, use
+        // the normal kernel only for the prefix containing all non-singletons,
+        // then use 64 independent lanes for the contiguous singleton tail.
+        // Both dispatches share the *same* range uniform and indirect buffer,
+        // so no CPU readback, binding rebuild, or draw-record permutation.
+        let total_groups = normal_groups.saturating_add(singleton_groups);
         if super::renderer::trace_timings()
-            && self.last_singleton_report != Some(singletons)
+            && self.last_singleton_report != Some((normal_groups as usize, singleton_groups as usize))
         {
             eprintln!(
-                "gpui3d cull_mode singleton_compaction={} batches={} workgroups={} saved_workgroups={}",
-                singletons, count, logical_groups, count.saturating_sub(logical_groups),
+                "gpui3d cull_mode singleton_compaction={} batches={} normal_workgroups={} singleton_workgroups={} workgroups={} saved_workgroups={} tail_start={}",
+                singleton_groups != 0, count, normal_groups, singleton_groups,
+                total_groups, count.saturating_sub(total_groups), compact_start,
             );
-            self.last_singleton_report = Some(singletons);
+            self.last_singleton_report =
+                Some((normal_groups as usize, singleton_groups as usize));
         }
-        let grid = device.compute_capabilities().plan_linear_dispatch_2d(logical_groups)?;
-        device.dispatch_compute(&ComputeDispatch {
-            shader: selected_shader,
-            bindings: &bindings,
-            workgroups: grid,
-        })?;
+        if normal_groups > 0 {
+            let grid = device.compute_capabilities().plan_linear_dispatch_2d(normal_groups)?;
+            device.dispatch_compute(&ComputeDispatch {
+                shader,
+                bindings: &bindings,
+                workgroups: grid,
+            })?;
+        }
+        if singleton_groups > 0 {
+            let grid = device.compute_capabilities().plan_linear_dispatch_2d(singleton_groups)?;
+            device.dispatch_compute(&ComputeDispatch {
+                shader: singleton_shader.expect("singleton kernel exists for selected path"),
+                bindings: &bindings,
+                workgroups: grid,
+            })?;
+        }
         Ok(())
     }
 
@@ -542,12 +571,22 @@ mod singleton_dispatch_tests {
 
     #[test]
     fn generated_singletons_reduce_dispatch_groups_without_reordering() {
-        assert_eq!(culling_dispatch_groups(65_993, true, true), (true, 1032));
-        assert_eq!(culling_dispatch_groups(65_993, false, true), (false, 65_993));
-        assert_eq!(culling_dispatch_groups(65_993, true, false), (false, 65_993));
-        assert_eq!(culling_dispatch_groups(1, true, true), (true, 1));
-        assert_eq!(culling_dispatch_groups(64, true, true), (true, 1));
-        assert_eq!(culling_dispatch_groups(65, true, true), (true, 2));
+        assert_eq!(culling_dispatch_groups(65_993, 0, true), (0, 1032));
+        assert_eq!(culling_dispatch_groups(65_993, 65_993, true), (65_993, 0));
+        assert_eq!(culling_dispatch_groups(65_993, 0, false), (65_993, 0));
+        assert_eq!(culling_dispatch_groups(1, 0, true), (1, 0));
+        assert_eq!(culling_dispatch_groups(64, 0, true), (64, 0));
+        assert_eq!(culling_dispatch_groups(65, 0, true), (0, 2));
+    }
+
+    #[test]
+    fn mixed_quad_instancing_and_generated_sections_keep_both_dispatch_paths() {
+        assert_eq!(culling_dispatch_groups(65_993, 96, true), (96, 1030));
+        assert_eq!(culling_dispatch_groups(65_993, 96, false), (65_993, 0));
+        assert_eq!(culling_dispatch_groups(200, 180, true), (200, 0));
+        assert_eq!(culling_dispatch_groups(200, 135, true), (135, 2));
+        assert_eq!(culling_dispatch_groups(200, 200, true), (200, 0));
+    }
     }
 }
 
