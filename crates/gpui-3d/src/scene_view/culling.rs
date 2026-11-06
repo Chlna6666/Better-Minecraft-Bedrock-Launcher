@@ -9,6 +9,7 @@ use gfx_core::{
 };
 use gpui::ExtensionDevice;
 use super::scene::stable_slots::StableDrawSlots;
+use crate::prepare::StructuralDrawDelta;
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 const BOUNDS_STRIDE: usize = 48;
@@ -332,7 +333,7 @@ impl CullResources {
             instance_capacity,
             batch_capacity,
         };
-        if let Err(error) = resources.write_inputs(device, draws, batches, meshes, false) {
+        if let Err(error) = resources.write_inputs(device, draws, batches, meshes, false, None) {
             resources.destroy(device)?;
             return Err(error);
         }
@@ -348,7 +349,7 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<()> {
-        self.update_generated_singletons(device, draws, batches, meshes, false)
+        self.update_generated_singletons(device, draws, batches, meshes, false, None)
     }
 
     /// Only the scene's resident resource counters and singleton Batch
@@ -363,11 +364,12 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
         generated_singletons: bool,
+        structural: Option<&StructuralDrawDelta>,
     ) -> gpui::Result<()> {
         if draws.len() <= self.instance_capacity
             && self.resident_slots.high_water() <= self.instance_capacity
             && batches.len() <= self.batch_capacity {
-            self.write_inputs(device, draws, batches, meshes, generated_singletons)?;
+            self.write_inputs(device, draws, batches, meshes, generated_singletons, structural)?;
             return Ok(());
         }
         let mut next = Self::create(device, draws, batches, self.backend, meshes)?;
@@ -443,14 +445,38 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
         generated_singletons: bool,
+        structural: Option<&StructuralDrawDelta>,
     ) -> gpui::Result<()> {
         // The shared stable-slot identity is (Node, Mesh, Material, Part,
         // occurrence). A Section deletion retires only its corresponding slot;
         // surviving bounds stay resident at their previous GPU addresses.
         let mut next_bounds_keys = std::mem::take(&mut self.scratch_bounds_keys);
-        let (next_slots, logical_to_physical) =
-            plan_resident_bounds(&self.resident_slots, draws, &mut next_bounds_keys)?;
-        if next_slots.high_water() > self.instance_capacity {
+        // The structural planner checks only changed Section identities and
+        // reuses compact u32 logical mappings for unmodified sections.
+        // All mutations are staged until GPU writes succeed.
+        let mut structural_plan = if generated_singletons && self.generated_singleton_canonical {
+            if let Some(delta) = structural {
+                self.resident_slots.plan_structural(
+                    draws, &self.uploaded_slot_map, delta,
+                )?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let (next_slots, logical_to_physical) = if let Some(plan) = structural_plan.as_mut() {
+            (None, std::mem::take(&mut plan.mapping))
+        } else {
+            let (slots, mapping) =
+                plan_resident_bounds(&self.resident_slots, draws, &mut next_bounds_keys)?;
+            (Some(slots), mapping)
+        };
+        let next_high_water = structural_plan.as_ref().map_or_else(
+            || next_slots.as_ref().map_or(0, StableDrawSlots::high_water),
+            |plan| plan.high_water,
+        );
+        if next_high_water > self.instance_capacity {
             return Err(anyhow!("GPU culling physical slot capacity exceeded").into());
         }
         let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
@@ -484,10 +510,37 @@ impl CullResources {
             return Err(error);
         }
 
-        // Generate bounded dirty regions from 48-byte record identities.
-        // Materialize ONLY these regions, never the entire resident bounds
-        // table. A removed physical slot is zeroed and reused transactionally.
-        let bounds_patches = resident_bounds_patches(&self.bounds_keys, &next_bounds_keys);
+        // A structural Section splice changes only the old/new physical slot
+        // records. Avoid even cloning the full BoundsRecordKey CPU table;
+        // write zeroes for final retirements and exact records for additions.
+        let mut changed_bounds = Vec::<(usize, Option<BoundsRecordKey>)>::new();
+        let bounds_patches = if let Some(plan) = structural_plan.as_ref() {
+            let mut affected = std::collections::BTreeMap::new();
+            for slot in plan.removed_slots() {
+                affected.insert(slot, None);
+            }
+            for (slot, logical) in plan.updated_slots() {
+                affected.insert(slot, Some(BoundsRecordKey::from_draw(&draws[logical])));
+            }
+            let mut patches = Vec::new();
+            for (slot, key) in affected {
+                if self.bounds_keys.get(slot).copied().flatten() == key {
+                    continue;
+                }
+                let mut bytes = vec![0u8; BOUNDS_STRIDE];
+                if let Some(key) = key {
+                    for (word, value) in key.0.iter().enumerate() {
+                        bytes[word * 4..word * 4 + 4]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+                patches.push((slot as u64 * BOUNDS_STRIDE as u64, bytes));
+                changed_bounds.push((slot, key));
+            }
+            patches
+        } else {
+            resident_bounds_patches(&self.bounds_keys, &next_bounds_keys)
+        };
 
         // The compact map is the only data affected by logical reordering.
         let mapping_patches = resident_mapping_patches(
@@ -566,11 +619,22 @@ impl CullResources {
                 mapping_patches.len(),
             );
         }
-        self.resident_slots = next_slots;
         self.uploaded_slot_map = logical_to_physical;
-        std::mem::swap(&mut self.bounds_keys, &mut next_bounds_keys);
-        next_bounds_keys.clear();
-        self.scratch_bounds_keys = next_bounds_keys;
+        if let Some(plan) = structural_plan {
+            let high_water = plan.high_water;
+            plan.commit(&mut self.resident_slots);
+            self.bounds_keys.resize(high_water, None);
+            for (slot, key) in changed_bounds {
+                self.bounds_keys[slot] = key;
+            }
+            next_bounds_keys.clear();
+            self.scratch_bounds_keys = next_bounds_keys;
+        } else {
+            self.resident_slots = next_slots.expect("full slot planner provides next state");
+            std::mem::swap(&mut self.bounds_keys, &mut next_bounds_keys);
+            next_bounds_keys.clear();
+            self.scratch_bounds_keys = next_bounds_keys;
+        }
         if canonical_tail {
             // Commit the small length delta without swapping/copying the
             // entire already-resident key table or its CPU byte snapshot.
