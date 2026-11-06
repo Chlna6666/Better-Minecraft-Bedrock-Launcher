@@ -129,6 +129,27 @@ impl Renderer {
         device: &mut dyn ExtensionDevice,
         context: RendererExtensionContext,
     ) -> gpui::Result<Self> {
+        if trace_timings() {
+            // One-time GPU capability report; no driver queries per frame.
+            // Distinguish physical array capacity from actually available
+            // backend texture-array creation/upload/shader sampling.
+            let arrays = device.texture_array_capabilities();
+            let buffers = device.buffer_binding_limits();
+            let compute = device.compute_capabilities();
+            eprintln!(
+                "gpui3d backend_caps backend={:?} array_max_dimension={} array_max_layers={} array_resources={} layer_uploads={} indexed_sampling={} storage_alignment={} storage_max_binding_bytes={} compute_max_group_invocations={} indirect_draw={}",
+                context.backend_kind(),
+                arrays.max_dimension_2d,
+                arrays.max_array_layers,
+                arrays.array_resources,
+                arrays.layer_uploads,
+                arrays.indexed_sampling,
+                buffers.storage_offset_alignment,
+                buffers.max_storage_binding_bytes,
+                compute.max_invocations_per_workgroup,
+                compute.indirect_draw,
+            );
+        }
         let resources = RendererResources::new(device, &context)?;
         Ok(Self {
             backend: context.backend_kind(),
