@@ -25,6 +25,7 @@ pub use exact_selection::{
 };
 pub use palette::{
     MapColor, MapColorEntry, MapTintMethod, PaletteImportReport, RenderPalette, RgbaColor,
+    SurfaceTintKind,
 };
 #[cfg(feature = "async")]
 pub use renderer::validate_chunk_fingerprints_async;

@@ -43,6 +43,19 @@ impl RgbaColor {
     }
 }
 
+/// How a grayscale block appearance mask is biome-tinted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceTintKind {
+    /// Biome grass color (`grass.png` colormap / client biome grass appearance).
+    Grass,
+    /// Biome foliage color (`foliage.png` colormap / client biome foliage appearance).
+    Foliage,
+    /// Species-fixed foliage color that does not vary by biome (`birch`, `spruce`).
+    FixedFoliage,
+    /// Biome dry-foliage color (`leaf_litter`).
+    DryFoliage,
+}
+
 /// Import counters returned after merging palette data.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PaletteImportReport {
@@ -477,22 +490,35 @@ impl RenderPalette {
     /// tint alone, otherwise the mask is applied twice and colors render too dark.
     #[must_use]
     pub fn surface_block_tint(&self, name: &str, biome_id: Option<u32>) -> Option<RgbaColor> {
+        Some(match self.surface_tint_kind(name)? {
+            SurfaceTintKind::Grass => self.biome_grass_color(biome_id),
+            SurfaceTintKind::Foliage => self.biome_foliage_color(biome_id),
+            SurfaceTintKind::FixedFoliage => fixed_foliage_tint(name)?,
+            SurfaceTintKind::DryFoliage => biome_id
+                .and_then(|id| self.biome_dry_foliage_colors.get(&id).copied())
+                .unwrap_or(self.default_dry_foliage_color),
+        })
+    }
+
+    /// Classifies how a block's grayscale appearance mask is biome-tinted.
+    ///
+    /// Callers that average neighboring biome colors must blend the matching tint channel and
+    /// leave fixed species colors (`birch`, `spruce`) untouched.
+    #[must_use]
+    pub fn surface_tint_kind(&self, name: &str) -> Option<SurfaceTintKind> {
         if is_grass_tinted_block(name) {
-            return Some(self.biome_grass_color(biome_id));
+            return Some(SurfaceTintKind::Grass);
         }
         let normalized = name.strip_prefix("minecraft:").unwrap_or(name);
         if normalized == "leaf_litter" {
-            return Some(
-                biome_id
-                    .and_then(|id| self.biome_dry_foliage_colors.get(&id).copied())
-                    .unwrap_or(self.default_dry_foliage_color),
-            );
+            return Some(SurfaceTintKind::DryFoliage);
         }
         if is_foliage_tinted_block(name) {
-            return Some(
-                fixed_foliage_tint(name)
-                    .unwrap_or_else(|| self.biome_foliage_color(biome_id)),
-            );
+            return Some(if fixed_foliage_tint(name).is_some() {
+                SurfaceTintKind::FixedFoliage
+            } else {
+                SurfaceTintKind::Foliage
+            });
         }
         None
     }

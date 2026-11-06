@@ -1931,6 +1931,9 @@ fn load_batch_from_world(
         };
     let query_time = started.elapsed();
     let trace = trace_verbose();
+    // Bedrock fades grass/foliage colors over the block and its eight neighbors. Build the
+    // blended column tints once per batch so parallel chunk collection only reads them.
+    let biome_blend = p3d::Preview3dBiomeBlendField::from_chunks(&chunks);
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
@@ -1939,7 +1942,10 @@ fn load_batch_from_world(
             if cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
                 return (pos, Err("区块预读已取消".to_string()));
             }
-            (pos, collect_cached_chunk(data, models, trace))
+            (
+                pos,
+                collect_cached_chunk(data, models, trace, Some(&biome_blend)),
+            )
         })
         .collect::<Vec<_>>();
     let collect_time = collect_started.elapsed();
@@ -3273,7 +3279,9 @@ impl Worker {
             .query_chunk_data(pos, self.chunk_load_options())
             .map_err(|error| format!("读取区块 {},{} 失败：{error}", pos.x, pos.z))?;
         let trace = trace_verbose();
-        let chunk = collect_cached_chunk(data, self.models.as_ref(), trace)?;
+        let biome_blend =
+            p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
+        let chunk = collect_cached_chunk(data, self.models.as_ref(), trace, Some(&biome_blend))?;
         if trace {
             eprintln!(
                 "world3d worker: load_chunk {},{} total_ms={}",
@@ -4273,6 +4281,7 @@ fn collect_cached_chunk(
     data: ChunkData,
     models: &bedrock_block_model::BlockModelRepository,
     trace: bool,
+    biome_blend: Option<&p3d::Preview3dBiomeBlendField>,
 ) -> Result<Option<CachedChunk>, String> {
     if !data.is_loaded {
         return Ok(None);
@@ -4280,8 +4289,9 @@ fn collect_cached_chunk(
     let pos = data.pos;
     let started = Instant::now();
     let frame_displays = FrameDisplay::collect(&data);
-    let blocks = p3d::preview_3d_collect_chunk_blocks_with_block_models(&data, Some(models))
-        .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
+    let blocks =
+        p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
+            .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
     let bytes = blocks.estimated_cpu_bytes();
     let version = data.version;
     let probe = Arc::new(build_probe(pos, data, None));

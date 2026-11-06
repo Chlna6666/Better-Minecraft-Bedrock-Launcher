@@ -8,11 +8,10 @@ use bedrock_block_model::{
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
     block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
-    is_engine_block_entity_model_block,
-    model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
-    shape_from_geometry,
+    is_engine_block_entity_model_block, model_family_for_block_name, model_family_has_detail_shape,
+    model_shape_for_block_state, shape_from_geometry,
 };
-use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
+use bedrock_render::{ChunkPos, RenderPalette, RgbaColor, SurfaceTintKind};
 use bedrock_world::NbtTag;
 use bedrock_world::{
     BiomeDataRequirement, BiomeStorage, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
@@ -2099,6 +2098,14 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
     chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
 ) -> Result<Preview3dChunkBlocks, String> {
+    preview_3d_collect_chunk_blocks_with_biome_blend(chunk, block_models, None)
+}
+
+pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
+    chunk: &ChunkData,
+    block_models: Option<&BlockModelRepository>,
+    biome_blend: Option<&Preview3dBiomeBlendField>,
+) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::builtin_shared();
     let initial_block_capacity = chunk.subchunks.len().saturating_mul(16 * 16 * 16);
     let mut occupied =
@@ -2158,7 +2165,13 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 false,
                                 *biome.get_or_insert_with(|| {
-                                    preview_3d_biome_at_or_top(chunk, local_x, local_z, y)
+                                    preview_3d_block_biome_sample(
+                                        chunk,
+                                        local_x,
+                                        local_z,
+                                        y,
+                                        biome_blend,
+                                    )
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
@@ -2210,7 +2223,13 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 surface_only,
                                 *biome.get_or_insert_with(|| {
-                                    preview_3d_biome_at_or_top(chunk, local_x, local_z, y)
+                                    preview_3d_block_biome_sample(
+                                        chunk,
+                                        local_x,
+                                        local_z,
+                                        y,
+                                        biome_blend,
+                                    )
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
@@ -2251,7 +2270,13 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 false,
                                 *biome.get_or_insert_with(|| {
-                                    preview_3d_biome_at_or_top(chunk, local_x, local_z, y)
+                                    preview_3d_block_biome_sample(
+                                        chunk,
+                                        local_x,
+                                        local_z,
+                                        y,
+                                        biome_blend,
+                                    )
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
@@ -4119,6 +4144,21 @@ fn preview_3d_state_bool(state: &BlockState, key: &str) -> Option<bool> {
 struct Preview3dBiomeSample {
     biome_id: Option<u32>,
     legacy_color: Option<RgbaColor>,
+    /// Biome grass tint averaged over the block and its eight neighbors (Bedrock blend rule).
+    grass_tint: Option<RgbaColor>,
+    /// Biome foliage tint averaged over the block and its eight neighbors.
+    foliage_tint: Option<RgbaColor>,
+}
+
+impl Preview3dBiomeSample {
+    const fn empty() -> Self {
+        Self {
+            biome_id: None,
+            legacy_color: None,
+            grass_tint: None,
+            foliage_tint: None,
+        }
+    }
 }
 
 fn preview_3d_color_for_block(
@@ -4190,9 +4230,20 @@ fn preview_3d_color_for_named_block(
 ) -> [f32; 4] {
     let biome_id = biome.and_then(|biome| biome.biome_id);
     let color = if biome_tint {
-        match biome.and_then(|biome| biome.legacy_color) {
-            Some(legacy) if !preview_3d_color_is_washed_out(legacy) => legacy,
-            _ => palette
+        let blended = match palette.surface_tint_kind(name) {
+            Some(SurfaceTintKind::Grass) => biome.and_then(|biome| biome.grass_tint),
+            Some(SurfaceTintKind::Foliage) => biome.and_then(|biome| biome.foliage_tint),
+            _ => None,
+        };
+        match blended.or_else(|| {
+            biome.and_then(|biome| {
+                biome
+                    .legacy_color
+                    .filter(|legacy| !preview_3d_color_is_washed_out(*legacy))
+            })
+        }) {
+            Some(tint) => tint,
+            None => palette
                 .surface_block_tint(name, biome_id)
                 .unwrap_or_else(|| palette.block_color(name)),
         }
@@ -4250,9 +4301,9 @@ fn preview_3d_palette_block_name<'a>(state: &'a BlockState) -> Cow<'a, str> {
         return Cow::Borrowed("minecraft:short_grass");
     }
     if normalized == "double_plant" {
-        return Cow::Owned(canonical_block_name_for_state(&preview_3d_block_state_query(
-            state,
-        )));
+        return Cow::Owned(canonical_block_name_for_state(
+            &preview_3d_block_state_query(state),
+        ));
     }
     Cow::Borrowed(name)
 }
@@ -4268,13 +4319,23 @@ fn preview_3d_texture_tint_for_block(
 ) -> Option<RgbaColor> {
     let palette_name = preview_3d_palette_block_name(state);
     let biome_id = biome.and_then(|biome| biome.biome_id);
-    let palette_tint = palette.surface_block_tint(palette_name.as_ref(), biome_id)?;
+    let kind = palette.surface_tint_kind(palette_name.as_ref())?;
+    // Bedrock averages the biome color of the block and its eight neighbors; use the precomputed
+    // column tint so borders fade instead of stepping at biome-cell edges.
+    let blended = match kind {
+        SurfaceTintKind::Grass => biome.and_then(|biome| biome.grass_tint),
+        SurfaceTintKind::Foliage => biome.and_then(|biome| biome.foliage_tint),
+        SurfaceTintKind::FixedFoliage | SurfaceTintKind::DryFoliage => None,
+    };
+    if let Some(tint) = blended {
+        return Some(tint);
+    }
     if let Some(legacy) = biome.and_then(|biome| biome.legacy_color)
         && !preview_3d_color_is_washed_out(legacy)
     {
         return Some(legacy);
     }
-    Some(palette_tint)
+    palette.surface_block_tint(palette_name.as_ref(), biome_id)
 }
 
 fn preview_3d_is_full_grass_block(normalized: &str) -> bool {
@@ -4425,12 +4486,13 @@ fn preview_3d_biome_at_or_top(
             return Some(Preview3dBiomeSample {
                 biome_id: Some(u32::from(sample.biome_id)),
                 legacy_color: Some(RgbaColor::new(sample.red, sample.green, sample.blue, 255)),
+                ..Preview3dBiomeSample::empty()
             });
         }
     }
     preview_3d_biome_id_at_or_top(chunk, local_x, local_z, y).map(|biome_id| Preview3dBiomeSample {
         biome_id: Some(biome_id),
-        legacy_color: None,
+        ..Preview3dBiomeSample::empty()
     })
 }
 
@@ -4438,13 +4500,196 @@ fn preview_3d_terrain_biome_sample(biome: TerrainColumnBiome) -> Preview3dBiomeS
     match biome {
         TerrainColumnBiome::Id(biome_id) => Preview3dBiomeSample {
             biome_id: Some(biome_id),
-            legacy_color: None,
+            ..Preview3dBiomeSample::empty()
         },
         TerrainColumnBiome::Legacy(sample) => Preview3dBiomeSample {
             biome_id: Some(u32::from(sample.biome_id)),
             legacy_color: Some(RgbaColor::new(sample.red, sample.green, sample.blue, 255)),
+            ..Preview3dBiomeSample::empty()
         },
     }
+}
+
+/// Per-column grass/foliage tints averaged over the block and its eight neighbors.
+///
+/// Bedrock computes a block's biome color from the block and its eight neighbors, which fades
+/// biome borders instead of stepping at biome-cell edges.
+#[derive(Default)]
+pub(super) struct Preview3dBiomeBlendField {
+    columns: HashMap<(i32, i32), (RgbaColor, RgbaColor)>,
+}
+
+impl Preview3dBiomeBlendField {
+    pub(super) fn from_chunks(chunks: &[ChunkData]) -> Self {
+        let palette = RenderPalette::builtin_shared();
+        let mut samples =
+            HashMap::with_capacity_and_hasher(chunks.len().saturating_mul(256), Default::default());
+        for chunk in chunks {
+            for (index, sample) in preview_3d_biome_columns(chunk).into_iter().enumerate() {
+                let Some(sample) = sample else {
+                    continue;
+                };
+                samples.insert(
+                    (
+                        chunk.pos.x.saturating_mul(16) + (index % 16) as i32,
+                        chunk.pos.z.saturating_mul(16) + (index / 16) as i32,
+                    ),
+                    sample,
+                );
+            }
+        }
+        let mut tint_cache =
+            HashMap::<(Option<u32>, Option<[u8; 4]>), (RgbaColor, RgbaColor)>::default();
+        let mut tint_of = |sample: &Preview3dBiomeSample| {
+            let key = (
+                sample.biome_id,
+                sample.legacy_color.map(RgbaColor::to_array),
+            );
+            if let Some(tint) = tint_cache.get(&key) {
+                return *tint;
+            }
+            let tint = if let Some(legacy) = sample.legacy_color
+                && !preview_3d_color_is_washed_out(legacy)
+            {
+                (legacy, legacy)
+            } else {
+                (
+                    palette.biome_grass_color(sample.biome_id),
+                    palette.biome_foliage_color(sample.biome_id),
+                )
+            };
+            tint_cache.insert(key, tint);
+            tint
+        };
+        let tints = samples
+            .iter()
+            .map(|(&pos, sample)| (pos, tint_of(sample)))
+            .collect::<HashMap<_, _>>();
+        let mut columns = HashMap::with_capacity_and_hasher(tints.len(), Default::default());
+        for (&(x, z), &own) in &tints {
+            let mut sums = [[0_u32; 3]; 2];
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let tint = tints.get(&(x + dx, z + dz)).copied().unwrap_or(own);
+                    let grass = tint.0.to_array();
+                    let foliage = tint.1.to_array();
+                    for channel in 0..3 {
+                        sums[0][channel] += u32::from(grass[channel]);
+                        sums[1][channel] += u32::from(foliage[channel]);
+                    }
+                }
+            }
+            let average = |sums: [u32; 3]| {
+                RgbaColor::new(
+                    u8::try_from((sums[0] + 4) / 9).unwrap_or(u8::MAX),
+                    u8::try_from((sums[1] + 4) / 9).unwrap_or(u8::MAX),
+                    u8::try_from((sums[2] + 4) / 9).unwrap_or(u8::MAX),
+                    255,
+                )
+            };
+            columns.insert((x, z), (average(sums[0]), average(sums[1])));
+        }
+        Self { columns }
+    }
+
+    pub(super) fn tints(&self, x: i32, z: i32) -> Option<(RgbaColor, RgbaColor)> {
+        self.columns.get(&(x, z)).copied()
+    }
+}
+
+/// Returns the topmost biome sample of each 16x16 column in Bedrock's `z * 16 + x` order.
+fn preview_3d_biome_columns(chunk: &ChunkData) -> Vec<Option<Preview3dBiomeSample>> {
+    let mut columns = vec![None; 256];
+    if let Some(samples) = chunk.column_samples.as_ref() {
+        for local_z in 0..16u8 {
+            for local_x in 0..16u8 {
+                if let Some(biome) = samples
+                    .get(local_x, local_z)
+                    .and_then(|sample| sample.biome)
+                {
+                    columns[usize::from(local_z) * 16 + usize::from(local_x)] =
+                        Some(preview_3d_terrain_biome_sample(biome));
+                }
+            }
+        }
+    }
+    if let Some(samples) = chunk.legacy_biomes.as_ref() {
+        for local_z in 0..16u8 {
+            for local_x in 0..16u8 {
+                let index = usize::from(local_z) * 16 + usize::from(local_x);
+                if columns[index].is_some() {
+                    continue;
+                }
+                if let Some(sample) = samples[usize::from(local_z)][usize::from(local_x)] {
+                    columns[index] = Some(Preview3dBiomeSample {
+                        biome_id: Some(u32::from(sample.biome_id)),
+                        legacy_color: Some(RgbaColor::new(
+                            sample.red,
+                            sample.green,
+                            sample.blue,
+                            255,
+                        )),
+                        ..Preview3dBiomeSample::empty()
+                    });
+                }
+            }
+        }
+    }
+    // Walk storages from the top down and fill only columns that no higher layer owns. Empty
+    // overlay storages are skipped by their palette, so the 16x16 scan stays cheap.
+    for storage in chunk.biome_data.values().rev() {
+        if columns.iter().all(Option::is_some) {
+            break;
+        }
+        if !storage
+            .palette
+            .iter()
+            .any(|id| preview_3d_non_empty_biome_id(Some(*id)).is_some())
+        {
+            continue;
+        }
+        for local_z in 0..16u8 {
+            for local_x in 0..16u8 {
+                let index = usize::from(local_z) * 16 + usize::from(local_x);
+                if columns[index].is_some() {
+                    continue;
+                }
+                let biome_id = (0..16_u8).rev().find_map(|local_y| {
+                    preview_3d_non_empty_biome_id(storage.biome_id_at(local_x, local_y, local_z))
+                });
+                if let Some(biome_id) = biome_id {
+                    columns[index] = Some(Preview3dBiomeSample {
+                        biome_id: Some(biome_id),
+                        ..Preview3dBiomeSample::empty()
+                    });
+                }
+            }
+        }
+    }
+    columns
+}
+
+/// Returns a block's biome sample with the 3x3-averaged tints attached when a field is present.
+fn preview_3d_block_biome_sample(
+    chunk: &ChunkData,
+    local_x: u8,
+    local_z: u8,
+    y: i32,
+    blend: Option<&Preview3dBiomeBlendField>,
+) -> Option<Preview3dBiomeSample> {
+    let sample = preview_3d_biome_at_or_top(chunk, local_x, local_z, y);
+    let Some(blend) = blend else {
+        return sample;
+    };
+    let x = chunk.pos.x.saturating_mul(16) + i32::from(local_x);
+    let z = chunk.pos.z.saturating_mul(16) + i32::from(local_z);
+    let Some((grass_tint, foliage_tint)) = blend.tints(x, z) else {
+        return sample;
+    };
+    let mut sample = sample.unwrap_or(Preview3dBiomeSample::empty());
+    sample.grass_tint = Some(grass_tint);
+    sample.foliage_tint = Some(foliage_tint);
+    Some(sample)
 }
 
 fn preview_3d_biome_id_at_or_top(
@@ -7411,6 +7656,64 @@ mod tests {
             )
         );
         assert!((leaf_color[3] - 1.0).abs() < 0.001);
+    }
+
+    fn test_biome_chunk(chunk_x: i32, biome_id: u32) -> ChunkData {
+        let mut chunk = test_render_chunk_with_subchunks(BTreeMap::new());
+        chunk.pos.x = chunk_x;
+        chunk.biome_data.insert(
+            0,
+            BiomeStorage {
+                y: Some(0),
+                palette: vec![biome_id],
+                indices: Some(vec![0; 16 * 16 * 16]),
+                counts: vec![0],
+            },
+        );
+        chunk
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_biome_blend_averages_the_eight_neighbors() {
+        let field = Preview3dBiomeBlendField::from_chunks(&[
+            test_biome_chunk(0, 1),
+            test_biome_chunk(1, 21),
+        ]);
+        let palette = RenderPalette::default();
+        let average = |left: RgbaColor, right: RgbaColor| {
+            let left = left.to_array();
+            let right = right.to_array();
+            let blend = |channel: usize| {
+                let sum = u32::from(left[channel]) * 6 + u32::from(right[channel]) * 3;
+                u8::try_from((sum + 4) / 9).unwrap_or(u8::MAX)
+            };
+            RgbaColor::new(blend(0), blend(1), blend(2), 255)
+        };
+
+        // Column 15 sits on the border: 6 samples come from chunk 0, 3 from chunk 1.
+        let (grass, foliage) = field.tints(15, 8).expect("border column");
+        assert_eq!(
+            grass,
+            average(
+                palette.biome_grass_color(Some(1)),
+                palette.biome_grass_color(Some(21))
+            )
+        );
+        assert_eq!(
+            foliage,
+            average(
+                palette.biome_foliage_color(Some(1)),
+                palette.biome_foliage_color(Some(21))
+            )
+        );
+        assert_eq!(
+            field.tints(4, 8).expect("interior column").0,
+            palette.biome_grass_color(Some(1))
+        );
+        assert_eq!(
+            field.tints(20, 8).expect("interior column").0,
+            palette.biome_grass_color(Some(21))
+        );
     }
 
     #[test]
