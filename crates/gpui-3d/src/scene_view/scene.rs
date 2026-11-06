@@ -1056,7 +1056,7 @@ impl SceneResources {
         defer_binding_cleanup: bool,
         textures_unchanged: bool,
     ) -> gpui::Result<bool> {
-        let Some(dirty) = self.prepared.resident_delta_draws().map(<[usize]>::to_vec) else {
+        let Some(dirty) = self.prepared.resident_delta_draws().map(|indices| indices.to_vec()) else {
             return Ok(false);
         };
         let Some(culler) = &self.culling else {
