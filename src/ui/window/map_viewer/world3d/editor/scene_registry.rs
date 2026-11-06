@@ -9,6 +9,7 @@ pub(super) struct ChunkScene {
     // Up to four adjacent generated Sections share a material-part draw
     // source. Original Section nodes remain stable occluder/streaming owners.
     fused: BTreeMap<(ChunkPos, i32), (NodeId, Vec<Arc<World3dChunkMesh>>)>,
+    last_fusion_trace: Option<Instant>,
 }
 
 #[cfg(test)]
@@ -288,6 +289,7 @@ impl ChunkScene {
             for key in touched {
                 self.sync_fusion(&mut scene, meshes, key, origin)?;
             }
+            self.report_fusion(&scene);
             return Ok(scene);
         }
         let removed = self
@@ -308,7 +310,36 @@ impl ChunkScene {
         for key in all_groups {
             self.sync_fusion(&mut scene, meshes, key, origin)?;
         }
+        self.report_fusion(&scene);
         Ok(scene)
+    }
+
+    fn report_fusion(&mut self, scene: &Scene) {
+        if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if self.last_fusion_trace
+            .is_some_and(|previous| now.duration_since(previous) < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.last_fusion_trace = Some(now);
+        let mut source_sections = 0usize;
+        let mut source_draws = 0usize;
+        let mut fused_draws = 0usize;
+        for (id, sources) in self.fused.values() {
+            source_sections += sources.len();
+            source_draws += sources.iter().map(|mesh| mesh.mesh.parts().len()).sum::<usize>();
+            fused_draws += scene.node(*id)
+                .and_then(|node| node.mesh.as_ref())
+                .map_or(0, |mesh| mesh.parts().len());
+        }
+        let saved = source_draws.saturating_sub(fused_draws);
+        eprintln!(
+            "world3d fusion_stats groups={} source_sections={} original_draws={} fused_draws={} eliminated_draws={} remaining_section_nodes={}",
+            self.fused.len(), source_sections, source_draws, fused_draws, saved, self.nodes.len(),
+        );
     }
 
     fn sync_fusion(
