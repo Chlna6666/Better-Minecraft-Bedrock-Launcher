@@ -313,7 +313,11 @@ impl VoxelMeshSource {
             // Phase one: expose source halos, then explicitly replace all
             // interiors with authoritative source data (including empty air).
             for interior in [false, true] {
-                for (index, source_kind) in source.cells.iter().enumerate() {
+                let source_volume = source.size.into_iter().map(|size| size as usize).product::<usize>();
+                for index in 0..source_volume {
+                    // Model-only sections omit their cube-grid allocation but
+                    // may still contain nonzero instance neighbour classes.
+                    let source_kind = if source.cells.len() == 0 { 0 } else { source.cells.cell(index) };
                     let x = index % source.size[0] as usize;
                     let y = index / source.size[0] as usize % source.size[1] as usize;
                     let z = index / source_xy;
