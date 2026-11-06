@@ -2206,9 +2206,13 @@ impl SceneResources {
                 next_keys.push(previous_key);
                 next_sources.push(source);
                 let metadata = self.generated_batch_sources[batch_index];
+                let (slot, first_instance) = generated::generated_mapping_target(
+                    self.culling.as_ref().map(|culling| culling.committed_slot_layout().1),
+                    batch_index, index,
+                )?;
                 generated::push_page_record(
                     &mut next_page_groups, &mut self.generated_mappings,
-                    metadata, batch_index, index,
+                    metadata, slot, first_instance,
                 )?;
                 next_generated.push(metadata);
                 continue;
@@ -2220,9 +2224,13 @@ impl SceneResources {
             // This lookup and binary material-part resolution now happen in
             // the same pass that already resolves the native BindGroup.
             let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
+            let (slot, first_instance) = generated::generated_mapping_target(
+                self.culling.as_ref().map(|culling| culling.committed_slot_layout().1),
+                batch_index, index,
+            )?;
             generated::push_page_record(
                 &mut next_page_groups, &mut self.generated_mappings,
-                generated_source, batch_index, index,
+                generated_source, slot, first_instance,
             )?;
             next_generated.push(generated_source);
             let key = DrawResourceKey {

@@ -91,9 +91,13 @@ fn cs_cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_in
     // their result without workgroup synchronization or an instance-list atomic.
     if (batch.y == 1u) {
         if (lane == 0u) {
-            let resident = bounds[logical_to_physical[batch.w]];
+            let physical = logical_to_physical[batch.w];
+            let resident = bounds[physical];
             var source = vec4<u32>(resident.vertex_count, 1u, batch.z, batch.w);
-            if (batch.x != 0u) { source = generated[index]; }
+            // GPU-generated per-material face count is indexed by a stable
+            // physical Draw Slot. The logical first_instance is owned by the
+            // culler, not by the generated count's long-lived GPU record.
+            if (batch.x != 0u) { source.x = generated[physical].x; }
             let visible = is_visible(resident);
             if (visible && batch.x == 0u) { visible_instances[batch.w] = batch.w; }
             atomicStore(&arguments[index].vertex_count, select(0u, source.x, visible));
@@ -160,10 +164,14 @@ fn cs_cull_singletons(
     }
     let batch = batches[index];
     // The CPU selects this entry point only if all batch.instance_count == 1.
-    let resident = bounds[logical_to_physical[batch.w]];
+    let physical = logical_to_physical[batch.w];
+    let resident = bounds[physical];
     var source = vec4<u32>(resident.vertex_count, 1u, batch.z, batch.w);
+    // Preserve dense native indirect output, but fetch the generated face
+    // count through its stable resident address so Section reorder does not
+    // invalidate all per-material GPU counts.
     if (batch.x != 0u) {
-        source = generated[index];
+        source.x = generated[physical].x;
     }
     let visible = is_visible(resident);
     if (visible && batch.x == 0u) {

@@ -183,6 +183,28 @@ impl BatchMappingSource {
     }
 }
 
+/// Resolve the generated count's address independently of the dense native
+/// Batch order. GPU culling uses the resident physical slot for the source
+/// count; it writes the current logical first_instance into its own indirect
+/// command every frame. Without GPU culling the generated output remains a
+/// conventional densely indexed DrawIndirect table.
+pub(super) fn generated_mapping_target(
+    physical_slots: Option<&[u32]>,
+    batch_index: usize,
+    first_instance: usize,
+) -> gpui::Result<(u32, u32)> {
+    if let Some(slots) = physical_slots {
+        let physical = slots.get(first_instance).copied()
+            .ok_or_else(|| anyhow!("generated physical slot index outside culling map"))?;
+        Ok((physical, 0))
+    } else {
+        Ok((
+            u32::try_from(batch_index).context("generated batch index overflow")?,
+            u32::try_from(first_instance).context("generated draw index overflow")?,
+        ))
+    }
+}
+
 /// Add one generated Section/part record during the existing native Draw
 /// BindGroup traversal. Reuse the last committed Page's spare Vec, so
 /// repeated streaming deltas don't allocate one new record array per Page.
@@ -190,8 +212,8 @@ pub(super) fn push_page_record(
     groups: &mut HashMap<BufferId, (usize, Vec<u32>)>,
     resident_mappings: &mut HashMap<BufferId, Mapping>,
     source: Option<BatchMappingSource>,
-    batch_index: usize,
-    first_instance: usize,
+    output_slot: u32,
+    first_instance: u32,
 ) -> gpui::Result<()> {
     let Some(source) = source else {
         return Ok(());
@@ -209,8 +231,8 @@ pub(super) fn push_page_record(
     };
     mapping.extend([
         source.argument_part,
-        u32::try_from(batch_index).context("generated batch index overflow")?,
-        u32::try_from(first_instance).context("generated draw index overflow")?,
+        output_slot,
+        first_instance,
         0,
     ]);
     Ok(())
@@ -254,6 +276,8 @@ impl SceneResources {
             let mut fallback = std::mem::take(&mut self.generated_group_scratch);
             fallback.clear();
             let resident_sources = self.generated_batch_sources.len() == self.batches.len();
+            let physical_slots = self.culling.as_ref()
+                .map(|culling| culling.committed_slot_layout().1);
             for (index, batch) in self.batches.iter().enumerate() {
                 let source = if resident_sources {
                     self.generated_batch_sources[index]
@@ -263,9 +287,12 @@ impl SceneResources {
                         .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
                     BatchMappingSource::for_draw(draw, mesh)?
                 };
+                let (slot, first_instance) = generated_mapping_target(
+                    physical_slots, index, batch.first_instance,
+                )?;
                 push_page_record(
                     &mut fallback, &mut self.generated_mappings,
-                    source, index, batch.first_instance,
+                    source, slot, first_instance,
                 )?;
             }
             fallback
@@ -285,7 +312,14 @@ impl SceneResources {
             self.generated_group_scratch = groups;
             return Ok(());
         }
-        let needed = self.batches.len().next_power_of_two();
+        // The generated source table is addressed by resident physical slots
+        // during GPU culling. Empty/recycled slots may extend past the active
+        // dense batch count, so capacity follows the physical high-water mark.
+        let source_slots = self.culling.as_ref().map_or(
+            self.batches.len(),
+            |culling| culling.committed_slot_layout().0,
+        );
+        let needed = source_slots.max(1).next_power_of_two();
         if self.generated_arguments.is_none_or(|(_, cap)| cap < needed) {
             let buffer = device.create_buffer(&BufferDescriptor {
                 label: Some("generated voxel draw arguments".into()),
@@ -695,6 +729,28 @@ mod mapping_patch_tests {
         let unknown = gfx_core::BufferId::from_parts(13, 1);
         super::invalidate_argument_page(&mut mappings, unknown);
         assert_eq!(mappings.len(), 1);
+    }
+
+    #[test]
+    fn generated_mapping_uses_stable_physical_counts_during_structural_shifts() {
+        let slots = [9u32, 2, 17, 5];
+        // A Section inserted at logical position zero does not require
+        // rewriting any of the old physical count records.
+        assert_eq!(
+            super::generated_mapping_target(Some(&slots), 1, 1).unwrap(),
+            (2, 0),
+        );
+        assert_eq!(
+            super::generated_mapping_target(Some(&slots), 2, 2).unwrap(),
+            (17, 0),
+        );
+        // Standalone/non-culling indirect draws still carry dense offsets
+        // and the logical first-instance required by DrawIndirect.
+        assert_eq!(
+            super::generated_mapping_target(None, 2, 2).unwrap(),
+            (2, 2),
+        );
+        assert!(super::generated_mapping_target(Some(&slots), 4, 8).is_err());
     }
 
     #[test]
