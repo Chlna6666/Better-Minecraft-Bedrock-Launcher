@@ -22,6 +22,13 @@ use gfx_core::{
 /// [`PipelineDevice`], so a renderer can pass `&mut dyn ExtensionDevice` without
 /// knowing the concrete nova-gfx backend type.
 pub trait ExtensionDevice {
+    /// Device-specific uniform/storage buffer offsets and per-binding ranges.
+    /// The host forwards the active native device's limits; renderer
+    /// extensions must not infer these from a backend name or fixed constants.
+    fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
+        gfx_core::BufferBindingLimits::default()
+    }
+
     /// Returns the device's optional ordered compute/indirect capabilities.
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         gfx_core::ComputeCapabilities::default()
@@ -242,6 +249,10 @@ impl<T> ExtensionDevice for T
 where
     T: ResourceDevice + PipelineDevice,
 {
+    fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
+        ResourceDevice::buffer_binding_limits(self)
+    }
+
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         ResourceDevice::compute_capabilities(self)
     }
