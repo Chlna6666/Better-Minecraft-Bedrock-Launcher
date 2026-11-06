@@ -618,6 +618,33 @@ mod tests {
     }
 
     #[test]
+    fn structural_new_slot_emits_material_record_without_previous_gpu_snapshot() {
+        let original = draws(32);
+        let (slots, map) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut cache = DrawRecordCache::default();
+        let mut keys = Vec::new();
+        let mut bytes = Vec::new();
+        let mut scratch = Vec::new();
+        cache.encode_stable(
+            &original, 0, &map, slots.high_water(),
+            &[], &[], &mut keys, &mut bytes, &mut scratch,
+        ).unwrap();
+        let mut next = original.clone();
+        next.push(draws(33).pop().unwrap());
+        let (_next_slots, next_map) = slots.plan(&next).unwrap();
+        assert_eq!(next_map[32], 32);
+        let patches = cache.encode_resident_delta(
+            &next, 0, &next_map, &[32], &keys, &bytes, &mut scratch,
+        ).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, 32);
+        let canonical = crate::scene_view::gpu::encode_draw_records(
+            std::slice::from_ref(&next[32]), 0,
+        ).unwrap();
+        assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
+    }
+
+    #[test]
     fn drawparam_delta_encodes_only_changed_physical_material_record() {
         let original = draws(40);
         let (slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
