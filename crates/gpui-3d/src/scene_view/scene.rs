@@ -117,6 +117,11 @@ pub(super) struct SceneResources {
     spare_draw_resources: Vec<BindGroupId>,
     spare_draw_resource_keys: Vec<DrawResourceKey>,
     spare_draw_resource_sources: Vec<((MeshId, bool), u64)>,
+    /// Immutable material snapshot and raster winding for each native Batch.
+    /// A translation-only Section update keeps the exact cached GPU command
+    /// pipeline when both fields remain unchanged.
+    native_command_sources: Vec<NativeCommandSource>,
+    spare_native_command_sources: Vec<NativeCommandSource>,
     draw_addresses: Vec<DrawAddress>,
     reorder_positions: Vec<usize>,
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
@@ -185,6 +190,24 @@ pub(super) struct DrawBatchRange {
 struct DrawAddress {
     arguments_offset: u64,
     first_instance: usize,
+}
+
+/// These are the per-Draw inputs that can change native pipeline selection
+/// while its Mesh/Part identity, BindGroup and indirect argument slot remain
+/// the same. Material pointer retention comes from the published Scene Arc,
+/// and world winding changes alter raster front-face orientation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCommandSource {
+    material_snapshot: usize,
+    mirrored: bool,
+}
+impl NativeCommandSource {
+    fn for_draw(draw: &PreparedDraw) -> Self {
+        Self {
+            material_snapshot: Arc::as_ptr(&draw.material) as usize,
+            mirrored: draw.is_mirrored(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -413,6 +436,8 @@ impl SceneResources {
             spare_draw_resources: Vec::new(),
             spare_draw_resource_keys: Vec::new(),
             spare_draw_resource_sources: Vec::new(),
+            native_command_sources: Vec::new(),
+            spare_native_command_sources: Vec::new(),
             draw_addresses: Vec::new(),
             reorder_positions: Vec::new(),
             binding_cache: HashMap::new(),
@@ -496,6 +521,7 @@ impl SceneResources {
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
         let mut reordered_blends = None;
         let mut reused_resident_slots = false;
+        let mut resident_commands_stable = false;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
             let camera_phase =
@@ -760,15 +786,16 @@ impl SceneResources {
                 let textures_unchanged = self.texture_table.as_ref().is_some_and(|previous| {
                     Arc::ptr_eq(previous, &scene_view.textures)
                 });
-                let updated = if reused_resident_slots {
+                let result = if reused_resident_slots {
                     self.sync_resident_draw_delta(
                         device, renderer, bind_group_layout, sampler,
                         sampler_changed, assets_changed, textures_unchanged,
                     )?
                 } else {
-                    false
+                    None
                 };
-                if !updated {
+                resident_commands_stable = result.unwrap_or(false);
+                if result.is_none() {
                     self.sync_buffers(
                         device, renderer, bind_group_layout, sampler,
                         sampler_changed, scene_view.voxel_shader, assets_changed,
@@ -884,7 +911,7 @@ impl SceneResources {
         } else {
             false
         };
-        if draw_list_changed
+        if (draw_list_changed && !resident_commands_stable)
             || sampler_changed
             || shadow_created
             || voxel_shader_changed
@@ -1075,6 +1102,19 @@ impl SceneResources {
         })
     }
 
+    /// A native command is independent of world translation. Reuse it only
+    /// if every changed singleton retains the exact material snapshot
+    /// (pipeline/rejection/alpha state) and raster winding direction.
+    fn resident_command_pipelines_unchanged(&self, dirty: &[usize]) -> bool {
+        self.native_command_sources.len() == self.batches.len()
+            && dirty.iter().all(|&logical| {
+                self.prepared.draws.get(logical).is_some_and(|draw| {
+                    self.native_command_sources.get(logical)
+                        == Some(&NativeCommandSource::for_draw(draw))
+                })
+            })
+    }
+
     /// Section Delta -> retained GPU Draw Slot update. The Culler has
     /// already validated and committed stable opaque singleton identities.
     /// We write only changed DrawParams/Instance records at their physical
@@ -1089,12 +1129,12 @@ impl SceneResources {
         sampler_changed: bool,
         defer_binding_cleanup: bool,
         textures_unchanged: bool,
-    ) -> gpui::Result<bool> {
+    ) -> gpui::Result<Option<bool>> {
         let Some(dirty) = self.prepared.resident_delta_draws().map(|indices| indices.to_vec()) else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(culler) = &self.culling else {
-            return Ok(false);
+            return Ok(None);
         };
         let (high_water, mapping) = culler.committed_slot_layout();
         let capacity = high_water.max(1);
@@ -1111,8 +1151,11 @@ impl SceneResources {
             || self.prepared.draws.len() != self.batches.len()
             || dirty.len().saturating_mul(4) > self.prepared.draws.len()
         {
-            return Ok(false);
+            return Ok(None);
         }
+        let commands_unchanged = self.resident_bindings_unchanged(
+            &dirty, sampler_changed, textures_unchanged,
+        ) && self.resident_command_pipelines_unchanged(&dirty);
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
@@ -1192,7 +1235,7 @@ impl SceneResources {
                 started.elapsed().as_secs_f64() * 1000.0,
             );
         }
-        Ok(true)
+        Ok(Some(commands_unchanged))
     }
 
     fn sync_buffers(
@@ -1916,6 +1959,8 @@ impl SceneResources {
         let mut next = std::mem::take(&mut self.spare_draw_resources);
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
         let mut next_sources = std::mem::take(&mut self.spare_draw_resource_sources);
+        let mut next_native = std::mem::take(&mut self.spare_native_command_sources);
+        next_native.clear();
         let mut next_generated = std::mem::take(&mut self.spare_generated_batch_sources);
         // This pass already touches every native Batch. Assemble its GPU
         // mapping records now, instead of walking all batches a second time.
@@ -1928,6 +1973,7 @@ impl SceneResources {
         next.reserve(self.batches.len());
         next_keys.reserve(self.batches.len());
         next_sources.reserve(self.batches.len());
+        next_native.reserve(self.batches.len());
         next_generated.reserve(self.batches.len());
         let mut created = HashMap::new();
         // Bind the allocated range so culling alone does not invalidate every bind group.
@@ -1949,6 +1995,7 @@ impl SceneResources {
                 .draws
                 .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
+            next_native.push(NativeCommandSource::for_draw(draw));
             let mesh_id = draw.mesh.id();
             let compact_voxel = mesh_key(draw, voxel_shader).1;
             let generation = draw.mesh.generation();
@@ -2133,10 +2180,12 @@ impl SceneResources {
         std::mem::swap(&mut self.draw_resources, &mut next);
         std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
         std::mem::swap(&mut self.draw_resource_sources, &mut next_sources);
+        std::mem::swap(&mut self.native_command_sources, &mut next_native);
         std::mem::swap(&mut self.generated_batch_sources, &mut next_generated);
         self.spare_draw_resources = next;
         self.spare_draw_resource_keys = next_keys;
         self.spare_draw_resource_sources = next_sources;
+        self.spare_native_command_sources = next_native;
         self.spare_generated_batch_sources = next_generated;
         if force {
             for bind_group in self.binding_cache.values().copied() {
