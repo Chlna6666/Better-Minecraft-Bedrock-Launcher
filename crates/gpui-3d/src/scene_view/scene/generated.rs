@@ -216,6 +216,19 @@ pub(super) fn push_page_record(
     Ok(())
 }
 
+/// Writing new GPU-generated Part Counts to an existing physical Page makes
+/// previously computed indirect arguments stale even if every mapping word
+/// and source buffer handle is bit-identical. Invalidating only that Page's
+/// output forces a fresh GPU mapping dispatch without walking all Pages.
+pub(super) fn invalidate_argument_page(
+    mappings: &mut HashMap<BufferId, Mapping>,
+    source: BufferId,
+) {
+    if let Some(mapping) = mappings.get_mut(&source) {
+        mapping.output = None;
+    }
+}
+
 /// Mesh parts are validated as contiguous, strictly increasing index
 /// ranges at construction. Resolve the generated part in O(log N) rather than
 /// scanning every material part again for each generated Draw batch.
@@ -660,6 +673,28 @@ mod mapping_patch_tests {
             &patches, 131_072, false, limits(256, 1 << 20),
         ).unwrap();
         assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 131_072 }]);
+    }
+
+    #[test]
+    fn regenerated_counts_force_refresh_even_with_unchanged_mapping() {
+        let source = gfx_core::BufferId::from_parts(12, 1);
+        let output = gfx_core::BufferId::from_parts(22, 1);
+        let mut mappings = std::collections::HashMap::from([(
+            source,
+            super::Mapping {
+                buffer: source,
+                capacity: 64,
+                entries: vec![7, 8, 9, 0],
+                scratch_entries: Vec::new(),
+                output: Some(output),
+            },
+        )]);
+        super::invalidate_argument_page(&mut mappings, source);
+        assert!(mappings[&source].output.is_none());
+        assert_eq!(mappings[&source].entries, [7, 8, 9, 0]);
+        let unknown = gfx_core::BufferId::from_parts(13, 1);
+        super::invalidate_argument_page(&mut mappings, unknown);
+        assert_eq!(mappings.len(), 1);
     }
 
     #[test]

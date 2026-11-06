@@ -51,6 +51,9 @@ impl SceneResources {
                 &mut self.reorder_positions,
             );
         }
+        // A pending Page mapping was assembled for the former logical order.
+        // Any later direct sync must rebuild it after this permutation.
+        self.generated_pending_groups = None;
         crate::prepare::apply_order(
             &mut self.draw_addresses[first_batch..],
             order,

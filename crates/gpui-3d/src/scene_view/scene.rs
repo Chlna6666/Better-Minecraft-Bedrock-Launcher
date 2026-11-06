@@ -1551,7 +1551,7 @@ impl SceneResources {
             {
                 if let Err(error) = flush_pending_generated_meshes(
                     device, &mut pending_gpu, self.mesh_shader.as_ref(),
-                    &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
+                    &mut pending, &mut self.meshes, &mut self.generated_mappings, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
                     &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
                 ) {
                     discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
@@ -1563,7 +1563,7 @@ impl SceneResources {
         }
         if let Err(error) = flush_pending_generated_meshes(
             device, &mut pending_gpu, self.mesh_shader.as_ref(),
-            &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
+            &mut pending, &mut self.meshes, &mut self.generated_mappings, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
             &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
         ) {
             discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
@@ -2185,6 +2185,7 @@ fn flush_pending_generated_meshes(
     shaders: Option<&super::generated::Shaders>,
     pending: &mut Vec<StagedMesh>,
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
+    generated_mappings: &mut HashMap<BufferId, generated::Mapping>,
     page_refs: &mut page_refs::PageRefs,
     retired_meshes: &mut Vec<MeshResources>,
     arena: &mut MeshArena,
@@ -2201,6 +2202,12 @@ fn flush_pending_generated_meshes(
             device, &inputs, shaders, generated_arena, template_arena, argument_arena, backend,
         )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
+            if let Some(generated) = &resource.generated {
+                // Reused Argument Page/slot identifiers alone cannot reveal
+                // that GPU Compute has written new Part Counts. Force this
+                // Page's indirect table to consume freshly generated counts.
+                generated::invalidate_argument_page(generated_mappings, generated.arguments);
+            }
             pending.push((id, resource, None));
         }
     }
