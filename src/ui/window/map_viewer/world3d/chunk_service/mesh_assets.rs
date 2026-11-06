@@ -15,15 +15,24 @@ pub(super) struct MeshAssets {
     // cross-Section batching without changing any texture coordinates.
     content_textures: HashMap<u64, Vec<Weak<TextureAsset>>>,
     materials: HashMap<MaterialSlotKey, Weak<Material>>,
-    grass_side_tints: HashMap<(TextureAssetId, [u8; 3]), TintEntry>,
+    /// Derived grass-block sides keyed by `(dirt, overlay, biome tint)`.
+    grass_side_tints: HashMap<(TextureAssetId, TextureAssetId, [u8; 3]), TintEntry>,
     grayscale_masks: HashMap<TextureAssetId, bool>,
 }
 
 struct TintEntry {
-    // Keep the source's identity stable while a derived texture is in use. Otherwise the path
+    // Keep the source identities stable while a derived texture is in use. Otherwise the path
     // cache's weak reference expires and every chunk reloads and re-decodes the same source.
-    _source: Arc<TextureAsset>,
+    _sources: [Arc<TextureAsset>; 2],
     texture: Weak<TextureAsset>,
+}
+
+fn tint_key(tint: [f32; 4]) -> [u8; 3] {
+    [
+        (tint[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (tint[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (tint[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
 }
 
 impl MeshAssets {
@@ -130,12 +139,7 @@ impl MeshAssets {
         // authored against; the vertex color now carries this tint alone.
         const PLAINS: [f32; 3] = [0.4824, 0.7490, 0.3569];
         let base = base?;
-        let key = [
-            (tint[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-            (tint[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-            (tint[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-        ];
-        let key = (base.id(), key);
+        let key = (base.id(), base.id(), tint_key(tint));
         if let Some(cached) = self
             .grass_side_tints
             .get(&key)
@@ -164,7 +168,58 @@ impl MeshAssets {
         self.grass_side_tints.insert(
             key,
             TintEntry {
-                _source: base.clone(),
+                _sources: [base.clone(), base.clone()],
+                texture: Arc::downgrade(&asset),
+            },
+        );
+        Some(asset)
+    }
+
+    /// Composites a grayscale grass-side overlay over dirt with the biome tint.
+    ///
+    /// Vanilla renders grass-block sides as `dirt + grass_side * tint`; the carried texture is
+    /// the pre-tinted inventory variant and is noticeably brighter than the tinted top face.
+    pub(super) fn composited_grass_side(
+        &mut self,
+        dirt: &Arc<TextureAsset>,
+        overlay: &Arc<TextureAsset>,
+        tint: [f32; 4],
+    ) -> Option<Arc<TextureAsset>> {
+        let dimensions = dirt.dimensions();
+        if overlay.dimensions() != dimensions {
+            return None;
+        }
+        let key = (dirt.id(), overlay.id(), tint_key(tint));
+        if let Some(cached) = self
+            .grass_side_tints
+            .get(&key)
+            .and_then(|entry| entry.texture.upgrade())
+        {
+            return Some(cached);
+        }
+        let tint = tint_key(tint);
+        let mut pixels = dirt.pixels().to_vec();
+        for (destination, source) in pixels
+            .chunks_exact_mut(4)
+            .zip(overlay.pixels().chunks_exact(4))
+        {
+            let alpha = u16::from(source[3]);
+            if alpha == 0 {
+                continue;
+            }
+            let inverse = 255 - alpha;
+            for channel in 0..3 {
+                let tinted = u16::from(source[channel]) * u16::from(tint[channel]) / 255;
+                let blended = u16::from(destination[channel]) * inverse + tinted * alpha;
+                destination[channel] = u8::try_from((blended + 127) / 255).unwrap_or(u8::MAX);
+            }
+        }
+        let image = image::RgbaImage::from_raw(dimensions.0, dimensions.1, pixels)?;
+        let asset = self.intern_texture(mipmapped_texture(image)?);
+        self.grass_side_tints.insert(
+            key,
+            TintEntry {
+                _sources: [dirt.clone(), overlay.clone()],
                 texture: Arc::downgrade(&asset),
             },
         );
@@ -346,6 +401,25 @@ mod tests {
         assets.prune();
         assert!(assets.grass_side_tints.is_empty());
         assert!(assets.tinted_grass_side(Some(&base), tint).is_some());
+    }
+
+    #[test]
+    fn composited_grass_side_tints_the_overlay_over_dirt_and_reuses_the_result() {
+        let mut assets = MeshAssets::default();
+        let dirt = Arc::new(
+            TextureAsset::rgba8(2, 1, Arc::<[u8]>::from([120, 80, 45, 255, 90, 60, 30, 255]))
+                .unwrap(),
+        );
+        let overlay = Arc::new(
+            TextureAsset::rgba8(2, 1, Arc::<[u8]>::from([155, 155, 155, 255, 0, 0, 0, 0]))
+                .unwrap(),
+        );
+        let tint = [123.0 / 255.0, 191.0 / 255.0, 91.0 / 255.0, 1.0];
+        let first = assets.composited_grass_side(&dirt, &overlay, tint).unwrap();
+        let second = assets.composited_grass_side(&dirt, &overlay, tint).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(&first.pixels()[..4], &[74, 116, 55, 255]);
+        assert_eq!(&first.pixels()[4..8], &dirt.pixels()[4..8]);
     }
 
     #[test]

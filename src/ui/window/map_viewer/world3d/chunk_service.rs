@@ -538,9 +538,10 @@ mod view_tests {
     use super::{
         ChunkCursor, ChunkServiceEvent, ChunkServiceHandle, cached_texture_source, chunk_mesh_id,
         coarse_lod_for_view, desired_chunk_positions, downsample_texture, face_band_y,
-        face_vertex_color, forget_published_sections, inside_cache_hysteresis, inside_view,
-        intern_face_materials, is_full_grass_block_side_material, mesh_target_positions,
-        mesh_target_priority, mipmapped_texture, p3d,
+        face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
+        inside_cache_hysteresis, inside_view, intern_face_materials,
+        is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
+        mipmapped_texture, p3d,
         partition_section_faces, same_chunk_render_geometry, section_priority,
         surrounded_chunk_candidates, take_visible_dirty_meshes, take_visible_urgent_chunks,
         visible_dirty_meshes,
@@ -1396,6 +1397,22 @@ mod view_tests {
         assert!(!is_full_grass_block_side_material(
             "minecraft_seagrass__mat_down"
         ));
+        assert_eq!(
+            grass_block_side_texture_keys("minecraft_grass_side"),
+            Some(("dirt", "grass_side"))
+        );
+        assert_eq!(
+            grass_block_side_texture_keys("minecraft_grass_block_side"),
+            Some(("dirt", "grass_side"))
+        );
+        assert_eq!(
+            grass_block_side_texture_keys("minecraft_tallgrass__mat_down"),
+            None
+        );
+        assert_eq!(
+            grass_block_side_texture_keys("minecraft_grass_side_snowed"),
+            None
+        );
     }
 }
 
@@ -3391,6 +3408,15 @@ impl Worker {
                         && resolved_texture
                             .as_ref()
                             .is_some_and(|texture| self.mesh_assets.is_grayscale_mask(texture));
+                    let grass_side_sources =
+                        grass_block_side_texture_keys(material_name).and_then(
+                            |(dirt_key, overlay_key)| {
+                                let (dirt, _) = self.resolve_texture_key(dirt_key)?;
+                                let (overlay, _) = self.resolve_texture_key(overlay_key)?;
+                                (dirt.dimensions() == overlay.dimensions())
+                                    .then_some((dirt, overlay))
+                            },
+                        );
                     FaceMaterialProperties {
                         texture: resolved_texture,
                         normal: normal.map(|(asset, _)| asset),
@@ -3398,19 +3424,31 @@ impl Worker {
                         alpha_content,
                         is_missing,
                         tint_mask,
+                        grass_side_sources,
                         opaque_glass: material_name.starts_with("minecraft_glass_"),
                     }
                 });
             let mut resolved_texture = properties.texture.clone();
             let mut uses_tint = properties.tint_mask;
-            if face.normal[1] == 0
-                && is_full_grass_block_side_material(material_name)
-                && let Some(tinted) = self
-                    .mesh_assets
-                    .tinted_grass_side(resolved_texture.as_ref(), face.color)
-            {
-                resolved_texture = Some(tinted);
-                uses_tint = false;
+            if face.normal[1] == 0 {
+                let composited = properties
+                    .grass_side_sources
+                    .as_ref()
+                    .and_then(|(dirt, overlay)| {
+                        self.mesh_assets
+                            .composited_grass_side(dirt, overlay, face.color)
+                    });
+                if let Some(composited) = composited {
+                    resolved_texture = Some(composited);
+                    uses_tint = false;
+                } else if is_full_grass_block_side_material(material_name)
+                    && let Some(tinted) = self
+                        .mesh_assets
+                        .tinted_grass_side(resolved_texture.as_ref(), face.color)
+                {
+                    resolved_texture = Some(tinted);
+                    uses_tint = false;
+                }
             }
             let texture = resolved_texture.as_ref();
             if let Some(started) = lookup_started {
@@ -3734,6 +3772,15 @@ impl Worker {
         result
     }
 
+    /// Resolves a `terrain_texture.json` key, for companion textures such as grass side masks.
+    fn resolve_texture_key(
+        &mut self,
+        key: &str,
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
+        let resolved = self.resolver.texture_for_key(key)?;
+        self.resolve_texture_path(resolved)
+    }
+
     fn resolve_map_texture(
         &mut self,
         id: &str,
@@ -4037,6 +4084,20 @@ fn is_full_grass_block_side_material(material: &str) -> bool {
     )
 }
 
+/// Companion texture keys for rebuilding a grass block side from resource-pack layers.
+///
+/// Vanilla composites `dirt` + `grass_side` (grayscale overlay, alpha) * biome tint; the
+/// carried side texture is the pre-tinted inventory variant and is too bright for the world.
+fn grass_block_side_texture_keys(material: &str) -> Option<(&'static str, &'static str)> {
+    let base = material
+        .split_once(MATERIAL_SLOT_SEPARATOR)
+        .map_or(material, |(base, _)| base);
+    match obj_material_texture_name(base).as_str() {
+        "grass_side" | "grass_block_side" => Some(("dirt", "grass_side")),
+        _ => None,
+    }
+}
+
 fn face_vertex_color(
     face: &p3d::Preview3dStreamFace,
     has_texture: bool,
@@ -4301,6 +4362,8 @@ struct FaceMaterialProperties {
     /// The material is biome-tinted and its texture is the grayscale mask, so the face keeps
     /// the voxel vertex color. Pre-tinted resource-pack textures render without a second tint.
     tint_mask: bool,
+    /// Dirt and grass-overlay textures used to rebuild a grass block side per biome.
+    grass_side_sources: Option<(Arc<TextureAsset>, Arc<TextureAsset>)>,
     opaque_glass: bool,
 }
 

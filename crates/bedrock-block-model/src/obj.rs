@@ -686,6 +686,16 @@ impl ObjTextureResolver {
         None
     }
 
+    /// Resolves a `terrain_texture.json` key from the active pack stack.
+    ///
+    /// Callers use this for companion textures that a block material does not expose, such as
+    /// the grass-side overlay mask that is composited over the dirt side.
+    #[must_use]
+    pub fn texture_for_key(&self, texture_key: &str) -> Option<ObjResolvedTexture> {
+        let (pack, source_path) = self.texture_path_for_key(texture_key)?;
+        Some(pack.resolved_texture(&self.texture_directory_name, source_path))
+    }
+
     /// Resolves an inventory icon from the active resource-pack stack.
     ///
     /// The embedded item-id mapping is applied first because Bedrock item ids do not always equal
