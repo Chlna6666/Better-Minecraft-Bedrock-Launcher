@@ -119,6 +119,48 @@ impl StableDrawSlots {
 
 
 impl SceneResources {
+    /// Encode only the exact physical Instance rows referenced by the last
+    /// fixed-layout Section Delta. Unchanged GPU data is never visited or
+    /// copied, and no CPU mirror is changed before GPU upload succeeds.
+    pub(super) fn encode_resident_instance_delta(
+        &self,
+        mapping: &[u32],
+        dirty: &[usize],
+        previous: &[instance_cache::InstanceSlotKey],
+        previous_bytes: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> gpui::Result<Vec<(usize, instance_cache::InstanceSlotKey, [u8; INSTANCE_STRIDE as usize])>> {
+        const STRIDE: usize = INSTANCE_STRIDE as usize;
+        if mapping.len() != self.prepared.draws.len()
+            || previous_bytes.len() != previous.len() * STRIDE
+        {
+            return Err(anyhow!("GPUI 3D dirty Instance requires committed resident layout").into());
+        }
+        let mut patches = Vec::with_capacity(dirty.len());
+        let mut seen = std::collections::HashSet::with_capacity(dirty.len());
+        for &logical in dirty {
+            if !seen.insert(logical) { continue; }
+            let draw = self.prepared.draws.get(logical)
+                .ok_or_else(|| anyhow!("dirty Instance logical index outside scene"))?;
+            let physical = *mapping.get(logical)
+                .ok_or_else(|| anyhow!("missing resident Instance slot"))? as usize;
+            let prior = previous.get(physical)
+                .ok_or_else(|| anyhow!("resident Instance slot outside table"))?;
+            if prior == &self.instance_key(draw, true)? {
+                continue;
+            }
+            let key = self.instance_key(draw, true)?;
+            scratch.clear();
+            self.encode_draw_instances(std::slice::from_ref(draw), true, scratch)?;
+            let bytes: [u8; STRIDE] = scratch.get(..STRIDE)
+                .ok_or_else(|| anyhow!("incomplete dirty Instance record"))?
+                .try_into()
+                .expect("a validated Instance record has the full stride");
+            patches.push((physical, key, bytes));
+        }
+        Ok(patches)
+    }
+
     /// Encode only GPU-visible instance rows whose stable physical identity
     /// changed; removing or inserting a section does not touch resident rows.
     pub(super) fn encode_stable_instances(
