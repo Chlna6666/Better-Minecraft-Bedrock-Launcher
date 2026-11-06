@@ -2727,6 +2727,21 @@ impl SceneResources {
         let command_started = trace_timings().then(Instant::now);
         let previous_step_count = steps.len();
         steps.reserve(self.batches.len());
+        // A pure Generated Mesh scene has a canonical singleton Batch layout.
+        // Its BindGroups, indirect offsets and GPU argument source have already
+        // been resolved at scene-sync time. Avoid one Mesh HashMap probe and
+        // mesh-kind dispatch for every native command after Section splices.
+        let generated_singletons = shadow.is_none()
+            && voxel_shader
+            && self.culling.is_some()
+            && self.page_refs.only_generated_meshes()
+            && self.batch_workspace.singleton_layout()
+            && self.batches.len() == self.prepared.draws.len()
+            && self.draw_resources.len() == self.prepared.draws.len()
+            && self.draw_addresses.len() == self.prepared.draws.len();
+        if generated_singletons {
+            self.append_generated_singleton_steps(renderer, steps)?;
+        } else {
         let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
             let index = batch.first_instance;
@@ -2849,6 +2864,7 @@ impl SceneResources {
                 }));
             }
         }
+        }
         if let Some(started) = command_started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
             if elapsed_ms >= 16.0 {
@@ -2861,6 +2877,50 @@ impl SceneResources {
                     elapsed_ms,
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Encodes an all-generated, canonical singleton scene directly from the
+    /// retained native BindGroup and indirect-address tables. The GPU culler
+    /// owns visibility counts; the CPU inclusion mask only avoids issuing
+    /// commands for completely offscreen singletons.
+    fn append_generated_singleton_steps(
+        &self,
+        renderer: &RendererResources,
+        steps: &mut Vec<RenderCommand>,
+    ) -> gpui::Result<()> {
+        let arguments = self.culling.as_ref()
+            .ok_or_else(|| anyhow!("GPU culling arguments are unavailable"))?
+            .arguments;
+        let bounds_visible = self.prepared.bounds_visibility();
+        for (index, draw) in self.prepared.draws.iter().enumerate() {
+            if renderer.rejects_material(&draw.material) {
+                continue;
+            }
+            let included = self.command_visibility.get(index).copied()
+                .unwrap_or_else(|| {
+                    bounds_visible(draw.bounds)
+                        && self.prepared.is_draw_in_culling_bounds(draw)
+                });
+            if !included {
+                continue;
+            }
+            let binding = self.draw_resources.get(index)
+                .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
+            let address = self.draw_addresses.get(index)
+                .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
+            let pipeline = renderer.generated_pipeline(
+                draw.material.alpha_mode == AlphaMode::Blend,
+                draw.raster_front_face(),
+            )?;
+            steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                pipeline,
+                bind_groups: bind_group_list([*binding]),
+                arguments,
+                offset: address.arguments_offset,
+                scissor: None,
+            }));
         }
         Ok(())
     }
