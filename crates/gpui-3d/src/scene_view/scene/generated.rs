@@ -314,7 +314,123 @@ fn generated_part_index(parts: &[MeshPart], target: MeshPart) -> Option<usize> {
         .filter(|&index| parts[index] == target)
 }
 
+/// Rebuild the mapping list of ONE affected GPU Argument Page only.
+/// Physical output slot IDs are immutable for surviving Sections. Removing a
+/// Section drops its old slot record; replacing/reusing a slot rewrites the
+/// record without touching any other Page. The list is not required to be in
+/// logical Draw order because map.y is a resident physical output address.
+fn splice_generated_page_entries(
+    previous: &[u32],
+    removed: &HashSet<u32>,
+    added: &[[u32; 4]],
+) -> gpui::Result<Vec<u32>> {
+    if !previous.len().is_multiple_of(4) {
+        return Err(anyhow!("generated Page mapping is not 16-byte aligned").into());
+    }
+    let mut next = Vec::with_capacity(previous.len() + added.len() * 4);
+    for entry in previous.chunks_exact(4) {
+        if !removed.contains(&entry[1]) {
+            next.extend_from_slice(entry);
+        }
+    }
+    for record in added {
+        if let Some(index) = next.chunks_exact(4).position(|row| row[1] == record[1]) {
+            next[index * 4..index * 4 + 4].copy_from_slice(record);
+        } else {
+            next.extend_from_slice(record);
+        }
+    }
+    Ok(next)
+}
+
 impl SceneResources {
+    /// Avoid regenerating mappings for every unaffected Page on structural
+    /// Section insert/unload. The previous logical metadata is retained by
+    /// the binding snapshot splice in spare_generated_batch_sources, and the
+    /// old dense logical->physical table remains in uploaded_slot_map until
+    /// the complete GPU transaction commits.
+    pub(super) fn sync_structural_generated_pages(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<bool> {
+        let Some(delta) = self.prepared.structural_draw_delta().cloned() else {
+            return Ok(false);
+        };
+        let Some(culling) = self.culling.as_ref() else {
+            return Ok(false);
+        };
+        let (high_water, mapping) = culling.committed_slot_layout();
+        let needed = high_water.max(1).next_power_of_two();
+        let Some((output, capacity)) = self.generated_arguments else {
+            return Ok(false);
+        };
+        if capacity < needed
+            || self.spare_generated_batch_sources.len() != delta.previous_count
+            || self.generated_batch_sources.len() != self.prepared.draws.len()
+            || self.uploaded_slot_map.len() != delta.previous_count * 4
+            || mapping.len() != self.prepared.draws.len()
+            || self.generated_pending_groups.is_some()
+            // An invalidated source Page needs recomputation even if its
+            // Section was not edited. Retain full publication in that case.
+            || self.generated_mappings.values()
+                .any(|page| page.output != Some(output))
+        {
+            return Ok(false);
+        }
+
+        let mut removed = HashMap::<BufferId, HashSet<u32>>::new();
+        let mut added = HashMap::<BufferId, Vec<[u32; 4]>>::new();
+        let mut new_sizes = HashMap::<BufferId, usize>::new();
+        for edit in &delta.edits {
+            for old in edit.old.clone() {
+                if let Some(source) = self.spare_generated_batch_sources[old] {
+                    let bytes = &self.uploaded_slot_map[old * 4..old * 4 + 4];
+                    let physical = u32::from_le_bytes(bytes.try_into()
+                        .expect("each logical Draw Slot is one u32"));
+                    removed.entry(source.buffer).or_default().insert(physical);
+                }
+            }
+            for logical in edit.new.clone() {
+                if let Some(source) = self.generated_batch_sources[logical] {
+                    let physical = mapping[logical];
+                    added.entry(source.buffer).or_default().push([
+                        source.argument_part, physical, 0, 0,
+                    ]);
+                    new_sizes.insert(source.buffer, source.source_size);
+                }
+            }
+        }
+        let mut touched = removed.keys().copied().collect::<HashSet<_>>();
+        touched.extend(added.keys().copied());
+        if touched.is_empty() {
+            return Ok(true);
+        }
+        let mut changed = HashMap::with_capacity(touched.len());
+        for page in touched {
+            let previous = self.generated_mappings.get(&page);
+            if previous.is_none() && removed.contains_key(&page) {
+                // A formerly active Page must have a resident mapping.
+                return Ok(false);
+            }
+            let size = new_sizes.get(&page).copied()
+                .or_else(|| previous.map(|mapping| mapping.source_size))
+                .ok_or_else(|| anyhow!("generated Page source span is missing"))?;
+            let entries = splice_generated_page_entries(
+                previous.map_or(&[], |mapping| mapping.entries.as_slice()),
+                removed.get(&page).unwrap_or(&HashSet::new()),
+                added.get(&page).map_or(&[], Vec::as_slice),
+            )?;
+            changed.insert(page, (size, entries));
+        }
+        // The shader targets stable physical slots, so no dense per-Section
+        // mapping is needed for any untouched Page. Preserve all untouched
+        // Mapping buffers, input records and computed output counts.
+        self.generated_pending_groups = Some(changed);
+        self.generated_pending_partial = true;
+        self.sync_generated_draws(device, true)?;
+        Ok(true)
+    }
+
     pub(super) fn sync_generated_draws(
         &mut self,
         device: &mut dyn ExtensionDevice,
@@ -815,6 +931,32 @@ mod mapping_patch_tests {
         let unknown = gfx_core::BufferId::from_parts(13, 1);
         super::invalidate_argument_page(&mut mappings, unknown);
         assert_eq!(mappings.len(), 1);
+    }
+
+    #[test]
+    fn structural_page_splice_preserves_survivors_and_recycles_physical_slots() {
+        let original = vec![
+            10, 5, 0, 0,
+            11, 8, 0, 0,
+            12, 13, 0, 0,
+        ];
+        let removed = std::collections::HashSet::from([8u32]);
+        let unchanged = super::splice_generated_page_entries(
+            &original, &removed, &[],
+        ).unwrap();
+        assert_eq!(unchanged, [10, 5, 0, 0, 12, 13, 0, 0]);
+        // Reuse retired physical slot 8 for a different generated Part.
+        let updated = super::splice_generated_page_entries(
+            &original, &removed, &[[27, 8, 0, 0]],
+        ).unwrap();
+        assert_eq!(updated, [10, 5, 0, 0, 12, 13, 0, 0, 27, 8, 0, 0]);
+        assert_eq!(super::generated_output_dirty_patches(
+            &original, &updated, true,
+        ).len(), 1);
+        let replaced = super::splice_generated_page_entries(
+            &original, &std::collections::HashSet::new(), &[[71, 13, 0, 0]],
+        ).unwrap();
+        assert_eq!(replaced, [10, 5, 0, 0, 11, 8, 0, 0, 71, 13, 0, 0]);
     }
 
     #[test]
