@@ -65,6 +65,23 @@ pub(super) fn group_voxel_batches_into(
     workspace: &mut BatchWorkspace,
     batches: &mut Vec<DrawBatchRange>,
 ) {
+    // Direct callers and differential tests retain the original API.
+    group_voxel_batches_with_quad_presence(
+        draws, meshes, workspace, batches,
+        meshes.values().any(|mesh| mesh.procedural_quads && mesh.generated.is_none()),
+    );
+}
+
+/// The streaming GPU renderer maintains this property incrementally while
+/// loading/unloading MeshResources. No full Mesh HashMap traversal is needed
+/// to decide whether a SceneDelta needs native quad instancing.
+pub(super) fn group_voxel_batches_with_quad_presence(
+    draws: &mut [PreparedDraw],
+    meshes: &HashMap<(MeshId, bool), MeshResources>,
+    workspace: &mut BatchWorkspace,
+    batches: &mut Vec<DrawBatchRange>,
+    has_non_generated_quads: bool,
+) {
     batches.clear();
     let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
 
@@ -76,7 +93,7 @@ pub(super) fn group_voxel_batches_into(
     // not require material sorting, and the transparent tail remains untouched.
     // One scan over resident mesh resources is much cheaper than the old
     // per-draw hashing, distinct-key sorting and inverse permutation.
-    if !meshes.values().any(|mesh| mesh.procedural_quads && mesh.generated.is_none()) {
+    if !has_non_generated_quads {
         workspace.buckets.clear();
         workspace.sorted_keys.clear();
         workspace.new_keys.clear();

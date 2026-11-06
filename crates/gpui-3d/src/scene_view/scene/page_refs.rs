@@ -7,6 +7,9 @@ use super::*;
 #[derive(Default)]
 pub(super) struct PageRefs {
     users: HashMap<BufferId, usize>,
+    /// Resident CPU-packed procedural quad meshes requiring native instance
+    /// grouping. Generated Meshes are already independent indirect draws.
+    ungenerated_quads: usize,
 }
 
 impl PageRefs {
@@ -18,12 +21,19 @@ impl PageRefs {
     }
 
     pub(super) fn insert(&mut self, mesh: &MeshResources, compact: bool) {
+        if mesh.procedural_quads && mesh.generated.is_none() {
+            self.ungenerated_quads += 1;
+        }
         if compact {
             Self::visit(mesh, |page| *self.users.entry(page).or_default() += 1);
         }
     }
 
     pub(super) fn remove(&mut self, mesh: &MeshResources, compact: bool) {
+        if mesh.procedural_quads && mesh.generated.is_none() {
+            debug_assert!(self.ungenerated_quads > 0);
+            self.ungenerated_quads -= 1;
+        }
         if compact {
             Self::visit(mesh, |page| {
                 match self.users.entry(page) {
@@ -46,6 +56,12 @@ impl PageRefs {
 
     pub(super) fn clear(&mut self) {
         self.users.clear();
+        self.ungenerated_quads = 0;
+    }
+
+    /// Read-only O(1) grouping decision, even for 100K+ resident Meshes.
+    pub(super) fn has_non_generated_quads(&self) -> bool {
+        self.ungenerated_quads != 0
     }
 
     pub(super) fn active_pages(&self) -> HashSet<BufferId> {
@@ -125,6 +141,25 @@ mod tests {
             HashSet::from([BufferId::from_parts(7, 1)])
         );
         assert_eq!(refs.active_pages().len(), 2);
+    }
+
+    #[test]
+    fn quad_grouping_tracks_upload_replacement_and_last_retirement() {
+        let mut refs = PageRefs::default();
+        let a = mesh(5);
+        let b = mesh(6);
+        assert!(!refs.has_non_generated_quads());
+        refs.insert(&a, true);
+        refs.insert(&b, true);
+        assert!(refs.has_non_generated_quads());
+        refs.remove(&a, true);
+        assert!(refs.has_non_generated_quads());
+        refs.remove(&b, true);
+        assert!(!refs.has_non_generated_quads());
+        refs.insert(&a, false);
+        assert!(refs.has_non_generated_quads());
+        refs.clear();
+        assert!(!refs.has_non_generated_quads());
     }
 
     #[test]

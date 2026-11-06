@@ -626,11 +626,12 @@ impl SceneResources {
             let batch_started = trace_timings().then(Instant::now);
             let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
             if gpu_culling {
-                super::batching::group_voxel_batches_into(
+                super::batching::group_voxel_batches_with_quad_presence(
                     &mut self.prepared.draws,
                     &self.meshes,
                     &mut self.batch_workspace,
                     &mut self.batches,
+                    self.page_refs.has_non_generated_quads(),
                 );
             } else {
                 self.batches.clear();
@@ -806,7 +807,17 @@ impl SceneResources {
             }
         }
         drop(resource_phase);
-        let command_visibility_changed = self.refresh_command_visibility();
+        // A shading-only frame update changes uniforms but never the CPU
+        // command inclusion mask. Avoid checking every resident Draw batch
+        // unless the draw layout or visibility volume actually changes.
+        let command_visibility_changed = if draw_list_changed
+            || visibility_changed
+            || culling_bounds_changed
+        {
+            self.refresh_command_visibility()
+        } else {
+            false
+        };
         if draw_list_changed
             || sampler_changed
             || shadow_created
