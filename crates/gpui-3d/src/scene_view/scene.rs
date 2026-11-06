@@ -988,7 +988,6 @@ impl SceneResources {
             |(high_water, _, _)| *high_water,
         ).max(1);
         let draw_count = physical_count;
-        let instance_count = physical_count;
         let light_count = self.prepared.lights.len().max(1);
         let draw_headroom = dx11_streaming_headroom(self.backend, draw_count);
         let next_draw_capacity = grow_capacity(self.draw_capacity, draw_headroom)?;

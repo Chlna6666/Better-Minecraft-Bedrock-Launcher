@@ -33,6 +33,15 @@ impl SceneResources {
             order,
             &mut self.reorder_positions,
         );
+        // Positional fast-path source IDs must follow precisely the same
+        // permutation as the associated BindGroups and Page metadata.
+        if self.draw_resource_sources.len() == end {
+            crate::prepare::apply_order(
+                &mut self.draw_resource_sources[first_batch..],
+                order,
+                &mut self.reorder_positions,
+            );
+        }
         // The Generated Mapping source belongs to the same drawable as its
         // BindGroup. Keep them together during camera-only blended sorting.
         if self.generated_batch_sources.len() == end {

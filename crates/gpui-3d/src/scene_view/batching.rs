@@ -188,7 +188,6 @@ pub(super) fn group_voxel_batches_with_quad_presence(
             .get(&key)
             .expect("active batch key must have an index bucket");
         for &source_index in indices {
-            let draw = &draws[source_index];
             if let Some(batch) = batches.last_mut() {
                 if last_key == Some(key)
                     && matches!(key, BatchKey::Quad { .. })

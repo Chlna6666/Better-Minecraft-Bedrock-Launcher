@@ -388,14 +388,15 @@ fn prepare_generated(
             if (slot == 1 || slot == 2 || slot == 3)
                 && let Some((faces, templates, arguments, backend)) = arena.as_mut()
             {
-                let pool = match slot {
-                    1 => templates,
-                    2 => faces,
-                    3 => arguments,
+                // Do not unify three distinct &mut MeshArena lifetimes in a
+                // returned reference. Dispatch the allocation operation
+                // itself; only its owned result crosses the match expression.
+                let (allocation, buffer, offset, capacity) = match slot {
+                    1 => templates.allocate(device, *backend, size as u64),
+                    2 => faces.allocate(device, *backend, size as u64),
+                    3 => arguments.allocate(device, *backend, size as u64),
                     _ => unreachable!(),
-                };
-                let (allocation, buffer, offset, capacity) =
-                    pool.allocate(device, *backend, size as u64)?;
+                }?;
                 // Both immutable template inputs and generated face outputs
                 // live in GPU-owner shared pages, but occupy disjoint slices.
                 // Compute uses offset-qualified bindings while the shader
