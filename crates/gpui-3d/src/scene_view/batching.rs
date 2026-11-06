@@ -65,7 +65,6 @@ pub(super) fn group_voxel_batches_into(
             let key = batch_key(draw, meshes);
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
-                    && first.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
                     && !key.0
                 {
@@ -212,8 +211,8 @@ mod tests {
     use crate::{Camera, Material, Mesh, Node, PreparedScene, Scene, Transform, Vec3};
     use std::sync::Arc;
 
-    /// Differential oracle: retain the previous stable full-draw sort and
-    /// exact material/quad grouping semantics.
+    /// Differential oracle: full stable sort with the same resource grouping
+    /// rule, independent of the optimized incremental bucket order.
     fn original(
         draws: &mut [PreparedDraw],
         meshes: &HashMap<(MeshId, bool), MeshResources>,
@@ -226,7 +225,6 @@ mod tests {
             let key = batch_key(draw, meshes);
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
-                    && first.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
                     && !key.0
                 {
