@@ -673,12 +673,27 @@ impl SceneResources {
             && (draw_list_changed || self.culling.is_none())
         {
             if let Some(culling) = &mut self.culling {
-                culling.update(
-                    device,
-                    &self.prepared.draws,
-                    &self.batches,
-                    Some(&self.meshes),
-                )?;
+                // Candidate Delta carries exact logical Draw positions when
+                // GPU opaque slot identity is preserved. With only singleton
+                // batches the native Batch and logical->physical tables are
+                // unchanged: patch only the affected resident Bounds rows.
+                // Quad instancing/structural deltas retain the full planner.
+                let delta = self.prepared.resident_delta_draws()
+                    .filter(|_| !self.page_refs.has_non_generated_quads());
+                let reused = if let Some(dirty) = delta {
+                    culling.update_dirty_opaque(
+                        device, &self.prepared.draws, &self.batches,
+                        Some(&self.meshes), dirty,
+                    )?
+                } else {
+                    false
+                };
+                if !reused {
+                    culling.update(
+                        device, &self.prepared.draws, &self.batches,
+                        Some(&self.meshes),
+                    )?;
+                }
             } else {
                 self.culling = Some(CullResources::create(
                     device,
