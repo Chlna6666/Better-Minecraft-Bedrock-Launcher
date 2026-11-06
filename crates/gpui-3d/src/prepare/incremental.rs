@@ -36,17 +36,18 @@ impl PreparedScene {
         for draw in partial.candidates.iter().cloned() {
             replacements.entry(draw.node).or_default().push(draw);
         }
-        let groups = self
-            .candidate_groups
+        // Resolve only changed roots by stable NodeId index instead of
+        // scanning all resident candidate groups. Sort the small delta by
+        // its original position to retain the full walk's ordering.
+        let mut groups = changed
             .iter()
-            .enumerate()
-            .filter_map(|(index, group)| {
-                let id = self.candidates[group.start].node;
-                changed
-                    .contains(&id)
-                    .then_some((index, group.start..group.end, id))
+            .filter_map(|&id| {
+                let index = *self.candidate_group_index.get(&id)?;
+                let group = self.candidate_groups.get(index)?;
+                Some((index, group.start..group.end, id))
             })
             .collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|(index, _, _)| *index);
         let mut inserted = replacements.keys().copied().collect::<HashSet<_>>();
         for (_, _, id) in &groups {
             inserted.remove(id);
@@ -123,6 +124,13 @@ impl PreparedScene {
         self.occluders.retain(|id, _| !changed.contains(id));
         self.occluders.extend(partial.occluders);
         self.candidate_groups = next_groups;
+        // Inserted/removed Sections shift offsets. Rebuild the lookup once
+        // after the merged candidate list has been committed.
+        self.candidate_group_index.clear();
+        for (index, group) in self.candidate_groups.iter().enumerate() {
+            self.candidate_group_index
+                .insert(self.candidates[group.start].node, index);
+        }
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
         Some(changed.len())
