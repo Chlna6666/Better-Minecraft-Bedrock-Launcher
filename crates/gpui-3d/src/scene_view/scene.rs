@@ -993,7 +993,7 @@ impl SceneResources {
         sampler_changed: bool,
         defer_binding_cleanup: bool,
     ) -> gpui::Result<bool> {
-        let Some(dirty) = self.prepared.resident_delta_draws() else {
+        let Some(dirty) = self.prepared.resident_delta_draws().map(<[usize]>::to_vec) else {
             return Ok(false);
         };
         let Some(culler) = &self.culling else {
@@ -1020,14 +1020,14 @@ impl SceneResources {
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
             &self.prepared.draws, self.prepared.lights.len(),
-            mapping, dirty,
+            mapping, &dirty,
             &self.draw_slot_keys, &self.uploaded_tables[0], &mut scratch,
         );
         self.scratch_packed_draws = scratch;
         let draw_patches = draw_result?;
         let mut scratch = std::mem::take(&mut self.dirty_instance_run);
         let instance_result = self.encode_resident_instance_delta(
-            mapping, dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
+            mapping, &dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
             &mut scratch,
         );
         self.dirty_instance_run = scratch;
@@ -1052,9 +1052,13 @@ impl SceneResources {
                 data: &bytes[..],
             });
         }
+        let draw_patch_count = draw_patches.len();
+        let instance_patch_count = instance_patches.len();
+        let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
             device.write_buffer_batch(&writes)?;
         }
+        drop(writes);
         // A new Mesh generation can change shared Page bindings and GPU Part
         // Counts even when DrawParams bytes remain identical. Keep the same
         // binding/mapping lifecycle as the full sync path.
@@ -1083,9 +1087,7 @@ impl SceneResources {
             eprintln!(
                 "gpui3d resident_delta draws={} dirty={} draw_patches={} instance_patches={} uploaded_bytes={} ms={:.2}",
                 self.prepared.draws.len(), dirty.len(),
-                writes.iter().filter(|write| write.descriptor.buffer == self.draw_buffer).count(),
-                writes.iter().filter(|write| write.descriptor.buffer == self.instance_buffer).count(),
-                writes.iter().map(|write| write.data.len()).sum::<usize>(),
+                draw_patch_count, instance_patch_count, uploaded_bytes,
                 started.elapsed().as_secs_f64() * 1000.0,
             );
         }
