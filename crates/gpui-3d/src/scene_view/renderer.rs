@@ -81,7 +81,7 @@ impl CachedCommands {
             && self.generated_draw_count == Some(delta.previous_count)
             && let Some(next) = self.splice_generated(delta, count, &mut build_range)?
         {
-            if super::renderer::trace_timings() {
+            if trace_timings() {
                 eprintln!(
                     "gpui3d native_command_delta previous={} current={} edits={} commands={}",
                     delta.previous_count, count, delta.edits.len(), next.len(),

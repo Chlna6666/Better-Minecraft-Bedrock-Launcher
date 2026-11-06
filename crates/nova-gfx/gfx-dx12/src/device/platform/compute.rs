@@ -568,7 +568,7 @@ impl Dx12Device {
         record_transition_barrier(
             command,
             &indirect.buffer,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
         );
         let resources = &mut self.command_encoders.get_mut(encoder)?.indirect_resources;
@@ -591,6 +591,13 @@ impl Dx12Device {
         let target_word = first_target.checked_mul(8)
             .and_then(|word| u32::try_from(word).ok())
             .ok_or_else(|| Error::InvalidInput("DX12 indirect output offset exceeds shader address range".into()))?;
+        let input_end = count.checked_mul(4)
+            .and_then(|len| first_word.checked_add(len))
+            .ok_or_else(|| Error::InvalidInput("DX12 indirect input span exceeds shader address range".into()))?;
+        let output_end = count.checked_mul(8)
+            .and_then(|len| target_word.checked_add(len))
+            .ok_or_else(|| Error::InvalidInput("DX12 indirect output span exceeds shader address range".into()))?;
+        debug_assert!(input_end > first_word && output_end > target_word);
         let words = [first_word, target_word, count, 0u32];
         // SAFETY: command list is recording on its graphics queue; source is
         // transitioned to GENERIC_READ, target is UAV, and all writes target
