@@ -94,6 +94,14 @@ jobs:
         shell: pwsh
         run: cargo build --bin BMCBL
 
+      - name: Test GPU-generated Section fusion and editor regression
+        shell: pwsh
+        run: |
+          cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --bin BMCBL scene_registry::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   linux-build:
     name: Linux build
     runs-on: ubuntu-24.04
