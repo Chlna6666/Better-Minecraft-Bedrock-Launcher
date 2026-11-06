@@ -723,10 +723,12 @@ impl VulkanDevice {
     /// Returns [`Error`] when validation or Vulkan allocation fails.
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
-        if desc.dimension != TextureDimension::D2 {
-            return Err(Error::InvalidInput(
-                "only 2D textures are supported in phase 1".to_string(),
-            ));
+        let layers = desc.dimension.layers();
+        if let TextureDimension::D2Array { .. } = desc.dimension {
+            self.texture_array_capabilities().plan(
+                desc.size.width(), desc.size.height(), layers,
+                desc.mip_level_count, desc.format,
+            )?;
         }
         let create_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -737,7 +739,7 @@ impl VulkanDevice {
                 depth: 1,
             })
             .mip_levels(desc.mip_level_count)
-            .array_layers(1)
+            .array_layers(layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
@@ -780,6 +782,9 @@ impl VulkanDevice {
     fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
         let (image, old_layout, mip_level_count) = {
             let texture = self.textures.get(desc.texture)?;
+            if texture.desc.dimension != TextureDimension::D2 {
+                return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+            }
             desc.validate_against(&texture.desc, data.len())?;
             (texture.image, texture.layout, texture.desc.mip_level_count)
         };
@@ -812,6 +817,9 @@ impl VulkanDevice {
             let descriptor = write.descriptor;
             let (image, old_layout, mip_level_count) = {
                 let texture = self.textures.get(descriptor.texture)?;
+                if texture.desc.dimension != TextureDimension::D2 {
+                    return Err(Error::InvalidInput("batch 2D upload cannot write a D2Array".into()));
+                }
                 descriptor.validate_against(&texture.desc, write.data.len())?;
                 (texture.image, texture.layout, texture.desc.mip_level_count)
             };
@@ -851,6 +859,7 @@ impl VulkanDevice {
                 mip_level_count: plan.mip_level_count,
                 layout,
                 mip_level: descriptor.mip_level,
+                layer: 0,
                 origin: descriptor.origin,
                 size: descriptor.size,
             });
@@ -995,14 +1004,26 @@ impl VulkanDevice {
                 "Vulkan attachment views require mip level zero only".to_string(),
             ));
         }
-        let view = create_image_view_range(
-            &self.device,
-            texture.image,
-            format_to_vk(desc.format),
-            image_aspect_for_format(desc.format),
-            desc.base_mip_level,
-            desc.mip_level_count,
-        )?;
+        let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
+            create_image_view_range_with_layers(
+                &self.device,
+                texture.image,
+                format_to_vk(desc.format),
+                image_aspect_for_format(desc.format),
+                desc.base_mip_level,
+                desc.mip_level_count,
+                layers,
+            )?
+        } else {
+            create_image_view_range(
+                &self.device,
+                texture.image,
+                format_to_vk(desc.format),
+                image_aspect_for_format(desc.format),
+                desc.base_mip_level,
+                desc.mip_level_count,
+            )?
+        };
         Ok(self.texture_views.insert(VulkanTextureView {
             view,
             texture: desc.texture,
@@ -3555,7 +3576,12 @@ impl SurfaceDevice for VulkanDevice {
 
 impl ResourceDevice for VulkanDevice {
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
-        self.texture_array_limits
+        gfx_core::TextureArrayCapabilities {
+            array_resources: true,
+            layer_uploads: true,
+            indexed_sampling: false,
+            ..self.texture_array_limits
+        }
     }
 
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
