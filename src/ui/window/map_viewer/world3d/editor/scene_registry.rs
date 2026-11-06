@@ -6,10 +6,9 @@ use gpui_3d::{NodeId, SceneError};
 pub(super) struct ChunkScene {
      lights: BTreeMap<(ChunkPos, [i32; 4]), (NodeId, super::super::types::World3dLocalLight)>,
     nodes: BTreeMap<(ChunkPos, i32), (NodeId, Arc<World3dChunkMesh>)>,
-    // Two neighbouring generated Sections are one GPU mesh and therefore
-    // one material-part draw per shared texture instead of two. The original
-    // Section nodes remain as stable identities and occluder owners.
-    fused: BTreeMap<(ChunkPos, i32), (NodeId, [Arc<World3dChunkMesh>; 2])>,
+    // Up to four adjacent generated Sections share a material-part draw
+    // source. Original Section nodes remain stable occluder/streaming owners.
+    fused: BTreeMap<(ChunkPos, i32), (NodeId, Vec<Arc<World3dChunkMesh>>)>,
 }
 
 #[cfg(test)]
@@ -319,25 +318,26 @@ impl ChunkScene {
         key: (ChunkPos, i32),
         origin: [i32; 3],
     ) -> Result<(), SceneError> {
-        let left = meshes.get(&key);
-        let right_key = ((ChunkPos { x: key.0.x + 1, ..key.0 }), key.1);
-        let right = meshes.get(&right_key);
-        let candidate = left.zip(right).filter(|(left, right)| {
-            // Sections are fused only when both have a GPU-generated source
-            // and no blended material. Transparent depth order is not
-            // commutative and must remain independently sorted.
-            left.mesh.gpu_voxels().is_some()
-                && right.mesh.gpu_voxels().is_some()
-                && left.materials.iter().chain(right.materials.iter())
-                    .all(|material| material.alpha_mode != gpui_3d::AlphaMode::Blend)
-        });
-        if let Some((left, right)) = candidate {
-            if self.fused.get(&key).is_some_and(|(_, sources)| {
-                Arc::ptr_eq(&sources[0], left) && Arc::ptr_eq(&sources[1], right)
+        // A 2x2 tile bounds rebuild work to at most four Sections even when
+        // the map contains thousands of resident immutable Scene nodes.
+        let members = fusion_members(key);
+        let sources = members.into_iter()
+            .filter_map(|member| meshes.get(&member).cloned())
+            .collect::<Vec<_>>();
+        let compatible = sources.len() >= 2
+            && sources.iter().all(|source| {
+                source.mesh.gpu_voxels().is_some()
+                    && source.materials.iter()
+                        .all(|material| material.alpha_mode != gpui_3d::AlphaMode::Blend)
+            });
+        if compatible {
+            if self.fused.get(&key).is_some_and(|(_, prior)| {
+                sources.len() == prior.len()
+                    && sources.iter().zip(prior).all(|(a, b)| Arc::ptr_eq(a, b))
             }) {
                 return Ok(());
             }
-            if let Some(fused) = fused_section_pair(left, right) {
+            if let Some(fused) = fused_section_cluster(&sources) {
                 let node = fused_render_node(&fused, origin);
                 let id = if let Some((id, _)) = self.fused.get(&key) {
                     *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = node;
@@ -345,12 +345,10 @@ impl ChunkScene {
                 } else {
                     scene.insert(None, node)?
                 };
-                self.fused.insert(key, (id, [left.clone(), right.clone()]));
-                // Keep the original nodes, lighting and occluder geometry
-                // intact. Only their mesh submission is replaced by the
-                // shared GPU-generated source.
-                for member in [key, right_key] {
+                self.fused.insert(key, (id, sources));
+                for member in members {
                     if let Some((id, _)) = self.nodes.get(&member) {
+                        // Original nodes still own occluders and stable IDs.
                         scene.node_mut(*id).ok_or(SceneError::StaleNode)?.mesh = None;
                     }
                 }
@@ -359,9 +357,9 @@ impl ChunkScene {
         }
         if let Some((id, _)) = self.fused.remove(&key) {
             scene.remove(id)?;
-            // Restore each original draw when its peer is removed, becomes
-            // transparent, or no longer has a compatible GPU source.
-            for member in [key, right_key] {
+            // Recover independent Section geometry on transparent material
+            // changes, removals, and unsupported group combinations.
+            for member in members {
                 if let Some((id, mesh)) = self.nodes.get(&member) {
                     *scene.node_mut(*id).ok_or(SceneError::StaleNode)? = chunk_node(mesh, origin);
                 }
@@ -469,55 +467,40 @@ impl ChunkScene {
     }
 }
 
-// A stable even-X pairing limits a changed Section to one neighbouring
-// remesh; it does not rebuild the entire resident map or invalidate unrelated
-// GPU Section resources.
+// A stable 2x2 key bounds updates to the owning tile and preserves correct
+// grouping for negative chunk coordinates.
 fn fusion_key((pos, section_y): (ChunkPos, i32)) -> (ChunkPos, i32) {
-    (ChunkPos { x: pos.x.div_euclid(2) * 2, ..pos }, section_y)
+    (ChunkPos {
+        x: pos.x.div_euclid(2) * 2,
+        z: pos.z.div_euclid(2) * 2,
+        ..pos
+    }, section_y)
 }
 
-fn fused_section_pair(
-    left: &World3dChunkMesh,
-    right: &World3dChunkMesh,
-) -> Option<World3dChunkMesh> {
-    let first = left.mesh.gpu_voxels()?;
-    let second = right.mesh.gpu_voxels()?;
-    // Compact/detail Sections can have distinct padded-grid extents and
-    // origins. Convert their cell coordinates into one common grid in the
-    // left Section's Scene-node coordinate system; static faces instead
-    // retain the 16-block node translation.
-    let a = first.origin();
-    let b = second.origin() + Vec3::new(16.0, 0.0, 0.0);
-    let common = a.min(b);
-    let grid_offset = |origin: Vec3| -> Option<[u32; 3]> {
-        let delta = origin - common;
-        let components = [delta.x, delta.y, delta.z];
-        let mut offset = [0u32; 3];
-        for (axis, value) in components.into_iter().enumerate() {
-            if !value.is_finite() || value < 0.0 || value.fract().abs() > 0.0001 {
-                return None;
-            }
-            offset[axis] = value as u32;
-        }
-        Some(offset)
-    };
-    let left_offset = grid_offset(a)?;
-    let right_offset = grid_offset(b)?;
+fn fusion_members((pos, section_y): (ChunkPos, i32)) -> [(ChunkPos, i32); 4] {
+    [
+        (pos, section_y),
+        (ChunkPos { x: pos.x + 1, ..pos }, section_y),
+        (ChunkPos { z: pos.z + 1, ..pos }, section_y),
+        (ChunkPos { x: pos.x + 1, z: pos.z + 1, ..pos }, section_y),
+    ]
+}
+
+fn fused_section_cluster(sources: &[Arc<World3dChunkMesh>]) -> Option<World3dChunkMesh> {
+    let first = sources.first()?;
     let mut materials = Vec::<Arc<gpui_3d::Material>>::new();
-    // MaterialId survives Arc::make_mut and therefore can identify different
-    // immutable snapshots after edits. Merge only byte-equivalent material
-    // values so one Section never silently inherits its neighbour's shader
-    // parameters.
+    // A cloned Material may preserve its ID while changing values. Verify
+    // actual immutable snapshots before sharing shader material slots.
     let mut index = HashMap::<gpui_3d::MaterialId, Vec<u32>>::new();
-    let mut mappings = [Vec::new(), Vec::new()];
-    for (source, mapping) in [left, right].into_iter().zip(mappings.iter_mut()) {
-        for material in source.materials.iter() {
-            let existing = index.get(&material.id()).and_then(|slots| {
+    let mut mappings = vec![Vec::new(); sources.len()];
+    for (section, mapping) in sources.iter().zip(mappings.iter_mut()) {
+        for material in section.materials.iter() {
+            let previous = index.get(&material.id()).and_then(|slots| {
                 slots.iter().copied().find(|&slot| {
                     materials[slot as usize].as_ref() == material.as_ref()
                 })
             });
-            let slot = if let Some(slot) = existing {
+            let slot = if let Some(slot) = previous {
                 slot
             } else {
                 let slot = u32::try_from(materials.len()).ok()?;
@@ -528,33 +511,61 @@ fn fused_section_pair(
             mapping.push(slot);
         }
     }
-    let fused_source = gpui_3d::VoxelMeshSource::fuse_sections(&[
-        gpui_3d::VoxelFusionInput {
-            source: first, offset: left_offset,
-            translation: [0, 0, 0], material_slots: &mappings[0],
-        },
-        gpui_3d::VoxelFusionInput {
-            source: second, offset: right_offset,
-            translation: [16, 0, 0], material_slots: &mappings[1],
-        },
-    ]).ok()?;
+    let placed = sources.iter().map(|section| {
+        let source = section.mesh.gpu_voxels()?;
+        let delta = [
+            section.origin[0].checked_sub(first.origin[0])?,
+            section.origin[1].checked_sub(first.origin[1])?,
+            section.origin[2].checked_sub(first.origin[2])?,
+        ];
+        let grid = source.origin() + Vec3::new(
+            delta[0] as f32, delta[1] as f32, delta[2] as f32,
+        );
+        Some((delta, grid))
+    }).collect::<Option<Vec<_>>>()?;
+    let grid_origin = placed.iter().fold(placed[0].1, |minimum, (_, point)| minimum.min(*point));
+    let offsets = placed.iter().map(|(_, grid)| {
+        let relative = *grid - grid_origin;
+        let mut result = [0u32; 3];
+        for (axis, value) in [relative.x, relative.y, relative.z].into_iter().enumerate() {
+            if !value.is_finite() || value < 0.0 || (value - value.round()).abs() > 0.0001 {
+                return None;
+            }
+            result[axis] = value as u32;
+        }
+        Some(result)
+    }).collect::<Option<Vec<_>>>()?;
+    let inputs = sources.iter().zip(placed.iter()).zip(offsets.iter())
+        .zip(mappings.iter())
+        .map(|(((section, (translation, _)), &offset), mapping)| {
+            Some(gpui_3d::VoxelFusionInput {
+                source: section.mesh.gpu_voxels()?.as_ref(),
+                offset,
+                translation: *translation,
+                material_slots: mapping,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let fused_source = gpui_3d::VoxelMeshSource::fuse_sections(&inputs).ok()?;
     let mut textures = BTreeMap::<gpui_3d::TextureAssetId, Arc<gpui_3d::TextureAsset>>::new();
-    for texture in left.textures.iter().chain(right.textures.iter()) {
-        textures.entry(texture.id()).or_insert_with(|| texture.clone());
+    for section in sources {
+        for texture in section.textures.iter() {
+            textures.entry(texture.id()).or_insert_with(|| texture.clone());
+        }
     }
     let mesh = Arc::new(gpui_3d::Mesh::from_gpu_voxels(fused_source));
     let faces = (mesh.index_count() / 6) as usize;
     Some(World3dChunkMesh {
         occluders: Arc::from([]),
-        pos: left.pos,
-        section_y: left.section_y,
-        origin: left.origin,
+        pos: first.pos,
+        section_y: first.section_y,
+        origin: first.origin,
         mesh,
         materials: Arc::from(materials),
         textures: Arc::from(textures.into_values().collect::<Vec<_>>()),
         faces,
         triangles: faces * 2,
-        missing_texture_faces: left.missing_texture_faces + right.missing_texture_faces,
+        missing_texture_faces: sources.iter().map(|section| section.missing_texture_faces).sum(),
     })
 }
 
