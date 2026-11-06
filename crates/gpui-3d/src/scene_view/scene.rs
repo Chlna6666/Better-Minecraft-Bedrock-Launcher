@@ -2010,9 +2010,21 @@ impl SceneResources {
             if shadow.is_none()
                 && self.culling.is_some()
                 && batch.instance_count == 1
-                && (!bounds_visible(draw.bounds) || !self.prepared.is_draw_in_culling_bounds(draw))
             {
-                continue;
+                // prepare() already evaluates the identical CPU native-command
+                // inclusion mask when camera, range or draw layout changes.
+                // Reuse that result instead of repeating 6-plane AABB tests
+                // while encoding potentially 100K+ DrawIndirect commands.
+                // The fallback preserves standalone native test paths that
+                // call append_steps() before the visibility snapshot exists.
+                let included = self.command_visibility.get(batch_index).copied()
+                    .unwrap_or_else(|| {
+                        bounds_visible(draw.bounds)
+                            && self.prepared.is_draw_in_culling_bounds(draw)
+                    });
+                if !included {
+                    continue;
+                }
             }
             // Generated Section batches are normally singletons. Reject offscreen
             // instances before probing the resident mesh map or choosing a
