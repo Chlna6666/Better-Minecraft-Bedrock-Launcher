@@ -252,11 +252,11 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
     ) -> gpui::Result<Self> {
-        Self::new_shared(
-            device,
-            backend,
-            Rc::new(RefCell::new(MeshArena::generated_output(device.buffer_binding_limits()))),
-        )
+        // Query the immutable device limits before passing the exclusive GPU
+        // device reference to the constructor.
+        let limits = device.buffer_binding_limits();
+        let pool = Rc::new(RefCell::new(MeshArena::generated_output(limits)));
+        Self::new_shared(device, backend, pool)
     }
 
     pub(super) fn new_shared(
