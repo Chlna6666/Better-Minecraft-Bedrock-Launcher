@@ -526,7 +526,8 @@ mod tests {
         let previous_capacity = batches.capacity();
         // Removing a root from the center shifts logical draw ownership, but
         // the canonical singleton batch at each remaining index stays {i,1}.
-        scene.remove(scene.roots()[45]).unwrap();
+        let removed = scene.roots()[45];
+        scene.remove(removed).unwrap();
         let mut draws = prepare(&scene);
         group_voxel_batches_with_quad_presence(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
