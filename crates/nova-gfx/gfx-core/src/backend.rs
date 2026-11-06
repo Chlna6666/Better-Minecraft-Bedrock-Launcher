@@ -237,6 +237,13 @@ pub trait SurfaceDevice {
 /// should validate descriptors before creating native resources and report bad
 /// inputs with [`Error::InvalidInput`].
 pub trait ResourceDevice {
+    /// Native buffer binding limits used to plan storage/uniform suballocations.
+    /// Backends that cannot report limits return zeros; callers must fail
+    /// validation rather than assume a fictional hardware capability.
+    fn buffer_binding_limits(&self) -> crate::BufferBindingLimits {
+        crate::BufferBindingLimits::default()
+    }
+
     /// Returns optional ordered buffer-compute and indirect-draw support.
     fn compute_capabilities(&self) -> crate::ComputeCapabilities {
         crate::ComputeCapabilities::default()
