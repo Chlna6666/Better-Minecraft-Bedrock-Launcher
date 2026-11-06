@@ -757,13 +757,13 @@ impl SceneResources {
                 // uploads, preserving all native and indirect draw addresses.
                 // If the CPU mirrors, capacities or layout cannot be proven
                 // stable, sync_buffers() safely re-plans the entire table.
+                let textures_unchanged = self.texture_table.as_ref().is_some_and(|previous| {
+                    Arc::ptr_eq(previous, &scene_view.textures)
+                });
                 let updated = if reused_resident_slots {
                     self.sync_resident_draw_delta(
                         device, renderer, bind_group_layout, sampler,
-                        sampler_changed, assets_changed,
-                        self.texture_table.as_ref().is_some_and(|previous| {
-                            Arc::ptr_eq(previous, &scene_view.textures)
-                        }),
+                        sampler_changed, assets_changed, textures_unchanged,
                     )?
                 } else {
                     false
