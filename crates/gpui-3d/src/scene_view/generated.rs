@@ -1,5 +1,5 @@
 //! Compute-generated face descriptors, retained templates and native draw arguments.
-use super::{artifacts, gpu::MeshResources};
+use super::{artifacts, gpu::{ArenaAllocation, MeshArena, MeshResources}};
 use crate::{Mesh, VoxelMeshSource};
 use anyhow::{Context as _, anyhow};
 use gfx_core::*;
@@ -152,6 +152,11 @@ struct PendingGenerated {
     generation: u64,
     output_bytes: usize,
     template_bytes: u64,
+    // A generated section occupies an independently retired slice of a
+    // page shared with other Section outputs. Legacy GPU tests use None.
+    allocation: Option<ArenaAllocation>,
+    vertex_base: u32,
+    vertex_binding_bytes: usize,
 }
 
 impl PendingGenerated {
@@ -159,16 +164,16 @@ impl PendingGenerated {
         MeshResources {
             generation: self.generation,
             vertices: self.buffers[2],
-            vertex_binding_bytes: self.output_bytes,
+            vertex_binding_bytes: self.vertex_binding_bytes,
             vertex_stride: 16,
-            vertex_base: 0,
+            vertex_base: self.vertex_base,
             tangents: None,
             tangent_bytes: 0,
             indices: self.buffers[3],
             index_format: IndexFormat::Uint16,
             index_offset: 0,
             procedural_quads: true,
-            allocation: None,
+            allocation: self.allocation,
             generated: Some(GeneratedMesh {
                 templates: self.buffers[1],
                 arguments: self.buffers[3],
@@ -178,10 +183,21 @@ impl PendingGenerated {
     }
 }
 
-fn discard_pending_generated(device: &mut dyn ExtensionDevice, pending: &[PendingGenerated]) {
+fn discard_pending_generated(
+    device: &mut dyn ExtensionDevice,
+    pending: Vec<PendingGenerated>,
+    mut arena: Option<&mut MeshArena>,
+) {
     for mesh in pending {
-        for &buffer in &mesh.buffers {
-            let _ = device.destroy_buffer(buffer);
+        for (slot, &buffer) in mesh.buffers.iter().enumerate() {
+            if slot != 2 || mesh.allocation.is_none() {
+                let _ = device.destroy_buffer(buffer);
+            }
+        }
+        if let Some(allocation) = mesh.allocation
+            && let Some(arena) = arena.as_deref_mut()
+        {
+            let _ = arena.release(device, allocation);
         }
     }
 }
@@ -192,6 +208,7 @@ fn discard_pending_generated(device: &mut dyn ExtensionDevice, pending: &[Pendin
 fn prepare_generated(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
+    mut arena: Option<(&mut MeshArena, BackendKind)>,
 ) -> gpui::Result<PendingGenerated> {
     let source = mesh
         .gpu_voxels()
@@ -313,14 +330,32 @@ fn prepare_generated(
         ),
     ];
     let mut buffers = Vec::new();
+    let mut pooled_allocation = None;
+    let mut pooled_offset = 0u64;
+    let mut pooled_capacity = output_bytes;
     let result = (|| {
-        for (size, usage) in specs {
-            buffers.push(device.create_buffer(&BufferDescriptor {
-                label: Some("GPU voxel meshing".into()),
-                size: size as u64,
-                usage,
-                memory_location: MemoryLocation::GpuOnly,
-            })?);
+        for (slot, (size, usage)) in specs.into_iter().enumerate() {
+            if slot == 2 && let Some((pool, backend)) = arena.as_mut() {
+                let (allocation, buffer, offset, capacity) =
+                    pool.allocate(device, *backend, size as u64)?;
+                // Record ownership immediately: later validation/write errors
+                // must release this slice rather than destroy the entire page.
+                pooled_allocation = Some(allocation);
+                pooled_offset = offset;
+                pooled_capacity = usize::try_from(capacity)
+                    .context("generated face page exceeds host address space")?;
+                if offset / 16 >= 0x8000_0000 {
+                    return Err(anyhow!("generated face pool exceeds vertex address range"));
+                }
+                buffers.push(buffer);
+            } else {
+                buffers.push(device.create_buffer(&BufferDescriptor {
+                    label: Some("GPU voxel meshing".into()),
+                    size: size as u64,
+                    usage,
+                    memory_location: MemoryLocation::GpuOnly,
+                })?);
+            }
         }
         let writes =
             [(0, &cells), (1, &templates), (3, &args), (4, &params)].map(|(slot, data)| {
@@ -340,7 +375,7 @@ fn prepare_generated(
                 binding: slot as u32,
                 buffer: BufferBinding {
                     buffer: buffers[slot],
-                    offset: 0,
+                    offset: if slot == 2 { pooled_offset } else { 0 },
                     size: *size as u64,
                     stride: None,
                 },
@@ -384,8 +419,15 @@ fn prepare_generated(
     let (bindings, stages) = match result {
         Ok(prepared) => prepared,
         Err(error) => {
-            for buffer in buffers {
-                let _ = device.destroy_buffer(buffer);
+            for (slot, buffer) in buffers.into_iter().enumerate() {
+                if slot != 2 || pooled_allocation.is_none() {
+                    let _ = device.destroy_buffer(buffer);
+                }
+            }
+            if let Some(allocation) = pooled_allocation
+                && let Some((pool, _)) = arena
+            {
+                let _ = pool.release(device, allocation);
             }
             return Err(error);
         }
@@ -397,6 +439,9 @@ fn prepare_generated(
         generation: mesh.generation(),
         output_bytes,
         template_bytes: templates.len() as u64,
+        vertex_base: (pooled_offset / 16) as u32,
+        vertex_binding_bytes: pooled_capacity,
+        allocation: pooled_allocation,
     })
 }
 
@@ -408,15 +453,39 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
+    create_many_impl(device, meshes, shaders, None)
+}
+
+/// Production GPU meshing suballocates output descriptors into shared writable
+/// storage pages. Existing test helpers retain a standalone variant above.
+pub(super) fn create_many_pooled(
+    device: &mut dyn ExtensionDevice,
+    meshes: &[&Mesh],
+    shaders: &Shaders,
+    arena: &mut MeshArena,
+    backend: BackendKind,
+) -> gpui::Result<Vec<MeshResources>> {
+    create_many_impl(device, meshes, shaders, Some((arena, backend)))
+}
+
+fn create_many_impl(
+    device: &mut dyn ExtensionDevice,
+    meshes: &[&Mesh],
+    shaders: &Shaders,
+    mut arena: Option<(&mut MeshArena, BackendKind)>,
+) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
     let mut pending = Vec::with_capacity(meshes.len());
     for mesh in meshes {
-        match prepare_generated(device, mesh) {
+        let pool = arena.as_mut().map(|(arena, backend)| (&mut **arena, *backend));
+        match prepare_generated(device, mesh, pool) {
             Ok(mesh) => pending.push(mesh),
             Err(error) => {
-                discard_pending_generated(device, &pending);
+                discard_pending_generated(
+                    device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+                );
                 return Err(error);
             }
         }
@@ -438,7 +507,9 @@ pub(super) fn create_many(
     };
     drop(dispatches);
     if let Err(error) = submitted {
-        discard_pending_generated(device, &pending);
+        discard_pending_generated(
+            device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+        );
         return Err(error);
     }
     // All compute reads of the source buffers have been ordered ahead of
@@ -449,7 +520,9 @@ pub(super) fn create_many(
         scratch.extend([mesh.buffers[0], mesh.buffers[4], mesh.buffers[5]]);
     }
     if let Err(error) = device.destroy_buffer_batch(&scratch) {
-        discard_pending_generated(device, &pending);
+        discard_pending_generated(
+            device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+        );
         return Err(error.into());
     }
     Ok(pending.into_iter().map(PendingGenerated::into_resources).collect())
