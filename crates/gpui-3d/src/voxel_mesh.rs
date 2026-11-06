@@ -298,7 +298,11 @@ impl VoxelMeshSource {
             }
         }
         let mut cells = vec![0u32; count];
-        let mut classes = vec![0u32; count];
+        // The common cube-only GPU Section has no model-instance neighbour
+        // classes; allocating an additional full u32 grid would be wasted.
+        let mut classes = inputs.iter()
+            .any(|input| input.source.instances.is_some())
+            .then(|| vec![0u32; count]);
         let mut templates = Vec::with_capacity(total_classes as usize * 6);
         let mut model_faces = Vec::with_capacity(total_instance_templates as usize);
         let mut instances = Vec::new();
@@ -352,41 +356,45 @@ impl VoxelMeshSource {
             }
             let source_xy = (source.size[0] as usize) * (source.size[1] as usize);
             let merged_xy = (size[0] as usize) * (size[1] as usize);
-            // Phase one: expose source halos, then explicitly replace all
-            // interiors with authoritative source data (including empty air).
-            for interior in [false, true] {
-                let source_volume = source.size.into_iter().map(|size| size as usize).product::<usize>();
-                for index in 0..source_volume {
-                    // Model-only sections omit their cube-grid allocation but
-                    // may still contain nonzero instance neighbour classes.
-                    let source_kind = if source.cells.len() == 0 { 0 } else { source.cells.cell(index) };
-                    let x = index % source.size[0] as usize;
-                    let y = index / source.size[0] as usize % source.size[1] as usize;
-                    let z = index / source_xy;
-                    let in_source = x > 0 && y > 0 && z > 0
-                        && x + 1 < source.size[0] as usize
-                        && y + 1 < source.size[1] as usize
-                        && z + 1 < source.size[2] as usize;
-                    if in_source != interior { continue }
-                    let gx = x + input.offset[0] as usize;
-                    let gy = y + input.offset[1] as usize;
-                    let gz = z + input.offset[2] as usize;
-                    let destination = gz * merged_xy + gy * size[0] as usize + gx;
-                    if !interior && interior_mask[destination] { continue }
-                    let kind = if source_kind == 0 || source_kind == VOXEL_OCCLUDER {
-                        source_kind
-                    } else {
-                        class_offset.checked_add(source_kind).ok_or(MeshError::TooLarge)?
-                    };
-                    if interior || cells[destination] == 0 { cells[destination] = kind; }
-                    if let Some(data) = &source.instances {
-                        let value = data.classes.cell(index);
-                        if interior || classes[destination] == 0 { classes[destination] = value; }
-                    }
-                    if let (Some(light), Some(levels)) = (&source.lighting, &mut levels) {
-                        if interior || levels[destination] == 0 {
-                            levels[destination] = light.levels[index];
-                        }
+            // The ownership mask is already complete for all source
+            // interiors. One linear pass per Section is sufficient: halos
+            // can never override authoritative voxels, even if those are air.
+            // This halves the hot path's source-grid traversal.
+            let source_volume = source.size.into_iter()
+                .map(|extent| extent as usize).product::<usize>();
+            for index in 0..source_volume {
+                // Model-only Sections omit their cube-grid storage but may
+                // still have neighbour classes and immutable light levels.
+                let source_kind = if source.cells.len() == 0 {
+                    0
+                } else {
+                    source.cells.cell(index)
+                };
+                let x = index % source.size[0] as usize;
+                let y = index / source.size[0] as usize % source.size[1] as usize;
+                let z = index / source_xy;
+                let interior = x > 0 && y > 0 && z > 0
+                    && x + 1 < source.size[0] as usize
+                    && y + 1 < source.size[1] as usize
+                    && z + 1 < source.size[2] as usize;
+                let gx = x + input.offset[0] as usize;
+                let gy = y + input.offset[1] as usize;
+                let gz = z + input.offset[2] as usize;
+                let destination = gz * merged_xy + gy * size[0] as usize + gx;
+                if !interior && interior_mask[destination] { continue }
+                let kind = if source_kind == 0 || source_kind == VOXEL_OCCLUDER {
+                    source_kind
+                } else {
+                    class_offset.checked_add(source_kind).ok_or(MeshError::TooLarge)?
+                };
+                if interior || cells[destination] == 0 { cells[destination] = kind; }
+                if let (Some(data), Some(classes)) = (&source.instances, &mut classes) {
+                    let value = data.classes.cell(index);
+                    if interior || classes[destination] == 0 { classes[destination] = value; }
+                }
+                if let (Some(light), Some(levels)) = (&source.lighting, &mut levels) {
+                    if interior || levels[destination] == 0 {
+                        levels[destination] = light.levels[index];
                     }
                 }
             }
@@ -397,7 +405,9 @@ impl VoxelMeshSource {
         }
         let mut combined = Self::new(size, base_origin, cells, templates)?;
         if !instances.is_empty() {
-            combined = combined.with_instances(classes, model_faces, instances)?;
+            combined = combined.with_instances(
+                classes.ok_or(MeshError::InvalidParts)?, model_faces, instances,
+            )?;
         }
         combined = combined.with_static_faces(statics)?;
         combined = combined.with_ambient_occlusion(base.ambient_occlusion);
