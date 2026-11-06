@@ -3766,8 +3766,7 @@ impl Worker {
         }
         let image = RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba)?;
         let content = texture_alpha_content(&image);
-        let asset = mipmapped_texture(image)?;
-        let asset = Arc::new(asset);
+        let asset = self.mesh_assets.intern_texture(mipmapped_texture(image)?);
         self.textures_by_path
             .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
         self.texture_alpha_content.insert(cache_key, content);
@@ -3864,12 +3863,11 @@ impl Worker {
             return None;
         }
         let content = texture_alpha_content(&image);
-        let asset = if is_data {
+        let asset = self.mesh_assets.intern_texture(if is_data {
             mipmapped_data_texture(image)
         } else {
             mipmapped_texture(image)
-        }?;
-        let asset = Arc::new(asset);
+        }?);
         self.textures_by_path
             .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
         self.texture_alpha_content.insert(cache_key, content);
