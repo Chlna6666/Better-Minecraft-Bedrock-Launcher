@@ -283,6 +283,69 @@ mod tests {
     }
 
     #[test]
+    fn candidate_group_index_survives_remove_insert_then_followup_edit() {
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 25.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        let ids = (0..128)
+            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .collect::<Vec<_>>();
+        let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
+
+        let mut inserted = scene.fork();
+        inserted.remove(ids[6]).unwrap();
+        inserted.remove(ids[33]).unwrap();
+        inserted.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
+        let delta = inserted.changed_nodes(&scene).unwrap();
+        assert_eq!(
+            prepared.update_nodes(&inserted, delta.as_ref(), Mat4::IDENTITY),
+            Some(delta.len())
+        );
+        prepared.update_camera(camera, 1.).unwrap();
+        assert_eq!(prepared.candidate_group_index.len(), prepared.candidate_groups.len());
+        for (index, group) in prepared.candidate_groups.iter().enumerate() {
+            assert_eq!(
+                prepared.candidate_group_index.get(&prepared.candidates[group.start].node),
+                Some(&index)
+            );
+        }
+
+        let original_storage = prepared.candidates.as_ptr();
+        let mut edited = inserted.fork();
+        edited.node_mut(ids[90]).unwrap().transform.translation.x = 2.;
+        edited.node_mut(ids[11]).unwrap().transform.translation.y = 1.;
+        let delta = edited.changed_nodes(&inserted).unwrap();
+        assert_eq!(
+            prepared.update_nodes(&edited, delta.as_ref(), Mat4::IDENTITY),
+            Some(delta.len())
+        );
+        assert_eq!(
+            prepared.candidates.as_ptr(), original_storage,
+            "non-structural followup must not reconstruct the candidate Vec"
+        );
+        prepared.update_camera(camera, 1.).unwrap();
+        let full = PreparedScene::new(&edited, camera, 1.).unwrap();
+        assert_eq!(
+            prepared.candidate_groups.iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>(),
+            full.candidate_groups.iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            prepared.draws.iter()
+                .map(|draw| (draw.node, draw.world))
+                .collect::<Vec<_>>(),
+            full.draws.iter()
+                .map(|draw| (draw.node, draw.world))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn root_replacement_prepares_only_changed_nodes_and_preserves_snapshots() {
         let camera =
             Camera::perspective(Vec3::new(0., 0., 10.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
