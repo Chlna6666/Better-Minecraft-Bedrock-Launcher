@@ -237,6 +237,12 @@ pub trait SurfaceDevice {
 /// should validate descriptors before creating native resources and report bad
 /// inputs with [`Error::InvalidInput`].
 pub trait ResourceDevice {
+    /// Physical limits and *implemented* resource/shader capabilities for
+    /// array textures. A limit alone must not enable a rendering path.
+    fn texture_array_capabilities(&self) -> crate::TextureArrayCapabilities {
+        crate::TextureArrayCapabilities::default()
+    }
+
     /// Native buffer binding limits used to plan storage/uniform suballocations.
     /// Backends that cannot report limits return zeros; callers must fail
     /// validation rather than assume a fictional hardware capability.
