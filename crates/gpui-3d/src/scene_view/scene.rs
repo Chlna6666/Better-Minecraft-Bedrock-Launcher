@@ -123,6 +123,24 @@ fn sparse_upload_range_budget(backend: BackendKind, draw_count: usize) -> usize 
     }
 }
 
+/// Amortize light-buffer growth so a streaming Section's next light does not
+/// invalidate every draw BindGroup at each power-of-two threshold. Bound the
+/// reservation by the active device's reported storage-binding limit.
+fn streaming_light_headroom(required: usize, max_binding_bytes: u64) -> usize {
+    let max_rows = usize::try_from(max_binding_bytes / u64::from(LIGHT_STRIDE))
+        .unwrap_or(usize::MAX);
+    if max_rows == 0 {
+        return required;
+    }
+    let max_power_of_two = 1usize << (usize::BITS - 1 - max_rows.leading_zeros());
+    if required > max_power_of_two {
+        // Do not ask the growth policy for a larger reservation than the
+        // device can bind. Its normal validation handles this corner case.
+        return required;
+    }
+    required.saturating_mul(4).min(max_power_of_two)
+}
+
 mod assets;
 mod instance_cache;
 pub(in crate::scene_view) mod stable_slots;
@@ -885,23 +903,27 @@ impl SceneResources {
         // live in persistent physical slots. The u32 mapping is the only
         // dense table that moves when an earlier Section is inserted.
         let next_slots = if voxel_shader {
-            // Culling is synced before this resource stage. It owns the same
-            // stable Node/Mesh/Material/Part identities as the voxel draw
-            // buffers, so share its committed physical layout rather than
-            // constructing a second HashMap and re-planning all resident
-            // Section slots on each delta.
+            // Culling already owns the authoritative physical-slot identity
+            // map. Clone only its compact u32 mapping, never the full
+            // HashMap of Section draw identities for each streaming delta.
             Some(match self.culling.as_ref().filter(|culling| {
                 culling.counts().1 == self.prepared.draws.len()
             }) {
-                Some(culling) => culling.committed_slot_layout(),
-                None => self.stable_slots.plan(&self.prepared.draws)?,
+                Some(culling) => {
+                    let (high_water, mapping) = culling.committed_slot_layout();
+                    (high_water, mapping, None)
+                }
+                None => {
+                    let (slots, mapping) = self.stable_slots.plan(&self.prepared.draws)?;
+                    (slots.high_water(), mapping, Some(slots))
+                }
             })
         } else {
             None
         };
         let physical_count = next_slots.as_ref().map_or(
             self.prepared.draws.len(),
-            |(slots, _)| slots.high_water(),
+            |(high_water, _, _)| *high_water,
         ).max(1);
         let draw_count = physical_count;
         let instance_count = physical_count;
@@ -909,7 +931,11 @@ impl SceneResources {
         let draw_headroom = dx11_streaming_headroom(self.backend, draw_count);
         let next_draw_capacity = grow_capacity(self.draw_capacity, draw_headroom)?;
         let next_instance_capacity = grow_capacity(self.instance_capacity, draw_headroom)?;
-        let next_light_capacity = grow_capacity(self.light_capacity, light_count)?;
+        let light_headroom = streaming_light_headroom(
+            light_count,
+            device.buffer_binding_limits().max_storage_binding_bytes,
+        );
+        let next_light_capacity = grow_capacity(self.light_capacity, light_headroom)?;
         let next_slot_capacity = grow_capacity(
             self.draw_slot_capacity,
             dx11_streaming_headroom(self.backend, self.prepared.draws.len().max(1)),
@@ -923,7 +949,7 @@ impl SceneResources {
         let mut next_draw_keys = std::mem::take(&mut self.scratch_draw_slot_keys);
         let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
         let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
-        let encoded_instance_rows = if let Some((slots, mapping)) = next_slots.as_ref() {
+        let encoded_instance_rows = if let Some((high_water, mapping, _)) = next_slots.as_ref() {
             // Encode material snapshots directly into physical GPU slots. No
             // intermediate dense logical 80-byte table and no second reorder
             // copy are needed for the common streaming Section update.
@@ -931,7 +957,7 @@ impl SceneResources {
                 &self.prepared.draws,
                 self.prepared.lights.len(),
                 mapping,
-                slots.high_water(),
+                *high_water,
                 &self.draw_slot_keys,
                 &self.uploaded_tables[0],
                 &mut next_draw_keys,
@@ -940,7 +966,7 @@ impl SceneResources {
             )?;
             self.encode_stable_instances(
                 mapping,
-                slots.high_water(),
+                *high_water,
                 &self.instance_slot_keys,
                 &self.uploaded_tables[1],
                 &mut next_instance_keys,
@@ -967,7 +993,7 @@ impl SceneResources {
         self.dirty_instance_run = dirty_instance_run;
         let mut slot_bytes = std::mem::take(&mut self.scratch_slot_map);
         slot_bytes.clear();
-        if let Some((_, mapping)) = next_slots.as_ref() {
+        if let Some((_, mapping, _)) = next_slots.as_ref() {
             for &slot in mapping {
                 slot_bytes.extend_from_slice(&slot.to_le_bytes());
             }
@@ -1242,10 +1268,11 @@ impl SceneResources {
                     }),
             );
         self.sync_generated_draws(device, voxel_shader)?;
-        if let Some((slots, _)) = next_slots {
+        if let Some((_, _, Some(slots))) = next_slots {
             self.stable_slots = slots;
-        } else {
-            // The standard scene shader uses dense indexing directly.
+        } else if !voxel_shader {
+            // The standard scene shader uses dense indexing directly. The
+            // culler owns voxel layouts when GPU culling is enabled.
             self.stable_slots = stable_slots::StableDrawSlots::default();
         }
         let mut previous_slot_bytes = std::mem::replace(&mut self.uploaded_slot_map, slot_bytes);
@@ -1277,7 +1304,7 @@ impl SceneResources {
             && started.elapsed() >= std::time::Duration::from_millis(16)
         {
             eprintln!(
-                "gpui3d buffer_detail draws={} instance_encoded={} bytes={} prepared_bytes={} writes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={}",
+                "gpui3d buffer_detail draws={} instance_encoded={} bytes={} prepared_bytes={} writes={} encode_ms={:.2} write_ms={:.2} bind_ms={:.2} resized={} resize_draw={} resize_instances={} resize_lights={} resize_slots={}",
                 draw_count,
                 encoded_instance_rows,
                 uploaded_bytes,
@@ -1286,7 +1313,11 @@ impl SceneResources {
                 encode_ms.unwrap_or_default(),
                 write_ms.unwrap_or_default(),
                 bind_ms.unwrap_or_default(),
-                replace_draw || replace_instances || replace_lights,
+                replace_draw || replace_instances || replace_lights || replace_slot_map,
+                replace_draw,
+                replace_instances,
+                replace_lights,
+                replace_slot_map,
             );
         }
         // Empty new tables are intentional sentinels used only when the
@@ -1532,8 +1563,9 @@ impl SceneResources {
         let instance_count = self.instance_capacity;
         let shadow_buffer = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
         let visible_instances = self.culling.as_ref().map(|culling| culling.visible_instances);
-        // Mesh replacement can move voxel pages even if a logical MeshId is
-        // unchanged; bypass the positional shortcut in that case.
+        // A replacement only invalidates the BindGroups referencing its own
+        // mesh generation. Unrelated retired meshes must not disable fast
+        // positional reuse for the whole 100K+ batch stream.
         let resident_meshes_unchanged = self.retired_meshes.is_empty();
         let trace_started = trace_timings().then(Instant::now);
         let mut reused = 0usize;
@@ -1558,7 +1590,6 @@ impl SceneResources {
             // position. Match immutable source IDs and the resource-bearing
             // texture/frame keys before touching the large GPU mesh map.
             if !force
-                && resident_meshes_unchanged
                 && self.draw_resource_sources.get(batch_index) == Some(&source)
                 && let Some(&previous_key) = self.draw_resource_keys.get(batch_index)
                 && previous_key.shadow == shadow_buffer
@@ -1568,6 +1599,10 @@ impl SceneResources {
                 && previous_key.occlusion_id == occlusion_id
                 && previous_key.metallic_roughness_id == metallic_roughness_id
                 && let Some(&bind_group) = self.draw_resources.get(batch_index)
+                // A removed/replaced mesh may have retired an old binding.
+                // Verify residency only on that uncommon retirement path.
+                && (resident_meshes_unchanged
+                    || self.binding_cache.get(&previous_key) == Some(&bind_group))
             {
                 reused += 1;
                 positional_reused += 1;
@@ -2709,6 +2744,28 @@ fn update_command_visibility(
         changed = true;
     }
     changed
+}
+
+#[cfg(test)]
+mod streaming_light_headroom_tests {
+    use super::*;
+
+    #[test]
+    fn light_growth_keeps_headroom_without_rebinding_each_threshold() {
+        let limit = 512 * 1024 * 1024;
+        let headroom = streaming_light_headroom(1_955, limit);
+        assert_eq!(headroom, 7_820);
+        assert_eq!(grow_capacity(1, headroom).unwrap(), 8_192);
+        assert_eq!(streaming_light_headroom(2_048, limit), 8_192);
+    }
+
+    #[test]
+    fn light_growth_respects_storage_binding_limits() {
+        let limit = u64::from(LIGHT_STRIDE) * 256;
+        assert_eq!(streaming_light_headroom(128, limit), 256);
+        assert_eq!(streaming_light_headroom(256, limit), 256);
+        assert_eq!(streaming_light_headroom(300, limit), 300);
+    }
 }
 
 #[cfg(test)]
