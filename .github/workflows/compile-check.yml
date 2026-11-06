@@ -99,7 +99,7 @@ jobs:
         run: |
           cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --bin BMCBL scene_registry::tests -- --nocapture
+          cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux-build:
@@ -170,4 +170,4 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 voxel_mesh::fusion_tests -- --nocapture
 
       - name: Test editor four-Section fusion and removal recovery
-        run: cargo test --bin BMCBL scene_registry::tests -- --nocapture
+        run: cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
