@@ -66,7 +66,7 @@ mod math;
 mod mesh;
 mod voxel_mesh;
 pub use voxel_mesh::{
-    VOXEL_OCCLUDER, VoxelFaceTemplate, VoxelMeshInstance, VoxelMeshSource, voxel_ambient_light,
+    VOXEL_OCCLUDER, VoxelFaceTemplate, VoxelFusionInput, VoxelMeshInstance, VoxelMeshSource, voxel_ambient_light,
 };
 mod prepare;
 mod raycast;
