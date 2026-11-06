@@ -154,5 +154,10 @@ jobs:
       - name: Build BMCBL executable
         run: cargo build --bin BMCBL
 
-      - name: Test GPUI 3D cross-material batching
-        run: cargo test -p gpui-3d --lib scene_view::batching::tests -- --nocapture
+      - name: Test GPUI 3D cross-material batching and generated Section fusion
+        run: |
+          cargo test -p gpui-3d --lib scene_view::batching::tests -- --nocapture
+          cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
+
+      - name: Test editor four-Section fusion and removal recovery
+        run: cargo test --bin BMCBL scene_registry::tests -- --nocapture
