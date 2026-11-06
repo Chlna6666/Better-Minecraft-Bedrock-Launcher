@@ -360,6 +360,11 @@ impl PreparedScene {
     }
 
     pub(crate) fn set_culling_bounds(&mut self, bounds: Option<Aabb>) {
+        if self.culling_bounds != bounds {
+            // A culling-domain change cannot inherit a previous structural
+            // physical slot proof, even if the GPU owns final visibility.
+            self.structural_delta = None;
+        }
         self.gpu_candidates_dirty |= !self.gpu_culling && self.culling_bounds != bounds;
         self.culling_bounds = bounds;
     }
@@ -552,6 +557,10 @@ impl PreparedScene {
             .normalized()
             .ok_or(CameraError::InvalidPose)?;
         if self.gpu_culling && !self.gpu_candidates_dirty {
+            // A camera-only update is not a new Section splice. Do not
+            // accidentally replay an already-committed structural delta.
+            // Fixed-layout dirty Draw rows remain available to this frame.
+            self.structural_delta = None;
             self.sort_blended_draws(camera, view_direction);
             self.view_projection = view_projection;
             self.camera = Some(camera);
