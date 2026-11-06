@@ -70,7 +70,7 @@ impl VulkanDevice {
         dispatch: &ComputeDispatch<'_>,
         reuse: Option<&Arc<Call>>,
     ) -> Result<Option<Arc<Call>>> {
-        dispatch.validate(self.compute.capabilities)?;
+        dispatch.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
         let shader = self.shader_modules.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {
             return Err(Error::InvalidInput(
