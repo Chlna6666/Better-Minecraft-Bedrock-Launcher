@@ -13,7 +13,8 @@ use super::types::{
 };
 use crate::ui::window::map_viewer::preview_3d_source as p3d;
 use bedrock_block_model::{
-    ObjResolvedTexture, ObjTextureResolver, vanilla_resource_pack_roots_from_packages,
+    MATERIAL_SLOT_SEPARATOR, ObjResolvedTexture, ObjTextureResolver, obj_material_texture_name,
+    vanilla_resource_pack_roots_from_packages,
 };
 use bedrock_render::{ChunkPos, Dimension};
 use bedrock_world::block::BlockState;
@@ -538,7 +539,8 @@ mod view_tests {
         ChunkCursor, ChunkServiceEvent, ChunkServiceHandle, cached_texture_source, chunk_mesh_id,
         coarse_lod_for_view, desired_chunk_positions, downsample_texture, face_band_y,
         face_vertex_color, forget_published_sections, inside_cache_hysteresis, inside_view,
-        intern_face_materials, mesh_target_positions, mesh_target_priority, mipmapped_texture, p3d,
+        intern_face_materials, is_full_grass_block_side_material, mesh_target_positions,
+        mesh_target_priority, mipmapped_texture, p3d,
         partition_section_faces, same_chunk_render_geometry, section_priority,
         surrounded_chunk_candidates, take_visible_dirty_meshes, take_visible_urgent_chunks,
         visible_dirty_meshes,
@@ -1377,6 +1379,23 @@ mod view_tests {
             face_vertex_color(&face, true, true, false, super::TextureAlphaContent::Opaque),
             face.color
         );
+    }
+
+    #[test]
+    fn plant_materials_keep_vertex_tint_and_only_grass_block_sides_pre_tint() {
+        assert!(is_full_grass_block_side_material("minecraft_grass_side"));
+        assert!(is_full_grass_block_side_material(
+            "minecraft_grass_block_side"
+        ));
+        assert!(!is_full_grass_block_side_material(
+            "minecraft_tallgrass__mat_down"
+        ));
+        assert!(!is_full_grass_block_side_material(
+            "minecraft_tall_grass__mat_up"
+        ));
+        assert!(!is_full_grass_block_side_material(
+            "minecraft_seagrass__mat_down"
+        ));
     }
 }
 
@@ -3368,20 +3387,24 @@ impl Worker {
                         resolved_texture = Some(color);
                         alpha_content = content;
                     }
+                    let tint_mask = material_uses_tint(material_name)
+                        && resolved_texture
+                            .as_ref()
+                            .is_some_and(|texture| self.mesh_assets.is_grayscale_mask(texture));
                     FaceMaterialProperties {
                         texture: resolved_texture,
                         normal: normal.map(|(asset, _)| asset),
                         mer: mer.map(|(asset, _)| asset),
                         alpha_content,
                         is_missing,
-                        uses_tint: material_uses_tint(material_name),
+                        tint_mask,
                         opaque_glass: material_name.starts_with("minecraft_glass_"),
                     }
                 });
             let mut resolved_texture = properties.texture.clone();
-            let mut uses_tint = properties.uses_tint;
+            let mut uses_tint = properties.tint_mask;
             if face.normal[1] == 0
-                && material_name.contains("grass")
+                && is_full_grass_block_side_material(material_name)
                 && let Some(tinted) = self
                     .mesh_assets
                     .tinted_grass_side(resolved_texture.as_ref(), face.color)
@@ -4002,6 +4025,20 @@ fn material_uses_tint(material: &str) -> bool {
     .any(|needle| material.contains(needle))
 }
 
+/// Whether a face material is a full grass block side.
+///
+/// Those carried side textures already bake the biome tint into their green overlay. Grass-named
+/// plant materials (`tallgrass`, `seagrass`, ferns) are grayscale masks and keep the vertex tint.
+fn is_full_grass_block_side_material(material: &str) -> bool {
+    let base = material
+        .split_once(MATERIAL_SLOT_SEPARATOR)
+        .map_or(material, |(base, _)| base);
+    matches!(
+        obj_material_texture_name(base).as_str(),
+        "grass_side" | "grass_block_side" | "grass_side_snowed" | "grass_block_side_snowed"
+    )
+}
+
 fn face_vertex_color(
     face: &p3d::Preview3dStreamFace,
     has_texture: bool,
@@ -4263,7 +4300,9 @@ struct FaceMaterialProperties {
     /// The face failed texture resolution and is showing the missing-texture
     /// placeholder instead; still counted and traceable.
     is_missing: bool,
-    uses_tint: bool,
+    /// The material is biome-tinted and its texture is the grayscale mask, so the face keeps
+    /// the voxel vertex color. Pre-tinted resource-pack textures render without a second tint.
+    tint_mask: bool,
     opaque_glass: bool,
 }
 

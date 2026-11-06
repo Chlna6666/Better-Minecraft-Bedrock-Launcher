@@ -7,7 +7,8 @@ use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, detail_material_block_name_for_state, is_engine_block_entity_model_block,
+    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
+    is_engine_block_entity_model_block,
     model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
     shape_from_geometry,
 };
@@ -4128,7 +4129,7 @@ fn preview_3d_color_for_block(
     if state.name.strip_prefix("minecraft:").unwrap_or(&state.name) == "redstone_wire" {
         return preview_3d_redstone_wire_color(state);
     }
-    let color = preview_3d_surface_color_for_block(palette, state.name.as_str(), biome).to_array();
+    let color = preview_3d_surface_color_for_block(palette, state, biome).to_array();
     [
         f32::from(color[0]) / 255.0,
         f32::from(color[1]) / 255.0,
@@ -4208,10 +4209,16 @@ fn preview_3d_color_for_named_block(
 
 fn preview_3d_surface_color_for_block(
     palette: &RenderPalette,
-    name: &str,
+    state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
 ) -> RgbaColor {
+    let name = state.name.as_str();
     let normalized = name.strip_prefix("minecraft:").unwrap_or(name);
+    // Appearance entries are keyed by the canonical block identity. Legacy saves store
+    // pre-rename identifiers and state-driven plant variants, so resolve the same identity the
+    // resource-pack model layer uses before looking up the biome tint.
+    let palette_name = preview_3d_palette_block_name(state);
+    let palette_name = palette_name.as_ref();
     if let Some(legacy_color) = biome.and_then(|biome| biome.legacy_color) {
         if preview_3d_is_full_grass_block(normalized) {
             return preview_3d_apply_surface_grass_tint(
@@ -4220,17 +4227,39 @@ fn preview_3d_surface_color_for_block(
             );
         }
         if preview_3d_is_foliage_block(normalized) {
-            return preview_3d_multiply_with_biome_tint(palette.block_color(name), legacy_color);
+            return preview_3d_multiply_with_biome_tint(
+                palette.block_color(palette_name),
+                legacy_color,
+            );
         }
     }
     let biome_id = biome.and_then(|biome| biome.biome_id);
     let color_name = if preview_3d_is_full_grass_block(normalized) {
         "minecraft:grass_block"
     } else {
-        name
+        palette_name
     };
     let color = palette.surface_block_color(color_name, biome_id, true);
     preview_3d_correct_washed_out_biome_tint(palette, color_name, biome_id, color)
+}
+
+/// Resolves the palette identity of grass-like plant states.
+///
+/// Bedrock saves written before the `short_grass` rename still store `minecraft:tallgrass`,
+/// and `minecraft:double_plant` stores its visual kind in block state. Both must resolve to the
+/// palette entry that owns the biome tint.
+fn preview_3d_palette_block_name<'a>(state: &'a BlockState) -> Cow<'a, str> {
+    let name = state.name.as_str();
+    let normalized = name.strip_prefix("minecraft:").unwrap_or(name);
+    if normalized == "tallgrass" {
+        return Cow::Borrowed("minecraft:short_grass");
+    }
+    if normalized == "double_plant" {
+        return Cow::Owned(canonical_block_name_for_state(&preview_3d_block_state_query(
+            state,
+        )));
+    }
+    Cow::Borrowed(name)
 }
 
 fn preview_3d_is_full_grass_block(normalized: &str) -> bool {
@@ -7361,6 +7390,43 @@ mod tests {
         );
         assert_eq!(legacy_grass_color, grass_color);
         assert!((leaf_color[3] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_legacy_tallgrass_uses_grass_tint() {
+        let palette = RenderPalette::default();
+        let legacy_state = test_block_state("minecraft:tallgrass");
+        let short_grass_state = test_block_state("minecraft:short_grass");
+
+        let legacy_color = preview_3d_color_for_block(&palette, &legacy_state, None);
+        let short_grass_color = preview_3d_color_for_block(&palette, &short_grass_state, None);
+
+        assert_eq!(legacy_color, short_grass_color);
+        assert!(
+            legacy_color[1] > legacy_color[0] && legacy_color[1] > legacy_color[2],
+            "legacy tallgrass should use the biome grass tint, got {legacy_color:?}"
+        );
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_double_plant_grass_uses_biome_grass_tint() {
+        let palette = RenderPalette::default();
+        let double_plant = test_block_state_with_tag(
+            "minecraft:double_plant",
+            "double_plant_type",
+            NbtTag::String("grass".to_string()),
+        );
+        let tall_grass = test_block_state("minecraft:tall_grass");
+
+        let color = preview_3d_color_for_block(&palette, &double_plant, None);
+        assert_eq!(
+            color,
+            preview_3d_color_for_block(&palette, &tall_grass, None)
+        );
+        assert!(
+            color[1] > color[0] && color[1] > color[2],
+            "double plant grass should use the biome grass tint, got {color:?}"
+        );
     }
 
     #[test]

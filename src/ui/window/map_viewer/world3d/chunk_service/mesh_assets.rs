@@ -9,6 +9,7 @@ use std::sync::{Arc, Weak};
 pub(super) struct MeshAssets {
     materials: HashMap<MaterialSlotKey, Weak<Material>>,
     grass_side_tints: HashMap<(TextureAssetId, [u8; 3]), TintEntry>,
+    grayscale_masks: HashMap<TextureAssetId, bool>,
 }
 
 struct TintEntry {
@@ -116,6 +117,40 @@ impl MeshAssets {
         );
         Some(asset)
     }
+
+    /// Whether a decoded texture is a neutral mask that expects a biome tint.
+    ///
+    /// Vanilla grass, leaves and plant textures are grayscale masks; resource packs may ship
+    /// pre-tinted variants instead, which must render without multiplying a second tint.
+    pub(super) fn is_grayscale_mask(&mut self, texture: &TextureAsset) -> bool {
+        let id = texture.id();
+        if let Some(masked) = self.grayscale_masks.get(&id) {
+            return *masked;
+        }
+        let pixels = texture.pixels();
+        let pixel_count = pixels.len() / 4;
+        let step = (pixel_count / 1024).max(1);
+        let mut sum = [0_u64; 3];
+        let mut samples = 0_u64;
+        for index in (0..pixel_count).step_by(step) {
+            let pixel = &pixels[index * 4..index * 4 + 4];
+            if pixel[3] < 8 {
+                continue;
+            }
+            for (channel, value) in pixel[..3].iter().enumerate() {
+                sum[channel] += u64::from(*value);
+            }
+            samples += 1;
+        }
+        let mask = samples > 0 && {
+            let average = sum.map(|value| value / samples);
+            let maximum = average[0].max(average[1]).max(average[2]);
+            let minimum = average[0].min(average[1]).min(average[2]);
+            maximum - minimum <= 12
+        };
+        self.grayscale_masks.insert(id, mask);
+        mask
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +210,24 @@ mod tests {
         drop(replacement);
         assets.prune();
         assert!(assets.materials.is_empty());
+    }
+
+    #[test]
+    fn grayscale_masks_request_tint_and_pre_tinted_textures_do_not() {
+        let mut assets = MeshAssets::default();
+        let mask = Arc::new(
+            TextureAsset::rgba8(
+                2,
+                1,
+                Arc::<[u8]>::from([82, 82, 82, 200, 120, 118, 122, 255]),
+            )
+            .unwrap(),
+        );
+        assert!(assets.is_grayscale_mask(&mask));
+        let colored =
+            Arc::new(TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([51, 127, 8, 255])).unwrap());
+        assert!(!assets.is_grayscale_mask(&colored));
+        assert!(assets.is_grayscale_mask(&mask));
     }
 
     #[test]
