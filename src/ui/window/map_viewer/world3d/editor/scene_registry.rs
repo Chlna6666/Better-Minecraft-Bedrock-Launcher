@@ -16,6 +16,91 @@ pub(super) struct ChunkScene {
 mod tests {
     use super::{Arc, BTreeMap, BTreeSet, ChunkPos, ChunkScene, Dimension, World3dChunkMesh};
     use gpui_3d::Mesh;
+    fn generated_chunk(x: i32, material: Arc<gpui_3d::Material>) -> Arc<World3dChunkMesh> {
+        let cube = Mesh::cube();
+        let templates = cube.vertices().chunks_exact(4).map(|corners| {
+            gpui_3d::VoxelFaceTemplate {
+                vertices: std::array::from_fn(|index| {
+                    let mut vertex = corners[index];
+                    vertex.position = vertex.position + gpui_3d::Vec3::new(0.5, 0.5, 0.5);
+                    vertex
+                }),
+                material_slot: 0,
+                neighbour: [
+                    corners[0].normal.x as i32,
+                    corners[0].normal.y as i32,
+                    corners[0].normal.z as i32,
+                ],
+            }
+        }).collect::<Vec<_>>();
+        let mut cells = vec![0u32; 4 * 3 * 3];
+        cells[17] = 1;
+        let source = gpui_3d::VoxelMeshSource::new(
+            [4, 3, 3],
+            gpui_3d::Vec3::new(-1.0, -1.0, -1.0),
+            cells,
+            templates,
+        ).unwrap();
+        let pos = ChunkPos { x, z: 0, dimension: Dimension::Overworld };
+        Arc::new(World3dChunkMesh {
+            occluders: Arc::from([]),
+            pos,
+            section_y: 0,
+            origin: [x * 16, 0, 0],
+            mesh: Arc::new(Mesh::from_gpu_voxels(source)),
+            materials: Arc::from([material]),
+            textures: Arc::from([]),
+            triangles: 12,
+            faces: 6,
+            missing_texture_faces: 0,
+        })
+    }
+
+    #[test]
+    fn adjacent_generated_sections_render_as_one_mesh_part_and_restore_on_removal() {
+        let mut material = gpui_3d::Material::new();
+        material.shading_model = gpui_3d::ShadingModel::Unlit;
+        let material = Arc::new(material);
+        let left = generated_chunk(0, material.clone());
+        let right = generated_chunk(1, material);
+        let first = (left.pos, 0);
+        let second = (right.pos, 0);
+        let mut sections = BTreeMap::from([(first, left.clone()), (second, right.clone())]);
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(None, &sections, None, [0; 3]).unwrap();
+        assert_eq!(registry.fused.len(), 1, "neighbouring GPU sources must fuse");
+        let id = registry.fused[&first].0;
+        assert_eq!(scene.node(id).unwrap().mesh.as_ref().unwrap().parts().len(), 1);
+        assert!(registry.nodes.values().all(|(id, _)| scene.node(*id).unwrap().mesh.is_none()));
+        let original_id = registry.nodes[&first].0;
+
+        sections.remove(&second);
+        let next = registry.update(
+            Some(&scene), &sections, Some(&BTreeSet::from([second])), [0; 3],
+        ).unwrap();
+        assert!(registry.fused.is_empty());
+        assert!(next.node(id).is_none());
+        assert!(next.node(original_id).unwrap().mesh.is_some(),
+            "removing either peer must restore the remaining original Section mesh");
+    }
+
+    #[test]
+    fn blended_gpu_section_is_never_fused_across_transparency_order() {
+        let plain = Arc::new(gpui_3d::Material::new());
+        let mut blend = gpui_3d::Material::new();
+        blend.alpha_mode = gpui_3d::AlphaMode::Blend;
+        let left = generated_chunk(0, plain);
+        let right = generated_chunk(1, Arc::new(blend));
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(
+            None,
+            &BTreeMap::from([((left.pos, 0), left), ((right.pos, 0), right)]),
+            None, [0; 3],
+        ).unwrap();
+        assert!(registry.fused.is_empty());
+        assert!(registry.nodes.values().all(|(id, _)| scene.node(*id).unwrap().mesh.is_some()));
+    }
+
     #[test]
     fn invisible_emitters_keep_stable_nodes_without_geometry() {
         let pos = ChunkPos {
