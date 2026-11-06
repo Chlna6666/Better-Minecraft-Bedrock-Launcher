@@ -87,6 +87,8 @@ pub(super) struct SceneResources {
     scratch_instance_keys: Vec<instance_cache::InstanceSlotKey>,
     dirty_instance_run: Vec<u8>,
     meshes: HashMap<(MeshId, bool), MeshResources>,
+    /// Live compact-Mesh references to each face/template buffer page.
+    page_refs: page_refs::PageRefs,
     arena: MeshArena,
     /// GPU-owner-local arena shared by SceneViews on one renderer/device.
     /// No global GPU handles or cross-device sharing.
@@ -150,6 +152,7 @@ fn streaming_light_headroom(required: usize, max_binding_bytes: u64) -> usize {
 mod assets;
 mod binding_index;
 mod instance_cache;
+mod page_refs;
 pub(in crate::scene_view) mod stable_slots;
 mod generated;
 mod light_pass;
@@ -379,6 +382,7 @@ impl SceneResources {
             scratch_instance_keys: Vec::new(),
             dirty_instance_run: Vec::new(),
             meshes: HashMap::new(),
+            page_refs: page_refs::PageRefs::default(),
             arena: MeshArena::default(),
             generated_arena: shared_generated_arena,
             template_arena: shared_template_arena,
@@ -1520,7 +1524,7 @@ impl SceneResources {
             {
                 if let Err(error) = flush_pending_generated_meshes(
                     device, &mut pending_gpu, self.mesh_shader.as_ref(),
-                    &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+                    &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
                     &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), backend,
                 ) {
                     discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
@@ -1532,7 +1536,7 @@ impl SceneResources {
         }
         if let Err(error) = flush_pending_generated_meshes(
             device, &mut pending_gpu, self.mesh_shader.as_ref(),
-            &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+            &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
             &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), backend,
         ) {
             discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
@@ -1550,6 +1554,7 @@ impl SceneResources {
             .collect::<Vec<_>>();
         for id in stale {
             if let Some(mesh) = self.meshes.remove(&id) {
+                self.page_refs.remove(&mesh, id.1);
                 self.retired_meshes.push(mesh);
             }
         }
@@ -1559,6 +1564,7 @@ impl SceneResources {
         for &id in removed {
             for compact in [false, true] {
                 if let Some(mesh) = self.meshes.remove(&(id, compact)) {
+                    self.page_refs.remove(&mesh, compact);
                     self.retired_meshes.push(mesh);
                 }
             }
@@ -1584,27 +1590,9 @@ impl SceneResources {
         removed_meshes: &[MeshId],
         removed_textures: &[TextureAssetId],
     ) -> gpui::Result<()> {
-        // Generated draws now key both face and immutable template pages.
-        // Retire page bindings only when no other surviving Mesh uses them.
-        let removed = removed_meshes.iter().copied().collect::<HashSet<_>>();
-        let mut pages = removed_meshes
-            .iter()
-            .filter_map(|id| self.meshes.get(&(*id, true)))
-            .flat_map(|mesh| {
-                std::iter::once(mesh.vertices)
-                    .chain(mesh.generated.iter().map(|generated| generated.templates))
-            })
-            .collect::<HashSet<_>>();
-        if !pages.is_empty() {
-            for ((id, compact), mesh) in &self.meshes {
-                if *compact && !removed.contains(id) {
-                    pages.remove(&mesh.vertices);
-                    if let Some(generated) = &mesh.generated {
-                        pages.remove(&generated.templates);
-                    }
-                }
-            }
-        }
+        // Only the changed Section IDs and their physical GPU pages need
+        // inspection. No full resident MeshResources walk on ordinary unloads.
+        let pages = self.page_refs.orphaned(removed_meshes, &self.meshes);
         let stale = self.binding_index.affected(removed_meshes, &pages, removed_textures);
         for key in stale {
             self.destroy_cached_binding(device, key)?;
@@ -1871,12 +1859,7 @@ impl SceneResources {
         // every streamed section. A forced rebind replaces the entire cache
         // with freshly created entries and also needs no second scan.
         if !defer_binding_cleanup && !force {
-            let resident_voxel_pages = self
-                .meshes
-                .iter()
-                .filter(|((_, compact), _)| *compact)
-                .map(|(_, mesh)| mesh.vertices)
-                .collect::<HashSet<_>>();
+            let resident_voxel_pages = self.page_refs.active_pages();
             let stale = self
                 .binding_cache
                 .iter()
@@ -2114,6 +2097,7 @@ impl SceneResources {
         if let Some(pass) = self.light_pass.take() {
             pass.destroy(device)?;
         }
+        self.page_refs.clear();
         for (_, mesh) in self.meshes.drain() {
             destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
         }
@@ -2142,6 +2126,7 @@ fn flush_pending_generated_meshes(
     shaders: Option<&super::generated::Shaders>,
     pending: &mut Vec<StagedMesh>,
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
+    page_refs: &mut page_refs::PageRefs,
     retired_meshes: &mut Vec<MeshResources>,
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
@@ -2159,7 +2144,7 @@ fn flush_pending_generated_meshes(
             pending.push((id, resource, None));
         }
     }
-    upload_pending_meshes(device, pending, meshes, retired_meshes, arena, generated_arena, template_arena)
+    upload_pending_meshes(device, pending, meshes, page_refs, retired_meshes, arena, generated_arena, template_arena)
 }
 
 fn discard_pending_meshes(
@@ -2179,6 +2164,7 @@ fn upload_pending_meshes(
     device: &mut dyn ExtensionDevice,
     pending: &mut Vec<StagedMesh>,
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
+    page_refs: &mut page_refs::PageRefs,
     retired_meshes: &mut Vec<MeshResources>,
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
@@ -2203,7 +2189,11 @@ fn upload_pending_meshes(
         return Err(error.into());
     }
     for (id, mesh, _) in pending.drain(..) {
+        // Account for the incoming generation before retiring an older
+        // generation which may refer to the same shared buffer.
+        page_refs.insert(&mesh, id.1);
         if let Some(old) = meshes.insert(id, mesh) {
+            page_refs.remove(&old, id.1);
             retired_meshes.push(old);
         }
     }

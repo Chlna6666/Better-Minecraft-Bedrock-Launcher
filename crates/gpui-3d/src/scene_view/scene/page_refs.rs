@@ -1,0 +1,139 @@
+//! Compact GPU Page residency counts, independent of the backend API.
+//! Section removal only examines the pages referenced by changed Mesh IDs.
+//! Physical page reuse remains the MeshArena's deferred-fence responsibility.
+
+use super::*;
+
+#[derive(Default)]
+pub(super) struct PageRefs {
+    users: HashMap<BufferId, usize>,
+}
+
+impl PageRefs {
+    fn visit(mesh: &MeshResources, mut action: impl FnMut(BufferId)) {
+        action(mesh.vertices);
+        if let Some(generated) = &mesh.generated {
+            action(generated.templates);
+        }
+    }
+
+    pub(super) fn insert(&mut self, mesh: &MeshResources, compact: bool) {
+        if compact {
+            Self::visit(mesh, |page| *self.users.entry(page).or_default() += 1);
+        }
+    }
+
+    pub(super) fn remove(&mut self, mesh: &MeshResources, compact: bool) {
+        if compact {
+            Self::visit(mesh, |page| {
+                match self.users.entry(page) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let count = *entry.get();
+                        debug_assert!(count > 0);
+                        if count <= 1 {
+                            entry.remove();
+                        } else {
+                            *entry.get_mut() -= 1;
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(_) => {
+                        debug_assert!(false, "untracked voxel page removed");
+                    }
+                }
+            });
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.users.clear();
+    }
+
+    pub(super) fn active_pages(&self) -> HashSet<BufferId> {
+        self.users.keys().copied().collect()
+    }
+
+    /// A physical page becomes orphaned only if every live compact-Mesh
+    /// reference belongs to the removed IDs. Duplicate IDs are ignored.
+    pub(super) fn orphaned(
+        &self,
+        removed_ids: &[MeshId],
+        resident: &HashMap<(MeshId, bool), MeshResources>,
+    ) -> HashSet<BufferId> {
+        let mut removed_uses = HashMap::<BufferId, usize>::new();
+        let mut seen = HashSet::with_capacity(removed_ids.len());
+        for &id in removed_ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(mesh) = resident.get(&(id, true)) {
+                Self::visit(mesh, |page| {
+                    *removed_uses.entry(page).or_default() += 1;
+                });
+            }
+        }
+        removed_uses.into_iter()
+            .filter_map(|(page, count)| {
+                (self.users.get(&page).copied() == Some(count)).then_some(page)
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gfx_core::IndexFormat;
+
+    fn mesh(page: u32) -> MeshResources {
+        let buffer = BufferId::from_parts(page, 1);
+        MeshResources {
+            generated: None,
+            generation: 1,
+            vertices: buffer,
+            vertex_binding_bytes: 16,
+            vertex_stride: 16,
+            vertex_base: 0,
+            tangents: None,
+            tangent_bytes: 0,
+            indices: buffer,
+            index_format: IndexFormat::Uint16,
+            index_offset: 0,
+            procedural_quads: true,
+            allocation: None,
+        }
+    }
+
+    #[test]
+    fn retiring_one_section_does_not_retire_a_shared_page() {
+        let mut refs = PageRefs::default();
+        let mut meshes = HashMap::new();
+        for (id, page) in [(1, 7), (2, 7), (3, 9)] {
+            let value = mesh(page);
+            refs.insert(&value, true);
+            meshes.insert((MeshId(id), true), value);
+        }
+        assert!(refs.orphaned(&[MeshId(1)], &meshes).is_empty());
+        assert_eq!(
+            refs.orphaned(&[MeshId(1), MeshId(2)], &meshes),
+            HashSet::from([BufferId::from_parts(7, 1)])
+        );
+        assert!(refs.orphaned(&[MeshId(1), MeshId(1)], &meshes).is_empty());
+        let removed = meshes.remove(&(MeshId(1), true)).unwrap();
+        refs.remove(&removed, true);
+        assert_eq!(
+            refs.orphaned(&[MeshId(2)], &meshes),
+            HashSet::from([BufferId::from_parts(7, 1)])
+        );
+        assert_eq!(refs.active_pages().len(), 2);
+    }
+
+    #[test]
+    fn ordinary_mesh_does_not_keep_voxel_pages_alive() {
+        let mut refs = PageRefs::default();
+        let resource = mesh(5);
+        refs.insert(&resource, false);
+        assert!(refs.active_pages().is_empty());
+        refs.remove(&resource, false);
+        assert!(refs.active_pages().is_empty());
+    }
+}
