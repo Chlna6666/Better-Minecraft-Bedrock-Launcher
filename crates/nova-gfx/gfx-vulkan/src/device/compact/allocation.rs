@@ -70,7 +70,7 @@ pub(super) fn allocate_texture(
             depth: 1,
         })
         .mip_levels(desc.mip_level_count)
-        .array_layers(1)
+        .array_layers(desc.dimension.layers())
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
