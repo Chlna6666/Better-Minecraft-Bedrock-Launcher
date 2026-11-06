@@ -126,7 +126,9 @@ impl MeshAssets {
         base: Option<&Arc<TextureAsset>>,
         tint: [f32; 4],
     ) -> Option<Arc<TextureAsset>> {
-        const PLAINS: [f32; 3] = [0.5686, 0.7412, 0.3490];
+        // Bedrock plains grass tint (#7bbf5b), the reference the carried side texture is
+        // authored against; the vertex color now carries this tint alone.
+        const PLAINS: [f32; 3] = [0.4824, 0.7490, 0.3569];
         let base = base?;
         let key = [
             (tint[0].clamp(0.0, 1.0) * 255.0).round() as u8,

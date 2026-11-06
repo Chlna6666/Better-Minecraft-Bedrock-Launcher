@@ -4129,6 +4129,9 @@ fn preview_3d_color_for_block(
     if state.name.strip_prefix("minecraft:").unwrap_or(&state.name) == "redstone_wire" {
         return preview_3d_redstone_wire_color(state);
     }
+    if let Some(tint) = preview_3d_texture_tint_for_block(palette, state, biome) {
+        return preview_3d_color_from_rgba(tint, 1.0);
+    }
     let color = preview_3d_surface_color_for_block(palette, state, biome).to_array();
     [
         f32::from(color[0]) / 255.0,
@@ -4186,25 +4189,17 @@ fn preview_3d_color_for_named_block(
     biome_tint: bool,
 ) -> [f32; 4] {
     let biome_id = biome.and_then(|biome| biome.biome_id);
-    let mut color = if biome_tint {
-        if let Some(legacy_color) = biome.and_then(|biome| biome.legacy_color) {
-            preview_3d_multiply_with_biome_tint(palette.block_color(name), legacy_color)
-        } else {
-            palette.surface_block_color(name, biome_id, true)
+    let color = if biome_tint {
+        match biome.and_then(|biome| biome.legacy_color) {
+            Some(legacy) if !preview_3d_color_is_washed_out(legacy) => legacy,
+            _ => palette
+                .surface_block_tint(name, biome_id)
+                .unwrap_or_else(|| palette.block_color(name)),
         }
     } else {
         palette.block_color(name)
     };
-    if biome_tint {
-        color = preview_3d_correct_washed_out_biome_tint(palette, name, biome_id, color);
-    }
-    let color = color.to_array();
-    [
-        f32::from(color[0]) / 255.0,
-        f32::from(color[1]) / 255.0,
-        f32::from(color[2]) / 255.0,
-        1.0,
-    ]
+    preview_3d_color_from_rgba(color, 1.0)
 }
 
 fn preview_3d_surface_color_for_block(
@@ -4260,6 +4255,26 @@ fn preview_3d_palette_block_name<'a>(state: &'a BlockState) -> Cow<'a, str> {
         )));
     }
     Cow::Borrowed(name)
+}
+
+/// Returns the pure biome tint for blocks whose texture is a grayscale appearance mask.
+///
+/// The palette's surface color already folds the mask average into the result; textured faces
+/// sample the mask themselves, so multiplying by that surface color would apply the mask twice.
+fn preview_3d_texture_tint_for_block(
+    palette: &RenderPalette,
+    state: &BlockState,
+    biome: Option<Preview3dBiomeSample>,
+) -> Option<RgbaColor> {
+    let palette_name = preview_3d_palette_block_name(state);
+    let biome_id = biome.and_then(|biome| biome.biome_id);
+    let palette_tint = palette.surface_block_tint(palette_name.as_ref(), biome_id)?;
+    if let Some(legacy) = biome.and_then(|biome| biome.legacy_color)
+        && !preview_3d_color_is_washed_out(legacy)
+    {
+        return Some(legacy);
+    }
+    Some(palette_tint)
 }
 
 fn preview_3d_is_full_grass_block(normalized: &str) -> bool {
@@ -7291,16 +7306,8 @@ mod tests {
     }
 
     #[test]
-    fn map_viewer_preview_3d_grass_faces_and_water_use_face_specific_colors() {
+    fn map_viewer_preview_3d_grass_faces_use_tint_and_dirt_side_color() {
         let palette = RenderPalette::default()
-            .with_block_color(
-                "minecraft:grass_block",
-                bedrock_render::RgbaColor::new(20, 210, 30, 255),
-            )
-            .with_block_color(
-                "minecraft:grass",
-                bedrock_render::RgbaColor::new(80, 150, 50, 255),
-            )
             .with_block_color(
                 "minecraft:dirt",
                 bedrock_render::RgbaColor::new(120, 80, 45, 255),
@@ -7314,9 +7321,17 @@ mod tests {
 
         let grass_colors = preview_3d_face_colors_for_block(&palette, &grass_state, None);
         let water_color = preview_3d_water_color_for_block(&palette, &water_state, None);
+        let grass_tint = preview_3d_color_from_rgba(
+            palette
+                .surface_block_tint("minecraft:grass_block", None)
+                .expect("grass block should be biome-tinted"),
+            1.0,
+        );
+        let dirt_color = preview_3d_color_from_rgba(palette.block_color("minecraft:dirt"), 1.0);
 
-        assert!(grass_colors.up[1] > grass_colors.side[1]);
-        assert!(grass_colors.down[0] > grass_colors.up[0]);
+        assert_eq!(grass_colors.up, grass_tint);
+        assert_eq!(grass_colors.side, grass_tint);
+        assert_eq!(grass_colors.down, dirt_color);
         assert!(water_color[2] > water_color[1]);
         assert!((water_color[3] - PREVIEW_3D_WATER_ALPHA).abs() < 0.001);
     }
@@ -7354,16 +7369,8 @@ mod tests {
     }
 
     #[test]
-    fn map_viewer_preview_3d_grass_and_leaves_use_surface_palette_colors() {
-        let palette = RenderPalette::default()
-            .with_block_color(
-                "minecraft:grass_block",
-                bedrock_render::RgbaColor::new(32, 210, 48, 255),
-            )
-            .with_block_color(
-                "minecraft:grass",
-                bedrock_render::RgbaColor::new(132, 92, 52, 255),
-            );
+    fn map_viewer_preview_3d_grass_and_leaves_use_biome_tints() {
+        let palette = RenderPalette::default();
         let grass_block_state = BlockState {
             name: "minecraft:grass_block".to_string(),
             states: Default::default(),
@@ -7384,11 +7391,25 @@ mod tests {
         let legacy_grass_color = preview_3d_color_for_block(&palette, &legacy_grass_state, None);
         let leaf_color = preview_3d_color_for_block(&palette, &leaf_state, None);
 
-        assert!(
-            grass_color[1] > grass_color[0] * 1.6,
-            "grass block should use the green surface color instead of the dirt side color: {grass_color:?}"
+        assert_eq!(
+            grass_color,
+            preview_3d_color_from_rgba(
+                palette
+                    .surface_block_tint("minecraft:grass_block", None)
+                    .expect("grass block should be biome-tinted"),
+                1.0,
+            )
         );
         assert_eq!(legacy_grass_color, grass_color);
+        assert_eq!(
+            leaf_color,
+            preview_3d_color_from_rgba(
+                palette
+                    .surface_block_tint("minecraft:oak_leaves", None)
+                    .expect("oak leaves should be biome-tinted"),
+                1.0,
+            )
+        );
         assert!((leaf_color[3] - 1.0).abs() < 0.001);
     }
 

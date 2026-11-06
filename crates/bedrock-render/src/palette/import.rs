@@ -470,6 +470,33 @@ impl RenderPalette {
         with_alpha(color, 255)
     }
 
+    /// Returns the pure biome tint a grayscale appearance mask expects, if the block is tinted.
+    ///
+    /// [`Self::surface_block_color`] folds the block's mask average into its result and is meant
+    /// for flat tiles. Textured callers that sample the mask themselves must multiply it by this
+    /// tint alone, otherwise the mask is applied twice and colors render too dark.
+    #[must_use]
+    pub fn surface_block_tint(&self, name: &str, biome_id: Option<u32>) -> Option<RgbaColor> {
+        if is_grass_tinted_block(name) {
+            return Some(self.biome_grass_color(biome_id));
+        }
+        let normalized = name.strip_prefix("minecraft:").unwrap_or(name);
+        if normalized == "leaf_litter" {
+            return Some(
+                biome_id
+                    .and_then(|id| self.biome_dry_foliage_colors.get(&id).copied())
+                    .unwrap_or(self.default_dry_foliage_color),
+            );
+        }
+        if is_foliage_tinted_block(name) {
+            return Some(
+                fixed_foliage_tint(name)
+                    .unwrap_or_else(|| self.biome_foliage_color(biome_id)),
+            );
+        }
+        None
+    }
+
     /// Returns a block color with JSON-defined state overrides applied.
     #[must_use]
     pub(crate) fn block_state_color(&self, state: &BlockState) -> RgbaColor {
@@ -660,6 +687,15 @@ impl RenderPalette {
     pub fn biome_grass_color(&self, biome_id: Option<u32>) -> RgbaColor {
         self.biome_grass_tint(biome_id)
             .unwrap_or(self.default_grass_color)
+    }
+
+    /// Returns the foliage tint a 3D surface should multiply into grayscale foliage textures.
+    ///
+    /// Falls back to the palette default foliage color when the biome has no explicit tint.
+    #[must_use]
+    pub fn biome_foliage_color(&self, biome_id: Option<u32>) -> RgbaColor {
+        self.biome_foliage_tint(biome_id)
+            .unwrap_or(self.default_foliage_color)
     }
 
     /// Returns the official biome water tint used by the game's water rendering.
@@ -2440,6 +2476,32 @@ mod tests {
         assert!(default_tinted.green > default_tinted.red);
         assert!(default_tinted.green > default_tinted.blue);
         assert!((70..=190).contains(&luminance(default_tinted)));
+    }
+
+    #[test]
+    fn surface_block_tint_returns_the_mask_multiplier_without_the_mask_average() {
+        let palette = RenderPalette::default();
+        for name in ["minecraft:short_grass", "minecraft:oak_leaves"] {
+            let mask = palette.block_color(name);
+            let tint = palette
+                .surface_block_tint(name, Some(1))
+                .unwrap_or_else(|| panic!("{name} should be biome-tinted"));
+            let surface = palette.surface_block_color(name, Some(1), true);
+            assert_eq!(
+                surface,
+                RgbaColor::new(
+                    multiply_channel(mask.red, tint.red),
+                    multiply_channel(mask.green, tint.green),
+                    multiply_channel(mask.blue, tint.blue),
+                    255,
+                ),
+                "{name}: surface color must be the mask times the returned tint"
+            );
+        }
+        assert_eq!(
+            palette.surface_block_tint("minecraft:stone", Some(1)),
+            None
+        );
     }
 
     #[test]
