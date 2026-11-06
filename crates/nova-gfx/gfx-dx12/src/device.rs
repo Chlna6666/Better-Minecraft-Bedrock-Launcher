@@ -1321,19 +1321,42 @@ mod platform {
                                 DescriptorKey::Texture(texture_binding.texture_view),
                             )?;
                             if fresh {
+                                let array_layers = texture.desc.dimension.layers();
+                                let array = matches!(texture.desc.dimension, TextureDimension::D2Array { .. });
                                 let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                            Format: if view.format == Format::Depth32Float { windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT } else { format_to_dxgi(view.format) },
-                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D,
-                            Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                            Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                                Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_SRV {
-                                    MostDetailedMip: view.base_mip_level,
-                                    MipLevels: view.mip_level_count,
-                                    PlaneSlice: 0,
-                                    ResourceMinLODClamp: 0.0,
-                                },
-                            },
-                        };
+                                    Format: if view.format == Format::Depth32Float {
+                                        windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT
+                                    } else {
+                                        format_to_dxgi(view.format)
+                                    },
+                                    ViewDimension: if array {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                                    } else {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D
+                                    },
+                                    Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                                    Anonymous: if array {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                            Texture2DArray: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_ARRAY_SRV {
+                                                MostDetailedMip: view.base_mip_level,
+                                                MipLevels: view.mip_level_count,
+                                                FirstArraySlice: 0,
+                                                ArraySize: array_layers,
+                                                PlaneSlice: 0,
+                                                ResourceMinLODClamp: 0.0,
+                                            },
+                                        }
+                                    } else {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                            Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_SRV {
+                                                MostDetailedMip: view.base_mip_level,
+                                                MipLevels: view.mip_level_count,
+                                                PlaneSlice: 0,
+                                                ResourceMinLODClamp: 0.0,
+                                            },
+                                        }
+                                    },
+                                };
                                 // SAFETY: SRV descriptor references a live texture resource and heap slot.
                                 unsafe {
                                     self.device.CreateShaderResourceView(
