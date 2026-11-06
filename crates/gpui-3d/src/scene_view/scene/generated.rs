@@ -7,6 +7,7 @@ use gfx_core::{
 pub(super) struct Mapping {
     pub buffer: BufferId,
     capacity: usize,
+    source_size: usize,
     entries: Vec<u32>,
     // Recycled staging vector for the next Scene/Section publication.
     // Keep the last committed entries immutable for dirty-range comparison.
@@ -319,6 +320,7 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         voxel_shader: bool,
     ) -> gpui::Result<()> {
+        let partial = std::mem::take(&mut self.generated_pending_partial);
         let mut groups = if let Some(ready) = self.generated_pending_groups.take() {
             // Normal streaming path: no second traversal of every Batch.
             ready
@@ -349,15 +351,17 @@ impl SceneResources {
             }
             fallback
         };
-        let stale = self
-            .generated_mappings
-            .keys()
-            .filter(|source| !groups.contains_key(source))
-            .copied()
-            .collect::<Vec<_>>();
-        for source in stale {
-            if let Some(mapping) = self.generated_mappings.remove(&source) {
-                device.destroy_buffer(mapping.buffer)?;
+        if !partial {
+            let stale = self
+                .generated_mappings
+                .keys()
+                .filter(|source| !groups.contains_key(source))
+                .copied()
+                .collect::<Vec<_>>();
+            for source in stale {
+                if let Some(mapping) = self.generated_mappings.remove(&source) {
+                    device.destroy_buffer(mapping.buffer)?;
+                }
             }
         }
         if groups.is_empty() {
@@ -396,6 +400,15 @@ impl SceneResources {
         let mut updates = Vec::new();
         let binding_limits = device.buffer_binding_limits();
         for (source, (source_size, entries)) in groups.drain() {
+            if entries.is_empty() {
+                // Only the last Section using this Page was removed.
+                // A partial publication must release this specific mapping
+                // but leave mappings of every other Page untouched.
+                if let Some(mapping) = self.generated_mappings.remove(&source) {
+                    device.destroy_buffer(mapping.buffer)?;
+                }
+                continue;
+            }
             if self
                 .generated_mappings
                 .get(&source)
@@ -426,6 +439,7 @@ impl SceneResources {
                     Mapping {
                         buffer,
                         capacity,
+                        source_size,
                         entries: Vec::new(),
                         scratch_entries: Vec::new(),
                         output: None,
@@ -435,6 +449,9 @@ impl SceneResources {
                 }
             }
             let input = self.generated_mappings[&source].buffer;
+            if let Some(mapping) = self.generated_mappings.get_mut(&source) {
+                mapping.source_size = source_size;
+            }
             // `output` can change on capacity growth even when the source
             // mapping is bit-for-bit identical. Re-dispatch the kernel but do
             // not re-upload the already resident input buffer in that case.
@@ -786,6 +803,7 @@ mod mapping_patch_tests {
             super::Mapping {
                 buffer: source,
                 capacity: 64,
+                source_size: 4096,
                 entries: vec![7, 8, 9, 0],
                 scratch_entries: Vec::new(),
                 output: Some(output),

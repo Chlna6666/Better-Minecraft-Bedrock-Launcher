@@ -42,6 +42,9 @@ pub(super) struct SceneResources {
     /// Published by the native binding traversal, consumed by the GPU Draw
     /// table update without another full Batch/Mesh pass.
     generated_pending_groups: Option<HashMap<BufferId, (usize, Vec<u32>)>>,
+    /// When true, pending groups contain only touched physical Argument
+    /// Pages. Unaffected Pages must not be retired or rebuilt.
+    generated_pending_partial: bool,
     /// Retains the Page-group HashMap buckets across Section publications.
     generated_group_scratch: HashMap<BufferId, (usize, Vec<u32>)>,
     scene: Option<Arc<Scene>>,
@@ -376,6 +379,7 @@ impl SceneResources {
             generated_arguments: None,
             generated_mappings: HashMap::new(),
             generated_pending_groups: None,
+            generated_pending_partial: false,
             generated_group_scratch: HashMap::new(),
             scene: None,
             active_assets: assets::AssetCounts::default(),
