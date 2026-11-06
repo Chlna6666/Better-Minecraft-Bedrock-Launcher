@@ -64,7 +64,8 @@ fn main() {
         .shader(
             Shader::new("cull")
                 .wgsl_file("src/scene_view/cull.wgsl")
-                .entry("cs_cull", ShaderStage::Compute),
+                .entry("cs_cull", ShaderStage::Compute)
+                .entry("cs_cull_singletons", ShaderStage::Compute),
         )
         .shader(
             Shader::new("hiz")
