@@ -113,7 +113,18 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
     for (bytes, usage) in [
         (gpu::encode_draws(&prepared).unwrap(), BufferUsage::STORAGE),
         (
-            gpu::encode_instances(&prepared).unwrap(),
+            {
+                let mut instances = gpu::encode_instances(&prepared).unwrap();
+                // The standalone source begins at descriptor zero. A pooled
+                // generated mesh instead addresses a different suballocation
+                // in a shared face buffer; mirror the production instance
+                // encoder's 140-byte vertex-base field for native rendering.
+                if resource.vertex_base > 0 {
+                    instances[140..144]
+                        .copy_from_slice(&(resource.vertex_base | 0x8000_0000).to_le_bytes());
+                }
+                instances
+            },
             BufferUsage::STORAGE,
         ),
         (frame(Mat4::IDENTITY), BufferUsage::UNIFORM),
@@ -675,12 +686,21 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     assert_ne!(resources[0].vertex_base, resources[1].vertex_base);
     assert!(resources.iter().all(|resource| resource.allocation.is_some()));
     assert_eq!(arena.stats().0, 1);
-    for resource in &resources {
+    for (mesh, resource) in meshes.iter().zip(&resources) {
         assert_eq!(counts(
             &mut device,
             resource.generated.as_ref().unwrap().arguments,
             16,
         )[0], 60);
+        render_generated(
+            &mut device,
+            mesh,
+            resource,
+            resource.generated.as_ref().unwrap().arguments,
+            [255; 4],
+            None,
+            None,
+        );
     }
     SubmissionDevice::wait_queue_idle(&mut device).unwrap();
     let mut ordinary = MeshArena::default();
