@@ -86,6 +86,7 @@ pub(super) struct SceneResources {
     dirty_instance_run: Vec<u8>,
     meshes: HashMap<(MeshId, bool), MeshResources>,
     arena: MeshArena,
+    generated_arena: MeshArena,
     retired_meshes: Vec<MeshResources>,
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
@@ -207,11 +208,12 @@ impl SceneResources {
         self.culling.as_ref().map_or((0, 0), CullResources::counts)
     }
     pub(super) fn has_retired_arena_ranges(&self) -> bool {
-        self.arena.has_retired_ranges()
+        self.arena.has_retired_ranges() || self.generated_arena.has_retired_ranges()
     }
 
     pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
         self.arena.reclaim_after_gpu_idle();
+        self.generated_arena.reclaim_after_gpu_idle();
     }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
@@ -331,6 +333,7 @@ impl SceneResources {
             dirty_instance_run: Vec::new(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
+            generated_arena: MeshArena::generated_output(),
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
@@ -703,7 +706,7 @@ impl SceneResources {
             }
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
         }
         if gpu_culling {
             if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
@@ -1411,7 +1414,7 @@ impl SceneResources {
                 ) {
                     Ok(created) => created,
                     Err(error) => {
-                        discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
                         return Err(error);
                     }
                 };
@@ -1426,8 +1429,9 @@ impl SceneResources {
                 if let Err(error) = flush_pending_generated_meshes(
                     device, &mut pending_gpu, self.mesh_shader.as_ref(),
                     &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+                    &mut self.generated_arena, backend,
                 ) {
-                    discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
                     return Err(error);
                 }
                 pending_ids.clear();
@@ -1437,8 +1441,9 @@ impl SceneResources {
         if let Err(error) = flush_pending_generated_meshes(
             device, &mut pending_gpu, self.mesh_shader.as_ref(),
             &mut pending, &mut self.meshes, &mut self.retired_meshes, &mut self.arena,
+            &mut self.generated_arena, backend,
         ) {
-            discard_pending_meshes(device, &mut pending, &mut self.arena)?;
+            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut self.generated_arena)?;
             return Err(error);
         }
         Ok(())
@@ -1937,10 +1942,10 @@ impl SceneResources {
             pass.destroy(device)?;
         }
         for (_, mesh) in self.meshes.drain() {
-            destroy_mesh(device, mesh, &mut self.arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena)?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut self.generated_arena)?;
         }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
@@ -1966,30 +1971,31 @@ fn flush_pending_generated_meshes(
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
     retired_meshes: &mut Vec<MeshResources>,
     arena: &mut MeshArena,
+    generated_arena: &mut MeshArena,
+    backend: BackendKind,
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
         let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
-        let created = if staged_gpu.len() == 1 {
-            vec![super::generated::create(device, &staged_gpu[0].1, shaders)?]
-        } else {
-            let inputs = staged_gpu.iter().map(|(_, mesh)| mesh.as_ref())
-                .collect::<Vec<_>>();
-            super::generated::create_many(device, &inputs, shaders)?
-        };
+        let inputs = staged_gpu.iter().map(|(_, mesh)| mesh.as_ref())
+            .collect::<Vec<_>>();
+        let created = super::generated::create_many_pooled(
+            device, &inputs, shaders, generated_arena, backend,
+        )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             pending.push((id, resource, None));
         }
     }
-    upload_pending_meshes(device, pending, meshes, retired_meshes, arena)
+    upload_pending_meshes(device, pending, meshes, retired_meshes, arena, generated_arena)
 }
 
 fn discard_pending_meshes(
     device: &mut dyn ExtensionDevice,
     pending: &mut Vec<StagedMesh>,
     arena: &mut MeshArena,
+    generated_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     for (_, mesh, _) in pending.drain(..) {
-        destroy_mesh(device, mesh, arena)?;
+        destroy_mesh(device, mesh, arena, generated_arena)?;
     }
     Ok(())
 }
@@ -2000,6 +2006,7 @@ fn upload_pending_meshes(
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
     retired_meshes: &mut Vec<MeshResources>,
     arena: &mut MeshArena,
+    generated_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     if pending.is_empty() {
         return Ok(());
@@ -2016,7 +2023,7 @@ fn upload_pending_meshes(
         })
         .collect::<Vec<_>>();
     if let Err(error) = device.write_buffer_batch(&writes) {
-        discard_pending_meshes(device, pending, arena)?;
+        discard_pending_meshes(device, pending, arena, generated_arena)?;
         return Err(error.into());
     }
     for (id, mesh, _) in pending.drain(..) {
