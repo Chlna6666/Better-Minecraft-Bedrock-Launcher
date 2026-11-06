@@ -119,3 +119,51 @@ fn cs_cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_in
         arguments[index].first_instance = batch.w;
     }
 }
+
+
+// Generated Sections generally produce independent singleton batches.
+// Instead of launching one 64-lane workgroup per Section/material part and
+// leaving 63 lanes idle, assign one resident batch to each lane. The output
+// ABI is identical to cs_cull and preserves original logical draw ordering.
+//
+// The number of *active* batches is stored numerically in range.maximum.w,
+// because the GPU allocation is capacity-sized and may contain stale entries.
+// A float represents practical streamed-world counts exactly (< 2^24).
+@compute @workgroup_size(64)
+fn cs_cull_singletons(
+    @builtin(workgroup_id) group: vec3<u32>,
+    @builtin(local_invocation_index) lane: u32,
+    @builtin(num_workgroups) grid: vec3<u32>,
+) {
+    if (lane == 0u) {
+        let matrix = frame.view_projection;
+        let row0 = vec4<f32>(matrix[0].x, matrix[1].x, matrix[2].x, matrix[3].x);
+        let row1 = vec4<f32>(matrix[0].y, matrix[1].y, matrix[2].y, matrix[3].y);
+        let row2 = vec4<f32>(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
+        let row3 = vec4<f32>(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
+        planes = array<vec4<f32>, 6>(
+            row3 + row0, row3 - row0, row3 + row1,
+            row3 - row1, row2, row3 - row2,
+        );
+    }
+    workgroupBarrier();
+    let index = (group.x + group.y * grid.x) * 64u + lane;
+    if (index >= u32(range.maximum.w)) {
+        return;
+    }
+    let batch = batches[index];
+    // The CPU selects this entry point only if all batch.instance_count == 1.
+    let resident = bounds[logical_to_physical[batch.w]];
+    var source = vec4<u32>(resident.vertex_count, 1u, batch.z, batch.w);
+    if (batch.x != 0u) {
+        source = generated[index];
+    }
+    let visible = is_visible(resident);
+    if (visible && batch.x == 0u) {
+        visible_instances[batch.w] = batch.w;
+    }
+    atomicStore(&arguments[index].vertex_count, select(0u, source.x, visible));
+    atomicStore(&arguments[index].instance_count, select(0u, source.y, visible));
+    arguments[index].first_vertex = source.z;
+    arguments[index].first_instance = source.w;
+}
