@@ -2842,7 +2842,8 @@ mod platform {
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
-            for step in steps.iter() {
+            let mut step_iter = steps.iter().peekable();
+            while let Some(step) = step_iter.next() {
                 let indirect_index = indirect_count;
                 if matches!(step, RenderCommand::DrawIndirect(_)) {
                     indirect_count += 1;
@@ -2922,6 +2923,22 @@ mod platform {
                     &mut binding_state,
                 )?;
                 if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    // All indirect records were staged into adjacent native 32-byte
+                    // arguments. Only consecutive draws with identical pipeline,
+                    // bind groups and scissor can share one ExecuteIndirect call.
+                    let mut run_count = 1usize;
+                    while let Some(&next) = step_iter.peek() {
+                        if !matches!(next, RenderCommand::DrawIndirect(_))
+                            || next.pipeline() != step.pipeline()
+                            || next.bind_groups() != step.bind_groups()
+                            || next.scissor() != step.scissor()
+                        {
+                            break;
+                        }
+                        step_iter.next();
+                        indirect_count += 1;
+                        run_count += 1;
+                    }
                     self.execute_indirect(
                         &command_list,
                         encoder_id,
@@ -2929,6 +2946,7 @@ mod platform {
                             Error::Backend("indirect arguments were not staged".into())
                         })?,
                         indirect_index,
+                        run_count,
                     )?;
                 } else {
                     self.record_render_step_draw(
@@ -3111,7 +3129,8 @@ mod platform {
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
-            for step in steps.iter() {
+            let mut step_iter = steps.iter().peekable();
+            while let Some(step) = step_iter.next() {
                 let indirect_index = indirect_count;
                 if matches!(step, RenderCommand::DrawIndirect(_)) {
                     indirect_count += 1;
@@ -3191,6 +3210,22 @@ mod platform {
                     &mut binding_state,
                 )?;
                 if matches!(step, RenderCommand::DrawIndirect(_)) {
+                    // All indirect records were staged into adjacent native 32-byte
+                    // arguments. Only consecutive draws with identical pipeline,
+                    // bind groups and scissor can share one ExecuteIndirect call.
+                    let mut run_count = 1usize;
+                    while let Some(&next) = step_iter.peek() {
+                        if !matches!(next, RenderCommand::DrawIndirect(_))
+                            || next.pipeline() != step.pipeline()
+                            || next.bind_groups() != step.bind_groups()
+                            || next.scissor() != step.scissor()
+                        {
+                            break;
+                        }
+                        step_iter.next();
+                        indirect_count += 1;
+                        run_count += 1;
+                    }
                     self.execute_indirect(
                         &command_list,
                         encoder_id,
@@ -3198,6 +3233,7 @@ mod platform {
                             Error::Backend("indirect arguments were not staged".into())
                         })?,
                         indirect_index,
+                        run_count,
                     )?;
                 } else {
                     self.record_render_step_draw(

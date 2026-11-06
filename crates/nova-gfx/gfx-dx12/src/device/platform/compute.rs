@@ -578,15 +578,23 @@ impl Dx12Device {
         encoder: CommandEncoderId,
         slot: usize,
         index: usize,
+        count: usize,
     ) -> Result<()> {
         let indirect = &self.command_encoders.get(encoder)?.indirect_resources[slot];
+        let end = index.checked_add(count)
+            .ok_or_else(|| Error::InvalidInput("indirect draw range overflow".into()))?;
+        if count == 0 || end > indirect.signatures.len() {
+            return Err(Error::InvalidInput("invalid staged indirect draw range".into()));
+        }
+        let native_count = u32::try_from(count)
+            .map_err(|_| Error::InvalidInput("indirect draw count exceeds u32".into()))?;
         let signature = indirect
             .signatures
             .get(index)
             .ok_or_else(|| Error::InvalidInput("invalid staged indirect index".into()))?;
         // SAFETY: scratch and signature are retained by the submitting encoder until its fence.
         unsafe {
-            command.ExecuteIndirect(signature, 1, &indirect.buffer, index as u64 * 32, None, 0);
+            command.ExecuteIndirect(signature, native_count, &indirect.buffer, index as u64 * 32, None, 0);
         }
         Ok(())
     }

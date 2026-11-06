@@ -130,6 +130,8 @@ pub struct VulkanDevice {
     physical_device: vk::PhysicalDevice,
     adapter_name: String,
     max_sampler_anisotropy: f32,
+    multi_draw_indirect: bool,
+    max_draw_indirect_count: u32,
     binding_limits: gfx_core::BufferBindingLimits,
     texture_array_limits: gfx_core::TextureArrayCapabilities,
     device: Arc<ash::Device>,
@@ -367,6 +369,8 @@ impl VulkanDevice {
             physical_device,
             adapter_name,
             max_sampler_anisotropy,
+            multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
+            max_draw_indirect_count: native_limits.max_draw_indirect_count.max(1),
             binding_limits,
             texture_array_limits,
             device,
@@ -1765,6 +1769,8 @@ impl VulkanDevice {
             framebuffer,
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
+            multi_draw_indirect: self.multi_draw_indirect,
+            max_draw_indirect_count: self.max_draw_indirect_count,
             extent,
             viewport_extent,
             viewport_origin,
@@ -4858,6 +4864,7 @@ fn create_device(
     let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
     let mut enabled_features = vk::PhysicalDeviceFeatures::default();
     enabled_features.draw_indirect_first_instance = supported_features.draw_indirect_first_instance;
+    enabled_features.multi_draw_indirect = supported_features.multi_draw_indirect;
     let supports_sampler_anisotropy = supported_features.sampler_anisotropy == vk::TRUE;
     enabled_features.sampler_anisotropy = supported_features.sampler_anisotropy;
     #[cfg(target_os = "windows")]
@@ -5532,6 +5539,8 @@ struct CommandRecordInfo<'a> {
     framebuffer: vk::Framebuffer,
     steps: &'a [CommandDrawStepInfo],
     descriptor_sets: &'a [vk::DescriptorSet],
+    multi_draw_indirect: bool,
+    max_draw_indirect_count: u32,
     extent: vk::Extent2D,
     viewport_extent: vk::Extent2D,
     viewport_origin: gfx_core::SignedOrigin2d,
@@ -5891,7 +5900,8 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         let mut previous_pipeline = None;
         let mut previous_scissor = None;
         let mut previous_bindings = None;
-        for step in info.steps {
+        let mut step_iter = info.steps.iter().peekable();
+        while let Some(step) = step_iter.next() {
             let scissor = step
                 .scissor
                 .and_then(|scissor| vk_rect_for_scissor(scissor, info.scissor_extent).ok())
@@ -5923,8 +5933,33 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             previous_bindings = Some((step.pipeline_layout, sets));
             match step.draw {
                 CommandDrawStepKind::Indirect { buffer, offset } => {
-                    info.device
-                        .cmd_draw_indirect(info.command_buffer, buffer, offset, 1, 16);
+                    let mut draw_count = 1u32;
+                    if info.multi_draw_indirect {
+                        while draw_count < info.max_draw_indirect_count {
+                            let Some(&next) = step_iter.peek() else { break };
+                            let CommandDrawStepKind::Indirect {
+                                buffer: next_buffer,
+                                offset: next_offset,
+                            } = next.draw else { break };
+                            if next_buffer != buffer
+                                || next.pipeline != step.pipeline
+                                || next.pipeline_layout != step.pipeline_layout
+                                || next.scissor != step.scissor
+                                || &info.descriptor_sets[next.descriptor_sets.clone()] != sets
+                                || offset.checked_add(u64::from(draw_count) * 16)
+                                    != Some(next_offset)
+                            {
+                                break;
+                            }
+                            // Skipped steps have identical native graphics state.
+                            // Their GPU records are still executed in original order.
+                            step_iter.next();
+                            draw_count += 1;
+                        }
+                    }
+                    info.device.cmd_draw_indirect(
+                        info.command_buffer, buffer, offset, draw_count, 16,
+                    );
                 }
                 CommandDrawStepKind::NonIndexed {
                     vertex_count,
