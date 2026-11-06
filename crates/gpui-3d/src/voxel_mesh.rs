@@ -192,6 +192,194 @@ pub struct VoxelMeshSource {
     fallback: OnceLock<Mesh>,
 }
 
+/// One retained GPU-generated Section to be fused with neighbouring Sections.
+///
+/// `offset` is measured in padded-grid cells relative to the first Section,
+/// not world-space coordinates. `material_slots` maps local material slots to
+/// the fused node's material array.
+pub struct VoxelFusionInput<'a> {
+    /// An immutable GPU voxel source; its original Scene node is not mutated.
+    pub source: &'a VoxelMeshSource,
+    /// Source-grid displacement within the fused padded grid.
+    pub offset: [u32; 3],
+    /// Local material slot -> fused material slot mapping.
+    pub material_slots: &'a [u32],
+}
+
+impl VoxelMeshSource {
+    /// Fuse adjacent GPU-generated Sections before GPU meshing. Rebase cube
+    /// classes, arbitrary-model jobs, static quads and light fields without
+    /// expanding any source into CPU vertices. The resulting mesh uses one
+    /// material part per distinct fused material, instead of one per Section.
+    ///
+    /// Adjacent halo overlaps are resolved by emitting interior cells first;
+    /// a source's halo must never replace an adjacent source's real cell.
+    ///
+    /// The caller must restrict fusion to opaque/masked materials and keep the
+    /// original Section nodes for occluders, editing and streaming identity.
+    pub fn fuse_sections(inputs: &[VoxelFusionInput<'_>]) -> Result<Self, MeshError> {
+        let Some(first) = inputs.first() else { return Err(MeshError::InvalidParts) };
+        if first.offset != [0; 3] || inputs.len() < 2 {
+            return Err(MeshError::InvalidParts);
+        }
+        let base = first.source;
+        let mut size = [0u32; 3];
+        let mut total_classes = 0u32;
+        let mut total_instance_templates = 0u32;
+        let mut template_count = 0usize;
+        for input in inputs {
+            let source = input.source;
+            if source.origin != base.origin
+                || source.clip_y != base.clip_y
+                || source.ambient_occlusion != base.ambient_occlusion
+                || source.lighting.as_ref().map(|light| (light.ambient.to_bits(), light.levels.len()))
+                    .map(|(ambient, _)| ambient)
+                    != base.lighting.as_ref().map(|light| light.ambient.to_bits())
+                || source.model_faces % 6 != 0
+            {
+                return Err(MeshError::InvalidParts);
+            }
+            for axis in 0..3 {
+                size[axis] = size[axis].max(
+                    input.offset[axis].checked_add(source.size[axis]).ok_or(MeshError::TooLarge)?
+                );
+            }
+            total_classes = total_classes.checked_add(
+                u32::try_from(source.model_faces / 6).map_err(|_| MeshError::TooLarge)?
+            ).ok_or(MeshError::TooLarge)?;
+            total_instance_templates = total_instance_templates.checked_add(
+                u32::try_from(source.static_start - source.model_faces)
+                    .map_err(|_| MeshError::TooLarge)?
+            ).ok_or(MeshError::TooLarge)?;
+            template_count = template_count.checked_add(source.templates.len())
+                .ok_or(MeshError::TooLarge)?;
+        }
+        let count = size.into_iter()
+            .try_fold(1usize, |acc, dim| acc.checked_mul(dim as usize))
+            .ok_or(MeshError::TooLarge)?;
+        if count > i32::MAX as usize { return Err(MeshError::TooLarge); }
+
+        let mut cells = vec![0u32; count];
+        let mut classes = vec![0u32; count];
+        let mut templates = Vec::with_capacity(total_classes as usize * 6);
+        let mut model_faces = Vec::with_capacity(total_instance_templates as usize);
+        let mut instances = Vec::new();
+        let mut statics = Vec::with_capacity(template_count);
+        let mut levels = base.lighting.as_ref().map(|_| vec![0u8; count]);
+        let mut class_offset = 0u32;
+        let mut instance_face_offset = 0u32;
+        for input in inputs {
+            let source = input.source;
+            let remap = |slot: u32| -> Result<u32, MeshError> {
+                input.material_slots.get(slot as usize).copied().ok_or(MeshError::InvalidParts)
+            };
+            let models = &source.templates[..source.model_faces];
+            for face in models {
+                let mut face = face.clone();
+                face.material_slot = remap(face.material_slot)?;
+                templates.push(face);
+            }
+            let src_instances = &source.templates[source.model_faces..source.static_start];
+            for face in src_instances {
+                let mut face = face.clone();
+                face.material_slot = remap(face.material_slot)?;
+                model_faces.push(face);
+            }
+            let delta = Vec3::new(input.offset[0] as f32, input.offset[1] as f32, input.offset[2] as f32);
+            for face in &source.templates[source.static_start..] {
+                let mut face = face.clone();
+                face.material_slot = remap(face.material_slot)?;
+                for vertex in &mut face.vertices {
+                    vertex.position = vertex.position + delta;
+                }
+                statics.push(face);
+            }
+            if let Some(data) = &source.instances {
+                for job in data.jobs.iter() {
+                    let first = instance_face_offset.checked_add(
+                        job.first_face.checked_sub(source.model_faces as u32).ok_or(MeshError::InvalidParts)?
+                    ).ok_or(MeshError::TooLarge)?;
+                    let end = first.checked_add(job.face_count).ok_or(MeshError::TooLarge)?;
+                    instances.push(VoxelMeshInstance {
+                        position: std::array::from_fn(|axis| job.position[axis] + input.offset[axis]),
+                        faces: first..end,
+                        height: job.height,
+                        occlusion_mask: job.occlusion_mask,
+                    });
+                }
+            }
+            let source_xy = (source.size[0] as usize) * (source.size[1] as usize);
+            let merged_xy = (size[0] as usize) * (size[1] as usize);
+            // Phase one: expose source halos, then explicitly replace all
+            // interiors with authoritative source data (including empty air).
+            for interior in [false, true] {
+                for (index, source_kind) in source.cells.iter().enumerate() {
+                    let x = index % source.size[0] as usize;
+                    let y = index / source.size[0] as usize % source.size[1] as usize;
+                    let z = index / source_xy;
+                    let in_source = x > 0 && y > 0 && z > 0
+                        && x + 1 < source.size[0] as usize
+                        && y + 1 < source.size[1] as usize
+                        && z + 1 < source.size[2] as usize;
+                    if in_source != interior { continue }
+                    let gx = x + input.offset[0] as usize;
+                    let gy = y + input.offset[1] as usize;
+                    let gz = z + input.offset[2] as usize;
+                    let destination = gz * merged_xy + gy * size[0] as usize + gx;
+                    let kind = if source_kind == 0 || source_kind == VOXEL_OCCLUDER {
+                        source_kind
+                    } else {
+                        class_offset.checked_add(source_kind).ok_or(MeshError::TooLarge)?
+                    };
+                    if interior || cells[destination] == 0 { cells[destination] = kind; }
+                    if let Some(data) = &source.instances {
+                        let value = data.classes.cell(index);
+                        if interior || classes[destination] == 0 { classes[destination] = value; }
+                    }
+                    if let (Some(light), Some(levels)) = (&source.lighting, &mut levels) {
+                        if interior || levels[destination] == 0 {
+                            levels[destination] = light.levels[index];
+                        }
+                    }
+                }
+            }
+            class_offset = class_offset.checked_add((source.model_faces / 6) as u32)
+                .ok_or(MeshError::TooLarge)?;
+            instance_face_offset = instance_face_offset.checked_add(src_instances.len() as u32)
+                .ok_or(MeshError::TooLarge)?;
+        }
+        // Static-only sources omit their compact cell vector, so their light
+        // field must still be copied independently of the cube-cell loop.
+        if let Some(levels) = &mut levels {
+            for input in inputs {
+                let source = input.source;
+                let light = source.lighting.as_ref().ok_or(MeshError::InvalidParts)?;
+                let src_xy = source.size[0] as usize * source.size[1] as usize;
+                let dst_xy = size[0] as usize * size[1] as usize;
+                for index in 0..light.levels.len() {
+                    let x = index % source.size[0] as usize;
+                    let y = index / source.size[0] as usize % source.size[1] as usize;
+                    let z = index / src_xy;
+                    let dest = (z + input.offset[2] as usize) * dst_xy
+                        + (y + input.offset[1] as usize) * size[0] as usize
+                        + x + input.offset[0] as usize;
+                    if levels[dest] == 0 { levels[dest] = light.levels[index]; }
+                }
+            }
+        }
+        let mut combined = Self::new(size, base.origin, cells, templates)?;
+        if !instances.is_empty() {
+            combined = combined.with_instances(classes, model_faces, instances)?;
+        }
+        combined = combined.with_static_faces(statics)?;
+        combined = combined.with_ambient_occlusion(base.ambient_occlusion);
+        if let (Some(light), Some(levels)) = (&base.lighting, levels) {
+            combined = combined.with_lighting(levels, light.ambient)?;
+        }
+        combined.with_y_range(base.clip_y[0], base.clip_y[1])
+    }
+}
+
 /// Validate the immutable GPU input data without allocating or encoding a
 /// temporary full CPU triangle Mesh. Both compute and lazy CPU fallback need
 /// exactly the same finite-position/normal/UV and UNORM-color invariants.
