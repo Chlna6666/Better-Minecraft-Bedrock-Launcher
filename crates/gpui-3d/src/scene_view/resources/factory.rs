@@ -54,13 +54,26 @@ impl RendererResources {
                         label: Some("gpui-3d GPU batch culling".into()),
                         binary: embedded_shader(context, ShaderStage::Compute, "cs_cull")?,
                     })?);
-                resources.singleton_cull_shader =
-                    Some(device.create_shader_module(&ShaderModuleDescriptor {
+                // This is a performance-only alternative to cs_cull.
+                // If a particular backend driver rejects its module, keep
+                // the established compute path rather than disabling 3D.
+                let singleton = embedded_shader(
+                    context, ShaderStage::Compute, "cs_cull_singletons",
+                ).and_then(|binary| {
+                    Ok(device.create_shader_module(&ShaderModuleDescriptor {
                         label: Some("gpui-3d GPU singleton batch culling".into()),
-                        binary: embedded_shader(
-                            context, ShaderStage::Compute, "cs_cull_singletons",
-                        )?,
-                    })?);
+                        binary,
+                    })?)
+                });
+                match singleton {
+                    Ok(shader) => resources.singleton_cull_shader = Some(shader),
+                    Err(error) => {
+                        log::warn!(
+                            "gpui-3d singleton culling unavailable on {:?}: {error:#}; falling back to cs_cull",
+                            context.backend_kind(),
+                        );
+                    }
+                }
             }
             if let Some(prototype) = prototype {
                 resources.bind_group_layout = prototype.bind_group_layout;
