@@ -59,6 +59,10 @@ pub(super) struct SceneResources {
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     pub(super) command_revision: u64,
+    /// Exact structural range mapping eligible for a native-command splice.
+    /// Set only after stable GPU slots and survivor BindGroups were committed.
+    command_delta: Option<crate::prepare::StructuralDrawDelta>,
+    structural_bindings_spliced: bool,
     // Cached native commands remain valid while camera motion leaves CPU-pruned batches unchanged.
     command_visibility: Vec<bool>,
     batches: Vec<DrawBatchRange>,
@@ -393,6 +397,8 @@ impl SceneResources {
             projection: None,
             prepared: PreparedScene::default(),
             command_revision: 0,
+            command_delta: None,
+            structural_bindings_spliced: false,
             command_visibility: Vec::new(),
             batches: Vec::new(),
             batch_workspace: super::batching::BatchWorkspace::default(),
@@ -521,11 +527,14 @@ impl SceneResources {
         // Camera-only movement normally changes uniforms and GPU cull arguments, not
         // the native draw command list. Invalidate commands below only when their
         // bindings, draw batches or CPU-pruned visibility actually change.
+        self.command_delta = None;
+        self.structural_bindings_spliced = false;
         self.prepared.set_culling_bounds(scene_view.culling_bounds);
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
         let mut reordered_blends = None;
         let mut reused_resident_slots = false;
         let mut resident_commands_stable = false;
+        let mut native_structural_updated = false;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
             let camera_phase =
@@ -818,6 +827,7 @@ impl SceneResources {
                         device, renderer, bind_group_layout, sampler,
                         sampler_changed, assets_changed, textures_unchanged,
                     )?;
+                    native_structural_updated = structural_updated;
                     if !structural_updated {
                         self.sync_buffers(
                             device, renderer, bind_group_layout, sampler,
@@ -935,6 +945,18 @@ impl SceneResources {
         } else {
             false
         };
+        if native_structural_updated
+            && self.structural_bindings_spliced
+            && !camera_changed
+            && !culling_bounds_changed
+            && !sampler_changed
+            && !shadow_created
+            && !voxel_shader_changed
+            && !wire_changed
+            && self.generated_singleton_command_count().is_some()
+        {
+            self.command_delta = self.prepared.structural_draw_delta().cloned();
+        }
         if (draw_list_changed && !resident_commands_stable)
             || sampler_changed
             || shadow_created
@@ -1382,6 +1404,7 @@ impl SceneResources {
             device, renderer, bind_group_layout, sampler,
             textures_unchanged, sampler_changed,
         )?;
+        self.structural_bindings_spliced = spliced_bindings;
         if !spliced_bindings {
             self.sync_draw_resources(
                 device, renderer, bind_group_layout, sampler,
@@ -2709,6 +2732,25 @@ impl SceneResources {
         Ok(())
     }
 
+    /// Native scene command eligibility is independent of the backend's
+    /// native indirect ABI. This view has one indirect address per canonical
+    /// generated singleton, with resident bindings for every logical draw.
+    pub(super) fn generated_singleton_command_count(&self) -> Option<usize> {
+        let count = self.prepared.draws.len();
+        (self.voxel_shader
+            && self.culling.is_some()
+            && self.page_refs.only_generated_meshes()
+            && self.batch_workspace.singleton_layout()
+            && self.batches.len() == count
+            && self.draw_resources.len() == count
+            && self.draw_addresses.len() == count)
+            .then_some(count)
+    }
+
+    pub(super) fn native_command_delta(&self) -> Option<&crate::prepare::StructuralDrawDelta> {
+        self.command_delta.as_ref()
+    }
+
     pub(super) fn append_steps(
         &self,
         renderer: &RendererResources,
@@ -2740,7 +2782,9 @@ impl SceneResources {
             && self.draw_resources.len() == self.prepared.draws.len()
             && self.draw_addresses.len() == self.prepared.draws.len();
         if generated_singletons {
-            self.append_generated_singleton_steps(renderer, steps)?;
+            self.append_generated_singleton_range(
+                renderer, steps, 0..self.prepared.draws.len(),
+            )?;
         } else {
         let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
@@ -2885,16 +2929,24 @@ impl SceneResources {
     /// retained native BindGroup and indirect-address tables. The GPU culler
     /// owns visibility counts; the CPU inclusion mask only avoids issuing
     /// commands for completely offscreen singletons.
-    fn append_generated_singleton_steps(
+    pub(super) fn append_generated_singleton_range(
         &self,
         renderer: &RendererResources,
         steps: &mut Vec<RenderCommand>,
+        range: std::ops::Range<usize>,
     ) -> gpui::Result<()> {
+        if self.generated_singleton_command_count().is_none()
+            || range.start > range.end
+            || range.end > self.prepared.draws.len()
+        {
+            return Err(anyhow!("native generated Section range is invalid"));
+        }
         let arguments = self.culling.as_ref()
             .ok_or_else(|| anyhow!("GPU culling arguments are unavailable"))?
             .arguments;
         let bounds_visible = self.prepared.bounds_visibility();
-        for (index, draw) in self.prepared.draws.iter().enumerate() {
+        for index in range {
+            let draw = &self.prepared.draws[index];
             if renderer.rejects_material(&draw.material) {
                 continue;
             }

@@ -3,6 +3,7 @@ use super::{
     resources::RendererResources, scene::SceneResources,
 };
 use anyhow::{anyhow, bail};
+use crate::prepare::StructuralDrawDelta;
 use gfx_core::{BackendKind, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
@@ -33,6 +34,8 @@ struct RendererTimingTrace {
 struct CachedCommands {
     revision: Option<u64>,
     commands: Vec<RenderCommand>,
+    /// Only this canonical layout may be remapped through logical Section deltas.
+    generated_draw_count: Option<usize>,
 }
 
 impl CachedCommands {
@@ -47,6 +50,7 @@ impl CachedCommands {
             return Ok(());
         }
         self.revision = None;
+        self.generated_draw_count = None;
         self.commands.clear();
         let first = steps.len();
         build(steps)?;
@@ -54,6 +58,157 @@ impl CachedCommands {
         self.revision = Some(revision);
         Ok(())
     }
+
+    /// Reuse native commands belonging to survivor Sections and resolve only
+    /// the newly inserted/changed ranges. The final pass still flattens into a
+    /// RenderCommand slice, but does no survivor pipeline/mesh/BindGroup work.
+    fn append_spliced(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        steps: &mut Vec<RenderCommand>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        mut build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision == Some(revision) {
+            steps.extend_from_slice(&self.commands);
+            return Ok(());
+        }
+        if let (Some(count), Some(delta), Some(previous)) =
+            (draw_count, delta, self.revision)
+            && previous.wrapping_add(1) == revision
+            && self.generated_draw_count == Some(delta.previous_count)
+            && let Some(next) = self.splice_generated(delta, count, &mut build_range)?
+        {
+            if super::renderer::trace_timings() {
+                eprintln!(
+                    "gpui3d native_command_delta previous={} current={} edits={} commands={}",
+                    delta.previous_count, count, delta.edits.len(), next.len(),
+                );
+            }
+            steps.extend_from_slice(&next);
+            self.commands = next;
+            self.revision = Some(revision);
+            self.generated_draw_count = Some(count);
+            return Ok(());
+        }
+        self.append(revision, steps, build)?;
+        self.generated_draw_count = draw_count;
+        Ok(())
+    }
+
+    /// Transactional sparse rebuild: validate all previous command indices and
+    /// edit intervals before touching the published command cache.
+    fn splice_generated(
+        &self,
+        delta: &StructuralDrawDelta,
+        new_count: usize,
+        build_range: &mut impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<Option<Vec<RenderCommand>>> {
+        let mut previous_command = None;
+        for command in &self.commands {
+            let RenderCommand::DrawIndirect(draw) = command else {
+                return Ok(None);
+            };
+            if draw.offset % 16 != 0 || draw.offset / 16 >= delta.previous_count as u64 {
+                return Ok(None);
+            }
+            if previous_command.is_some_and(|old| old >= draw.offset) {
+                return Ok(None);
+            }
+            previous_command = Some(draw.offset);
+        }
+        let mut old = 0;
+        let mut new = 0;
+        for edit in &delta.edits {
+            if edit.old.start < old
+                || edit.new.start < new
+                || edit.old.end > delta.previous_count
+                || edit.new.end > new_count
+                || edit.old.start > edit.old.end
+                || edit.new.start > edit.new.end
+                || edit.old.start - old != edit.new.start - new
+            {
+                return Ok(None);
+            }
+            old = edit.old.end;
+            new = edit.new.end;
+        }
+        if delta.previous_count - old != new_count - new {
+            return Ok(None);
+        }
+        let mut next = Vec::with_capacity(self.commands.len().saturating_add(new_count.saturating_sub(delta.previous_count)));
+        let mut position = 0usize;
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        for edit in &delta.edits {
+            if !copy_native_survivors(
+                &self.commands, &mut position,
+                old_cursor..edit.old.start, new_cursor, &mut next,
+            ) {
+                return Ok(None);
+            }
+            while let Some(RenderCommand::DrawIndirect(draw)) = self.commands.get(position) {
+                if draw.offset / 16 >= edit.old.end as u64 {
+                    break;
+                }
+                position += 1;
+            }
+            let from = next.len();
+            build_range(edit.new.clone(), &mut next)?;
+            if !generated_range_matches(&next[from..], edit.new.clone()) {
+                return Ok(None);
+            }
+            old_cursor = edit.old.end;
+            new_cursor = edit.new.end;
+        }
+        if !copy_native_survivors(
+            &self.commands, &mut position,
+            old_cursor..delta.previous_count, new_cursor, &mut next,
+        ) || position != self.commands.len() {
+            return Ok(None);
+        }
+        Ok(Some(next))
+    }
+}
+
+fn generated_range_matches(commands: &[RenderCommand], range: std::ops::Range<usize>) -> bool {
+    let mut last = None;
+    commands.iter().all(|command| {
+        let RenderCommand::DrawIndirect(draw) = command else { return false };
+        let index = draw.offset / 16;
+        if draw.offset % 16 != 0 || index < range.start as u64
+            || index >= range.end as u64 || last.is_some_and(|old| old >= index)
+        {
+            return false;
+        }
+        last = Some(index);
+        true
+    })
+}
+
+fn copy_native_survivors(
+    old: &[RenderCommand],
+    position: &mut usize,
+    old_range: std::ops::Range<usize>,
+    new_start: usize,
+    next: &mut Vec<RenderCommand>,
+) -> bool {
+    while let Some(command) = old.get(*position) {
+        let RenderCommand::DrawIndirect(draw) = command else { return false };
+        let logical = (draw.offset / 16) as usize;
+        if logical >= old_range.end { break; }
+        if logical < old_range.start { return false; }
+        let Some(next_logical) = new_start.checked_add(logical - old_range.start)
+            .and_then(|value| u64::try_from(value).ok())
+            .and_then(|value| value.checked_mul(16)) else { return false };
+        let mut copy = draw.clone();
+        copy.offset = next_logical;
+        next.push(RenderCommand::DrawIndirect(copy));
+        *position += 1;
+    }
+    true
 }
 
 impl RendererTimingTrace {
@@ -387,9 +542,16 @@ impl RendererExtensionRenderer for Renderer {
             self.command_cache
                 .entry(scene_view.id)
                 .or_default()
-                .append(scene.command_revision, steps, |steps| {
-                    scene.append_steps(&self.resources, scene_view.voxel_shader, steps)
-                })?;
+                .append_spliced(
+                    scene.command_revision,
+                    scene.generated_singleton_command_count(),
+                    scene.native_command_delta(),
+                    steps,
+                    |steps| scene.append_steps(&self.resources, scene_view.voxel_shader, steps),
+                    |range, steps| {
+                        scene.append_generated_singleton_range(&self.resources, steps, range)
+                    },
+                )?;
         }
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
