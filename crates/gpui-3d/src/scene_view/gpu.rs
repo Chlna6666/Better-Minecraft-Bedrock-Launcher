@@ -19,7 +19,7 @@ use gfx_core::{
 };
 use gpui::Bounds;
 use gpui::ExtensionDevice;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 
 const ALPHA_MODE_OPAQUE: u32 = 0;
@@ -146,6 +146,9 @@ pub(super) struct MeshArena {
     pages: Vec<Option<ArenaPage>>,
     available_pages: BTreeSet<(u64, usize)>,
     free_pages: Vec<usize>,
+    /// Only pages that released a GPU-visible suballocation since the last
+    /// completed submission. Prevents an O(all pages) check every frame.
+    retired_pages: HashSet<usize>,
 }
 
 impl MeshArena {
@@ -341,16 +344,23 @@ impl MeshArena {
                 .remove(&(page.available_bytes(), allocation.page));
             self.pages[allocation.page] = None;
             self.free_pages.push(allocation.page);
+            // An old retirement no longer exists after final page destruction.
+            // The same index can be reused by a new GPU buffer.
+            self.retired_pages.remove(&allocation.page);
         } else {
             page.retire(allocation.offset, allocation.bytes)?;
+            self.retired_pages.insert(allocation.page);
         }
         Ok(())
     }
 
-    /// Called only after the host has confirmed all prior GPU submissions completed.
+    /// Called only after the host has confirmed all prior GPU submissions
+    /// completed. Iterate touched pages, not the entire resident page pool.
     pub(super) fn reclaim_after_gpu_idle(&mut self) {
-        for (index, page) in self.pages.iter_mut().enumerate() {
-            let Some(page) = page else { continue };
+        for index in self.retired_pages.drain() {
+            let Some(page) = self.pages.get_mut(index).and_then(Option::as_mut) else {
+                continue;
+            };
             if page.retired_ranges.is_empty() {
                 continue;
             }
@@ -364,11 +374,10 @@ impl MeshArena {
         }
     }
 
+    /// Queried on every GPU-owner frame and shared by DX11/DX12/Vulkan/GL.
+    /// A sparse Section retirement must not scan hundreds of resident pages.
     pub(super) fn has_retired_ranges(&self) -> bool {
-        self.pages
-            .iter()
-            .flatten()
-            .any(|page| !page.retired_ranges.is_empty())
+        !self.retired_pages.is_empty()
     }
 
     pub(super) fn stats(&self) -> (usize, u64, u64, u64) {
@@ -383,6 +392,57 @@ impl MeshArena {
                     dead + page.used.saturating_sub(page.live_bytes),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod sparse_arena_retirement_tests {
+    use super::*;
+
+    fn page(id: u32, retired: bool) -> ArenaPage {
+        ArenaPage {
+            buffer: BufferId::from_parts(id, 1),
+            capacity: 1024,
+            used: if retired { 256 } else { 128 },
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: if retired { vec![(128, 128)] } else { Vec::new() },
+        }
+    }
+
+    #[test]
+    fn only_retired_pages_are_reclaimed_after_gpu_completion() {
+        let mut arena = MeshArena::default();
+        for index in 0..128 {
+            arena.pages.push(Some(page(index, index == 73)));
+        }
+        arena.retired_pages.insert(73);
+        assert!(arena.has_retired_ranges());
+        // The other 127 resident pages are intentionally untouched.
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(arena.pages[73].as_ref().unwrap().free_ranges, vec![(128, 128)]);
+        assert!(arena.pages[72].as_ref().unwrap().free_ranges.is_empty());
+        assert!(arena.pages[74].as_ref().unwrap().free_ranges.is_empty());
+        assert!(!arena.available_pages.is_empty());
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+    }
+
+    #[test]
+    fn retired_page_indices_do_not_outlive_recycled_page_slots() {
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(page(0, false)));
+        arena.retired_pages.insert(0);
+        // In production release() removes this index on the final buffer
+        // destruction, before a new arena buffer can reuse that slot.
+        arena.pages[0] = None;
+        arena.retired_pages.remove(&0);
+        arena.pages[0] = Some(page(1, false));
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
     }
 }
 
