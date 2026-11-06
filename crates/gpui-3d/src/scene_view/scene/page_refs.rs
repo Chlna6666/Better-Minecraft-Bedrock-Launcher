@@ -17,6 +17,7 @@ impl PageRefs {
         action(mesh.vertices);
         if let Some(generated) = &mesh.generated {
             action(generated.templates);
+            action(generated.arguments);
         }
     }
 

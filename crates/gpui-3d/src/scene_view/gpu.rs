@@ -140,6 +140,7 @@ pub(super) struct MeshArena {
     generated_output: bool,
     /// Separate SRV-only templates from writable D3D11 UAV face outputs.
     generated_templates: bool,
+    generated_arguments: bool,
     generated_limits: gfx_core::BufferBindingLimits,
     pages: Vec<Option<ArenaPage>>,
     available_pages: BTreeSet<(u64, usize)>,
@@ -155,6 +156,15 @@ impl MeshArena {
         Self {
             generated_output: true,
             generated_templates: true,
+            generated_limits: limits,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn generated_arguments(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            generated_output: true,
+            generated_arguments: true,
             generated_limits: limits,
             ..Self::default()
         }
@@ -226,6 +236,8 @@ impl MeshArena {
             label: Some(if self.generated_output {
                 if self.generated_templates {
                     "gpui-3d generated template pool".into()
+                } else if self.generated_arguments {
+                    "gpui-3d generated part-count pool".into()
                 } else {
                     "gpui-3d generated face pool".into()
                 }
@@ -235,6 +247,9 @@ impl MeshArena {
             size: capacity,
             usage: if self.generated_templates {
                 BufferUsage::STORAGE | BufferUsage::COPY_DST
+            } else if self.generated_arguments {
+                BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE
+                    | BufferUsage::INDIRECT | BufferUsage::COPY_DST
             } else if self.generated_output {
                 BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST
             } else {
@@ -1042,17 +1057,22 @@ pub(super) fn destroy_mesh(
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
     template_arena: &mut MeshArena,
+    arguments_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     if let Some(allocation) = mesh.allocation {
         if let Some(generated) = &mesh.generated {
-            // Mesh output and template source each have an independently
-            // retired slice of the device-level generated page pool. Never
-            // destroy the page while other Sections still reference it.
-            if let Some(template_allocation) = generated.template_allocation {
+            // Generated faces, templates and part counts are distinct pools.
+            // Their suballocations remain live until the corresponding mesh
+            // is retired, independent of other Section users of the page.
+            if let Some(argument_allocation) = generated.argument_allocation {
+                arguments_arena.release(device, argument_allocation)?;
+            } else {
                 device.destroy_buffer(generated.arguments)?;
+            }
+            if let Some(template_allocation) = generated.template_allocation {
                 template_arena.release(device, template_allocation)?;
             } else {
-                device.destroy_buffer_batch(&[generated.templates, generated.arguments])?;
+                device.destroy_buffer(generated.templates)?;
             }
             return generated_arena.release(device, allocation);
         }

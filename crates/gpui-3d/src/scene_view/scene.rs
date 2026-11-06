@@ -94,6 +94,7 @@ pub(super) struct SceneResources {
     /// No global GPU handles or cross-device sharing.
     generated_arena: Rc<RefCell<MeshArena>>,
     template_arena: Rc<RefCell<MeshArena>>,
+    argument_arena: Rc<RefCell<MeshArena>>,
     retired_meshes: Vec<MeshResources>,
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
@@ -260,7 +261,8 @@ impl SceneResources {
         let limits = device.buffer_binding_limits();
         let faces = Rc::new(RefCell::new(MeshArena::generated_output(limits)));
         let templates = Rc::new(RefCell::new(MeshArena::generated_templates(limits)));
-        Self::new_shared(device, backend, faces, templates)
+        let arguments = Rc::new(RefCell::new(MeshArena::generated_arguments(limits)));
+        Self::new_shared(device, backend, faces, templates, arguments)
     }
 
     pub(super) fn new_shared(
@@ -268,6 +270,7 @@ impl SceneResources {
         backend: BackendKind,
         shared_generated_arena: Rc<RefCell<MeshArena>>,
         shared_template_arena: Rc<RefCell<MeshArena>>,
+        shared_argument_arena: Rc<RefCell<MeshArena>>,
     ) -> gpui::Result<Self> {
         let draw_capacity = 1;
         let light_capacity = 1;
@@ -386,6 +389,7 @@ impl SceneResources {
             arena: MeshArena::default(),
             generated_arena: shared_generated_arena,
             template_arena: shared_template_arena,
+            argument_arena: shared_argument_arena,
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
@@ -776,7 +780,7 @@ impl SceneResources {
             }
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
         }
         if gpu_culling {
             if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
@@ -1521,7 +1525,7 @@ impl SceneResources {
                 ) {
                     Ok(created) => created,
                     Err(error) => {
-                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
                         return Err(error);
                     }
                 };
@@ -1536,9 +1540,9 @@ impl SceneResources {
                 if let Err(error) = flush_pending_generated_meshes(
                     device, &mut pending_gpu, self.mesh_shader.as_ref(),
                     &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
-                    &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), backend,
+                    &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
                 ) {
-                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
                     return Err(error);
                 }
                 pending_ids.clear();
@@ -1548,9 +1552,9 @@ impl SceneResources {
         if let Err(error) = flush_pending_generated_meshes(
             device, &mut pending_gpu, self.mesh_shader.as_ref(),
             &mut pending, &mut self.meshes, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
-            &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), backend,
+            &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
         ) {
-            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
             return Err(error);
         }
         Ok(())
@@ -2110,10 +2114,10 @@ impl SceneResources {
         }
         self.page_refs.clear();
         for (_, mesh) in self.meshes.drain() {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut())?;
+            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
         }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
@@ -2142,6 +2146,7 @@ fn flush_pending_generated_meshes(
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
     template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
     backend: BackendKind,
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
@@ -2149,13 +2154,13 @@ fn flush_pending_generated_meshes(
         let inputs = staged_gpu.iter().map(|(_, mesh)| mesh.as_ref())
             .collect::<Vec<_>>();
         let created = super::generated::create_many_pooled(
-            device, &inputs, shaders, generated_arena, template_arena, backend,
+            device, &inputs, shaders, generated_arena, template_arena, argument_arena, backend,
         )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             pending.push((id, resource, None));
         }
     }
-    upload_pending_meshes(device, pending, meshes, page_refs, retired_meshes, arena, generated_arena, template_arena)
+    upload_pending_meshes(device, pending, meshes, page_refs, retired_meshes, arena, generated_arena, template_arena, argument_arena)
 }
 
 fn discard_pending_meshes(
@@ -2164,9 +2169,10 @@ fn discard_pending_meshes(
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
     template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     for (_, mesh, _) in pending.drain(..) {
-        destroy_mesh(device, mesh, arena, generated_arena, template_arena)?;
+        destroy_mesh(device, mesh, arena, generated_arena, template_arena, argument_arena)?;
     }
     Ok(())
 }
@@ -2180,6 +2186,7 @@ fn upload_pending_meshes(
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
     template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     if pending.is_empty() {
         return Ok(());
@@ -2196,7 +2203,7 @@ fn upload_pending_meshes(
         })
         .collect::<Vec<_>>();
     if let Err(error) = device.write_buffer_batch(&writes) {
-        discard_pending_meshes(device, pending, arena, generated_arena, template_arena)?;
+        discard_pending_meshes(device, pending, arena, generated_arena, template_arena, argument_arena)?;
         return Err(error.into());
     }
     for (id, mesh, _) in pending.drain(..) {

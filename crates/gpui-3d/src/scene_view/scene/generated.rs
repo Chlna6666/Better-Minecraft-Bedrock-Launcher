@@ -79,11 +79,14 @@ impl SceneResources {
                         .map(|mapping| std::mem::take(&mut mapping.scratch_entries))
                         .unwrap_or_default();
                     scratch.clear();
-                    entry.insert((draw.mesh.parts().len() * 16, scratch))
+                    entry.insert((generated.argument_page_bytes as usize, scratch))
                 }
             };
+            let argument_part = generated.argument_base
+                .checked_add(u32::try_from(part).context("generated material index overflow")?)
+                .ok_or_else(|| anyhow!("generated argument page index overflow"))?;
             mapping.extend([
-                part as u32,
+                argument_part,
                 index as u32,
                 u32::try_from(batch.first_instance).context("generated draw index overflow")?,
                 0,

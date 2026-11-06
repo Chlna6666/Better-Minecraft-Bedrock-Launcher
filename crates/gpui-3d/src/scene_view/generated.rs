@@ -24,6 +24,11 @@ pub(super) struct GeneratedMesh {
     /// Absolute index of the first 112-byte header record in the shared page.
     pub template_base: u32,
     pub template_page_bytes: u64,
+    /// Resident material-count buffer shared by other generated Sections.
+    pub argument_allocation: Option<ArenaAllocation>,
+    pub argument_base: u32,
+    pub argument_offset: u64,
+    pub argument_page_bytes: u64,
 }
 pub(super) struct Shaders(pub [ShaderModuleId; 6]);
 pub(super) fn create_shaders(
@@ -171,6 +176,10 @@ struct PendingGenerated {
     template_offset: u64,
     template_base: u32,
     template_page_bytes: u64,
+    argument_allocation: Option<ArenaAllocation>,
+    argument_base: u32,
+    argument_offset: u64,
+    argument_page_bytes: u64,
     vertex_base: u32,
     vertex_binding_bytes: usize,
 }
@@ -198,6 +207,10 @@ impl PendingGenerated {
                 template_allocation: self.template_allocation,
                 template_base: self.template_base,
                 template_page_bytes: self.template_page_bytes,
+                argument_allocation: self.argument_allocation,
+                argument_base: self.argument_base,
+                argument_offset: self.argument_offset,
+                argument_page_bytes: self.argument_page_bytes,
             }),
         }
     }
@@ -206,17 +219,21 @@ impl PendingGenerated {
 fn discard_pending_generated(
     device: &mut dyn ExtensionDevice,
     pending: Vec<PendingGenerated>,
-    mut arena: Option<(&mut MeshArena, &mut MeshArena)>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena)>,
 ) {
     for mesh in pending {
         for (slot, &buffer) in mesh.buffers.iter().enumerate() {
             if (slot != 2 || mesh.allocation.is_none())
                 && (slot != 1 || mesh.template_allocation.is_none())
+                && (slot != 3 || mesh.argument_allocation.is_none())
             {
                 let _ = device.destroy_buffer(buffer);
             }
         }
-        if let Some((faces, templates)) = arena.as_mut() {
+        if let Some((faces, templates, arguments)) = arena.as_mut() {
+            if let Some(allocation) = mesh.argument_allocation {
+                let _ = arguments.release(device, allocation);
+            }
             if let Some(allocation) = mesh.template_allocation {
                 let _ = templates.release(device, allocation);
             }
@@ -233,7 +250,7 @@ fn discard_pending_generated(
 fn prepare_generated(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
-    mut arena: Option<(&mut MeshArena, &mut MeshArena, BackendKind)>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
 ) -> gpui::Result<PendingGenerated> {
     let source = mesh
         .gpu_voxels()
@@ -360,12 +377,23 @@ fn prepare_generated(
     let mut template_offset = 0u64;
     let mut template_base = 0u32;
     let mut template_page_bytes = templates.len() as u64;
+    let mut argument_allocation = None;
+    let mut argument_offset = 0u64;
+    let mut argument_base = 0u32;
+    let mut argument_page_bytes = args.len() as u64;
     let mut pooled_offset = 0u64;
     let mut pooled_capacity = output_bytes;
     let result = (|| {
         for (slot, (size, usage)) in specs.into_iter().enumerate() {
-            if (slot == 1 || slot == 2) && let Some((faces, templates, backend)) = arena.as_mut() {
-                let pool = if slot == 1 { templates } else { faces };
+            if (slot == 1 || slot == 2 || slot == 3)
+                && let Some((faces, templates, arguments, backend)) = arena.as_mut()
+            {
+                let pool = match slot {
+                    1 => templates,
+                    2 => faces,
+                    3 => arguments,
+                    _ => unreachable!(),
+                };
                 let (allocation, buffer, offset, capacity) =
                     pool.allocate(device, *backend, size as u64)?;
                 // Both immutable template inputs and generated face outputs
@@ -381,7 +409,7 @@ fn prepare_generated(
                     template_base = u32::try_from(offset / 112)
                         .context("generated template index exceeds u32")?;
                     template_page_bytes = capacity;
-                } else {
+                } else if slot == 2 {
                     pooled_allocation = Some(allocation);
                     pooled_offset = offset;
                     pooled_capacity = usize::try_from(capacity)
@@ -389,6 +417,15 @@ fn prepare_generated(
                     if offset / 16 >= 0x8000_0000 {
                         return Err(anyhow!("generated face pool exceeds vertex address range"));
                     }
+                } else {
+                    argument_allocation = Some(allocation);
+                    argument_offset = offset;
+                    if offset % 16 != 0 {
+                        return Err(anyhow!("generated argument offset violates u32x4 record alignment"));
+                    }
+                    argument_base = u32::try_from(offset / 16)
+                        .context("generated part-count address exceeds u32")?;
+                    argument_page_bytes = capacity;
                 }
                 buffers.push(buffer);
             } else {
@@ -415,7 +452,11 @@ fn prepare_generated(
                 BufferWrite {
                     descriptor: BufferWriteDescriptor {
                         buffer: buffers[slot],
-                        offset: if slot == 1 { template_offset } else { 0 },
+                        offset: match slot {
+                            1 => template_offset,
+                            3 => argument_offset,
+                            _ => 0,
+                        },
                     },
                     data: data.as_slice(),
                 }
@@ -431,6 +472,7 @@ fn prepare_generated(
                     offset: match slot {
                         1 => template_offset,
                         2 => pooled_offset,
+                        3 => argument_offset,
                         _ => 0,
                     },
                     size: *size as u64,
@@ -479,11 +521,15 @@ fn prepare_generated(
             for (slot, buffer) in buffers.into_iter().enumerate() {
                 if (slot != 2 || pooled_allocation.is_none())
                     && (slot != 1 || template_allocation.is_none())
+                    && (slot != 3 || argument_allocation.is_none())
                 {
                     let _ = device.destroy_buffer(buffer);
                 }
             }
-            if let Some((faces, templates, _)) = arena {
+            if let Some((faces, templates, arguments, _)) = arena {
+                if let Some(allocation) = argument_allocation {
+                    let _ = arguments.release(device, allocation);
+                }
                 if let Some(allocation) = template_allocation {
                     let _ = templates.release(device, allocation);
                 }
@@ -508,6 +554,10 @@ fn prepare_generated(
         template_offset,
         template_base,
         template_page_bytes,
+        argument_allocation,
+        argument_base,
+        argument_offset,
+        argument_page_bytes,
     })
 }
 
@@ -530,16 +580,17 @@ pub(super) fn create_many_pooled(
     shaders: &Shaders,
     arena: &mut MeshArena,
     template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
     backend: BackendKind,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, Some((arena, template_arena, backend)))
+    create_many_impl(device, meshes, shaders, Some((arena, template_arena, argument_arena, backend)))
 }
 
 fn create_many_impl(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
     shaders: &Shaders,
-    mut arena: Option<(&mut MeshArena, &mut MeshArena, BackendKind)>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
@@ -549,14 +600,14 @@ fn create_many_impl(
     let trace_started = super::renderer::trace_timings().then(Instant::now);
     let mut pending = Vec::with_capacity(meshes.len());
     for mesh in meshes {
-        let pool = arena.as_mut().map(|(faces, templates, backend)| {
-            (&mut **faces, &mut **templates, *backend)
+        let pool = arena.as_mut().map(|(faces, templates, arguments, backend)| {
+            (&mut **faces, &mut **templates, &mut **arguments, *backend)
         });
         match prepare_generated(device, mesh, pool) {
             Ok(mesh) => pending.push(mesh),
             Err(error) => {
                 discard_pending_generated(
-                    device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
+                    device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
                 );
                 return Err(error);
             }
@@ -588,7 +639,7 @@ fn create_many_impl(
     drop(dispatches);
     if let Err(error) = submitted {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
+            device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
         );
         return Err(error);
     }
@@ -601,7 +652,7 @@ fn create_many_impl(
     }
     if let Err(error) = device.destroy_buffer_batch(&scratch) {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
+            device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
         );
         return Err(error.into());
     }
@@ -610,7 +661,7 @@ fn create_many_impl(
         if total_ms >= 16.0 {
             eprintln!(
                 "gpui3d generated_batch backend={:?} meshes={} dispatches={} scratch_buffers={} prepare_ms={:.2} dispatch_ms={:.2} retire_ms={:.2} total_ms={:.2}",
-                arena.as_ref().map(|(_, _, backend)| *backend),
+                arena.as_ref().map(|(_, _, _, backend)| *backend),
                 meshes.len(),
                 dispatch_count,
                 scratch.len(),
