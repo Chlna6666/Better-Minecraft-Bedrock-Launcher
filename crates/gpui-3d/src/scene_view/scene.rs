@@ -1378,16 +1378,23 @@ impl SceneResources {
         // culler. Copy BindGroup metadata only across unchanged logical
         // intervals, resolving Mesh/Material bindings for new Sections only.
         // Generated Page mapping remains a separate GPU compute publication.
-        if !self.sync_structural_draw_resources(
+        let spliced_bindings = self.sync_structural_draw_resources(
             device, renderer, bind_group_layout, sampler,
             textures_unchanged, sampler_changed,
-        )? {
+        )?;
+        if !spliced_bindings {
             self.sync_draw_resources(
                 device, renderer, bind_group_layout, sampler,
                 sampler_changed, true, defer_binding_cleanup,
             )?;
         }
-        self.sync_generated_draws(device, true)?;
+        // When the native bindings were copied by structural splice, the
+        // old Page sources and CPU logical slot map are still available.
+        // Update only Pages owning a changed physical slot; a full binding
+        // fallback or GPU count reallocation publishes all Pages normally.
+        if !spliced_bindings || !self.sync_structural_generated_pages(device)? {
+            self.sync_generated_draws(device, true)?;
+        }
 
         // All dependent GPU operations completed successfully. Extend only
         // the new physical tail; unchanged rows remain byte-identical.
