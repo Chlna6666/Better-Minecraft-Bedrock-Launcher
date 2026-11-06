@@ -1070,6 +1070,13 @@ struct MaterialRecord {
     generation: u64,
 }
 
+/// Retain material snapshots for the live draw working set. A fixed 8K or
+/// 64K ceiling makes a 100K+ section scene re-encode the uncached tail on
+/// every publication. Bound historical snapshots independently of scene size.
+fn material_record_cache_limit(draws: usize) -> usize {
+    draws.saturating_mul(2).clamp(8_192, 262_144)
+}
+
 #[derive(Default)]
 pub(super) struct DrawRecordCache {
     light_count: Option<u32>,
@@ -1114,11 +1121,10 @@ impl DrawRecordCache {
             .ok_or_else(|| anyhow!("GPUI 3D physical DrawParams table overflows usize"))?;
         next_keys.clear();
         next_keys.extend_from_slice(&previous_keys[..previous_keys.len().min(high_water)]);
-        // Avoid the 8,192-material hard ceiling turning every unchanged
-        // resident Section into a new GPU upload. Size the cache to the live
-        // draw working set and discard snapshots held only by this cache.
-        // This cleanup runs once per publication, never inside the draw loop.
-        let cache_limit = draws.len().saturating_mul(2).clamp(8_192, 65_536);
+        // Size the cache for the live (possibly 100K+) draw working set so
+        // ordinary Section updates do not repeatedly re-encode uncached
+        // material snapshots. Prune snapshots no longer held by the scene.
+        let cache_limit = material_record_cache_limit(draws.len());
         if self.records.len() >= cache_limit {
             self.records.retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
         }
@@ -1231,6 +1237,10 @@ impl DrawRecordCache {
             self.records.clear();
             self.light_count = Some(light_count);
         }
+        let cache_limit = material_record_cache_limit(draws.len());
+        if self.records.len() >= cache_limit {
+            self.records.retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
         let stride = DRAW_PARAMS_STRIDE as usize;
         bytes.clear();
         bytes.reserve(draws.len().max(1).saturating_mul(stride));
@@ -1263,9 +1273,9 @@ impl DrawRecordCache {
             let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
                 .try_into()
                 .expect("draw encoder must write exactly one aligned record");
-            // Never retain unbounded historical snapshots. Existing IDs may
-            // be refreshed even if the cache is at capacity.
-            if self.records.len() < 8192 || self.records.contains_key(&key) {
+            // Keep the live material working set; bound historical snapshots
+            // even if the scene has accumulated many distinct states.
+            if self.records.len() < cache_limit || self.records.contains_key(&key) {
                 self.records.insert(key, MaterialRecord {
                     material: draw.material.clone(),
                     bytes: record,
@@ -1589,6 +1599,14 @@ mod tests {
         encode_voxel_mesh,
     };
     use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn material_cache_capacity_tracks_large_scenes_without_unbounded_growth() {
+        assert_eq!(super::material_record_cache_limit(0), 8192);
+        assert_eq!(super::material_record_cache_limit(8192), 16384);
+        assert_eq!(super::material_record_cache_limit(103305), 206610);
+        assert_eq!(super::material_record_cache_limit(1_000_000), 262144);
+    }
 
     #[test]
     fn cached_draw_records_match_full_encoder_across_light_counts() {
