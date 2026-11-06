@@ -13,17 +13,12 @@ pub(crate) struct Texture {
 }
 impl Texture {
     pub(crate) fn bytes(&self) -> u64 {
-        (0..self.desc.mip_level_count)
-            .map(|mip| {
-                u64::from((self.desc.size.width() >> mip).max(1))
-                    * u64::from((self.desc.size.height() >> mip).max(1))
-                    * u64::from(self.desc.format.bytes_per_pixel())
-            })
-            .sum()
+        self.desc.byte_size()
     }
 }
 pub(crate) struct View {
     pub(crate) native: glow::NativeTexture,
+    pub(crate) target: u32,
     pub(crate) size: Extent2d,
     pub(crate) format: Format,
     pub(crate) usage: TextureUsage,
@@ -51,7 +46,12 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
 
 impl ResourceDevice for OpenGlDevice {
     fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
-        self.texture_array_limits
+        TextureArrayCapabilities {
+            array_resources: true,
+            layer_uploads: true,
+            indexed_sampling: false,
+            ..self.texture_array_limits
+        }
     }
 
     fn buffer_binding_limits(&self) -> BufferBindingLimits {
@@ -210,6 +210,16 @@ impl ResourceDevice for OpenGlDevice {
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
         let (width, height) = native_extent(desc.size)?;
+        let target = match desc.dimension {
+            TextureDimension::D2 => glow::TEXTURE_2D,
+            TextureDimension::D2Array { layers } => {
+                self.texture_array_capabilities().plan(
+                    desc.size.width(), desc.size.height(), layers,
+                    desc.mip_level_count, desc.format,
+                )?;
+                glow::TEXTURE_2D_ARRAY
+            }
+        };
         if desc.memory_location == MemoryLocation::GpuToCpu {
             return Err(Error::InvalidInput(
                 "use OpenGL read_texture for CPU readback".into(),
@@ -220,14 +230,27 @@ impl ResourceDevice for OpenGlDevice {
         // SAFETY: immutable texture storage is allocated on the owned current GL context.
         let texture = unsafe {
             let texture = self.gl.create_texture().map_err(native)?;
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            self.gl.tex_storage_2d(
-                glow::TEXTURE_2D,
-                desc.mip_level_count as i32,
-                internal,
-                width,
-                height,
-            );
+            self.gl.bind_texture(target, Some(texture));
+            if let TextureDimension::D2Array { layers } = desc.dimension {
+                self.gl.tex_storage_3d(
+                    target,
+                    desc.mip_level_count as i32,
+                    internal,
+                    width,
+                    height,
+                    i32::try_from(layers).map_err(|_| {
+                        Error::InvalidInput("OpenGL array depth exceeds native i32".into())
+                    })?,
+                );
+            } else {
+                self.gl.tex_storage_2d(
+                    target,
+                    desc.mip_level_count as i32,
+                    internal,
+                    width,
+                    height,
+                );
+            }
             texture
         };
         if let Err(error) = self.check() {
@@ -243,6 +266,9 @@ impl ResourceDevice for OpenGlDevice {
     }
     fn write_texture(&mut self, desc: TextureWriteDescriptor, bytes: &[u8]) -> Result<()> {
         let texture = self.textures.get(desc.texture)?;
+        if texture.desc.dimension != TextureDimension::D2 {
+            return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+        }
         desc.validate_against(&texture.desc, bytes.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST)
             || desc.layout.bytes_per_row.get() % texture.desc.format.bytes_per_pixel() != 0
@@ -276,6 +302,55 @@ impl ResourceDevice for OpenGlDevice {
         }
         self.check()
     }
+    fn write_texture_array_layer(
+        &mut self,
+        desc: TextureArrayLayerWriteDescriptor,
+        data: &[u8],
+    ) -> Result<()> {
+        let texture = self.textures.get(desc.texture)?;
+        desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
+        let native = texture.native;
+        let format = texture.desc.format;
+        let upload = desc.upload;
+        if upload.layout.bytes_per_row.get() % format.bytes_per_pixel() != 0 {
+            return Err(Error::InvalidInput("array row pitch must be pixel-aligned".into()));
+        }
+        let offset = usize::try_from(upload.layout.offset)
+            .map_err(|_| Error::InvalidInput("array source offset exceeds usize".into()))?;
+        let layer = i32::try_from(upload.layer)
+            .map_err(|_| Error::InvalidInput("array layer exceeds GL signed index".into()))?;
+        self.park()?;
+        let (_, external, kind) = format(format);
+        // GLSL sampler2DArray sees the true texture slice. GL sub-image
+        // upload depth is one, so a write cannot cross layer boundaries.
+        unsafe {
+            self.gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(native));
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.pixel_store_i32(
+                glow::UNPACK_ROW_LENGTH,
+                i32::try_from(upload.layout.bytes_per_row.get() / format.bytes_per_pixel())
+                    .map_err(|_| Error::InvalidInput("array row pitch exceeds GL i32".into()))?,
+            );
+            self.gl.tex_sub_image_3d(
+                glow::TEXTURE_2D_ARRAY,
+                i32::try_from(upload.mip_level).map_err(|_| {
+                    Error::InvalidInput("array mip index exceeds GL i32".into())
+                })?,
+                i32::try_from(upload.origin.x).map_err(|_| Error::InvalidInput("array X exceeds GL i32".into()))?,
+                i32::try_from(upload.origin.y).map_err(|_| Error::InvalidInput("array Y exceeds GL i32".into()))?,
+                layer,
+                i32::try_from(upload.extent.width()).map_err(|_| Error::InvalidInput("array width exceeds GL i32".into()))?,
+                i32::try_from(upload.extent.height()).map_err(|_| Error::InvalidInput("array height exceeds GL i32".into()))?,
+                1,
+                external,
+                kind,
+                glow::PixelUnpackData::Slice(Some(&data[offset..])),
+            );
+            self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+        }
+        self.check()
+    }
+
     fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc)?;
@@ -285,6 +360,12 @@ impl ResourceDevice for OpenGlDevice {
             ));
         }
         let size = texture.desc.mip_extent(desc.base_mip_level)?;
+        let target = if matches!(texture.desc.dimension, TextureDimension::D2Array { .. }) {
+            glow::TEXTURE_2D_ARRAY
+        } else {
+            glow::TEXTURE_2D
+        };
+        let layers = texture.desc.dimension.layers();
         self.park()?;
         // SAFETY: source has immutable storage; the new name has never been bound and the
         // validated mip range shares native storage without a texture copy.
@@ -292,13 +373,13 @@ impl ResourceDevice for OpenGlDevice {
             let view = self.gl.create_texture().map_err(native)?;
             (self.view_texture)(
                 view.0.get(),
-                glow::TEXTURE_2D,
+                target,
                 texture.native.0.get(),
                 format(desc.format).0,
                 desc.base_mip_level,
                 desc.mip_level_count,
                 0,
-                1,
+                layers,
             );
             view
         };
@@ -310,6 +391,7 @@ impl ResourceDevice for OpenGlDevice {
         }
         Ok(self.views.insert(View {
             native: view,
+            target,
             size,
             format: desc.format,
             usage: texture.desc.usage,
