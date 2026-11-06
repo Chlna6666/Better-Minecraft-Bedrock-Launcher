@@ -68,6 +68,28 @@ pub(super) fn group_voxel_batches_into(
     batches.clear();
     let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
 
+    // Streaming GPU Generated Meshes are singleton draws: their unique template
+    // and generated-vertex buffers cannot be shared by instancing. Building a
+    // HashMap bucket, sorting tens of thousands of keys, and permuting every
+    // resident PreparedDraw adds O(N) CPU work but merges exactly zero draws.
+    // Preserve the scene's existing opaque order; opaque depth semantics do
+    // not require material sorting, and the transparent tail remains untouched.
+    // One scan over resident mesh resources is much cheaper than the old
+    // per-draw hashing, distinct-key sorting and inverse permutation.
+    if !meshes.values().any(|mesh| mesh.procedural_quads && mesh.generated.is_none()) {
+        workspace.buckets.clear();
+        workspace.sorted_keys.clear();
+        workspace.new_keys.clear();
+        workspace.spare_keys.clear();
+        workspace.order.clear();
+        batches.reserve(draws.len());
+        batches.extend((0..draws.len()).map(|index| DrawBatchRange {
+            first_instance: index,
+            instance_count: 1,
+        }));
+        return;
+    }
+
     // Tiny scenes are cheaper to handle directly than through hash buckets.
     // Reset the historical key set when switching back to this path.
     if opaque < 128 {
@@ -240,7 +262,9 @@ mod tests {
         meshes: &HashMap<(MeshId, bool), MeshResources>,
     ) -> Vec<DrawBatchRange> {
         let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
-        draws[..opaque].sort_by_cached_key(|draw| batch_key(draw, meshes));
+        if meshes.values().any(|mesh| mesh.procedural_quads && mesh.generated.is_none()) {
+            draws[..opaque].sort_by_cached_key(|draw| batch_key(draw, meshes));
+        }
         let mut batches: Vec<DrawBatchRange> = Vec::new();
         let mut last_key = None;
         for (index, draw) in draws.iter().enumerate() {
@@ -452,6 +476,34 @@ mod tests {
         compare(Vec::new(), &mut workspace, &meshes);
         compare(prepare(&scene), &mut workspace, &meshes);
     }
+    #[test]
+    fn generated_singleton_scene_does_not_build_sort_buckets_or_reorder_draws() {
+        let (scene, _) = fixture();
+        let meshes = HashMap::new();
+        let mut draws = prepare(&scene);
+        let before = draws.iter().map(|draw| draw.node).collect::<Vec<_>>();
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        group_voxel_batches_into(&mut draws, &meshes, &mut workspace, &mut batches);
+        assert_eq!(draws.iter().map(|draw| draw.node).collect::<Vec<_>>(), before);
+        assert_eq!(batches.len(), draws.len());
+        assert!(batches.iter().enumerate().all(|(index, batch)| {
+            batch.first_instance == index && batch.instance_count == 1
+        }));
+        assert!(workspace.sorted_keys.is_empty());
+        assert!(workspace.buckets.is_empty());
+        assert!(workspace.positions.is_empty());
+
+        // After a streaming mutation the same direct path must continue to
+        // leave untouched resident draw identities in their existing order.
+        let mut changed = scene.fork();
+        let removed = changed.roots()[0];
+        changed.remove(removed).unwrap();
+        let draws = prepare(&changed);
+        compare(draws, &mut workspace, &meshes);
+        assert!(workspace.buckets.is_empty());
+    }
+
     #[test]
     fn identity_grouped_draw_order_does_not_allocate_inverse_permutation() {
         let (scene, _) = fixture();
