@@ -68,7 +68,7 @@ impl RendererResources {
                 match singleton {
                     Ok(shader) => resources.singleton_cull_shader = Some(shader),
                     Err(error) => {
-                        log::warn!(
+                        eprintln!(
                             "gpui-3d singleton culling unavailable on {:?}: {error:#}; falling back to cs_cull",
                             context.backend_kind(),
                         );
