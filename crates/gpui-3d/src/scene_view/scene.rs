@@ -1767,6 +1767,8 @@ impl SceneResources {
         steps: &mut Vec<RenderCommand>,
         shadow: Option<(&[BindGroupId], BufferId)>,
     ) -> gpui::Result<()> {
+        let command_started = trace_timings().then(Instant::now);
+        let previous_step_count = steps.len();
         steps.reserve(self.batches.len());
         let bounds_visible = self.prepared.bounds_visibility();
         for (batch_index, batch) in self.batches.iter().enumerate() {
@@ -1776,10 +1778,6 @@ impl SceneResources {
                 .draws
                 .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
-            let mesh = self
-                .meshes
-                .get(&mesh_key(draw, voxel_shader))
-                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             if renderer.rejects_material(&draw.material)
                 || (shadow.is_some() && draw.material.alpha_mode == AlphaMode::Blend)
             {
@@ -1796,6 +1794,13 @@ impl SceneResources {
             {
                 continue;
             }
+            // Generated Section batches are normally singletons. Reject offscreen
+            // instances before probing the resident mesh map or choosing a
+            // pipeline; the native command list is already CPU-frustum-pruned.
+            let mesh = self
+                .meshes
+                .get(&mesh_key(draw, voxel_shader))
+                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             let draw_resources = shadow
                 .map_or(self.draw_resources.as_slice(), |value| value.0)
                 .get(batch_index)
@@ -1873,6 +1878,19 @@ impl SceneResources {
                     first_instance,
                     scissor: None,
                 }));
+            }
+        }
+        if let Some(started) = command_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 16.0 {
+                eprintln!(
+                    "gpui3d command_detail pass={} draws={} batches={} native_commands={} elapsed_ms={:.2}",
+                    if shadow.is_some() { "shadow" } else { "scene" },
+                    self.prepared.draws.len(),
+                    self.batches.len(),
+                    steps.len() - previous_step_count,
+                    elapsed_ms,
+                );
             }
         }
         Ok(())
