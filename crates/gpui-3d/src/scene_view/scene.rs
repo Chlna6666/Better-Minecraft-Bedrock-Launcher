@@ -706,6 +706,13 @@ impl SceneResources {
             && reordered_blends.is_none()
             && (draw_list_changed || self.culling.is_none())
         {
+            // Both proofs are maintained incrementally: no non-generated
+            // resident Mesh and no native Quad permutation. The GPU culling
+            // Batch ABI is then [generated=1, count=1, 0, logical_index]
+            // regardless of which Section occupies each dense index.
+            let generated_singletons = self.page_refs.only_generated_meshes()
+                && self.batch_workspace.singleton_layout()
+                && self.batches.len() == self.prepared.draws.len();
             if let Some(culling) = &mut self.culling {
                 // Candidate Delta carries exact logical Draw positions when
                 // GPU opaque slot identity is preserved. With only singleton
@@ -723,20 +730,24 @@ impl SceneResources {
                     false
                 };
                 if !reused {
-                    culling.update(
+                    culling.update_generated_singletons(
                         device, &self.prepared.draws, &self.batches,
-                        Some(&self.meshes),
+                        Some(&self.meshes), generated_singletons,
                     )?;
                 }
                 reused_resident_slots = reused;
             } else {
-                self.culling = Some(CullResources::create(
+                let mut culling = CullResources::create(
                     device,
                     &self.prepared.draws,
                     &self.batches,
                     self.backend,
                     Some(&self.meshes),
-                )?);
+                )?;
+                // Initial creation already computed the full Batch table.
+                // Mark it eligible for tail-only growth on future deltas.
+                culling.mark_generated_singletons(generated_singletons);
+                self.culling = Some(culling);
             }
         } else if !gpu_culling && let Some(previous) = self.culling.take() {
             previous.destroy(device)?;
