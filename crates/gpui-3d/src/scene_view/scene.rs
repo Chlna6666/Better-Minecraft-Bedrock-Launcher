@@ -643,12 +643,19 @@ impl SceneResources {
             let batch_started = trace_timings().then(Instant::now);
             let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
             if gpu_culling {
+                let native_quads = self.page_refs.has_non_generated_quads();
+                if native_quads {
+                    // This path can reorder opaque draws independently of
+                    // the original CandidateGroup order, so future fixed
+                    // candidate indices must not be treated as GPU slots.
+                    self.prepared.invalidate_resident_candidate_order();
+                }
                 super::batching::group_voxel_batches_with_quad_presence(
                     &mut self.prepared.draws,
                     &self.meshes,
                     &mut self.batch_workspace,
                     &mut self.batches,
-                    self.page_refs.has_non_generated_quads(),
+                    native_quads,
                 );
             } else {
                 self.batches.clear();
