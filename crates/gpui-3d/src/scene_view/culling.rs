@@ -371,7 +371,7 @@ impl CullResources {
             return Ok(());
         }
         let mut next = Self::create(device, draws, batches, self.backend, meshes)?;
-        next.generated_singleton_canonical = generated_singletons;
+        next.mark_generated_singletons(generated_singletons);
         let previous = std::mem::replace(self, next);
         previous.destroy(device)?;
         Ok(())
@@ -380,6 +380,12 @@ impl CullResources {
     /// A fresh full table was built using the standard validated key path.
     /// Retain a generated-only shortcut for subsequent structural deltas.
     pub(super) fn mark_generated_singletons(&mut self, verified: bool) {
+        // The initial allocation was populated by the full, validated Mesh
+        // lookup path. Check its ABI once in debug builds before enabling
+        // sparse structural updates; never trust a stale generated-only hint.
+        debug_assert!(!verified || self.batch_keys.iter().enumerate().all(|(i, key)| {
+            key.0 == [1, 1, 0, i as u32]
+        }));
         self.generated_singleton_canonical = verified;
     }
 
@@ -546,6 +552,20 @@ impl CullResources {
             return Err(error.into());
         }
 
+        if canonical_tail
+            && batches.len() != self.count
+            && super::renderer::trace_timings()
+        {
+            eprintln!(
+                "gpui3d generated_cull_batch_delta previous={} current={} appended={} uploaded_bytes={} bounds_patches={} slot_map_patches={}",
+                self.count,
+                batches.len(),
+                batches.len().saturating_sub(self.count),
+                batch_bytes.len(),
+                bounds_patches.len(),
+                mapping_patches.len(),
+            );
+        }
         self.resident_slots = next_slots;
         self.uploaded_slot_map = logical_to_physical;
         std::mem::swap(&mut self.bounds_keys, &mut next_bounds_keys);
