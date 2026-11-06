@@ -135,19 +135,26 @@ impl ArenaPage {
 
 #[derive(Default)]
 pub(super) struct MeshArena {
+    // GPU-generated face pages require writable storage. Keep them isolated
+    // from the immutable CPU-packed voxel vertex/index pages.
+    generated_output: bool,
     pages: Vec<Option<ArenaPage>>,
     available_pages: BTreeSet<(u64, usize)>,
     free_pages: Vec<usize>,
 }
 
 impl MeshArena {
-    fn allocate(
+    pub(super) fn generated_output() -> Self {
+        Self { generated_output: true, ..Self::default() }
+    }
+
+    pub(super) fn allocate(
         &mut self,
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
         bytes: u64,
     ) -> gpui::Result<(ArenaAllocation, BufferId, u64, u64)> {
-        let stride = u64::from(VOXEL_VERTEX_STRIDE);
+        let stride = if self.generated_output { 16 } else { u64::from(VOXEL_VERTEX_STRIDE) };
         let aligned = bytes
             .max(1)
             .checked_add(stride - 1)
@@ -164,9 +171,17 @@ impl MeshArena {
         );
         let memory_location = buffer_memory_location(backend);
         let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("gpui-3d voxel mesh arena".into()),
+            label: Some(if self.generated_output {
+                "gpui-3d generated face pool".into()
+            } else {
+                "gpui-3d voxel mesh arena".into()
+            }),
             size: capacity,
-            usage: BufferUsage::STORAGE | BufferUsage::INDEX | BufferUsage::COPY_DST,
+            usage: if self.generated_output {
+                BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST
+            } else {
+                BufferUsage::STORAGE | BufferUsage::INDEX | BufferUsage::COPY_DST
+            },
             memory_location,
         })?;
         let page = ArenaPage {
@@ -232,7 +247,7 @@ impl MeshArena {
         )))
     }
 
-    fn release(
+    pub(super) fn release(
         &mut self,
         device: &mut dyn ExtensionDevice,
         allocation: ArenaAllocation,
@@ -967,10 +982,14 @@ pub(super) fn destroy_mesh(
     device: &mut dyn ExtensionDevice,
     mesh: MeshResources,
     arena: &mut MeshArena,
+    generated_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     if let Some(allocation) = mesh.allocation {
         if let Some(generated) = &mesh.generated {
-            device.destroy_buffer(generated.templates)?;
+            // The generated output is a range of a shared writable pool.
+            // Template and indirect argument buffers remain mesh-local.
+            device.destroy_buffer_batch(&[generated.templates, generated.arguments])?;
+            return generated_arena.release(device, allocation);
         }
         return arena.release(device, allocation);
     }
