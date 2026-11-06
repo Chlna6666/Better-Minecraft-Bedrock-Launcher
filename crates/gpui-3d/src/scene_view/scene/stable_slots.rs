@@ -374,6 +374,46 @@ mod tests {
     }
 
     #[test]
+    fn drawparam_delta_encodes_only_changed_physical_material_record() {
+        let original = draws(40);
+        let (slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut cache = DrawRecordCache::default();
+        let mut keys = Vec::new();
+        let mut baseline = Vec::new();
+        let mut scratch = Vec::new();
+        cache.encode_stable(
+            &original, 0, &mapping, slots.high_water(),
+            &[], &[], &mut keys, &mut baseline, &mut scratch,
+        ).unwrap();
+        assert!(cache.encode_resident_delta(
+            &original, 0, &mapping, &[], &keys, &baseline, &mut scratch,
+        ).unwrap().is_empty());
+        let mut changed = original.clone();
+        Arc::make_mut(&mut changed[8].material).base_color = [0.2, 0.4, 0.6, 1.0];
+        let patches = cache.encode_resident_delta(
+            &changed, 0, &mapping, &[8], &keys, &baseline, &mut scratch,
+        ).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, mapping[8] as usize);
+        assert_ne!(patches[0].1, keys[mapping[8] as usize]);
+        let canonical = super::super::gpu::encode_draw_records(
+            std::slice::from_ref(&changed[8]), 0,
+        ).unwrap();
+        assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
+        let mut patched = baseline.clone();
+        let start = patches[0].0 * DRAW_PARAMS_STRIDE as usize;
+        patched[start..start + DRAW_PARAMS_STRIDE as usize]
+            .copy_from_slice(&patches[0].2);
+        let mut next_keys = Vec::new();
+        let mut full = Vec::new();
+        DrawRecordCache::default().encode_stable(
+            &changed, 0, &mapping, slots.high_water(),
+            &keys, &baseline, &mut next_keys, &mut full, &mut scratch,
+        ).unwrap();
+        assert_eq!(patched, full, "sparse GPU patch must match canonical full encode");
+    }
+
+    #[test]
     fn incremental_plan_keeps_exact_one_to_one_resident_slot_state() {
         let original = draws(128);
         let (mut slots, _) = StableDrawSlots::default().plan(&original).unwrap();
