@@ -4357,6 +4357,16 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
+            // D3D12 required texture resource limits; the current
+            // abstraction still creates single-slice D2 resources only.
+            gfx_core::TextureArrayCapabilities {
+                max_dimension_2d: 16_384,
+                max_array_layers: 2_048,
+                ..Default::default()
+            }
+        }
+
         fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
             // Raw SRV/UAV views use u32 element indices of four-byte units.
             // Native CBV offsets use 256-byte alignment and 64 KiB ranges.
