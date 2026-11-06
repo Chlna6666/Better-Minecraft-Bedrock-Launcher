@@ -118,6 +118,150 @@ impl StableDrawSlots {
     }}
 
 
+/// Transactional structural GPU slot plan. Only changed Sections are hashed
+/// into/out of the resident slot registry; untouched identities retain their
+/// exact physical addresses, even if their dense logical indices move.
+pub(in crate::scene_view) struct StructuralSlotPlan {
+    pub mapping: Vec<u32>,
+    pub high_water: usize,
+    retired: Vec<(SlotIdentity, usize)>,
+    added: Vec<(SlotIdentity, usize, usize)>,
+    free: Vec<usize>,
+}
+
+impl StructuralSlotPlan {
+    pub(in crate::scene_view) fn removed_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.retired.iter().map(|(_, slot)| *slot)
+    }
+
+    pub(in crate::scene_view) fn updated_slots(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.added.iter().map(|(_, slot, logical)| (*slot, *logical))
+    }
+
+    /// Called only after the GPU mapping and bounds writes have succeeded.
+    pub(in crate::scene_view) fn commit(self, slots: &mut StableDrawSlots) {
+        for (identity, slot) in self.retired {
+            debug_assert_eq!(slots.occupied.remove(&identity), Some(slot));
+            slots.identities[slot] = None;
+        }
+        slots.identities.resize(self.high_water, None);
+        for (identity, slot, _) in self.added {
+            debug_assert!(slots.identities[slot].is_none());
+            slots.identities[slot] = Some(identity);
+            debug_assert!(slots.occupied.insert(identity, slot).is_none());
+        }
+        slots.free = self.free;
+    }
+}
+
+impl StableDrawSlots {
+    /// Plan ordered old/new Section splices while copying only the compact
+    /// logical u32 mapping for unaffected ranges. No O(all meshes) identity
+    /// lookup, HashMap clone or physical Draw/Instance relocation is needed.
+    ///
+    /// Malformed or overlapping edits return None, allowing the established
+    /// full transactional planner to handle mixed or reordered layouts.
+    pub(in crate::scene_view) fn plan_structural(
+        &self,
+        draws: &[PreparedDraw],
+        old_mapping: &[u32],
+        delta: &crate::prepare::StructuralDrawDelta,
+    ) -> gpui::Result<Option<StructuralSlotPlan>> {
+        if delta.previous_count != old_mapping.len() || delta.edits.is_empty() {
+            return Ok(None);
+        }
+        let mut next_mapping = Vec::with_capacity(draws.len());
+        let mut retired = Vec::<(SlotIdentity, usize)>::new();
+        let mut additions = Vec::<(SlotIdentity, usize)>::new();
+        let mut occurrences = HashMap::<BaseIdentity, u32>::new();
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        for edit in &delta.edits {
+            if edit.old.start < old_cursor || edit.new.start < new_cursor
+                || edit.old.end > old_mapping.len() || edit.new.end > draws.len()
+                || edit.old.start > edit.old.end || edit.new.start > edit.new.end
+                || edit.old.start - old_cursor != edit.new.start - new_cursor
+            {
+                return Ok(None);
+            }
+            next_mapping.extend_from_slice(&old_mapping[old_cursor..edit.old.start]);
+            for &physical in &old_mapping[edit.old.clone()] {
+                let slot = physical as usize;
+                let Some(identity) = self.identities.get(slot).copied().flatten() else {
+                    return Ok(None);
+                };
+                retired.push((identity, slot));
+            }
+            for logical in edit.new.clone() {
+                let base = BaseIdentity::of(&draws[logical]);
+                let occurrence = occurrences.entry(base).or_default();
+                let identity = SlotIdentity { base, occurrence: *occurrence };
+                *occurrence = occurrence.checked_add(1).ok_or_else(|| {
+                    anyhow!("GPUI 3D changed Section duplicate draw occurrence overflow")
+                })?;
+                additions.push((identity, logical));
+                next_mapping.push(0); // Filled only after all retired slots are known.
+            }
+            old_cursor = edit.old.end;
+            new_cursor = edit.new.end;
+        }
+        if old_mapping.len() - old_cursor != draws.len() - new_cursor {
+            return Ok(None);
+        }
+        next_mapping.extend_from_slice(&old_mapping[old_cursor..]);
+        if next_mapping.len() != draws.len() {
+            return Ok(None);
+        }
+
+        // Recycle only retired Section slots. An identity that survives its
+        // own replacement keeps the same slot (including duplicate parts).
+        let retired_lookup = retired.iter().copied().collect::<HashMap<_, _>>();
+        if retired_lookup.len() != retired.len() {
+            return Ok(None);
+        }
+        let mut seen = std::collections::HashSet::with_capacity(additions.len());
+        let mut reused = std::collections::HashSet::with_capacity(additions.len());
+        for &(identity, _) in &additions {
+            if !seen.insert(identity) {
+                return Ok(None);
+            }
+            if let Some(&slot) = retired_lookup.get(&identity) {
+                reused.insert(slot);
+            } else if self.occupied.contains_key(&identity) {
+                // An allegedly inserted identity belongs to an untouched
+                // Section; the splice description was incomplete.
+                return Ok(None);
+            }
+        }
+        let mut free = self.free.clone();
+        for &(_, slot) in &retired {
+            if !reused.contains(&slot) {
+                free.push(slot);
+            }
+        }
+        let mut high_water = self.identities.len();
+        let mut added = Vec::with_capacity(additions.len());
+        for (identity, logical) in additions {
+            let slot = if let Some(&slot) = retired_lookup.get(&identity) {
+                slot
+            } else if let Some(slot) = free.pop() {
+                slot
+            } else {
+                let slot = high_water;
+                high_water = high_water.checked_add(1)
+                    .ok_or_else(|| anyhow!("GPU physical Draw Slot overflow"))?;
+                slot
+            };
+            next_mapping[logical] = u32::try_from(slot)
+                .map_err(|_| anyhow!("GPU physical Draw Slot exceeds u32 index"))?;
+            added.push((identity, slot, logical));
+        }
+        Ok(Some(StructuralSlotPlan {
+            mapping: next_mapping, high_water, retired, added, free,
+        }))
+    }
+}
+
 impl SceneResources {
     /// Encode only the exact physical Instance rows referenced by the last
     /// fixed-layout Section Delta. Unchanged GPU data is never visited or
