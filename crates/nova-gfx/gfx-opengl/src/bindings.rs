@@ -9,7 +9,7 @@ use glow::HasContext as _;
 #[derive(Default)]
 pub(crate) struct Cache {
     buffers: Vec<(u32, u32, glow::NativeBuffer, i32, i32)>,
-    textures: Vec<(u32, glow::NativeTexture)>,
+    textures: Vec<(u32, u32, glow::NativeTexture)>,
     samplers: Vec<(u32, Option<glow::NativeSampler>)>,
 }
 
@@ -28,9 +28,10 @@ mod tests {
         assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 16, 32));
         assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 16, 64));
         assert!(cache.buffer(glow::SHADER_STORAGE_BUFFER, 0, buffer, 16, 64));
-        assert!(cache.texture(0, texture));
-        assert!(!cache.texture(0, texture));
-        assert!(cache.texture(1, texture));
+        assert!(cache.texture(0, glow::TEXTURE_2D, texture));
+        assert!(!cache.texture(0, glow::TEXTURE_2D, texture));
+        assert!(cache.texture(1, glow::TEXTURE_2D, texture));
+        assert!(cache.texture(0, glow::TEXTURE_2D_ARRAY, texture));
         assert!(cache.sampler(0, None));
         assert!(!cache.sampler(0, None));
         assert!(cache.sampler(0, Some(sampler)));
@@ -38,7 +39,7 @@ mod tests {
         cache.reset();
         assert_eq!(cache.buffers.capacity(), capacity);
         assert!(cache.buffer(glow::UNIFORM_BUFFER, 0, buffer, 0, 32));
-        assert!(cache.texture(0, texture));
+        assert!(cache.texture(0, glow::TEXTURE_2D, texture));
         assert!(cache.sampler(0, None));
     }
 }
@@ -71,13 +72,14 @@ impl Cache {
             true
         }
     }
-    fn texture(&mut self, unit: u32, native: glow::NativeTexture) -> bool {
-        if let Some((_, previous)) = self.textures.iter_mut().find(|value| value.0 == unit) {
-            let changed = *previous != native;
-            *previous = native;
+    fn texture(&mut self, unit: u32, target: u32, native: glow::NativeTexture) -> bool {
+        if let Some(previous) = self.textures.iter_mut().find(|value| value.0 == unit) {
+            let next = (unit, target, native);
+            let changed = *previous != next;
+            *previous = next;
             changed
         } else {
-            self.textures.push((unit, native));
+            self.textures.push((unit, target, native));
             true
         }
     }
@@ -222,9 +224,9 @@ impl OpenGlDevice {
         // SAFETY: the view and sampler belong to this current owner context. Native units
         // were allocated within the driver's limit during pipeline reflection.
         unsafe {
-            if cache.texture(binding.unit, view.native) {
+            if cache.texture(binding.unit, view.target, view.native) {
                 self.gl.active_texture(glow::TEXTURE0 + binding.unit);
-                self.gl.bind_texture(glow::TEXTURE_2D, Some(view.native));
+                self.gl.bind_texture(view.target, Some(view.native));
             }
             if cache.sampler(binding.unit, sampler) {
                 self.gl.bind_sampler(binding.unit, sampler);
