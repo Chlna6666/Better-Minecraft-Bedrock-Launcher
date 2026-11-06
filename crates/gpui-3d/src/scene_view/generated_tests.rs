@@ -677,7 +677,7 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
     ];
-    let mut arena = MeshArena::generated_output();
+    let mut arena = MeshArena::generated_output(device.buffer_binding_limits());
     let mut resources = create_many_pooled(
         &mut device, &[&meshes[0], &meshes[1]], &shaders, &mut arena, BackendKind::Dx11,
     ).unwrap();
