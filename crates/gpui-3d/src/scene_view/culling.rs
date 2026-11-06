@@ -163,6 +163,66 @@ fn resident_mapping_patches(previous: &[u32], next: &[u32]) -> Vec<(u64, Vec<u8>
         }).collect()
 }
 
+/// A fixed-layout Candidate Delta retains the exact mapping between logical
+/// draws and resident physical GPU slots. Reject any inconsistent identity,
+/// batch layout or resource-kind change and let the full planner handle it.
+/// Only the dirty physical rows are encoded; no full BoundsRecordKey vector,
+/// inverse map or CPU draw table is constructed.
+fn sparse_resident_bounds_patches(
+    draws: &[PreparedDraw],
+    batches: &[DrawBatchRange],
+    meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
+    dirty: &[usize],
+    slots: &StableDrawSlots,
+    mapping: &[u32],
+    bounds_keys: &[Option<BoundsRecordKey>],
+    batch_keys: &[BatchRecordKey],
+) -> Option<Vec<(usize, BoundsRecordKey, [u8; BOUNDS_STRIDE])>> {
+    if draws.len() != mapping.len()
+        || draws.len() != batches.len()
+        || draws.len() != batch_keys.len()
+        || bounds_keys.len() != slots.high_water()
+    {
+        return None;
+    }
+    let mut patches = Vec::with_capacity(dirty.len());
+    let mut seen = std::collections::HashSet::with_capacity(dirty.len());
+    for &logical in dirty {
+        if !seen.insert(logical) {
+            continue;
+        }
+        let draw = draws.get(logical)?;
+        let batch = batches.get(logical)?;
+        let physical = *mapping.get(logical)?;
+        let slot = physical as usize;
+        if batch.first_instance != logical || batch.instance_count != 1
+            || !slots.matches_resident_draw(physical, draw)
+        {
+            return None;
+        }
+        let generated = meshes.is_some_and(|meshes| {
+            meshes.get(&super::scene::mesh_key(draw, true))
+                .is_some_and(|mesh| mesh.generated.is_some())
+        });
+        let old_batch = batch_keys.get(logical)?;
+        if old_batch.0 != [
+            u32::from(generated), 1, 0, u32::try_from(logical).ok()?,
+        ] {
+            return None;
+        }
+        let key = BoundsRecordKey::from_draw(draw);
+        if bounds_keys.get(slot)? == &Some(key) {
+            continue;
+        }
+        let mut bytes = [0u8; BOUNDS_STRIDE];
+        for (word, value) in key.0.iter().enumerate() {
+            bytes[word * 4..word * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        patches.push((slot, key, bytes));
+    }
+    Some(patches)
+}
+
 pub(super) struct CullResources {
     pub(super) hiz: super::hiz::HiZ,
     backend: BackendKind,
@@ -293,6 +353,48 @@ impl CullResources {
         let previous = std::mem::replace(self, next);
         previous.destroy(device)?;
         Ok(())
+    }
+
+    /// Fast path for opaque singleton Section edits. Candidate ordering,
+    /// batch descriptors and stable physical slots must remain identical.
+    /// Camera visibility still runs on the GPU after these sparse writes.
+    /// The committed CPU mirror changes only after the GPU upload succeeds.
+    pub(super) fn update_dirty_opaque(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        draws: &[PreparedDraw],
+        batches: &[DrawBatchRange],
+        meshes: Option<&std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>>,
+        dirty: &[usize],
+    ) -> gpui::Result<bool> {
+        if self.count != draws.len()
+            || self.instances != draws.len()
+            || self.singleton_start != 0
+        {
+            return Ok(false);
+        }
+        let Some(patches) = sparse_resident_bounds_patches(
+            draws, batches, meshes, dirty,
+            &self.resident_slots, &self.uploaded_slot_map,
+            &self.bounds_keys, &self.batch_keys,
+        ) else {
+            return Ok(false);
+        };
+        if patches.is_empty() {
+            return Ok(true);
+        }
+        let writes = patches.iter().map(|(slot, _, bytes)| gfx_core::BufferWrite {
+            descriptor: gfx_core::BufferWriteDescriptor {
+                buffer: self.bounds,
+                offset: *slot as u64 * BOUNDS_STRIDE as u64,
+            },
+            data: &bytes[..],
+        }).collect::<Vec<_>>();
+        device.write_buffer_batch(&writes)?;
+        for (slot, key, _) in patches {
+            self.bounds_keys[slot] = Some(key);
+        }
+        Ok(true)
     }
 
     fn write_inputs(
@@ -992,6 +1094,43 @@ mod bounds_cache_tests {
             bytes[start..start + data.len()].copy_from_slice(data);
         }
         bytes
+    }
+
+    #[test]
+    fn dirty_candidate_updates_only_its_gpu_physical_bounds_slot() {
+        let original = sample_draws();
+        let mut keys = Vec::new();
+        let (slots, mapping) =
+            plan_resident_bounds(&StableDrawSlots::default(), &original, &mut keys).unwrap();
+        let batches = (0..original.len()).map(|index| DrawBatchRange {
+            first_instance: index, instance_count: 1,
+        }).collect::<Vec<_>>();
+        let mut batch_keys = Vec::new();
+        batch_record_keys(&original, &batches, None, &mut batch_keys).unwrap();
+        let mut updated = original.clone();
+        updated[3].bounds.max.x += 1.0;
+        let patch = sparse_resident_bounds_patches(
+            &updated, &batches, None, &[3],
+            &slots, &mapping, &keys, &batch_keys,
+        ).unwrap();
+        assert_eq!(patch.len(), 1);
+        assert_eq!(patch[0].0, mapping[3] as usize);
+        let expected = BoundsRecordKey::from_draw(&updated[3]);
+        assert_eq!(patch[0].1, expected);
+        assert_eq!(patch[0].2.as_slice(),
+                   encode_bounds(std::slice::from_ref(&updated[3])));
+        let unchanged = sparse_resident_bounds_patches(
+            &original, &batches, None, &[3],
+            &slots, &mapping, &keys, &batch_keys,
+        ).unwrap();
+        assert!(unchanged.is_empty());
+        // Identity changes must re-plan the slot instead of writing the
+        // bounds of one mesh into another mesh's resident address.
+        updated[3] = original[2].clone();
+        assert!(sparse_resident_bounds_patches(
+            &updated, &batches, None, &[3],
+            &slots, &mapping, &keys, &batch_keys,
+        ).is_none());
     }
 
     #[test]
