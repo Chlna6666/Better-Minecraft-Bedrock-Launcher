@@ -255,6 +255,10 @@ impl<T> ExtensionDevice for T
 where
     T: ResourceDevice + PipelineDevice,
 {
+    fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
+        ResourceDevice::texture_array_capabilities(self)
+    }
+
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
         ResourceDevice::buffer_binding_limits(self)
     }
