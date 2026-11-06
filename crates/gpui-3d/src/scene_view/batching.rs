@@ -42,6 +42,10 @@ pub(super) struct BatchWorkspace {
     spare_keys: Vec<BatchKey>,
     order: Vec<usize>,
     positions: Vec<usize>,
+    /// A singleton batch at logical index i always has first_instance=i.
+    /// Section insertion/removal changes only the Vec extent, not retained
+    /// batch entries; a previous instanced-Quad scene invalidates this mode.
+    singleton_layout: bool,
 }
 
 #[cfg(test)]
@@ -82,7 +86,6 @@ pub(super) fn group_voxel_batches_with_quad_presence(
     batches: &mut Vec<DrawBatchRange>,
     has_non_generated_quads: bool,
 ) {
-    batches.clear();
     let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
 
     // Streaming GPU Generated Meshes are singleton draws: their unique template
@@ -99,13 +102,27 @@ pub(super) fn group_voxel_batches_with_quad_presence(
         workspace.new_keys.clear();
         workspace.spare_keys.clear();
         workspace.order.clear();
-        batches.reserve(draws.len());
-        batches.extend((0..draws.len()).map(|index| DrawBatchRange {
-            first_instance: index,
-            instance_count: 1,
-        }));
+        // All retained batches are the canonical logical-index identity.
+        // Even when a Section is inserted at the front of a 100K-draw scene,
+        // every previous entry at index i remains {i, 1}. Only extend the
+        // tail or truncate the removed tail; never rescan existing batches.
+        if !workspace.singleton_layout {
+            batches.clear();
+            workspace.singleton_layout = true;
+        }
+        let previous = batches.len();
+        batches.truncate(draws.len());
+        if draws.len() > previous {
+            batches.reserve(draws.len() - previous);
+            batches.extend((previous..draws.len()).map(|index| DrawBatchRange {
+                first_instance: index,
+                instance_count: 1,
+            }));
+        }
         return;
     }
+    workspace.singleton_layout = false;
+    batches.clear();
 
     // Tiny scenes are cheaper to handle directly than through hash buckets.
     // Reset the historical key set when switching back to this path.
@@ -492,6 +509,76 @@ mod tests {
         compare(Vec::new(), &mut workspace, &meshes);
         compare(prepare(&scene), &mut workspace, &meshes);
     }
+    #[test]
+    fn singleton_batches_reuse_prefix_across_middle_insertion_and_unload() {
+        let (mut scene, _) = fixture();
+        let meshes = HashMap::new();
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        let mut draws = prepare(&scene);
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, false,
+        );
+        assert!(workspace.singleton_layout);
+        let snapshot = batches.iter().map(|b| (b.first_instance, b.instance_count))
+            .collect::<Vec<_>>();
+        let existing = batches.as_ptr();
+        let previous_capacity = batches.capacity();
+        // Removing a root from the center shifts logical draw ownership, but
+        // the canonical singleton batch at each remaining index stays {i,1}.
+        scene.remove(scene.roots()[45]).unwrap();
+        let mut draws = prepare(&scene);
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, false,
+        );
+        assert_eq!(batches.as_ptr(), existing);
+        assert_eq!(batches.capacity(), previous_capacity);
+        assert_eq!(batches.len(), snapshot.len() - 1);
+        assert_eq!(batches.iter().map(|b| (b.first_instance, b.instance_count))
+            .collect::<Vec<_>>(), snapshot[..snapshot.len() - 1]);
+
+        // A new root inserts at the beginning of the scene's logical order;
+        // only the final {i,1} descriptor must be appended.
+        let mesh = Arc::new(Mesh::cube());
+        scene.insert(None, Node::new().with_mesh(mesh)).unwrap();
+        let mut draws = prepare(&scene);
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, false,
+        );
+        assert_eq!(batches.len(), snapshot.len());
+        assert_eq!(batches.as_ptr(), existing);
+        assert_eq!(batches.iter().map(|b| (b.first_instance, b.instance_count))
+            .collect::<Vec<_>>(), snapshot);
+    }
+
+    #[test]
+    fn switch_from_instanced_quad_batches_resets_singleton_identity() {
+        let (scene, _) = fixture();
+        let mut draws = prepare(&scene);
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        let meshes = HashMap::new();
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, false,
+        );
+        assert!(workspace.singleton_layout);
+        // Switching to the native grouping path invalidates the assumption.
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, true,
+        );
+        assert!(!workspace.singleton_layout);
+        // Re-entering the generated-only path reconstructs all singleton
+        // descriptors, even if the former grouping produced fewer batches.
+        group_voxel_batches_with_quad_presence(
+            &mut draws, &meshes, &mut workspace, &mut batches, false,
+        );
+        assert!(workspace.singleton_layout);
+        assert_eq!(batches.len(), draws.len());
+        assert!(batches.iter().enumerate().all(|(i, b)| {
+            b.first_instance == i && b.instance_count == 1
+        }));
+    }
+
     #[test]
     fn generated_singleton_scene_does_not_build_sort_buckets_or_reorder_draws() {
         let (scene, _) = fixture();
