@@ -244,6 +244,10 @@ pub(super) struct CullResources {
     scratch_bounds_keys: Vec<Option<BoundsRecordKey>>,
     batch_keys: Vec<BatchRecordKey>,
     scratch_batch_keys: Vec<BatchRecordKey>,
+    /// The committed indirect Batch table is exactly [1,1,0,logical_idx]
+    /// for every entry. A middle Section insertion/removal changes only
+    /// its length; all preexisting logical descriptors remain byte-identical.
+    generated_singleton_canonical: bool,
     // Persistent per-Section draw addresses. Bounds stay at physical slots,
     // while this compact logical->physical map follows batch ordering.
     resident_slots: StableDrawSlots,
@@ -322,12 +326,13 @@ impl CullResources {
             scratch_bounds_keys: Vec::new(),
             batch_keys: Vec::new(),
             scratch_batch_keys: Vec::new(),
+            generated_singleton_canonical: false,
             resident_slots: StableDrawSlots::default(),
             uploaded_slot_map: Vec::new(),
             instance_capacity,
             batch_capacity,
         };
-        if let Err(error) = resources.write_inputs(device, draws, batches, meshes) {
+        if let Err(error) = resources.write_inputs(device, draws, batches, meshes, false) {
             resources.destroy(device)?;
             return Err(error);
         }
@@ -343,16 +348,39 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<()> {
+        self.update_generated_singletons(device, draws, batches, meshes, false)
+    }
+
+    /// Only the scene's resident resource counters and singleton Batch
+    /// workspace may certify the canonical generated-only indirect table.
+    /// General callers, native tests and shadow cullers use update().
+    pub(super) fn update_generated_singletons(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        draws: &[PreparedDraw],
+        batches: &[DrawBatchRange],
+        meshes: Option<
+            &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
+        >,
+        generated_singletons: bool,
+    ) -> gpui::Result<()> {
         if draws.len() <= self.instance_capacity
             && self.resident_slots.high_water() <= self.instance_capacity
             && batches.len() <= self.batch_capacity {
-            self.write_inputs(device, draws, batches, meshes)?;
+            self.write_inputs(device, draws, batches, meshes, generated_singletons)?;
             return Ok(());
         }
-        let next = Self::create(device, draws, batches, self.backend, meshes)?;
+        let mut next = Self::create(device, draws, batches, self.backend, meshes)?;
+        next.generated_singleton_canonical = generated_singletons;
         let previous = std::mem::replace(self, next);
         previous.destroy(device)?;
         Ok(())
+    }
+
+    /// A fresh full table was built using the standard validated key path.
+    /// Retain a generated-only shortcut for subsequent structural deltas.
+    pub(super) fn mark_generated_singletons(&mut self, verified: bool) {
+        self.generated_singleton_canonical = verified;
     }
 
     /// Fast path for opaque singleton Section edits. Candidate ordering,
@@ -408,6 +436,7 @@ impl CullResources {
         meshes: Option<
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
+        generated_singletons: bool,
     ) -> gpui::Result<()> {
         // The shared stable-slot identity is (Node, Mesh, Material, Part,
         // occurrence). A Section deletion retires only its corresponding slot;
@@ -420,11 +449,29 @@ impl CullResources {
         }
         let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
         let [mut bounds_scratch, mut batch_bytes] = std::mem::take(&mut self.scratch_inputs);
-        if let Err(error) = encode_batches_cached(
-            draws, batches, meshes,
-            &self.batch_keys, &self.uploaded_inputs[1],
-            &mut next_batch_keys, &mut batch_bytes,
-        ) {
+        // This proof is provided only when the application's complete
+        // resident MeshResource set consists of generated meshes and the
+        // singleton BatchWorkspace has retained the {i,1} layout. The
+        // previous full upload established the same invariant.
+        let canonical_tail = generated_singletons
+            && self.generated_singleton_canonical
+            && batches.len() == draws.len()
+            && self.count == self.instances
+            && self.batch_keys.len() == self.count
+            && self.uploaded_inputs[1].len() == self.count * ARGUMENT_STRIDE as usize;
+        let batch_result = if canonical_tail {
+            next_batch_keys.clear();
+            encode_generated_singleton_tail(
+                self.count, batches.len(), &mut batch_bytes,
+            )
+        } else {
+            encode_batches_cached(
+                draws, batches, meshes,
+                &self.batch_keys, &self.uploaded_inputs[1],
+                &mut next_batch_keys, &mut batch_bytes,
+            ).map(|_| ())
+        };
+        if let Err(error) = batch_result {
             self.scratch_bounds_keys = next_bounds_keys;
             self.scratch_batch_keys = next_batch_keys;
             self.scratch_inputs = [bounds_scratch, batch_bytes];
@@ -458,16 +505,31 @@ impl CullResources {
                 data,
             });
         }
-        for range in super::uploads::changed_ranges_for_keys(
-            &self.batch_keys, &next_batch_keys,
-            self.uploaded_inputs[1].len(), ARGUMENT_STRIDE as usize, 12, 4,
-        ) {
-            writes.push(gfx_core::BufferWrite {
-                descriptor: gfx_core::BufferWriteDescriptor {
-                    buffer: self.batches, offset: range.start as u64,
-                },
-                data: &batch_bytes[range],
-            });
+        if canonical_tail {
+            // For canonical [1,1,0,index] records the old prefix is
+            // independent of Section identity. On growth upload ONLY the
+            // newly appended tail; on shrink issue no batch-buffer write.
+            if batches.len() > self.count {
+                writes.push(gfx_core::BufferWrite {
+                    descriptor: gfx_core::BufferWriteDescriptor {
+                        buffer: self.batches,
+                        offset: self.count as u64 * ARGUMENT_STRIDE,
+                    },
+                    data: &batch_bytes,
+                });
+            }
+        } else {
+            for range in super::uploads::changed_ranges_for_keys(
+                &self.batch_keys, &next_batch_keys,
+                self.uploaded_inputs[1].len(), ARGUMENT_STRIDE as usize, 12, 4,
+            ) {
+                writes.push(gfx_core::BufferWrite {
+                    descriptor: gfx_core::BufferWriteDescriptor {
+                        buffer: self.batches, offset: range.start as u64,
+                    },
+                    data: &batch_bytes[range],
+                });
+            }
         }
         let write_result = if writes.is_empty() {
             Ok(())
@@ -489,28 +551,47 @@ impl CullResources {
         std::mem::swap(&mut self.bounds_keys, &mut next_bounds_keys);
         next_bounds_keys.clear();
         self.scratch_bounds_keys = next_bounds_keys;
-        std::mem::swap(&mut self.batch_keys, &mut next_batch_keys);
-        next_batch_keys.clear();
-        self.scratch_batch_keys = next_batch_keys;
-        let mut old = std::mem::replace(&mut self.uploaded_inputs[1], batch_bytes);
-        if self.uploaded_inputs[1].is_empty()
-            && old.len() == batches.len() * ARGUMENT_STRIDE as usize
-        {
-            self.uploaded_inputs[1] = std::mem::take(&mut old);
+        if canonical_tail {
+            // Commit the small length delta without swapping/copying the
+            // entire already-resident key table or its CPU byte snapshot.
+            self.batch_keys.truncate(batches.len());
+            self.uploaded_inputs[1].truncate(
+                batches.len() * ARGUMENT_STRIDE as usize,
+            );
+            for index in self.batch_keys.len()..batches.len() {
+                self.batch_keys.push(BatchRecordKey([1, 1, 0, index as u32]));
+            }
+            self.uploaded_inputs[1].extend_from_slice(&batch_bytes);
+            next_batch_keys.clear();
+            self.scratch_batch_keys = next_batch_keys;
+            batch_bytes.clear();
+            bounds_scratch.clear();
+            self.scratch_inputs = [bounds_scratch, batch_bytes];
+        } else {
+            std::mem::swap(&mut self.batch_keys, &mut next_batch_keys);
+            next_batch_keys.clear();
+            self.scratch_batch_keys = next_batch_keys;
+            let mut old = std::mem::replace(&mut self.uploaded_inputs[1], batch_bytes);
+            if self.uploaded_inputs[1].is_empty()
+                && old.len() == batches.len() * ARGUMENT_STRIDE as usize
+            {
+                self.uploaded_inputs[1] = std::mem::take(&mut old);
+            }
+            old.clear();
+            bounds_scratch.clear();
+            self.scratch_inputs = [bounds_scratch, old];
         }
-        old.clear();
-        bounds_scratch.clear();
-        self.scratch_inputs = [bounds_scratch, old];
+        self.generated_singleton_canonical = generated_singletons;
         self.count = batches.len();
         self.instances = draws.len();
-        // Batching emits all Quad keys before Singleton keys. The last
-        // multi-instance range marks the beginning of the largest contiguous
-        // singleton tail. The prefix may also contain singleton batches, but
-        // the tail *never* contains instancing, so no cross-Section results
-        // or indirect instance addresses need to be rearranged.
-        self.singleton_start = batches.iter()
-            .rposition(|batch| batch.instance_count > 1)
-            .map_or(0, |index| index + 1);
+        // Canonical Generated records are all singleton batches; the normal
+        // path still preserves the original native Quad grouping boundary.
+        self.singleton_start = if generated_singletons {
+            0
+        } else {
+            batches.iter().rposition(|batch| batch.instance_count > 1)
+                .map_or(0, |index| index + 1)
+        };
         Ok(())
     }
 
@@ -858,6 +939,28 @@ fn batch_record_keys(
     Ok(())
 }
 
+/// Generate only appended canonical GPU Batch descriptors. The indirect
+/// Compute ABI consumes four u32 words per logical singleton draw; inserting
+/// a Section in the middle does not affect any already-resident descriptor.
+fn encode_generated_singleton_tail(
+    previous_count: usize,
+    next_count: usize,
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    // Verify bounds before the GPU upload, so later metadata commit cannot
+    // fail after the native BufferWrite batch has succeeded.
+    u32::try_from(next_count)
+        .context("GPU generated batch index exceeds the u32 draw ABI")?;
+    bytes.clear();
+    bytes.reserve(next_count.saturating_sub(previous_count) * ARGUMENT_STRIDE as usize);
+    for index in previous_count..next_count {
+        for word in [1u32, 1, 0, index as u32] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
 /// Preserve the previous GPU Batch table and patch only records affected by
 /// Section addition/removal or generated-mesh changes. An empty output when
 /// keys/extent match is a sentinel for reusing the already committed buffer.
@@ -935,6 +1038,23 @@ pub(super) mod tests;
 #[cfg(test)]
 mod bounds_cache_tests {
     use super::*;
+
+    #[test]
+    fn structural_generated_batches_only_encode_new_tail() {
+        let mut bytes = Vec::new();
+        encode_generated_singleton_tail(70_000, 70_002, &mut bytes).unwrap();
+        assert_eq!(bytes.len(), 2 * ARGUMENT_STRIDE as usize);
+        for (index, record) in bytes.chunks_exact(ARGUMENT_STRIDE as usize).enumerate() {
+            let words = record.chunks_exact(4).map(|value| {
+                u32::from_le_bytes(value.try_into().unwrap())
+            }).collect::<Vec<_>>();
+            assert_eq!(words, [1, 1, 0, 70_000 + index as u32]);
+        }
+        encode_generated_singleton_tail(70_002, 69_999, &mut bytes).unwrap();
+        assert!(bytes.is_empty(), "Section unload needs no native Batch rewrite");
+        encode_generated_singleton_tail(70_000, 70_000, &mut bytes).unwrap();
+        assert!(bytes.is_empty());
+    }
     use crate::{Camera, Mesh, Node, Scene, Transform, Vec3};
     use std::sync::Arc;
 
