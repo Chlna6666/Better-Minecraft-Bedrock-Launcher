@@ -812,7 +812,7 @@ impl SceneResources {
                         CullResources::structural_slots_committed,
                     ) && self.sync_structural_draw_delta(
                         device, renderer, bind_group_layout, sampler,
-                        sampler_changed, assets_changed,
+                        sampler_changed, assets_changed, textures_unchanged,
                     )?;
                     if !structural_updated {
                         self.sync_buffers(
@@ -1272,6 +1272,7 @@ impl SceneResources {
         sampler: SamplerId,
         sampler_changed: bool,
         defer_binding_cleanup: bool,
+        textures_unchanged: bool,
     ) -> gpui::Result<bool> {
         let Some(delta) = self.prepared.structural_draw_delta() else {
             return Ok(false);
@@ -1302,6 +1303,7 @@ impl SceneResources {
             || dirty.len().saturating_mul(4) > count.max(1)
             || !self.page_refs.only_generated_meshes()
             || !self.batch_workspace.singleton_layout()
+            || !textures_unchanged
         {
             return Ok(false);
         }
@@ -1368,13 +1370,19 @@ impl SceneResources {
             device.write_buffer_batch(&writes)?;
         }
         drop(writes);
-        // Structural insertion/removal changes logical Batch addresses and
-        // generated part mapping even with stable physical instance slots.
-        // Keep the necessary full resource/indirect command reorganization.
-        self.sync_draw_resources(
+        // The stable physical Draw Slot table is already committed by the
+        // culler. Copy BindGroup metadata only across unchanged logical
+        // intervals, resolving Mesh/Material bindings for new Sections only.
+        // Generated Page mapping remains a separate GPU compute publication.
+        if !self.sync_structural_draw_resources(
             device, renderer, bind_group_layout, sampler,
-            sampler_changed, true, defer_binding_cleanup,
-        )?;
+            textures_unchanged, sampler_changed,
+        )? {
+            self.sync_draw_resources(
+                device, renderer, bind_group_layout, sampler,
+                sampler_changed, true, defer_binding_cleanup,
+            )?;
+        }
         self.sync_generated_draws(device, true)?;
 
         // All dependent GPU operations completed successfully. Extend only
