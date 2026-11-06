@@ -587,7 +587,6 @@ mod singleton_dispatch_tests {
         assert_eq!(culling_dispatch_groups(200, 135, true), (135, 2));
         assert_eq!(culling_dispatch_groups(200, 200, true), (200, 0));
     }
-    }
 }
 
 #[cfg(test)]
@@ -645,7 +644,7 @@ fn create_buffers(
             write | BufferUsage::INDIRECT,
         ),
         (instances as u64 * 4, write),
-        (32, BufferUsage::UNIFORM | BufferUsage::COPY_DST),
+        (48, BufferUsage::UNIFORM | BufferUsage::COPY_DST),
         (instances as u64 * 4, read),
     ];
     let mut buffers = Vec::with_capacity(6);
