@@ -86,6 +86,16 @@ jobs:
         shell: pwsh
         run: cargo check -p bedrock-leveldb -p bedrock-world --all-features
 
+      - name: Test graphics core layered resource ABI
+        shell: pwsh
+        run: |
+          cargo test -p gfx-core --lib texture_array::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-dx11 --lib --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-dx12 --lib --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build BMCBL library
         shell: pwsh
         run: cargo build --lib
@@ -155,6 +165,12 @@ jobs:
 
       - name: Check Bedrock storage crates
         run: cargo check -p bedrock-leveldb -p bedrock-world --all-features
+
+      - name: Test graphics core layered resource ABI
+        run: |
+          cargo test -p gfx-core --lib texture_array::tests -- --nocapture
+          cargo test -p gfx-opengl --lib --no-run
+          cargo test -p gfx-vulkan --lib --no-run
 
       - name: Build BMCBL library
         run: cargo build --lib
