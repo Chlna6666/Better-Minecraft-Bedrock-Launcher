@@ -131,6 +131,7 @@ pub struct VulkanDevice {
     adapter_name: String,
     max_sampler_anisotropy: f32,
     binding_limits: gfx_core::BufferBindingLimits,
+    texture_array_limits: gfx_core::TextureArrayCapabilities,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -278,6 +279,11 @@ impl VulkanDevice {
             uniform_offset_alignment: native_limits.min_uniform_buffer_offset_alignment.max(1),
             max_uniform_binding_bytes: u64::from(native_limits.max_uniform_buffer_range),
         };
+        let texture_array_limits = gfx_core::TextureArrayCapabilities {
+            max_dimension_2d: native_limits.max_image_dimension2_d,
+            max_array_layers: native_limits.max_image_array_layers,
+            ..Default::default()
+        };
         let queue_families = queue_family_indices_without_surface(&instance, physical_device)?;
         // SAFETY: The selected physical device belongs to this instance.
         let queue_properties =
@@ -362,6 +368,7 @@ impl VulkanDevice {
             adapter_name,
             max_sampler_anisotropy,
             binding_limits,
+            texture_array_limits,
             device,
             graphics_queue,
             present_queue,
@@ -3547,6 +3554,10 @@ impl SurfaceDevice for VulkanDevice {
 }
 
 impl ResourceDevice for VulkanDevice {
+    fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
+        self.texture_array_limits
+    }
+
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
         self.binding_limits
     }
