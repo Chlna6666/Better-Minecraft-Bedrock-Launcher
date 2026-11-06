@@ -2,11 +2,18 @@
 
 use super::{MaterialSlotKey, mipmapped_texture, texture_storage_bytes};
 use gpui_3d::{AlphaMode, Material, ShadingModel, TextureAsset, TextureAssetId};
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
 #[derive(Default)]
 pub(super) struct MeshAssets {
+    // Canonicalize exact texture contents across different resource-pack
+    // paths and texture aliases. Only weak references are retained, so a
+    // streamed-out world releases both its CPU images and GPU resources.
+    // GPU materials then see one stable TextureAssetId, enabling real
+    // cross-Section batching without changing any texture coordinates.
+    content_textures: HashMap<u64, Vec<Weak<TextureAsset>>>,
     materials: HashMap<MaterialSlotKey, Weak<Material>>,
     grass_side_tints: HashMap<(TextureAssetId, [u8; 3]), TintEntry>,
     grayscale_masks: HashMap<TextureAssetId, bool>,
@@ -20,7 +27,51 @@ struct TintEntry {
 }
 
 impl MeshAssets {
+    // TextureAsset::PartialEq includes its generated ID, so it cannot be
+    // used for content interning. Compare the full immutable GPU sampling
+    // contract, with a hash only as a fast candidate lookup. Collisions are
+    // resolved with exact byte comparison, never by the hash alone.
+    fn texture_fingerprint(texture: &TextureAsset) -> u64 {
+        let mut hash = DefaultHasher::new();
+        texture.dimensions().hash(&mut hash);
+        texture.mip_level_count().hash(&mut hash);
+        (texture.color_space() as u8).hash(&mut hash);
+        (texture.sampling() as u8).hash(&mut hash);
+        for level in 0..texture.mip_level_count() {
+            texture.mip_pixels(level).expect("validated texture mip").hash(&mut hash);
+        }
+        hash.finish()
+    }
+
+    fn identical_texels(a: &TextureAsset, b: &TextureAsset) -> bool {
+        a.dimensions() == b.dimensions()
+            && a.mip_level_count() == b.mip_level_count()
+            && a.color_space() == b.color_space()
+            && a.sampling() == b.sampling()
+            && (0..a.mip_level_count()).all(|level| a.mip_pixels(level) == b.mip_pixels(level))
+    }
+
+    pub(super) fn intern_texture(&mut self, texture: TextureAsset) -> Arc<TextureAsset> {
+        let fingerprint = Self::texture_fingerprint(&texture);
+        let candidates = self.content_textures.entry(fingerprint).or_default();
+        // Opportunistic cleanup avoids an unbounded weak list if images are
+        // frequently unloaded and reloaded before the periodic prune pass.
+        candidates.retain(|old| old.strong_count() > 0);
+        if let Some(existing) = candidates.iter().filter_map(Weak::upgrade)
+            .find(|old| Self::identical_texels(old, &texture))
+        {
+            return existing;
+        }
+        let shared = Arc::new(texture);
+        candidates.push(Arc::downgrade(&shared));
+        shared
+    }
+
     pub(super) fn prune(&mut self) {
+        self.content_textures.retain(|_, bucket| {
+            bucket.retain(|image| image.strong_count() > 0);
+            !bucket.is_empty()
+        });
         self.materials.retain(|_, asset| asset.strong_count() > 0);
         self.grass_side_tints
             .retain(|_, entry| entry.texture.strong_count() > 0);
@@ -107,7 +158,7 @@ impl MeshAssets {
             }
         }
         let image = image::RgbaImage::from_raw(base.width(), base.height(), pixels)?;
-        let asset = Arc::new(mipmapped_texture(image)?);
+        let asset = self.intern_texture(mipmapped_texture(image)?);
         self.grass_side_tints.insert(
             key,
             TintEntry {
@@ -156,6 +207,45 @@ impl MeshAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_resource_pack_paths_share_exact_gpu_texture_identity() {
+        let mut assets = MeshAssets::default();
+        let pixels = [25, 90, 155, 255, 10, 20, 30, 128];
+        let first = assets.intern_texture(TextureAsset::rgba8(2, 1, pixels.to_vec()).unwrap());
+        let other = assets.intern_texture(TextureAsset::rgba8(2, 1, pixels.to_vec()).unwrap());
+        assert!(Arc::ptr_eq(&first, &other));
+        assert_eq!(first.id(), other.id());
+        assert_eq!(assets.content_textures.len(), 1);
+        let weak = Arc::downgrade(&first);
+        drop((first, other));
+        assert!(weak.upgrade().is_none());
+        assets.prune();
+        assert!(assets.content_textures.is_empty());
+    }
+
+    #[test]
+    fn content_interning_preserves_sampling_color_space_and_mips() {
+        let mut assets = MeshAssets::default();
+        let rgba = [20, 40, 60, 255];
+        let srgb = assets.intern_texture(TextureAsset::rgba8(1, 1, rgba.to_vec()).unwrap());
+        let point = assets.intern_texture(
+            TextureAsset::rgba8(1, 1, rgba.to_vec()).unwrap().with_point_sampling(),
+        );
+        let linear = assets.intern_texture(
+            TextureAsset::linear_rgba8(1, 1, rgba.to_vec()).unwrap(),
+        );
+        let mip = assets.intern_texture(
+            TextureAsset::rgba8_mip_chain(2, 2, [
+                vec![20, 40, 60, 255].repeat(4),
+                rgba.to_vec(),
+            ]).unwrap(),
+        );
+        assert_ne!(srgb.id(), point.id());
+        assert_ne!(srgb.id(), linear.id());
+        assert_ne!(srgb.id(), mip.id());
+        assert_eq!(assets.content_textures.len(), 4);
+    }
 
     #[test]
     fn alpha_coverage_does_not_select_glass_or_polished_roughness() {
