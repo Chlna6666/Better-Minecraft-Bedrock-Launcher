@@ -199,6 +199,14 @@ impl PreparedScene {
     pub(crate) fn resident_delta_draws(&self) -> Option<&[usize]> {
         self.resident_delta_draws.as_deref()
     }
+
+    /// Native Quad batching can permute opaque draws away from the candidate
+    /// order. Such a scene must not issue logical Candidate indices directly
+    /// as GPU Draw Slot indices until the next full camera rebuild.
+    pub(crate) fn invalidate_resident_candidate_order(&mut self) {
+        self.opaque_resident_order = false;
+        self.resident_delta_draws = None;
+    }
     /// Only visible leaf draws introduced or updated by the last incremental scene delta.
     pub(crate) fn incremental_asset_draws(&self) -> &[PreparedDraw] {
         &self.changed_asset_draws
