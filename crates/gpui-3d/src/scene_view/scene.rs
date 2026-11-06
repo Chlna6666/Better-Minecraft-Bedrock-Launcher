@@ -3249,6 +3249,45 @@ fn update_command_visibility(
 }
 
 #[cfg(test)]
+mod native_command_snapshot_tests {
+    use super::*;
+    use crate::{Material, Node, Transform, Vec3};
+
+    #[test]
+    fn translation_keeps_native_pipeline_but_mirror_and_material_changes_do_not() {
+        let mut scene = Scene::new();
+        let material = Arc::new(Material::new());
+        let id = scene.insert(
+            None,
+            Node::new()
+                .with_mesh(Arc::new(Mesh::cube()))
+                .with_materials([material]),
+        ).unwrap();
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let initial = PreparedScene::new(&scene, camera, 1.).unwrap();
+        let original = NativeCommandSource::for_draw(&initial.draws[0]);
+
+        let mut translated = scene.fork();
+        translated.node_mut(id).unwrap().transform.translation.x = 3.;
+        let translated_draws = PreparedScene::new(&translated, camera, 1.).unwrap();
+        assert_eq!(original, NativeCommandSource::for_draw(&translated_draws.draws[0]));
+
+        translated.node_mut(id).unwrap().transform.scale.x = -1.;
+        let mirrored = PreparedScene::new(&translated, camera, 1.).unwrap();
+        assert_ne!(original, NativeCommandSource::for_draw(&mirrored.draws[0]));
+
+        let mut different_material = initial.draws[0].clone();
+        different_material.material = Arc::new(Material::new());
+        assert_ne!(
+            original,
+            NativeCommandSource::for_draw(&different_material),
+        );
+    }
+}
+
+#[cfg(test)]
 mod streaming_light_headroom_tests {
     use super::*;
 
