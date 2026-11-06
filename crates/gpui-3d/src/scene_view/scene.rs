@@ -5,7 +5,7 @@ use super::{
         DrawBindingResources, MeshArena, MeshResources, PendingMeshUpload, TextureResources,
         buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set, create_mesh,
         create_storage_buffer, create_texture, destroy_mesh, destroy_texture, DrawRecordCache,
-        encode_frame_params, encode_lights_into, grow_capacity,
+        dx11_streaming_headroom, encode_frame_params, encode_lights_into, grow_capacity,
     },
     projection::FrameProjection,
     renderer::trace_timings,
@@ -892,12 +892,13 @@ impl SceneResources {
         let draw_count = physical_count;
         let instance_count = physical_count;
         let light_count = self.prepared.lights.len().max(1);
-        let next_draw_capacity = grow_capacity(self.draw_capacity, draw_count)?;
-        let next_instance_capacity = grow_capacity(self.instance_capacity, instance_count)?;
+        let draw_headroom = dx11_streaming_headroom(self.backend, draw_count);
+        let next_draw_capacity = grow_capacity(self.draw_capacity, draw_headroom)?;
+        let next_instance_capacity = grow_capacity(self.instance_capacity, draw_headroom)?;
         let next_light_capacity = grow_capacity(self.light_capacity, light_count)?;
         let next_slot_capacity = grow_capacity(
             self.draw_slot_capacity,
-            self.prepared.draws.len().max(1),
+            dx11_streaming_headroom(self.backend, self.prepared.draws.len().max(1)),
         )?;
         let replace_draw = next_draw_capacity != self.draw_capacity;
         let replace_instances = next_instance_capacity != self.instance_capacity;
