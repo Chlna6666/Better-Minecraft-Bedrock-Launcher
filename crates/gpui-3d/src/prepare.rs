@@ -533,8 +533,37 @@ impl PreparedScene {
                 .sort_by(|left, right| right.view_depth.total_cmp(&left.view_depth));
         } else {
             self.draws.clear();
-            self.draws
-                .extend(self.next_visible_candidates.iter().map(|&index| {
+            if self.gpu_culling {
+                // The GPU owns visibility and opaque/alpha-test depth ordering.
+                // A streaming Section delta only needs a stable partition:
+                // preserve the native opaque candidate order without sorting
+                // 100K+ records or computing per-opaque CPU view depths.
+                self.draws.extend(
+                    self.next_visible_candidates.iter()
+                        .map(|&index| &self.candidates[index])
+                        .filter(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend)
+                        .cloned(),
+                );
+                let blended_start = self.draws.len();
+                self.draws.extend(
+                    self.next_visible_candidates.iter()
+                        .map(|&index| &self.candidates[index])
+                        .filter(|draw| draw.material.alpha_mode == crate::AlphaMode::Blend)
+                        .map(|draw| {
+                            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+                            PreparedDraw {
+                                view_depth: (center - camera.eye).dot(view_direction),
+                                ..draw.clone()
+                            }
+                        }),
+                );
+                // Only the transparent tail needs a CPU back-to-front order.
+                self.draws[blended_start..].sort_by(|left, right| {
+                    right.view_depth.total_cmp(&left.view_depth)
+                });
+            } else {
+                // CPU culling keeps the original material/mesh order.
+                self.draws.extend(self.next_visible_candidates.iter().map(|&index| {
                     let draw = &self.candidates[index];
                     let center = (draw.bounds.min + draw.bounds.max) * 0.5;
                     PreparedDraw {
@@ -542,24 +571,18 @@ impl PreparedScene {
                         ..draw.clone()
                     }
                 }));
-            let gpu_culling = self.gpu_culling;
-            self.draws.sort_by(|left, right| {
-                let left_blended = left.material.alpha_mode == crate::AlphaMode::Blend;
-                let right_blended = right.material.alpha_mode == crate::AlphaMode::Blend;
-                match (left_blended, right_blended) {
-                    (false, true) => Ordering::Less,
-                    (true, false) => Ordering::Greater,
-                    (true, true) => right.view_depth.total_cmp(&left.view_depth),
-                    // GPU batching sorts opaque draws by its resident page and material
-                    // key later; sorting them here by a different key only repeats work.
-                    (false, false) if gpu_culling => Ordering::Equal,
-                    (false, false) => left
-                        .material
-                        .id()
-                        .cmp(&right.material.id())
-                        .then_with(|| left.mesh.id().cmp(&right.mesh.id())),
-                }
-            });
+                self.draws.sort_by(|left, right| {
+                    let left_blended = left.material.alpha_mode == crate::AlphaMode::Blend;
+                    let right_blended = right.material.alpha_mode == crate::AlphaMode::Blend;
+                    match (left_blended, right_blended) {
+                        (false, true) => Ordering::Less,
+                        (true, false) => Ordering::Greater,
+                        (true, true) => right.view_depth.total_cmp(&left.view_depth),
+                        (false, false) => left.material.id().cmp(&right.material.id())
+                            .then_with(|| left.mesh.id().cmp(&right.mesh.id())),
+                    }
+                });
+            }
             std::mem::swap(
                 &mut self.visible_candidates,
                 &mut self.next_visible_candidates,
@@ -789,6 +812,60 @@ fn max_world_scale(world: Mat4) -> f32 {
 mod tests {
     use super::*;
     use crate::{LodLevel, Node, SpotLight, Transform, Vec2, Vertex};
+
+    #[test]
+    fn gpu_streaming_stably_partitions_opaque_and_sorts_only_transparent() {
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let mut scene = Scene::new();
+        let opaque = Arc::new(crate::Material::new());
+        let mut transparent = crate::Material::new();
+        transparent.alpha_mode = crate::AlphaMode::Blend;
+        let transparent = Arc::new(transparent);
+        let mesh = mesh();
+        for index in 0..48 {
+            let material = if index % 3 == 0 { transparent.clone() } else { opaque.clone() };
+            scene.insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([material])
+                    .with_transform(Transform {
+                        translation: Vec3::new((index % 5) as f32, 0., -(index as f32)),
+                        ..Transform::IDENTITY
+                    }),
+            ).unwrap();
+        }
+        let mut prepared = PreparedScene::default();
+        prepared.set_gpu_culling(true);
+        prepared.update(&scene, camera, 1.).unwrap();
+
+        // Baseline: the previous stable full-record sort of GPU candidates.
+        let direction = (camera.target - camera.eye).normalized().unwrap();
+        let mut expected = prepared.candidates.clone();
+        for draw in &mut expected {
+            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+            draw.view_depth = (center - camera.eye).dot(direction);
+        }
+        expected.sort_by(|a, b| {
+            let ab = a.material.alpha_mode == crate::AlphaMode::Blend;
+            let bb = b.material.alpha_mode == crate::AlphaMode::Blend;
+            match (ab, bb) {
+                (false, true) => Ordering::Less,
+                (true, false) => Ordering::Greater,
+                (true, true) => b.view_depth.total_cmp(&a.view_depth),
+                (false, false) => Ordering::Equal,
+            }
+        });
+        assert_eq!(
+            prepared.draws.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+            expected.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+        );
+        let start = prepared.draws.partition_point(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend);
+        assert!(prepared.draws[..start].iter().all(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend));
+        assert!(prepared.draws[start..].windows(2).all(|pair| pair[0].view_depth >= pair[1].view_depth));
+    }
 
     fn mesh() -> Arc<Mesh> {
         Arc::new(
