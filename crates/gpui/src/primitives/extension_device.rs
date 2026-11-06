@@ -97,6 +97,15 @@ pub trait ExtensionDevice {
     /// Returns [`gfx_core::Error`] if the texture, region, or data is invalid, or upload fails.
     fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()>;
 
+    /// Upload one array-texture layer and mip in native submission order.
+    fn write_texture_array_layer(
+        &mut self,
+        _desc: gfx_core::TextureArrayLayerWriteDescriptor,
+        _data: &[u8],
+    ) -> Result<()> {
+        Err(gfx_core::Error::Unavailable("layered texture uploads are unsupported".into()))
+    }
+
     /// Writes several texture subresources as one backend upload batch.
     ///
     /// # Errors
