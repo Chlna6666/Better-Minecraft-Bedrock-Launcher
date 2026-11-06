@@ -1302,11 +1302,14 @@ impl DrawRecordCache {
                 .ok_or_else(|| anyhow!("dirty DrawParams logical index outside scene"))?;
             let slot = *mapping.get(logical)
                 .ok_or_else(|| anyhow!("missing resident DrawParams slot"))? as usize;
-            let prev = *previous_keys.get(slot)
-                .ok_or_else(|| anyhow!("resident DrawParams slot outside cache"))?;
-            let start = slot * STRIDE;
-            let old_bytes = previous_bytes.get(start..start + STRIDE)
-                .ok_or_else(|| anyhow!("resident DrawParams bytes missing"))?;
+            // Structural insertions can append new physical slots while the
+            // committed CPU mirror still has its previous high-water mark.
+            // An absent row is always dirty; never treat a synthetic
+            // placeholder key as a valid resident record.
+            let prev = previous_keys.get(slot).copied();
+            let start = slot.checked_mul(STRIDE)
+                .ok_or_else(|| anyhow!("resident DrawParams offset overflow"))?;
+            let old_bytes = previous_bytes.get(start..start + STRIDE);
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
             let cache_key = (
@@ -1327,7 +1330,8 @@ impl DrawRecordCache {
                 encode_draw_record(draw, light_count, scratch, STRIDE)?;
                 let bytes: [u8; STRIDE] = scratch[..STRIDE].try_into()
                     .expect("one complete resident DrawParams record");
-                let generation = if prev.material == material
+                let generation = if let (Some(prev), Some(old_bytes)) = (prev, old_bytes)
+                    && prev.material == material
                     && prev.uv_regions == uv_regions
                     && prev.light_count == light_count
                     && old_bytes == bytes.as_slice()
@@ -1345,7 +1349,7 @@ impl DrawRecordCache {
                 (DrawParamKey { material, snapshot_generation: generation,
                     uv_regions, light_count }, bytes)
             };
-            if prev != key {
+            if prev != Some(key) || old_bytes != Some(bytes.as_slice()) {
                 patches.push((slot, key, bytes));
             }
         }
