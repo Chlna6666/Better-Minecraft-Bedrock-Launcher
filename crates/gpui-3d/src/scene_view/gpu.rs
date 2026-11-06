@@ -149,6 +149,22 @@ impl MeshArena {
         Self { generated_output: true, generated_limits: limits, ..Self::default() }
     }
 
+    // Shared page offsets must satisfy both the driver's storage binding
+    // offset alignment and the 16-byte GeneratedFace shader address unit.
+    // Compute their least common multiple; do not assume power-of-two limits.
+    fn generated_face_alignment(limits: gfx_core::BufferBindingLimits) -> gpui::Result<u64> {
+        let alignment = limits.storage_offset_alignment;
+        if alignment == 0 {
+            return Err(anyhow!("storage offset alignment was not reported").into());
+        }
+        let (mut a, mut b) = (alignment, 16u64);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        alignment.checked_div(a).and_then(|v| v.checked_mul(16))
+            .ok_or_else(|| anyhow!("generated face alignment overflow").into())
+    }
+
     pub(super) fn allocate(
         &mut self,
         device: &mut dyn ExtensionDevice,
@@ -159,16 +175,7 @@ impl MeshArena {
         // while also maintaining the shader's 16-byte GeneratedFace addressing.
         // No backend name or assumed 256-byte limit is involved in this plan.
         let stride = if self.generated_output {
-            let storage = self.generated_limits.storage_offset_alignment;
-            if storage == 0 {
-                return Err(anyhow!("generated voxel device did not report storage limits").into());
-            }
-            let (mut a, mut b) = (storage, 16u64);
-            while b != 0 {
-                (a, b) = (b, a % b);
-            }
-            storage.checked_div(a).and_then(|v| v.checked_mul(16))
-                .ok_or_else(|| anyhow!("generated face alignment overflow"))?
+            Self::generated_face_alignment(self.generated_limits)?
         } else {
             u64::from(VOXEL_VERTEX_STRIDE)
         };
@@ -1661,6 +1668,28 @@ mod tests {
         encode_voxel_mesh,
     };
     use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn generated_pool_alignment_tracks_reported_device_limits() {
+        let mut limits = gfx_core::BufferBindingLimits {
+            storage_offset_alignment: 4,
+            max_storage_binding_bytes: 16 * 1024 * 1024,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 64 * 1024,
+        };
+        let align = super::MeshArena::generated_face_alignment;
+        assert_eq!(align(limits).unwrap(), 16);
+        limits.storage_offset_alignment = 64;
+        assert_eq!(align(limits).unwrap(), 64);
+        limits.storage_offset_alignment = 256;
+        assert_eq!(align(limits).unwrap(), 256);
+        limits.storage_offset_alignment = 384;
+        assert_eq!(align(limits).unwrap(), 384);
+        limits.storage_offset_alignment = 0;
+        assert!(align(limits).is_err());
+        limits.storage_offset_alignment = u64::MAX;
+        assert!(align(limits).is_err());
+    }
 
     #[test]
     fn dx11_streaming_buffers_avoid_rebinding_again_at_32k_and_64k() {
