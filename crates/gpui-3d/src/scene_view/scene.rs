@@ -343,7 +343,7 @@ impl SceneResources {
             dirty_instance_run: Vec::new(),
             meshes: HashMap::new(),
             arena: MeshArena::default(),
-            generated_arena: MeshArena::generated_output(),
+            generated_arena: MeshArena::generated_output(device.buffer_binding_limits()),
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
