@@ -733,6 +733,7 @@ impl SceneResources {
                     culling.update_generated_singletons(
                         device, &self.prepared.draws, &self.batches,
                         Some(&self.meshes), generated_singletons,
+                        self.prepared.structural_draw_delta(),
                     )?;
                 }
                 reused_resident_slots = reused;
