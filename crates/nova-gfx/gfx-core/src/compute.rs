@@ -237,6 +237,25 @@ pub struct ComputeDispatch<'a> {
 }
 
 impl ComputeDispatch<'_> {
+    /// Validate one compute submission against both the shader execution
+    /// capabilities and native buffer binding limits. Shared across all four
+    /// backends, analogous to wgpu's device-limit validation.
+    pub fn validate_with_limits(
+        &self,
+        capabilities: ComputeCapabilities,
+        limits: BufferBindingLimits,
+    ) -> Result<()> {
+        self.validate(capabilities)?;
+        for binding in self.bindings {
+            limits.validate_range(
+                binding.buffer.offset,
+                binding.buffer.size,
+                binding.access == ComputeBufferAccess::Uniform,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Validates workgroup counts and binding aliasing against advertised capabilities.
     ///
     /// # Errors
@@ -298,6 +317,41 @@ mod tests {
         assert_eq!(limits.storage_allocation_size(2048).unwrap(), 2048);
         assert!(limits.storage_allocation_size(2049).is_err());
         assert!(BufferBindingLimits::default().validate_range(0, 4, false).is_err());
+    }
+
+    #[test]
+    fn compute_dispatch_requires_native_buffer_limits() {
+        let caps = mock_caps();
+        let limits = BufferBindingLimits {
+            storage_offset_alignment: 128,
+            max_storage_binding_bytes: 4096,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 1024,
+        };
+        let binding = ComputeBufferBinding {
+            binding: 0,
+            buffer: BufferBinding {
+                buffer: BufferId::new(2),
+                offset: 256,
+                size: 1024,
+                stride: None,
+            },
+            access: ComputeBufferAccess::ReadWrite,
+        };
+        let bindings = [binding];
+        let dispatch = ComputeDispatch {
+            shader: ShaderModuleId::new(3),
+            bindings: &bindings,
+            workgroups: [1; 3],
+        };
+        assert!(dispatch.validate_with_limits(caps, limits).is_ok());
+        assert!(dispatch.validate_with_limits(caps, BufferBindingLimits::default()).is_err());
+        let bad = [ComputeBufferBinding {
+            buffer: BufferBinding { offset: 192, ..binding.buffer },
+            ..binding
+        }];
+        let dispatch = ComputeDispatch { bindings: &bad, ..dispatch };
+        assert!(dispatch.validate_with_limits(caps, limits).is_err());
     }
 
     #[test]
