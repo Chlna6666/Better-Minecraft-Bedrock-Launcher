@@ -7,7 +7,11 @@ use super::{
 use crate::{AlphaMode, MeshId, PreparedDraw};
 use std::collections::HashMap;
 
-type BatchKey = (bool, u64, u64, u32, bool);
+// A draw's material constants live in its own GPU DrawParams slot. Native
+// bindings depend on texture resources, while the raster pipeline depends on
+// front-face/cull state. MaterialId is therefore intentionally NOT part of
+// the grouping key: different block materials can share one quad submission.
+type BatchKey = (bool, [Option<u64>; 4], u64, u32, bool, bool, bool);
 
 /// Persistent scratch for streaming batch updates. Group by one computed key
 /// per draw, retain previously sorted distinct keys, and sort only newly
@@ -37,8 +41,9 @@ pub(super) fn group_voxel_batches(
 }
 
 /// Rebuild only the distinct-key ordering on scene deltas instead of sorting
-/// every opaque draw. The GPU-visible draw/instance order stays equivalent to
-/// stable sort_by_cached_key, including material and mirror-sensitive batching.
+/// every opaque draw. Group compatible quad resources by their actual GPU
+/// texture bindings and raster state, not by their logical MaterialId.
+/// Opaque and masked draws keep distinct per-instance material parameters.
 pub(super) fn group_voxel_batches_into(
     draws: &mut [PreparedDraw],
     meshes: &HashMap<(MeshId, bool), MeshResources>,
@@ -59,11 +64,9 @@ pub(super) fn group_voxel_batches_into(
         for (index, draw) in draws.iter().enumerate() {
             let key = batch_key(draw, meshes);
             if let Some(batch) = batches.last_mut() {
-                let first = &draws[batch.first_instance];
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && first.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
-                    && first.material.as_ref() == draw.material.as_ref()
                     && !key.0
                 {
                     batch.instance_count += 1;
@@ -134,9 +137,7 @@ pub(super) fn group_voxel_batches_into(
         for &source_index in indices {
             let draw = &draws[source_index];
             if let Some(batch) = batches.last_mut() {
-                let first = &draws[workspace.order[batch.first_instance]];
                 if last_key == Some(key)
-                    && first.material.as_ref() == draw.material.as_ref()
                     && !key.0
                 {
                     batch.instance_count += 1;
@@ -178,7 +179,7 @@ pub(super) fn group_voxel_batches_into(
 fn batch_key(
     draw: &PreparedDraw,
     meshes: &HashMap<(MeshId, bool), MeshResources>,
-) -> (bool, u64, u64, u32, bool) {
+) -> BatchKey {
     let resource = meshes.get(&mesh_key(draw, true));
     let quad = resource.is_some_and(|mesh| mesh.procedural_quads && mesh.generated.is_none());
     let page = if quad {
@@ -191,9 +192,16 @@ fn batch_key(
     let size_class = u32::BITS - draw.part.index_count().saturating_sub(1).leading_zeros();
     (
         !quad,
-        draw.material.id().0,
+        [
+            draw.material.albedo_texture.map(|id| id.0),
+            draw.material.normal_texture.map(|id| id.0),
+            draw.material.occlusion_texture.map(|id| id.0),
+            draw.material.metallic_roughness_texture.map(|id| id.0),
+        ],
         page,
         size_class,
+        draw.material.double_sided,
+        draw.material.front_face == gfx_core::FrontFace::Cw,
         !draw.material.double_sided && draw.is_mirrored(),
     )
 }
@@ -217,11 +225,9 @@ mod tests {
         for (index, draw) in draws.iter().enumerate() {
             let key = batch_key(draw, meshes);
             if let Some(batch) = batches.last_mut() {
-                let first = &draws[batch.first_instance];
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && first.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
-                    && first.material.as_ref() == draw.material.as_ref()
                     && !key.0
                 {
                     batch.instance_count += 1;
@@ -289,6 +295,79 @@ mod tests {
             batches.iter().map(|b| (b.first_instance, b.instance_count)).collect::<Vec<_>>(),
             baseline.iter().map(|b| (b.first_instance, b.instance_count)).collect::<Vec<_>>(),
         );
+    }
+
+    fn mock_quad_resources(mesh: &std::sync::Arc<Mesh>) -> MeshResources {
+        let buffer = gfx_core::BufferId::from_parts(5, 1);
+        MeshResources {
+            generated: None,
+            generation: mesh.generation(),
+            vertices: buffer,
+            vertex_binding_bytes: 4096,
+            vertex_stride: 24,
+            vertex_base: 0,
+            tangents: None,
+            tangent_bytes: 0,
+            indices: buffer,
+            index_format: gfx_core::IndexFormat::Uint16,
+            index_offset: 0,
+            procedural_quads: true,
+            allocation: None,
+        }
+    }
+
+    #[test]
+    fn identical_gpu_bindings_batch_distinct_material_constants() {
+        // Different logical materials still read their own DrawParams via
+        // the per-instance physical slot; they do not require separate draws.
+        let mesh = Arc::new(Mesh::cube());
+        let mut scene = Scene::new();
+        let mut ids = Vec::new();
+        for i in 0..192 {
+            let mut material = Material::new();
+            material.shading_model = crate::ShadingModel::Unlit;
+            material.base_color = [i as f32 / 192.0, 0.4, 0.7, 1.0];
+            ids.push(material.id());
+            scene.insert(None, Node::new()
+                .with_mesh(mesh.clone())
+                .with_materials([Arc::new(material)]))
+                .unwrap();
+        }
+        let mut draws = prepare(&scene);
+        assert_eq!(draws.len(), 192);
+        assert_ne!(ids[0], ids[1]);
+        let mut meshes = HashMap::new();
+        meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
+        let batches = group_voxel_batches(&mut draws, &meshes);
+        assert_eq!(batches.len(), 1, "per-instance material data must not split a quad draw");
+        assert_eq!(batches[0].instance_count, 192);
+        assert_eq!(draws.iter().map(|d| d.material.id()).collect::<std::collections::HashSet<_>>().len(), 192);
+    }
+
+    #[test]
+    fn distinct_texture_bindings_and_raster_states_never_merge() {
+        let mesh = Arc::new(Mesh::cube());
+        let mut scene = Scene::new();
+        let mut plain = Material::new();
+        plain.shading_model = crate::ShadingModel::Unlit;
+        let mut textured = plain.clone();
+        textured.albedo_texture = Some(crate::TextureAssetId(42));
+        let mut double_sided = plain.clone();
+        double_sided.double_sided = true;
+        let mut flipped = plain.clone();
+        flipped.front_face = gfx_core::FrontFace::Cw;
+        for material in [plain, textured, double_sided, flipped] {
+            scene.insert(None, Node::new()
+                .with_mesh(mesh.clone())
+                .with_materials([Arc::new(material)]))
+                .unwrap();
+        }
+        let mut draws = prepare(&scene);
+        let mut meshes = HashMap::new();
+        meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
+        let batches = group_voxel_batches(&mut draws, &meshes);
+        assert_eq!(batches.len(), 4, "texture or culling state changes need independent bindings");
+        assert!(batches.iter().all(|batch| batch.instance_count == 1));
     }
 
     #[test]
