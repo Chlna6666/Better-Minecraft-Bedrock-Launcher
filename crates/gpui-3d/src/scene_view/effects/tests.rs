@@ -272,11 +272,13 @@ fn queue_draw<D: Device>(
     submission
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires D3D11; production screen pass color/depth and colored local lighting"]
 fn effects_dx11() {
     verify(gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap());
 }
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires D3D12; production screen pass color/depth and colored local lighting"]
 fn effects_dx12() {
@@ -288,6 +290,7 @@ fn effects_vulkan() {
     verify(gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap());
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires OpenGL 4.5; hidden bootstrap only, no presentation"]
 fn effects_opengl() {

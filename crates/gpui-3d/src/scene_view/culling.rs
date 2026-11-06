@@ -34,7 +34,7 @@ fn culling_dispatch_groups(count: u32, tail_start: u32, shader_available: bool) 
 /// Byte-accurate identity of a 48-byte GPU culling bounds record.
 /// Converting floats to their bit patterns distinguishes signed zeros and
 /// prevents a cache hit from silently changing the generated GPU bytes.
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 struct BoundsRecordKey([u32; 12]);
 
 /// Exact 16-byte GPU culling batch descriptor. This remains identical when

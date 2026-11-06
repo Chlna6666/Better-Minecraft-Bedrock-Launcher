@@ -174,7 +174,7 @@ struct DrawAddress {
     first_instance: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DrawMeshKey {
     Mesh { id: MeshId, generation: u64 },
     // Each generated draw selects its own header via the Instance table.
@@ -183,7 +183,7 @@ enum DrawMeshKey {
     VoxelPage(BufferId),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct DrawResourceKey {
     shadow: Option<BufferId>,
     mesh: DrawMeshKey,

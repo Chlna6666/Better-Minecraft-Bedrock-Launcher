@@ -380,7 +380,7 @@ mod adaptive_raster_tests {
         assert_eq!(choose_raster_threads(0.25), 128);
         assert_eq!(choose_raster_threads(f32::NAN), 64);
         let profiles = super::raster_profiles();
-        let caps = ComputeCapabilities {
+        let caps = gfx_core::ComputeCapabilities {
             max_workgroups: [65535; 3],
             max_invocations_per_workgroup: 64,
             max_workgroup_size: [64, 64, 64],

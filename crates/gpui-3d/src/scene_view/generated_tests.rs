@@ -683,7 +683,7 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
     ];
-    let limits = device.buffer_binding_limits();
+    let limits = gpui::ExtensionDevice::buffer_binding_limits(&device);
     let mut arena = MeshArena::generated_output(limits);
     let mut templates = MeshArena::generated_templates(limits);
     let mut resources = create_many_pooled(

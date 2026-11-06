@@ -5,6 +5,7 @@ use crate::scene_view::{
     artifacts,
     batching::group_voxel_batches,
     gpu::{self, MeshArena},
+    INSTANCE_STRIDE,
 };
 use crate::{
     Aabb, Camera, Mat4, Material, Mesh, MeshPart, Node, PreparedScene, Scene, ShadingModel,
