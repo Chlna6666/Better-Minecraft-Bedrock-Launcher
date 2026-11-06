@@ -85,6 +85,43 @@ mod tests {
     }
 
     #[test]
+    fn four_section_tile_preserves_node_ids_and_rebuilds_only_its_own_group() {
+        let material = Arc::new(gpui_3d::Material::new());
+        let mesh_at = |x, z| {
+            let section = generated_chunk(x, material.clone());
+            let mut section = (*section).clone();
+            section.pos.z = z;
+            section.origin[2] = z * 16;
+            Arc::new(section)
+        };
+        let sections = [mesh_at(0, 0), mesh_at(1, 0), mesh_at(0, 1), mesh_at(1, 1)];
+        let mut meshes = sections.iter().map(|mesh| ((mesh.pos, 0), mesh.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut registry = ChunkScene::default();
+        let before = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        assert_eq!(registry.fused.len(), 1);
+        let key = super::fusion_key((sections[0].pos, 0));
+        let group_id = registry.fused[&key].0;
+        assert_eq!(registry.fused[&key].1.len(), 4);
+        assert_eq!(before.node(group_id).unwrap().mesh.as_ref().unwrap().parts().len(), 1,
+            "four generated Section materials share one native draw");
+
+        let replacement = mesh_at(1, 1);
+        let changed_key = (replacement.pos, 0);
+        meshes.insert(changed_key, replacement);
+        let next = registry.update(
+            Some(&before), &meshes, Some(&BTreeSet::from([changed_key])), [0; 3],
+        ).unwrap();
+        assert_eq!(registry.fused[&key].0, group_id, "fused Scene node IDs stay stable");
+        assert_ne!(
+            before.node(group_id).unwrap().mesh.as_ref().unwrap().id(),
+            next.node(group_id).unwrap().mesh.as_ref().unwrap().id(),
+            "a Section delta regenerates only its owning fused mesh",
+        );
+        assert!(registry.nodes.values().all(|(id, _)| next.node(*id).unwrap().mesh.is_none()));
+    }
+
+    #[test]
     fn blended_gpu_section_is_never_fused_across_transparency_order() {
         let plain = Arc::new(gpui_3d::Material::new());
         let mut blend = gpui_3d::Material::new();
