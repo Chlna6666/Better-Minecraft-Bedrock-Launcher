@@ -88,7 +88,7 @@ mod tests {
 
 impl Dx11Device {
     pub(crate) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
-        dispatch.validate(self.compute_capabilities())?;
+        dispatch.validate_with_limits(self.compute_capabilities(), self.buffer_binding_limits())?;
         let Shader::Compute(shader) = self.shaders.get(dispatch.shader)? else {
             return Err(Error::InvalidInput(
                 "dispatch requires a compute shader".into(),
