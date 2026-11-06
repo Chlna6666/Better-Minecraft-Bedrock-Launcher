@@ -6,6 +6,11 @@ pub(super) struct AssetCounts {
     stamp: Option<(u64, u64)>,
     meshes: HashMap<MeshId, usize>,
     textures: HashMap<TextureAssetId, usize>,
+    // Only IDs that lost their final reference in the last committed delta.
+    // Avoid rebuilding the whole resident GPU resource set for one Section removal.
+    removed_meshes: Vec<MeshId>,
+    removed_textures: Vec<TextureAssetId>,
+    full_rescan: bool,
 }
 
 impl AssetCounts {
@@ -13,11 +18,13 @@ impl AssetCounts {
     /// New-section-only publications do not require a global GPU eviction walk.
     /// A lost delta lineage conservatively requests a full residency sweep.
     pub(super) fn sync(&mut self, previous: Option<&Scene>, scene: &Scene) -> bool {
-        let mut might_have_removed_assets = false;
         let stamp = (scene.instance_id(), scene.version());
         if self.stamp == Some(stamp) {
             return false;
         }
+        self.removed_meshes.clear();
+        self.removed_textures.clear();
+        self.full_rescan = false;
         if let Some(previous) =
             previous.filter(|old| self.stamp == Some((old.instance_id(), old.version())))
             && let Some(nodes) = scene.changed_nodes(previous)
@@ -25,7 +32,7 @@ impl AssetCounts {
             let unique = nodes.iter().copied().collect::<HashSet<_>>();
             for id in unique {
                 if let Some(node) = previous.node(id) {
-                    might_have_removed_assets |= self.record(node, false);
+                    self.record(node, false);
                 }
                 if let Some(node) = scene.node(id) {
                     self.record(node, true);
@@ -34,8 +41,8 @@ impl AssetCounts {
         } else {
             // Unrelated history or first scene: do not assume cached GPU
             // bindings are still referenced by the new scene.
-            might_have_removed_assets = true;
             *self = Self::default();
+            self.full_rescan = true;
             let mut pending = scene.roots().to_vec();
             while let Some(id) = pending.pop() {
                 if let Some(node) = scene.node(id) {
@@ -46,18 +53,31 @@ impl AssetCounts {
                 }
             }
         }
+        // A mesh can disappear and be re-added within one atomic scene delta.
+        // Only retire IDs absent from the final reference-count snapshot.
+        self.removed_meshes.retain(|id| !self.meshes.contains_key(id));
+        self.removed_textures.retain(|id| !self.textures.contains_key(id));
         self.stamp = Some(stamp);
-        might_have_removed_assets
+        self.full_rescan || !self.removed_meshes.is_empty() || !self.removed_textures.is_empty()
     }
 
-    fn record(&mut self, node: &crate::Node, add: bool) -> bool {
-        let mut removed = false;
+    pub(super) fn removed_ids(&self) -> (&[MeshId], &[TextureAssetId]) {
+        (&self.removed_meshes, &self.removed_textures)
+    }
+
+    pub(super) fn needs_full_rescan(&self) -> bool {
+        self.full_rescan
+    }
+
+    fn record(&mut self, node: &crate::Node, add: bool) {
         for mesh in node
             .mesh
             .iter()
             .chain(node.lod.iter().map(|level| &level.mesh))
         {
-            removed |= adjust(&mut self.meshes, mesh.id(), add);
+            if adjust(&mut self.meshes, mesh.id(), add) {
+                self.removed_meshes.push(mesh.id());
+            }
         }
         for material in node
             .materials
@@ -73,10 +93,11 @@ impl AssetCounts {
             .into_iter()
             .flatten()
             {
-                removed |= adjust(&mut self.textures, texture, add);
+                if adjust(&mut self.textures, texture, add) {
+                    self.removed_textures.push(texture);
+                }
             }
         }
-        removed
     }
 
     pub(super) fn ids(&self) -> (HashSet<MeshId>, HashSet<TextureAssetId>) {
@@ -125,6 +146,39 @@ mod tests {
         last.remove(b).unwrap();
         assert!(counts.sync(Some(&next), &last), "last reference must trigger cleanup");
         assert!(counts.meshes.is_empty());
+    }
+
+    #[test]
+    fn atomic_replacement_does_not_retire_readded_shared_mesh() {
+        let mesh = Arc::new(Mesh::cube());
+        let mut before = Scene::new();
+        let id = before.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
+        let mut counts = AssetCounts::default();
+        assert!(counts.sync(None, &before));
+        let mut next = before.fork();
+        next.remove(id).unwrap();
+        next.insert(None, Node::new().with_mesh(mesh)).unwrap();
+        assert!(!counts.sync(Some(&before), &next));
+        assert!(counts.removed_ids().0.is_empty());
+        assert!(!counts.needs_full_rescan());
+    }
+
+    #[test]
+    fn retirement_delta_contains_only_last_removed_mesh() {
+        let one = Arc::new(Mesh::cube());
+        let two = Arc::new(Mesh::cube());
+        let mut scene = Scene::new();
+        let old = scene.insert(None, Node::new().with_mesh(one.clone())).unwrap();
+        let stay = scene.insert(None, Node::new().with_mesh(two.clone())).unwrap();
+        let mut counts = AssetCounts::default();
+        assert!(counts.sync(None, &scene));
+        let mut next = scene.fork();
+        next.remove(old).unwrap();
+        assert!(counts.sync(Some(&scene), &next));
+        assert_eq!(counts.removed_ids().0, &[one.id()]);
+        assert_eq!(counts.removed_ids().1.len(), 0);
+        assert!(next.node(stay).is_some());
+        assert!(!counts.needs_full_rescan());
     }
 
     #[test]

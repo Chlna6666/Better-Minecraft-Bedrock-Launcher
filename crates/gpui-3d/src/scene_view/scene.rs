@@ -103,6 +103,7 @@ pub(super) struct SceneResources {
     draw_addresses: Vec<DrawAddress>,
     reorder_positions: Vec<usize>,
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
+    binding_index: binding_index::BindingIndex,
     last_binding_report: Option<Instant>,
     sampler: Option<SamplerId>,
     // Resource-cache age only; frame-visible output samples the extension frame time.
@@ -142,6 +143,7 @@ fn streaming_light_headroom(required: usize, max_binding_bytes: u64) -> usize {
 }
 
 mod assets;
+mod binding_index;
 mod instance_cache;
 pub(in crate::scene_view) mod stable_slots;
 mod generated;
@@ -375,6 +377,7 @@ impl SceneResources {
             draw_addresses: Vec::new(),
             reorder_positions: Vec::new(),
             binding_cache: HashMap::new(),
+            binding_index: binding_index::BindingIndex::default(),
             last_binding_report: None,
             sampler: None,
             last_used_at: Instant::now(),
@@ -724,12 +727,28 @@ impl SceneResources {
                     .map(|culling| culling.visible_instances);
             let mesh_replaced = !self.retired_meshes.is_empty();
             if references_removed || mesh_replaced || visible_instances_changed {
-                retirement_scan = true;
-                let (active_meshes, active_textures) = self.active_assets.ids();
-                self.retire_bindings(device, &active_meshes, &active_textures)?;
-                if references_removed {
-                    self.retire_textures(device, &active_textures)?;
-                    self.retire_meshes(&active_meshes);
+                // The normal Section Delta path contains exact final-reference
+                // removals. Do not walk every resident mesh and BindGroup when
+                // only a handful of Sections were unloaded.
+                if references_removed
+                    && !mesh_replaced
+                    && !visible_instances_changed
+                    && !self.active_assets.needs_full_rescan()
+                {
+                    let (removed_meshes, removed_textures) = self.active_assets.removed_ids();
+                    let removed_meshes = removed_meshes.to_vec();
+                    let removed_textures = removed_textures.to_vec();
+                    self.retire_binding_delta(device, &removed_meshes, &removed_textures)?;
+                    self.retire_texture_delta(device, &removed_textures)?;
+                    self.retire_mesh_delta(&removed_meshes);
+                } else {
+                    retirement_scan = true;
+                    let (active_meshes, active_textures) = self.active_assets.ids();
+                    self.retire_bindings(device, &active_meshes, &active_textures)?;
+                    if references_removed {
+                        self.retire_textures(device, &active_textures)?;
+                        self.retire_meshes(&active_meshes);
+                    }
                 }
             }
         }
@@ -1402,6 +1421,19 @@ impl SceneResources {
         Ok(())
     }
 
+    fn retire_texture_delta(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        removed: &[TextureAssetId],
+    ) -> gpui::Result<()> {
+        for id in removed {
+            if let Some(texture) = self.textures.remove(id) {
+                destroy_texture(device, texture)?;
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_meshes(
         &mut self,
         device: &mut dyn ExtensionDevice,
@@ -1505,6 +1537,59 @@ impl SceneResources {
         }
     }
 
+    fn retire_mesh_delta(&mut self, removed: &[MeshId]) {
+        for &id in removed {
+            for compact in [false, true] {
+                if let Some(mesh) = self.meshes.remove(&(id, compact)) {
+                    self.retired_meshes.push(mesh);
+                }
+            }
+        }
+    }
+
+    fn destroy_cached_binding(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        key: DrawResourceKey,
+    ) -> gpui::Result<()> {
+        if let Some(&binding) = self.binding_cache.get(&key) {
+            device.destroy_bind_group(binding)?;
+            self.binding_cache.remove(&key);
+            self.binding_index.remove(key);
+        }
+        Ok(())
+    }
+
+    fn retire_binding_delta(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        removed_meshes: &[MeshId],
+        removed_textures: &[TextureAssetId],
+    ) -> gpui::Result<()> {
+        // Pooled CPU voxel quads are keyed by the page buffer, not MeshId.
+        // Invalidate one of those bindings only when no surviving Mesh still
+        // references that page; otherwise a valid draw would lose its binding.
+        let removed = removed_meshes.iter().copied().collect::<HashSet<_>>();
+        let mut pages = removed_meshes
+            .iter()
+            .filter_map(|id| self.meshes.get(&(*id, true)))
+            .filter(|mesh| mesh.generated.is_none())
+            .map(|mesh| mesh.vertices)
+            .collect::<HashSet<_>>();
+        if !pages.is_empty() {
+            for ((id, compact), mesh) in &self.meshes {
+                if *compact && !removed.contains(id) {
+                    pages.remove(&mesh.vertices);
+                }
+            }
+        }
+        let stale = self.binding_index.affected(removed_meshes, &pages, removed_textures);
+        for key in stale {
+            self.destroy_cached_binding(device, key)?;
+        }
+        Ok(())
+    }
+
     fn retire_bindings(
         &mut self,
         device: &mut dyn ExtensionDevice,
@@ -1532,9 +1617,8 @@ impl SceneResources {
                 .then_some((*key, binding))
             })
             .collect::<Vec<_>>();
-        for (key, binding) in stale {
-            device.destroy_bind_group(binding)?;
-            self.binding_cache.remove(&key);
+        for (key, _) in stale {
+            self.destroy_cached_binding(device, key)?;
         }
         Ok(())
     }
@@ -1746,8 +1830,15 @@ impl SceneResources {
             for bind_group in self.binding_cache.values().copied() {
                 device.destroy_bind_group(bind_group)?;
             }
+            self.binding_index.clear();
+            for &key in created.keys() {
+                self.binding_index.insert(key);
+            }
             self.binding_cache = created;
         } else {
+            for &key in created.keys() {
+                self.binding_index.insert(key);
+            }
             self.binding_cache.extend(created);
         }
         // Binding validation is already performed by retire_bindings after
@@ -1775,9 +1866,8 @@ impl SceneResources {
                     .then_some((*key, binding))
                 })
                 .collect::<Vec<_>>();
-            for (key, binding) in stale {
-                device.destroy_bind_group(binding)?;
-                self.binding_cache.remove(&key);
+            for (key, _) in stale {
+                self.destroy_cached_binding(device, key)?;
             }
         }
         if let Some(started) = trace_started {
@@ -1992,6 +2082,7 @@ impl SceneResources {
         for bind_group in self.binding_cache.drain().map(|(_, binding)| binding) {
             device.destroy_bind_group(bind_group)?;
         }
+        self.binding_index.clear();
         if let Some(shadow) = self.shadow.take() {
             shadow.destroy(device)?;
         }
