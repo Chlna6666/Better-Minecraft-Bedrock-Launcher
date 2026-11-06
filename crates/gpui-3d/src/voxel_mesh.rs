@@ -259,6 +259,27 @@ impl VoxelMeshSource {
             .ok_or(MeshError::TooLarge)?;
         if count > i32::MAX as usize { return Err(MeshError::TooLarge); }
 
+        // Mark authoritative emitting volumes before importing any halos.
+        // Otherwise a later neighbour's occluder halo could accidentally
+        // replace an earlier Section's air cell on a shared seam.
+        let mut interior_mask = vec![false; count];
+        for input in inputs {
+            let src = input.source.size;
+            let dst_xy = size[0] as usize * size[1] as usize;
+            for z in 1..src[2] - 1 {
+                for y in 1..src[1] - 1 {
+                    for x in 1..src[0] - 1 {
+                        let target = (z + input.offset[2]) as usize * dst_xy
+                            + (y + input.offset[1]) as usize * size[0] as usize
+                            + (x + input.offset[0]) as usize;
+                        if interior_mask[target] {
+                            return Err(MeshError::InvalidParts);
+                        }
+                        interior_mask[target] = true;
+                    }
+                }
+            }
+        }
         let mut cells = vec![0u32; count];
         let mut classes = vec![0u32; count];
         let mut templates = Vec::with_capacity(total_classes as usize * 6);
@@ -330,6 +351,7 @@ impl VoxelMeshSource {
                     let gy = y + input.offset[1] as usize;
                     let gz = z + input.offset[2] as usize;
                     let destination = gz * merged_xy + gy * size[0] as usize + gx;
+                    if !interior && interior_mask[destination] { continue }
                     let kind = if source_kind == 0 || source_kind == VOXEL_OCCLUDER {
                         source_kind
                     } else {
@@ -351,25 +373,6 @@ impl VoxelMeshSource {
                 .ok_or(MeshError::TooLarge)?;
             instance_face_offset = instance_face_offset.checked_add(src_instances.len() as u32)
                 .ok_or(MeshError::TooLarge)?;
-        }
-        // Static-only sources omit their compact cell vector, so their light
-        // field must still be copied independently of the cube-cell loop.
-        if let Some(levels) = &mut levels {
-            for input in inputs {
-                let source = input.source;
-                let light = source.lighting.as_ref().ok_or(MeshError::InvalidParts)?;
-                let src_xy = source.size[0] as usize * source.size[1] as usize;
-                let dst_xy = size[0] as usize * size[1] as usize;
-                for index in 0..light.levels.len() {
-                    let x = index % source.size[0] as usize;
-                    let y = index / source.size[0] as usize % source.size[1] as usize;
-                    let z = index / src_xy;
-                    let dest = (z + input.offset[2] as usize) * dst_xy
-                        + (y + input.offset[1] as usize) * size[0] as usize
-                        + x + input.offset[0] as usize;
-                    if levels[dest] == 0 { levels[dest] = light.levels[index]; }
-                }
-            }
         }
         let mut combined = Self::new(size, base.origin, cells, templates)?;
         if !instances.is_empty() {
@@ -414,6 +417,12 @@ fn validate_voxel_templates(faces: &[VoxelFaceTemplate]) -> Result<(), MeshError
 }
 
 impl VoxelMeshSource {
+    /// Dimensions of this Section's padded voxel grid.
+    #[must_use]
+    pub const fn size(&self) -> [u32; 3] {
+        self.size
+    }
+
     /// Validates a padded grid and computes conservative per-material output capacities.
     /// No faces or triangle vertices are generated here.
     ///
@@ -677,6 +686,75 @@ impl VoxelMeshSource {
             Mesh::from_voxel_quads_without_raycast(quads, self.parts.to_vec())
                 .expect("validated voxel templates and bounded material regions")
         })
+    }
+}
+
+#[cfg(test)]
+mod fusion_tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_generated_cube_sections_share_one_material_part_and_cull_seams() {
+        let left = tests::source();
+        let right = tests::source();
+        let merged = VoxelMeshSource::fuse_sections(&[
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+        ]).unwrap();
+        assert_eq!(merged.size(), [6, 3, 3]);
+        assert_eq!(merged.parts.len(), 1, "same material across Sections becomes one draw");
+        assert_eq!(tests::visible(&left), 10);
+        assert_eq!(tests::visible(&right), 10);
+        assert_eq!(tests::visible(&merged), 18, "inter-Section hidden faces must disappear");
+    }
+
+    #[test]
+    fn fused_model_only_sections_keep_instance_jobs_and_neighbor_classes() {
+        let face_templates = tests::source().templates.to_vec();
+        let make = || VoxelMeshSource::new([4, 3, 3], Vec3::ZERO, vec![0; 36], vec![])
+            .unwrap().with_instances(
+                vec![16; 36], face_templates.clone(),
+                vec![VoxelMeshInstance {
+                    position: [1, 1, 1], faces: 0..6, height: 1.0,
+                    occlusion_mask: 0,
+                }]
+            ).unwrap();
+        let left = make();
+        let right = make();
+        assert_eq!(left.cells.len(), 0, "model-only sources skip the cube cell buffer");
+        let merged = VoxelMeshSource::fuse_sections(&[
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+        ]).unwrap();
+        assert_eq!(merged.parts.len(), 1);
+        assert_eq!(merged.instances.as_ref().unwrap().jobs.len(), 2);
+        assert_eq!(tests::visible(&merged), 12);
+        let classes = &merged.instances.as_ref().unwrap().classes;
+        assert_eq!(classes.cell(1 + 6 + 6 * 3), 16);
+        assert_eq!(classes.cell(3 + 6 + 6 * 3), 16);
+    }
+
+    #[test]
+    fn fused_static_sections_rebase_quads_and_preserve_lighting() {
+        let face = tests::source().templates[0].clone();
+        let make = || VoxelMeshSource::new([4, 3, 3], Vec3::ZERO, vec![0; 36], vec![])
+            .unwrap()
+            .with_static_faces(vec![face.clone()]).unwrap()
+            .with_lighting(vec![7; 36], 0.25).unwrap();
+        let left = make();
+        let right = make();
+        let merged = VoxelMeshSource::fuse_sections(&[
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+        ]).unwrap();
+        assert_eq!(merged.parts.len(), 1);
+        assert_eq!(merged.capacity(), 2);
+        assert_eq!(merged.lighting.as_ref().unwrap().levels.len(), 54);
+        assert!(merged.lighting.as_ref().unwrap().levels.iter().all(|&x| x == 7));
+        assert_eq!(merged.fallback().vertices().len(), 8);
+        let mut x = merged.fallback().vertices().iter().map(|v| v.position.x).collect::<Vec<_>>();
+        x.sort_by(f32::total_cmp);
+        assert!(x[7] - x[0] > 2.0, "right static faces must move by two grid cells");
     }
 }
 
