@@ -403,7 +403,7 @@ fn fused_section_pair(
     let mut materials = Vec::<Arc<gpui_3d::Material>>::new();
     let mut index = HashMap::<gpui_3d::MaterialId, u32>::new();
     let mut mappings = [Vec::new(), Vec::new()];
-    for (source, mapping) in [(left, &mut mappings[0]), (right, &mut mappings[1])] {
+    for (source, mapping) in [left, right].into_iter().zip(mappings.iter_mut()) {
         for material in source.materials.iter() {
             let slot = if let Some(&slot) = index.get(&material.id()) {
                 slot
