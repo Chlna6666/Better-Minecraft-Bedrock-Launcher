@@ -677,10 +677,16 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
         Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
     ];
-    let mut arena = MeshArena::generated_output(device.buffer_binding_limits());
+    let limits = device.buffer_binding_limits();
+    let mut arena = MeshArena::generated_output(limits);
+    let mut templates = MeshArena::generated_templates(limits);
     let mut resources = create_many_pooled(
-        &mut device, &[&meshes[0], &meshes[1]], &shaders, &mut arena, BackendKind::Dx11,
+        &mut device, &[&meshes[0], &meshes[1]], &shaders,
+        &mut arena, &mut templates, BackendKind::Dx11,
     ).unwrap();
+    assert_eq!(resources[0].generated.as_ref().unwrap().templates,
+               resources[1].generated.as_ref().unwrap().templates);
+    assert_ne!(resources[0].generated.as_ref().unwrap().templates, resources[0].vertices);
     assert_eq!(resources.len(), 2);
     assert_eq!(resources[0].vertices, resources[1].vertices);
     assert_ne!(resources[0].vertex_base, resources[1].vertex_base);
@@ -705,9 +711,12 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     SubmissionDevice::wait_queue_idle(&mut device).unwrap();
     let mut ordinary = MeshArena::default();
     for resource in resources.drain(..) {
-        super::super::gpu::destroy_mesh(&mut device, resource, &mut ordinary, &mut arena).unwrap();
+        super::super::gpu::destroy_mesh(
+            &mut device, resource, &mut ordinary, &mut arena, &mut templates,
+        ).unwrap();
     }
     assert_eq!(arena.stats().0, 0);
+    assert_eq!(templates.stats().0, 0);
 }
 
 #[test]

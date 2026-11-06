@@ -193,7 +193,7 @@ impl PendingGenerated {
 fn discard_pending_generated(
     device: &mut dyn ExtensionDevice,
     pending: Vec<PendingGenerated>,
-    mut arena: Option<&mut MeshArena>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena)>,
 ) {
     for mesh in pending {
         for (slot, &buffer) in mesh.buffers.iter().enumerate() {
@@ -203,12 +203,12 @@ fn discard_pending_generated(
                 let _ = device.destroy_buffer(buffer);
             }
         }
-        if let Some(arena) = arena.as_deref_mut() {
+        if let Some((faces, templates)) = arena.as_mut() {
             if let Some(allocation) = mesh.template_allocation {
-                let _ = arena.release(device, allocation);
+                let _ = templates.release(device, allocation);
             }
             if let Some(allocation) = mesh.allocation {
-                let _ = arena.release(device, allocation);
+                let _ = faces.release(device, allocation);
             }
         }
     }
@@ -220,7 +220,7 @@ fn discard_pending_generated(
 fn prepare_generated(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
-    mut arena: Option<(&mut MeshArena, BackendKind)>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena, BackendKind)>,
 ) -> gpui::Result<PendingGenerated> {
     let source = mesh
         .gpu_voxels()
@@ -349,7 +349,8 @@ fn prepare_generated(
     let mut pooled_capacity = output_bytes;
     let result = (|| {
         for (slot, (size, usage)) in specs.into_iter().enumerate() {
-            if (slot == 1 || slot == 2) && let Some((pool, backend)) = arena.as_mut() {
+            if (slot == 1 || slot == 2) && let Some((faces, templates, backend)) = arena.as_mut() {
+                let pool = if slot == 1 { templates } else { faces };
                 let (allocation, buffer, offset, capacity) =
                     pool.allocate(device, *backend, size as u64)?;
                 // Both immutable template inputs and generated face outputs
@@ -451,12 +452,12 @@ fn prepare_generated(
                     let _ = device.destroy_buffer(buffer);
                 }
             }
-            if let Some((pool, _)) = arena {
+            if let Some((faces, templates, _)) = arena {
                 if let Some(allocation) = template_allocation {
-                    let _ = pool.release(device, allocation);
+                    let _ = templates.release(device, allocation);
                 }
                 if let Some(allocation) = pooled_allocation {
-                    let _ = pool.release(device, allocation);
+                    let _ = faces.release(device, allocation);
                 }
             }
             return Err(error);
@@ -495,28 +496,31 @@ pub(super) fn create_many_pooled(
     meshes: &[&Mesh],
     shaders: &Shaders,
     arena: &mut MeshArena,
+    template_arena: &mut MeshArena,
     backend: BackendKind,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, Some((arena, backend)))
+    create_many_impl(device, meshes, shaders, Some((arena, template_arena, backend)))
 }
 
 fn create_many_impl(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
     shaders: &Shaders,
-    mut arena: Option<(&mut MeshArena, BackendKind)>,
+    mut arena: Option<(&mut MeshArena, &mut MeshArena, BackendKind)>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
     let mut pending = Vec::with_capacity(meshes.len());
     for mesh in meshes {
-        let pool = arena.as_mut().map(|(arena, backend)| (&mut **arena, *backend));
+        let pool = arena.as_mut().map(|(faces, templates, backend)| {
+            (&mut **faces, &mut **templates, *backend)
+        });
         match prepare_generated(device, mesh, pool) {
             Ok(mesh) => pending.push(mesh),
             Err(error) => {
                 discard_pending_generated(
-                    device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+                    device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
                 );
                 return Err(error);
             }
@@ -540,7 +544,7 @@ fn create_many_impl(
     drop(dispatches);
     if let Err(error) = submitted {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+            device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
         );
         return Err(error);
     }
@@ -553,7 +557,7 @@ fn create_many_impl(
     }
     if let Err(error) = device.destroy_buffer_batch(&scratch) {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(arena, _)| &mut **arena),
+            device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
         );
         return Err(error.into());
     }

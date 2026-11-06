@@ -125,6 +125,7 @@ pub(super) struct Renderer {
     /// Resident writable face pages live on the renderer's GPU owner and are
     /// reused by all SceneViews that share this device.
     generated_arena: Rc<RefCell<MeshArena>>,
+    template_arena: Rc<RefCell<MeshArena>>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
     frame_time: Option<Instant>,
@@ -167,6 +168,9 @@ impl Renderer {
             resources,
             generated_arena: Rc::new(RefCell::new(
                 MeshArena::generated_output(device.buffer_binding_limits()),
+            )),
+            template_arena: Rc::new(RefCell::new(
+                MeshArena::generated_templates(device.buffer_binding_limits()),
             )),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
@@ -317,11 +321,13 @@ mod tests {
 impl RendererExtensionRenderer for Renderer {
     fn needs_gpu_completion(&self) -> bool {
         self.generated_arena.borrow().has_retired_ranges()
+            || self.template_arena.borrow().has_retired_ranges()
             || self.scenes.values().any(SceneResources::has_retired_arena_ranges)
     }
 
     fn gpu_work_completed(&mut self) {
         self.generated_arena.borrow_mut().reclaim_after_gpu_idle();
+        self.template_arena.borrow_mut().reclaim_after_gpu_idle();
         for scene in self.scenes.values_mut() {
             scene.reclaim_arena_after_gpu_idle();
         }
@@ -350,6 +356,7 @@ impl RendererExtensionRenderer for Renderer {
                 scene_view.id,
                 SceneResources::new_shared(
                     device, context.backend_kind(), Rc::clone(&self.generated_arena),
+                    Rc::clone(&self.template_arena),
                 )?,
             );
         }

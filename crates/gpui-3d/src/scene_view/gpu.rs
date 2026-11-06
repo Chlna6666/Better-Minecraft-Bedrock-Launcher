@@ -138,6 +138,8 @@ pub(super) struct MeshArena {
     // GPU-generated face pages require writable storage. Keep them isolated
     // from the immutable CPU-packed voxel vertex/index pages.
     generated_output: bool,
+    /// Separate SRV-only templates from writable D3D11 UAV face outputs.
+    generated_templates: bool,
     generated_limits: gfx_core::BufferBindingLimits,
     pages: Vec<Option<ArenaPage>>,
     available_pages: BTreeSet<(u64, usize)>,
@@ -147,6 +149,15 @@ pub(super) struct MeshArena {
 impl MeshArena {
     pub(super) fn generated_output(limits: gfx_core::BufferBindingLimits) -> Self {
         Self { generated_output: true, generated_limits: limits, ..Self::default() }
+    }
+
+    pub(super) fn generated_templates(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            generated_output: true,
+            generated_templates: true,
+            generated_limits: limits,
+            ..Self::default()
+        }
     }
 
     // Shared page offsets must satisfy both the driver's storage binding
@@ -207,12 +218,18 @@ impl MeshArena {
         let memory_location = buffer_memory_location(backend);
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some(if self.generated_output {
-                "gpui-3d generated face pool".into()
+                if self.generated_templates {
+                    "gpui-3d generated template pool".into()
+                } else {
+                    "gpui-3d generated face pool".into()
+                }
             } else {
                 "gpui-3d voxel mesh arena".into()
             }),
             size: capacity,
-            usage: if self.generated_output {
+            usage: if self.generated_templates {
+                BufferUsage::STORAGE | BufferUsage::COPY_DST
+            } else if self.generated_output {
                 BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST
             } else {
                 BufferUsage::STORAGE | BufferUsage::INDEX | BufferUsage::COPY_DST
@@ -1018,6 +1035,7 @@ pub(super) fn destroy_mesh(
     mesh: MeshResources,
     arena: &mut MeshArena,
     generated_arena: &mut MeshArena,
+    template_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     if let Some(allocation) = mesh.allocation {
         if let Some(generated) = &mesh.generated {
@@ -1026,7 +1044,7 @@ pub(super) fn destroy_mesh(
             // destroy the page while other Sections still reference it.
             if let Some(template_allocation) = generated.template_allocation {
                 device.destroy_buffer(generated.arguments)?;
-                generated_arena.release(device, template_allocation)?;
+                template_arena.release(device, template_allocation)?;
             } else {
                 device.destroy_buffer_batch(&[generated.templates, generated.arguments])?;
             }
