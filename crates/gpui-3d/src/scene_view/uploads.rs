@@ -126,8 +126,8 @@ pub(super) fn encode_cached_records<K: PartialEq, E>(
 /// A single changed_range() may upload megabytes of unchanged records between
 /// two distant dirty sections. Keep separate islands with a bounded write count,
 /// coalescing short clean gaps to limit per-write driver overhead. When the
-/// scatter limit is exceeded, fall back to one contiguous span rather than
-/// producing an unbounded number of GPU write commands.
+/// scatter limit is exceeded, preserve the widest clean gaps and merge the
+/// remaining islands. This minimizes transfer bytes under the write limit.
 ///
 /// A truncated tail needs no upload: the draw/instance count already limits GPU
 /// consumers to the live prefix.
@@ -219,10 +219,7 @@ fn dirty_record_ranges(
     coalesce_gap_records: usize,
     mut is_dirty: impl FnMut(usize) -> bool,
 ) -> Vec<Range<usize>> {
-    let mut ranges = Vec::<Range<usize>>::new();
-    let mut first_dirty = None;
-    let mut final_dirty_end = 0;
-    let mut fragmented = false;
+    let mut islands = Vec::<Range<usize>>::new();
     let max_gap_bytes = coalesce_gap_records.saturating_mul(stride);
     for index in 0..count {
         if !is_dirty(index) {
@@ -230,29 +227,39 @@ fn dirty_record_ranges(
         }
         let offset = index * stride;
         let end = offset + stride;
-        first_dirty.get_or_insert(offset);
-        final_dirty_end = end;
-        if fragmented {
-            continue;
-        }
-        match ranges.last_mut() {
-            Some(last) if offset - last.end <= max_gap_bytes => {
-                last.end = end;
-            }
-            _ => {
-                ranges.push(offset..end);
-                if ranges.len() > max_ranges.max(1) {
-                    ranges.clear();
-                    fragmented = true;
-                }
-            }
+        match islands.last_mut() {
+            Some(last) if offset - last.end <= max_gap_bytes => last.end = end,
+            _ => islands.push(offset..end),
         }
     }
-    if fragmented {
-        vec![first_dirty.expect("fragmentation requires a dirty record")..final_dirty_end]
-    } else {
-        ranges
+    let limit = max_ranges.max(1);
+    if islands.len() <= limit {
+        return islands;
     }
+
+    // Preserve the widest clean gaps instead of collapsing every scattered
+    // update into one nearly full-table transfer. Keeping at most 'limit'
+    // spans bounds native driver calls while minimizing the bytes copied.
+    // A gap is identified by the island immediately preceding it.
+    let mut gaps = (0..islands.len() - 1)
+        .map(|index| (islands[index + 1].start - islands[index].end, index))
+        .collect::<Vec<_>>();
+    gaps.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut splits = gaps
+        .into_iter()
+        .take(limit - 1)
+        .map(|(_, index)| index)
+        .collect::<Vec<_>>();
+    splits.sort_unstable();
+
+    let mut merged = Vec::with_capacity(limit);
+    let mut first = islands[0].start;
+    for split in splits {
+        merged.push(first..islands[split].end);
+        first = islands[split + 1].start;
+    }
+    merged.push(first..islands.last().expect("nonempty dirty islands").end);
+    merged
 }
 
 #[cfg(test)]
@@ -284,8 +291,8 @@ mod tests {
         );
         assert_eq!(
             changed_ranges(&old, &next, 4, 2, 0),
-            vec![8..56],
-            "too many islands fall back to a single safe span",
+            vec![8..12, 28..56],
+            "the widest clean gap is preserved under the write limit",
         );
         assert_eq!(
             changed_ranges(&old, &next, 4, 8, 4),
@@ -295,6 +302,22 @@ mod tests {
         let mut patched = old.clone();
         for range in changed_ranges(&old, &next, 4, 8, 0) {
             patched[range.clone()].copy_from_slice(&next[range]);
+        }
+        assert_eq!(patched, next);
+    }
+
+    #[test]
+    fn fragmented_updates_keep_widest_gaps_and_preserve_gpu_contents() {
+        let old = vec![0u8; 400];
+        let mut next = old.clone();
+        for index in [1usize, 3, 5, 50, 52, 90] {
+            next[index * 4..index * 4 + 4].fill(7);
+        }
+        let ranges = changed_ranges(&old, &next, 4, 3, 0);
+        assert_eq!(ranges, vec![4..24, 200..212, 360..364]);
+        let mut patched = old;
+        for range in &ranges {
+            patched[range.clone()].copy_from_slice(&next[range.clone()]);
         }
         assert_eq!(patched, next);
     }
