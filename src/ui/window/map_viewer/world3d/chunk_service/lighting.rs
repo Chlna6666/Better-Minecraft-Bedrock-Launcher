@@ -274,7 +274,19 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let mesh = plane.with_vertices(vertices).unwrap();
-            assert!(light.static_source(&mesh).is_ok(), "flat axis {axis}");
+            let templates = mesh
+                .vertices()
+                .chunks_exact(4)
+                .map(|quad| gpui_3d::VoxelFaceTemplate {
+                    vertices: std::array::from_fn(|index| quad[index]),
+                    material_slot: 0,
+                    neighbour: [0, 1, 0],
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                light.static_source_faces(templates).is_ok(),
+                "flat axis {axis}"
+            );
         }
     }
     #[test]

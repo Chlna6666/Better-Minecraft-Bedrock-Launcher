@@ -159,7 +159,9 @@ mod camera_snapshot_tests {
 
 #[cfg(test)]
 mod section_epoch_tests {
-    use super::*;
+    use super::accept_section_epoch;
+    use bedrock_render::{ChunkPos, Dimension};
+    use std::collections::HashMap;
 
     #[test]
     fn older_upsert_and_completion_cannot_override_newer_unload() {

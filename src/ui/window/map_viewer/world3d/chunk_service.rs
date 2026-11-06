@@ -606,7 +606,7 @@ mod view_tests {
         assert!(!same_chunk_render_geometry(&original, &changed_material));
         let mut changed_occlusion = (*same).clone();
         changed_occlusion.occluders = Arc::from([gpui_3d::Occluder {
-            bounds: gpui_3d::Aabb::new(Vec3::ZERO, Vec3::ONE).unwrap(),
+            bounds: gpui_3d::Aabb::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)).unwrap(),
             faces: 63,
         }]);
         assert!(!same_chunk_render_geometry(&original, &changed_occlusion));
