@@ -808,10 +808,18 @@ impl SceneResources {
                 };
                 resident_commands_stable = result.unwrap_or(false);
                 if result.is_none() {
-                    self.sync_buffers(
+                    let structural_updated = self.culling.as_ref().is_some_and(
+                        CullResources::structural_slots_committed,
+                    ) && self.sync_structural_draw_delta(
                         device, renderer, bind_group_layout, sampler,
-                        sampler_changed, scene_view.voxel_shader, assets_changed,
+                        sampler_changed, assets_changed,
                     )?;
+                    if !structural_updated {
+                        self.sync_buffers(
+                            device, renderer, bind_group_layout, sampler,
+                            sampler_changed, scene_view.voxel_shader, assets_changed,
+                        )?;
+                    }
                 }
             }
             if let Some(started) = buffer_started {
