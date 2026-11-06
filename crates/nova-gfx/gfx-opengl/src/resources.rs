@@ -50,6 +50,10 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
 }
 
 impl ResourceDevice for OpenGlDevice {
+    fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
+        self.texture_array_limits
+    }
+
     fn buffer_binding_limits(&self) -> BufferBindingLimits {
         self.binding_limits
     }
