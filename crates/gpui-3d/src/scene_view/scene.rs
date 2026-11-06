@@ -104,6 +104,10 @@ pub(super) struct SceneResources {
     /// Mesh identity for each binding. Allows positional hits to skip the
     /// resident MeshResources lookup for unchanged streamed sections.
     draw_resource_sources: Vec<((MeshId, bool), u64)>,
+    /// Generated Page and material-part offsets captured in the existing
+    /// binding pass, so Draw Mapping does not re-hash every mesh/part.
+    generated_batch_sources: Vec<Option<generated::BatchMappingSource>>,
+    spare_generated_batch_sources: Vec<Option<generated::BatchMappingSource>>,
     /// Spare capacity for batch/resource lists, recycled across scene publications.
     spare_draw_resources: Vec<BindGroupId>,
     spare_draw_resource_keys: Vec<DrawResourceKey>,
@@ -397,6 +401,8 @@ impl SceneResources {
             draw_resources: Vec::new(),
             draw_resource_keys: Vec::new(),
             draw_resource_sources: Vec::new(),
+            generated_batch_sources: Vec::new(),
+            spare_generated_batch_sources: Vec::new(),
             spare_draw_resources: Vec::new(),
             spare_draw_resource_keys: Vec::new(),
             spare_draw_resource_sources: Vec::new(),
@@ -1664,12 +1670,15 @@ impl SceneResources {
         let mut next = std::mem::take(&mut self.spare_draw_resources);
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
         let mut next_sources = std::mem::take(&mut self.spare_draw_resource_sources);
+        let mut next_generated = std::mem::take(&mut self.spare_generated_batch_sources);
+        next_generated.clear();
         next.clear();
         next_keys.clear();
         next_sources.clear();
         next.reserve(self.batches.len());
         next_keys.reserve(self.batches.len());
         next_sources.reserve(self.batches.len());
+        next_generated.reserve(self.batches.len());
         let mut created = HashMap::new();
         // Bind the allocated range so culling alone does not invalidate every bind group.
         let instance_count = self.instance_capacity;
@@ -1711,6 +1720,11 @@ impl SceneResources {
                 && previous_key.occlusion_id == occlusion_id
                 && previous_key.metallic_roughness_id == metallic_roughness_id
                 && let Some(&bind_group) = self.draw_resources.get(batch_index)
+                // A batch may switch material-part while retaining the same
+                // Mesh and BindGroup. Do not reuse the wrong count source.
+                && self.generated_batch_sources.get(batch_index).is_some_and(|source| {
+                    source.is_none_or(|metadata| metadata.part == draw.part)
+                })
                 // A removed/replaced mesh may have retired an old binding.
                 // Verify residency only on that uncommon retirement path.
                 && (resident_meshes_unchanged
@@ -1721,12 +1735,17 @@ impl SceneResources {
                 next.push(bind_group);
                 next_keys.push(previous_key);
                 next_sources.push(source);
+                next_generated.push(self.generated_batch_sources[batch_index]);
                 continue;
             }
             let mesh = self
                 .meshes
                 .get(&(mesh_id, compact_voxel))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+            // This lookup and binary material-part resolution now happen in
+            // the same pass that already resolves the native BindGroup.
+            let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
+            next_generated.push(generated_source);
             let key = DrawResourceKey {
                 shadow: shadow_buffer,
                 visible_instances,
@@ -1851,9 +1870,11 @@ impl SceneResources {
         std::mem::swap(&mut self.draw_resources, &mut next);
         std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
         std::mem::swap(&mut self.draw_resource_sources, &mut next_sources);
+        std::mem::swap(&mut self.generated_batch_sources, &mut next_generated);
         self.spare_draw_resources = next;
         self.spare_draw_resource_keys = next_keys;
         self.spare_draw_resource_sources = next_sources;
+        self.spare_generated_batch_sources = next_generated;
         if force {
             for bind_group in self.binding_cache.values().copied() {
                 device.destroy_bind_group(bind_group)?;

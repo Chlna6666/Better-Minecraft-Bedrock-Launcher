@@ -149,6 +149,40 @@ fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
     }).collect()
 }
 
+/// Immutable Generated Page metadata for one native DrawBatch. Produced
+/// alongside BindGroups, so the subsequent GPU mapping pass reads resident
+/// offsets instead of resolving MeshId and material parts a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BatchMappingSource {
+    pub(super) part: MeshPart,
+    pub(super) buffer: BufferId,
+    pub(super) source_size: usize,
+    pub(super) argument_part: u32,
+}
+
+impl BatchMappingSource {
+    pub(super) fn for_draw(
+        draw: &PreparedDraw,
+        mesh: &MeshResources,
+    ) -> gpui::Result<Option<Self>> {
+        let Some(generated) = &mesh.generated else {
+            return Ok(None);
+        };
+        let part = generated_part_index(draw.mesh.parts(), draw.part)
+            .ok_or_else(|| anyhow!("missing generated material part"))?;
+        let argument_part = generated.argument_base
+            .checked_add(u32::try_from(part).context("generated material index overflow")?)
+            .ok_or_else(|| anyhow!("generated argument page index overflow"))?;
+        Ok(Some(Self {
+            part: draw.part,
+            buffer: generated.arguments,
+            source_size: usize::try_from(generated.argument_page_bytes)
+                .context("generated argument Page exceeds addressable host range")?,
+            argument_part,
+        }))
+    }
+}
+
 /// Mesh parts are validated as contiguous, strictly increasing index
 /// ranges at construction. Resolve the generated part in O(log N) rather than
 /// scanning every material part again for each generated Draw batch.
@@ -166,31 +200,36 @@ impl SceneResources {
         voxel_shader: bool,
     ) -> gpui::Result<()> {
         let mut groups = HashMap::<BufferId, (usize, Vec<u32>)>::new();
+        let resident_sources = self.generated_batch_sources.len() == self.batches.len();
         for (index, batch) in self.batches.iter().enumerate() {
-            let draw = &self.prepared.draws[batch.first_instance];
-            let mesh = &self.meshes[&mesh_key(draw, voxel_shader)];
-            let Some(generated) = &mesh.generated else {
+            // In normal streaming scenes the metadata was captured by the
+            // earlier binding pass. Direct GPU tests may construct batches
+            // without bindings, so retain the validated fallback path.
+            let source = if resident_sources {
+                self.generated_batch_sources[index]
+            } else {
+                let draw = &self.prepared.draws[batch.first_instance];
+                let mesh = self.meshes.get(&mesh_key(draw, voxel_shader))
+                    .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+                BatchMappingSource::for_draw(draw, mesh)?
+            };
+            let Some(source) = source else {
                 continue;
             };
-            let part = generated_part_index(draw.mesh.parts(), draw.part)
-                .ok_or_else(|| anyhow!("missing generated material part"))?;
-            let (_, mapping) = match groups.entry(generated.arguments) {
+            let (_, mapping) = match groups.entry(source.buffer) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let mut scratch = self.generated_mappings
-                        .get_mut(&generated.arguments)
+                        .get_mut(&source.buffer)
                         .map(|mapping| std::mem::take(&mut mapping.scratch_entries))
                         .unwrap_or_default();
                     scratch.clear();
-                    entry.insert((generated.argument_page_bytes as usize, scratch))
+                    entry.insert((source.source_size, scratch))
                 }
             };
-            let argument_part = generated.argument_base
-                .checked_add(u32::try_from(part).context("generated material index overflow")?)
-                .ok_or_else(|| anyhow!("generated argument page index overflow"))?;
             mapping.extend([
-                argument_part,
-                index as u32,
+                source.argument_part,
+                u32::try_from(index).context("generated batch index overflow")?,
                 u32::try_from(batch.first_instance).context("generated draw index overflow")?,
                 0,
             ]);
