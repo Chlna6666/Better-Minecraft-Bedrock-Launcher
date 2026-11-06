@@ -2133,6 +2133,240 @@ impl SceneResources {
         Ok(())
     }
 
+    /// Stage a single newly inserted Section's native binding using the
+    /// existing device-owned cache. This deliberately does not mutate the
+    /// committed cache: any failure rolls back all newly created BindGroups.
+    fn resolve_structural_binding(
+        &self,
+        device: &mut dyn ExtensionDevice,
+        renderer: &RendererResources,
+        bind_group_layout: BindGroupLayoutId,
+        sampler: SamplerId,
+        logical: usize,
+        created: &mut HashMap<DrawResourceKey, BindGroupId>,
+    ) -> gpui::Result<(
+        BindGroupId,
+        DrawResourceKey,
+        ((MeshId, bool), u64),
+        NativeCommandSource,
+        Option<generated::BatchMappingSource>,
+    )> {
+        let draw = self.prepared.draws.get(logical)
+            .ok_or_else(|| anyhow!("new Section binding has invalid logical Draw index"))?;
+        let mesh_key = mesh_key(draw, true);
+        let mesh = self.meshes.get(&mesh_key)
+            .ok_or_else(|| anyhow!("new Section binding references an unuploaded Mesh"))?;
+        let source = (mesh_key, draw.mesh.generation());
+        let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
+        let key = DrawResourceKey {
+            shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
+            visible_instances: self.culling.as_ref().map(|culling| culling.visible_instances),
+            mesh: if let Some(generated) = &mesh.generated {
+                DrawMeshKey::GeneratedPage {
+                    faces: mesh.vertices,
+                    templates: generated.templates,
+                }
+            } else if mesh_key.1 {
+                DrawMeshKey::VoxelPage(mesh.vertices)
+            } else {
+                DrawMeshKey::Mesh {
+                    id: mesh_key.0,
+                    generation: draw.mesh.generation(),
+                }
+            },
+            albedo_id: draw.material.albedo_texture,
+            normal_id: draw.material.normal_texture,
+            occlusion_id: draw.material.occlusion_texture,
+            metallic_roughness_id: draw.material.metallic_roughness_texture,
+        };
+        let native = NativeCommandSource::for_draw(draw);
+        if let Some(&binding) = created.get(&key)
+            .or_else(|| self.binding_cache.get(&key))
+        {
+            return Ok((binding, key, source, native, generated_source));
+        }
+        let texture_view = |id: Option<TextureAssetId>| -> gpui::Result<_> {
+            if let Some(id) = id {
+                Ok(self.textures.get(&id)
+                    .ok_or_else(|| anyhow!("new Section binding references an unuploaded texture {}", id.0))?
+                    .view)
+            } else {
+                renderer.fallback_texture_view()
+            }
+        };
+        let binding = create_draw_resource_set(device, DrawBindingResources {
+            shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
+            bind_group_layout,
+            mesh,
+            draw_buffer: self.draw_buffer,
+            draw_capacity: self.draw_capacity,
+            draw_slots: self.draw_slot_buffer,
+            draw_slot_capacity: self.draw_slot_capacity,
+            instance_buffer: self.instance_buffer,
+            instance_count: self.instance_capacity,
+            light_buffer: self.light_buffer,
+            light_capacity: self.light_capacity,
+            albedo_view: texture_view(draw.material.albedo_texture)?,
+            normal_texture_view: texture_view(draw.material.normal_texture)?,
+            occlusion_view: texture_view(draw.material.occlusion_texture)?,
+            metallic_roughness_view: texture_view(draw.material.metallic_roughness_texture)?,
+            material_sampler: sampler,
+            frame_buffer: self.frame_buffer,
+            visible_instances: self.culling.as_ref().map(|culling| {
+                (culling.visible_instances, culling.instance_capacity as u64 * 4)
+            }),
+        })?;
+        created.insert(key, binding);
+        Ok((binding, key, source, native, generated_source))
+    }
+
+    /// Structural Section Delta: copy unchanged parallel native BindGroup
+    /// snapshots in contiguous slices and resolve ONLY inserted/replaced
+    /// draws. This avoids hashing 100K resident Mesh/Material references
+    /// after a middle insertion. The generated count mapping remains a
+    /// separate GPU publication from already-resolved per-slot sources.
+    fn sync_structural_draw_resources(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        renderer: &RendererResources,
+        bind_group_layout: BindGroupLayoutId,
+        sampler: SamplerId,
+        textures_unchanged: bool,
+        sampler_changed: bool,
+    ) -> gpui::Result<bool> {
+        let Some(delta) = self.prepared.structural_draw_delta().cloned() else {
+            return Ok(false);
+        };
+        let count = self.prepared.draws.len();
+        let old_count = delta.previous_count;
+        let shadow = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
+        let visible = self.culling.as_ref().map(|culler| culler.visible_instances);
+        if !textures_unchanged || sampler_changed
+            || !self.page_refs.only_generated_meshes()
+            || !self.batch_workspace.singleton_layout()
+            || !self.culling.as_ref().is_some_and(CullResources::structural_slots_committed)
+            || self.generated_pending_groups.is_some()
+            || !self.retired_meshes.is_empty()
+            || self.batches.len() != count
+            || self.draw_resources.len() != old_count
+            || self.draw_resource_keys.len() != old_count
+            || self.draw_resource_sources.len() != old_count
+            || self.native_command_sources.len() != old_count
+            || self.generated_batch_sources.len() != old_count
+            || self.draw_resource_keys.first().is_none_or(|key| {
+                key.shadow != shadow || key.visible_instances != visible
+            })
+        {
+            return Ok(false);
+        }
+        // Validate the complete splice shape before any device allocations
+        // or snapshots are touched; malformed overlaps use the full path.
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        for edit in &delta.edits {
+            if edit.old.start < old_cursor || edit.new.start < new_cursor
+                || edit.old.end > old_count || edit.new.end > count
+                || edit.old.start > edit.old.end || edit.new.start > edit.new.end
+                || edit.old.start - old_cursor != edit.new.start - new_cursor
+            {
+                return Ok(false);
+            }
+            old_cursor = edit.old.end;
+            new_cursor = edit.new.end;
+        }
+        if old_count - old_cursor != count - new_cursor {
+            return Ok(false);
+        }
+
+        let trace_started = trace_timings().then(Instant::now);
+        let mut bindings = std::mem::take(&mut self.spare_draw_resources);
+        let mut keys = std::mem::take(&mut self.spare_draw_resource_keys);
+        let mut sources = std::mem::take(&mut self.spare_draw_resource_sources);
+        let mut natives = std::mem::take(&mut self.spare_native_command_sources);
+        let mut generated = std::mem::take(&mut self.spare_generated_batch_sources);
+        bindings.clear();
+        keys.clear();
+        sources.clear();
+        natives.clear();
+        generated.clear();
+        bindings.reserve(count);
+        keys.reserve(count);
+        sources.reserve(count);
+        natives.reserve(count);
+        generated.reserve(count);
+        let mut created = HashMap::<DrawResourceKey, BindGroupId>::new();
+        let mut old_cursor = 0usize;
+        let mut inserted = 0usize;
+        let mut append_survivors = |range: std::ops::Range<usize>,
+                                    bindings: &mut Vec<BindGroupId>,
+                                    keys: &mut Vec<DrawResourceKey>,
+                                    sources: &mut Vec<((MeshId, bool), u64)>,
+                                    natives: &mut Vec<NativeCommandSource>,
+                                    generated: &mut Vec<Option<generated::BatchMappingSource>>| {
+            bindings.extend_from_slice(&self.draw_resources[range.clone()]);
+            keys.extend_from_slice(&self.draw_resource_keys[range.clone()]);
+            sources.extend_from_slice(&self.draw_resource_sources[range.clone()]);
+            natives.extend_from_slice(&self.native_command_sources[range.clone()]);
+            generated.extend_from_slice(&self.generated_batch_sources[range]);
+        };
+        for edit in &delta.edits {
+            append_survivors(
+                old_cursor..edit.old.start,
+                &mut bindings, &mut keys, &mut sources,
+                &mut natives, &mut generated,
+            );
+            for index in edit.new.clone() {
+                let result = self.resolve_structural_binding(
+                    device, renderer, bind_group_layout, sampler, index, &mut created,
+                );
+                let (binding, key, source, native, mapping) = match result {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        for binding in created.into_values() {
+                            device.destroy_bind_group(binding)?;
+                        }
+                        return Err(error);
+                    }
+                };
+                bindings.push(binding);
+                keys.push(key);
+                sources.push(source);
+                natives.push(native);
+                generated.push(mapping);
+                inserted += 1;
+            }
+            old_cursor = edit.old.end;
+        }
+        append_survivors(
+            old_cursor..old_count,
+            &mut bindings, &mut keys, &mut sources,
+            &mut natives, &mut generated,
+        );
+        debug_assert_eq!(bindings.len(), count);
+        std::mem::swap(&mut self.draw_resources, &mut bindings);
+        std::mem::swap(&mut self.draw_resource_keys, &mut keys);
+        std::mem::swap(&mut self.draw_resource_sources, &mut sources);
+        std::mem::swap(&mut self.native_command_sources, &mut natives);
+        std::mem::swap(&mut self.generated_batch_sources, &mut generated);
+        self.spare_draw_resources = bindings;
+        self.spare_draw_resource_keys = keys;
+        self.spare_draw_resource_sources = sources;
+        self.spare_native_command_sources = natives;
+        self.spare_generated_batch_sources = generated;
+        for &key in created.keys() {
+            self.binding_index.insert(key);
+        }
+        self.binding_cache.extend(created);
+        if let Some(started) = trace_started {
+            eprintln!(
+                "gpui3d structural_bindings batches={} resolved={} reused={} elapsed_ms={:.2}",
+                count, inserted, count.saturating_sub(inserted),
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        Ok(true)
+    }
+
     fn sync_draw_resources(
         &mut self,
         device: &mut dyn ExtensionDevice,
