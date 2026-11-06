@@ -202,6 +202,10 @@ pub struct VoxelFusionInput<'a> {
     pub source: &'a VoxelMeshSource,
     /// Source-grid displacement within the fused padded grid.
     pub offset: [u32; 3],
+    /// Source Scene-node translation relative to the fused Scene node, in
+    /// whole world/mesh units. Static face vertices use this displacement;
+    /// cell-relative cube/model templates use `offset` instead.
+    pub translation: [i32; 3],
     /// Local material slot -> fused material slot mapping.
     pub material_slots: &'a [u32],
 }
@@ -219,17 +223,30 @@ impl VoxelMeshSource {
     /// original Section nodes for occluders, editing and streaming identity.
     pub fn fuse_sections(inputs: &[VoxelFusionInput<'_>]) -> Result<Self, MeshError> {
         let Some(first) = inputs.first() else { return Err(MeshError::InvalidParts) };
-        if first.offset != [0; 3] || inputs.len() < 2 {
-            return Err(MeshError::InvalidParts);
-        }
+        if inputs.len() < 2 { return Err(MeshError::InvalidParts); }
         let base = first.source;
+        let base_origin = Vec3::new(
+            base.origin.x + first.translation[0] as f32 - first.offset[0] as f32,
+            base.origin.y + first.translation[1] as f32 - first.offset[1] as f32,
+            base.origin.z + first.translation[2] as f32 - first.offset[2] as f32,
+        );
         let mut size = [0u32; 3];
         let mut total_classes = 0u32;
         let mut total_instance_templates = 0u32;
         let mut template_count = 0usize;
         for input in inputs {
             let source = input.source;
-            if source.origin != base.origin
+            let expected_origin = Vec3::new(
+                base_origin.x + input.offset[0] as f32,
+                base_origin.y + input.offset[1] as f32,
+                base_origin.z + input.offset[2] as f32,
+            );
+            let placed_origin = Vec3::new(
+                source.origin.x + input.translation[0] as f32,
+                source.origin.y + input.translation[1] as f32,
+                source.origin.z + input.translation[2] as f32,
+            );
+            if (placed_origin - expected_origin).length() > 0.001
                 || source.clip_y != base.clip_y
                 || source.ambient_occlusion != base.ambient_occlusion
                 || source.lighting.as_ref().map(|light| (light.ambient.to_bits(), light.levels.len()))
@@ -306,7 +323,11 @@ impl VoxelMeshSource {
                 face.material_slot = remap(face.material_slot)?;
                 model_faces.push(face);
             }
-            let delta = Vec3::new(input.offset[0] as f32, input.offset[1] as f32, input.offset[2] as f32);
+            let delta = Vec3::new(
+                input.translation[0] as f32,
+                input.translation[1] as f32,
+                input.translation[2] as f32,
+            );
             for face in &source.templates[source.static_start..] {
                 let mut face = face.clone();
                 face.material_slot = remap(face.material_slot)?;
@@ -374,7 +395,7 @@ impl VoxelMeshSource {
             instance_face_offset = instance_face_offset.checked_add(src_instances.len() as u32)
                 .ok_or(MeshError::TooLarge)?;
         }
-        let mut combined = Self::new(size, base.origin, cells, templates)?;
+        let mut combined = Self::new(size, base_origin, cells, templates)?;
         if !instances.is_empty() {
             combined = combined.with_instances(classes, model_faces, instances)?;
         }
@@ -421,6 +442,12 @@ impl VoxelMeshSource {
     #[must_use]
     pub const fn size(&self) -> [u32; 3] {
         self.size
+    }
+
+    /// Origin of this padded grid in its owning Scene-node coordinate system.
+    #[must_use]
+    pub const fn origin(&self) -> Vec3 {
+        self.origin
     }
 
     /// Validates a padded grid and computes conservative per-material output capacities.
@@ -698,8 +725,8 @@ mod fusion_tests {
         let left = tests::source();
         let right = tests::source();
         let merged = VoxelMeshSource::fuse_sections(&[
-            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
-            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], translation: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], translation: [2, 0, 0], material_slots: &[0] },
         ]).unwrap();
         assert_eq!(merged.size(), [6, 3, 3]);
         assert_eq!(merged.parts.len(), 1, "same material across Sections becomes one draw");
@@ -723,8 +750,8 @@ mod fusion_tests {
         let right = make();
         assert_eq!(left.cells.len(), 0, "model-only sources skip the cube cell buffer");
         let merged = VoxelMeshSource::fuse_sections(&[
-            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
-            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], translation: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], translation: [2, 0, 0], material_slots: &[0] },
         ]).unwrap();
         assert_eq!(merged.parts.len(), 1);
         assert_eq!(merged.instances.as_ref().unwrap().jobs.len(), 2);
@@ -744,8 +771,8 @@ mod fusion_tests {
         let left = make();
         let right = make();
         let merged = VoxelMeshSource::fuse_sections(&[
-            VoxelFusionInput { source: &left, offset: [0, 0, 0], material_slots: &[0] },
-            VoxelFusionInput { source: &right, offset: [2, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &left, offset: [0, 0, 0], translation: [0, 0, 0], material_slots: &[0] },
+            VoxelFusionInput { source: &right, offset: [2, 0, 0], translation: [2, 0, 0], material_slots: &[0] },
         ]).unwrap();
         assert_eq!(merged.parts.len(), 1);
         assert_eq!(merged.capacity(), 2);
