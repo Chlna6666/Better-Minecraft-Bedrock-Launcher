@@ -122,6 +122,50 @@ mod tests {
     }
 
     #[test]
+    fn transparent_member_does_not_disable_opaque_neighbour_fusion() {
+        let opaque = Arc::new(gpui_3d::Material::new());
+        let mut transparent = gpui_3d::Material::new();
+        transparent.alpha_mode = gpui_3d::AlphaMode::Blend;
+        let a = generated_chunk(0, opaque.clone());
+        let b = generated_chunk(1, opaque.clone());
+        let mut c = (*generated_chunk(0, opaque)).clone();
+        c.pos.z = 1;
+        c.origin[2] = 16;
+        let c = Arc::new(c);
+        let mut d = (*generated_chunk(1, Arc::new(transparent))).clone();
+        d.pos.z = 1;
+        d.origin[2] = 16;
+        let d = Arc::new(d);
+        let key = super::fusion_key((a.pos, 0));
+        let mut meshes = [a, b, c, d].iter()
+            .map(|mesh| ((mesh.pos, 0), mesh.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        assert_eq!(registry.fused[&key].1.len(), 3);
+        let transparent_id = registry.nodes[&(d.pos, 0)].0;
+        assert!(scene.node(transparent_id).unwrap().mesh.is_some());
+
+        // Replacing an opaque member with a transparent Section must restore
+        // that member's native draw, while the remaining two still fuse.
+        let mut replacement = (*generated_chunk(1, Arc::new({
+            let mut m = gpui_3d::Material::new();
+            m.alpha_mode = gpui_3d::AlphaMode::Blend;
+            m
+        }))).clone();
+        replacement.pos = b.pos;
+        replacement.origin = b.origin;
+        let replacement = Arc::new(replacement);
+        meshes.insert((b.pos, 0), replacement);
+        let after = registry.update(
+            Some(&scene), &meshes, Some(&BTreeSet::from([(b.pos, 0)])), [0; 3],
+        ).unwrap();
+        assert_eq!(registry.fused[&key].1.len(), 2);
+        assert!(after.node(registry.nodes[&(b.pos, 0)].0).unwrap().mesh.is_some());
+        assert!(after.node(transparent_id).unwrap().mesh.is_some());
+    }
+
+    #[test]
     fn unrelated_generated_materials_keep_finer_section_culling() {
         // Two material parts remain two even after fusion. Keeping the
         // per-Section GPU culling and draw resources costs less in this case.
@@ -408,15 +452,18 @@ impl ChunkScene {
         // A 2x2 tile bounds rebuild work to at most four Sections even when
         // the map contains thousands of resident immutable Scene nodes.
         let members = fusion_members(key);
+        // A single water/glass Section must not disable merging of its
+        // three opaque neighbours. Ineligible members stay independent and
+        // retain their own sorted blended draws.
         let sources = members.into_iter()
             .filter_map(|member| meshes.get(&member).cloned())
-            .collect::<Vec<_>>();
-        let compatible = sources.len() >= 2
-            && sources.iter().all(|source| {
+            .filter(|source| {
                 source.mesh.gpu_voxels().is_some()
                     && source.materials.iter()
                         .all(|material| material.alpha_mode != gpui_3d::AlphaMode::Blend)
-            });
+            })
+            .collect::<Vec<_>>();
+        let compatible = sources.len() >= 2;
         if compatible {
             if self.fused.get(&key).is_some_and(|(_, prior)| {
                 sources.len() == prior.len()
@@ -432,13 +479,23 @@ impl ChunkScene {
                 } else {
                     scene.insert(None, node)?
                 };
-                self.fused.insert(key, (id, sources));
                 for member in members {
-                    if let Some((id, _)) = self.nodes.get(&member) {
-                        // Original nodes still own occluders and stable IDs.
-                        scene.node_mut(*id).ok_or(SceneError::StaleNode)?.mesh = None;
+                    if let Some((id, original)) = self.nodes.get(&member) {
+                        let node = scene.node_mut(*id).ok_or(SceneError::StaleNode)?;
+                        if sources.iter().any(|source| Arc::ptr_eq(source, original)) {
+                            // Eligible sources render from the shared Generated
+                            // Mesh; their stable original nodes still own
+                            // occluders and editing identity.
+                            node.mesh = None;
+                        } else {
+                            // A Section can leave the group on replacement
+                            // (e.g. water added). Restore its independent
+                            // mesh even when the remainder still fuses.
+                            *node = chunk_node(original, origin);
+                        }
                     }
                 }
+                self.fused.insert(key, (id, sources));
                 return Ok(());
             }
         }
