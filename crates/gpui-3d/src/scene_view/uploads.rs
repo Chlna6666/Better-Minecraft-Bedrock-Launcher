@@ -241,14 +241,29 @@ fn dirty_record_ranges(
     // update into one nearly full-table transfer. Keeping at most 'limit'
     // spans bounds native driver calls while minimizing the bytes copied.
     // A gap is identified by the island immediately preceding it.
-    let mut gaps = (0..islands.len() - 1)
-        .map(|index| (islands[index + 1].start - islands[index].end, index))
-        .collect::<Vec<_>>();
-    gaps.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    let mut splits = gaps
+    // A scene may have 100K+ dirty records. Sorting every clean gap used
+    // to cost O(N log N) even though only up to 15 splits are retained.
+    // Keep a fixed-size min-heap of the largest gaps instead.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let wanted = limit - 1;
+    let mut largest = BinaryHeap::<Reverse<(usize, usize)>>::with_capacity(wanted);
+    for index in 0..islands.len() - 1 {
+        // Prefer earlier gaps when the free spans are equally large.
+        let candidate = (
+            islands[index + 1].start - islands[index].end,
+            usize::MAX - index,
+        );
+        if largest.len() < wanted {
+            largest.push(Reverse(candidate));
+        } else if largest.peek().is_some_and(|&Reverse(smallest)| candidate > smallest) {
+            largest.pop();
+            largest.push(Reverse(candidate));
+        }
+    }
+    let mut splits = largest
         .into_iter()
-        .take(limit - 1)
-        .map(|(_, index)| index)
+        .map(|Reverse((_, reversed_index))| usize::MAX - reversed_index)
         .collect::<Vec<_>>();
     splits.sort_unstable();
 
@@ -320,6 +335,19 @@ mod tests {
             patched[range.clone()].copy_from_slice(&next[range.clone()]);
         }
         assert_eq!(patched, next);
+    }
+
+    #[test]
+    fn merged_ranges_handle_one_write_and_equal_sized_gaps() {
+        let mut next = vec![0u8; 256];
+        for offset in [8usize, 40, 72, 104, 136] {
+            next[offset..offset + 4].fill(1);
+        }
+        let old = vec![0u8; next.len()];
+        assert_eq!(changed_ranges(&old, &next, 4, 1, 0), vec![8..140]);
+        // With equal gaps, keep the earliest split deterministically.
+        assert_eq!(changed_ranges(&old, &next, 4, 2, 0), vec![8..12, 40..140]);
+        assert!(changed_ranges(&old, &old, 4, 2, 0).is_empty());
     }
 
     #[test]
