@@ -144,7 +144,7 @@ impl Dx12Device {
         dispatch: &ComputeDispatch<'_>,
         views: &mut HashMap<ViewKey, DescriptorSlot>,
     ) -> Result<Option<Resources>> {
-        dispatch.validate(capabilities())?;
+        dispatch.validate_with_limits(capabilities(), self.buffer_binding_limits())?;
         let shader = self.shader_modules.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {
             return Err(Error::InvalidInput(
