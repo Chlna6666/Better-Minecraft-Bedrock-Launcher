@@ -736,6 +736,43 @@ mod fusion_tests {
     }
 
     #[test]
+    fn fused_sections_match_separate_cpu_geometry_when_not_touching() {
+        // A differential oracle independent of the GPU compute implementation:
+        // before/after fusion must preserve every quad's world coordinates.
+        // Leave an empty grid cell between the two sources so no face should
+        // be culled by the new inter-Section neighbour check.
+        let left = tests::source();
+        let right = tests::source();
+        let merged = VoxelMeshSource::fuse_sections(&[
+            VoxelFusionInput {
+                source: &left, offset: [0, 0, 0],
+                translation: [0, 0, 0], material_slots: &[0],
+            },
+            VoxelFusionInput {
+                source: &right, offset: [5, 0, 0],
+                translation: [5, 0, 0], material_slots: &[0],
+            },
+        ]).unwrap();
+        let quads = |source: &VoxelMeshSource, x: f32| {
+            let mut faces = source.fallback().vertices()
+                .chunks_exact(4)
+                .filter(|quad| quad[0].color[3] > 0.0)
+                .map(|quad| std::array::from_fn::<_, 4, _>(|corner| {
+                    let pos = quad[corner].position;
+                    [(pos.x + x).to_bits(), pos.y.to_bits(), pos.z.to_bits()]
+                }))
+                .collect::<Vec<[[u32; 3]; 4]>>();
+            faces.sort_unstable();
+            faces
+        };
+        let mut separate = quads(&left, 0.0);
+        separate.extend(quads(&right, 5.0));
+        separate.sort_unstable();
+        assert_eq!(quads(&merged, 0.0), separate,
+            "cross-Section fusion must never change unrelated geometry");
+    }
+
+    #[test]
     fn fused_model_only_sections_keep_instance_jobs_and_neighbor_classes() {
         let face_templates = tests::source().templates.to_vec();
         let make = || VoxelMeshSource::new([4, 3, 3], Vec3::ZERO, vec![0; 36], vec![])
