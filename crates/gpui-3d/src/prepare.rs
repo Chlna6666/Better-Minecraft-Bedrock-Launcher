@@ -177,8 +177,24 @@ pub struct PreparedScene {
     /// Dirty logical draws from the most recent fixed-layout Section Delta.
     /// Empty means no changed GPU record; None means a full update is needed.
     resident_delta_draws: Option<Vec<usize>>,
+    /// Previous and next logical draw ranges modified by structural Section
+    /// changes. Only opaque GPU singleton scenes can directly use these
+    /// ranges; alpha sorting and CPU culling require the full slot planner.
+    structural_delta: Option<StructuralDrawDelta>,
     blend_order: Vec<usize>,
     blend_positions: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StructuralDrawEdit {
+    pub old: std::ops::Range<usize>,
+    pub new: std::ops::Range<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StructuralDrawDelta {
+    pub previous_count: usize,
+    pub edits: Vec<StructuralDrawEdit>,
 }
 
 #[derive(Clone, Debug)]
@@ -200,12 +216,17 @@ impl PreparedScene {
         self.resident_delta_draws.as_deref()
     }
 
+    pub(crate) fn structural_draw_delta(&self) -> Option<&StructuralDrawDelta> {
+        self.structural_delta.as_ref()
+    }
+
     /// Native Quad batching can permute opaque draws away from the candidate
     /// order. Such a scene must not issue logical Candidate indices directly
     /// as GPU Draw Slot indices until the next full camera rebuild.
     pub(crate) fn invalidate_resident_candidate_order(&mut self) {
         self.opaque_resident_order = false;
         self.resident_delta_draws = None;
+        self.structural_delta = None;
     }
     /// Only visible leaf draws introduced or updated by the last incremental scene delta.
     pub(crate) fn incremental_asset_draws(&self) -> &[PreparedDraw] {
@@ -350,6 +371,7 @@ impl PreparedScene {
         if changed {
             self.opaque_resident_order = false;
             self.resident_delta_draws = None;
+            self.structural_delta = None;
         }
         changed
     }
@@ -405,6 +427,7 @@ impl PreparedScene {
         self.gpu_candidates_dirty = true;
         self.opaque_resident_order = false;
         self.resident_delta_draws = None;
+        self.structural_delta = None;
         self.candidate_groups.clear();
         self.candidate_group_index.clear();
         self.draws.clear();
@@ -520,6 +543,10 @@ impl PreparedScene {
 
     /// Culls the retained draws for one camera and rebuilds the ordered draw list.
     fn apply_camera(&mut self, camera: Camera, aspect: f32) -> Result<(), CameraError> {
+        // A structural delta is valid only against the camera used by the
+        // previous resident mapping; a camera change can reorder transparency.
+        let structural_camera_stable =
+            self.camera == Some(camera) && self.aspect == Some(aspect);
         let view_projection = camera.view_projection(aspect)?;
         let view_direction = (camera.target - camera.eye)
             .normalized()
@@ -551,6 +578,7 @@ impl PreparedScene {
         }
         if self.next_visible_candidates == self.visible_candidates
             && self.draws.len() == self.visible_candidates.len()
+            && self.structural_delta.is_none()
         {
             for draw in &mut self.draws {
                 if self.gpu_culling && draw.material.alpha_mode != AlphaMode::Blend {
@@ -632,6 +660,9 @@ impl PreparedScene {
             && self.draws.len() == self.candidates.len()
             && self.draws.iter().all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
         self.resident_delta_draws = None;
+        if !structural_camera_stable || !self.opaque_resident_order {
+            self.structural_delta = None;
+        }
         Ok(())
     }
 

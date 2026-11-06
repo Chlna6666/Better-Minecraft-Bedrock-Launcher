@@ -18,6 +18,7 @@ impl PreparedScene {
         // Until all delta preconditions are established, an early-return
         // failure must never reuse an old resident GPU dirty-index list.
         self.resident_delta_draws = None;
+        self.structural_delta = None;
         if nodes.iter().any(|&id| {
             scene.node(id).is_some_and(|node| {
                 scene.parent(id).is_some()
@@ -138,6 +139,17 @@ impl PreparedScene {
         if !inserted.is_empty() {
             return None;
         }
+        let structural_opaque = self.gpu_culling
+            && self.opaque_resident_order
+            && self.draws.len() == self.candidates.len()
+            && partial.candidates.iter().all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
+        let mut structural_edits = Vec::<StructuralDrawEdit>::with_capacity(groups.len() + 1);
+        if !prefix.is_empty() {
+            structural_edits.push(StructuralDrawEdit {
+                old: 0..0,
+                new: 0..prefix.len(),
+            });
+        }
         let mut next_start = prefix.len();
         let mut changed_groups = groups.iter().peekable();
         for (index, group) in self.candidate_groups.iter().enumerate() {
@@ -145,13 +157,18 @@ impl PreparedScene {
                 .peek()
                 .is_some_and(|(changed_index, _, _)| *changed_index == index)
             {
-                let (_, _, id) = changed_groups.next()?;
+                let (_, old_range, id) = changed_groups.next()?;
+                let new_start = next_start;
                 if let Some(draws) = replacements.get(id)
                     && let Some(next) = candidate_group(draws, next_start)
                 {
                     next_start = next.end;
                     next_groups.push(next);
                 }
+                structural_edits.push(StructuralDrawEdit {
+                    old: old_range,
+                    new: new_start..next_start,
+                });
             } else {
                 let mut next = group.clone();
                 next.end = next_start + group.end - group.start;
@@ -202,6 +219,12 @@ impl PreparedScene {
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
         self.opaque_resident_order = false;
+        if structural_opaque && !structural_edits.is_empty() {
+            self.structural_delta = Some(StructuralDrawDelta {
+                previous_count: self.draws.len(),
+                edits: structural_edits,
+            });
+        }
         Some(changed.len())
     }
 }
