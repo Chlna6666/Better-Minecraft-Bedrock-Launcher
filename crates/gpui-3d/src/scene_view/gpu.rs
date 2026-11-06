@@ -60,6 +60,7 @@ pub(super) struct PendingMeshUpload {
 
 const VOXEL_ARENA_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+#[derive(Clone, Copy)]
 pub(super) struct ArenaAllocation {
     page: usize,
     offset: u64,
