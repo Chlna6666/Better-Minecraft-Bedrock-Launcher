@@ -22,6 +22,60 @@ pub struct ComputeCapabilities {
     pub indirect_draw: bool,
 }
 
+/// Reported buffer binding limits of the selected native device.
+///
+/// Like wgpu::Limits, these are *capabilities*, not resource-allocation
+/// defaults. Zero means the backend cannot report the relevant limit; callers
+/// must not assume an arbitrary alignment or maximum range in that case.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BufferBindingLimits {
+    /// Minimum valid byte offset for a storage buffer binding.
+    pub storage_offset_alignment: u64,
+    /// Maximum addressable byte range of a single storage binding.
+    pub max_storage_binding_bytes: u64,
+    /// Minimum valid byte offset for a uniform buffer binding.
+    pub uniform_offset_alignment: u64,
+    /// Maximum addressable byte range of a single uniform binding.
+    pub max_uniform_binding_bytes: u64,
+}
+
+impl BufferBindingLimits {
+    /// Validate a non-empty binding range against the actual device contract.
+    /// Buffer allocation length is validated separately by the backend.
+    pub fn validate_range(self, offset: u64, size: u64, uniform: bool) -> Result<()> {
+        let (alignment, maximum) = if uniform {
+            (self.uniform_offset_alignment, self.max_uniform_binding_bytes)
+        } else {
+            (self.storage_offset_alignment, self.max_storage_binding_bytes)
+        };
+        if alignment == 0 || maximum == 0 {
+            return Err(Error::Unavailable("buffer binding limits were not reported".into()));
+        }
+        if size == 0 || size > maximum || offset % alignment != 0
+            || offset.checked_add(size).is_none()
+        {
+            return Err(Error::InvalidInput("buffer binding violates device limits".into()));
+        }
+        Ok(())
+    }
+
+    /// Compute an aligned storage suballocation size without overflow.
+    pub fn storage_allocation_size(self, bytes: u64) -> Result<u64> {
+        let align = self.storage_offset_alignment;
+        if align == 0 || self.max_storage_binding_bytes == 0 {
+            return Err(Error::Unavailable("storage binding limits were not reported".into()));
+        }
+        let requested = bytes.max(1);
+        if requested > self.max_storage_binding_bytes {
+            return Err(Error::InvalidInput("storage allocation exceeds device binding limit".into()));
+        }
+        requested.checked_add(align - 1)
+            .map(|value| value / align * align)
+            .filter(|value| *value <= self.max_storage_binding_bytes)
+            .ok_or_else(|| Error::InvalidInput("aligned storage allocation exceeds device limits".into()))
+    }
+}
+
 /// Backend-neutral selection of the voxel rendering pipeline.
 ///
 /// All four desktop APIs (D3D11, D3D12, Vulkan and OpenGL) use the same
@@ -225,6 +279,26 @@ impl ComputeDispatch<'_> {
 mod tests {
     use super::*;
     use crate::BufferId;
+
+    #[test]
+    fn device_binding_limits_validate_offsets_and_aligned_allocations() {
+        let limits = BufferBindingLimits {
+            storage_offset_alignment: 512,
+            max_storage_binding_bytes: 2048,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 1024,
+        };
+        assert!(limits.validate_range(1024, 500, false).is_ok());
+        assert!(limits.validate_range(768, 500, false).is_err());
+        assert!(limits.validate_range(0, 2049, false).is_err());
+        assert!(limits.validate_range(256, 1024, true).is_ok());
+        assert!(limits.validate_range(512, 1025, true).is_err());
+        assert_eq!(limits.storage_allocation_size(1).unwrap(), 512);
+        assert_eq!(limits.storage_allocation_size(700).unwrap(), 1024);
+        assert_eq!(limits.storage_allocation_size(2048).unwrap(), 2048);
+        assert!(limits.storage_allocation_size(2049).is_err());
+        assert!(BufferBindingLimits::default().validate_range(0, 4, false).is_err());
+    }
 
     #[test]
     fn dispatch_rejects_aliases_and_oversized_groups() {
