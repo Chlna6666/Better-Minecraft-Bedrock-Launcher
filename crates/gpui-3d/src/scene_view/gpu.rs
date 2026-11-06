@@ -990,6 +990,21 @@ pub(super) fn destroy_mesh(
     Ok(())
 }
 
+/// Reserve one future growth band on DX11 after entering a large streamed
+/// voxel scene. At 32K and 64K draws, rebuilding every native SRV bind group
+/// caused 357ms and 644ms stalls in captured traces. A bounded 128K physical
+/// capacity moves that unavoidable rebind to the 16K threshold instead.
+///
+/// This is deliberately not applied to small scenes or other backends, and
+/// never grows past 128K unless the actual draw count requires it.
+pub(super) fn dx11_streaming_headroom(backend: BackendKind, draws: usize) -> usize {
+    if backend == BackendKind::Dx11 && draws > 16_384 && draws <= 131_072 {
+        131_072
+    } else {
+        draws
+    }
+}
+
 pub(super) fn grow_capacity(current: usize, required: usize) -> gpui::Result<usize> {
     if required <= current {
         return Ok(current);
@@ -1599,6 +1614,17 @@ mod tests {
         encode_voxel_mesh,
     };
     use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn dx11_streaming_buffers_avoid_rebinding_again_at_32k_and_64k() {
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 8192), 8192);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 16384), 16384);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 16385), 131072);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 65993), 131072);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 131073), 131073);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Vulkan, 65993), 65993);
+        assert_eq!(super::dx11_streaming_headroom(gfx_core::BackendKind::Dx12, 65993), 65993);
+    }
 
     #[test]
     fn material_cache_capacity_tracks_large_scenes_without_unbounded_growth() {
