@@ -122,14 +122,19 @@ impl VulkanDevice {
                 continue;
             };
             let desc = &old.desc;
-            let view = create_image_view_range(
-                &self.device,
-                texture.image,
-                format_to_vk(desc.format),
-                image_aspect_for_format(desc.format),
-                desc.base_mip_level,
-                desc.mip_level_count,
-            )?;
+            let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
+                create_image_view_range_with_layers(
+                    &self.device, texture.image, format_to_vk(desc.format),
+                    image_aspect_for_format(desc.format), desc.base_mip_level,
+                    desc.mip_level_count, layers,
+                )?
+            } else {
+                create_image_view_range(
+                    &self.device, texture.image, format_to_vk(desc.format),
+                    image_aspect_for_format(desc.format), desc.base_mip_level,
+                    desc.mip_level_count,
+                )?
+            };
             replacement.views.push((
                 id,
                 VulkanTextureView {
@@ -268,7 +273,7 @@ impl VulkanDevice {
             let layers = vk::ImageSubresourceLayers::default()
                 .aspect_mask(aspect)
                 .mip_level(mip)
-                .layer_count(1);
+                .layer_count(source.desc.dimension.layers());
             let region = vk::ImageCopy::default()
                 .src_subresource(layers)
                 .dst_subresource(layers)
@@ -356,7 +361,7 @@ fn heap_image_barrier(
     let range = vk::ImageSubresourceRange::default()
         .aspect_mask(image_aspect_for_format(texture.desc.format))
         .level_count(texture.desc.mip_level_count)
-        .layer_count(1);
+        .layer_count(texture.desc.dimension.layers());
     let barrier = vk::ImageMemoryBarrier::default()
         .image(texture.image)
         .old_layout(old)
