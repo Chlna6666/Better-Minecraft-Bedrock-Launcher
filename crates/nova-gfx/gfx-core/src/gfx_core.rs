@@ -30,7 +30,7 @@ mod compute;
 mod memory;
 mod texture_array;
 mod texture_copy;
-pub use texture_array::{TextureArrayCapabilities, TextureArrayPlan};
+pub use texture_array::{TextureArrayCapabilities, TextureArrayLayerUpload, TextureArrayPlan};
 pub use compute::{
     BufferBindingLimits, ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
     ComputeKernelProfile, VoxelExecutionPath,
