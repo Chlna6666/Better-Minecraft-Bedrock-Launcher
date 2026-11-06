@@ -554,14 +554,12 @@ impl CullResources {
         if canonical_tail {
             // Commit the small length delta without swapping/copying the
             // entire already-resident key table or its CPU byte snapshot.
-            self.batch_keys.truncate(batches.len());
-            self.uploaded_inputs[1].truncate(
-                batches.len() * ARGUMENT_STRIDE as usize,
+            commit_generated_singleton_tail(
+                &mut self.batch_keys,
+                &mut self.uploaded_inputs[1],
+                batches.len(),
+                &batch_bytes,
             );
-            for index in self.batch_keys.len()..batches.len() {
-                self.batch_keys.push(BatchRecordKey([1, 1, 0, index as u32]));
-            }
-            self.uploaded_inputs[1].extend_from_slice(&batch_bytes);
             next_batch_keys.clear();
             self.scratch_batch_keys = next_batch_keys;
             batch_bytes.clear();
@@ -951,14 +949,40 @@ fn encode_generated_singleton_tail(
     // fail after the native BufferWrite batch has succeeded.
     u32::try_from(next_count)
         .context("GPU generated batch index exceeds the u32 draw ABI")?;
+    let tail_bytes = next_count.saturating_sub(previous_count)
+        .checked_mul(ARGUMENT_STRIDE as usize)
+        .ok_or_else(|| anyhow!("GPU generated batch upload byte count overflow"))?;
     bytes.clear();
-    bytes.reserve(next_count.saturating_sub(previous_count) * ARGUMENT_STRIDE as usize);
+    bytes.reserve(tail_bytes);
     for index in previous_count..next_count {
         for word in [1u32, 1, 0, index as u32] {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
     }
     Ok(())
+}
+
+/// Commit only after every GPU write has succeeded. The physical culling
+/// Batch descriptor at logical i does not depend on its Section identity;
+/// only changes in the effective length must be reflected in the mirror.
+fn commit_generated_singleton_tail(
+    keys: &mut Vec<BatchRecordKey>,
+    resident_bytes: &mut Vec<u8>,
+    new_count: usize,
+    encoded_tail: &[u8],
+) {
+    let old_count = keys.len();
+    debug_assert_eq!(resident_bytes.len(), old_count * ARGUMENT_STRIDE as usize);
+    debug_assert_eq!(
+        encoded_tail.len(),
+        new_count.saturating_sub(old_count) * ARGUMENT_STRIDE as usize,
+    );
+    keys.truncate(new_count);
+    resident_bytes.truncate(new_count * ARGUMENT_STRIDE as usize);
+    for index in old_count..new_count {
+        keys.push(BatchRecordKey([1, 1, 0, index as u32]));
+    }
+    resident_bytes.extend_from_slice(encoded_tail);
 }
 
 /// Preserve the previous GPU Batch table and patch only records affected by
@@ -1038,6 +1062,32 @@ pub(super) mod tests;
 #[cfg(test)]
 mod bounds_cache_tests {
     use super::*;
+
+    #[test]
+    fn structural_generated_batch_mirror_matches_canonical_full_encoding() {
+        let mut keys = Vec::new();
+        let mut committed = Vec::new();
+        let mut scratch = Vec::new();
+        encode_generated_singleton_tail(0, 128, &mut scratch).unwrap();
+        commit_generated_singleton_tail(&mut keys, &mut committed, 128, &scratch);
+        assert_eq!(keys.len(), 128);
+        let old_bytes = committed.clone();
+
+        // An unload in the middle shifts the owning Section identity but
+        // leaves [1,1,0,i] byte-for-byte identical for every surviving i.
+        encode_generated_singleton_tail(128, 127, &mut scratch).unwrap();
+        assert!(scratch.is_empty());
+        commit_generated_singleton_tail(&mut keys, &mut committed, 127, &scratch);
+        assert_eq!(&committed[..], &old_bytes[..127 * ARGUMENT_STRIDE as usize]);
+
+        // A new Section at logical 0 appends one record at the tail only.
+        encode_generated_singleton_tail(127, 128, &mut scratch).unwrap();
+        commit_generated_singleton_tail(&mut keys, &mut committed, 128, &scratch);
+        assert_eq!(committed, old_bytes);
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(key.0, [1, 1, 0, index as u32]);
+        }
+    }
 
     #[test]
     fn structural_generated_batches_only_encode_new_tail() {
