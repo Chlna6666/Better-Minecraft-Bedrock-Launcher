@@ -761,6 +761,9 @@ impl SceneResources {
                     self.sync_resident_draw_delta(
                         device, renderer, bind_group_layout, sampler,
                         sampler_changed, assets_changed,
+                        self.texture_table.as_ref().is_some_and(|previous| {
+                            Arc::ptr_eq(previous, &scene_view.textures)
+                        }),
                     )?
                 } else {
                     false
@@ -992,6 +995,52 @@ impl SceneResources {
         Ok(())
     }
 
+    /// A pure world-transform delta changes only GPU Bounds/Instance rows.
+    /// Skip the O(all batches) BindGroup and generated Page mapping passes
+    /// only when every changed draw still refers to the same immutable mesh
+    /// generation, material texture set and already-bound GPU resources.
+    /// Structural/texture/shadow changes use the original full sync.
+    fn resident_bindings_unchanged(
+        &self,
+        dirty: &[usize],
+        sampler_changed: bool,
+        textures_unchanged: bool,
+    ) -> bool {
+        if sampler_changed || !textures_unchanged
+            || !self.retired_meshes.is_empty()
+            || self.generated_pending_groups.is_some()
+            || self.draw_resource_sources.len() != self.batches.len()
+            || self.draw_resource_keys.len() != self.batches.len()
+            || self.draw_resources.len() != self.batches.len()
+            || self.generated_batch_sources.len() != self.batches.len()
+        {
+            return false;
+        }
+        let shadow = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
+        let visible = self.culling.as_ref().map(|culling| culling.visible_instances);
+        dirty.iter().all(|&index| {
+            let Some(draw) = self.prepared.draws.get(index) else {
+                return false;
+            };
+            let source = (mesh_key(draw, true), draw.mesh.generation());
+            if self.draw_resource_sources.get(index) != Some(&source) {
+                return false;
+            }
+            let Some(key) = self.draw_resource_keys.get(index) else {
+                return false;
+            };
+            key.shadow == shadow
+                && key.visible_instances == visible
+                && key.albedo_id == draw.material.albedo_texture
+                && key.normal_id == draw.material.normal_texture
+                && key.occlusion_id == draw.material.occlusion_texture
+                && key.metallic_roughness_id == draw.material.metallic_roughness_texture
+                && self.generated_batch_sources.get(index).is_some_and(|metadata| {
+                    metadata.is_none_or(|source| source.part == draw.part)
+                })
+        })
+    }
+
     /// Section Delta -> retained GPU Draw Slot update. The Culler has
     /// already validated and committed stable opaque singleton identities.
     /// We write only changed DrawParams/Instance records at their physical
@@ -1005,6 +1054,7 @@ impl SceneResources {
         sampler: SamplerId,
         sampler_changed: bool,
         defer_binding_cleanup: bool,
+        textures_unchanged: bool,
     ) -> gpui::Result<bool> {
         let Some(dirty) = self.prepared.resident_delta_draws().map(<[usize]>::to_vec) else {
             return Ok(false);
@@ -1075,11 +1125,15 @@ impl SceneResources {
         // A new Mesh generation can change shared Page bindings and GPU Part
         // Counts even when DrawParams bytes remain identical. Keep the same
         // binding/mapping lifecycle as the full sync path.
-        self.sync_draw_resources(
-            device, renderer, bind_group_layout, sampler,
-            sampler_changed, true, defer_binding_cleanup,
-        )?;
-        self.sync_generated_draws(device, true)?;
+        if !self.resident_bindings_unchanged(
+            &dirty, sampler_changed, textures_unchanged,
+        ) {
+            self.sync_draw_resources(
+                device, renderer, bind_group_layout, sampler,
+                sampler_changed, true, defer_binding_cleanup,
+            )?;
+            self.sync_generated_draws(device, true)?;
+        }
 
         // Commit exact CPU mirrors only after the GPU updates and resource
         // bindings have succeeded. A failed operation must be retried against
