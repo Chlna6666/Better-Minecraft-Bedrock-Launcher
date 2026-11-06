@@ -419,15 +419,24 @@ fn fused_section_pair(
     let left_offset = grid_offset(a)?;
     let right_offset = grid_offset(b)?;
     let mut materials = Vec::<Arc<gpui_3d::Material>>::new();
-    let mut index = HashMap::<gpui_3d::MaterialId, u32>::new();
+    // MaterialId survives Arc::make_mut and therefore can identify different
+    // immutable snapshots after edits. Merge only byte-equivalent material
+    // values so one Section never silently inherits its neighbour's shader
+    // parameters.
+    let mut index = HashMap::<gpui_3d::MaterialId, Vec<u32>>::new();
     let mut mappings = [Vec::new(), Vec::new()];
     for (source, mapping) in [left, right].into_iter().zip(mappings.iter_mut()) {
         for material in source.materials.iter() {
-            let slot = if let Some(&slot) = index.get(&material.id()) {
+            let existing = index.get(&material.id()).and_then(|slots| {
+                slots.iter().copied().find(|&slot| {
+                    materials[slot as usize].as_ref() == material.as_ref()
+                })
+            });
+            let slot = if let Some(slot) = existing {
                 slot
             } else {
                 let slot = u32::try_from(materials.len()).ok()?;
-                index.insert(material.id(), slot);
+                index.entry(material.id()).or_default().push(slot);
                 materials.push(material.clone());
                 slot
             };
