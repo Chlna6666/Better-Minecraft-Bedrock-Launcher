@@ -74,6 +74,7 @@ pub struct OpenGlDevice {
     generation: u32,
     pub(crate) uniform_alignment: u64,
     pub(crate) storage_alignment: u64,
+    pub(crate) binding_limits: BufferBindingLimits,
     pub(crate) compute: crate::compute::State,
     pub(crate) binding_cache: RefCell<crate::bindings::Cache>,
     // Last field: the config's native DC must outlive every GL/glutin object.
@@ -194,6 +195,20 @@ impl OpenGlDevice {
                 "OpenGL renderer {name} does not match requested adapter"
             )));
         }
+        // Query the driver exactly once. Compute dispatches must not issue
+        // glGetInteger64v on the hot path of every streamed Section.
+        let binding_limits = unsafe {
+            BufferBindingLimits {
+                storage_offset_alignment: storage_alignment,
+                max_storage_binding_bytes: gl.get_parameter_i64(
+                    glow::MAX_SHADER_STORAGE_BLOCK_SIZE,
+                ).max(0) as u64,
+                uniform_offset_alignment: uniform_alignment,
+                max_uniform_binding_bytes: gl.get_parameter_i64(
+                    glow::MAX_UNIFORM_BLOCK_SIZE,
+                ).max(0) as u64,
+            }
+        };
         let compute = crate::compute::State::new(&gl);
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
@@ -237,6 +252,7 @@ impl OpenGlDevice {
             generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
             uniform_alignment,
             storage_alignment,
+            binding_limits,
             compute,
             #[cfg(target_os = "windows")]
             _bootstrap: bootstrap,
