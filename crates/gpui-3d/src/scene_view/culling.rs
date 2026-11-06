@@ -534,21 +534,44 @@ impl CullResources {
             self.last_singleton_report =
                 Some((normal_groups as usize, singleton_groups as usize));
         }
-        if normal_groups > 0 {
-            let grid = device.compute_capabilities().plan_linear_dispatch_2d(normal_groups)?;
-            device.dispatch_compute(&ComputeDispatch {
-                shader,
-                bindings: &bindings,
-                workgroups: grid,
-            })?;
-        }
-        if singleton_groups > 0 {
-            let grid = device.compute_capabilities().plan_linear_dispatch_2d(singleton_groups)?;
-            device.dispatch_compute(&ComputeDispatch {
-                shader: singleton_shader.expect("singleton kernel exists for selected path"),
-                bindings: &bindings,
-                workgroups: grid,
-            })?;
+        let capabilities = device.compute_capabilities();
+        match (normal_groups, singleton_groups) {
+            (0, 0) => {}
+            (normal, 0) => {
+                let grid = capabilities.plan_linear_dispatch_2d(normal)?;
+                device.dispatch_compute(&ComputeDispatch {
+                    shader,
+                    bindings: &bindings,
+                    workgroups: grid,
+                })?;
+            }
+            (0, singleton) => {
+                let grid = capabilities.plan_linear_dispatch_2d(singleton)?;
+                device.dispatch_compute(&ComputeDispatch {
+                    shader: singleton_shader.expect("singleton kernel exists for selected path"),
+                    bindings: &bindings,
+                    workgroups: grid,
+                })?;
+            }
+            (normal, singleton) => {
+                // Vulkan and DX12 co-record both kernels into a single native
+                // batch instead of paying two compute submissions per frame.
+                // The original and singleton kernels write disjoint indirect
+                // argument ranges, so neither dispatch depends on the other.
+                let dispatches = [
+                    ComputeDispatch {
+                        shader,
+                        bindings: &bindings,
+                        workgroups: capabilities.plan_linear_dispatch_2d(normal)?,
+                    },
+                    ComputeDispatch {
+                        shader: singleton_shader.expect("singleton kernel exists for selected path"),
+                        bindings: &bindings,
+                        workgroups: capabilities.plan_linear_dispatch_2d(singleton)?,
+                    },
+                ];
+                device.dispatch_compute_batch(&dispatches)?;
+            }
         }
         Ok(())
     }
