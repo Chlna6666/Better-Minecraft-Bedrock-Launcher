@@ -22,6 +22,12 @@ use gfx_core::{
 /// [`PipelineDevice`], so a renderer can pass `&mut dyn ExtensionDevice` without
 /// knowing the concrete nova-gfx backend type.
 pub trait ExtensionDevice {
+    /// Physical array-texture limits and end-to-end layered sampling support.
+    /// Extensions can plan resource sizes without hard-coding any backend.
+    fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
+        gfx_core::TextureArrayCapabilities::default()
+    }
+
     /// Device-specific uniform/storage buffer offsets and per-binding ranges.
     /// The host forwards the active native device's limits; renderer
     /// extensions must not infer these from a backend name or fixed constants.
