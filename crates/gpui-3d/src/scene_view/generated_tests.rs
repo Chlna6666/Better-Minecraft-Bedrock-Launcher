@@ -655,6 +655,41 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     }
     SubmissionDevice::wait_queue_idle(&mut device).unwrap();
 }
+/// Optional native regression: two independent Generated Sections must
+/// share one face-buffer allocation without aliasing descriptors or counts.
+#[test]
+#[ignore = "requires D3D11 device; shared GPU face pool and deferred retirement"]
+fn generated_faces_share_a_page_with_independent_section_offsets() {
+    let mut device = gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap();
+    let shaders = create_shaders(&mut device, BackendKind::Dx11).unwrap();
+    let meshes = [
+        Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
+        Mesh::from_gpu_voxels(crate::voxel_mesh::tests::source()),
+    ];
+    let mut arena = MeshArena::generated_output();
+    let mut resources = create_many_pooled(
+        &mut device, &[&meshes[0], &meshes[1]], &shaders, &mut arena, BackendKind::Dx11,
+    ).unwrap();
+    assert_eq!(resources.len(), 2);
+    assert_eq!(resources[0].vertices, resources[1].vertices);
+    assert_ne!(resources[0].vertex_base, resources[1].vertex_base);
+    assert!(resources.iter().all(|resource| resource.allocation.is_some()));
+    assert_eq!(arena.stats().0, 1);
+    for resource in &resources {
+        assert_eq!(counts(
+            &mut device,
+            resource.generated.as_ref().unwrap().arguments,
+            16,
+        )[0], 60);
+    }
+    SubmissionDevice::wait_queue_idle(&mut device).unwrap();
+    let mut ordinary = MeshArena::default();
+    for resource in resources.drain(..) {
+        super::super::gpu::destroy_mesh(&mut device, resource, &mut ordinary, &mut arena).unwrap();
+    }
+    assert_eq!(arena.stats().0, 0);
+}
+
 #[test]
 #[ignore = "requires D3D11; offscreen GPU-generated mesh counts"]
 fn gpu_mesher_dx11() {
