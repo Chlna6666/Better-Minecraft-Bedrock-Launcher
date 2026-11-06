@@ -391,6 +391,9 @@ impl CullResources {
             data: &bytes[..],
         }).collect::<Vec<_>>();
         device.write_buffer_batch(&writes)?;
+        // BufferWrite descriptors borrow the patch byte arrays. Release
+        // those borrows before moving the patches into the committed mirror.
+        drop(writes);
         for (slot, key, _) in patches {
             self.bounds_keys[slot] = Some(key);
         }
