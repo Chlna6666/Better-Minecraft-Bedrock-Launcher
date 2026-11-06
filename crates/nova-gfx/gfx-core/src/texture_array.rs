@@ -248,6 +248,57 @@ mod tests {
     }
 
     #[test]
+    fn array_write_addresses_native_layer_mip_subresources_and_preserves_2d() {
+        let caps = TextureArrayCapabilities {
+            max_dimension_2d: 1024,
+            max_array_layers: 32,
+            array_resources: true,
+            layer_uploads: true,
+            indexed_sampling: false,
+        };
+        let texture = TextureDescriptor {
+            label: None,
+            size: Extent2d::new(16, 16).unwrap(),
+            mip_level_count: 5,
+            format: Format::Rgba8Unorm,
+            usage: crate::TextureUsage::SAMPLED | crate::TextureUsage::COPY_DST,
+            memory_location: crate::MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2Array { layers: 4 },
+        };
+        assert_eq!(texture.byte_size(), (256 + 64 + 16 + 4 + 1) * 4 * 4);
+        let image_id = TextureId::from_parts(1, 0);
+        let write = TextureArrayLayerWriteDescriptor {
+            texture: image_id,
+            upload: TextureArrayLayerUpload {
+                layer: 2,
+                mip_level: 2,
+                origin: Origin2d::ZERO,
+                extent: Extent2d::new(4, 4).unwrap(),
+                layout: TextureDataLayout::new(0, 16, 4).unwrap(),
+            },
+        };
+        assert!(write.validate_against(&texture, caps, 64).is_ok());
+        assert_eq!(write.subresource_index(texture.mip_level_count).unwrap(), 12);
+        assert!(write.validate_against(
+            &TextureDescriptor { dimension: TextureDimension::D2, ..texture.clone() },
+            caps, 64
+        ).is_err());
+        assert!(write.validate_against(
+            &texture,
+            TextureArrayCapabilities { layer_uploads: false, ..caps },
+            64
+        ).is_err());
+        assert!(write.validate_against(
+            &TextureDescriptor { usage: crate::TextureUsage::SAMPLED, ..texture.clone() },
+            caps, 64
+        ).is_err());
+        assert!(write.validate_against(
+            &TextureDescriptor { dimension: TextureDimension::D2Array { layers: 0 }, ..texture },
+            caps, 64
+        ).is_err());
+    }
+
+    #[test]
     fn physical_array_support_does_not_enable_unimplemented_sampling() {
         let mut limits = TextureArrayCapabilities {
             max_dimension_2d: 16384,
