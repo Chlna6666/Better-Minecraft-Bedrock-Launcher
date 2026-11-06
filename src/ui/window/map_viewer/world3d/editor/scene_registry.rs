@@ -397,9 +397,27 @@ fn fused_section_pair(
 ) -> Option<World3dChunkMesh> {
     let first = left.mesh.gpu_voxels()?;
     let second = right.mesh.gpu_voxels()?;
-    // Adjacent 16-block Section interiors have a one-cell halo around
-    // them. The merged grid spans 32 blocks plus the same outer halo.
-    if first.size() != second.size() { return None; }
+    // Compact/detail Sections can have distinct padded-grid extents and
+    // origins. Convert their cell coordinates into one common grid in the
+    // left Section's Scene-node coordinate system; static faces instead
+    // retain the 16-block node translation.
+    let a = first.origin();
+    let b = second.origin() + Vec3::new(16.0, 0.0, 0.0);
+    let common = a.min(b);
+    let grid_offset = |origin: Vec3| -> Option<[u32; 3]> {
+        let delta = origin - common;
+        let components = [delta.x, delta.y, delta.z];
+        let mut offset = [0u32; 3];
+        for (axis, value) in components.into_iter().enumerate() {
+            if !value.is_finite() || value < 0.0 || value.fract().abs() > 0.0001 {
+                return None;
+            }
+            offset[axis] = value as u32;
+        }
+        Some(offset)
+    };
+    let left_offset = grid_offset(a)?;
+    let right_offset = grid_offset(b)?;
     let mut materials = Vec::<Arc<gpui_3d::Material>>::new();
     let mut index = HashMap::<gpui_3d::MaterialId, u32>::new();
     let mut mappings = [Vec::new(), Vec::new()];
@@ -418,10 +436,12 @@ fn fused_section_pair(
     }
     let fused_source = gpui_3d::VoxelMeshSource::fuse_sections(&[
         gpui_3d::VoxelFusionInput {
-            source: first, offset: [0, 0, 0], material_slots: &mappings[0],
+            source: first, offset: left_offset,
+            translation: [0, 0, 0], material_slots: &mappings[0],
         },
         gpui_3d::VoxelFusionInput {
-            source: second, offset: [16, 0, 0], material_slots: &mappings[1],
+            source: second, offset: right_offset,
+            translation: [16, 0, 0], material_slots: &mappings[1],
         },
     ]).ok()?;
     let mut textures = BTreeMap::<gpui_3d::TextureAssetId, Arc<gpui_3d::TextureAsset>>::new();
