@@ -80,12 +80,9 @@ impl VulkanDevice {
         if dispatch.workgroups.contains(&0) {
             return Ok(None);
         }
-        // SAFETY: querying limits of this live physical device does not modify it.
-        let limits = unsafe {
-            self.instance
-                .get_physical_device_properties(self.physical_device)
-        }
-        .limits;
+        // Limits were captured from this physical adapter at device creation.
+        // Never issue a Vulkan property query per streaming-Section dispatch.
+        let limits = self.binding_limits;
         let mut signature = Vec::with_capacity(dispatch.bindings.len());
         let mut infos = Vec::with_capacity(dispatch.bindings.len());
         for binding in dispatch.bindings {
@@ -97,21 +94,20 @@ impl VulkanDevice {
                 BufferUsage::STORAGE
             };
             let alignment = if uniform {
-                limits.min_uniform_buffer_offset_alignment
+                limits.uniform_offset_alignment
             } else {
-                limits.min_storage_buffer_offset_alignment
-            }
-            .max(1);
+                limits.storage_offset_alignment
+            };
             let maximum = if uniform {
-                limits.max_uniform_buffer_range
+                limits.max_uniform_binding_bytes
             } else {
-                limits.max_storage_buffer_range
+                limits.max_storage_binding_bytes
             };
             if !buffer.desc.usage.contains(usage)
                 || (binding.access == ComputeBufferAccess::ReadWrite
                     && !buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE))
                 || binding.buffer.size == 0
-                || binding.buffer.size > u64::from(maximum)
+                || binding.buffer.size > maximum
                 || binding.buffer.offset % alignment != 0
                 || binding
                     .buffer
