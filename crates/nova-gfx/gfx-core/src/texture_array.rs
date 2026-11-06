@@ -4,7 +4,7 @@
 //! array creation, layer upload, or indexed shader sampling. Keep the three
 //! implementation capabilities separate until all native operations exist.
 
-use crate::{Error, Extent2d, Format, Origin2d, Result, TextureDataLayout};
+use crate::{Error, Extent2d, Format, Origin2d, Result, TextureDataLayout, TextureDescriptor, TextureDimension, TextureId};
 
 /// Limits of the selected graphics device, plus availability of the complete
 /// layered-texture path in the current backend implementation.
@@ -43,6 +43,48 @@ pub struct TextureArrayLayerUpload {
     pub origin: Origin2d,
     pub extent: Extent2d,
     pub layout: TextureDataLayout,
+}
+
+/// Upload a single slice of a texture-array resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextureArrayLayerWriteDescriptor {
+    pub texture: TextureId,
+    pub upload: TextureArrayLayerUpload,
+}
+
+impl TextureArrayLayerWriteDescriptor {
+    /// Validate the native subresource index and source pitch against the
+    /// *actual* live texture descriptor, not a caller-supplied plan.
+    pub fn validate_against(
+        self,
+        descriptor: &TextureDescriptor,
+        capabilities: TextureArrayCapabilities,
+        data_len: usize,
+    ) -> Result<()> {
+        descriptor.validate()?;
+        let TextureDimension::D2Array { layers } = descriptor.dimension else {
+            return Err(Error::InvalidInput("layered upload requires a D2Array texture".into()));
+        };
+        if !descriptor.usage.contains(crate::TextureUsage::COPY_DST) {
+            return Err(Error::InvalidInput("layered upload requires COPY_DST".into()));
+        }
+        if !capabilities.array_resources || !capabilities.layer_uploads {
+            return Err(Error::Unavailable("backend does not implement texture-array uploads".into()));
+        }
+        let plan = capabilities.plan(
+            descriptor.size.width(), descriptor.size.height(), layers,
+            descriptor.mip_level_count, descriptor.format,
+        )?;
+        plan.validate_layer_upload(self.upload, descriptor.format, data_len)
+    }
+
+    /// Return the D3D11/D3D12-style mip-major subresource address. Backends
+    /// with other native storage layouts can use the same validated layer/mip.
+    pub fn subresource_index(self, mip_levels: u32) -> Result<u32> {
+        self.upload.layer.checked_mul(mip_levels)
+            .and_then(|base| base.checked_add(self.upload.mip_level))
+            .ok_or_else(|| Error::InvalidInput("texture array subresource index overflow".into()))
+    }
 }
 
 impl TextureArrayPlan {
