@@ -28,6 +28,7 @@ impl RendererResources {
             pass,
             owns_layout: prototype.is_none(),
             cull_shader: None,
+            singleton_cull_shader: None,
             bind_group_layout: None,
             pipeline_layout: None,
             vertex_shader: None,
@@ -52,6 +53,13 @@ impl RendererResources {
                     Some(device.create_shader_module(&ShaderModuleDescriptor {
                         label: Some("gpui-3d GPU batch culling".into()),
                         binary: embedded_shader(context, ShaderStage::Compute, "cs_cull")?,
+                    })?);
+                resources.singleton_cull_shader =
+                    Some(device.create_shader_module(&ShaderModuleDescriptor {
+                        label: Some("gpui-3d GPU singleton batch culling".into()),
+                        binary: embedded_shader(
+                            context, ShaderStage::Compute, "cs_cull_singletons",
+                        )?,
                     })?);
             }
             if let Some(prototype) = prototype {
