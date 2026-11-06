@@ -292,8 +292,7 @@ fn install_panic_hook() {
 #[cfg(windows)]
 fn install_unhandled_exception_hook() {
     use windows::Win32::System::Diagnostics::Debug::{
-        AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_EXECUTE_HANDLER,
-        EXCEPTION_POINTERS, SetUnhandledExceptionFilter,
+        EXCEPTION_EXECUTE_HANDLER, EXCEPTION_POINTERS, SetUnhandledExceptionFilter,
     };
 
     fn exception_summary(exception_info: *const EXCEPTION_POINTERS) -> (u32, usize) {
@@ -315,19 +314,6 @@ fn install_unhandled_exception_hook() {
         )
     }
 
-    unsafe extern "system" fn handle_vectored_exception(
-        exception_info: *mut EXCEPTION_POINTERS,
-    ) -> i32 {
-        let (code, address) = exception_summary(exception_info);
-        append_crash_line(&format!(
-            "{} ERROR BMCBL::utils::logger: vectored exception captured: code=0x{:08X} address=0x{:X}",
-            elapsed_time(),
-            code,
-            address
-        ));
-        EXCEPTION_CONTINUE_SEARCH
-    }
-
     unsafe extern "system" fn handle_unhandled_exception(
         exception_info: *const EXCEPTION_POINTERS,
     ) -> i32 {
@@ -343,9 +329,15 @@ fn install_unhandled_exception_hook() {
         EXCEPTION_EXECUTE_HANDLER
     }
 
+    // First-chance vectored handlers observe normal debugger notifications
+    // (0x40010006 / 0x4001000A) and handled language exceptions. Logging
+    // each of those using append_crash_line synchronously flushes the async
+    // writer and the file, severely stalling the GPU owner thread during
+    // debugging. Only log true unhandled crashes through the last-chance
+    // exception filter, retaining the separate panic hook.
+    //
     // SAFETY: Installing a single process-wide unhandled exception filter is intended Win32 usage.
     unsafe {
-        let _ = AddVectoredExceptionHandler(1, Some(handle_vectored_exception));
         let _ = SetUnhandledExceptionFilter(Some(handle_unhandled_exception));
     }
 }
