@@ -137,7 +137,7 @@ mod tests {
         d.origin[2] = 16;
         let d = Arc::new(d);
         let key = super::fusion_key((a.pos, 0));
-        let mut meshes = [a, b, c, d].iter()
+        let mut meshes = [a.clone(), b.clone(), c.clone(), d.clone()].iter()
             .map(|mesh| ((mesh.pos, 0), mesh.clone()))
             .collect::<BTreeMap<_, _>>();
         let mut registry = ChunkScene::default();
