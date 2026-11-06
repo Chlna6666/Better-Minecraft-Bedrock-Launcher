@@ -1251,6 +1251,158 @@ impl SceneResources {
         Ok(Some(commands_unchanged))
     }
 
+    /// A structural Section splice changes dense logical positions but
+    /// leaves all survivor DrawParams/Instance rows at their original physical
+    /// GPU addresses. The Culler has already committed the new slot registry.
+    /// Touch only newly mapped Section rows and the unavoidable compact
+    /// u32 indirection suffix; do not materialize any full physical table.
+    fn sync_structural_draw_delta(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        renderer: &RendererResources,
+        bind_group_layout: BindGroupLayoutId,
+        sampler: SamplerId,
+        sampler_changed: bool,
+        defer_binding_cleanup: bool,
+    ) -> gpui::Result<bool> {
+        let Some(delta) = self.prepared.structural_draw_delta() else {
+            return Ok(false);
+        };
+        let Some(culler) = &self.culling else {
+            return Ok(false);
+        };
+        let (high_water, mapping) = culler.committed_slot_layout();
+        let count = self.prepared.draws.len();
+        let previous_count = delta.previous_count;
+        let old_high_water = self.draw_slot_keys.len();
+        let offset = delta.edits.iter().map(|edit| edit.new.start).min().unwrap_or(count);
+        let dirty = delta.edits.iter()
+            .flat_map(|edit| edit.new.clone())
+            .collect::<Vec<_>>();
+        if high_water == 0 || mapping.len() != count
+            || high_water < old_high_water
+            || self.instance_slot_keys.len() != old_high_water
+            || self.uploaded_tables[0].len() != old_high_water * DRAW_PARAMS_STRIDE as usize
+            || self.uploaded_tables[1].len() != old_high_water * INSTANCE_STRIDE as usize
+            || self.uploaded_slot_map.len() != previous_count * 4
+            || self.draw_capacity < high_water
+            || self.instance_capacity < high_water
+            || self.draw_slot_capacity < count
+            || self.draw_addresses.len() != previous_count
+            || self.batches.len() != count
+            || offset > count
+            || dirty.len().saturating_mul(4) > count.max(1)
+            || !self.page_refs.only_generated_meshes()
+            || !self.batch_workspace.singleton_layout()
+        {
+            return Ok(false);
+        }
+        // Light count and values may affect all material records and bound
+        // buffers. A true structural fast path must preserve the exact
+        // committed lighting table, otherwise use the full sync.
+        let mut light_bytes = Vec::new();
+        encode_lights_into(&self.prepared.lights, &mut light_bytes);
+        if light_bytes != self.uploaded_tables[2] {
+            return Ok(false);
+        }
+
+        let trace_started = trace_timings().then(Instant::now);
+        let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
+        let draw_result = self.draw_record_cache.encode_resident_delta(
+            &self.prepared.draws, self.prepared.lights.len(),
+            mapping, &dirty,
+            &self.draw_slot_keys, &self.uploaded_tables[0], &mut scratch,
+        );
+        self.scratch_packed_draws = scratch;
+        let draw_patches = draw_result?;
+        let mut scratch = std::mem::take(&mut self.dirty_instance_run);
+        let instance_result = self.encode_resident_instance_delta(
+            mapping, &dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
+            &mut scratch,
+        );
+        self.dirty_instance_run = scratch;
+        let instance_patches = instance_result?;
+
+        let mut slot_suffix = Vec::with_capacity((count - offset) * 4);
+        for &slot in &mapping[offset..] {
+            slot_suffix.extend_from_slice(&slot.to_le_bytes());
+        }
+        let mut writes = Vec::with_capacity(draw_patches.len() + instance_patches.len() + 1);
+        for (slot, _, bytes) in &draw_patches {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.draw_buffer,
+                    offset: *slot as u64 * DRAW_PARAMS_STRIDE as u64,
+                },
+                data: &bytes[..],
+            });
+        }
+        for (slot, _, bytes) in &instance_patches {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.instance_buffer,
+                    offset: *slot as u64 * INSTANCE_STRIDE as u64,
+                },
+                data: &bytes[..],
+            });
+        }
+        if !slot_suffix.is_empty() {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.draw_slot_buffer,
+                    offset: offset as u64 * 4,
+                },
+                data: &slot_suffix,
+            });
+        }
+        let bytes_uploaded = writes.iter().map(|write| write.data.len()).sum::<usize>();
+        if !writes.is_empty() {
+            device.write_buffer_batch(&writes)?;
+        }
+        drop(writes);
+        // Structural insertion/removal changes logical Batch addresses and
+        // generated part mapping even with stable physical instance slots.
+        // Keep the necessary full resource/indirect command reorganization.
+        self.sync_draw_resources(
+            device, renderer, bind_group_layout, sampler,
+            sampler_changed, true, defer_binding_cleanup,
+        )?;
+        self.sync_generated_draws(device, true)?;
+
+        // All dependent GPU operations completed successfully. Extend only
+        // the new physical tail; unchanged rows remain byte-identical.
+        let draw_fill = *self.draw_slot_keys.last()
+            .ok_or_else(|| anyhow!("missing previous GPU DrawParams snapshot"))?;
+        let instance_fill = *self.instance_slot_keys.last()
+            .ok_or_else(|| anyhow!("missing previous GPU Instance snapshot"))?;
+        self.draw_slot_keys.resize(high_water, draw_fill);
+        self.instance_slot_keys.resize(high_water, instance_fill);
+        self.uploaded_tables[0].resize(high_water * DRAW_PARAMS_STRIDE as usize, 0);
+        self.uploaded_tables[1].resize(high_water * INSTANCE_STRIDE as usize, 0);
+        for (slot, key, bytes) in draw_patches {
+            self.draw_slot_keys[slot] = key;
+            let start = slot * DRAW_PARAMS_STRIDE as usize;
+            self.uploaded_tables[0][start..start + DRAW_PARAMS_STRIDE as usize]
+                .copy_from_slice(&bytes);
+        }
+        for (slot, key, bytes) in instance_patches {
+            self.instance_slot_keys[slot] = key;
+            let start = slot * INSTANCE_STRIDE as usize;
+            self.uploaded_tables[1][start..start + INSTANCE_STRIDE as usize]
+                .copy_from_slice(&bytes);
+        }
+        self.uploaded_slot_map.resize(count * 4, 0);
+        self.uploaded_slot_map[offset * 4..].copy_from_slice(&slot_suffix);
+        if let Some(started) = trace_started {
+            eprintln!(
+                "gpui3d structural_slot_delta previous={} current={} dirty={} slot_suffix={} uploaded_bytes={} ms={:.2}",
+                previous_count, count, dirty.len(), count - offset,
+                bytes_uploaded, started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        Ok(true)
+    }
+
     fn sync_buffers(
         &mut self,
         device: &mut dyn ExtensionDevice,
