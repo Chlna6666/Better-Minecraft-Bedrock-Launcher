@@ -166,11 +166,32 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_gpu_materials_from_different_sections_fuse_without_matching_ids() {
+        let one = Arc::new(gpui_3d::Material::new());
+        let another = Arc::new(gpui_3d::Material::new());
+        assert_ne!(one.id(), another.id(), "workers independently allocate MaterialIds");
+        assert!(one.render_content_eq(&another));
+        let left = generated_chunk(0, one);
+        let right = generated_chunk(1, another);
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(
+            None,
+            &BTreeMap::from([((left.pos, 0), left), ((right.pos, 0), right)]),
+            None, [0; 3],
+        ).unwrap();
+        assert_eq!(registry.fused.len(), 1);
+        assert_eq!(scene.node(registry.fused.values().next().unwrap().0)
+            .unwrap().mesh.as_ref().unwrap().parts().len(), 1);
+    }
+
+    #[test]
     fn unrelated_generated_materials_keep_finer_section_culling() {
         // Two material parts remain two even after fusion. Keeping the
         // per-Section GPU culling and draw resources costs less in this case.
         let left = generated_chunk(0, Arc::new(gpui_3d::Material::new()));
-        let right = generated_chunk(1, Arc::new(gpui_3d::Material::new()));
+        let mut distinct = gpui_3d::Material::new();
+        distinct.base_color = [0.25, 0.5, 0.75, 1.0];
+        let right = generated_chunk(1, Arc::new(distinct));
         let mut registry = ChunkScene::default();
         let scene = registry.update(
             None,
@@ -633,22 +654,36 @@ fn fusion_members((pos, section_y): (ChunkPos, i32)) -> [(ChunkPos, i32); 4] {
 fn fused_section_cluster(sources: &[Arc<World3dChunkMesh>]) -> Option<World3dChunkMesh> {
     let first = sources.first()?;
     let mut materials = Vec::<Arc<gpui_3d::Material>>::new();
-    // A cloned Material may preserve its ID while changing values. Verify
-    // actual immutable snapshots before sharing shader material slots.
-    let mut index = HashMap::<gpui_3d::MaterialId, Vec<u32>>::new();
+    // Each streamed Section may create new MaterialIds for physically
+    // identical shader state. Merge equal immutable GPU material snapshots
+    // even across different IDs, but never merge unlike colors, blend modes
+    // or texture bindings. Partition by the four texture resources first to
+    // avoid a quadratic scan across all materials in large clusters.
+    let mut index = HashMap::<(
+        Option<gpui_3d::TextureAssetId>,
+        Option<gpui_3d::TextureAssetId>,
+        Option<gpui_3d::TextureAssetId>,
+        Option<gpui_3d::TextureAssetId>,
+    ), Vec<u32>>::new();
     let mut mappings = vec![Vec::new(); sources.len()];
     for (section, mapping) in sources.iter().zip(mappings.iter_mut()) {
         for material in section.materials.iter() {
-            let previous = index.get(&material.id()).and_then(|slots| {
+            let key = (
+                material.albedo_texture,
+                material.normal_texture,
+                material.occlusion_texture,
+                material.metallic_roughness_texture,
+            );
+            let previous = index.get(&key).and_then(|slots| {
                 slots.iter().copied().find(|&slot| {
-                    materials[slot as usize].as_ref() == material.as_ref()
+                    materials[slot as usize].render_content_eq(material)
                 })
             });
             let slot = if let Some(slot) = previous {
                 slot
             } else {
                 let slot = u32::try_from(materials.len()).ok()?;
-                index.entry(material.id()).or_default().push(slot);
+                index.entry(key).or_default().push(slot);
                 materials.push(material.clone());
                 slot
             };
