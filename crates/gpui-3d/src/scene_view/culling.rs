@@ -769,19 +769,29 @@ fn encode_batches_cached(
     let size = batches.len()
         .checked_mul(ARGUMENT_STRIDE as usize)
         .ok_or_else(|| anyhow!("GPU batch descriptor size overflow"))?;
-    let dirty = next.iter().enumerate()
-        .filter(|(index, key)| previous.get(*index).copied() != Some(**key))
-        .count();
+    // One sequential comparison finds the first genuinely dirty batch row.
+    // Previous code separately counted all changed records, compared both
+    // entire key vectors, then walked them a third time to encode changes.
+    // On a stable 100K+ Section scene this returns without copying the
+    // resident CPU snapshot; on deltas it visits no unaffected prefix twice.
+    let first_dirty = next.iter().enumerate().position(|(index, key)| {
+        previous.get(index) != Some(key)
+            || previous_bytes.len() < (index + 1) * ARGUMENT_STRIDE as usize
+    });
     output.clear();
-    if dirty == 0 && previous == next && previous_bytes.len() == size {
+    if first_dirty.is_none()
+        && previous.len() == next.len()
+        && previous_bytes.len() == size
+    {
         return Ok(0);
     }
     output.extend_from_slice(previous_bytes);
     output.resize(size, 0);
-    for (index, key) in next.iter().enumerate() {
-        if previous.get(index) == Some(key)
-            && previous_bytes.len() >= (index + 1) * ARGUMENT_STRIDE as usize
-        {
+    let mut dirty = 0;
+    for (index, key) in next.iter().enumerate().skip(first_dirty.unwrap_or(next.len())) {
+        if previous.get(index) != Some(key) {
+            dirty += 1;
+        } else if previous_bytes.len() >= (index + 1) * ARGUMENT_STRIDE as usize {
             continue;
         }
         let start = index * ARGUMENT_STRIDE as usize;
@@ -945,6 +955,34 @@ mod bounds_cache_tests {
         assert_eq!(removed_count, 0);
         encode_batches_into(&draws, removed, None, &mut reference).unwrap();
         assert_eq!(bytes, reference);
+    }
+
+    #[test]
+    fn middle_section_batch_delta_encodes_only_changed_descriptor() {
+        let draws = sample_draws();
+        let batches = (0..draws.len()).map(|index| DrawBatchRange {
+            first_instance: index,
+            instance_count: 1,
+        }).collect::<Vec<_>>();
+        let mut keys = Vec::new();
+        let mut encoded = Vec::new();
+        encode_batches_cached(
+            &draws, &batches, None, &[], &[], &mut keys, &mut encoded,
+        ).unwrap();
+        let prior_keys = keys.clone();
+        let prior_bytes = encoded.clone();
+        let mut reordered = batches.clone();
+        reordered[8].first_instance = 3;
+        let changed = encode_batches_cached(
+            &draws, &reordered, None, &prior_keys, &prior_bytes,
+            &mut keys, &mut encoded,
+        ).unwrap();
+        assert_eq!(changed, 1);
+        let mut reference = Vec::new();
+        encode_batches_into(&draws, &reordered, None, &mut reference).unwrap();
+        assert_eq!(encoded, reference);
+        assert_eq!(&encoded[..8 * ARGUMENT_STRIDE as usize],
+                   &prior_bytes[..8 * ARGUMENT_STRIDE as usize]);
     }
 
     fn apply_sparse_patches(mut bytes: Vec<u8>, patches: &[(u64, Vec<u8>)], len: usize) -> Vec<u8> {
