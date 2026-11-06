@@ -75,6 +75,7 @@ pub struct OpenGlDevice {
     pub(crate) uniform_alignment: u64,
     pub(crate) storage_alignment: u64,
     pub(crate) binding_limits: BufferBindingLimits,
+    pub(crate) texture_array_limits: TextureArrayCapabilities,
     pub(crate) compute: crate::compute::State,
     pub(crate) binding_cache: RefCell<crate::bindings::Cache>,
     // Last field: the config's native DC must outlive every GL/glutin object.
@@ -209,6 +210,13 @@ impl OpenGlDevice {
                 ).max(0) as u64,
             }
         };
+        let texture_array_limits = unsafe {
+            TextureArrayCapabilities {
+                max_dimension_2d: gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as u32,
+                max_array_layers: gl.get_parameter_i32(glow::MAX_ARRAY_TEXTURE_LAYERS).max(0) as u32,
+                ..Default::default()
+            }
+        };
         let compute = crate::compute::State::new(&gl);
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
@@ -253,6 +261,7 @@ impl OpenGlDevice {
             uniform_alignment,
             storage_alignment,
             binding_limits,
+            texture_array_limits,
             compute,
             #[cfg(target_os = "windows")]
             _bootstrap: bootstrap,
