@@ -15,6 +15,17 @@ const BOUNDS_STRIDE: usize = 48;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
 
 
+// Shader ABI: cs_cull_singletons uses @workgroup_size(64) and distributes
+// each invocation to one independent DrawBatchRange. The group width is a
+// compile-time shader property, not a guessed GPU capability limit.
+fn culling_dispatch_groups(count: u32, all_singletons: bool, shader_available: bool) -> (bool, u32) {
+    if all_singletons && shader_available {
+        (true, count.div_ceil(64))
+    } else {
+        (false, count)
+    }
+}
+
 /// Byte-accurate identity of a 48-byte GPU culling bounds record.
 /// Converting floats to their bit patterns distinguishes signed zeros and
 /// prevents a cache hit from silently changing the generated GPU bytes.
@@ -153,7 +164,9 @@ pub(super) struct CullResources {
     bounds: BufferId,
     pub(super) batches: BufferId,
     range: BufferId,
-    range_bounds: Option<(Option<Aabb>, bool)>,
+    range_bounds: Option<(Option<Aabb>, bool, usize)>,
+    singleton_batches: bool,
+    last_singleton_report: Option<bool>,
     pub(super) arguments: BufferId,
     pub(super) visible_instances: BufferId,
     pub(super) instance_capacity: usize,
@@ -232,6 +245,8 @@ impl CullResources {
             range: buffers[4],
             slot_map: buffers[5],
             range_bounds: None,
+            singleton_batches: false,
+            last_singleton_report: None,
             count: 0,
             instances: 0,
             uploaded_inputs: Default::default(),
@@ -376,13 +391,29 @@ impl CullResources {
         self.scratch_inputs = [bounds_scratch, old];
         self.count = batches.len();
         self.instances = draws.len();
+        self.singleton_batches = batches.iter().all(|batch| batch.instance_count == 1);
         Ok(())
     }
 
+    // Legacy native test fixtures exercise the original one-workgroup-per-
+    // batch entry point. Production calls the adaptive selection below.
+    #[cfg(test)]
     pub(super) fn dispatch(
         &mut self,
         device: &mut dyn ExtensionDevice,
         shader: ShaderModuleId,
+        frame: BufferId,
+        range: Option<Aabb>,
+        generated: Option<(BufferId, usize)>,
+    ) -> gpui::Result<()> {
+        self.dispatch_optimized(device, shader, None, frame, range, generated)
+    }
+
+    pub(super) fn dispatch_optimized(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        shader: ShaderModuleId,
+        singleton_shader: Option<ShaderModuleId>,
         frame: BufferId,
         range: Option<Aabb>,
         generated: Option<(BufferId, usize)>,
@@ -398,16 +429,17 @@ impl CullResources {
             )
         });
         let occlusion_enabled = self.hiz.has_occluders();
+        let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
         let mut range_bytes = [0; 32];
         for (chunk, value) in range_bytes
             .chunks_exact_mut(4)
-            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], 0.0])
+            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], count as f32])
         {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
-        if self.range_bounds != Some((range, occlusion_enabled)) {
+        if self.range_bounds != Some((range, occlusion_enabled, self.count)) {
             device.write_buffer(self.range, 0, &range_bytes)?;
-            self.range_bounds = Some((range, occlusion_enabled));
+            self.range_bounds = Some((range, occlusion_enabled, self.count));
         }
         let bindings = [
             compute_binding(
@@ -462,10 +494,30 @@ impl CullResources {
                 ComputeBufferAccess::ReadOnly,
             ),
         ];
-        let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
-        let grid = device.compute_capabilities().plan_linear_dispatch_2d(count)?;
+        // A streamed generated world often has 50K+ *singleton* batches.
+        // The original 64-lane kernel wastes 63 lanes per singleton. The
+        // specialized kernel processes 64 distinct draws in each workgroup,
+        // retaining the same indirect argument and visibility buffer ABI.
+        let (singletons, logical_groups) = culling_dispatch_groups(
+            count, self.singleton_batches, singleton_shader.is_some(),
+        );
+        let selected_shader = if singletons {
+            singleton_shader.expect("singleton shader exists when selected")
+        } else {
+            shader
+        };
+        if super::renderer::trace_timings()
+            && self.last_singleton_report != Some(singletons)
+        {
+            eprintln!(
+                "gpui3d cull_mode singleton_compaction={} batches={} workgroups={} saved_workgroups={}",
+                singletons, count, logical_groups, count.saturating_sub(logical_groups),
+            );
+            self.last_singleton_report = Some(singletons);
+        }
+        let grid = device.compute_capabilities().plan_linear_dispatch_2d(logical_groups)?;
         device.dispatch_compute(&ComputeDispatch {
-            shader,
+            shader: selected_shader,
             bindings: &bindings,
             workgroups: grid,
         })?;
@@ -481,6 +533,21 @@ impl CullResources {
         device.destroy_buffer(self.range)?;
         device.destroy_buffer(self.slot_map)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod singleton_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn generated_singletons_reduce_dispatch_groups_without_reordering() {
+        assert_eq!(culling_dispatch_groups(65_993, true, true), (true, 1032));
+        assert_eq!(culling_dispatch_groups(65_993, false, true), (false, 65_993));
+        assert_eq!(culling_dispatch_groups(65_993, true, false), (false, 65_993));
+        assert_eq!(culling_dispatch_groups(1, true, true), (true, 1));
+        assert_eq!(culling_dispatch_groups(64, true, true), (true, 1));
+        assert_eq!(culling_dispatch_groups(65, true, true), (true, 2));
     }
 }
 
