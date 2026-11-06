@@ -1287,7 +1287,7 @@ impl SceneResources {
         let dirty = delta.edits.iter()
             .flat_map(|edit| edit.new.clone())
             .collect::<Vec<_>>();
-        if high_water == 0 || mapping.len() != count
+        if high_water == 0 || old_high_water == 0 || mapping.len() != count
             || high_water < old_high_water
             || self.instance_slot_keys.len() != old_high_water
             || self.uploaded_tables[0].len() != old_high_water * DRAW_PARAMS_STRIDE as usize
