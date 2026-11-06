@@ -288,12 +288,15 @@ impl SceneResources {
                 .ok_or_else(|| anyhow!("dirty Instance logical index outside scene"))?;
             let physical = *mapping.get(logical)
                 .ok_or_else(|| anyhow!("missing resident Instance slot"))? as usize;
-            let prior = previous.get(physical)
-                .ok_or_else(|| anyhow!("resident Instance slot outside table"))?;
-            if prior == &self.instance_key(draw, true)? {
+            let key = self.instance_key(draw, true)?;
+            if previous.get(physical) == Some(&key)
+                && previous_bytes.len() >= (physical + 1) * STRIDE
+            {
                 continue;
             }
-            let key = self.instance_key(draw, true)?;
+            // A structural insert can allocate beyond the previous
+            // high-water mark; the new record must be encoded even if no
+            // previous key/byte range exists for that physical slot.
             scratch.clear();
             self.encode_draw_instances(std::slice::from_ref(draw), true, scratch)?;
             let bytes: [u8; STRIDE] = scratch.get(..STRIDE)
