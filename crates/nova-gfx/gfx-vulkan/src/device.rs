@@ -130,6 +130,7 @@ pub struct VulkanDevice {
     physical_device: vk::PhysicalDevice,
     adapter_name: String,
     max_sampler_anisotropy: f32,
+    binding_limits: gfx_core::BufferBindingLimits,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -270,6 +271,13 @@ impl VulkanDevice {
         let adapter_properties =
             unsafe { instance.get_physical_device_properties(physical_device) };
         let adapter_name = physical_device_name(&adapter_properties);
+        let native_limits = adapter_properties.limits;
+        let binding_limits = gfx_core::BufferBindingLimits {
+            storage_offset_alignment: native_limits.min_storage_buffer_offset_alignment.max(1),
+            max_storage_binding_bytes: u64::from(native_limits.max_storage_buffer_range),
+            uniform_offset_alignment: native_limits.min_uniform_buffer_offset_alignment.max(1),
+            max_uniform_binding_bytes: u64::from(native_limits.max_uniform_buffer_range),
+        };
         let queue_families = queue_family_indices_without_surface(&instance, physical_device)?;
         // SAFETY: The selected physical device belongs to this instance.
         let queue_properties =
@@ -353,6 +361,7 @@ impl VulkanDevice {
             physical_device,
             adapter_name,
             max_sampler_anisotropy,
+            binding_limits,
             device,
             graphics_queue,
             present_queue,
@@ -3539,18 +3548,7 @@ impl SurfaceDevice for VulkanDevice {
 
 impl ResourceDevice for VulkanDevice {
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
-        // The exact selected physical adapter's VkPhysicalDeviceLimits.
-        // GPU allocations and compute descriptor binding use these same
-        // properties; avoid freezing a guessed Vulkan alignment into GPUI.
-        let limits = unsafe {
-            self.instance.get_physical_device_properties(self.physical_device)
-        }.limits;
-        gfx_core::BufferBindingLimits {
-            storage_offset_alignment: limits.min_storage_buffer_offset_alignment.max(1),
-            max_storage_binding_bytes: u64::from(limits.max_storage_buffer_range),
-            uniform_offset_alignment: limits.min_uniform_buffer_offset_alignment.max(1),
-            max_uniform_binding_bytes: u64::from(limits.max_uniform_buffer_range),
-        }
+        self.binding_limits
     }
 
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
