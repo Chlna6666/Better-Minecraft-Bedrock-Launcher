@@ -2113,6 +2113,42 @@ mod tests {
     }
 
     #[test]
+    fn pooled_generated_buffers_never_alias_mesh_specific_template_bindings() {
+        // Two Sections may share one generated-face GPU page while their
+        // template buffers, static light data and indirect arguments differ.
+        // Resource keys must retain individual MeshId/generation identity.
+        let generic = DrawResourceKey {
+            shadow: None,
+            visible_instances: None,
+            mesh: DrawMeshKey::Generated { id: MeshId(1), generation: 5 },
+            albedo_id: Some(TextureAssetId(9)),
+            normal_id: None,
+            occlusion_id: None,
+            metallic_roughness_id: None,
+        };
+        let other = DrawResourceKey {
+            mesh: DrawMeshKey::Generated { id: MeshId(2), generation: 5 },
+            ..generic
+        };
+        let moved = DrawResourceKey {
+            mesh: DrawMeshKey::Generated { id: MeshId(1), generation: 6 },
+            ..generic
+        };
+        let page = gfx_core::BufferId::from_parts(1, 1);
+        let ordinary = DrawResourceKey {
+            mesh: DrawMeshKey::VoxelPage(page),
+            ..generic
+        };
+        assert_ne!(generic, other);
+        assert_ne!(generic, moved);
+        assert_ne!(generic, ordinary);
+        let active = HashSet::from([MeshId(1)]);
+        let textures = HashSet::from([TextureAssetId(9)]);
+        assert!(generic.uses_active_assets(&active, &HashSet::new(), &textures));
+        assert!(!other.uses_active_assets(&active, &HashSet::new(), &textures));
+    }
+
+    #[test]
     fn shared_mesh_uses_separate_voxel_and_regular_cache_keys() {
         let mesh = Arc::new(Mesh::cube());
         let mut unlit = Material::new();
