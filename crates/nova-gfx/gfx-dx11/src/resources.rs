@@ -1,7 +1,7 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
 use std::cell::RefCell;
-use windows::Win32::Graphics::Direct3D::{D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D};
+use windows::Win32::Graphics::Direct3D::{D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2DARRAY};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
 mod buffer_upload;
@@ -36,13 +36,7 @@ pub(crate) struct Texture {
 }
 impl Texture {
     pub(crate) fn bytes(&self) -> u64 {
-        (0..self.desc.mip_level_count)
-            .map(|level| {
-                u64::from((self.desc.size.width() >> level).max(1))
-                    * u64::from((self.desc.size.height() >> level).max(1))
-                    * u64::from(self.desc.format.bytes_per_pixel())
-            })
-            .sum()
+        self.desc.byte_size()
     }
 }
 pub(crate) struct View {
@@ -86,7 +80,9 @@ impl ResourceDevice for Dx11Device {
         TextureArrayCapabilities {
             max_dimension_2d: 16_384,
             max_array_layers: 2_048,
-            ..Default::default()
+            array_resources: true,
+            layer_uploads: true,
+            indexed_sampling: false,
         }
     }
 
@@ -288,6 +284,12 @@ impl ResourceDevice for Dx11Device {
                 "use read_texture for D3D11 readback".into(),
             ));
         }
+        if let TextureDimension::D2Array { layers } = desc.dimension {
+            self.texture_array_capabilities().plan(
+                desc.size.width(), desc.size.height(), layers,
+                desc.mip_level_count, desc.format,
+            )?;
+        }
         let mut bind = 0;
         if desc.usage.contains(TextureUsage::SAMPLED) {
             bind |= D3D11_BIND_SHADER_RESOURCE.0 as u32;
@@ -306,7 +308,7 @@ impl ResourceDevice for Dx11Device {
                     Width: desc.size.width(),
                     Height: desc.size.height(),
                     MipLevels: desc.mip_level_count,
-                    ArraySize: 1,
+                    ArraySize: desc.dimension.layers(),
                     Format: if desc.format == Format::Depth32Float
                         && desc.usage.contains(TextureUsage::SAMPLED)
                     {
@@ -334,6 +336,9 @@ impl ResourceDevice for Dx11Device {
     }
     fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
         let texture = self.textures.get(desc.texture)?;
+        if texture.desc.dimension != TextureDimension::D2 {
+            return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+        }
         desc.validate_against(&texture.desc, data.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST) {
             return Err(Error::InvalidInput("texture lacks COPY_DST".into()));
@@ -359,6 +364,38 @@ impl ResourceDevice for Dx11Device {
         };
         Ok(())
     }
+    fn write_texture_array_layer(
+        &mut self,
+        desc: TextureArrayLayerWriteDescriptor,
+        data: &[u8],
+    ) -> Result<()> {
+        let texture = self.textures.get(desc.texture)?;
+        desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
+        let subresource = desc.subresource_index(texture.desc.mip_level_count)?;
+        let upload = desc.upload;
+        let region = D3D11_BOX {
+            left: upload.origin.x,
+            top: upload.origin.y,
+            right: upload.origin.x + upload.extent.width(),
+            bottom: upload.origin.y + upload.extent.height(),
+            front: 0,
+            back: 1,
+        };
+        // Native D3D11 subresources index mip + array_slice * mip_count.
+        // GPU command order preserves writes and subsequent sampled draws.
+        unsafe {
+            self.context.UpdateSubresource(
+                &texture.native,
+                subresource,
+                Some(&region),
+                data.as_ptr().add(upload.layout.offset as usize).cast(),
+                upload.layout.bytes_per_row.get(),
+                0,
+            )
+        };
+        Ok(())
+    }
+
     fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc)?;
@@ -386,12 +423,27 @@ impl ResourceDevice for Dx11Device {
                             } else {
                                 format(desc.format)
                             },
-                            ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
-                            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
-                                Texture2D: D3D11_TEX2D_SRV {
-                                    MostDetailedMip: desc.base_mip_level,
-                                    MipLevels: desc.mip_level_count,
-                                },
+                            ViewDimension: if texture.desc.dimension == TextureDimension::D2 {
+                                D3D_SRV_DIMENSION_TEXTURE2D
+                            } else {
+                                D3D_SRV_DIMENSION_TEXTURE2DARRAY
+                            },
+                            Anonymous: if let TextureDimension::D2Array { layers } = texture.desc.dimension {
+                                D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                                    Texture2DArray: D3D11_TEX2D_ARRAY_SRV {
+                                        MostDetailedMip: desc.base_mip_level,
+                                        MipLevels: desc.mip_level_count,
+                                        FirstArraySlice: 0,
+                                        ArraySize: layers,
+                                    },
+                                }
+                            } else {
+                                D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                                    Texture2D: D3D11_TEX2D_SRV {
+                                        MostDetailedMip: desc.base_mip_level,
+                                        MipLevels: desc.mip_level_count,
+                                    },
+                                }
                             },
                         }),
                         Some(&mut view.srv),
