@@ -1753,8 +1753,10 @@ impl SceneResources {
                     .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
             {
                 let (arena_pages, arena_capacity, arena_live, arena_dead) = self.arena.stats();
+                let (generated_pages, generated_capacity, generated_live, generated_dead) =
+                    self.generated_arena.stats();
                 eprintln!(
-                    "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} deferred_prune={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={}",
+                    "gpui3d bindings batches={} reused={} positional_reused={} created={} cached={} deferred_prune={} elapsed_ms={:.2} arena_pages={} arena_capacity_bytes={} arena_live_bytes={} arena_dead_bytes={} generated_pages={} generated_capacity_bytes={} generated_live_bytes={} generated_dead_bytes={}",
                     self.batches.len(),
                     reused,
                     positional_reused,
@@ -1766,6 +1768,10 @@ impl SceneResources {
                     arena_capacity,
                     arena_live,
                     arena_dead,
+                    generated_pages,
+                    generated_capacity,
+                    generated_live,
+                    generated_dead,
                 );
                 self.last_binding_report = Some(now);
             }
