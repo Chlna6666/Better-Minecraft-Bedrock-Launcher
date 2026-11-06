@@ -10,6 +10,11 @@ pub(super) struct PageRefs {
     /// Resident CPU-packed procedural quad meshes requiring native instance
     /// grouping. Generated Meshes are already independent indirect draws.
     ungenerated_quads: usize,
+    /// Covers both compact and ordinary meshes: only when every resident
+    /// resource is GPU-generated can every singleton indirect batch use the
+    /// constant [generated=1, instances=1, first_instance=index] ABI.
+    generated_meshes: usize,
+    ordinary_meshes: usize,
 }
 
 impl PageRefs {
@@ -22,6 +27,11 @@ impl PageRefs {
     }
 
     pub(super) fn insert(&mut self, mesh: &MeshResources, compact: bool) {
+        if mesh.generated.is_some() {
+            self.generated_meshes += 1;
+        } else {
+            self.ordinary_meshes += 1;
+        }
         if mesh.procedural_quads && mesh.generated.is_none() {
             self.ungenerated_quads += 1;
         }
@@ -31,6 +41,13 @@ impl PageRefs {
     }
 
     pub(super) fn remove(&mut self, mesh: &MeshResources, compact: bool) {
+        if mesh.generated.is_some() {
+            debug_assert!(self.generated_meshes > 0);
+            self.generated_meshes -= 1;
+        } else {
+            debug_assert!(self.ordinary_meshes > 0);
+            self.ordinary_meshes -= 1;
+        }
         if mesh.procedural_quads && mesh.generated.is_none() {
             debug_assert!(self.ungenerated_quads > 0);
             self.ungenerated_quads -= 1;
@@ -58,6 +75,14 @@ impl PageRefs {
     pub(super) fn clear(&mut self) {
         self.users.clear();
         self.ungenerated_quads = 0;
+        self.generated_meshes = 0;
+        self.ordinary_meshes = 0;
+    }
+
+    /// All currently live GPU MeshResources are generated. This property
+    /// can be queried on every Section Delta without scanning the mesh map.
+    pub(super) fn only_generated_meshes(&self) -> bool {
+        self.generated_meshes > 0 && self.ordinary_meshes == 0
     }
 
     /// Read-only O(1) grouping decision, even for 100K+ resident Meshes.
@@ -161,6 +186,37 @@ mod tests {
         assert!(refs.has_non_generated_quads());
         refs.clear();
         assert!(!refs.has_non_generated_quads());
+    }
+
+    #[test]
+    fn conservative_generated_only_proof_falls_back_on_any_other_mesh() {
+        let mut refs = PageRefs::default();
+        assert!(!refs.only_generated_meshes());
+        let mut generated = mesh(8);
+        generated.generated = Some(super::super::generated::GeneratedMesh {
+            templates: BufferId::from_parts(9, 1),
+            arguments: BufferId::from_parts(10, 1),
+            face_count: 0,
+            source_face_count: 0,
+            dispatch_count: 0,
+            template_allocation: None,
+            template_base: 0,
+            template_offset: 0,
+            template_page_bytes: 0,
+            argument_allocation: None,
+            argument_base: 0,
+            argument_offset: 0,
+            argument_page_bytes: 0,
+        });
+        refs.insert(&generated, true);
+        assert!(refs.only_generated_meshes());
+        let plain = mesh(11);
+        refs.insert(&plain, false);
+        assert!(!refs.only_generated_meshes());
+        refs.remove(&plain, false);
+        assert!(refs.only_generated_meshes());
+        refs.remove(&generated, true);
+        assert!(!refs.only_generated_meshes());
     }
 
     #[test]
