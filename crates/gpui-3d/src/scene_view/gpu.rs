@@ -138,14 +138,15 @@ pub(super) struct MeshArena {
     // GPU-generated face pages require writable storage. Keep them isolated
     // from the immutable CPU-packed voxel vertex/index pages.
     generated_output: bool,
+    generated_limits: gfx_core::BufferBindingLimits,
     pages: Vec<Option<ArenaPage>>,
     available_pages: BTreeSet<(u64, usize)>,
     free_pages: Vec<usize>,
 }
 
 impl MeshArena {
-    pub(super) fn generated_output() -> Self {
-        Self { generated_output: true, ..Self::default() }
+    pub(super) fn generated_output(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self { generated_output: true, generated_limits: limits, ..Self::default() }
     }
 
     pub(super) fn allocate(
@@ -154,17 +155,30 @@ impl MeshArena {
         backend: BackendKind,
         bytes: u64,
     ) -> gpui::Result<(ArenaAllocation, BufferId, u64, u64)> {
-        // Generated output is bound as a writable storage range during
-        // meshing. Vulkan storage-buffer dynamic offsets can require 256-byte
-        // alignment; D3D11/D3D12 raw UAV offsets accept this alignment too.
-        // Vertex shader addresses still use 16-byte GeneratedFace units.
-        let stride = if self.generated_output { 256 } else { u64::from(VOXEL_VERTEX_STRIDE) };
-        let aligned = bytes
-            .max(1)
+        // Match the actual device's storage-buffer binding offset alignment,
+        // while also maintaining the shader's 16-byte GeneratedFace addressing.
+        // No backend name or assumed 256-byte limit is involved in this plan.
+        let stride = if self.generated_output {
+            let storage = self.generated_limits.storage_offset_alignment;
+            if storage == 0 {
+                return Err(anyhow!("generated voxel device did not report storage limits").into());
+            }
+            let (mut a, mut b) = (storage, 16u64);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            storage.checked_div(a).and_then(|v| v.checked_mul(16))
+                .ok_or_else(|| anyhow!("generated face alignment overflow"))?
+        } else {
+            u64::from(VOXEL_VERTEX_STRIDE)
+        };
+        let aligned = bytes.max(1)
             .checked_add(stride - 1)
             .ok_or_else(|| anyhow!("voxel mesh exceeds arena address range"))?
-            / stride
-            * stride;
+            / stride * stride;
+        if self.generated_output {
+            self.generated_limits.validate_range(0, aligned, false)?;
+        }
         if let Some(reserved) = self.reserve_page(aligned)? {
             return Ok(reserved);
         }
@@ -173,6 +187,16 @@ impl MeshArena {
                 .checked_next_power_of_two()
                 .ok_or_else(|| anyhow!("voxel arena page size overflow"))?,
         );
+        // The 8 MiB page is an allocation-policy target, not a GPU limit.
+        // Cap generated pages to the device's reported maximum storage range.
+        let capacity = if self.generated_output {
+            capacity.min(self.generated_limits.max_storage_binding_bytes)
+        } else {
+            capacity
+        };
+        if capacity < aligned {
+            return Err(anyhow!("generated face exceeds device storage range").into());
+        }
         let memory_location = buffer_memory_location(backend);
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some(if self.generated_output {
