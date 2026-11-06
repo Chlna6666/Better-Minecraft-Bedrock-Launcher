@@ -52,6 +52,36 @@ impl PreparedScene {
         for (_, _, id) in &groups {
             inserted.remove(id);
         }
+        // Editor transforms and resource changes normally preserve the
+        // number of mesh parts for each affected root. In this case every
+        // surviving candidate retains its position; update only those
+        // slices instead of moving the entire scene through a scratch Vec.
+        // Use the partial walk's exact group bounds (not a union of part
+        // bounds), so the result matches a complete scene traversal.
+        if inserted.is_empty()
+            && groups.iter().all(|(_, range, id)| {
+                replacements.get(id).is_some_and(|draws| draws.len() == range.len())
+                    && partial.candidate_group_index.contains_key(id)
+            })
+        {
+            self.changed_asset_draws.clear();
+            self.changed_asset_draws.extend(partial.candidates);
+            for (index, range, id) in groups {
+                let new_group = &partial.candidate_groups[partial.candidate_group_index[&id]];
+                let mut group = new_group.clone();
+                group.start = range.start;
+                group.end = range.end;
+                self.candidate_groups[index] = group;
+                let replacement = replacements.remove(&id)
+                    .expect("equal-length group must retain its replacement");
+                self.candidates[range].clone_from_slice(&replacement);
+            }
+            self.occluders.retain(|id, _| !changed.contains(id));
+            self.occluders.extend(partial.occluders);
+            self.visible_candidates.clear();
+            self.gpu_candidates_dirty = true;
+            return Some(changed.len());
+        }
         // New roots are visited first by the full walker. Existing roots without
         // candidates (e.g. a hidden node becoming visible) can require a full walk.
         let mut prefix = Vec::new();
@@ -156,6 +186,53 @@ fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGrou
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn unchanged_part_count_updates_only_affected_candidate_storage() {
+        let camera = Camera::perspective(
+            Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        let ids = (0..256)
+            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .collect::<Vec<_>>();
+        let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
+        let before = prepared.candidates.as_ptr();
+        let unaffected = prepared.candidates[17].clone();
+        let mut edited = scene.fork();
+        edited.node_mut(ids[88]).unwrap().transform.translation.x = 3.5;
+        let changed = edited.changed_nodes(&scene).unwrap();
+        assert_eq!(
+            prepared.update_nodes(&edited, changed.as_ref(), Mat4::IDENTITY),
+            Some(1)
+        );
+        assert_eq!(
+            prepared.candidates.as_ptr(), before,
+            "same-size Section Delta must reuse the existing candidate storage"
+        );
+        assert_eq!(prepared.candidates[17].node, unaffected.node);
+        assert_eq!(prepared.candidates[17].world, unaffected.world);
+        assert_eq!(prepared.candidate_group_index.len(), prepared.candidate_groups.len());
+        prepared.update_camera(camera, 1.).unwrap();
+        let full = PreparedScene::new(&edited, camera, 1.).unwrap();
+        assert_eq!(
+            prepared.candidate_groups.iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>(),
+            full.candidate_groups.iter()
+                .map(|group| (group.start, group.end, group.bounds))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            prepared.draws.iter()
+                .map(|draw| (draw.node, draw.world))
+                .collect::<Vec<_>>(),
+            full.draws.iter()
+                .map(|draw| (draw.node, draw.world))
+                .collect::<Vec<_>>(),
+        );
+    }
 
     #[test]
     fn many_changed_sections_match_a_full_walk_without_repeated_splicing() {
