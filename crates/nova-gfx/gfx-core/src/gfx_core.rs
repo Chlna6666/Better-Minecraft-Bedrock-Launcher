@@ -1994,6 +1994,11 @@ impl TextureWriteDescriptor {
     /// texture bounds, or the source layout cannot cover the requested rows.
     pub fn validate_against(&self, texture: &TextureDescriptor, data_len: usize) -> Result<()> {
         texture.validate()?;
+        if texture.dimension != TextureDimension::D2 {
+            return Err(Error::InvalidInput(
+                "use TextureArrayLayerWriteDescriptor for array-layer writes".into(),
+            ));
+        }
         let mip_extent = texture.mip_extent(self.mip_level)?;
         let end_x = self
             .origin
