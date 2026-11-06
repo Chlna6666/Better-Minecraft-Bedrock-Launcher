@@ -63,7 +63,7 @@ impl State {
 
 impl OpenGlDevice {
     pub(crate) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
-        dispatch.validate(self.compute.capabilities)?;
+        dispatch.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
         self.park()?;
         let shader = self.shaders.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute || !shader.reflection.textures.is_empty() {
