@@ -122,6 +122,25 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_generated_materials_keep_finer_section_culling() {
+        // Two material parts remain two even after fusion. Keeping the
+        // per-Section GPU culling and draw resources costs less in this case.
+        let left = generated_chunk(0, Arc::new(gpui_3d::Material::new()));
+        let right = generated_chunk(1, Arc::new(gpui_3d::Material::new()));
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(
+            None,
+            &BTreeMap::from([((left.pos, 0), left), ((right.pos, 0), right)]),
+            None,
+            [0; 3],
+        ).unwrap();
+        assert!(registry.fused.is_empty());
+        assert!(registry.nodes.values().all(|(id, _)| {
+            scene.node(*id).unwrap().mesh.is_some()
+        }));
+    }
+
+    #[test]
     fn blended_gpu_section_is_never_fused_across_transparency_order() {
         let plain = Arc::new(gpui_3d::Material::new());
         let mut blend = gpui_3d::Material::new();
