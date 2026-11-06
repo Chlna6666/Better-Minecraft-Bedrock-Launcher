@@ -865,10 +865,21 @@ impl SceneResources {
         // A shading-only frame update changes uniforms but never the CPU
         // command inclusion mask. Avoid checking every resident Draw batch
         // unless the draw layout or visibility volume actually changes.
-        let command_visibility_changed = if draw_list_changed
-            || visibility_changed
-            || culling_bounds_changed
+        let command_visibility_changed = if reused_resident_slots
+            && !visibility_changed
+            && !culling_bounds_changed
         {
+            // The culling system has validated unchanged physical/layout
+            // identities. Recheck CPU-native inclusion only for the handful
+            // of dirty singleton draws; avoid a second whole-scene frustum
+            // pass for an ordinary fixed-camera Section update.
+            let dirty = self.prepared.resident_delta_draws()
+                .map(|indices| indices.to_vec());
+            dirty
+                .as_deref()
+                .and_then(|indices| self.refresh_dirty_command_visibility(indices))
+                .unwrap_or_else(|| self.refresh_command_visibility())
+        } else if draw_list_changed || visibility_changed || culling_bounds_changed {
             self.refresh_command_visibility()
         } else {
             false
@@ -932,6 +943,29 @@ impl SceneResources {
                         visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw)
                     })
             }),
+        )
+    }
+
+    /// O(changed Section draws) CPU-native command visibility update.
+    /// Full-camera movement and any unsupported batch arrangement retain the
+    /// original full mask builder.
+    fn refresh_dirty_command_visibility(&mut self, dirty: &[usize]) -> Option<bool> {
+        if self.culling.is_none() || self.command_visibility.len() != self.batches.len() {
+            return None;
+        }
+        let prepared = &self.prepared;
+        let visible = prepared.bounds_visibility();
+        update_dirty_command_visibility(
+            &mut self.command_visibility,
+            dirty,
+            |index| {
+                let batch = self.batches.get(index)?;
+                if batch.instance_count != 1 || batch.first_instance != index {
+                    return None;
+                }
+                let draw = prepared.draws.get(index)?;
+                Some(visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw))
+            },
         )
     }
 
@@ -3117,6 +3151,29 @@ fn update_prepared(
 
 /// Update a retained native-command inclusion mask without per-frame allocation.
 /// A camera movement that leaves the mask unchanged can reuse the previous commands.
+/// Update a subset of a previously committed visibility mask without
+/// enumerating every native Batch. Resolve all changes before mutating it,
+/// so invalid indices cannot leave a partially updated mask.
+fn update_dirty_command_visibility(
+    previous: &mut [bool],
+    dirty: &[usize],
+    value_at: impl Fn(usize) -> Option<bool>,
+) -> Option<bool> {
+    let mut patches = Vec::with_capacity(dirty.len());
+    for &index in dirty {
+        let old = *previous.get(index)?;
+        patches.push((index, old, value_at(index)?));
+    }
+    let mut changed = false;
+    for (index, old, new) in patches {
+        if old != new {
+            previous[index] = new;
+            changed = true;
+        }
+    }
+    Some(changed)
+}
+
 fn update_command_visibility(
     previous: &mut Vec<bool>,
     current: impl IntoIterator<Item = bool>,
@@ -3180,7 +3237,33 @@ mod sparse_upload_budget_tests {
 
 #[cfg(test)]
 mod command_visibility_tests {
-    use super::update_command_visibility;
+    use super::{update_command_visibility, update_dirty_command_visibility};
+
+    #[test]
+    fn dirty_section_visibility_changes_only_the_targeted_batches() {
+        let mut mask = vec![true; 65_536];
+        let changed = update_dirty_command_visibility(
+            &mut mask, &[15, 63_992], |index| Some(index != 15),
+        );
+        assert_eq!(changed, Some(true));
+        assert!(!mask[15]);
+        assert!(mask[63_992]);
+        assert!(mask[16]);
+        assert_eq!(
+            update_dirty_command_visibility(&mut mask, &[15], |_| Some(false)),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn invalid_dirty_indices_do_not_commit_a_partial_mask() {
+        let mut mask = vec![true; 8];
+        assert_eq!(
+            update_dirty_command_visibility(&mut mask, &[1, 99], |_| Some(false)),
+            None
+        );
+        assert_eq!(mask, vec![true; 8]);
+    }
 
     #[test]
     fn camera_motion_reuses_commands_until_batch_visibility_changes() {
