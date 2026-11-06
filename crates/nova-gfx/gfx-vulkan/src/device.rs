@@ -3630,6 +3630,46 @@ impl ResourceDevice for VulkanDevice {
         Self::write_texture(self, desc, data)
     }
 
+    fn write_texture_array_layer(
+        &mut self,
+        desc: gfx_core::TextureArrayLayerWriteDescriptor,
+        data: &[u8],
+    ) -> Result<()> {
+        let (image, old_layout, mip_level_count, format) = {
+            let texture = self.textures.get(desc.texture)?;
+            desc.validate_against(
+                &texture.desc, self.texture_array_capabilities(), data.len(),
+            )?;
+            (texture.image, texture.layout, texture.desc.mip_level_count, texture.desc.format)
+        };
+        let slice = desc.upload;
+        let staging_descriptor = TextureWriteDescriptor {
+            texture: desc.texture,
+            mip_level: slice.mip_level,
+            layout: slice.layout,
+            origin: slice.origin,
+            size: slice.extent,
+        };
+        validate_texture_staging_layout(staging_descriptor, format)?;
+        let allocation = self.write_upload_data(data)?;
+        let staging_buffer = self.upload_page_buffer(allocation.page_index)?;
+        let layout = texture_staging_layout(allocation, staging_descriptor)?;
+        self.copy_buffers_to_textures(&[VulkanTextureUpload {
+            texture: desc.texture,
+            source: staging_buffer,
+            image,
+            old_layout,
+            mip_level_count,
+            layout,
+            mip_level: slice.mip_level,
+            layer: slice.layer,
+            origin: slice.origin,
+            size: slice.extent,
+        }])?;
+        self.textures.get_mut(desc.texture)?.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        Ok(())
+    }
+
     fn write_texture_batch<'a>(
         &mut self,
         writes: impl IntoIterator<Item = TextureWrite<'a>>,
@@ -6975,6 +7015,7 @@ mod tests {
             mip_level_count: 2,
             layout: TextureDataLayout::new(0, 7, 5).unwrap(),
             mip_level: 0,
+            layer: 0,
             origin: gfx_core::Origin2d::ZERO,
             size: gfx_core::Extent2d::new(7, 5).unwrap(),
         };
