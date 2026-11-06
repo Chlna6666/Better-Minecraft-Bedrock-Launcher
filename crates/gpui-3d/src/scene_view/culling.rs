@@ -249,6 +249,9 @@ pub(super) struct CullResources {
     /// for every entry. A middle Section insertion/removal changes only
     /// its length; all preexisting logical descriptors remain byte-identical.
     generated_singleton_canonical: bool,
+    /// True only when the last successful update committed a validated
+    /// Section splice rather than re-planning all resident Draw slots.
+    structural_slots_committed: bool,
     // Persistent per-Section draw addresses. Bounds stay at physical slots,
     // while this compact logical->physical map follows batch ordering.
     resident_slots: StableDrawSlots,
@@ -263,6 +266,10 @@ impl CullResources {
     /// The culler has already planned and uploaded the stable Section address
     /// table. Reuse that same physical layout for DrawParams/Instances instead
     /// of hashing every Draw identity a second time in SceneResources.
+    pub(super) fn structural_slots_committed(&self) -> bool {
+        self.structural_slots_committed
+    }
+
     pub(super) fn committed_slot_layout(&self) -> (usize, &[u32]) {
         // Only the culler writes this resident snapshot. SceneResource's
         // encode pass borrows it and never needs a second full u32 Vec clone.
@@ -328,6 +335,7 @@ impl CullResources {
             batch_keys: Vec::new(),
             scratch_batch_keys: Vec::new(),
             generated_singleton_canonical: false,
+            structural_slots_committed: false,
             resident_slots: StableDrawSlots::default(),
             uploaded_slot_map: Vec::new(),
             instance_capacity,
@@ -417,6 +425,7 @@ impl CullResources {
             return Ok(false);
         };
         if patches.is_empty() {
+            self.structural_slots_committed = false;
             return Ok(true);
         }
         let writes = patches.iter().map(|(slot, _, bytes)| gfx_core::BufferWrite {
@@ -433,6 +442,7 @@ impl CullResources {
         for (slot, key, _) in patches {
             self.bounds_keys[slot] = Some(key);
         }
+        self.structural_slots_committed = false;
         Ok(true)
     }
 
@@ -620,6 +630,7 @@ impl CullResources {
             );
         }
         self.uploaded_slot_map = logical_to_physical;
+        self.structural_slots_committed = structural_plan.is_some();
         if let Some(plan) = structural_plan {
             let high_water = plan.high_water;
             plan.commit(&mut self.resident_slots);
