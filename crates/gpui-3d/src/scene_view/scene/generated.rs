@@ -19,6 +19,9 @@ struct Update {
     input: BufferId,
     entries: Vec<u32>,
     patches: Vec<MappingPatch>,
+    /// Aligned read-only mapping windows; only these records are recomputed
+    /// into the resident GPU indirect argument table.
+    dispatch_ranges: Vec<MappingDispatchRange>,
 }
 
 /// One record-aligned dirty region in a persistent generated-draw mapping.
@@ -26,6 +29,106 @@ struct Update {
 struct MappingPatch {
     offset: u64,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MappingDispatchRange {
+    offset: u64,
+    size: u64,
+}
+
+/// Bind only the dirty portion of the resident mapping to the compute shader.
+/// All four backends report their actual storage-buffer binding alignment; a
+/// shader invocation starts at index 0 of the bound view, and map.y remains
+/// the absolute output Draw index. Pages bigger than a single storage binding
+/// are split into legal windows, including when the output buffer is rebuilt.
+fn mapping_dispatch_ranges(
+    patches: &[MappingPatch],
+    mapping_bytes: usize,
+    force_full: bool,
+    limits: gfx_core::BufferBindingLimits,
+) -> gpui::Result<Vec<MappingDispatchRange>> {
+    if mapping_bytes == 0 || (!force_full && patches.is_empty()) {
+        return Ok(Vec::new());
+    }
+    if !mapping_bytes.is_multiple_of(16)
+        || limits.storage_offset_alignment == 0
+        || limits.max_storage_binding_bytes == 0
+    {
+        return Err(anyhow!("generated mapping storage limits or record alignment are invalid").into());
+    }
+    let align = limits.storage_offset_alignment;
+    let mut a = align;
+    let mut b = 16u64;
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let offset_alignment = align.checked_div(a)
+        .and_then(|value| value.checked_mul(16))
+        .ok_or_else(|| anyhow!("generated mapping offset alignment overflow"))?;
+    // A new binding must begin at a device-aligned, 16-byte record boundary.
+    let max_window = limits.max_storage_binding_bytes
+        / offset_alignment * offset_alignment;
+    if max_window == 0 {
+        return Err(anyhow!("generated mapping cannot bind a complete aligned record window").into());
+    }
+    let total = u64::try_from(mapping_bytes)
+        .context("generated mapping byte length exceeds address range")?;
+    let mut windows = Vec::<MappingDispatchRange>::new();
+    let full = force_full || patches.len() > 16;
+    if full {
+        let mut start = 0u64;
+        while start < total {
+            let end = total.min(start + max_window);
+            windows.push(MappingDispatchRange { offset: start, size: end - start });
+            start = end;
+        }
+        return Ok(windows);
+    }
+    // Compute each sparse region at the nearest valid binding offset. A few
+    // unchanged prefix records in the same alignment unit may be recomputed,
+    // but no read crosses outside the live mapping.
+    for patch in patches {
+        let end = patch.offset.checked_add(patch.bytes.len() as u64)
+            .ok_or_else(|| anyhow!("generated mapping dirty range overflow"))?;
+        if end > total || !patch.offset.is_multiple_of(16) || !end.is_multiple_of(16) {
+            return Err(anyhow!("generated mapping dirty range is not record aligned").into());
+        }
+        let mut start = patch.offset / offset_alignment * offset_alignment;
+        while start < end {
+            let stop = end.min(start + max_window);
+            windows.push(MappingDispatchRange { offset: start, size: stop - start });
+            start = stop;
+        }
+    }
+    windows.sort_unstable_by_key(|range| range.offset);
+    let mut merged = Vec::<MappingDispatchRange>::with_capacity(windows.len());
+    for range in windows {
+        if let Some(last) = merged.last_mut() {
+            let end = last.offset + last.size;
+            let other_end = range.offset + range.size;
+            if range.offset <= end
+                && other_end.max(end) - last.offset <= max_window
+            {
+                last.size = other_end.max(end) - last.offset;
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+    // Dispatch setup and descriptor creation can cost more than useful GPU
+    // work for highly fragmented deltas; fall back to a legal full sweep.
+    let covered = merged.iter().map(|range| range.size).sum::<u64>();
+    if merged.len() > 12 || covered.saturating_mul(2) >= total {
+        merged.clear();
+        let mut start = 0u64;
+        while start < total {
+            let end = total.min(start + max_window);
+            merged.push(MappingDispatchRange { offset: start, size: end - start });
+            start = end;
+        }
+    }
+    Ok(merged)
 }
 
 /// Build bounded, record-aligned uploads without materializing the entire
@@ -129,6 +232,7 @@ impl SceneResources {
             .generated_arguments
             .ok_or_else(|| anyhow!("missing generated draw output"))?;
         let mut updates = Vec::new();
+        let binding_limits = device.buffer_binding_limits();
         for (source, (source_size, entries)) in groups {
             if self
                 .generated_mappings
@@ -176,12 +280,26 @@ impl SceneResources {
                 &self.generated_mappings[&source].entries,
                 &entries,
             );
+            let output_changed = self.generated_mappings[&source].output != Some(output);
+            // Removing a suffix leaves every surviving GPU argument intact.
+            // Commit the shorter mapping without uploading or dispatching it.
+            if patches.is_empty() && !output_changed {
+                let mapping = self.generated_mappings.get_mut(&source)
+                    .ok_or_else(|| anyhow!("generated mapping disappeared"))?;
+                let old_entries = std::mem::replace(&mut mapping.entries, entries);
+                mapping.scratch_entries = old_entries;
+                continue;
+            }
+            let dispatch_ranges = mapping_dispatch_ranges(
+                &patches, entries.len() * 4, output_changed, binding_limits,
+            )?;
             updates.push(Update {
                 source,
                 source_size,
                 input,
                 entries,
                 patches,
+                dispatch_ranges,
             });
         }
         if updates.is_empty() {
@@ -202,55 +320,55 @@ impl SceneResources {
         if !writes.is_empty() {
             device.write_buffer_batch(&writes)?;
         }
-        let bindings = updates
-            .iter()
-            .map(|update| {
-                [
-                    (
-                        update.source,
-                        update.source_size,
-                        ComputeBufferAccess::ReadOnly,
-                    ),
-                    (
-                        update.input,
-                        update.entries.len() * 4,
-                        ComputeBufferAccess::ReadOnly,
-                    ),
-                    (output, capacity * 16, ComputeBufferAccess::ReadWrite),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(slot, (buffer, size, access))| ComputeBufferBinding {
-                    binding: slot as u32,
-                    buffer: BufferBinding {
-                        buffer,
-                        offset: 0,
-                        size: size as u64,
-                        stride: None,
-                    },
-                    access,
-                })
-                .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
         let shader = self
             .mesh_draw_shader
             .ok_or_else(|| anyhow!("missing generated draw shader"))?;
         let compute_caps = device.compute_capabilities();
-        let dispatches = updates
-            .iter()
-            .zip(&bindings)
-            .map(|(update, bindings)| {
-                let count = u32::try_from(update.entries.len().div_ceil(4 * 64))
-                    .context("generated draw dispatch overflow")?;
-                let grid = compute_caps.plan_linear_dispatch_2d(count)?;
-                Ok(ComputeDispatch {
-                    shader,
-                    bindings,
-                    workgroups: grid,
-                })
+        let total_dispatches = updates.iter()
+            .map(|update| update.dispatch_ranges.len())
+            .sum::<usize>();
+        let mut bindings = Vec::<Vec<ComputeBufferBinding>>::with_capacity(total_dispatches);
+        let mut grids = Vec::with_capacity(total_dispatches);
+        for update in &updates {
+            for range in &update.dispatch_ranges {
+                // Rebind only the aligned dirty mapping window. The compute
+                // shader's arrayLength() and index are relative to this view,
+                // while map.y targets the unchanged absolute output draw slot.
+                let resources = [
+                    (update.source, 0u64, update.source_size as u64,
+                     ComputeBufferAccess::ReadOnly),
+                    (update.input, range.offset, range.size,
+                     ComputeBufferAccess::ReadOnly),
+                    (output, 0u64, capacity as u64 * 16,
+                     ComputeBufferAccess::ReadWrite),
+                ];
+                let mut group = Vec::with_capacity(resources.len());
+                for (slot, (buffer, offset, size, access)) in resources.into_iter().enumerate() {
+                    binding_limits.validate_range(offset, size, false)?;
+                    group.push(ComputeBufferBinding {
+                        binding: slot as u32,
+                        buffer: BufferBinding {
+                            buffer,
+                            offset,
+                            size,
+                            stride: None,
+                        },
+                        access,
+                    });
+                }
+                let threads = u32::try_from(range.size.div_ceil(16 * 64))
+                    .context("generated draw dirty dispatch overflow")?;
+                grids.push(compute_caps.plan_linear_dispatch_2d(threads)?);
+                bindings.push(group);
+            }
+        }
+        let dispatches = bindings.iter().zip(&grids)
+            .map(|(bindings, &workgroups)| ComputeDispatch {
+                shader,
+                bindings,
+                workgroups,
             })
-            .collect::<gpui::Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         device.dispatch_compute_batch(&dispatches)?;
         for update in updates {
             let mapping = self
@@ -434,7 +552,80 @@ mod tests {
 
 #[cfg(test)]
 mod mapping_patch_tests {
-    use super::mapping_patches;
+    use super::{mapping_patches, mapping_dispatch_ranges, MappingDispatchRange};
+    use gfx_core::BufferBindingLimits;
+
+    fn limits(alignment: u64, maximum: u64) -> BufferBindingLimits {
+        BufferBindingLimits {
+            storage_offset_alignment: alignment,
+            max_storage_binding_bytes: maximum,
+            ..BufferBindingLimits::default()
+        }
+    }
+
+    fn dirty(offset: u64) -> super::MappingPatch {
+        super::MappingPatch { offset, bytes: vec![0; 16] }
+    }
+
+    #[test]
+    fn sparse_generated_mapping_only_dispatches_device_aligned_dirty_views() {
+        let regions = mapping_dispatch_ranges(
+            &[dirty(32), dirty(64_016)], 524_288, false, limits(256, 1 << 20),
+        ).unwrap();
+        assert_eq!(regions, [
+            MappingDispatchRange { offset: 0, size: 48 },
+            MappingDispatchRange { offset: 64_000, size: 32 },
+        ]);
+        assert!(regions.iter().map(|r| r.size).sum::<u64>() < 256);
+    }
+
+    #[test]
+    fn output_replacement_dispatches_all_records_even_if_mapping_unchanged() {
+        let regions = mapping_dispatch_ranges(
+            &[], 65_536, true, limits(256, 1 << 20),
+        ).unwrap();
+        assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 65_536 }]);
+        assert!(mapping_dispatch_ranges(&[], 65_536, false, limits(256, 1 << 20))
+            .unwrap().is_empty());
+    }
+
+    #[test]
+    fn fragmented_changes_fall_back_to_full_compute() {
+        let patches = (0..24u64).map(|x| dirty(x * 4096)).collect::<Vec<_>>();
+        let regions = mapping_dispatch_ranges(
+            &patches, 131_072, false, limits(256, 1 << 20),
+        ).unwrap();
+        assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 131_072 }]);
+    }
+
+    #[test]
+    fn device_storage_binding_limit_splits_full_gpu_mapping() {
+        let regions = mapping_dispatch_ranges(
+            &[], 16_384, true, limits(256, 4096),
+        ).unwrap();
+        assert_eq!(regions, (0..4u64).map(|index|
+            MappingDispatchRange { offset: index * 4096, size: 4096 }
+        ).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn changes_at_both_ends_cover_exact_dirty_draws() {
+        let original = (0..16_384u32).collect::<Vec<_>>();
+        let mut changed = original.clone();
+        changed[4] ^= 42;
+        changed[16_360] ^= 17;
+        let patches = mapping_patches(&original, &changed);
+        let regions = mapping_dispatch_ranges(
+            &patches, changed.len() * 4, false, limits(256, 1 << 20),
+        ).unwrap();
+        let covers = |byte: u64| regions.iter().any(|range|
+            byte >= range.offset && byte + 16 <= range.offset + range.size
+        );
+        assert!(covers(16));
+        assert!(covers(65_440));
+        assert!(regions.iter().map(|range| range.size).sum::<u64>()
+            < changed.len() as u64 * 4 / 2);
+    }
 
     fn materialize(previous: &[u32], next: &[u32]) -> (Vec<u32>, usize) {
         let patches = mapping_patches(previous, next);
