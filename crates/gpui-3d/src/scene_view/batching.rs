@@ -48,6 +48,14 @@ pub(super) struct BatchWorkspace {
     singleton_layout: bool,
 }
 
+impl BatchWorkspace {
+    /// True only when every currently published native batch is the
+    /// canonical singleton {first_instance: logical_index, count: 1}.
+    pub(super) fn singleton_layout(&self) -> bool {
+        self.singleton_layout
+    }
+}
+
 #[cfg(test)]
 pub(super) fn group_voxel_batches(
     draws: &mut [PreparedDraw],
