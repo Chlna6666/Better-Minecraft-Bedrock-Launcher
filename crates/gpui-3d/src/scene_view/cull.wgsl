@@ -9,7 +9,14 @@ struct Bounds {
 struct Arguments { vertex_count: atomic<u32>, instance_count: atomic<u32>, first_vertex: u32, first_instance: u32 };
 struct Frame { view_projection: mat4x4<f32> };
 // minimum.w = 1 when Hi-Z has resident occluders, 0 when it is empty.
-struct CullRange { minimum: vec4<f32>, maximum: vec4<f32> };
+// dispatch.x: active batch count; dispatch.y: starting batch of the
+// contiguous singleton tail. The first dispatch handles [0,y), the second
+// dispatch packs [y,x) into workgroups of 64 without copying any Draw records.
+struct CullRange {
+    minimum: vec4<f32>,
+    maximum: vec4<f32>,
+    dispatch: vec4<u32>,
+};
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> bounds: array<Bounds>;
 @group(0) @binding(2) var<storage, read_write> arguments: array<Arguments>;
@@ -147,8 +154,8 @@ fn cs_cull_singletons(
         );
     }
     workgroupBarrier();
-    let index = (group.x + group.y * grid.x) * 64u + lane;
-    if (index >= u32(range.maximum.w)) {
+    let index = range.dispatch.y + (group.x + group.y * grid.x) * 64u + lane;
+    if (index >= range.dispatch.x) {
         return;
     }
     let batch = batches[index];
