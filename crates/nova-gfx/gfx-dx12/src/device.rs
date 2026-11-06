@@ -4357,6 +4357,17 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
+            // Raw SRV/UAV views use u32 element indices of four-byte units.
+            // Native CBV offsets use 256-byte alignment and 64 KiB ranges.
+            gfx_core::BufferBindingLimits {
+                storage_offset_alignment: 4,
+                max_storage_binding_bytes: u64::from(u32::MAX) * 4,
+                uniform_offset_alignment: 256,
+                max_uniform_binding_bytes: 64 * 1024,
+            }
+        }
+
         fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
             compute::capabilities()
         }
