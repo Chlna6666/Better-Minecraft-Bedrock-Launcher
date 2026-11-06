@@ -971,29 +971,31 @@ impl SceneResources {
         // Culling retains its dense logical order; voxel DrawParams/Instance
         // live in persistent physical slots. The u32 mapping is the only
         // dense table that moves when an earlier Section is inserted.
-        let next_slots = if voxel_shader {
-            // Culling already owns the authoritative physical-slot identity
-            // map. Clone only its compact u32 mapping, never the full
-            // HashMap of Section draw identities for each streaming delta.
-            Some(match self.culling.as_ref().filter(|culling| {
+        // The culler already owns the authoritative logical->physical
+        // Section slot mapping. Borrow its resident snapshot directly:
+        // cloning a 100K+ u32 map on every scene delta just to re-encode its
+        // identical bytes wastes bandwidth and allocates on the GPU owner.
+        //
+        // A locally planned successor is necessary only when the culler is
+        // unavailable, and remains transactional until all GPU writes succeed.
+        let culling_layout = if voxel_shader {
+            self.culling.as_ref().filter(|culling| {
                 culling.counts().1 == self.prepared.draws.len()
-            }) {
-                Some(culling) => {
-                    let (high_water, mapping) = culling.committed_slot_layout();
-                    (high_water, mapping, None)
-                }
-                None => {
-                    let (slots, mapping) = self.stable_slots.plan(&self.prepared.draws)?;
-                    (slots.high_water(), mapping, Some(slots))
-                }
-            })
+            }).map(CullResources::committed_slot_layout)
         } else {
             None
         };
-        let physical_count = next_slots.as_ref().map_or(
-            self.prepared.draws.len(),
-            |(high_water, _, _)| *high_water,
-        ).max(1);
+        let next_slots = if voxel_shader && culling_layout.is_none() {
+            Some(self.stable_slots.plan(&self.prepared.draws)?)
+        } else {
+            None
+        };
+        let slot_layout = culling_layout.or_else(|| next_slots.as_ref().map(
+            |(slots, mapping)| (slots.high_water(), mapping.as_slice()),
+        ));
+        let physical_count = slot_layout
+            .map_or(self.prepared.draws.len(), |(high_water, _)| high_water)
+            .max(1);
         let draw_count = physical_count;
         let light_count = self.prepared.lights.len().max(1);
         let draw_headroom = dx11_streaming_headroom(self.backend, draw_count);
@@ -1017,7 +1019,7 @@ impl SceneResources {
         let mut next_draw_keys = std::mem::take(&mut self.scratch_draw_slot_keys);
         let mut next_instance_keys = std::mem::take(&mut self.scratch_instance_keys);
         let mut dirty_instance_run = std::mem::take(&mut self.dirty_instance_run);
-        let encoded_instance_rows = if let Some((high_water, mapping, _)) = next_slots.as_ref() {
+        let encoded_instance_rows = if let Some((high_water, mapping)) = slot_layout {
             // Encode material snapshots directly into physical GPU slots. No
             // intermediate dense logical 80-byte table and no second reorder
             // copy are needed for the common streaming Section update.
@@ -1025,7 +1027,7 @@ impl SceneResources {
                 &self.prepared.draws,
                 self.prepared.lights.len(),
                 mapping,
-                *high_water,
+                high_water,
                 &self.draw_slot_keys,
                 &self.uploaded_tables[0],
                 &mut next_draw_keys,
@@ -1034,7 +1036,7 @@ impl SceneResources {
             )?;
             self.encode_stable_instances(
                 mapping,
-                *high_water,
+                high_water,
                 &self.instance_slot_keys,
                 &self.uploaded_tables[1],
                 &mut next_instance_keys,
@@ -1061,7 +1063,7 @@ impl SceneResources {
         self.dirty_instance_run = dirty_instance_run;
         let mut slot_bytes = std::mem::take(&mut self.scratch_slot_map);
         slot_bytes.clear();
-        if let Some((_, mapping, _)) = next_slots.as_ref() {
+        if let Some((_, mapping)) = slot_layout {
             for &slot in mapping {
                 slot_bytes.extend_from_slice(&slot.to_le_bytes());
             }
@@ -1336,7 +1338,7 @@ impl SceneResources {
                     }),
             );
         self.sync_generated_draws(device, voxel_shader)?;
-        if let Some((_, _, Some(slots))) = next_slots {
+        if let Some((slots, _)) = next_slots {
             self.stable_slots = slots;
         } else if !voxel_shader {
             // The standard scene shader uses dense indexing directly. The
