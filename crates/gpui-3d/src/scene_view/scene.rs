@@ -152,6 +152,9 @@ struct DrawAddress {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DrawMeshKey {
     Mesh { id: MeshId, generation: u64 },
+    // Generated Sections share writable face pages, but their template and
+    // lighting bindings stay mesh-local. They MUST NOT key on the face page.
+    Generated { id: MeshId, generation: u64 },
     VoxelPage(BufferId),
 }
 
@@ -174,7 +177,9 @@ impl DrawResourceKey {
         textures: &HashSet<TextureAssetId>,
     ) -> bool {
         (match self.mesh {
-            DrawMeshKey::Mesh { id, .. } => meshes.contains(&id),
+            DrawMeshKey::Mesh { id, .. } | DrawMeshKey::Generated { id, .. } => {
+                meshes.contains(&id)
+            }
             DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
         }) && [
             self.albedo_id,
@@ -198,6 +203,11 @@ impl DrawResourceKey {
                 DrawMeshKey::Mesh { id, generation } => meshes
                     .get(&(id, false))
                     .is_some_and(|mesh| mesh.generation == generation),
+                DrawMeshKey::Generated { id, generation } => meshes
+                    .get(&(id, true))
+                    .is_some_and(|mesh| {
+                        mesh.generated.is_some() && mesh.generation == generation
+                    }),
                 DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
             }
     }
@@ -1572,7 +1582,12 @@ impl SceneResources {
             let key = DrawResourceKey {
                 shadow: shadow_buffer,
                 visible_instances,
-                mesh: if compact_voxel {
+                mesh: if mesh.generated.is_some() {
+                    DrawMeshKey::Generated {
+                        id: mesh_id,
+                        generation,
+                    }
+                } else if compact_voxel {
                     DrawMeshKey::VoxelPage(mesh.vertices)
                 } else {
                     DrawMeshKey::Mesh {
