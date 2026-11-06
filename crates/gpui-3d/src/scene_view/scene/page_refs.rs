@@ -193,12 +193,10 @@ mod tests {
         let mut refs = PageRefs::default();
         assert!(!refs.only_generated_meshes());
         let mut generated = mesh(8);
-        generated.generated = Some(super::super::generated::GeneratedMesh {
+        generated.generated = Some(crate::scene_view::generated::GeneratedMesh {
             templates: BufferId::from_parts(9, 1),
             arguments: BufferId::from_parts(10, 1),
-            face_count: 0,
-            source_face_count: 0,
-            dispatch_count: 0,
+            template_bytes: 0,
             template_allocation: None,
             template_base: 0,
             template_offset: 0,
