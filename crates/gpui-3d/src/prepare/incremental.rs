@@ -166,7 +166,7 @@ impl PreparedScene {
                     next_groups.push(next);
                 }
                 structural_edits.push(StructuralDrawEdit {
-                    old: old_range,
+                    old: old_range.clone(),
                     new: new_start..next_start,
                 });
             } else {
