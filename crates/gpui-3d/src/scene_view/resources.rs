@@ -21,6 +21,7 @@ pub(super) struct RendererResources {
     pass: PassKind,
     owns_layout: bool,
     pub(super) cull_shader: Option<ShaderModuleId>,
+    pub(super) singleton_cull_shader: Option<ShaderModuleId>,
     bind_group_layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
     vertex_shader: Option<ShaderModuleId>,
@@ -50,6 +51,7 @@ impl RendererResources {
             pass: PassKind::Color,
             owns_layout: false,
             cull_shader: None,
+            singleton_cull_shader: None,
             bind_group_layout: Some(layout),
             pipeline_layout: None,
             vertex_shader: None,
@@ -172,6 +174,9 @@ impl RendererResources {
     }
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         if let Some(shader) = self.cull_shader.take() {
+            device.destroy_shader_module(shader)?;
+        }
+        if let Some(shader) = self.singleton_cull_shader.take() {
             device.destroy_shader_module(shader)?;
         }
         for pipeline in &mut self.pipelines {
