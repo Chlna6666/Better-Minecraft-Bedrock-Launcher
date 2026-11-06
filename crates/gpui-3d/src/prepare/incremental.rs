@@ -248,11 +248,11 @@ mod tests {
             prepared.update_nodes(&next, changed.as_ref(), Mat4::IDENTITY),
             Some(2)
         );
-        let dirty = prepared.resident_delta_draws().unwrap();
+        let dirty = prepared.resident_delta_draws().unwrap().to_vec();
         assert_eq!(dirty.len(), 2);
         assert!(dirty.iter().all(|&index| changed.contains(&prepared.draws[index].node)));
         prepared.update_camera(camera, 1.).unwrap();
-        assert_eq!(prepared.resident_delta_draws().unwrap(), dirty);
+        assert_eq!(prepared.resident_delta_draws().unwrap(), dirty.as_slice());
         let full = PreparedScene::new(&next, camera, 1.).unwrap();
         assert_eq!(
             prepared.draws.iter().map(|draw| (draw.node, draw.bounds, draw.world)).collect::<Vec<_>>(),
