@@ -79,6 +79,17 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
 }
 
 impl ResourceDevice for Dx11Device {
+    fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
+        // This backend requires FL11_0, so D3D11's mandatory resource
+        // limits apply. Array resource creation and layer sampling are not
+        // wired into gfx-core yet: do not advertise them as available.
+        TextureArrayCapabilities {
+            max_dimension_2d: 16_384,
+            max_array_layers: 2_048,
+            ..Default::default()
+        }
+    }
+
     fn buffer_binding_limits(&self) -> BufferBindingLimits {
         // Native D3D11 raw SRV/UAV views use 32-bit words, not Vulkan's
         // uniform 256-byte storage-offset requirement. Keep the guaranteed
