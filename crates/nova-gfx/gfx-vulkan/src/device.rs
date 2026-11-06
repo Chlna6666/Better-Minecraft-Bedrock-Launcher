@@ -3006,6 +3006,7 @@ impl VulkanDevice {
             mip_level_count,
             layout,
             mip_level,
+            layer: 0,
             origin,
             size,
         }])
@@ -3082,13 +3083,15 @@ impl VulkanDevice {
         command_buffer: vk::CommandBuffer,
         group: &VulkanTextureUploadGroup<'_>,
     ) -> Result<()> {
-        transition_image_layout_levels(
+        let layers = self.textures.get(group.texture)?.desc.dimension.layers();
+        transition_image_layout_levels_with_layers(
             &self.device,
             command_buffer,
             group.image,
             group.old_layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             group.mip_level_count,
+            layers,
             vk::ImageAspectFlags::COLOR,
         );
         let mut synchronized = 0;
@@ -3116,13 +3119,14 @@ impl VulkanDevice {
             }
             self.record_buffer_to_texture_copy(command_buffer, upload)?;
         }
-        transition_image_layout_levels(
+        transition_image_layout_levels_with_layers(
             &self.device,
             command_buffer,
             group.image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             group.mip_level_count,
+            layers,
             vk::ImageAspectFlags::COLOR,
         );
         Ok(())
@@ -3147,7 +3151,7 @@ impl VulkanDevice {
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .mip_level(upload.mip_level)
-                    .base_array_layer(0)
+                    .base_array_layer(upload.layer)
                     .layer_count(1),
             )
             .image_offset(vk::Offset3D {
@@ -4140,6 +4144,7 @@ struct VulkanTextureUpload {
     mip_level_count: u32,
     layout: TextureDataLayout,
     mip_level: u32,
+    layer: u32,
     origin: gfx_core::Origin2d,
     size: gfx_core::Extent2d,
 }
@@ -4168,6 +4173,7 @@ fn graph_color_write_requires_barrier(
 
 fn texture_uploads_overlap(first: &VulkanTextureUpload, second: &VulkanTextureUpload) -> bool {
     first.mip_level == second.mip_level
+        && first.layer == second.layer
         && u64::from(first.origin.x) < u64::from(second.origin.x) + u64::from(second.size.width())
         && u64::from(second.origin.x) < u64::from(first.origin.x) + u64::from(first.size.width())
         && u64::from(first.origin.y) < u64::from(second.origin.y) + u64::from(second.size.height())
@@ -4999,6 +5005,30 @@ fn create_image_view(
     aspect_mask: vk::ImageAspectFlags,
 ) -> Result<vk::ImageView> {
     create_image_view_range(device, image, format, aspect_mask, 0, 1)
+}
+
+fn create_image_view_range_with_layers(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspect_mask: vk::ImageAspectFlags,
+    base_mip_level: u32,
+    mip_level_count: u32,
+    layers: u32,
+) -> Result<vk::ImageView> {
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(aspect_mask)
+        .base_mip_level(base_mip_level)
+        .level_count(mip_level_count)
+        .base_array_layer(0)
+        .layer_count(layers);
+    let create_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+        .format(format)
+        .subresource_range(range);
+    unsafe { device.create_image_view(&create_info, None) }
+        .map_err(|error| VulkanError::from(error).into())
 }
 
 fn create_image_view_range(
@@ -6014,6 +6044,22 @@ fn transition_image_layout_levels(
     mip_level_count: u32,
     aspect: vk::ImageAspectFlags,
 ) {
+    transition_image_layout_levels_with_layers(
+        device, command_buffer, image, old_layout, new_layout,
+        mip_level_count, 1, aspect,
+    );
+}
+
+fn transition_image_layout_levels_with_layers(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    mip_level_count: u32,
+    layers: u32,
+    aspect: vk::ImageAspectFlags,
+) {
     let color_attachment_access =
         vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
     let (source_stage, destination_stage, source_access_mask, destination_access_mask) =
@@ -6153,7 +6199,7 @@ fn transition_image_layout_levels(
                 .base_mip_level(0)
                 .level_count(mip_level_count)
                 .base_array_layer(0)
-                .layer_count(1),
+                .layer_count(layers),
         );
     // SAFETY: Command buffer is recording and image barrier targets the whole image subresource.
     unsafe {
