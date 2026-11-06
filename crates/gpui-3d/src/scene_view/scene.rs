@@ -734,11 +734,12 @@ impl SceneResources {
                 self.culling
                     .as_mut()
                     .ok_or_else(|| anyhow!("GPU culling resources missing"))?
-                    .dispatch(
+                    .dispatch_optimized(
                         device,
                         renderer
                             .cull_shader
                             .ok_or_else(|| anyhow!("GPU culling shader missing"))?,
+                        renderer.singleton_cull_shader,
                         self.frame_buffer,
                         scene_view.culling_bounds,
                         self.generated_arguments,
