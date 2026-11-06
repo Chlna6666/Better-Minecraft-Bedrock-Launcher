@@ -177,9 +177,9 @@ struct DrawAddress {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DrawMeshKey {
     Mesh { id: MeshId, generation: u64 },
-    // Generated Sections share writable face pages, but their template and
-    // lighting bindings stay mesh-local. They MUST NOT key on the face page.
-    Generated { id: MeshId, generation: u64 },
+    // Each generated draw selects its own header via the Instance table.
+    // BindGroups can now be reused by Sections sharing BOTH resident pages.
+    GeneratedPage { faces: BufferId, templates: BufferId },
     VoxelPage(BufferId),
 }
 
@@ -202,8 +202,9 @@ impl DrawResourceKey {
         textures: &HashSet<TextureAssetId>,
     ) -> bool {
         (match self.mesh {
-            DrawMeshKey::Mesh { id, .. } | DrawMeshKey::Generated { id, .. } => {
-                meshes.contains(&id)
+            DrawMeshKey::Mesh { id, .. } => meshes.contains(&id),
+            DrawMeshKey::GeneratedPage { faces, templates } => {
+                voxel_pages.contains(&faces) && voxel_pages.contains(&templates)
             }
             DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
         }) && [
@@ -228,11 +229,9 @@ impl DrawResourceKey {
                 DrawMeshKey::Mesh { id, generation } => meshes
                     .get(&(id, false))
                     .is_some_and(|mesh| mesh.generation == generation),
-                DrawMeshKey::Generated { id, generation } => meshes
-                    .get(&(id, true))
-                    .is_some_and(|mesh| {
-                        mesh.generated.is_some() && mesh.generation == generation
-                    }),
+                DrawMeshKey::GeneratedPage { faces, templates } => {
+                    voxel_pages.contains(&faces) && voxel_pages.contains(&templates)
+                },
                 DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
             }
     }
@@ -1585,20 +1584,24 @@ impl SceneResources {
         removed_meshes: &[MeshId],
         removed_textures: &[TextureAssetId],
     ) -> gpui::Result<()> {
-        // Pooled CPU voxel quads are keyed by the page buffer, not MeshId.
-        // Invalidate one of those bindings only when no surviving Mesh still
-        // references that page; otherwise a valid draw would lose its binding.
+        // Generated draws now key both face and immutable template pages.
+        // Retire page bindings only when no other surviving Mesh uses them.
         let removed = removed_meshes.iter().copied().collect::<HashSet<_>>();
         let mut pages = removed_meshes
             .iter()
             .filter_map(|id| self.meshes.get(&(*id, true)))
-            .filter(|mesh| mesh.generated.is_none())
-            .map(|mesh| mesh.vertices)
+            .flat_map(|mesh| {
+                std::iter::once(mesh.vertices)
+                    .chain(mesh.generated.iter().map(|generated| generated.templates))
+            })
             .collect::<HashSet<_>>();
         if !pages.is_empty() {
             for ((id, compact), mesh) in &self.meshes {
                 if *compact && !removed.contains(id) {
                     pages.remove(&mesh.vertices);
+                    if let Some(generated) = &mesh.generated {
+                        pages.remove(&generated.templates);
+                    }
                 }
             }
         }
@@ -1619,7 +1622,10 @@ impl SceneResources {
             .meshes
             .iter()
             .filter(|((id, compact), _)| *compact && active_meshes.contains(id))
-            .map(|(_, mesh)| mesh.vertices)
+            .flat_map(|(_, mesh)| {
+                std::iter::once(mesh.vertices)
+                    .chain(mesh.generated.iter().map(|generated| generated.templates))
+            })
             .collect::<HashSet<_>>();
         let stale = self
             .binding_cache
@@ -1721,10 +1727,10 @@ impl SceneResources {
             let key = DrawResourceKey {
                 shadow: shadow_buffer,
                 visible_instances,
-                mesh: if mesh.generated.is_some() {
-                    DrawMeshKey::Generated {
-                        id: mesh_id,
-                        generation,
+                mesh: if let Some(generated) = &mesh.generated {
+                    DrawMeshKey::GeneratedPage {
+                        faces: mesh.vertices,
+                        templates: generated.templates,
                     }
                 } else if compact_voxel {
                     DrawMeshKey::VoxelPage(mesh.vertices)

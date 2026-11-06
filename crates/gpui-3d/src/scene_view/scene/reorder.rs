@@ -75,6 +75,14 @@ impl SceneResources {
             };
             let offset = index * INSTANCE_STRIDE as usize + 140;
             bytes[offset..offset + 4].copy_from_slice(&vertex_base.to_ne_bytes());
+            if let Some(generated) = &mesh.generated {
+                // The voxel shader does not use normal_matrix for normals.
+                // Column 0.y carries the page-relative 112-byte template
+                // header index; column 0.x remains the indirect vertex count.
+                let offset = index * INSTANCE_STRIDE as usize + 68;
+                bytes[offset..offset + 4]
+                    .copy_from_slice(&generated.template_base.to_ne_bytes());
+            }
         }
         Ok(())
     }

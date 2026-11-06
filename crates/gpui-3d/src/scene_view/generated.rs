@@ -21,6 +21,9 @@ pub(super) struct GeneratedMesh {
     /// Aligned suballocation within one shared GPU template storage page.
     pub template_offset: u64,
     pub template_allocation: Option<ArenaAllocation>,
+    /// Absolute index of the first 112-byte header record in the shared page.
+    pub template_base: u32,
+    pub template_page_bytes: u64,
 }
 pub(super) struct Shaders(pub [ShaderModuleId; 6]);
 pub(super) fn create_shaders(
@@ -87,7 +90,11 @@ fn material_part_lookup(source: &VoxelMeshSource) -> HashMap<u32, usize> {
 }
 
 fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
-    let mut bytes = Vec::with_capacity(32 + source.templates.len() * 112);
+    // Two 112-byte header records allow every generated Section to be
+    // addressed by one GPU template-record index, without per-Mesh BindGroups.
+    // Header 0 stores the original float origin as raw u32 words; header 1
+    // stores the grid dimensions and the absolute lighting-word offset.
+    let mut bytes = Vec::with_capacity(224 + source.templates.len() * 112);
     for value in [
         source.origin.x,
         source.origin.y,
@@ -96,9 +103,11 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     ] {
         bytes.extend(value.to_le_bytes());
     }
+    bytes.resize(112, 0);
     for value in source.size.into_iter().chain([0]) {
         bytes.extend(value.to_le_bytes());
     }
+    bytes.resize(224, 0);
     let mut static_counts = vec![0u32; source.parts.len()];
     // The previous per-template .position() scanned all material parts for
     // every face. Resolve each material slot once, independent of face count.
@@ -137,7 +146,7 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     }
     if let Some(light) = &source.lighting {
         let base = (bytes.len() / 4) as u32;
-        bytes[28..32].copy_from_slice(&base.to_le_bytes());
+        bytes[124..128].copy_from_slice(&base.to_le_bytes());
         bytes.extend_from_slice(&light.levels);
         bytes.resize(bytes.len().div_ceil(4) * 4, 0);
     }
@@ -160,6 +169,8 @@ struct PendingGenerated {
     allocation: Option<ArenaAllocation>,
     template_allocation: Option<ArenaAllocation>,
     template_offset: u64,
+    template_base: u32,
+    template_page_bytes: u64,
     vertex_base: u32,
     vertex_binding_bytes: usize,
 }
@@ -185,6 +196,8 @@ impl PendingGenerated {
                 template_bytes: self.template_bytes,
                 template_offset: self.template_offset,
                 template_allocation: self.template_allocation,
+                template_base: self.template_base,
+                template_page_bytes: self.template_page_bytes,
             }),
         }
     }
@@ -225,7 +238,7 @@ fn prepare_generated(
     let source = mesh
         .gpu_voxels()
         .ok_or_else(|| anyhow!("missing voxel source"))?;
-    let (templates, static_counts) = encode(source);
+    let (mut templates, static_counts) = encode(source);
     let mut words = if source.model_faces == 0 {
         Vec::new()
     } else {
@@ -345,6 +358,8 @@ fn prepare_generated(
     let mut pooled_allocation = None;
     let mut template_allocation = None;
     let mut template_offset = 0u64;
+    let mut template_base = 0u32;
+    let mut template_page_bytes = templates.len() as u64;
     let mut pooled_offset = 0u64;
     let mut pooled_capacity = output_bytes;
     let result = (|| {
@@ -360,6 +375,12 @@ fn prepare_generated(
                 if slot == 1 {
                     template_allocation = Some(allocation);
                     template_offset = offset;
+                    if offset % 112 != 0 {
+                        return Err(anyhow!("template page offset violates 112-byte record alignment"));
+                    }
+                    template_base = u32::try_from(offset / 112)
+                        .context("generated template index exceeds u32")?;
+                    template_page_bytes = capacity;
                 } else {
                     pooled_allocation = Some(allocation);
                     pooled_offset = offset;
@@ -378,6 +399,16 @@ fn prepare_generated(
                     memory_location: MemoryLocation::GpuOnly,
                 })?);
             }
+        }
+        // Lighting words are addressed from the full page at render time,
+        // not from a per-Section bound subrange. The mesher ignores this field.
+        if source.lighting.is_some() {
+            let local = u32::from_le_bytes(templates[124..128].try_into().unwrap());
+            let page_offset = u32::try_from(template_offset / 4)
+                .context("generated lighting offset exceeds u32")?;
+            let absolute = page_offset.checked_add(local)
+                .ok_or_else(|| anyhow!("generated lighting page address overflow"))?;
+            templates[124..128].copy_from_slice(&absolute.to_le_bytes());
         }
         let writes =
             [(0, &cells), (1, &templates), (3, &args), (4, &params)].map(|(slot, data)| {
@@ -475,6 +506,8 @@ fn prepare_generated(
         allocation: pooled_allocation,
         template_allocation,
         template_offset,
+        template_base,
+        template_page_bytes,
     })
 }
 

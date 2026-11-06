@@ -123,6 +123,12 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
                     instances[140..144]
                         .copy_from_slice(&(resource.vertex_base | 0x8000_0000).to_le_bytes());
                 }
+                // In the page-based generated vertex path, the normal matrix
+                // is reserved metadata. Pass the header record offset exactly
+                // as the production Instance encoder does.
+                instances[68..72].copy_from_slice(
+                    &resource.generated.as_ref().unwrap().template_base.to_le_bytes(),
+                );
                 instances
             },
             BufferUsage::STORAGE,
@@ -153,9 +159,9 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
             (1, buffers[0].0, buffers[0].1),
             (8, buffers[1].0, buffers[1].1),
             (9, buffers[2].0, buffers[2].1),
-            (12, generated.templates, generated.template_bytes),
+            (12, generated.templates, generated.template_page_bytes / 112 * 112),
             (13, resource.vertices, resource.vertex_binding_bytes as u64),
-            (14, generated.templates, generated.template_bytes),
+            (14, generated.templates, generated.template_page_bytes),
             (
                 15,
                 shadow.unwrap_or(buffers[0].0),
@@ -686,6 +692,8 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     ).unwrap();
     assert_eq!(resources[0].generated.as_ref().unwrap().templates,
                resources[1].generated.as_ref().unwrap().templates);
+    assert_ne!(resources[0].generated.as_ref().unwrap().template_base,
+               resources[1].generated.as_ref().unwrap().template_base);
     assert_ne!(resources[0].generated.as_ref().unwrap().templates, resources[0].vertices);
     assert_eq!(resources.len(), 2);
     assert_eq!(resources[0].vertices, resources[1].vertices);

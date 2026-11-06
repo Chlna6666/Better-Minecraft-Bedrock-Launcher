@@ -1,6 +1,14 @@
 struct Vertex { x:f32, y:f32, z:f32, color:u32, u:f32, v:f32 };
 struct Face { info:vec4<u32>, vertices:array<Vertex,4> };
-struct Templates {origin:vec4<f32>,size:vec4<u32>,faces:array<Face>};
+// Each immutable template page is an array of 112-byte records. The first
+// two records of each Section are headers; Compute sees a section-local view.
+struct Templates {
+    origin:vec4<f32>,
+    origin_padding:array<vec4<u32>,6>,
+    size:vec4<u32>,
+    size_padding:array<vec4<u32>,6>,
+    faces:array<Face>
+};
 struct GeneratedFace {cell:u32,model_face:u32,height:f32,padding:u32};
 struct Params { size:vec4<u32>, origin:vec4<f32>, clip:vec4<f32>, extra:vec4<u32> };
 @group(0) @binding(0) var<storage,read> cells:array<u32>;

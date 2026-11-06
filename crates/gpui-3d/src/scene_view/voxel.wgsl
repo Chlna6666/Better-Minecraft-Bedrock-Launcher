@@ -76,40 +76,39 @@ const PI:f32=3.141592653589793;
 // Culling/batch order is logical; Section records use stable physical slots.
 @group(0) @binding(16) var<storage, read> draw_slot_indices: array<u32>;
 struct GeneratedTemplate { info:vec4<u32>, vertices:array<VoxelVertex,4> };
-struct GeneratedTemplates {origin:vec4<f32>,size:vec4<u32>,faces:array<GeneratedTemplate>};
 struct GeneratedFace {cell:u32,model_face:u32,height:f32,padding:u32};
-@group(0) @binding(12) var<storage, read> generated_templates:GeneratedTemplates;
+@group(0) @binding(12) var<storage, read> generated_templates:array<GeneratedTemplate>;
 @group(0) @binding(13) var<storage, read> generated_faces:array<GeneratedFace>;
 @group(0) @binding(14) var<storage, read> lighting_words:array<u32>;
 
-fn cell_levels(cell:u32)->vec2<f32> {
-    let word=lighting_words[generated_templates.size.w+cell/4u];
+fn cell_levels(cell:u32,size:vec4<u32>)->vec2<f32> {
+    let word=lighting_words[size.w+cell/4u];
     let packed=(word>>((cell%4u)*8u))&255u;
     return vec2<f32>(f32(packed&15u),f32(packed>>4u))/15.0;
 }
 
-fn static_levels(p:vec3<f32>)->vec2<f32> {
-    let q=vec3<i32>(floor(p-generated_templates.origin.xyz));
-    let size=generated_templates.size.xyz;
-    if(any(q<vec3<i32>(0))||any(q>=vec3<i32>(size))){return vec2<f32>(0.0);}
-    return cell_levels((u32(q.z)*size.y+u32(q.y))*size.x+u32(q.x));
+fn static_levels(p:vec3<f32>,origin:vec4<f32>,size:vec4<u32>)->vec2<f32> {
+    let q=vec3<i32>(floor(p-origin.xyz));
+    let dims=size.xyz;
+    if(any(q<vec3<i32>(0))||any(q>=vec3<i32>(dims))){return vec2<f32>(0.0);}
+    return cell_levels((u32(q.z)*size.y+u32(q.y))*size.x+u32(q.x),size);
 }
 
 // Smooth lighting: the four front-plane cells around one face corner, averaged so
 // adjacent faces interpolate instead of stepping one whole light level per block.
-fn normal_from_delta(delta:i32)->vec3<i32> {
-    let size=vec3<i32>(generated_templates.size.xyz);
+fn normal_from_delta(delta:i32,size:vec4<u32>)->vec3<i32> {
+    let dims=vec3<i32>(size.xyz);
     var n=vec3<i32>(0);
     if(delta==1){n.x=1;}else if(delta==-1){n.x=-1;}
-    else if(delta==size.x){n.y=1;}else if(delta==-size.x){n.y=-1;}
-    else if(delta==size.x*size.y){n.z=1;}else if(delta==-size.x*size.y){n.z=-1;}
+    else if(delta==dims.x){n.y=1;}else if(delta==-dims.x){n.y=-1;}
+    else if(delta==dims.x*dims.y){n.z=1;}else if(delta==-dims.x*dims.y){n.z=-1;}
     return n;
 }
-fn corner_cell_light(cell:u32,delta:i32,local:vec3<f32>)->vec2<f32> {
-    let n=normal_from_delta(delta);
-    if(all(n==vec3<i32>(0))){return cell_levels(cell);}
-    let size=vec3<i32>(generated_templates.size.xyz);
-    let c=vec3<i32>(i32(cell%generated_templates.size.x),i32(cell/generated_templates.size.x%generated_templates.size.y),i32(cell/(generated_templates.size.x*generated_templates.size.y)));
+fn corner_cell_light(cell:u32,delta:i32,local:vec3<f32>,size:vec4<u32>)->vec2<f32> {
+    let n=normal_from_delta(delta,size);
+    if(all(n==vec3<i32>(0))){return cell_levels(cell,size);}
+    let dims=vec3<i32>(size.xyz);
+    let c=vec3<i32>(i32(cell%size.x),i32(cell/size.x%size.y),i32(cell/(size.x*size.y)));
     var steps=array<vec3<i32>,2>(vec3<i32>(0),vec3<i32>(0));
     if(n.x!=0){steps[0]=vec3<i32>(0,select(-1,1,local.y>=0.5),0);steps[1]=vec3<i32>(0,0,select(-1,1,local.z>=0.5));}
     else if(n.y!=0){steps[0]=vec3<i32>(select(-1,1,local.x>=0.5),0,0);steps[1]=vec3<i32>(0,0,select(-1,1,local.z>=0.5));}
@@ -121,10 +120,10 @@ fn corner_cell_light(cell:u32,delta:i32,local:vec3<f32>)->vec2<f32> {
         if(i==2u){offset+=steps[1];}
         if(i==3u){offset+=steps[0]+steps[1];}
         let p=c+offset;
-        if(any(p<vec3<i32>(0))||any(p>=size)){continue;}
-        sum+=cell_levels(u32((p.z*size.y+p.y)*size.x+p.x));count+=1.0;
+        if(any(p<vec3<i32>(0))||any(p>=dims)){continue;}
+        sum+=cell_levels(u32((p.z*dims.y+p.y)*dims.x+p.x),size);count+=1.0;
     }
-    if(count==0.0){return cell_levels(cell);}
+    if(count==0.0){return cell_levels(cell,size);}
     return sum/vec2<f32>(count);
 }
 
@@ -142,39 +141,41 @@ fn template_position(v:VoxelVertex,height:f32)->vec3<f32> {return vec3<f32>(v.po
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
     let physical_slot = draw_slot_indices[instance_index];
     let instance = instances[physical_slot];
+    let template_base = bitcast<u32>(instance.normal_matrix[0].y);
+    let origin = bitcast<vec4<f32>>(generated_templates[template_base].info);
+    let size = generated_templates[template_base+1u].info;
     let base=instance.vertex_base & 0x7fffffffu;
     let descriptor=generated_faces[base+index/6u];
     let corners=array<u32,6>(0u,1u,2u,0u,2u,3u);
-    var vertex=generated_templates.faces[descriptor.model_face].vertices[corners[index%6u]];
+    let face=generated_templates[template_base+2u+descriptor.model_face];
+    var vertex=face.vertices[corners[index%6u]];
     var position=vec3<f32>(0.0);
     if(descriptor.cell!=0xffffffffu){
-        let size=generated_templates.size;
-        position=generated_templates.origin.xyz+vec3<f32>(f32(descriptor.cell%size.x),f32(descriptor.cell/size.x%size.y),f32(descriptor.cell/size.x/size.y));
+        position=origin.xyz+vec3<f32>(f32(descriptor.cell%size.x),f32(descriptor.cell/size.x%size.y),f32(descriptor.cell/size.x/size.y));
     }
     vertex.position_x+=position.x;
     vertex.position_y=vertex.position_y*descriptor.height+position.y;
     vertex.position_z+=position.z;
     var shaded=shade_voxel_value(vertex,instance,physical_slot);
-    let face=generated_templates.faces[descriptor.model_face];
     let a=template_position(face.vertices[0],descriptor.height);
     let b=template_position(face.vertices[1],descriptor.height);
     let c=template_position(face.vertices[2],descriptor.height);
     if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance.model);}
     shaded.quad_uv=quad_coordinates(corners[index%6u]);
-    if(frame.voxel_settings.y!=1.0 && generated_templates.size.w!=0u){
+    if(frame.voxel_settings.y!=1.0 && size.w!=0u){
         var light=vec2<f32>(0.0);
         if(descriptor.cell==0xffffffffu){
             let center=(a+b+c+template_position(face.vertices[3],descriptor.height))*0.25;
             let normal=cross(b-a,c-a);let n=normal/max(length(normal),0.00001)*0.001;
-            light=max(static_levels(center-n),static_levels(center+n));
+            light=max(static_levels(center-n,origin,size),static_levels(center+n,origin,size));
         }else{
-            let delta=bitcast<i32>(generated_templates.faces[descriptor.model_face].info.y);
+            let delta=bitcast<i32>(face.info.y);
             let local=template_position(face.vertices[corners[index%6u]],descriptor.height);
-            light=corner_cell_light(descriptor.cell,delta,local);
+            light=corner_cell_light(descriptor.cell,delta,local,size);
         }
         let sky=select(1.0,frame.voxel_settings.z,frame.voxel_settings.w!=0.0);
         let brightness=max(light.x,light.y*sky);
-        let factor=generated_templates.origin.w+(1.0-generated_templates.origin.w)*brightness*brightness;
+        let factor=origin.w+(1.0-origin.w)*brightness*brightness;
         shaded.vertex_color=vec4<f32>(shaded.vertex_color.rgb*factor,shaded.vertex_color.a);
     }
     if(frame.voxel_settings.y!=1.0 && descriptor.padding!=0u){

@@ -21,6 +21,7 @@ pub(super) struct InstanceSlotKey {
     depth_bias: f32,
     vertex_word: u32,
     index_count_override: Option<u32>,
+    generated_template_base: Option<u32>,
 }
 
 // Default float PartialEq treats +0.0 and -0.0 as equal even though their
@@ -36,6 +37,7 @@ impl PartialEq for InstanceSlotKey {
             && self.depth_bias.to_bits() == other.depth_bias.to_bits()
             && self.vertex_word == other.vertex_word
             && self.index_count_override == other.index_count_override
+            && self.generated_template_base == other.generated_template_base
     }
 }
 impl Eq for InstanceSlotKey {}
@@ -59,6 +61,7 @@ impl InstanceSlotKey {
         self.depth_bias.to_bits().hash(&mut hash);
         self.vertex_word.hash(&mut hash);
         self.index_count_override.hash(&mut hash);
+        self.generated_template_base.hash(&mut hash);
         hash.finish()
     }
 }
@@ -69,7 +72,7 @@ impl SceneResources {
         draw: &PreparedDraw,
         voxel_shader: bool,
     ) -> gpui::Result<InstanceSlotKey> {
-        let (vertex_word, index_count_override) = if voxel_shader {
+        let (vertex_word, index_count_override, generated_template_base) = if voxel_shader {
             let mesh = self.meshes.get(&mesh_key(draw, true))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             let count = (self.culling.is_some() && mesh.procedural_quads)
@@ -86,9 +89,9 @@ impl SceneResources {
             } else {
                 mesh.vertex_base
             };
-            (vertex, count)
+            (vertex, count, mesh.generated.as_ref().map(|generated| generated.template_base))
         } else {
-            (0, None)
+            (0, None, None)
         };
         Ok(InstanceSlotKey {
             node: draw.node,
@@ -97,6 +100,7 @@ impl SceneResources {
             depth_bias: draw.depth_bias,
             vertex_word,
             index_count_override,
+            generated_template_base,
         })
     }
 
@@ -148,6 +152,7 @@ mod tests {
             depth_bias: 0.0,
             vertex_word: 0,
             index_count_override: None,
+            generated_template_base: None,
         };
         let positive = super::InstanceSlotKey {
             pixel_offset: crate::Vec2::ZERO,
@@ -217,6 +222,7 @@ mod tests {
             depth_bias: 0.0,
             vertex_word: 64,
             index_count_override: None,
+            generated_template_base: None,
         };
         let relocated = super::InstanceSlotKey {
             vertex_word: 128,
@@ -226,6 +232,12 @@ mod tests {
             index_count_override: Some(24),
             ..original
         };
+        let shifted_template = super::InstanceSlotKey {
+            generated_template_base: Some(17),
+            ..original
+        };
+        assert_ne!(original, shifted_template);
+        assert_ne!(original.fingerprint(), shifted_template.fingerprint());
         let keys = [relocated, culled];
         let previous = [original, original];
         let stride = crate::scene_view::INSTANCE_STRIDE as usize;

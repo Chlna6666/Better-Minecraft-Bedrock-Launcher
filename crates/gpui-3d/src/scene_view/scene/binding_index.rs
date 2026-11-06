@@ -35,8 +35,12 @@ impl BindingIndex {
 
     pub(super) fn insert(&mut self, key: DrawResourceKey) {
         match key.mesh {
-            DrawMeshKey::Mesh { id, .. } | DrawMeshKey::Generated { id, .. } => {
+            DrawMeshKey::Mesh { id, .. } => {
                 self.by_mesh.entry(id).or_default().insert(key);
+            }
+            DrawMeshKey::GeneratedPage { faces, templates } => {
+                self.by_page.entry(faces).or_default().insert(key);
+                self.by_page.entry(templates).or_default().insert(key);
             }
             DrawMeshKey::VoxelPage(page) => {
                 self.by_page.entry(page).or_default().insert(key);
@@ -54,8 +58,12 @@ impl BindingIndex {
 
     pub(super) fn remove(&mut self, key: DrawResourceKey) {
         match key.mesh {
-            DrawMeshKey::Mesh { id, .. } | DrawMeshKey::Generated { id, .. } => {
+            DrawMeshKey::Mesh { id, .. } => {
                 remove_reference(&mut self.by_mesh, id, key);
+            }
+            DrawMeshKey::GeneratedPage { faces, templates } => {
+                remove_reference(&mut self.by_page, faces, key);
+                remove_reference(&mut self.by_page, templates, key);
             }
             DrawMeshKey::VoxelPage(page) => {
                 remove_reference(&mut self.by_page, page, key);
@@ -104,7 +112,7 @@ mod tests {
     fn key(id: MeshId, texture: Option<TextureAssetId>) -> DrawResourceKey {
         DrawResourceKey {
             shadow: None,
-            mesh: DrawMeshKey::Generated { id, generation: 1 },
+            mesh: DrawMeshKey::Mesh { id, generation: 1 },
             visible_instances: None,
             albedo_id: texture,
             normal_id: None,
@@ -126,6 +134,22 @@ mod tests {
         assert!(index.affected(&[MeshId(1)], &HashSet::new(), &[]).is_empty());
         assert_eq!(index.affected(&[MeshId(2)], &HashSet::new(), &[]),
                    HashSet::from([b]));
+    }
+
+    #[test]
+    fn generated_page_lookup_deduplicates_both_resources() {
+        let faces = BufferId::from_parts(5, 1);
+        let templates = BufferId::from_parts(6, 1);
+        let page_key = DrawResourceKey {
+            mesh: DrawMeshKey::GeneratedPage { faces, templates },
+            ..key(MeshId(11), None)
+        };
+        let mut index = BindingIndex::default();
+        index.insert(page_key);
+        assert_eq!(index.affected(&[], &HashSet::from([faces, templates]), &[]),
+                   HashSet::from([page_key]));
+        index.remove(page_key);
+        assert!(index.affected(&[], &HashSet::from([faces, templates]), &[]).is_empty());
     }
 
     #[test]

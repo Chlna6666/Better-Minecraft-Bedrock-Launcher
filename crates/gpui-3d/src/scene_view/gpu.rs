@@ -163,16 +163,19 @@ impl MeshArena {
     // Shared page offsets must satisfy both the driver's storage binding
     // offset alignment and the 16-byte GeneratedFace shader address unit.
     // Compute their least common multiple; do not assume power-of-two limits.
-    fn generated_face_alignment(limits: gfx_core::BufferBindingLimits) -> gpui::Result<u64> {
+    fn generated_face_alignment(
+        limits: gfx_core::BufferBindingLimits,
+        record_bytes: u64,
+    ) -> gpui::Result<u64> {
         let alignment = limits.storage_offset_alignment;
         if alignment == 0 {
             return Err(anyhow!("storage offset alignment was not reported").into());
         }
-        let (mut a, mut b) = (alignment, 16u64);
+        let (mut a, mut b) = (alignment, record_bytes);
         while b != 0 {
             (a, b) = (b, a % b);
         }
-        alignment.checked_div(a).and_then(|v| v.checked_mul(16))
+        alignment.checked_div(a).and_then(|v| v.checked_mul(record_bytes))
             .ok_or_else(|| anyhow!("generated face alignment overflow").into())
     }
 
@@ -186,7 +189,10 @@ impl MeshArena {
         // while also maintaining the shader's 16-byte GeneratedFace addressing.
         // No backend name or assumed 256-byte limit is involved in this plan.
         let stride = if self.generated_output {
-            Self::generated_face_alignment(self.generated_limits)?
+            Self::generated_face_alignment(
+                self.generated_limits,
+                if self.generated_templates { 112 } else { 16 },
+            )?
         } else {
             u64::from(VOXEL_VERTEX_STRIDE)
         };
@@ -863,8 +869,8 @@ pub(super) fn create_draw_resource_set(
                 binding: 14,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: mesh.generated.as_ref().map_or(draw_buffer, |m| m.templates),
-                    offset: mesh.generated.as_ref().map_or(0, |m| m.template_offset),
-                    size: mesh.generated.as_ref().map_or(16, |m| m.template_bytes),
+                    offset: 0,
+                    size: mesh.generated.as_ref().map_or(16, |m| m.template_page_bytes),
                     stride: None,
                 }),
             },
@@ -892,11 +898,11 @@ pub(super) fn create_draw_resource_set(
                         .generated
                         .as_ref()
                         .map_or(draw_buffer, |mesh| mesh.templates),
-                    offset: mesh.generated.as_ref().map_or(0, |mesh| mesh.template_offset),
+                    offset: 0,
                     size: mesh
                         .generated
                         .as_ref()
-                        .map_or(16, |mesh| mesh.template_bytes),
+                        .map_or(16, |mesh| mesh.template_page_bytes / 112 * 112),
                     stride: None,
                 }),
             },
