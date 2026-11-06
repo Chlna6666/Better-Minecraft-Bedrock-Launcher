@@ -4,7 +4,7 @@ use crate::{Mesh, VoxelMeshSource};
 use anyhow::{Context as _, anyhow};
 use gfx_core::*;
 use gpui::ExtensionDevice;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 #[cfg(all(test, target_os = "windows"))]
 #[path = "generated_tests.rs"]
@@ -544,6 +544,9 @@ fn create_many_impl(
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
+    // Trace only when explicitly enabled; no per-Section clock reads in the
+    // hot path unless performance profiling was requested.
+    let trace_started = super::renderer::trace_timings().then(Instant::now);
     let mut pending = Vec::with_capacity(meshes.len());
     for mesh in meshes {
         let pool = arena.as_mut().map(|(faces, templates, backend)| {
@@ -559,6 +562,9 @@ fn create_many_impl(
             }
         }
     }
+    let prepare_ms = trace_started
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
     let mut dispatches = Vec::new();
     for mesh in &pending {
         for &(stage, workgroups) in &mesh.stages {
@@ -569,11 +575,16 @@ fn create_many_impl(
             });
         }
     }
+    let dispatch_count = dispatches.len();
+    let dispatch_started = trace_started.map(|_| Instant::now());
     let submitted = if dispatches.is_empty() {
         Ok(())
     } else {
         device.dispatch_compute_batch(&dispatches).map_err(anyhow::Error::from)
     };
+    let dispatch_ms = dispatch_started
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
     drop(dispatches);
     if let Err(error) = submitted {
         discard_pending_generated(
@@ -593,6 +604,22 @@ fn create_many_impl(
             device, pending, arena.as_mut().map(|(faces, templates, _)| (&mut **faces, &mut **templates)),
         );
         return Err(error.into());
+    }
+    if let Some(started) = trace_started {
+        let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if total_ms >= 16.0 {
+            eprintln!(
+                "gpui3d generated_batch backend={:?} meshes={} dispatches={} scratch_buffers={} prepare_ms={:.2} dispatch_ms={:.2} retire_ms={:.2} total_ms={:.2}",
+                arena.as_ref().map(|(_, _, backend)| *backend),
+                meshes.len(),
+                dispatch_count,
+                scratch.len(),
+                prepare_ms,
+                dispatch_ms,
+                (total_ms - prepare_ms - dispatch_ms).max(0.0),
+                total_ms,
+            );
+        }
     }
     Ok(pending.into_iter().map(PendingGenerated::into_resources).collect())
 }
