@@ -79,6 +79,18 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
 }
 
 impl ResourceDevice for Dx11Device {
+    fn buffer_binding_limits(&self) -> BufferBindingLimits {
+        // Native D3D11 raw SRV/UAV views use 32-bit words, not Vulkan's
+        // uniform 256-byte storage-offset requirement. Keep the guaranteed
+        // D3D11 resource range below the documented maximum raw texel count.
+        BufferBindingLimits {
+            storage_offset_alignment: 4,
+            max_storage_binding_bytes: (1u64 << 27) * 4,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 64 * 1024,
+        }
+    }
+
     fn compute_capabilities(&self) -> ComputeCapabilities {
         ComputeCapabilities {
             max_workgroups: [65535; 3],
