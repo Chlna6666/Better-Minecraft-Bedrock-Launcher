@@ -4,7 +4,7 @@
 //! array creation, layer upload, or indexed shader sampling. Keep the three
 //! implementation capabilities separate until all native operations exist.
 
-use crate::{Error, Format, Result};
+use crate::{Error, Extent2d, Format, Origin2d, Result, TextureDataLayout};
 
 /// Limits of the selected graphics device, plus availability of the complete
 /// layered-texture path in the current backend implementation.
@@ -31,6 +31,59 @@ pub struct TextureArrayPlan {
     pub layers: u32,
     pub mip_levels: u32,
     pub total_bytes: u64,
+}
+
+/// One independently uploaded subresource of a homogeneous 2D texture array.
+/// Mip and layer addressing are explicit instead of hiding the layer as an
+/// assumed third coordinate in an ordinary D2 write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextureArrayLayerUpload {
+    pub layer: u32,
+    pub mip_level: u32,
+    pub origin: Origin2d,
+    pub extent: Extent2d,
+    pub layout: TextureDataLayout,
+}
+
+impl TextureArrayPlan {
+    /// Validate a layer/mip upload against the planned native allocation and
+    /// the caller's byte slice, before any backend creates staging buffers.
+    pub fn validate_layer_upload(
+        self,
+        upload: TextureArrayLayerUpload,
+        format: Format,
+        data_len: usize,
+    ) -> Result<()> {
+        if upload.layer >= self.layers || upload.mip_level >= self.mip_levels {
+            return Err(Error::InvalidInput("texture array layer or mip is out of bounds".into()));
+        }
+        let mip_width = (self.width >> upload.mip_level).max(1);
+        let mip_height = (self.height >> upload.mip_level).max(1);
+        let end_x = upload.origin.x.checked_add(upload.extent.width());
+        let end_y = upload.origin.y.checked_add(upload.extent.height());
+        if end_x.is_none_or(|x| x > mip_width) || end_y.is_none_or(|y| y > mip_height) {
+            return Err(Error::InvalidInput("texture array upload rectangle exceeds mip dimensions".into()));
+        }
+        let row_bytes = u64::from(upload.extent.width())
+            .checked_mul(u64::from(format.bytes_per_pixel()))
+            .ok_or_else(|| Error::InvalidInput("texture array row byte count overflows".into()))?;
+        let row_pitch = u64::from(upload.layout.bytes_per_row.get());
+        if row_pitch < row_bytes || upload.layout.rows_per_image.get() < upload.extent.height() {
+            return Err(Error::InvalidInput("texture array upload pitch or row count is too small".into()));
+        }
+        let size = upload.layout.offset
+            .checked_add(
+                u64::from(upload.extent.height().saturating_sub(1))
+                    .checked_mul(row_pitch)
+                    .ok_or_else(|| Error::InvalidInput("texture array upload row stride overflows".into()))?,
+            )
+            .and_then(|offset| offset.checked_add(row_bytes))
+            .ok_or_else(|| Error::InvalidInput("texture array upload byte range overflows".into()))?;
+        if size > data_len as u64 {
+            return Err(Error::InvalidInput("texture array upload source data is truncated".into()));
+        }
+        Ok(())
+    }
 }
 
 impl TextureArrayCapabilities {
@@ -118,6 +171,38 @@ mod tests {
         assert!(limits.plan(0, 16, 1, 1, Format::Rgba8Unorm).is_err());
         assert!(TextureArrayCapabilities::default()
             .plan(16, 16, 1, 1, Format::Rgba8Unorm).is_err());
+    }
+
+    #[test]
+    fn layered_upload_validation_rejects_cross_mip_and_layer_writes() {
+        let caps = TextureArrayCapabilities {
+            max_dimension_2d: 1024,
+            max_array_layers: 32,
+            ..Default::default()
+        };
+        let plan = caps.plan(16, 16, 3, 5, Format::Rgba8Unorm).unwrap();
+        let valid = TextureArrayLayerUpload {
+            layer: 2,
+            mip_level: 2,
+            origin: Origin2d { x: 1, y: 1 },
+            extent: Extent2d::new(3, 3).unwrap(),
+            layout: TextureDataLayout::new(0, 12, 3).unwrap(),
+        };
+        assert!(plan.validate_layer_upload(valid, Format::Rgba8Unorm, 36).is_ok());
+        assert!(plan.validate_layer_upload(TextureArrayLayerUpload {
+            layer: 3, ..valid
+        }, Format::Rgba8Unorm, 36).is_err());
+        assert!(plan.validate_layer_upload(TextureArrayLayerUpload {
+            mip_level: 5, ..valid
+        }, Format::Rgba8Unorm, 36).is_err());
+        assert!(plan.validate_layer_upload(TextureArrayLayerUpload {
+            origin: Origin2d { x: 2, y: 2 }, ..valid
+        }, Format::Rgba8Unorm, 36).is_err());
+        assert!(plan.validate_layer_upload(valid, Format::Rgba8Unorm, 35).is_err());
+        assert!(plan.validate_layer_upload(TextureArrayLayerUpload {
+            layout: TextureDataLayout::new(0, 8, 3).unwrap(),
+            ..valid
+        }, Format::Rgba8Unorm, 36).is_err());
     }
 
     #[test]
