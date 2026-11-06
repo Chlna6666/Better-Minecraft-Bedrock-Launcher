@@ -154,7 +154,11 @@ impl MeshArena {
         backend: BackendKind,
         bytes: u64,
     ) -> gpui::Result<(ArenaAllocation, BufferId, u64, u64)> {
-        let stride = if self.generated_output { 16 } else { u64::from(VOXEL_VERTEX_STRIDE) };
+        // Generated output is bound as a writable storage range during
+        // meshing. Vulkan storage-buffer dynamic offsets can require 256-byte
+        // alignment; D3D11/D3D12 raw UAV offsets accept this alignment too.
+        // Vertex shader addresses still use 16-byte GeneratedFace units.
+        let stride = if self.generated_output { 256 } else { u64::from(VOXEL_VERTEX_STRIDE) };
         let aligned = bytes
             .max(1)
             .checked_add(stride - 1)
