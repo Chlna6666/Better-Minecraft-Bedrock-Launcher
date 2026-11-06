@@ -380,6 +380,103 @@ mod tests {
     }
 
     #[test]
+    fn structural_splices_keep_survivor_slots_and_reuse_retired_storage() {
+        let original = draws(96);
+        let (mut resident, map) = StableDrawSlots::default().plan(&original).unwrap();
+        // Delete a middle Section. All remaining physical addresses should
+        // survive even though their compact logical indices have shifted.
+        let mut removed = original.clone();
+        removed.remove(19);
+        let plan = resident.plan_structural(
+            &removed, &map,
+            &crate::prepare::StructuralDrawDelta {
+                previous_count: original.len(),
+                edits: vec![crate::prepare::StructuralDrawEdit {
+                    old: 19..20, new: 19..19,
+                }],
+            },
+        ).unwrap().unwrap();
+        let mapping = plan.mapping.clone();
+        assert_eq!(mapping[..19], map[..19]);
+        assert_eq!(mapping[19..], map[20..]);
+        assert_eq!(plan.high_water, resident.high_water());
+        plan.commit(&mut resident);
+        assert_eq!(resident.free.len(), 1);
+
+        // New root inserted into the middle of the dense logical ordering:
+        // the retired physical row is reused, without relocating survivors.
+        let extra = draws(97).pop().unwrap();
+        assert!(!original.iter().any(|draw| draw.node == extra.node));
+        let mut inserted = removed.clone();
+        inserted.insert(31, extra);
+        let plan = resident.plan_structural(
+            &inserted, &mapping,
+            &crate::prepare::StructuralDrawDelta {
+                previous_count: removed.len(),
+                edits: vec![crate::prepare::StructuralDrawEdit {
+                    old: 31..31, new: 31..32,
+                }],
+            },
+        ).unwrap().unwrap();
+        let next_mapping = plan.mapping.clone();
+        assert_eq!(&next_mapping[..31], &mapping[..31]);
+        assert_eq!(&next_mapping[32..], &mapping[31..]);
+        assert_eq!(next_mapping[31], map[19]);
+        plan.commit(&mut resident);
+        assert_eq!(resident.high_water(), 96);
+        assert!(resident.free.is_empty());
+        for (draw, slot) in inserted.iter().zip(next_mapping) {
+            assert!(resident.matches_resident_draw(slot, draw));
+        }
+    }
+
+    #[test]
+    fn structural_splices_can_move_one_identity_without_reassigning_its_slot() {
+        let original = draws(40);
+        let (mut resident, map) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut shifted = original.clone();
+        let moved = shifted.remove(12);
+        shifted.insert(0, moved);
+        let delta = crate::prepare::StructuralDrawDelta {
+            previous_count: original.len(),
+            edits: vec![
+                crate::prepare::StructuralDrawEdit {
+                    old: 0..0, new: 0..1,
+                },
+                crate::prepare::StructuralDrawEdit {
+                    old: 12..13, new: 13..13,
+                },
+            ],
+        };
+        let plan = resident.plan_structural(&shifted, &map, &delta)
+            .unwrap().unwrap();
+        assert_eq!(plan.mapping[0], map[12]);
+        assert_eq!(&plan.mapping[1..13], &map[..12]);
+        assert_eq!(&plan.mapping[13..], &map[13..]);
+        let next_map = plan.mapping.clone();
+        plan.commit(&mut resident);
+        assert!(resident.free.is_empty());
+        for (draw, slot) in shifted.iter().zip(next_map) {
+            assert!(resident.matches_resident_draw(slot, draw));
+        }
+    }
+
+    #[test]
+    fn structural_splices_reject_invalid_ranges_without_committing_slots() {
+        let original = draws(32);
+        let (resident, map) = StableDrawSlots::default().plan(&original).unwrap();
+        let invalid = crate::prepare::StructuralDrawDelta {
+            previous_count: original.len(),
+            edits: vec![crate::prepare::StructuralDrawEdit {
+                old: 15..16, new: 14..15,
+            }],
+        };
+        assert!(resident.plan_structural(&original, &map, &invalid)
+            .unwrap().is_none());
+        assert_eq!(resident.occupied.len(), original.len());
+    }
+
+    #[test]
     fn stable_slots_survive_reordering_insertion_and_removal() {
         let original = draws(80);
         let (first, assigned) = StableDrawSlots::default().plan(&original).unwrap();
