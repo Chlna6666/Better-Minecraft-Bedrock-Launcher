@@ -1,6 +1,6 @@
 //! Resident batch bounds and compute-generated indirect arguments.
 
-use super::{FRAME_PARAMS_STRIDE, gpu::buffer_memory_location, scene::DrawBatchRange};
+use super::{FRAME_PARAMS_STRIDE, gpu::{buffer_memory_location, dx11_streaming_headroom}, scene::DrawBatchRange};
 use crate::{Aabb, PreparedDraw};
 use anyhow::{Context as _, anyhow};
 use gfx_core::{
@@ -196,13 +196,15 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<Self> {
-        let instance_capacity = draws
-            .len()
+        // Keep the indirect-argument and visible-instance buffers on the
+        // same DX11 growth policy as scene draw/instance buffers. Otherwise a
+        // culling-buffer relocation would still invalidate every draw bind
+        // group at 32K/64K, defeating the scene-buffer headroom.
+        let instance_capacity = dx11_streaming_headroom(backend, draws.len())
             .max(64)
             .checked_next_power_of_two()
             .context("GPU instance capacity overflow")?;
-        let batch_capacity = batches
-            .len()
+        let batch_capacity = dx11_streaming_headroom(backend, batches.len())
             .max(64)
             .checked_next_power_of_two()
             .context("GPU batch capacity overflow")?;
