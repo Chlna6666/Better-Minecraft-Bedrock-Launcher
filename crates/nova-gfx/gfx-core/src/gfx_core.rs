@@ -927,8 +927,18 @@ impl BufferDescriptor {
 /// Texture dimensionality.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureDimension {
-    /// 2D texture.
+    /// Single-layer 2D texture.
     D2,
+    /// Array of identical 2D slices, with independent mip chains.
+    D2Array { layers: u32 },
+}
+
+impl TextureDimension {
+    /// Number of array layers per mip level.
+    #[must_use]
+    pub const fn layers(self) -> u32 {
+        match self { Self::D2 => 1, Self::D2Array { layers } => layers }
+    }
 }
 
 /// Texture creation descriptor.
@@ -961,7 +971,7 @@ impl TextureDescriptor {
                     .saturating_mul(u64::from((self.size.height() >> mip).max(1)))
                     .saturating_mul(u64::from(self.format.bytes_per_pixel())),
             )
-        })
+        }).saturating_mul(u64::from(self.dimension.layers()))
     }
     /// Validates the descriptor.
     ///
@@ -974,6 +984,17 @@ impl TextureDescriptor {
             return Err(Error::InvalidInput(
                 "texture usage must not be empty".to_string(),
             ));
+        }
+        if let TextureDimension::D2Array { layers } = self.dimension {
+            if layers == 0 {
+                return Err(Error::InvalidInput("texture arrays require nonzero layers".into()));
+            }
+            // Array render targets/readback need their own layer-aware ABI.
+            if self.usage.intersects(
+                TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT | TextureUsage::COPY_SRC
+            ) {
+                return Err(Error::Unavailable("layered attachments and readback are not implemented".into()));
+            }
         }
         let largest_dimension = self.size.width().max(self.size.height());
         let max_mip_level_count = u32::BITS - largest_dimension.leading_zeros();
