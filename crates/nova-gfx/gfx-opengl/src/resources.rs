@@ -310,17 +310,29 @@ impl ResourceDevice for OpenGlDevice {
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
         let native = texture.native;
-        let format = texture.desc.format;
+        let pixel_format = texture.desc.format;
         let upload = desc.upload;
-        if upload.layout.bytes_per_row.get() % format.bytes_per_pixel() != 0 {
+        if upload.layout.bytes_per_row.get() % pixel_format.bytes_per_pixel() != 0 {
             return Err(Error::InvalidInput("array row pitch must be pixel-aligned".into()));
         }
         let offset = usize::try_from(upload.layout.offset)
             .map_err(|_| Error::InvalidInput("array source offset exceeds usize".into()))?;
         let layer = i32::try_from(upload.layer)
             .map_err(|_| Error::InvalidInput("array layer exceeds GL signed index".into()))?;
+        let row_pixels = i32::try_from(upload.layout.bytes_per_row.get() / pixel_format.bytes_per_pixel())
+            .map_err(|_| Error::InvalidInput("array row pitch exceeds GL i32".into()))?;
+        let level = i32::try_from(upload.mip_level)
+            .map_err(|_| Error::InvalidInput("array mip index exceeds GL i32".into()))?;
+        let x = i32::try_from(upload.origin.x)
+            .map_err(|_| Error::InvalidInput("array X exceeds GL i32".into()))?;
+        let y = i32::try_from(upload.origin.y)
+            .map_err(|_| Error::InvalidInput("array Y exceeds GL i32".into()))?;
+        let width = i32::try_from(upload.extent.width())
+            .map_err(|_| Error::InvalidInput("array width exceeds GL i32".into()))?;
+        let height = i32::try_from(upload.extent.height())
+            .map_err(|_| Error::InvalidInput("array height exceeds GL i32".into()))?;
         self.park()?;
-        let (_, external, kind) = format(format);
+        let (_, external, kind) = format(pixel_format);
         // GLSL sampler2DArray sees the true texture slice. GL sub-image
         // upload depth is one, so a write cannot cross layer boundaries.
         unsafe {
@@ -328,19 +340,16 @@ impl ResourceDevice for OpenGlDevice {
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.pixel_store_i32(
                 glow::UNPACK_ROW_LENGTH,
-                i32::try_from(upload.layout.bytes_per_row.get() / format.bytes_per_pixel())
-                    .map_err(|_| Error::InvalidInput("array row pitch exceeds GL i32".into()))?,
+                row_pixels,
             );
             self.gl.tex_sub_image_3d(
                 glow::TEXTURE_2D_ARRAY,
-                i32::try_from(upload.mip_level).map_err(|_| {
-                    Error::InvalidInput("array mip index exceeds GL i32".into())
-                })?,
-                i32::try_from(upload.origin.x).map_err(|_| Error::InvalidInput("array X exceeds GL i32".into()))?,
-                i32::try_from(upload.origin.y).map_err(|_| Error::InvalidInput("array Y exceeds GL i32".into()))?,
+                level,
+                x,
+                y,
                 layer,
-                i32::try_from(upload.extent.width()).map_err(|_| Error::InvalidInput("array width exceeds GL i32".into()))?,
-                i32::try_from(upload.extent.height()).map_err(|_| Error::InvalidInput("array height exceeds GL i32".into()))?,
+                width,
+                height,
                 1,
                 external,
                 kind,
