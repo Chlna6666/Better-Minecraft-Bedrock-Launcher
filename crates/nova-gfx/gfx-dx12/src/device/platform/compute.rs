@@ -5,14 +5,24 @@ use gfx_core::{ComputeBufferAccess, ComputeCapabilities, ComputeDispatch};
 use std::collections::HashMap;
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_R32_TYPELESS};
 
+// The shader compiler runs in build.rs; production devices only load DXBC.
+mod indirect_artifacts {
+    include!(concat!(env!("OUT_DIR"), "/shaders_bytes.rs"));
+}
+
 #[cfg(test)]
 mod tests;
 
 pub(super) struct State {
     programs: HashMap<ShaderModuleId, Arc<Program>>,
-    zero: ID3D12Resource,
+    indirect_pack: NativeIndirectPack,
     indirect_buffers: Vec<Indirect>,
 }
+struct NativeIndirectPack {
+    root: ID3D12RootSignature,
+    pipeline: ID3D12PipelineState,
+}
+
 struct Program {
     signature: Vec<(u32, u8)>,
     root: ID3D12RootSignature,
@@ -52,25 +62,10 @@ pub(super) fn capabilities() -> ComputeCapabilities {
 
 impl State {
     pub(super) fn new(device: &ID3D12Device) -> Result<Self> {
-        let zero = create_buffer_resource(
-            device,
-            &BufferDescriptor {
-                label: None,
-                size: 256,
-                usage: BufferUsage::COPY_SRC,
-                memory_location: MemoryLocation::CpuToGpu,
-            },
-        )?;
-        let mut pointer = ptr::null_mut();
-        // SAFETY: this upload allocation owns 256 bytes and is initialized before any submission.
-        unsafe {
-            zero.Map(0, None, Some(&mut pointer)).map_err(dx_error)?;
-            ptr::write_bytes(pointer.cast::<u8>(), 0, 256);
-            zero.Unmap(0, None);
-        }
+        let indirect_pack = create_native_indirect_pack(device)?;
         Ok(Self {
             programs: HashMap::new(),
-            zero,
+            indirect_pack,
             indirect_buffers: Vec::new(),
         })
     }
@@ -118,7 +113,7 @@ impl State {
             &BufferDescriptor {
                 label: None,
                 size: capacity,
-                usage: BufferUsage::COPY_DST | BufferUsage::INDIRECT,
+                usage: BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::INDIRECT,
                 memory_location: MemoryLocation::GpuOnly,
             },
         )?;
@@ -481,12 +476,12 @@ impl Dx12Device {
             .checked_mul(32)
             .ok_or_else(|| Error::InvalidInput("indirect size overflow".into()))?;
         let mut indirect = self.compute.acquire_indirect(&self.device, size)?;
-        if indirect.state != D3D12_RESOURCE_STATE_COPY_DEST {
+        if indirect.state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
             record_transition_barrier(
                 command,
                 &indirect.buffer,
                 indirect.state,
-                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
         }
         let mut index = 0;
@@ -497,6 +492,9 @@ impl Dx12Device {
         // still goes through the full validation and transition path.
         let mut last_source: Option<(BufferId, ID3D12Resource)> = None;
         let mut last_signature: Option<(RenderPipelineId, ID3D12CommandSignature)> = None;
+        // One compute dispatch per contiguous source span, not three
+        // CopyBufferRegion commands per DrawIndirect.
+        let mut pending: Option<(BufferId, ID3D12Resource, u64, usize, u32)> = None;
         for step in steps {
             let RenderCommand::DrawIndirect(draw) = step else {
                 continue;
@@ -543,22 +541,29 @@ impl Dx12Device {
                 last_signature = Some((draw.pipeline, signature.clone()));
                 signature
             };
-            // Portable 16B record -> 2 root constants + native draw args with zero starts.
-            // SAFETY: source ranges were validated; each 32B destination is disjoint and
-            // the zero upload allocation was initialized at device creation.
-            unsafe {
-                command.CopyBufferRegion(&indirect.buffer, index * 32, source, draw.offset + 8, 8);
-                command.CopyBufferRegion(&indirect.buffer, index * 32 + 8, source, draw.offset, 8);
-                command.CopyBufferRegion(
-                    &indirect.buffer,
-                    index * 32 + 16,
-                    &self.compute.zero,
-                    0,
-                    8,
-                );
+            let contiguous = pending.as_ref().is_some_and(|(buffer, _, source_offset, _, length)| {
+                *buffer == draw.arguments
+                    && source_offset.checked_add(u64::from(*length) * 16) == Some(draw.offset)
+                    // The compiled 64-thread kernel uses one dispatch grid.
+                    && *length < 65535 * 64
+            });
+            if !contiguous {
+                if let Some((_, resource, source_offset, target, length)) = pending.take() {
+                    self.pack_native_indirect_run(
+                        command, &resource, &indirect.buffer, source_offset, target, length,
+                    )?;
+                }
+                pending = Some((draw.arguments, source.clone(), draw.offset, index as usize, 1));
+            } else if let Some((_, _, _, _, length)) = pending.as_mut() {
+                *length += 1;
             }
             indirect.signatures.push(signature);
             index += 1;
+        }
+        if let Some((_, resource, source_offset, target, length)) = pending.take() {
+            self.pack_native_indirect_run(
+                command, &resource, &indirect.buffer, source_offset, target, length,
+            )?;
         }
         record_transition_barrier(
             command,
@@ -570,6 +575,36 @@ impl Dx12Device {
         let slot = resources.len();
         resources.push(indirect);
         Ok(Some(slot))
+    }
+
+    fn pack_native_indirect_run(
+        &self,
+        command: &ID3D12GraphicsCommandList,
+        source: &ID3D12Resource,
+        target: &ID3D12Resource,
+        source_offset: u64,
+        first_target: usize,
+        count: u32,
+    ) -> Result<()> {
+        let first_word = u32::try_from(source_offset / 4)
+            .map_err(|_| Error::InvalidInput("DX12 indirect input offset exceeds shader address range".into()))?;
+        let target_word = first_target.checked_mul(8)
+            .and_then(|word| u32::try_from(word).ok())
+            .ok_or_else(|| Error::InvalidInput("DX12 indirect output offset exceeds shader address range".into()))?;
+        let words = [first_word, target_word, count, 0u32];
+        // SAFETY: command list is recording on its graphics queue; source is
+        // transitioned to GENERIC_READ, target is UAV, and all writes target
+        // disjoint 32-byte records. The UAV->INDIRECT transition follows the
+        // final dispatch before ExecuteIndirect.
+        unsafe {
+            command.SetComputeRootSignature(&self.compute.indirect_pack.root);
+            command.SetPipelineState(&self.compute.indirect_pack.pipeline);
+            command.SetComputeRootShaderResourceView(0, source.GetGPUVirtualAddress());
+            command.SetComputeRootUnorderedAccessView(1, target.GetGPUVirtualAddress());
+            command.SetComputeRoot32BitConstants(2, 4, words.as_ptr().cast(), 0);
+            command.Dispatch(count.div_ceil(64), 1, 1);
+        }
+        Ok(())
     }
 
     pub(super) fn execute_indirect(
@@ -598,6 +633,53 @@ impl Dx12Device {
         }
         Ok(())
     }
+}
+
+fn create_native_indirect_pack(device: &ID3D12Device) -> Result<NativeIndirectPack> {
+    let artifact = indirect_artifacts::native_indirect_dx12_shader("cs_pack_native_indirect")
+        .ok_or_else(|| Error::Shader("missing offline DX12 indirect pack shader".into()))?;
+    let gfx_core::EmbeddedShader::DxBytecode(bytecode) = artifact else {
+        return Err(Error::Shader("DX12 native indirect pack must be precompiled".into()));
+    };
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_SRV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: 0, RegisterSpace: 0 },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: 1, RegisterSpace: 0 },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 2,
+                    RegisterSpace: 0,
+                    Num32BitValues: 4,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+    ];
+    let root = serialize_root_signature(device, &parameters)?;
+    let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC::default();
+    desc.pRootSignature = core::mem::ManuallyDrop::new(Some(root.clone()));
+    desc.CS = shader_bytecode(bytecode);
+    // SAFETY: offline bytecode is static and the root signature remains live.
+    let result = unsafe { device.CreateComputePipelineState(&desc) };
+    // SAFETY: descriptor owns one temporary COM reference.
+    unsafe { core::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
+    Ok(NativeIndirectPack {
+        root,
+        pipeline: result.map_err(dx_error)?,
+    })
 }
 
 fn create_program(

@@ -9,7 +9,7 @@ readme = "README.md"
 documentation = "https://docs.rs/gfx-dx12"
 keywords = ["graphics", "gpu", "dx12", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
-include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+include = ["src/**", "tests/**", "benches/**", "build.rs", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
 [lib]
 path = "src/gfx_dx12.rs"
@@ -19,6 +19,9 @@ default = []
 # Intended for build tools, shader experiments, and explicit examples only.
 # Production renderers should supply precompiled DX bytecode.
 shader-compiler = ["windows/Win32_Graphics_Direct3D_Fxc"]
+
+[build-dependencies]
+gfx-shader-build = { path = "../gfx-shader-build" }
 
 [lints.rust]
 unsafe_code = "warn"
