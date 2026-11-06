@@ -50,6 +50,19 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
 }
 
 impl ResourceDevice for OpenGlDevice {
+    fn buffer_binding_limits(&self) -> BufferBindingLimits {
+        let (storage, uniform) = unsafe {
+            (self.gl.get_parameter_i64(glow::MAX_SHADER_STORAGE_BLOCK_SIZE),
+             self.gl.get_parameter_i64(glow::MAX_UNIFORM_BLOCK_SIZE))
+        };
+        BufferBindingLimits {
+            storage_offset_alignment: self.storage_alignment,
+            max_storage_binding_bytes: storage.max(0) as u64,
+            uniform_offset_alignment: self.uniform_alignment,
+            max_uniform_binding_bytes: uniform.max(0) as u64,
+        }
+    }
+
     fn compute_capabilities(&self) -> ComputeCapabilities {
         self.compute.capabilities
     }
