@@ -359,6 +359,16 @@ pub trait ResourceDevice {
     /// data slice is too short, or the backend cannot stage the upload.
     fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()>;
 
+    /// Upload one validated mip slice into a native 2D texture array.
+    /// Backends without complete layered resource support fail explicitly.
+    fn write_texture_array_layer(
+        &mut self,
+        _desc: crate::TextureArrayLayerWriteDescriptor,
+        _data: &[u8],
+    ) -> Result<()> {
+        Err(Error::Unavailable("layered array uploads are not implemented".into()))
+    }
+
     /// Writes a batch of texture uploads in order.
     ///
     /// # Errors
