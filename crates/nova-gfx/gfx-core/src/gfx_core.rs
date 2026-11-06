@@ -989,6 +989,9 @@ impl TextureDescriptor {
             if layers == 0 {
                 return Err(Error::InvalidInput("texture arrays require nonzero layers".into()));
             }
+            if self.format == Format::Depth32Float {
+                return Err(Error::Unavailable("depth texture arrays need a separate depth-view ABI".into()));
+            }
             // Array render targets/readback need their own layer-aware ABI.
             if self.usage.intersects(
                 TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT | TextureUsage::COPY_SRC
