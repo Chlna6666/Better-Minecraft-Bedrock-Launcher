@@ -153,3 +153,6 @@ jobs:
 
       - name: Build BMCBL executable
         run: cargo build --bin BMCBL
+
+      - name: Test GPUI 3D cross-material batching
+        run: cargo test -p gpui-3d --lib scene_view::batching::tests -- --nocapture
