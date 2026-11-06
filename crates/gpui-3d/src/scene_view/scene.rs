@@ -1229,9 +1229,10 @@ impl SceneResources {
         }
         if let Some(started) = trace_started {
             eprintln!(
-                "gpui3d resident_delta draws={} dirty={} draw_patches={} instance_patches={} uploaded_bytes={} ms={:.2}",
+                "gpui3d resident_delta draws={} dirty={} draw_patches={} instance_patches={} uploaded_bytes={} native_commands_stable={} ms={:.2}",
                 self.prepared.draws.len(), dirty.len(),
                 draw_patch_count, instance_patch_count, uploaded_bytes,
+                commands_unchanged,
                 started.elapsed().as_secs_f64() * 1000.0,
             );
         }
