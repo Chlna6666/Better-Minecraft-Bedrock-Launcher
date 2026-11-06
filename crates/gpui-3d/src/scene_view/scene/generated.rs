@@ -183,6 +183,39 @@ impl BatchMappingSource {
     }
 }
 
+/// Add one generated Section/part record during the existing native Draw
+/// BindGroup traversal. Reuse the last committed Page's spare Vec, so
+/// repeated streaming deltas don't allocate one new record array per Page.
+pub(super) fn push_page_record(
+    groups: &mut HashMap<BufferId, (usize, Vec<u32>)>,
+    resident_mappings: &mut HashMap<BufferId, Mapping>,
+    source: Option<BatchMappingSource>,
+    batch_index: usize,
+    first_instance: usize,
+) -> gpui::Result<()> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let (_, mapping) = match groups.entry(source.buffer) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let mut scratch = resident_mappings
+                .get_mut(&source.buffer)
+                .map(|mapping| std::mem::take(&mut mapping.scratch_entries))
+                .unwrap_or_default();
+            scratch.clear();
+            entry.insert((source.source_size, scratch))
+        }
+    };
+    mapping.extend([
+        source.argument_part,
+        u32::try_from(batch_index).context("generated batch index overflow")?,
+        u32::try_from(first_instance).context("generated draw index overflow")?,
+        0,
+    ]);
+    Ok(())
+}
+
 /// Mesh parts are validated as contiguous, strictly increasing index
 /// ranges at construction. Resolve the generated part in O(log N) rather than
 /// scanning every material part again for each generated Draw batch.
@@ -199,41 +232,31 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         voxel_shader: bool,
     ) -> gpui::Result<()> {
-        let mut groups = HashMap::<BufferId, (usize, Vec<u32>)>::new();
-        let resident_sources = self.generated_batch_sources.len() == self.batches.len();
-        for (index, batch) in self.batches.iter().enumerate() {
-            // In normal streaming scenes the metadata was captured by the
-            // earlier binding pass. Direct GPU tests may construct batches
-            // without bindings, so retain the validated fallback path.
-            let source = if resident_sources {
-                self.generated_batch_sources[index]
-            } else {
-                let draw = &self.prepared.draws[batch.first_instance];
-                let mesh = self.meshes.get(&mesh_key(draw, voxel_shader))
-                    .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
-                BatchMappingSource::for_draw(draw, mesh)?
-            };
-            let Some(source) = source else {
-                continue;
-            };
-            let (_, mapping) = match groups.entry(source.buffer) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let mut scratch = self.generated_mappings
-                        .get_mut(&source.buffer)
-                        .map(|mapping| std::mem::take(&mut mapping.scratch_entries))
-                        .unwrap_or_default();
-                    scratch.clear();
-                    entry.insert((source.source_size, scratch))
-                }
-            };
-            mapping.extend([
-                source.argument_part,
-                u32::try_from(index).context("generated batch index overflow")?,
-                u32::try_from(batch.first_instance).context("generated draw index overflow")?,
-                0,
-            ]);
-        }
+        let mut groups = if let Some(ready) = self.generated_pending_groups.take() {
+            // Normal streaming path: no second traversal of every Batch.
+            ready
+        } else {
+            // Standalone compute tests and first-time resource initialization
+            // still support the original, validated per-Batch fallback.
+            let mut fallback = std::mem::take(&mut self.generated_group_scratch);
+            fallback.clear();
+            let resident_sources = self.generated_batch_sources.len() == self.batches.len();
+            for (index, batch) in self.batches.iter().enumerate() {
+                let source = if resident_sources {
+                    self.generated_batch_sources[index]
+                } else {
+                    let draw = &self.prepared.draws[batch.first_instance];
+                    let mesh = self.meshes.get(&mesh_key(draw, voxel_shader))
+                        .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+                    BatchMappingSource::for_draw(draw, mesh)?
+                };
+                push_page_record(
+                    &mut fallback, &mut self.generated_mappings,
+                    source, index, batch.first_instance,
+                )?;
+            }
+            fallback
+        };
         let stale = self
             .generated_mappings
             .keys()
@@ -246,6 +269,7 @@ impl SceneResources {
             }
         }
         if groups.is_empty() {
+            self.generated_group_scratch = groups;
             return Ok(());
         }
         let needed = self.batches.len().next_power_of_two();
@@ -272,7 +296,7 @@ impl SceneResources {
             .ok_or_else(|| anyhow!("missing generated draw output"))?;
         let mut updates = Vec::new();
         let binding_limits = device.buffer_binding_limits();
-        for (source, (source_size, entries)) in groups {
+        for (source, (source_size, entries)) in groups.drain() {
             if self
                 .generated_mappings
                 .get(&source)
@@ -341,6 +365,7 @@ impl SceneResources {
                 dispatch_ranges,
             });
         }
+        self.generated_group_scratch = groups;
         if updates.is_empty() {
             return Ok(());
         }
@@ -635,6 +660,32 @@ mod mapping_patch_tests {
             &patches, 131_072, false, limits(256, 1 << 20),
         ).unwrap();
         assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 131_072 }]);
+    }
+
+    #[test]
+    fn prebuilt_page_groups_preserve_native_draw_order_and_offsets() {
+        let a = super::BatchMappingSource {
+            part: crate::MeshPart::new(0, 6, 0),
+            buffer: gfx_core::BufferId::from_parts(3, 1),
+            source_size: 4096,
+            argument_part: 17,
+        };
+        let b = super::BatchMappingSource {
+            part: crate::MeshPart::new(6, 12, 1),
+            buffer: gfx_core::BufferId::from_parts(4, 1),
+            source_size: 8192,
+            argument_part: 42,
+        };
+        let mut groups = std::collections::HashMap::new();
+        let mut old = std::collections::HashMap::new();
+        super::push_page_record(&mut groups, &mut old, Some(a), 2, 5).unwrap();
+        super::push_page_record(&mut groups, &mut old, Some(b), 3, 6).unwrap();
+        super::push_page_record(&mut groups, &mut old, Some(a), 7, 10).unwrap();
+        super::push_page_record(&mut groups, &mut old, None, 8, 11).unwrap();
+        assert_eq!(&groups[&a.buffer].1, &[17, 2, 5, 0, 17, 7, 10, 0]);
+        assert_eq!(&groups[&b.buffer].1, &[42, 3, 6, 0]);
+        assert_eq!(groups[&a.buffer].0, 4096);
+        assert_eq!(groups[&b.buffer].0, 8192);
     }
 
     #[test]

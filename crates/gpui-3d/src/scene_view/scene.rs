@@ -39,6 +39,11 @@ pub(super) struct SceneResources {
     mesh_draw_shader: Option<gfx_core::ShaderModuleId>,
     generated_arguments: Option<(BufferId, usize)>,
     generated_mappings: HashMap<BufferId, generated::Mapping>,
+    /// Published by the native binding traversal, consumed by the GPU Draw
+    /// table update without another full Batch/Mesh pass.
+    generated_pending_groups: Option<HashMap<BufferId, (usize, Vec<u32>)>>,
+    /// Retains the Page-group HashMap buckets across Section publications.
+    generated_group_scratch: HashMap<BufferId, (usize, Vec<u32>)>,
     scene: Option<Arc<Scene>>,
     active_assets: assets::AssetCounts,
     texture_table: Option<Arc<HashMap<TextureAssetId, Arc<crate::TextureAsset>>>>,
@@ -347,6 +352,8 @@ impl SceneResources {
             mesh_draw_shader: None,
             generated_arguments: None,
             generated_mappings: HashMap::new(),
+            generated_pending_groups: None,
+            generated_group_scratch: HashMap::new(),
             scene: None,
             active_assets: assets::AssetCounts::default(),
             texture_table: None,
@@ -1670,6 +1677,10 @@ impl SceneResources {
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
         let mut next_sources = std::mem::take(&mut self.spare_draw_resource_sources);
         let mut next_generated = std::mem::take(&mut self.spare_generated_batch_sources);
+        // This pass already touches every native Batch. Assemble its GPU
+        // mapping records now, instead of walking all batches a second time.
+        let mut next_page_groups = std::mem::take(&mut self.generated_group_scratch);
+        next_page_groups.clear();
         next_generated.clear();
         next.clear();
         next_keys.clear();
@@ -1734,7 +1745,12 @@ impl SceneResources {
                 next.push(bind_group);
                 next_keys.push(previous_key);
                 next_sources.push(source);
-                next_generated.push(self.generated_batch_sources[batch_index]);
+                let metadata = self.generated_batch_sources[batch_index];
+                generated::push_page_record(
+                    &mut next_page_groups, &mut self.generated_mappings,
+                    metadata, batch_index, index,
+                )?;
+                next_generated.push(metadata);
                 continue;
             }
             let mesh = self
@@ -1744,6 +1760,10 @@ impl SceneResources {
             // This lookup and binary material-part resolution now happen in
             // the same pass that already resolves the native BindGroup.
             let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
+            generated::push_page_record(
+                &mut next_page_groups, &mut self.generated_mappings,
+                generated_source, batch_index, index,
+            )?;
             next_generated.push(generated_source);
             let key = DrawResourceKey {
                 shadow: shadow_buffer,
@@ -1865,6 +1885,10 @@ impl SceneResources {
                 }
             }
         }
+        // Publish the completed GPU mapping snapshot alongside the native
+        // bindings. A failed BindGroup creation above leaves the previous
+        // committed sources intact; the next retry will rebuild the scratch.
+        self.generated_pending_groups = Some(next_page_groups);
         // Keep the previous Vec allocations as reusable scratch storage.
         std::mem::swap(&mut self.draw_resources, &mut next);
         std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
