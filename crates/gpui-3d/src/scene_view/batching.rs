@@ -11,7 +11,7 @@ use std::collections::HashMap;
 // bindings depend on texture resources, while the raster pipeline depends on
 // front-face/cull state. MaterialId is therefore intentionally NOT part of
 // the grouping key: different block materials can share one quad submission.
-type BatchKey = (bool, [Option<u64>; 4], u64, u32, bool, bool, bool);
+type BatchKey = (bool, [Option<u64>; 4], u64, u32, u8);
 
 /// Persistent scratch for streaming batch updates. Group by one computed key
 /// per draw, retain previously sorted distinct keys, and sort only newly
@@ -189,6 +189,13 @@ fn batch_key(
     // Round up to a power-of-two vertex-count class: padding costs less than 2x vertex
     // invocations per instance instead of a large part forcing every tiny part to its size.
     let size_class = u32::BITS - draw.part.index_count().saturating_sub(1).leading_zeros();
+    // One canonical raster state: double-sided draws ignore the stored front
+    // face, while single-sided draws account for mirrored transforms.
+    let raster = match draw.raster_front_face() {
+        None => 0u8,
+        Some(gfx_core::FrontFace::Ccw) => 1,
+        Some(gfx_core::FrontFace::Cw) => 2,
+    };
     (
         !quad,
         [
@@ -199,9 +206,7 @@ fn batch_key(
         ],
         page,
         size_class,
-        draw.material.double_sided,
-        draw.material.front_face == gfx_core::FrontFace::Cw,
-        !draw.material.double_sided && draw.is_mirrored(),
+        raster,
     )
 }
 
@@ -340,6 +345,35 @@ mod tests {
         assert_eq!(batches.len(), 1, "per-instance material data must not split a quad draw");
         assert_eq!(batches[0].instance_count, 192);
         assert_eq!(draws.iter().map(|d| d.material.id()).collect::<std::collections::HashSet<_>>().len(), 192);
+    }
+
+    #[test]
+    fn small_and_large_scenes_preserve_transparent_order() {
+        for count in [16usize, 192] {
+            let mesh = Arc::new(Mesh::cube());
+            let mut scene = Scene::new();
+            for i in 0..count {
+                let mut material = Material::new();
+                material.shading_model = crate::ShadingModel::Unlit;
+                material.alpha_mode = if i % 4 == 0 {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                };
+                scene.insert(None, Node::new().with_mesh(mesh.clone())
+                    .with_materials([Arc::new(material)])).unwrap();
+            }
+            let mut draws = prepare(&scene);
+            let blend_count = draws.iter().filter(|draw| draw.material.alpha_mode == AlphaMode::Blend).count();
+            let mut meshes = HashMap::new();
+            meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
+            let batches = group_voxel_batches(&mut draws, &meshes);
+            assert_eq!(batches.len(), blend_count + 1);
+            assert_eq!(batches[0].instance_count, count - blend_count);
+            assert!(batches.iter().skip(1).all(|batch| batch.instance_count == 1));
+            assert!(draws[batches[1].first_instance..].iter()
+                .all(|draw| draw.material.alpha_mode == AlphaMode::Blend));
+        }
     }
 
     #[test]
