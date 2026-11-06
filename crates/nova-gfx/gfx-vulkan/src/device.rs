@@ -3538,6 +3538,21 @@ impl SurfaceDevice for VulkanDevice {
 }
 
 impl ResourceDevice for VulkanDevice {
+    fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
+        // The exact selected physical adapter's VkPhysicalDeviceLimits.
+        // GPU allocations and compute descriptor binding use these same
+        // properties; avoid freezing a guessed Vulkan alignment into GPUI.
+        let limits = unsafe {
+            self.instance.get_physical_device_properties(self.physical_device)
+        }.limits;
+        gfx_core::BufferBindingLimits {
+            storage_offset_alignment: limits.min_storage_buffer_offset_alignment.max(1),
+            max_storage_binding_bytes: u64::from(limits.max_storage_buffer_range),
+            uniform_offset_alignment: limits.min_uniform_buffer_offset_alignment.max(1),
+            max_uniform_binding_bytes: u64::from(limits.max_uniform_buffer_range),
+        }
+    }
+
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         self.compute.capabilities
     }
