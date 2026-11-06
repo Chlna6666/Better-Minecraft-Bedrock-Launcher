@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, mapping[8] as usize);
         assert_ne!(patches[0].1, keys[mapping[8] as usize]);
-        let canonical = super::super::gpu::encode_draw_records(
+        let canonical = crate::scene_view::gpu::encode_draw_records(
             std::slice::from_ref(&changed[8]), 0,
         ).unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
