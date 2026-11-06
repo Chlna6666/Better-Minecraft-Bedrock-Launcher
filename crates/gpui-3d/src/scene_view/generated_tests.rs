@@ -126,9 +126,9 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
                 // In the page-based generated vertex path, the normal matrix
                 // is reserved metadata. Pass the header record offset exactly
                 // as the production Instance encoder does.
-                instances[68..72].copy_from_slice(
-                    &resource.generated.as_ref().unwrap().template_base.to_le_bytes(),
-                );
+                let base = resource.generated.as_ref().unwrap().template_base;
+                instances[68..72].copy_from_slice(&((base & 0xffff) as f32).to_le_bytes());
+                instances[72..76].copy_from_slice(&((base >> 16) as f32).to_le_bytes());
                 instances
             },
             BufferUsage::STORAGE,

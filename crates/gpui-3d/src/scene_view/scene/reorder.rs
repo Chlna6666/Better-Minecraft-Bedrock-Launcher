@@ -77,11 +77,15 @@ impl SceneResources {
             bytes[offset..offset + 4].copy_from_slice(&vertex_base.to_ne_bytes());
             if let Some(generated) = &mesh.generated {
                 // The voxel shader does not use normal_matrix for normals.
-                // Column 0.y carries the page-relative 112-byte template
-                // header index; column 0.x remains the indirect vertex count.
+                // Column 0.yz carry the 32-bit template record index as two
+                // numerically exact f32 16-bit halves. Never bitcast a u32
+                // into f32 here: DX11/GL may flush denormal values to zero.
+                // Column 0.x remains the indirect vertex count.
                 let offset = index * INSTANCE_STRIDE as usize + 68;
-                bytes[offset..offset + 4]
-                    .copy_from_slice(&generated.template_base.to_ne_bytes());
+                let lo = (generated.template_base & 0xffff) as f32;
+                let hi = (generated.template_base >> 16) as f32;
+                bytes[offset..offset + 4].copy_from_slice(&lo.to_ne_bytes());
+                bytes[offset + 4..offset + 8].copy_from_slice(&hi.to_ne_bytes());
             }
         }
         Ok(())

@@ -141,7 +141,10 @@ fn template_position(v:VoxelVertex,height:f32)->vec3<f32> {return vec3<f32>(v.po
 fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index) instance_index:u32)->VoxelOutput {
     let physical_slot = draw_slot_indices[instance_index];
     let instance = instances[physical_slot];
-    let template_base = bitcast<u32>(instance.normal_matrix[0].y);
+    // The normal matrix is unused by unlit voxel expansion. Two exact
+    // numeric halves preserve a u32 page index across DX11/GL f32 loads.
+    let template_base = u32(instance.normal_matrix[0].y)
+        | (u32(instance.normal_matrix[0].z) << 16u);
     let origin = bitcast<vec4<f32>>(generated_templates[template_base].info);
     let size = generated_templates[template_base+1u].info;
     let base=instance.vertex_base & 0x7fffffffu;
