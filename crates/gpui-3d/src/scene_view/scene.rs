@@ -1401,6 +1401,20 @@ impl SceneResources {
         }
         self.uploaded_slot_map.resize(count * 4, 0);
         self.uploaded_slot_map[offset * 4..].copy_from_slice(&slot_suffix);
+        // Canonical singleton DrawIndirect offsets are a function of their
+        // current logical index, independent of which Section owns the slot.
+        // The structural path must update the effective native command
+        // address count as well as GPU buffers. A middle insert/remove
+        // changes the owner at each index but never its {index * 16, index}
+        // address; only append or truncate the dense address tail.
+        let old_addresses = self.draw_addresses.len();
+        self.draw_addresses.truncate(count);
+        for index in old_addresses..count {
+            self.draw_addresses.push(DrawAddress {
+                arguments_offset: index as u64 * ARGUMENT_STRIDE,
+                first_instance: index,
+            });
+        }
         if let Some(started) = trace_started {
             eprintln!(
                 "gpui3d structural_slot_delta previous={} current={} dirty={} slot_suffix={} uploaded_bytes={} ms={:.2}",
