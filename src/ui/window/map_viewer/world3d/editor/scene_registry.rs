@@ -579,6 +579,19 @@ fn fused_section_cluster(sources: &[Arc<World3dChunkMesh>]) -> Option<World3dChu
             mapping.push(slot);
         }
     }
+    // Don't substitute a coarser 2x2 culling bound and incur a larger
+    // generated mesh when material-part coalescing cannot eliminate any
+    // native draw. Count only used material slots, not unused source assets.
+    let original_parts = sources.iter().map(|s| s.mesh.parts().len()).sum::<usize>();
+    let mut shared_parts = HashSet::<u32>::new();
+    for (section, mapping) in sources.iter().zip(&mappings) {
+        for part in section.mesh.parts() {
+            shared_parts.insert(*mapping.get(part.material_slot() as usize)?);
+        }
+    }
+    if shared_parts.len() >= original_parts {
+        return None;
+    }
     let placed = sources.iter().map(|section| {
         let source = section.mesh.gpu_voxels()?;
         let delta = [
