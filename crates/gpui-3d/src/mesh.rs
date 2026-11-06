@@ -235,7 +235,11 @@ impl Mesh {
         mesh
     }
 
-    pub(crate) fn gpu_voxels(&self) -> Option<&Arc<crate::VoxelMeshSource>> {
+    /// Borrow the immutable GPU-generated voxel source without materializing
+    /// CPU fallback triangles. This allows adjacent streaming Sections to be
+    /// fused before compute meshing while preserving their original sources.
+    #[must_use]
+    pub fn gpu_voxels(&self) -> Option<&Arc<crate::VoxelMeshSource>> {
         self.gpu_voxels.as_ref()
     }
     /// Creates a unit cube centered at the origin with face normals and UVs.
