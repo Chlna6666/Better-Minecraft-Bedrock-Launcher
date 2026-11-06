@@ -92,9 +92,13 @@ pub(super) struct SceneResources {
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     draw_resource_keys: Vec<DrawResourceKey>,
+    /// Mesh identity for each binding. Allows positional hits to skip the
+    /// resident MeshResources lookup for unchanged streamed sections.
+    draw_resource_sources: Vec<((MeshId, bool), u64)>,
     /// Spare capacity for batch/resource lists, recycled across scene publications.
     spare_draw_resources: Vec<BindGroupId>,
     spare_draw_resource_keys: Vec<DrawResourceKey>,
+    spare_draw_resource_sources: Vec<((MeshId, bool), u64)>,
     draw_addresses: Vec<DrawAddress>,
     reorder_positions: Vec<usize>,
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
@@ -322,8 +326,10 @@ impl SceneResources {
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_keys: Vec::new(),
+            draw_resource_sources: Vec::new(),
             spare_draw_resources: Vec::new(),
             spare_draw_resource_keys: Vec::new(),
+            spare_draw_resource_sources: Vec::new(),
             draw_addresses: Vec::new(),
             reorder_positions: Vec::new(),
             binding_cache: HashMap::new(),
@@ -1481,13 +1487,21 @@ impl SceneResources {
     ) -> gpui::Result<()> {
         let mut next = std::mem::take(&mut self.spare_draw_resources);
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
+        let mut next_sources = std::mem::take(&mut self.spare_draw_resource_sources);
         next.clear();
         next_keys.clear();
+        next_sources.clear();
         next.reserve(self.batches.len());
         next_keys.reserve(self.batches.len());
+        next_sources.reserve(self.batches.len());
         let mut created = HashMap::new();
         // Bind the allocated range so culling alone does not invalidate every bind group.
         let instance_count = self.instance_capacity;
+        let shadow_buffer = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
+        let visible_instances = self.culling.as_ref().map(|culling| culling.visible_instances);
+        // Mesh replacement can move voxel pages even if a logical MeshId is
+        // unchanged; bypass the positional shortcut in that case.
+        let resident_meshes_unchanged = self.retired_meshes.is_empty();
         let trace_started = trace_timings().then(Instant::now);
         let mut reused = 0usize;
         let mut positional_reused = 0usize;
@@ -1502,20 +1516,40 @@ impl SceneResources {
             let mesh_id = draw.mesh.id();
             let compact_voxel = mesh_key(draw, voxel_shader).1;
             let generation = draw.mesh.generation();
-            let mesh = self
-                .meshes
-                .get(&(mesh_id, compact_voxel))
-                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             let albedo_id = draw.material.albedo_texture;
             let normal_id = draw.material.normal_texture;
             let occlusion_id = draw.material.occlusion_texture;
             let metallic_roughness_id = draw.material.metallic_roughness_texture;
+            let source = ((mesh_id, compact_voxel), generation);
+            // Most Section deltas retain the same binding at a given batch
+            // position. Match immutable source IDs and the resource-bearing
+            // texture/frame keys before touching the large GPU mesh map.
+            if !force
+                && resident_meshes_unchanged
+                && self.draw_resource_sources.get(batch_index) == Some(&source)
+                && let Some(&previous_key) = self.draw_resource_keys.get(batch_index)
+                && previous_key.shadow == shadow_buffer
+                && previous_key.visible_instances == visible_instances
+                && previous_key.albedo_id == albedo_id
+                && previous_key.normal_id == normal_id
+                && previous_key.occlusion_id == occlusion_id
+                && previous_key.metallic_roughness_id == metallic_roughness_id
+                && let Some(&bind_group) = self.draw_resources.get(batch_index)
+            {
+                reused += 1;
+                positional_reused += 1;
+                next.push(bind_group);
+                next_keys.push(previous_key);
+                next_sources.push(source);
+                continue;
+            }
+            let mesh = self
+                .meshes
+                .get(&(mesh_id, compact_voxel))
+                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
             let key = DrawResourceKey {
-                shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
-                visible_instances: self
-                    .culling
-                    .as_ref()
-                    .map(|culling| culling.visible_instances),
+                shadow: shadow_buffer,
+                visible_instances,
                 mesh: if compact_voxel {
                     DrawMeshKey::VoxelPage(mesh.vertices)
                 } else {
@@ -1537,6 +1571,7 @@ impl SceneResources {
                 positional_reused += 1;
                 next.push(bind_group);
                 next_keys.push(key);
+                next_sources.push(source);
                 continue;
             }
             if let Some(&bind_group) = created.get(&key).or_else(|| {
@@ -1549,6 +1584,7 @@ impl SceneResources {
                 reused += 1;
                 next.push(bind_group);
                 next_keys.push(key);
+                next_sources.push(source);
                 continue;
             }
             let albedo_view = if let Some(id) = albedo_id {
@@ -1616,6 +1652,7 @@ impl SceneResources {
                     created.insert(key, bind_group);
                     next.push(bind_group);
                     next_keys.push(key);
+                    next_sources.push(source);
                 }
                 Err(error) => {
                     for bind_group in created.into_values() {
@@ -1628,8 +1665,10 @@ impl SceneResources {
         // Keep the previous Vec allocations as reusable scratch storage.
         std::mem::swap(&mut self.draw_resources, &mut next);
         std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
+        std::mem::swap(&mut self.draw_resource_sources, &mut next_sources);
         self.spare_draw_resources = next;
         self.spare_draw_resource_keys = next_keys;
+        self.spare_draw_resource_sources = next_sources;
         if force {
             for bind_group in self.binding_cache.values().copied() {
                 device.destroy_bind_group(bind_group)?;
@@ -1843,6 +1882,8 @@ impl SceneResources {
         }
         self.draw_resources.clear();
         self.draw_resource_keys.clear();
+        self.draw_resource_sources.clear();
+        self.spare_draw_resource_sources.clear();
         self.draw_slot_keys.clear();
         self.scratch_draw_slot_keys.clear();
         self.spare_draw_resources.clear();
