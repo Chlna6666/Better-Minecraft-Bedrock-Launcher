@@ -2744,11 +2744,13 @@ fn preview_3d_filter_internal_block_records(blocks: &mut Preview3dChunkBlocks) -
         !preview_3d_transparent_block_is_fully_hidden(block.key, occupied, glass, water, lava)
     });
 
+    let partial_heights = &blocks.partial_fluid_heights;
     blocks.water_blocks.retain(|block| {
         if block.surface_only {
             !preview_3d_surface_fluid_block_is_hidden(block.key, occupied, water)
         } else {
             !preview_3d_transparent_block_is_fully_hidden(block.key, occupied, water, glass, lava)
+                || has_exposed_liquid_side_above_neighbor(block, water, partial_heights)
         }
     });
 
@@ -2757,6 +2759,7 @@ fn preview_3d_filter_internal_block_records(blocks: &mut Preview3dChunkBlocks) -
             !preview_3d_surface_fluid_block_is_hidden(block.key, occupied, lava)
         } else {
             !preview_3d_transparent_block_is_fully_hidden(block.key, occupied, lava, glass, water)
+                || has_exposed_liquid_side_above_neighbor(block, lava, partial_heights)
         }
     });
 
@@ -2787,6 +2790,25 @@ fn preview_3d_transparent_block_is_fully_hidden(
                 && !other_transparent_a.contains(&neighbor)
                 && !other_transparent_b.contains(&neighbor))
     })
+}
+
+/// A fluid fully surrounded by other fluid blocks can still expose a
+/// vertical upper strip beside a lower fluid level. This is the only
+/// expensive path for pre-culling: the common exterior-face path returns
+/// before examining level differences.
+fn has_exposed_liquid_side_above_neighbor(
+    block: &Preview3dFluidBlock,
+    same_fluid: &HashSet<BlockKey>,
+    partial_heights: &HashMap<BlockKey, f32>,
+) -> bool {
+    FACE_DEFINITIONS.into_iter()
+        .filter(|face| face.normal[1] == 0)
+        .any(|face| {
+            let neighbour = block.key.neighbor(face);
+            same_fluid.contains(&neighbour)
+                && partial_heights.get(&neighbour)
+                    .is_some_and(|&height| block.height > height + 0.0001)
+        })
 }
 
 fn preview_3d_surface_fluid_block_is_hidden(
@@ -3396,9 +3418,11 @@ impl Preview3dChunkBlocks {
     fn rebuild_neighbor_indexes(&mut self) {
         self.refresh_ambient_exclusions();
         self.stair_states.clear();
-        self.partial_fluid_heights.clear();
-        // This index is sparse even for an ocean: ordinary source-level
-        // water/lava is represented by the absence of an entry (height=1).
+        // Preserve heights captured before internal-liquid pruning: a
+        // culled low-level cell still influences its visible neighbour's
+        // exposed upper strip. Chunk collections are immutable after their
+        // decode/filter stage; edits build a new chunk snapshot.
+        // Ordinary source-level fluid has no entry (height=1).
         for block in self.water_blocks.iter().chain(self.lava_blocks.iter()) {
             if block.height < 0.999 {
                 self.partial_fluid_heights.insert(block.key, block.height);
@@ -9381,6 +9405,37 @@ mod streaming_fluid_level_tests {
         assert!(heights.contains(&64.5));
         assert!(heights.contains(&65.0));
         assert!(!heights.contains(&64.0));
+    }
+
+    #[test]
+    fn internal_fluid_filter_keeps_exposed_strips_and_retains_culled_neighbor_level() {
+        let mut blocks = Preview3dChunkBlocks::default();
+        let high = liquid(7, 1.0);
+        let low = liquid(8, 0.5);
+        // Six same-fluid neighbours normally make a cell an internal record.
+        // The high cell must nevertheless remain renderable above the low
+        // neighbour's surface; the low cell may be culled but its level is
+        // still needed as neighbor metadata.
+        for (dx, dy, dz) in [
+            (0, 0, 0), (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+        ] {
+            let block = if dx == 1 && dy == 0 && dz == 0 {
+                low.clone()
+            } else {
+                let mut value = high.clone();
+                value.key.x += dx; value.key.y += dy; value.key.z += dz;
+                value
+            };
+            blocks.water.insert(block.key);
+            blocks.water_blocks.push(block);
+        }
+        blocks.rebuild_neighbor_indexes();
+        preview_3d_filter_internal_block_records(&mut blocks);
+        assert!(blocks.water_blocks.iter().any(|block| block.key == high.key));
+        assert_eq!(blocks.partial_fluid_heights.get(&low.key), Some(&0.5));
+        blocks.rebuild_neighbor_indexes();
+        assert_eq!(blocks.partial_fluid_heights.get(&low.key), Some(&0.5));
     }
 
     #[test]
