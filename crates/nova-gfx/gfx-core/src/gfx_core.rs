@@ -2945,6 +2945,11 @@ pub fn validate_pass_attachments(
             "depth attachment has {samples} samples but the render pass uses {pass_sample_count}"
         )));
     }
+    if resolve_samples.is_some() && pass_sample_count == 1 {
+        return Err(Error::InvalidInput(
+            "resolve targets require a multisampled render pass".into(),
+        ));
+    }
     if let Some(samples) = resolve_samples
         && samples != 1
     {
@@ -3727,8 +3732,11 @@ mod tests {
         assert!(validate_pass_attachments(4, [4].into_iter(), Some(1), None).is_err());
         // A resolve destination must be single-sampled.
         assert!(validate_pass_attachments(4, [4].into_iter(), None, Some(4)).is_err());
+        // A single-sampled command pass may not request a native resolve at all.
+        assert!(validate_pass_attachments(1, [1].into_iter(), None, Some(1)).is_err());
     }
 
+    #[test]
     fn render_pass_validation_requires_resolve_only_with_multisampling() {
         let attachment = ColorAttachmentDescriptor {
             format: Format::Rgba16Float,
