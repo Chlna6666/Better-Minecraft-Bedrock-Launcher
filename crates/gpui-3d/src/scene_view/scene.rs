@@ -309,6 +309,38 @@ impl DrawResourceKey {
 }
 
 impl SceneResources {
+    /// Keep the last fully published 3D geometry visible while an independent
+    /// CPU worker prepares a completely unrelated Scene snapshot. Camera
+    /// uniforms, culling and presentation still advance normally on GPU owner.
+    /// This avoids a long full-scene CPU traversal inside the GPU Owner's
+    /// shared 2D/3D submission slot during progressive preview replacements.
+    ///
+    /// Incremental forks always take the normal Structural Delta fast path.
+    /// Never mix old geometry with a different transform, shader mode or an
+    /// animated state. The actual new Scene is published only when the worker
+    /// has completed and its matching immutable snapshot is available.
+    pub(super) fn retained_sidecar_view(&self, incoming: &SceneView) -> Option<SceneView> {
+        if !super::sidecar::pending(incoming)
+            || !incoming.animation.is_empty()
+            || self.animation.as_ref().is_some_and(|tracks| !tracks.is_empty())
+            || self.scene_transform != Some(incoming.scene_transform)
+            || self.voxel_shader != incoming.voxel_shader
+        {
+            return None;
+        }
+        let previous = self.scene.as_ref()?;
+        if Arc::ptr_eq(previous, &incoming.scene)
+            || incoming.scene.changed_nodes(previous).is_some()
+        {
+            return None;
+        }
+        let mut retained = incoming.clone();
+        retained.scene = previous.clone();
+        retained.textures = self.texture_table.as_ref()?.clone();
+        retained.hidden_nodes = self.hidden_nodes.clone();
+        Some(retained)
+    }
+
     pub(super) fn gpu_culling_counts(&self) -> (usize, usize) {
         self.culling.as_ref().map_or((0, 0), CullResources::counts)
     }
@@ -644,6 +676,9 @@ impl SceneResources {
                 // First frame, stale worker result, LOD camera mismatch or
                 // disabled sidecar: preserve exactly the former rendering
                 // behavior without waiting for any producer/worker.
+                // The GPU owner already handled the publication directly,
+                // so any redundant queued full walk can be invalidated.
+                super::sidecar::discard(scene_view);
                 update_prepared(
                     &mut self.prepared,
                     &mut self.animation_scratch,
