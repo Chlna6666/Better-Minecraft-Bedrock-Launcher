@@ -511,8 +511,29 @@ fn convert_source_mesh(
     let mut groups =
         FxHashMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::default();
     let mut extracted_faces = 0usize;
+    let mut rejected_faces = 0usize;
+    // The source mesher works in individual chunks. Legitimate blocks and
+    // resource-pack models can overhang their column by a few blocks, but a
+    // vertex far outside the selected world is a malformed mesh, not a fluid
+    // surface or an intentional region-spanning quad.
+    let margin = 32.0f32;
+    let selection_bounds = [
+        [source_mesh.min_x as f32 - margin, source_mesh.max_x as f32 + 1.0 + margin],
+        [source_mesh.min_y as f32 - margin, source_mesh.max_y as f32 + 1.0 + margin],
+        [source_mesh.min_z as f32 - margin, source_mesh.max_z as f32 + 1.0 + margin],
+    ];
     for chunk in &source_mesh.chunk_meshes {
-        extract_legacy_faces(chunk, &mut groups, &mut extracted_faces);
+        extract_legacy_faces(
+            chunk, selection_bounds, &mut groups,
+            &mut extracted_faces, &mut rejected_faces,
+        );
+    }
+    if rejected_faces != 0 {
+        tracing::warn!(
+            rejected_faces,
+            processed_chunks = source_mesh.processed_chunk_count,
+            "map_viewer preview_3d_rejected_outlier_faces"
+        );
     }
 
     let mut chunks = Vec::with_capacity(groups.len());
@@ -747,8 +768,10 @@ fn region_faces_fingerprint(faces: &[RegionFace], build_lods: bool) -> RegionFac
 
 fn extract_legacy_faces(
     chunk: &super::preview_3d_source::Preview3dChunkMesh,
+    selection_bounds: [[f32; 2]; 3],
     groups: &mut FxHashMap<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>,
     extracted_faces: &mut usize,
+    rejected_faces: &mut usize,
 ) {
     let mesh = chunk.mesh.as_ref();
     for (face_index, indices) in mesh.indices().chunks_exact(6).enumerate() {
@@ -779,7 +802,8 @@ fn extract_legacy_faces(
                 vertex.position.z + chunk.world_origin[2] as f32,
             ];
         }
-        if !valid {
+        if !valid || !preview_quad_within_selection(&corners, selection_bounds) {
+            *rejected_faces = rejected_faces.saturating_add(1);
             continue;
         }
         let Some(vertex) = mesh.vertices().get(indices[0] as usize) else {
@@ -800,6 +824,37 @@ fn extract_legacy_faces(
             *extracted_faces = extracted_faces.saturating_add(1);
         });
     }
+}
+
+/// Discard malformed source quads before they enter the region reuse cache.
+///
+/// This covers solid/detail as well as transparent and liquid geometry.
+/// Bound checks alone would permit a single corrupt quad to stretch across a
+/// whole selected world, so retain the existing per-chunk mesher's conservative
+/// maximal face extent as a second independent condition.
+fn preview_quad_within_selection(
+    corners: &[[f32; 3]; 4],
+    bounds: [[f32; 2]; 3],
+) -> bool {
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for corner in corners {
+        for axis in 0..3 {
+            let value = corner[axis];
+            if !value.is_finite() || value < bounds[axis][0] || value > bounds[axis][1] {
+                return false;
+            }
+            low[axis] = low[axis].min(value);
+            high[axis] = high[axis].max(value);
+        }
+    }
+    // Region splitting is performed after this validation. A source quad
+    // spanning multiple 128-block regions is inconsistent with the chunk
+    // mesher, and is the source of screen-wide stretched triangles.
+    (0..3).all(|axis| {
+        let limit = if axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ };
+        high[axis] - low[axis] <= (limit * 2) as f32
+    })
 }
 
 fn pass_for_legacy_range(
@@ -1254,6 +1309,23 @@ fn canonical_f32_bits(value: f32) -> u32 {
 #[cfg(test)]
 mod preview_region_geometry_tests {
     use super::*;
+
+    #[test]
+    fn preview_region_rejects_stray_solid_and_fluid_quad_vertices() {
+        let bounds = [[-32.0, 160.0], [-64.0, 224.0], [-32.0, 160.0]];
+        let valid_water = [[0.0, 64.875, 0.0], [16.0, 64.875, 0.0],
+            [16.0, 64.875, 16.0], [0.0, 64.875, 16.0]];
+        assert!(preview_quad_within_selection(&valid_water, bounds));
+        let mut corrupt = valid_water;
+        corrupt[2][0] = 1024.0;
+        assert!(!preview_quad_within_selection(&corrupt, bounds));
+        let mut non_finite = valid_water;
+        non_finite[1][2] = f32::NAN;
+        assert!(!preview_quad_within_selection(&non_finite, bounds));
+        let wide_bounds = [[-2000.0, 2000.0], [-64.0, 224.0], [-32.0, 160.0]];
+        assert!(!preview_quad_within_selection(&corrupt, wide_bounds));
+    }
+
 
     fn face(corners: [[f32; 3]; 4]) -> RegionFace {
         RegionFace {
