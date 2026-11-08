@@ -2107,6 +2107,10 @@ struct Worker {
     boundary_pairs: BTreeSet<(ChunkPos, ChunkPos)>,
     lod_modes: HashMap<ChunkPos, bool>,
     dirty_meshes: BTreeSet<ChunkPos>,
+    /// Loaded metadata-only columns awaiting a camera-visible mesh request.
+    /// Unlike dirty_meshes, these are NOT automatically processed in the
+    /// background while the camera still faces away.
+    deferred_columns: BTreeSet<ChunkPos>,
     urgent_chunks: BTreeSet<ChunkPos>,
     retained_invalidated: BTreeSet<ChunkPos>,
     missing: BTreeSet<ChunkPos>,
@@ -2227,6 +2231,7 @@ impl Worker {
             boundary_pairs: BTreeSet::new(),
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
+            deferred_columns: BTreeSet::new(),
             urgent_chunks: BTreeSet::new(),
             retained_invalidated: BTreeSet::new(),
             missing: BTreeSet::new(),
@@ -2418,6 +2423,7 @@ impl Worker {
             forget_boundary_pairs(&mut self.boundary_pairs, pos);
             self.lod_modes.remove(&pos);
             self.dirty_meshes.remove(&pos);
+            self.deferred_columns.remove(&pos);
             self.mark_neighbor_meshes(pos);
             let _ = tx.send(ChunkServiceEvent::Unloaded {
                 generation: self.view.generation,
@@ -2538,10 +2544,16 @@ impl Worker {
             for (pos, result) in loaded.chunks {
                 match result {
                     Ok(Some(chunk)) => {
+                        let deferred = chunk.blocks.is_none();
                         self.cache.insert(pos, chunk);
                         self.missing.remove(&pos);
                         self.failed_positions.remove(&pos);
-                        newly_loaded.push(pos);
+                        if deferred {
+                            self.deferred_columns.insert(pos);
+                        } else {
+                            self.deferred_columns.remove(&pos);
+                            newly_loaded.push(pos);
+                        }
                     }
                     Ok(None) => {
                         self.failed_positions.remove(&pos);
@@ -2740,8 +2752,11 @@ impl Worker {
         let neighbors = mesh_target_positions(&[pos], true, |_, neighbor| {
             self.cache.contains_key(neighbor)
         });
-        self.dirty_meshes
-            .extend(neighbors.into_iter().filter(|neighbor| *neighbor != pos));
+        self.dirty_meshes.extend(
+            neighbors.into_iter().filter(|neighbor| {
+                *neighbor != pos && !self.deferred_columns.contains(neighbor)
+            }),
+        );
     }
 
     fn mesh_targets(
@@ -2757,7 +2772,7 @@ impl Worker {
         let mut texture_read_time = Duration::ZERO;
         let mut texture_decode_time = Duration::ZERO;
         let targets = mesh_target_positions(loaded, include_neighbors, |_, neighbor| {
-            self.cache.contains_key(neighbor)
+            self.cache.contains_key(neighbor) && !self.deferred_columns.contains(neighbor)
         });
         let (center_x, center_z) = self.view_center_chunk();
         let priority_targets = loaded
@@ -4200,6 +4215,7 @@ impl Worker {
             self.missing.remove(pos);
             self.failed_positions.remove(pos);
             self.probe_stash.remove(pos);
+            self.deferred_columns.remove(pos);
             self.urgent_chunks.insert(*pos);
         }
     }
@@ -4852,6 +4868,7 @@ fn run_worker(
                         let _ = events.send(ChunkServiceEvent::Unloaded { generation, pos });
                     }
                     worker.dirty_meshes.clear();
+                    worker.deferred_columns.clear();
                     worker.lod_modes.clear();
                     worker.urgent_chunks.clear();
                     for pos in std::mem::take(&mut worker.retained_invalidated) {
@@ -4870,6 +4887,19 @@ fn run_worker(
                     radius: radius.clamp(1, WORLD3D_MAX_VIEW_RADIUS),
                     view_distance,
                 };
+                // Turned toward metadata-only columns? Promote them to the
+                // regular dirty queue. The batch mesher rehydrates and builds
+                // their faces without reloading columns still behind us.
+                let newly_visible = worker
+                    .deferred_columns
+                    .iter()
+                    .copied()
+                    .filter(|pos| !lazy_mesh_column(*pos, worker.view))
+                    .collect::<Vec<_>>();
+                for pos in newly_visible {
+                    worker.deferred_columns.remove(&pos);
+                    worker.dirty_meshes.insert(pos);
+                }
                 if old_center != new_center || old_radius != worker.view.radius {
                     worker.failed_positions.clear();
                 }
