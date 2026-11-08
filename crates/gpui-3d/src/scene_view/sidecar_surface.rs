@@ -357,6 +357,34 @@ impl SidecarSurface {
                 return Err(error.into());
             }
         };
+        // Immutable per-target placement uniform. Recreate it when the
+        // widget moves/resizes, rather than rewriting a buffer that an
+        // in-flight GUI frame may still be sampling.
+        let placement = match device.create_buffer(&BufferDescriptor {
+            label: Some("gpui-3d sidecar crop placement".into()),
+            size: 16,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::GpuOnly,
+        }) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                let _ = device.destroy_texture_view(depth_view);
+                let _ = device.destroy_texture(depth);
+                let _ = device.destroy_texture_view(color_view);
+                let _ = device.destroy_texture(color);
+                return Err(error.into());
+            }
+        };
+        if let Err(error) = device.write_buffer(
+            placement, 0, &placement_bytes(region, host_extent),
+        ) {
+            let _ = device.destroy_buffer(placement);
+            let _ = device.destroy_texture_view(depth_view);
+            let _ = device.destroy_texture(depth);
+            let _ = device.destroy_texture_view(color_view);
+            let _ = device.destroy_texture(color);
+            return Err(error.into());
+        }
         let binding = match device.create_bind_group(&BindGroupDescriptor {
             label: Some("gpui-3d sidecar sampled target".into()),
             layout: self.bind_layout,
@@ -373,10 +401,20 @@ impl SidecarSurface {
                         sampler: self.sampler,
                     }),
                 },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: placement,
+                        offset: 0,
+                        size: 16,
+                        stride: None,
+                    }),
+                },
             ],
         }) {
             Ok(binding) => binding,
             Err(error) => {
+                let _ = device.destroy_buffer(placement);
                 let _ = device.destroy_texture_view(depth_view);
                 let _ = device.destroy_texture(depth);
                 let _ = device.destroy_texture_view(color_view);
@@ -385,7 +423,8 @@ impl SidecarSurface {
             }
         };
         Ok(Target {
-            color, color_view, depth, depth_view, binding, extent,
+            color, color_view, depth, depth_view, binding, placement, extent,
+            region, host_extent,
             capture: CaptureEpoch::default(),
         })
     }
