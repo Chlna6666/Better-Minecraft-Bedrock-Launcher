@@ -33,7 +33,7 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -328,6 +328,20 @@ fn mesh_target_priority(
     (!loaded.contains(&pos), !ahead, distance_sq)
 }
 
+#[inline]
+fn lazy_meshing_disabled() -> bool {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    *DISABLED.get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_some())
+}
+
+#[inline]
+pub(super) fn portal_culling_disabled() -> bool {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
+    })
+}
+
 /// Background columns in the rear hemisphere can defer expensive
 /// block-model expansion, texture resolution and GPU Section allocation.
 /// A generous 4-column near field is always built eagerly. The 120-degree
@@ -335,7 +349,7 @@ fn mesh_target_priority(
 /// pitch changes and seam visibility cannot cause obvious near-camera holes.
 /// Cached decoded probes remain available for picking and world queries.
 fn lazy_mesh_column(pos: ChunkPos, view: ViewState) -> bool {
-    if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_some() {
+    if lazy_meshing_disabled() {
         return false;
     }
     if pos.dimension != view.dimension {
@@ -2817,7 +2831,7 @@ impl Worker {
         candidates: &BTreeSet<(ChunkPos, i32)>,
     ) -> BTreeSet<(ChunkPos, i32)> {
         if candidates.is_empty()
-            || std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
+            || portal_culling_disabled()
         {
             return BTreeSet::new();
         }
