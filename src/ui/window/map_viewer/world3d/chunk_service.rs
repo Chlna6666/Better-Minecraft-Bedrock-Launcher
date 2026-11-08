@@ -535,6 +535,42 @@ fn reuse_section_gpu_mesh(
     true
 }
 
+/// Select only the nearest K visible columns from a potentially large
+/// backlog. The original code cloned and sorted the entire visible set even
+/// when the caller could submit only a handful of Sections per batch.
+///
+/// A max-heap keeps O(K) temporary records and O(N log K) CPU work. Tie
+/// ordering follows ChunkPos's BTreeSet order, preserving deterministic
+/// center-first publication and the exact result of a stable full sort.
+fn nearest_view_positions(
+    positions: impl IntoIterator<Item = ChunkPos>,
+    dimension: Dimension,
+    center_x: i32,
+    center_z: i32,
+    radius: i32,
+    limit: usize,
+) -> Vec<ChunkPos> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut nearest = std::collections::BinaryHeap::with_capacity(limit);
+    for pos in positions {
+        if !inside_view(pos, dimension, center_x, center_z, radius) {
+            continue;
+        }
+        let dx = i64::from(pos.x) - i64::from(center_x);
+        let dz = i64::from(pos.z) - i64::from(center_z);
+        let key = (dx * dx + dz * dz, pos);
+        if nearest.len() < limit {
+            nearest.push(key);
+        } else if nearest.peek().is_some_and(|&worst| key < worst) {
+            nearest.pop();
+            nearest.push(key);
+        }
+    }
+    nearest.into_sorted_vec().into_iter().map(|(_, pos)| pos).collect()
+}
+
 fn take_visible_dirty_meshes(
     dirty: &mut BTreeSet<ChunkPos>,
     dimension: Dimension,
@@ -543,8 +579,9 @@ fn take_visible_dirty_meshes(
     radius: i32,
     limit: usize,
 ) -> Vec<ChunkPos> {
-    let mut visible = visible_dirty_meshes(dirty, dimension, center_x, center_z, radius);
-    visible.truncate(limit);
+    let visible = nearest_view_positions(
+        dirty.iter().copied(), dimension, center_x, center_z, radius, limit,
+    );
     for pos in &visible {
         dirty.remove(pos);
     }
@@ -625,17 +662,9 @@ fn take_visible_urgent_chunks(
     radius: i32,
     limit: usize,
 ) -> Vec<ChunkPos> {
-    let mut visible = urgent
-        .iter()
-        .copied()
-        .filter(|pos| inside_view(*pos, dimension, center_x, center_z, radius))
-        .collect::<Vec<_>>();
-    visible.sort_by_key(|pos| {
-        let dx = i64::from(pos.x) - i64::from(center_x);
-        let dz = i64::from(pos.z) - i64::from(center_z);
-        dx * dx + dz * dz
-    });
-    visible.truncate(limit);
+    let visible = nearest_view_positions(
+        urgent.iter().copied(), dimension, center_x, center_z, radius, limit,
+    );
     for pos in &visible {
         urgent.remove(pos);
     }
@@ -847,6 +876,36 @@ mod view_tests {
         view.forward_xz = [0.0, -1.0];
         assert!(super::renderable_dirty_meshes(&dirty, view).contains(&pos(-8))
             || dirty.is_empty());
+    }
+
+    #[test]
+    fn bounded_nearest_queue_matches_full_sorted_visible_columns() {
+        let dimension = Dimension::Overworld;
+        let mut positions = BTreeSet::new();
+        for x in -28..=28 {
+            for z in -28..=28 {
+                if (x * 17 + z * 13) % 7 != 0 {
+                    positions.insert(ChunkPos { x, z, dimension });
+                }
+            }
+        }
+        let sorted = visible_dirty_meshes(&positions, dimension, 2, -3, 20);
+        for limit in [0, 1, 3, 8, 32, 256, 2048] {
+            let expected = &sorted[..limit.min(sorted.len())];
+            let mut dirty = positions.clone();
+            let actual = take_visible_dirty_meshes(
+                &mut dirty, dimension, 2, -3, 20, limit,
+            );
+            assert_eq!(actual, expected);
+            assert!(actual.iter().all(|p| !dirty.contains(p)));
+
+            let mut urgent = positions.clone();
+            let selected = take_visible_urgent_chunks(
+                &mut urgent, dimension, 2, -3, 20, limit,
+            );
+            assert_eq!(selected, expected);
+            assert!(selected.iter().all(|p| !urgent.contains(p)));
+        }
     }
 
     #[test]
