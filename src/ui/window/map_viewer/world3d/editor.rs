@@ -450,6 +450,7 @@ pub struct World3dEditorView {
     visibility_revision: u64,
     last_visibility_revision: Option<u64>,
     last_visibility_voxel: Option<[i32; 3]>,
+    last_visibility_signature: Option<(ChunkPos, i32, u8)>,
     last_visibility_radius: i32,
     /// Mesh render bands unreachable from the camera or any unknown exterior.
     hidden_sections: BTreeSet<(ChunkPos, i32)>,
@@ -579,6 +580,7 @@ impl World3dEditorView {
             visibility_revision: 0,
             last_visibility_revision: None,
             last_visibility_voxel: None,
+            last_visibility_signature: None,
             last_visibility_radius: 0,
             hidden_sections: BTreeSet::new(),
             invalidated_visibility: HashSet::new(),
@@ -1027,7 +1029,20 @@ impl World3dEditorView {
         {
             return;
         }
+        let signature = super::visibility::camera_signature(
+            &self.probes, self.dimension, voxel,
+        );
+        if self.last_visibility_revision == Some(self.visibility_revision)
+            && self.last_visibility_radius == self.view_radius
+            && self.last_visibility_signature == signature
+        {
+            // Camera moved inside the same 16^3 connected air component.
+            // No Scene fork, no Section graph traversal and no GPU Draw churn.
+            self.last_visibility_voxel = Some(voxel);
+            return;
+        }
         self.last_visibility_voxel = Some(voxel);
+        self.last_visibility_signature = signature;
         self.last_visibility_revision = Some(self.visibility_revision);
         self.last_visibility_radius = self.view_radius;
         let hidden = if self.edit_busy || !self.invalidated_visibility.is_empty() {
@@ -1597,6 +1612,7 @@ impl World3dEditorView {
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
         self.last_visibility_revision = None;
         self.last_visibility_voxel = None;
+        self.last_visibility_signature = None;
         self.hidden_sections.clear();
         self.invalidated_visibility.clear();
         self.textures.clear();
