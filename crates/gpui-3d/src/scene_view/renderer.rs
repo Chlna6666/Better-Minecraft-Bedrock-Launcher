@@ -86,7 +86,7 @@ struct CachedCommands {
     /// bind groups. Backends coalesce each identical-state run into one
     /// native indirect call, so a 100K-command scene records as a handful of
     /// native draws. Rebuilt only when the logical list changes.
-    grouped: Option<Vec<RenderCommand>>,
+    grouped: Option<Arc<[RenderCommand]>>,
     /// Immutable producer snapshot. Reuse this allocation while camera,
     /// frame uniforms or GPU culling change without changing Draw commands.
     shared_offscreen: Option<(u64, Arc<[RenderCommand]>, bool)>,
@@ -115,7 +115,12 @@ impl CachedCommands {
             &mut commands, build, build_range,
         )?;
         let authored_scissors = commands.iter().any(|command| command.scissor().is_some());
-        let shared: Arc<[RenderCommand]> = commands.into();
+        // Native grouped commands already live in a cache-owned Arc.
+        // Reuse the same allocation for the offscreen producer instead of
+        // retaining another full set of DrawIndirect descriptors.
+        let shared: Arc<[RenderCommand]> = self.grouped.as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| commands.into());
         self.shared_offscreen = Some((revision, Arc::clone(&shared), authored_scissors));
         Ok((shared, authored_scissors))
     }
@@ -144,7 +149,7 @@ impl CachedCommands {
         let first = steps.len();
         build(steps)?;
         self.commands.extend_from_slice(&steps[first..]);
-        self.grouped = group_indirect_commands(&self.commands, blended_batch_start);
+        self.grouped = group_indirect_commands(&self.commands, blended_batch_start).map(Arc::from);
         self.revision = Some(revision);
         // Backends coalesce adjacent identical-state draws into one native
         // indirect call; emit the regrouped list instead of the raw build
@@ -186,7 +191,7 @@ impl CachedCommands {
                 );
             }
             self.commands = next;
-            self.grouped = group_indirect_commands(&self.commands, blended_batch_start);
+            self.grouped = group_indirect_commands(&self.commands, blended_batch_start).map(Arc::from);
             self.revision = Some(revision);
             self.generated_draw_count = Some(count);
             self.publish(steps);
@@ -811,6 +816,37 @@ mod tests {
         assert_eq!(builds, 2);
         assert_eq!(first[0].pipeline(), RenderPipelineId::from_parts(1, 1));
         assert_eq!(next[0].pipeline(), RenderPipelineId::from_parts(2, 1));
+    }
+
+    #[test]
+    fn grouped_indirect_snapshot_shares_the_exact_native_order_allocation() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let (shared, clips) = cache.shared_offscreen(
+            1, None, None, None,
+            |commands| {
+                for (offset, pipeline) in [(0, 1), (16, 2), (32, 1)] {
+                    commands.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                        pipeline: RenderPipelineId::from_parts(pipeline, 1),
+                        bind_groups: bind_group_list([]),
+                        arguments: BufferId::from_parts(9, 1),
+                        offset,
+                        scissor: None,
+                    }));
+                }
+                Ok(())
+            },
+            |_, _| Ok(()),
+        ).unwrap();
+        assert!(!clips);
+        let grouped = cache.grouped.as_ref().expect("interleaved opaque pipelines should group");
+        assert!(Arc::ptr_eq(&shared, grouped));
+        let offsets: Vec<_> = shared.iter().map(|command| match command {
+            RenderCommand::DrawIndirect(draw) => draw.offset,
+            _ => unreachable!(),
+        }).collect();
+        assert_eq!(offsets, vec![0, 32, 16]);
     }
 
     #[test]
