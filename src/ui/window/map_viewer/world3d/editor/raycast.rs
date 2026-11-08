@@ -157,6 +157,7 @@ mod tests {
                 pos,
                 min_y: 0,
                 subchunks: BTreeMap::from([(0, subchunk)]),
+                visibility: BTreeMap::new(),
                 state_version: None,
                 storage_bytes: 0,
             }),
