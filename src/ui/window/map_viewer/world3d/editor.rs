@@ -424,7 +424,7 @@ struct PortalVisibilityKey {
     voxel: [i32; 3],
     radius: i32,
     /// Two voxels in the same 16^3 air component share a portal result.
-    component: Option<(ChunkPos, i32, u8)>,
+    component: Option<(ChunkPos, i32, u16, u8)>,
 }
 
 /// Camera movement within an already evaluated connected air component
@@ -449,6 +449,7 @@ mod async_portal_visibility_tests {
             component: Some((
                 ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld },
                 5,
+                1,
                 exits,
             )),
         }
@@ -467,6 +468,10 @@ mod async_portal_visibility_tests {
         let key = request(4, 1, 0b001011);
         assert!(!same_portal_region(key, request(5, 1, 0b001011)));
         assert!(!same_portal_region(key, request(4, 1, 0b111111)));
+        assert!(!same_portal_region(key, PortalVisibilityKey {
+            component: key.component.map(|(pos, y, _, exits)| (pos, y, 2, exits)),
+            ..key
+        }), "two isolated caves with identical exits must invalidate async cache");
         assert!(!same_portal_region(key, PortalVisibilityKey {
             dimension: Dimension::Nether, ..key
         }));
@@ -535,7 +540,7 @@ pub struct World3dEditorView {
     visibility_job_key: Option<PortalVisibilityKey>,
     visibility_completed_key: Option<PortalVisibilityKey>,
     visibility_signature_voxel: Option<(u64, [i32; 3])>,
-    visibility_signature: Option<(ChunkPos, i32, u8)>,
+    visibility_signature: Option<(ChunkPos, i32, u16, u8)>,
     hidden_draw_nodes: Arc<HashSet<NodeId>>,
     /// Mesh render bands unreachable from the camera or any unknown exterior.
     hidden_sections: BTreeSet<(ChunkPos, i32)>,
