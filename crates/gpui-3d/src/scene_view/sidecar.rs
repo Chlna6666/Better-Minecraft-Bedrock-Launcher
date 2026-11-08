@@ -200,7 +200,7 @@ fn merits_sidecar(scene: &Scene) -> bool {
                 || mesh.parts().len() >= 64
                 || mesh.gpu_voxels().is_some()
         };
-        if node.mesh.as_deref().is_some_and(expensive)
+        if node.mesh.as_deref().is_some_and(|mesh| expensive(mesh))
             || node.lod.iter().any(|level| expensive(&level.mesh))
         {
             return true;
