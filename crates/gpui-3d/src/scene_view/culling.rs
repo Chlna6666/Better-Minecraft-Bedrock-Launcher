@@ -882,6 +882,14 @@ impl CullResources {
         self.generated_singleton_canonical = generated_singletons;
         self.count = batches.len();
         self.instances = draws.len();
+        // The GPU write/slot planner has committed. Retire only physical
+        // metadata above the last live slot after large bulk unloads.
+        // Backing buffers remain fence-owned and interior slots never move.
+        let high_water = self.resident_slots.trim_unused_tail();
+        if self.bounds_keys.len() > high_water {
+            self.bounds_keys.truncate(high_water);
+            self.masked_slots.retain(|&slot| slot < high_water);
+        }
         // Canonical Generated records are all singleton batches; the normal
         // path still preserves the original native Quad grouping boundary.
         self.singleton_start = if generated_singletons {
