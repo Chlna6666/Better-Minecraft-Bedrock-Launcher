@@ -159,7 +159,9 @@ fn pool() -> Option<&'static ThreadPool> {
 /// is held while the work runs; a newer revision replaces queued old work.
 pub(super) fn schedule(view: &SceneView) {
     if std::env::var_os("GPUI_3D_DISABLE_SIDECAR").is_some()
-        || view.scene.roots().is_empty()
+        // The thread handoff is only worthwhile for nontrivial scenes;
+        // small UI widgets are cheaper to prepare directly on GPU owner.
+        || view.scene.len() < 64
         || !view.animation.is_empty()
     {
         return;
