@@ -649,24 +649,51 @@ fn visible_dirty_meshes(
 /// This mirrors JE's visible-first dirty rebuild queue: the underlying
 /// immutable world/Probe is never discarded, and the old resident GPU mesh
 /// stays valid as a fallback until the replacement is ready.
+/// Streaming priority: immediate camera neighborhood, then four-column
+/// radial groups ordered by the camera forward cone. Unlike a global
+/// forward-first sort, a remote forward chunk cannot starve a nearby side
+/// column after a fast turn. The key is deterministic and cheap to recompute
+/// when the camera changes; no persistent stale priority queue is required.
+fn renderable_dirty_priority(
+    pos: ChunkPos,
+    view: ViewState,
+) -> (u8, i64, u8, i64, ChunkPos) {
+    let center_x = (view.camera[0] / 16.0).floor() as i32;
+    let center_z = (view.camera[2] / 16.0).floor() as i32;
+    let dx = i64::from(pos.x) - i64::from(center_x);
+    let dz = i64::from(pos.z) - i64::from(center_z);
+    let distance_sq = dx * dx + dz * dz;
+    let ring = dx.abs().max(dz.abs());
+    // The inner four-column neighborhood is always distance-first, even
+    // behind the camera: teleports, turns and noclip must not expose holes.
+    if ring <= 4 {
+        return (0, 0, 0, distance_sq, pos);
+    }
+    let forward = dx as f32 * view.forward_xz[0] + dz as f32 * view.forward_xz[1];
+    let radius = (distance_sq as f32).sqrt();
+    let direction = if view.forward_xz[0].hypot(view.forward_xz[1]) < 0.5 {
+        1
+    } else if forward >= radius * 0.25 {
+        0
+    } else if forward < -radius * 0.55 {
+        2
+    } else {
+        1
+    };
+    (1, (ring - 5) / 4, direction, distance_sq, pos)
+}
+
 fn renderable_dirty_meshes(
     dirty: &BTreeSet<ChunkPos>,
     view: ViewState,
 ) -> Vec<ChunkPos> {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
-    // Exclude deferred rear columns *before* distance sorting. With a
-    // large edit backlog, sorting Section candidates that cannot be meshed
-    // this frame was repeatedly doing O(N log N) work for no GPU output.
     let mut ready = dirty.iter().copied()
         .filter(|pos| inside_view(*pos, view.dimension, center_x, center_z, view.radius))
         .filter(|pos| !lazy_mesh_column(*pos, view))
         .collect::<Vec<_>>();
-    ready.sort_by_key(|pos| {
-        let dx = i64::from(pos.x) - i64::from(center_x);
-        let dz = i64::from(pos.z) - i64::from(center_z);
-        dx * dx + dz * dz
-    });
+    ready.sort_by_key(|pos| renderable_dirty_priority(*pos, view));
     ready
 }
 
@@ -675,17 +702,31 @@ fn take_renderable_dirty_meshes(
     view: ViewState,
     limit: usize,
 ) -> Vec<ChunkPos> {
-    let center = (
-        (view.camera[0] / 16.0).floor() as i32,
-        (view.camera[2] / 16.0).floor() as i32,
-    );
-    // A camera may move again before the entire edit/rehydration backlog is
-    // drained. Select only the K nearest renderable columns (O(N log K)),
-    // instead of sorting all pending sections on every interleaved batch.
-    let ready = nearest_view_positions(
-        dirty.iter().copied().filter(|pos| !lazy_mesh_column(*pos, view)),
-        view.dimension, center.0, center.1, view.radius, limit,
-    );
+    if limit == 0 {
+        return Vec::new();
+    }
+    let center_x = (view.camera[0] / 16.0).floor() as i32;
+    let center_z = (view.camera[2] / 16.0).floor() as i32;
+    // O(N log K) selection, same order as the full dirty-drain path.
+    // The worker interleaves these tiny waves with DB reads, and a turn
+    // automatically changes the next selection without requeueing assets.
+    let mut nearest = std::collections::BinaryHeap::with_capacity(limit);
+    for pos in dirty.iter().copied() {
+        if !inside_view(pos, view.dimension, center_x, center_z, view.radius)
+            || lazy_mesh_column(pos, view)
+        {
+            continue;
+        }
+        let key = renderable_dirty_priority(pos, view);
+        if nearest.len() < limit {
+            nearest.push(key);
+        } else if nearest.peek().is_some_and(|&worst| key < worst) {
+            nearest.pop();
+            nearest.push(key);
+        }
+    }
+    let ready = nearest.into_sorted_vec().into_iter()
+        .map(|(_, _, _, _, pos)| pos).collect::<Vec<_>>();
     for pos in &ready {
         dirty.remove(pos);
     }
@@ -804,6 +845,32 @@ mod view_tests {
             super::request_for_stream_batch(full.clone(), &[], Some(view)).data_request,
             full.data_request
         );
+    }
+
+    #[test]
+    fn dirty_mesh_priority_uses_near_first_then_forward_within_radial_band() {
+        let at = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [1.0, 0.0],
+            forward_y: 0.0,
+            radius: 16,
+            view_distance: 320.0,
+        };
+        assert!(super::renderable_dirty_priority(at(-3, 0), view)
+            < super::renderable_dirty_priority(at(7, 0), view));
+        assert!(super::renderable_dirty_priority(at(7, 0), view)
+            < super::renderable_dirty_priority(at(0, 7), view));
+        // Compare across distance groups: far forward work cannot block
+        // much closer peripheral work.
+        assert!(super::renderable_dirty_priority(at(0, 5), view)
+            < super::renderable_dirty_priority(at(15, 0), view));
+        let mut dirty = BTreeSet::from([at(-3, 0), at(0, 7), at(7, 0)]);
+        let waves = super::take_renderable_dirty_meshes(&mut dirty, view, 2);
+        assert_eq!(waves, [at(-3, 0), at(7, 0)]);
+        assert_eq!(dirty, BTreeSet::from([at(0, 7)]));
     }
 
     #[test]
