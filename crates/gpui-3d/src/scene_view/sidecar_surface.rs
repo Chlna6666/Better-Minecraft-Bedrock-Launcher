@@ -152,6 +152,21 @@ fn clipped_scissor(previous: Option<ScissorRect>, extent: Extent2d) -> ScissorRe
     }
 }
 
+/// Native render-pass bounds already clip commands with no explicit scissor.
+/// Preserve that fast path: rewriting every DrawIndirect to a full-target
+/// scissor prevents some backends from retaining/coalescing its native state.
+fn clip_local_commands(commands: &mut Vec<RenderCommand>, extent: Extent2d) {
+    if !commands.iter().any(|command| command.scissor().is_some()) {
+        return;
+    }
+    for command in commands.iter_mut() {
+        if let Some(scissor) = command.scissor() {
+            command.set_scissor(Some(clipped_scissor(Some(scissor), extent)));
+        }
+    }
+    commands.retain(|command| command.scissor().is_none_or(|rect| !rect.is_empty()));
+}
+
 /// GPU resources stay on the graphics owner. Only the CPU render preparation
 /// queue runs on other threads; this surface owns no swapchain or window.
 pub(super) struct SidecarSurface {
@@ -639,12 +654,10 @@ impl SidecarSurface {
     ) -> gpui::Result<()> {
         let region = visible_region(host);
         // SceneResources already prepared commands for capture_context's
-        // local viewport. Never subtract region.x/y from those commands again.
+        // local viewport. The native target clips unscissored commands for
+        // free; only intersect authored local scissors when they are present.
         let extent = region_extent(region);
-        for draw in &mut geometry {
-            draw.set_scissor(Some(clipped_scissor(draw.scissor(), extent)));
-        }
-        geometry.retain(|draw| draw.scissor().is_none_or(|rect| !rect.is_empty()));
+        clip_local_commands(&mut geometry, extent);
         let recreate = self.targets.get(&id)
             .is_none_or(|target| !target.can_relocate(extent));
         if recreate {
@@ -868,6 +881,21 @@ mod tests {
         assert!(scissor_overlaps_viewport(
             ScissorRect { x: 1919, y: 1079, width: 10, height: 10 }, viewport,
         ));
+    }
+
+    #[test]
+    fn unscissored_indirect_draws_keep_the_native_full_target_fast_path() {
+        let extent = Extent2d::new(480, 320).unwrap();
+        let mut commands = vec![RenderCommand::DrawIndirect(DrawIndirectCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: bind_group_list([]),
+            arguments: BufferId::from_parts(1, 1),
+            offset: 0,
+            scissor: None,
+        })];
+        clip_local_commands(&mut commands, extent);
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].scissor().is_none());
     }
 
     #[test]
