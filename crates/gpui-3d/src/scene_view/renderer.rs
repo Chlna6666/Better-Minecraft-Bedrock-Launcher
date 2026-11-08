@@ -934,6 +934,12 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             self.sync_pipeline(device, &render_context)?;
             self.begin_frame(context.frame_time());
             self.retire_idle_scenes(device)?;
+            // A worker may still be preparing a replacement Scene. Reposition
+            // its last successfully submitted texture *before* the retained
+            // frame early return, so scrolling/moving does not blank the view.
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.sync_placement(device, scene_view.id, &context)?;
+            }
         }
         // A Qt3D-like CPU RenderJob may still be preparing the initial
         // scene or an incompatible full replacement. Do not turn the shared
@@ -991,14 +997,6 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
             scene.prepare(device, &mut self.resources, prepared_view, &render_context)?;
-        }
-        // Update only the immutable compositor placement on a move. If
-        // SceneResources found no local projection/camera/mesh change, its
-        // capture_revision remains stable and the old producer pixels are
-        // still correct at the new window position. Do this before testing
-        // can_reuse so a move need not schedule any 3D draw.
-        if let Some(surface) = self.offscreen.as_mut() {
-            surface.sync_placement(device, scene_view.id, &context)?;
         }
         // Pure GUI redraw / unchanged 3D state: sample the previously
         // submitted color image directly. Skip the offscreen producer pass,
