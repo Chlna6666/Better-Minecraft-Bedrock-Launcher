@@ -9,7 +9,8 @@
 
 use gfx_core::{
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
-    BufferDescriptor, BufferId, BufferUploadStats, BufferWrite, PipelineDevice,
+    BufferDescriptor, BufferId, BufferUploadStats, BufferWrite, GpuTimestampSample,
+    GpuTimestampTag, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDescriptor, RenderPassId,
     RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, Result, SamplerDescriptor,
     SamplerId, ShaderModuleDescriptor, ShaderModuleId, TextureDescriptor, TextureId,
@@ -67,6 +68,35 @@ pub trait ExtensionDevice {
         for dispatch in dispatches {
             self.dispatch_compute(dispatch)?;
         }
+        Ok(())
+    }
+
+    /// Whether the native backend can capture GPU work timestamps without
+    /// inserting an additional queue submission or a CPU wait.
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        false
+    }
+
+    /// Tags a compute batch for hardware time measurement when supported.
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        _tag: GpuTimestampTag,
+    ) -> Result<()> {
+        self.dispatch_compute_batch(dispatches)
+    }
+
+    /// Tags an upload batch for hardware time measurement when supported.
+    fn write_buffer_batch_profiled(
+        &mut self,
+        writes: &[BufferWrite<'_>],
+        _tag: GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        self.write_buffer_batch(writes)
+    }
+
+    /// Polls the already-completed native hardware probes; never waits.
+    fn drain_gpu_work_timestamps(&mut self, _samples: &mut Vec<GpuTimestampSample>) -> Result<()> {
         Ok(())
     }
 
@@ -298,6 +328,26 @@ where
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<()> {
         ResourceDevice::dispatch_compute_batch(self, dispatches)
+    }
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        ResourceDevice::gpu_work_timestamps_supported(self)
+    }
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tag: GpuTimestampTag,
+    ) -> Result<()> {
+        ResourceDevice::dispatch_compute_batch_profiled(self, dispatches, tag)
+    }
+    fn write_buffer_batch_profiled(
+        &mut self,
+        writes: &[BufferWrite<'_>],
+        tag: GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        ResourceDevice::write_buffer_batch_profiled(self, writes.iter().copied(), tag)
+    }
+    fn drain_gpu_work_timestamps(&mut self, samples: &mut Vec<GpuTimestampSample>) -> Result<()> {
+        ResourceDevice::drain_gpu_work_timestamps(self, samples)
     }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         ResourceDevice::create_buffer(self, desc)

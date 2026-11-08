@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::{
     AsyncCapabilities, BackendKind, BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor,
     BindGroupLayoutId, BufferDescriptor, BufferId, BufferUploadStats, BufferWrite,
+    GpuTimestampSample, GpuTimestampTag,
     CommandEncoderDescriptor, CommandEncoderId, CompositeAlphaMode, DeviceMemoryBudget,
     DrawDescriptor, Error, Extent2d, MemoryArchitecture, PipelineLayoutDescriptor,
     PipelineLayoutId, PresentFrameDescriptor, RenderPassCommands, RenderPassDescriptor,
@@ -309,6 +310,53 @@ pub trait ResourceDevice {
         for dispatch in dispatches {
             self.dispatch_compute(dispatch)?;
         }
+        Ok(())
+    }
+
+    /// Hardware GPU timestamp capability for explicitly tagged native work.
+    ///
+    /// True means a backend can record timestamps inside the actual GPU
+    /// submission, not that a CPU-side API duration is available.
+    #[must_use]
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        false
+    }
+
+    /// Dispatches a tagged compute batch. The default performs the work
+    /// without claiming a GPU timestamp result.
+    ///
+    /// # Errors
+    /// Propagates a dispatch error. Successful submission is not GPU completion.
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[crate::ComputeDispatch<'_>],
+        _tag: GpuTimestampTag,
+    ) -> Result<()> {
+        self.dispatch_compute_batch(dispatches)
+    }
+
+    /// Copies a tagged buffer batch. Hardware-capable backends attach
+    /// timestamp probes to their existing native upload command list.
+    ///
+    /// # Errors
+    /// Propagates an upload error. The CPU input is consumed before return.
+    fn write_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        _tag: GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        self.write_buffer_batch(writes)
+    }
+
+    /// Drains only fence-complete native GPU work samples. Never waits on a
+    /// GPU fence or requests a synchronous timestamp readback.
+    ///
+    /// # Errors
+    /// Returns a backend error when querying completed hardware probes fails.
+    fn drain_gpu_work_timestamps(
+        &mut self,
+        _output: &mut Vec<GpuTimestampSample>,
+    ) -> Result<()> {
         Ok(())
     }
 
