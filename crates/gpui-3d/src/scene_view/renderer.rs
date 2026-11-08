@@ -930,7 +930,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             // is prepared. Reuse the last *submitted* texture when possible;
             // this branch must not allocate/upload or block the GPU owner.
             if let Some(surface) = self.offscreen.as_ref()
-                && surface.composite_existing(scene_view.id, context.viewport(), steps)
+                && surface.composite_existing(scene_view.id, &context, steps)
             {
                 self.offscreen_trace.record(OffscreenFrameKind::RetainedWhilePreparing);
             }
@@ -975,10 +975,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // and uniform updates, not merely native draw-command changes.
         if let Some(surface) = self.offscreen.as_ref()
             && surface.can_reuse(
-                scene_view.id, context.viewport(), scene.capture_revision,
+                scene_view.id, &context, scene.capture_revision,
             )
         {
-            surface.composite_existing(scene_view.id, context.viewport(), steps);
+            surface.composite_existing(scene_view.id, &context, steps);
             self.offscreen_trace.record(OffscreenFrameKind::Reused);
             return Ok(());
         }
