@@ -120,26 +120,37 @@ impl Targets {
             msaa: None,
         };
         let msaa = if msaa_sample_count > 1 {
-            let mut mk = |format: Format, depth: bool| {
-                Target::create(device, extent, format, depth, msaa_sample_count)
-            };
-            if let (color, depth, surface, surface_depth, albedo) = (
-                mk(Format::Rgba16Float, false)?,
-                mk(Format::Depth32Float, true)?,
-                mk(Format::Rgba16Float, false)?,
-                mk(Format::Depth32Float, true)?,
-                mk(Format::Rgba16Float, false)?,
-            ) {
-                Some(MsaaTargets {
-                    color,
-                    depth,
-                    surface,
-                    surface_depth,
-                    albedo,
-                })
-            } else {
-                unreachable!("tuple of five always yields five")
+            // All allocations belong to one transaction: a failure on the third
+            // or fifth MSAA image must retire earlier MSAA images AND the six
+            // single-sample targets rather than leaking GPU resources.
+            let mut allocated = Vec::with_capacity(5);
+            for (format, depth) in [
+                (Format::Rgba16Float, false),
+                (Format::Depth32Float, true),
+                (Format::Rgba16Float, false),
+                (Format::Depth32Float, true),
+                (Format::Rgba16Float, false),
+            ] {
+                match Target::create(device, extent, format, depth, msaa_sample_count) {
+                    Ok(target) => allocated.push(target),
+                    Err(error) => {
+                        for target in allocated {
+                            let _ = target.destroy(device);
+                        }
+                        let _ = base.destroy(device);
+                        return Err(error);
+                    }
+                }
             }
+            let [color, depth, surface, surface_depth, albedo]: [Target; 5] =
+                allocated.try_into().unwrap_or_else(|_| unreachable!("five MSAA targets"));
+            Some(MsaaTargets {
+                color,
+                depth,
+                surface,
+                surface_depth,
+                albedo,
+            })
         } else {
             None
         };
