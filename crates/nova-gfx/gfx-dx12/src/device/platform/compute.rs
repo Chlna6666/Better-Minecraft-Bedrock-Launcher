@@ -494,13 +494,11 @@ impl Dx12Device {
         command: &ID3D12GraphicsCommandList,
         steps: &[RenderCommand],
     ) -> Result<Option<usize>> {
-        let count = steps
-            .iter()
-            .filter(|s| matches!(s, RenderCommand::DrawIndirect(_)))
-            .count();
-        if count == 0 {
-            return Ok(None);
-        }
+        // A large generated Section scene can have tens of thousands of
+        // indirect draws. Count and validate in the SAME pass rather than
+        // scanning the entire command table twice before the actual GPU
+        // packing pass. Keep validation before acquiring transient storage.
+        let mut count = 0usize;
         for step in steps {
             if let RenderCommand::DrawIndirect(draw) = step {
                 let buffer = self.buffers.get(draw.arguments)?;
@@ -515,7 +513,11 @@ impl Dx12Device {
                         "invalid DX12 indirect argument range or usage".into(),
                     ));
                 }
+                count += 1;
             }
+        }
+        if count == 0 {
+            return Ok(None);
         }
         let size = (count as u64)
             .checked_mul(32)
