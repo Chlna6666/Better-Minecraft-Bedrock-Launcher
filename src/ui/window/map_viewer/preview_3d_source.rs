@@ -9141,7 +9141,10 @@ mod portal_face_pruning_tests {
         ));
         let ordinary = builder.build_stream_faces(&[pos]);
         let trimmed = builder.build_stream_faces_with_gpu_cubes_skipping(
-            &[pos], &HashMap::default(), &HashSet::default(), &hidden,
+            &[pos],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            &hidden,
         );
         assert_eq!(ordinary.len(), 1);
         assert_eq!(trimmed.len(), 1);
