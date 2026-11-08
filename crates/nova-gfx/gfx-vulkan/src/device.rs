@@ -141,6 +141,9 @@ pub struct VulkanDevice {
     copy_offset_alignment: u64,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
+    /// Optional independent queue index in the SAME graphics family. Using
+    /// a different family would require explicit image ownership transfers.
+    sidecar_queue: Option<vk::Queue>,
     present_queue: vk::Queue,
     graphics_queue_family_index: u32,
     present_queue_family_index: u32,
@@ -338,6 +341,7 @@ impl VulkanDevice {
         let (
             device,
             graphics_queue,
+            sidecar_queue,
             present_queue,
             incremental_presentation,
             supports_sampler_anisotropy,
@@ -444,6 +448,7 @@ impl VulkanDevice {
             copy_offset_alignment,
             device,
             graphics_queue,
+            sidecar_queue,
             present_queue,
             graphics_queue_family_index: queue_families.graphics,
             present_queue_family_index: queue_families.present,
@@ -5434,8 +5439,20 @@ fn create_device(
     indices: QueueFamilyIndices,
     properties2_supported: bool,
     entry: &Entry,
-) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool, bool, bool)> {
-    let priorities = [1.0_f32];
+) -> Result<(ash::Device, vk::Queue, Option<vk::Queue>, vk::Queue, bool, bool, bool, bool)> {
+    let priorities = [1.0_f32, 0.75_f32];
+    let single_priority = [1.0_f32];
+    // More than one queue in the same graphics family is the only valid
+    // queue-topology optimization until native ownership-transfer protocols
+    // exist. Never request index 1 on a one-queue adapter.
+    let queue_families = unsafe {
+        instance.get_physical_device_queue_family_properties(physical_device)
+    };
+    let graphics_queue_count = queue_families
+        .get(indices.graphics as usize)
+        .map_or(0, |properties| properties.queue_count);
+    let dedicated = std::env::var_os("GPUI_3D_NATIVE_QUEUE").is_some()
+        && graphics_queue_count >= 2;
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
         unique_families.push(indices.present);
@@ -5444,9 +5461,14 @@ fn create_device(
         .iter()
         .copied()
         .map(|queue_family_index| {
+            let priorities_for_family = if dedicated && queue_family_index == indices.graphics {
+                &priorities[..]
+            } else {
+                &single_priority[..]
+            };
             vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index)
-                .queue_priorities(&priorities)
+                .queue_priorities(priorities_for_family)
         })
         .collect::<Vec<_>>();
     // SAFETY: Extension properties are owned values returned for this physical device.
@@ -5521,11 +5543,19 @@ fn create_device(
         .map_err(VulkanError::from)?;
     // SAFETY: Queue family index and queue index are valid per device creation.
     let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
+    // Queue index 1 is requested only when the physical family exposes it.
+    let sidecar_queue = dedicated.then(|| unsafe {
+        device.get_device_queue(indices.graphics, 1)
+    });
+    if dedicated {
+        log::info!("nova-gfx Vulkan second graphics queue enabled in family {}", indices.graphics);
+    }
     // SAFETY: Queue family index and queue index are valid per device creation.
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
     Ok((
         device,
         graphics_queue,
+        sidecar_queue,
         present_queue,
         incremental_presentation,
         supports_sampler_anisotropy,
