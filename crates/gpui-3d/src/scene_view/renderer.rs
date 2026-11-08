@@ -410,7 +410,18 @@ fn should_trim_scene(level: MemoryTrimLevel, last_used_at: Instant, now: Instant
         MemoryTrimLevel::Aggressive => true,
     }
 }
+/// The GPUI-facing renderer is only a bridge for viewport context and
+/// offscreen compositor attachment. All 3D GPU resources, frame cache and
+/// submission planning belong to the sidecar backend below.
 pub(super) struct Renderer {
+    backend: SidecarGpuBackend,
+}
+
+/// 3D-owned GPU backend. Its native resources remain thread-affine, while
+/// CPU Scene preparation is performed by the independent sidecar scheduler.
+/// Keeping this boundary explicit lets the host's extension pass supply the
+/// final attachment without owning MeshArena or Draw Slot lifetime.
+struct SidecarGpuBackend {
     backend: BackendKind,
     render_pass: RenderPassId,
     color_format: gfx_core::Format,
@@ -428,8 +439,8 @@ pub(super) struct Renderer {
     timing_trace: RendererTimingTrace,
 }
 
-impl Renderer {
-    pub(super) fn new(
+impl SidecarGpuBackend {
+    fn new(
         device: &mut dyn ExtensionDevice,
         context: RendererExtensionContext,
     ) -> gpui::Result<Self> {
@@ -620,7 +631,55 @@ mod tests {
     }
 }
 
+impl Renderer {
+    pub(super) fn new(
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+    ) -> gpui::Result<Self> {
+        Ok(Self {
+            backend: SidecarGpuBackend::new(device, context)?,
+        })
+    }
+}
+
+/// The GPUI extension never owns GPU resources or reimplements the 3D
+/// submission algorithm: it forwards the current viewport and attachment
+/// context into the renderer-owned sidecar and drains its completed commands.
+/// The shared native device owner still serializes backend access; arbitrary
+/// cross-thread native contexts are intentionally not exposed here.
 impl RendererExtensionRenderer for Renderer {
+    fn needs_gpu_completion(&self) -> bool {
+        self.backend.needs_gpu_completion()
+    }
+
+    fn gpu_work_completed(&mut self) {
+        self.backend.gpu_work_completed();
+    }
+
+    fn render(
+        &mut self,
+        extension: &dyn RendererExtension,
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+        steps: &mut Vec<RenderCommand>,
+    ) -> gpui::Result<()> {
+        self.backend.render(extension, device, context, steps)
+    }
+
+    fn trim_memory(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        level: MemoryTrimLevel,
+    ) -> gpui::Result<()> {
+        self.backend.trim_memory(device, level)
+    }
+
+    fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        self.backend.destroy(device)
+    }
+}
+
+impl RendererExtensionRenderer for SidecarGpuBackend {
     fn needs_gpu_completion(&self) -> bool {
         self.generated_arena.borrow().has_retired_ranges()
             || self.template_arena.borrow().has_retired_ranges()
