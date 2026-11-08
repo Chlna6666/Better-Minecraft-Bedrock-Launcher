@@ -260,7 +260,7 @@ impl SectionVisibility {
             head += 1;
             faces |= boundary_faces(index);
             if faces == ALL_SIDES {
-                return Some(faces);
+                return Some((0, ALL_SIDES));
             }
             for neighbour in cell_neighbours(index).into_iter().flatten() {
                 if !self.is_solid(neighbour) && !test_bit(&visited, neighbour) {
@@ -269,7 +269,18 @@ impl SectionVisibility {
                 }
             }
         }
-        Some(faces)
+        // All six boundaries belong to the same open shell when the
+        // border was certified empty. Interior sealed pockets instead get a
+        // stable component ID derived from their canonical minimum voxel.
+        if self.portals == [ALL_SIDES; SIDE_COUNT] {
+            Some(if faces != 0 {
+                (0, ALL_SIDES)
+            } else {
+                (u16::try_from(minimum + 1).expect("Section voxel index fits u16"), 0)
+            })
+        } else {
+            Some((0, faces))
+        }
     }
 }
 
@@ -555,13 +566,43 @@ mod tests {
     }
 
     #[test]
+    fn equal_portal_masks_do_not_merge_disconnected_cave_components() {
+        let mut cells = [(8usize, 8usize, 8usize), (4, 4, 4)];
+        let graph = SectionVisibility::from_solid_bits(bits_except_air(&cells));
+        let a = graph.camera_region([8, 8, 8]).unwrap();
+        let b = graph.camera_region([4, 4, 4]).unwrap();
+        assert_eq!(a.1, 0);
+        assert_eq!(b.1, 0);
+        assert_ne!(a.0, b.0, "separate sealed cave pockets must have distinct cache IDs");
+        assert!(graph.cell_region_ids.is_some());
+
+        // The open-border fast path must distinguish two sealed pockets,
+        // even if neither pocket has a portal to any Section face.
+        let mut solid = [0u64; SOLID_WORDS];
+        for (x,y,z) in [
+            (7,8,8), (9,8,8), (8,7,8), (8,9,8), (8,8,7), (8,8,9),
+            (3,4,4), (5,4,4), (4,3,4), (4,5,4), (4,4,3), (4,4,5),
+        ] {
+            let index = (y * 16 + z) * 16 + x;
+            solid[index / 64] |= 1u64 << (index % 64);
+        }
+        let graph = SectionVisibility::from_solid_bits(solid);
+        let a = graph.camera_region([8, 8, 8]).unwrap();
+        let b = graph.camera_region([4, 4, 4]).unwrap();
+        assert_eq!(a.1, 0);
+        assert_eq!(b.1, 0);
+        assert_ne!(a.0, b.0);
+        assert_eq!(graph.camera_region([0, 0, 0]), Some((0, ALL_SIDES)));
+    }
+
+    #[test]
     fn two_disconnected_air_regions_cache_per_voxel_exit_masks() {
         let mut air = (0..16).map(|x| (x, 4, 4)).collect::<Vec<_>>();
         air.extend((0..16).map(|z| (4, 12, z)));
         air.push((8, 8, 8));
         let graph = SectionVisibility::from_solid_bits(bits_except_air(&air));
         assert!(graph.cell_camera_exits.is_some());
-        assert_eq!(graph.heap_bytes(), 4096);
+        assert_eq!(graph.heap_bytes(), 4096 * 3);
         assert_eq!(graph.camera_exits([8, 4, 4]), Some(0b000011));
         assert_eq!(graph.camera_exits([4, 12, 8]), Some(0b110000));
         assert_eq!(graph.camera_exits([8, 8, 8]), Some(0));
