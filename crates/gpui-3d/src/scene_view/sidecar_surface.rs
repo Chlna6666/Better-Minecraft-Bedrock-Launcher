@@ -8,7 +8,7 @@
 use super::{SceneViewId, resources::embedded_shader};
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::{Duration, Instant}};
 
 /// Each SceneView gets a separate target: sharing one color image across
 /// multiple painter-order elements would make every composite sample the last
@@ -167,6 +167,17 @@ fn clip_local_commands(commands: &mut Vec<RenderCommand>, extent: Extent2d) {
     commands.retain(|command| command.scissor().is_none_or(|rect| !rect.is_empty()));
 }
 
+/// Capture and allocation counters are only emitted when the existing 3D
+/// timing diagnostics are enabled. These count REAL attachment reallocations,
+/// not changes of a view's absolute window coordinates.
+#[derive(Default)]
+struct TargetTrace {
+    window_start: Option<Instant>,
+    allocated: u64,
+    relocated: u64,
+    captured: u64,
+}
+
 /// GPU resources stay on the graphics owner. Only the CPU render preparation
 /// queue runs on other threads; this surface owns no swapchain or window.
 pub(super) struct SidecarSurface {
@@ -192,6 +203,7 @@ pub(super) struct SidecarSurface {
     /// unchanged-size view must not evict its color/depth GPU textures.
     awaiting_placement_gpu: Vec<PlacementResources>,
     ready_placement_release: Vec<PlacementResources>,
+    trace: TargetTrace,
 }
 
 enum Allocation {
@@ -330,6 +342,7 @@ impl SidecarSurface {
                 ready_to_release: Vec::new(),
                 awaiting_placement_gpu: Vec::new(),
                 ready_placement_release: Vec::new(),
+                trace: TargetTrace::default(),
             })
         })();
         if result.is_err() {
@@ -515,12 +528,58 @@ impl SidecarSurface {
         Ok(())
     }
 
+    /// Estimate only color/depth texel storage. Actual driver allocation
+    /// overhead, row alignment and bind-group memory are not included.
+    fn trace_targets_if_due(&mut self) {
+        if !super::renderer::trace_timings() {
+            return;
+        }
+        let now = Instant::now();
+        let start = self.trace.window_start.get_or_insert(now);
+        if now.saturating_duration_since(*start) < Duration::from_secs(1) {
+            return;
+        }
+        let bpp = u64::from(self.capture_format.bytes_per_pixel())
+            + u64::from(Format::Depth32Float.bytes_per_pixel());
+        let sum_pixels = |width: u32, height: u32| {
+            u64::from(width).saturating_mul(u64::from(height))
+        };
+        let cropped = self.targets.values().fold(0u64, |sum, target| {
+            sum.saturating_add(sum_pixels(target.extent.width(), target.extent.height()))
+        });
+        let full_window = self.targets.values().fold(0u64, |sum, target| {
+            sum.saturating_add(sum_pixels(
+                target.host_extent.width(), target.host_extent.height(),
+            ))
+        });
+        let retired = self.awaiting_gpu.iter()
+            .chain(self.ready_to_release.iter())
+            .fold(0u64, |sum, target| {
+                sum.saturating_add(sum_pixels(target.extent.width(), target.extent.height()))
+            });
+        eprintln!(
+            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
+            self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
+            self.awaiting_gpu.len() + self.ready_to_release.len(),
+            self.awaiting_placement_gpu.len() + self.ready_placement_release.len(),
+            cropped.saturating_mul(bpp),
+            full_window.saturating_mul(bpp),
+            retired.saturating_mul(bpp),
+            100.0 * (1.0 - cropped as f64 / full_window.max(1) as f64),
+        );
+        self.trace = TargetTrace {
+            window_start: Some(now),
+            ..TargetTrace::default()
+        };
+    }
+
     pub(super) fn sync(
         &mut self,
         device: &mut dyn ExtensionDevice,
         host: &RendererExtensionContext,
     ) -> gpui::Result<()> {
         self.release_completed(device)?;
+        self.trace_targets_if_due();
         if self.host_pass == host.render_pass()
             && self.host_format == host.color_format()
         {
@@ -577,6 +636,7 @@ impl SidecarSurface {
         target.region = region;
         target.host_extent = host.viewport();
         self.awaiting_placement_gpu.push(previous);
+        self.trace.relocated = self.trace.relocated.saturating_add(1);
         Ok(())
     }
 
@@ -665,12 +725,14 @@ impl SidecarSurface {
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
+            self.trace.allocated = self.trace.allocated.saturating_add(1);
         } else {
             self.sync_placement(device, id, host)?;
         }
         let target = self.targets.get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("missing 3D offscreen target"))?;
         target.capture.enqueue(capture_revision);
+        self.trace.captured = self.trace.captured.saturating_add(1);
         passes.push(RendererExtensionPass {
             target: target.color_view,
             resolve_target: None,
@@ -781,6 +843,7 @@ mod tests {
             ready_to_release: Vec::new(),
             awaiting_placement_gpu: Vec::new(),
             ready_placement_release: Vec::new(),
+            trace: TargetTrace::default(),
         };
         assert!(surface.has_retired_targets());
         assert_eq!(surface.ready_to_release.len(), 0);
