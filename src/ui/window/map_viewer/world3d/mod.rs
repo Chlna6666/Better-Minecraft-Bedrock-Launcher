@@ -17,6 +17,7 @@ mod offscreen_check;
 pub(super) mod registry;
 mod rendering;
 pub(super) mod types;
+mod visibility;
 
 pub(super) use link::World3dMapLink;
 pub(super) use types::World3dSelection;
