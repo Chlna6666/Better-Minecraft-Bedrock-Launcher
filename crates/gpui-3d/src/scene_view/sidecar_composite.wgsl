@@ -44,9 +44,15 @@ fn rounded_mask_coverage(position: vec2<f32>) -> f32 {
     let right_radius = select(radii.z, radii.y, top);
     let radius = select(right_radius, left_radius, centered.x < 0.0);
     let inset = abs(centered) - half_size + vec2<f32>(radius);
-    let outer = length(max(inset, vec2<f32>(0.0)));
-    let inner = min(0.0, max(inset.x, inset.y));
-    let distance = outer + inner - radius;
+    // GPUI's quad_sdf_impl deliberately treats zero-radius sharp corners
+    // differently from rounded corners. Preserve that exact coverage rule
+    // so a mixed-radius content mask does not create 1px alpha seams.
+    var distance = max(inset.x, inset.y);
+    if (radius != 0.0) {
+        let outer = length(max(inset, vec2<f32>(0.0)));
+        let inner = min(0.0, max(inset.x, inset.y));
+        distance = outer + inner - radius;
+    }
     return clamp(0.5 - distance, 0.0, 1.0);
 }
 
