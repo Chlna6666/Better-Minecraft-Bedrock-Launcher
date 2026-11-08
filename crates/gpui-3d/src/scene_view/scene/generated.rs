@@ -664,7 +664,16 @@ impl SceneResources {
         if !writes.is_empty() {
             let start = crate::gpu_submission_trace::enabled().then(Instant::now);
             let count = writes.len();
-            device.write_buffer_batch(&writes)?;
+            let profiled = self.gpu_batch_id != 0 && crate::gpu_submission_trace::enabled()
+                && device.gpu_work_timestamps_supported();
+            if profiled {
+                device.write_buffer_batch_profiled(&writes, gfx_core::GpuTimestampTag {
+                    batch_id: self.gpu_batch_id,
+                    stage: gfx_core::GpuTimestampStage::BufferUpload,
+                })?;
+            } else {
+                device.write_buffer_batch(&writes)?;
+            }
             if let Some(start) = start {
                 let elapsed = start.elapsed();
                 crate::gpu_submission_trace::observe(
@@ -674,6 +683,11 @@ impl SceneResources {
                 crate::upload_feedback::observe_buffer_upload(
                     self.backend, uploaded_bytes, count, elapsed,
                 );
+                if profiled {
+                    crate::upload_feedback::observe_tagged_upload(
+                        self.backend, self.gpu_batch_id, uploaded_bytes, count,
+                    );
+                }
             }
         }
         let shader = self
