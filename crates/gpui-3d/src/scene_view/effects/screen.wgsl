@@ -40,6 +40,11 @@ fn water_normal(p:vec3<f32>,n:vec3<f32>,footprint:f32)->vec3<f32>{
     if(abs(n.y)<0.5){return n;}
     var direction=vec2<f32>(0.8,0.6);var frequency=3.4;var amplitude=0.018;var speed=0.7;var slope=vec2<f32>(0.0);var position=(p+frame.origin.xyz).xz;
     for(var octave=0u;octave<4u;octave++){
+        // Higher-frequency octaves are entirely filtered once a projected
+        // wave exceeds three pixel footprints. All following frequencies
+        // only grow, so they contribute exactly zero but used to execute
+        // expensive sin/exp/cos on every distant-water fragment.
+        if(footprint*frequency>=3.0){break;}
         let phase=dot(position,direction)*frequency-frame.work.w*speed;
         let crest=exp(sin(phase)-1.0);let derivative=cos(phase)*crest;
         let weight=1.0-smoothstep(0.8,3.0,footprint*frequency);
