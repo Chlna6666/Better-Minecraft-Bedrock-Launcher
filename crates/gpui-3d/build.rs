@@ -10,6 +10,12 @@ use gfx_shader_build::{
 fn main() {
     let shaders = ShaderSet::new("scene_view")
         .shader(
+            Shader::new("sidecar_composite")
+                .wgsl_file("src/scene_view/sidecar_composite.wgsl")
+                .entry("vs_sidecar_composite", ShaderStage::Vertex)
+                .entry("fs_sidecar_composite", ShaderStage::Fragment),
+        )
+        .shader(
             Shader::new("screen_effects")
                 .wgsl(concat!(
                     include_str!("src/pbr.wgsl"),
