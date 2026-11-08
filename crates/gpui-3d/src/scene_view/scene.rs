@@ -623,7 +623,27 @@ impl SceneResources {
             if updated.is_some() {
                 self.prepared
                     .update_camera(scene_view.camera, projection.aspect())?;
+            } else if scene_view.animation.is_empty()
+                && let Some(prepared) = super::sidecar::try_take(
+                    scene_view, projection.aspect(), gpu_culling,
+                )?
+            {
+                // Independent CPU backend finished the immutable scene walk.
+                // The GPU owner only finalizes camera/projection, asset
+                // residency and native command submission. The mailbox
+                // never carries an ExtensionDevice or native GPU object.
+                self.prepared = prepared;
+                if trace_timings() {
+                    eprintln!(
+                        "gpui3d sidecar_prepared draws={} source_scene_version={}",
+                        self.prepared.draws.len(),
+                        scene_view.scene.version(),
+                    );
+                }
             } else {
+                // First frame, stale worker result, LOD camera mismatch or
+                // disabled sidecar: preserve exactly the former rendering
+                // behavior without waiting for any producer/worker.
                 update_prepared(
                     &mut self.prepared,
                     &mut self.animation_scratch,
