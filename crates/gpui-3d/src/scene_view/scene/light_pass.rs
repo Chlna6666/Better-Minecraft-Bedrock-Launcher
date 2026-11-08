@@ -91,7 +91,12 @@ impl SceneResources {
                     .ok_or_else(|| anyhow!("shadow culling requires compute"))?,
                 renderer.singleton_cull_shader,
                 pass.frame,
-                self.culling_bounds,
+                // A shadow caster may be outside the main camera's Section
+                // bounds while its shadow falls inside the illuminated view.
+                // The light-space frustum already provides conservative GPU
+                // rejection; applying the main camera's culling_bounds here
+                // incorrectly drops nearby casters after camera movement.
+                None,
                 self.generated_arguments,
             )?;
             let groups = self.shadow_bindings(device, renderer, &mut pass)?;
