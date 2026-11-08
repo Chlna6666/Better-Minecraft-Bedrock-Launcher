@@ -59,6 +59,7 @@ mod hiz;
 mod projection;
 mod renderer;
 mod sidecar;
+mod sidecar_surface;
 mod resources;
 mod scene;
 mod shadow;
