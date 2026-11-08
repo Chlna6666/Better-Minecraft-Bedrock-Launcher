@@ -1004,10 +1004,19 @@ impl SceneResources {
             // stable physical Bounds slots. No Scene fork / DrawParams upload.
             // Do this AFTER structural/sparse Bounds updates, so newly reused
             // slots cannot inherit another Section's hidden state.
-            let mask_uploaded = if let Some(culling) = &mut self.culling {
-                culling.update_hidden_nodes(
-                    device, &self.prepared.draws, &scene_view.hidden_nodes,
-                )?
+            // Camera-only frames keep the exact same immutable visibility
+            // snapshot and resident Bounds rows. Avoid rehashing every hidden
+            // NodeId and rebuilding the full physical-slot HashSet at 60+ FPS.
+            // Structural/asset changes may overwrite GPU Bounds rows and must
+            // reapply the overlay, even when the mask itself is unchanged.
+            let mask_uploaded = if node_mask_changed || draw_list_changed || draw_state_changed {
+                if let Some(culling) = &mut self.culling {
+                    culling.update_hidden_nodes(
+                        device, &self.prepared.draws, &scene_view.hidden_nodes,
+                    )?
+                } else {
+                    false
+                }
             } else {
                 false
             };
