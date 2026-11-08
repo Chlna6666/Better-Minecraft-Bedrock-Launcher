@@ -34,9 +34,15 @@ impl PreparedScene {
         partial
             .walk_stack
             .extend(changed.iter().copied().map(|id| (id, transform, true)));
-        partial
-            .walk_pending(scene, |_, node| node.transform, camera)
-            .ok()?;
+        // The bounded RenderJob traversal now takes a cancellation guard.
+        // Incremental in-place Section updates are synchronous and must
+        // complete; never publish a partially walked replacement.
+        if !partial
+            .walk_pending(scene, |_, node| node.transform, camera, || false)
+            .ok()?
+        {
+            return None;
+        }
         let mut replacements = std::collections::HashMap::<NodeId, Vec<PreparedDraw>>::new();
         for draw in partial.candidates.iter().cloned() {
             replacements.entry(draw.node).or_default().push(draw);
