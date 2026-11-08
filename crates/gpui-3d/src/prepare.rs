@@ -365,6 +365,36 @@ impl PreparedScene {
         })
     }
 
+    /// Prepare a full scene on a CPU render job, periodically abandoning
+    /// superseded snapshots. This is the same geometry traversal as the
+    /// synchronous path, except the caller can cancel before paying for a
+    /// complete obsolete Scene. A cancelled result is never published.
+    ///
+    /// The cancellation closure must be cheap (typically an atomic load).
+    pub(crate) fn update_transformed_interruptible(
+        &mut self,
+        scene: &Scene,
+        camera: Camera,
+        aspect: f32,
+        scene_transform: Mat4,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<bool, CameraError> {
+        if cancelled() {
+            return Ok(false);
+        }
+        if !self.walk(
+            scene,
+            scene_transform,
+            |_, node| node.transform,
+            camera,
+            cancelled,
+        )? {
+            return Ok(false);
+        }
+        self.apply_camera(camera, aspect)?;
+        Ok(true)
+    }
+
     pub(crate) fn update_transformed_evaluated(
         &mut self,
         scene: &EvaluatedScene<'_>,
@@ -449,7 +479,7 @@ impl PreparedScene {
         scene_transform: Mat4,
         local_transform: impl Fn(NodeId, &Node) -> crate::Transform,
     ) -> Result<(), CameraError> {
-        self.walk(scene, scene_transform, local_transform, camera)?;
+        self.walk(scene, scene_transform, local_transform, camera, || false)?;
         self.apply_camera(camera, aspect)
     }
 
@@ -460,7 +490,8 @@ impl PreparedScene {
         scene_transform: Mat4,
         local_transform: impl Fn(NodeId, &Node) -> crate::Transform,
         camera: Camera,
-    ) -> Result<(), CameraError> {
+        cancelled: impl Fn() -> bool,
+    ) -> Result<bool, CameraError> {
         self.candidates.clear();
         self.changed_asset_draws.clear();
         self.occluders.clear();
@@ -486,7 +517,7 @@ impl PreparedScene {
                 .copied()
                 .map(|id| (id, scene_transform, true)),
         );
-        self.walk_pending(scene, local_transform, camera)
+        self.walk_pending(scene, local_transform, camera, cancelled)
     }
 
     fn walk_pending(
@@ -494,8 +525,18 @@ impl PreparedScene {
         scene: &Scene,
         local_transform: impl Fn(NodeId, &Node) -> crate::Transform,
         camera: Camera,
-    ) -> Result<(), CameraError> {
+        cancelled: impl Fn() -> bool,
+    ) -> Result<bool, CameraError> {
+        let mut visited = 0_usize;
         while let Some((id, parent_world, parent_visible)) = self.walk_stack.pop() {
+            // Qt3D-style cancellable RenderJob: do not spend the remainder
+            // of an O(scene nodes) traversal on a superseded snapshot.
+            // Poll once per 128 nodes to avoid per-node synchronization.
+            if visited & 127 == 0 && cancelled() {
+                self.walk_stack.clear();
+                return Ok(false);
+            }
+            visited += 1;
             let Some(node) = scene.node(id) else { continue };
             // Hidden nodes hide their whole subtree; skip traversal instead of emitting draws and
             // lights that the renderer would have to discard later.
@@ -586,7 +627,7 @@ impl PreparedScene {
                 );
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Culls the retained draws for one camera and rebuilds the ordered draw list.
@@ -1942,5 +1983,43 @@ mod tests {
             PreparedScene::new(&scene, camera, 1.0).unwrap().draws.len(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod interruptible_prepare_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn superseded_scene_walk_stops_without_publishing_partial_draws() {
+        let mut scene = Scene::new();
+        for _ in 0..512 {
+            scene.insert(None, Node::default()).unwrap();
+        }
+        let camera = Camera::orthographic(
+            Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y, 20.0, 0.1, 100.0,
+        );
+        let polls = Cell::new(0usize);
+        let mut prepared = PreparedScene::default();
+        let finished = prepared
+            .update_transformed_interruptible(
+                &scene, camera, 1.0, Mat4::IDENTITY,
+                || {
+                    let count = polls.get() + 1;
+                    polls.set(count);
+                    count >= 3
+                },
+            )
+            .unwrap();
+        assert!(!finished);
+        assert!(polls.get() >= 3);
+        assert!(prepared.walk_stack.is_empty());
+        assert!(prepared.camera().is_none());
+        // A subsequent live request can reuse the cancelled allocation.
+        assert!(prepared.update_transformed_interruptible(
+            &scene, camera, 1.0, Mat4::IDENTITY, || false,
+        ).unwrap());
+        assert_eq!(prepared.camera(), Some(camera));
     }
 }
