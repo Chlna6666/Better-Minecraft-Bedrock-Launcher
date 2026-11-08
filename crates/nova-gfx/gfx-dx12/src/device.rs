@@ -218,6 +218,11 @@ mod platform {
         adapter_name: String,
         device: ID3D12Device,
         graphics_queue: ID3D12CommandQueue,
+        /// Optional independent 3D DIRECT queue. The CPU owner still holds
+        /// both queues; native GPU waits enforce graphics <-> sidecar order.
+        sidecar_queue: Option<ID3D12CommandQueue>,
+        sidecar_fence: Option<ID3D12Fence>,
+        next_sidecar_fence_value: u64,
         fence: ID3D12Fence,
         fence_event: FenceEvent,
         next_fence_value: u64,
@@ -284,6 +289,25 @@ mod platform {
             let device_elapsed = device_started_at.elapsed();
             let queue_started_at = Instant::now();
             let graphics_queue = create_command_queue(&device)?;
+            let (sidecar_queue, sidecar_fence) =
+                if std::env::var_os("GPUI_3D_NATIVE_QUEUE").is_some() {
+                    match create_command_queue(&device)
+                        .and_then(|queue| create_fence(&device).map(|fence| (queue, fence)))
+                    {
+                        Ok((queue, fence)) => {
+                            log::info!("nova-gfx DX12 independent offscreen DIRECT queue enabled");
+                            (Some(queue), Some(fence))
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "DX12 independent offscreen queue unavailable; using graphics queue: {error}"
+                            );
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
             // SAFETY: The queue is live and returns its timestamp tick frequency by value.
             let timestamp_frequency = unsafe { graphics_queue.GetTimestampFrequency() }
                 .ok()
@@ -403,6 +427,9 @@ mod platform {
                 adapter_name: adapter_description.name,
                 device,
                 graphics_queue,
+                sidecar_queue,
+                sidecar_fence,
+                next_sidecar_fence_value: 1,
                 buffers: ResourceRegistry::new("buffer"),
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
@@ -1916,6 +1943,53 @@ mod platform {
             let fence_value = self.signal_frame()?;
             self.check_device_removed("DX12 submit")?;
             Ok(fence_value)
+        }
+
+        /// Submit an offscreen 3D command list on the second native DIRECT
+        /// queue. Both waits are queued on the GPU; the CPU never polls a
+        /// fence here. All earlier main-queue uploads complete before 3D,
+        /// and later GUI composition waits for this producer's color target.
+        fn submit_sidecar_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
+            let (queue, fence) = match (&self.sidecar_queue, &self.sidecar_fence) {
+                (Some(queue), Some(fence)) => (queue.clone(), fence.clone()),
+                _ => return self.submit_deferred(encoder),
+            };
+            self.validate_swapchain_submission(encoder)?;
+            self.check_device_removed("DX12 sidecar submit preflight")?;
+            let command_list = {
+                let encoder = self.command_encoders.get(encoder)?;
+                encoder.command_list.clone().ok_or_else(|| Error::Backend(
+                    "DX12 sidecar encoder has no command list".into()
+                ))?
+            };
+            let executable: ID3D12CommandList = command_list.cast()
+                .map_err(|error| Error::Backend(error.to_string()))?;
+            // First graphics release: prior uploads, compute and transient
+            // resource writes must be visible to the offscreen producer.
+            let producer_input = self.signal_frame()?;
+            unsafe { queue.Wait(&self.fence, producer_input) }
+                .map_err(|error| Error::Backend(format!("DX12 sidecar queue wait: {error}")))?;
+            self.command_encoders.get_mut(encoder)?.submitted = true;
+            unsafe { queue.ExecuteCommandLists(&[Some(executable)]) };
+            let producer_output = self.next_sidecar_fence_value;
+            self.next_sidecar_fence_value = producer_output.saturating_add(1);
+            unsafe { queue.Signal(&fence, producer_output) }
+                .map_err(|error| Error::Backend(format!("DX12 sidecar queue signal: {error}")))?;
+            // Queue-side dependency: the next GPUI render pass cannot sample
+            // the 3D target until sidecar's write and attachment transitions
+            // finish. No CPU-side stall or second graphics context is used.
+            unsafe { self.graphics_queue.Wait(&fence, producer_output) }
+                .map_err(|error| Error::Backend(format!("DX12 GUI queue wait: {error}")))?;
+            let fence_value = self.signal_frame()?;
+            self.check_device_removed("DX12 sidecar submit")?;
+            let encoder = self.command_encoders.take(encoder)?;
+            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
+                fence_value,
+                _encoder: encoder,
+            });
+            self.submitted_frames = self.submitted_frames.saturating_add(1);
+            self.poll_cleanup();
+            Ok(self.submissions.insert(Dx12Submission { fence_value }))
         }
 
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
