@@ -35,7 +35,7 @@ use std::{
 pub(super) struct SceneResources {
     backend: BackendKind,
     /// Per-publication ID shared by hardware compute and upload probes.
-    gpu_batch_id: u64,
+    pub(super) gpu_batch_id: u64,
     culling: Option<CullResources>,
     mesh_shader: Option<super::generated::Shaders>,
     mesh_draw_shader: Option<gfx_core::ShaderModuleId>,
