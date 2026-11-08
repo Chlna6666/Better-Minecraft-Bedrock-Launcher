@@ -423,6 +423,17 @@ struct PortalVisibilityKey {
     dimension: Dimension,
     voxel: [i32; 3],
     radius: i32,
+    /// Two voxels in the same 16^3 air component share a portal result.
+    component: Option<(ChunkPos, i32, u8)>,
+}
+
+/// Camera movement within an already evaluated connected air component
+/// preserves the graph result. Stream revisions and radius changes do not.
+fn same_portal_region(a: PortalVisibilityKey, b: PortalVisibilityKey) -> bool {
+    a.revision == b.revision
+        && a.dimension == b.dimension
+        && a.radius == b.radius
+        && a.component == b.component
 }
 
 struct PortalVisibilityResult {
@@ -480,6 +491,8 @@ pub struct World3dEditorView {
     visibility_job: Option<Receiver<PortalVisibilityResult>>,
     visibility_job_key: Option<PortalVisibilityKey>,
     visibility_completed_key: Option<PortalVisibilityKey>,
+    visibility_signature_voxel: Option<(u64, [i32; 3])>,
+    visibility_signature: Option<(ChunkPos, i32, u8)>,
     hidden_draw_nodes: Arc<HashSet<NodeId>>,
     /// Mesh render bands unreachable from the camera or any unknown exterior.
     hidden_sections: BTreeSet<(ChunkPos, i32)>,
@@ -613,6 +626,8 @@ impl World3dEditorView {
             visibility_job: None,
             visibility_job_key: None,
             visibility_completed_key: None,
+            visibility_signature_voxel: None,
+            visibility_signature: None,
             hidden_draw_nodes: Arc::new(HashSet::new()),
             hidden_sections: BTreeSet::new(),
             invalidated_visibility: HashSet::new(),
@@ -1689,6 +1704,8 @@ impl World3dEditorView {
         self.visibility_job = None;
         self.visibility_job_key = None;
         self.visibility_completed_key = None;
+        self.visibility_signature_voxel = None;
+        self.visibility_signature = None;
         self.hidden_sections.clear();
         self.hidden_draw_nodes = Arc::new(HashSet::new());
         self.invalidated_visibility.clear();
