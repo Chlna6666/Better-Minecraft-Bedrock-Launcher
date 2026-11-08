@@ -581,10 +581,19 @@ fn renderable_dirty_meshes(
 ) -> Vec<ChunkPos> {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
-    visible_dirty_meshes(dirty, view.dimension, center_x, center_z, view.radius)
-        .into_iter()
+    // Exclude deferred rear columns *before* distance sorting. With a
+    // large edit backlog, sorting Section candidates that cannot be meshed
+    // this frame was repeatedly doing O(N log N) work for no GPU output.
+    let mut ready = dirty.iter().copied()
+        .filter(|pos| inside_view(*pos, view.dimension, center_x, center_z, view.radius))
         .filter(|pos| !lazy_mesh_column(*pos, view))
-        .collect()
+        .collect::<Vec<_>>();
+    ready.sort_by_key(|pos| {
+        let dx = i64::from(pos.x) - i64::from(center_x);
+        let dz = i64::from(pos.z) - i64::from(center_z);
+        dx * dx + dz * dz
+    });
+    ready
 }
 
 fn take_renderable_dirty_meshes(
@@ -838,6 +847,30 @@ mod view_tests {
         view.forward_xz = [0.0, -1.0];
         assert!(super::renderable_dirty_meshes(&dirty, view).contains(&pos(-8))
             || dirty.is_empty());
+    }
+
+    #[test]
+    fn deferred_mesh_candidates_do_not_enter_the_sorted_rebuild_queue() {
+        let pos = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [0.0, 1.0],
+            forward_y: 0.0,
+            radius: 12,
+            view_distance: 320.0,
+        };
+        let dirty = BTreeSet::from([pos(0, -8), pos(0, -6), pos(0, 3), pos(0, 7)]);
+        let candidates = super::renderable_dirty_meshes(&dirty, view);
+        assert_eq!(candidates.first(), Some(&pos(0, 3)));
+        assert!(candidates.contains(&pos(0, 7)));
+        if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_none() {
+            assert!(!candidates.contains(&pos(0, -8)));
+            assert!(!candidates.contains(&pos(0, -6)));
+        }
+        // The dirty source set is retained until the camera turns around.
+        assert_eq!(dirty.len(), 4);
     }
 
     #[test]
@@ -2936,11 +2969,11 @@ impl Worker {
         // Rehydrating each discarded target separately serializes world queries and block
         // collection. Reuse the normal parallel batch loader while keeping cached metadata
         // and neighbor-only boundary summaries owned by the original entries.
-        // Boundary culling needs the BLOCK DATA of every x/z neighbour of a
-        // target: a metadata-only cache entry (blocks dropped after the first
-        // mesh) makes block_class_at return None at the seam, so re-meshed
-        // sections either grow conservative boundary faces or punch holes.
-        let mut rehydrate_positions = local_positions
+        // A non-target neighbour with a retained boundary summary already
+        // supplies its seam classification to insert_stream_boundary below.
+        // Reload only a target's missing blocks, or a non-deferred neighbour
+        // that has neither full blocks nor a boundary summary.
+        let rehydrate_positions = local_positions
             .iter()
             .copied()
             .filter(|pos| {
@@ -2955,29 +2988,10 @@ impl Worker {
                     })
             })
             .collect::<Vec<_>>();
-        // Boundary culling needs the BLOCK DATA of every x/z neighbour of a
-        // target: a metadata-only cache entry (blocks dropped after the first
-        // mesh) makes block_class_at return None at the seam, so re-meshed
-        // sections grow conservative boundary faces. Rehydrate those
-        // neighbours so the mesher culls the seams with real data — no
-        // boundary faces are built at all (saves their CPU parse too).
-        for pos in &targets {
-            for (dx, dz) in CHUNK_NEIGHBOR_OFFSETS {
-                let neighbour = ChunkPos {
-                    x: pos.x + dx,
-                    z: pos.z + dz,
-                    dimension,
-                };
-                if !target_set.contains(&neighbour)
-                    && self.cache.get(&neighbour).is_some_and(|chunk| {
-                        chunk.blocks.is_none() && chunk.boundary.is_some()
-                    })
-                    && !rehydrate_positions.contains(&neighbour)
-                {
-                    rehydrate_positions.push(neighbour);
-                }
-            }
-        }
+        // The previous second pass reloaded every neighbour with a cached
+        // boundary, even though the builder immediately chose that boundary
+        // and never consumed the newly fetched block data. Keep those
+        // accurate cached summaries resident and skip redundant I/O.
         let mut rehydrated = if rehydrate_positions.is_empty() {
             HashMap::new()
         } else {
