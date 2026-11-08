@@ -85,6 +85,14 @@ impl From<ScaledPixels> for f64 {
     }
 }
 
+/// Returns the exact floating-point device-scaled coordinate without
+/// exposing ScaledPixels' private representation to other render crates.
+impl From<ScaledPixels> for f32 {
+    fn from(scaled_pixels: ScaledPixels) -> Self {
+        scaled_pixels.0
+    }
+}
+
 impl From<ScaledPixels> for u32 {
     fn from(pixels: ScaledPixels) -> Self {
         pixels.0 as u32

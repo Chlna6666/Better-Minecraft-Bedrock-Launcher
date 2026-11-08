@@ -23,20 +23,20 @@ struct RoundedMask {
 
 fn rounded_mask(mask: &gpui::ContentMask<gpui::ScaledPixels>) -> RoundedMask {
     let radii = [
-        mask.corner_radii.top_left.0,
-        mask.corner_radii.top_right.0,
-        mask.corner_radii.bottom_right.0,
-        mask.corner_radii.bottom_left.0,
+        f32::from(mask.corner_radii.top_left),
+        f32::from(mask.corner_radii.top_right),
+        f32::from(mask.corner_radii.bottom_right),
+        f32::from(mask.corner_radii.bottom_left),
     ];
     if radii == [0.0; 4] {
         return RoundedMask::default();
     }
     RoundedMask {
         bounds: [
-            mask.corner_bounds.origin.x.0,
-            mask.corner_bounds.origin.y.0,
-            mask.corner_bounds.size.width.0,
-            mask.corner_bounds.size.height.0,
+            f32::from(mask.corner_bounds.origin.x),
+            f32::from(mask.corner_bounds.origin.y),
+            f32::from(mask.corner_bounds.size.width),
+            f32::from(mask.corner_bounds.size.height),
         ],
         radii,
     }
@@ -1029,18 +1029,18 @@ mod tests {
         let rect = ScissorRect { x: 400, y: 200, width: 480, height: 320 };
         let mask = gpui::ContentMask {
             bounds: gpui::bounds(
-                gpui::point(gpui::ScaledPixels(400.0), gpui::ScaledPixels(200.0)),
-                gpui::size(gpui::ScaledPixels(480.0), gpui::ScaledPixels(320.0)),
+                gpui::point(gpui::ScaledPixels::from(400.0), gpui::ScaledPixels::from(200.0)),
+                gpui::size(gpui::ScaledPixels::from(480.0), gpui::ScaledPixels::from(320.0)),
             ),
             corner_bounds: gpui::bounds(
-                gpui::point(gpui::ScaledPixels(405.0), gpui::ScaledPixels(205.0)),
-                gpui::size(gpui::ScaledPixels(470.0), gpui::ScaledPixels(310.0)),
+                gpui::point(gpui::ScaledPixels::from(405.0), gpui::ScaledPixels::from(205.0)),
+                gpui::size(gpui::ScaledPixels::from(470.0), gpui::ScaledPixels::from(310.0)),
             ),
             corner_radii: gpui::Corners {
-                top_left: gpui::ScaledPixels(12.0),
-                top_right: gpui::ScaledPixels(8.0),
-                bottom_right: gpui::ScaledPixels(16.0),
-                bottom_left: gpui::ScaledPixels(4.0),
+                top_left: gpui::ScaledPixels::from(12.0),
+                top_right: gpui::ScaledPixels::from(8.0),
+                bottom_right: gpui::ScaledPixels::from(16.0),
+                bottom_left: gpui::ScaledPixels::from(4.0),
             },
         };
         let bytes = placement_bytes(rect, viewport, &mask);
@@ -1059,13 +1059,13 @@ mod tests {
     fn rectangular_mask_changes_do_not_recreate_composite_bindings() {
         let plain = gpui::ContentMask::<gpui::ScaledPixels>::default();
         let shifted = gpui::ContentMask::new(gpui::bounds(
-            gpui::point(gpui::ScaledPixels(72.0), gpui::ScaledPixels(90.0)),
-            gpui::size(gpui::ScaledPixels(160.0), gpui::ScaledPixels(240.0)),
+            gpui::point(gpui::ScaledPixels::from(72.0), gpui::ScaledPixels::from(90.0)),
+            gpui::size(gpui::ScaledPixels::from(160.0), gpui::ScaledPixels::from(240.0)),
         ));
         assert_eq!(rounded_mask(&plain), rounded_mask(&shifted));
         let rounded = gpui::ContentMask {
             corner_bounds: shifted.bounds,
-            corner_radii: gpui::Corners::from(gpui::ScaledPixels(14.0)),
+            corner_radii: gpui::Corners::from(gpui::ScaledPixels::from(14.0)),
             ..shifted
         };
         assert_ne!(rounded_mask(&plain), rounded_mask(&rounded));
