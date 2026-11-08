@@ -1,7 +1,7 @@
 //! Resident batch bounds and compute-generated indirect arguments.
 
 use super::{FRAME_PARAMS_STRIDE, gpu::{buffer_memory_location, dx11_streaming_headroom}, scene::DrawBatchRange};
-use crate::{Aabb, PreparedDraw};
+use crate::{Aabb, NodeId, PreparedDraw};
 use anyhow::{Context as _, anyhow};
 use gfx_core::{
     BackendKind, BufferBinding, BufferDescriptor, BufferId, BufferUsage, ComputeBufferAccess,
@@ -10,9 +10,13 @@ use gfx_core::{
 use gpui::ExtensionDevice;
 use super::scene::stable_slots::StableDrawSlots;
 use crate::prepare::StructuralDrawDelta;
-use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
+use std::{collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher}, hash::{Hash, Hasher}};
 
 const BOUNDS_STRIDE: usize = 48;
+/// The eighth u32 in the existing Bounds ABI is 0.0 (normal) or 1.0
+/// (no Hi-Z); 2.0 is reserved for a temporary portal-occluded draw.
+const PORTAL_HIDDEN_WORD: u32 = 2.0f32.to_bits();
+const PORTAL_WORD_OFFSET: u64 = 7 * 4;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
 
 
@@ -108,6 +112,30 @@ fn encode_bounds_cached(
             Ok::<(), std::convert::Infallible>(())
         },
     ).expect("bounds record encoder is infallible")
+}
+
+/// Each portal change touches only the GPU physical draw slots whose
+/// NodeIds changed state. Restore original depth-bias/Hi-Z flags (0/1)
+/// exactly; using zero unconditionally corrupts translucent geometry.
+fn plan_portal_visibility_words(
+    previous: &HashSet<usize>,
+    next: &HashSet<usize>,
+    resident: &[Option<BoundsRecordKey>],
+    reapply: bool,
+) -> Vec<(usize, u32)> {
+    let mut patches = BTreeMap::<usize, u32>::new();
+    for &slot in previous.difference(next) {
+        let original = resident.get(slot)
+            .and_then(|key| key.as_ref())
+            .map_or(0, |key| key.0[7]);
+        patches.insert(slot, original);
+    }
+    for &slot in next {
+        if !previous.contains(&slot) || reapply {
+            patches.insert(slot, PORTAL_HIDDEN_WORD);
+        }
+    }
+    patches.into_iter().collect()
 }
 
 /// Resolve a Scene/Section delta into stable physical GPU storage addresses.
@@ -257,6 +285,12 @@ pub(super) struct CullResources {
     resident_slots: StableDrawSlots,
     slot_map: BufferId,
     uploaded_slot_map: Vec<u32>,
+    /// NodeId -> stable physical Bounds slots. Rebuilt only after a Scene
+    /// structural update, never on camera-only visibility changes.
+    node_slots: HashMap<NodeId, Vec<usize>>,
+    node_slots_dirty: bool,
+    masked_slots: HashSet<usize>,
+    mask_reapply: bool,
     // Commit only after the entire native upload batch succeeds.
     // The committed bounds-key table doubles as the authoritative CPU mirror;
     // full 48-byte bounds staging arrays are no longer needed.
@@ -338,6 +372,10 @@ impl CullResources {
             structural_slots_committed: false,
             resident_slots: StableDrawSlots::default(),
             uploaded_slot_map: Vec::new(),
+            node_slots: HashMap::new(),
+            node_slots_dirty: true,
+            masked_slots: HashSet::new(),
+            mask_reapply: false,
             instance_capacity,
             batch_capacity,
         };
@@ -442,6 +480,9 @@ impl CullResources {
         for (slot, key, _) in patches {
             self.bounds_keys[slot] = Some(key);
         }
+        // The sparse upload may have overwritten a masked slot's word.
+        // Reassert the portal flag at the next culling dispatch.
+        self.mask_reapply = true;
         self.structural_slots_committed = false;
         Ok(true)
     }
@@ -630,6 +671,8 @@ impl CullResources {
             );
         }
         self.uploaded_slot_map = logical_to_physical;
+        self.node_slots_dirty = true;
+        self.mask_reapply = true;
         self.structural_slots_committed = structural_plan.is_some();
         if let Some(plan) = structural_plan {
             let high_water = plan.high_water;
@@ -686,6 +729,69 @@ impl CullResources {
                 .map_or(0, |index| index + 1)
         };
         Ok(())
+    }
+
+    /// Update per-Node occlusion using four-byte sparse writes to the
+    /// immutable GPU Bounds table. The physical slot map is reused across
+    /// camera changes; Scene fork / DrawParams / instances / native batch
+    /// regeneration are intentionally not involved.
+    pub(super) fn update_hidden_nodes(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        draws: &[PreparedDraw],
+        hidden: &HashSet<NodeId>,
+    ) -> gpui::Result<bool> {
+        if hidden.is_empty() && self.masked_slots.is_empty() {
+            // Avoid constructing the NodeId index in empty/ordinary scenes.
+            return Ok(false);
+        }
+        if self.node_slots_dirty {
+            self.node_slots.clear();
+            for (logical, draw) in draws.iter().enumerate() {
+                let Some(&physical) = self.uploaded_slot_map.get(logical) else {
+                    continue;
+                };
+                self.node_slots
+                    .entry(draw.node)
+                    .or_default()
+                    .push(physical as usize);
+            }
+            self.node_slots_dirty = false;
+        }
+        let mut next = HashSet::new();
+        for id in hidden {
+            if let Some(slots) = self.node_slots.get(id) {
+                next.extend(slots.iter().copied());
+            }
+        }
+        let patches = plan_portal_visibility_words(
+            &self.masked_slots,
+            &next,
+            &self.bounds_keys,
+            self.mask_reapply,
+        );
+        if !patches.is_empty() {
+            let encoded = patches
+                .iter()
+                .map(|(slot, word)| {
+                    (*slot as u64 * BOUNDS_STRIDE as u64 + PORTAL_WORD_OFFSET, word.to_le_bytes())
+                })
+                .collect::<Vec<_>>();
+            let writes = encoded
+                .iter()
+                .map(|(offset, bytes)| gfx_core::BufferWrite {
+                    descriptor: gfx_core::BufferWriteDescriptor {
+                        buffer: self.bounds,
+                        offset: *offset,
+                    },
+                    data: &bytes[..],
+                })
+                .collect::<Vec<_>>();
+            device.write_buffer_batch(&writes)?;
+        }
+        self.masked_slots = next;
+        self.mask_reapply = false;
+        Ok(!patches.is_empty())
     }
 
     // Legacy native test fixtures exercise the original one-workgroup-per-
@@ -866,6 +972,42 @@ impl CullResources {
         device.destroy_buffer(self.range)?;
         device.destroy_buffer(self.slot_map)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod portal_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn physical_visibility_patches_restore_original_hiz_bits() {
+        let original = BoundsRecordKey([0, 0, 0, 1, 0, 0, 0, 1.0f32.to_bits(), 0, 0, 0, 0]);
+        let resident = vec![Some(original), Some(original)];
+        let old = HashSet::from([0usize]);
+        let updated = HashSet::from([1usize]);
+        assert_eq!(
+            plan_portal_visibility_words(&old, &updated, &resident, false),
+            [(0, 1.0f32.to_bits()), (1, PORTAL_HIDDEN_WORD)]
+        );
+        assert_eq!(
+            plan_portal_visibility_words(&updated, &updated, &resident, false),
+            []
+        );
+        assert_eq!(
+            plan_portal_visibility_words(&updated, &updated, &resident, true),
+            [(1, PORTAL_HIDDEN_WORD)]
+        );
+        assert_eq!(
+            plan_portal_visibility_words(&updated, &HashSet::new(), &resident, false),
+            [(1, 1.0f32.to_bits())]
+        );
+    }
+
+    #[test]
+    fn mask_patch_byte_offset_is_the_existing_bounds_max_w_word() {
+        assert_eq!(BOUNDS_STRIDE, 48);
+        assert_eq!(PORTAL_WORD_OFFSET, 28);
+        assert_eq!(PORTAL_HIDDEN_WORD, 2.0f32.to_bits());
     }
 }
 
