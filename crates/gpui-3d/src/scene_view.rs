@@ -94,6 +94,9 @@ pub struct SceneView {
     pub(super) culling_bounds: Option<crate::Aabb>,
     /// Per-view GPU visibility overlay; preserves persistent Scene and mesh identity.
     pub(super) hidden_nodes: Arc<HashSet<NodeId>>,
+    /// Per-view, lock-local immutable preparation handoff. Clone preserves
+    /// identity; dropping the last SceneView releases CPU snapshots directly.
+    pub(super) sidecar: Arc<sidecar::Mailbox>,
 }
 
 #[derive(Clone)]
@@ -198,6 +201,7 @@ impl SceneView {
             screen_effects: None,
             culling_bounds: None,
             hidden_nodes: Arc::new(HashSet::new()),
+            sidecar: Arc::new(sidecar::Mailbox::default()),
         };
         sidecar::schedule(&view);
         view
@@ -234,6 +238,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         };
         if needs_full_walk {
             sidecar::schedule(&view);
@@ -267,6 +272,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         }
     }
 
@@ -364,6 +370,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         };
         sidecar::schedule(&view);
         Ok(view)
@@ -394,6 +401,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         }
     }
 
@@ -442,6 +450,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         })
     }
 
@@ -479,6 +488,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         })
     }
 
@@ -511,6 +521,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         }
     }
 
@@ -543,6 +554,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         }
     }
 
@@ -611,6 +623,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         })
     }
 
@@ -641,6 +654,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         }
     }
 
@@ -695,6 +709,7 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
+            sidecar: Arc::clone(&self.sidecar),
         })
     }
 
