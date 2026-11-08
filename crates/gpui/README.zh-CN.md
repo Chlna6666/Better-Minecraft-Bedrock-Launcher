@@ -117,4 +117,3 @@ cargo test -p gpui --no-default-features --features nova-gfx-dx12 --lib platform
 - [架构](../../docs/ARCHITECTURE.md)
 - [crate 目录](../../docs/CRATES.md)
 - [命名规范](../../docs/NAMING.md)
-- [gpui / nova-gfx 边界 ADR](../../docs/adr/0001-nova-gfx-gpui-boundary.md)

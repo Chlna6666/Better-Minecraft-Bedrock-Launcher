@@ -60,7 +60,7 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
   下载/存档/地图等语义留在 `src/`。
 - **领域 crate 不依赖 UI/GPU**：`bedrock-*` 负责 Bedrock 数据与 CPU 渲染，不依赖 `gpui`。
 
-边界决策的完整背景见 [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md)。
+以上约束即 gpui 与 nova-gfx 的边界；跨层变更需同步更新本文。
 
 ## 3. crate 职责
 
@@ -176,4 +176,3 @@ platform input -> gpui window/entity update
 - [CONTRIBUTING](CONTRIBUTING.md)：变更流程与边界检查
 - [NAMING](NAMING.md)：公共/内部命名
 - [CRATES](CRATES.md)：crate 目录
-- [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md)：nova-gfx 与 gpui 边界

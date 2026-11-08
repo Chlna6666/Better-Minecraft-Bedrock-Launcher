@@ -1,7 +1,7 @@
 # Contributing
 
-This guide is for changes to the BMCBL workspace. Read [ARCHITECTURE](ARCHITECTURE.en.md),
-[NAMING](NAMING.md) and [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) first.
+This guide is for changes to the BMCBL workspace. Read [ARCHITECTURE](ARCHITECTURE.en.md)
+and [NAMING](NAMING.md) first.
 
 ## 1. Before changing: declare scope
 

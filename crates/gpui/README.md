@@ -260,7 +260,6 @@ bounded safely; otherwise the renderer falls back to full redraw.
 - [Build and test](../../docs/BUILD_AND_TEST.en.md)
 - [Crate catalog](../../docs/CRATES.en.md)
 - [Naming rules](../../docs/NAMING.md)
-- [gpui / nova-gfx boundary ADR](../../docs/adr/0001-nova-gfx-gpui-boundary.md)
 - [Chinese README](README.zh-CN.md)
 
 The renderer boundary and ownership rules live in the links above; per-subsystem notes are in

@@ -1,7 +1,7 @@
 # 贡献指南
 
 本文面向修改 BMCBL 工作区代码与文档的开发者。先读 [ARCHITECTURE](ARCHITECTURE.md)、
-[NAMING](NAMING.md) 和 [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md)，再开始改动。
+[NAMING](NAMING.md)，再开始改动。
 
 ## 1. 变更前：声明范围
 

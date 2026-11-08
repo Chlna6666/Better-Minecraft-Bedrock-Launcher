@@ -80,7 +80,7 @@ foreach ($file in $markdownFiles) {
 foreach ($required in @("docs/README.md", "docs/README.en.md", "docs/ARCHITECTURE.md",
         "docs/ARCHITECTURE.en.md", "docs/BUILD_AND_TEST.md", "docs/BUILD_AND_TEST.en.md",
         "docs/CONTRIBUTING.md", "docs/CONTRIBUTING.en.md", "docs/CRATES.md",
-        "docs/CRATES.en.md", "docs/NAMING.md", "docs/adr/0001-nova-gfx-gpui-boundary.md")) {
+        "docs/CRATES.en.md", "docs/NAMING.md")) {
     if (-not (Test-Path (Join-Path $root $required))) {
         $failures.Add("${required}: required documentation is missing")
     }

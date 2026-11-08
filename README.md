@@ -197,7 +197,7 @@ EGPUI --> GPUI
 架构与边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 crate 职责与状态见 [docs/CRATES.md](docs/CRATES.md)。
 命名规范见 [docs/NAMING.md](docs/NAMING.md)，
-gpui/nova-gfx 边界决策见 [docs/adr/0001-nova-gfx-gpui-boundary.md](docs/adr/0001-nova-gfx-gpui-boundary.md)。
+gpui/nova-gfx 边界约束见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 实现与加载器说明
 

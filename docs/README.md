@@ -16,7 +16,6 @@
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.md) | 快捷方式/文件关联/更新器使用的启动参数与兼容参数 |
 | [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.md) | 披风包清单、纹理、图标、本地化和导入格式 |
 | [NAMING](NAMING.md) | 命名规范（wgpu 对齐、动词族、公共/内部接口） |
-| [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) | gpui 与 nova-gfx 的边界决策 |
 
 英文镜像：
 [README.en.md](README.en.md) · [ARCHITECTURE.en.md](ARCHITECTURE.en.md) ·
@@ -27,7 +26,7 @@
 ## 推荐阅读路径
 
 - **第一次接触项目**：根目录 [README](../README.md) → 本文档 → [ARCHITECTURE](ARCHITECTURE.md)。
-- **修改 GPU/渲染代码**：先读 [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) 与
+- **修改 GPU/渲染代码**：先读 [ARCHITECTURE](ARCHITECTURE.md) 的边界约束与
   [NAMING](NAMING.md)，再读 [BUILD_AND_TEST](BUILD_AND_TEST.md) 的后端矩阵。
 - **修改应用功能**：根 README 的功能图 → `src/` 对应模块 → [CRATES](CRATES.md) 中相邻 crate。
 - **AI/自动化代理**：先读根目录 `AGENTS.md`，再按任务类型选择上面的文档。

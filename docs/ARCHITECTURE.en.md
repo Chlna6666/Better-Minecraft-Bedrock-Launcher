@@ -62,7 +62,8 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 - **Domain crates stay free of UI/GPU policy.** `bedrock-*` handles Bedrock data and CPU
   rendering without depending on `gpui`.
 
-See [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) for the boundary decision.
+These constraints define the gpui / nova-gfx boundary; cross-layer changes must update
+this document.
 
 ## 3. Crate responsibilities
 
@@ -179,4 +180,3 @@ coalesces persistence.
 - [CONTRIBUTING](CONTRIBUTING.en.md): workflow and boundary checks
 - [NAMING](NAMING.md): public/internal naming rules (Chinese)
 - [CRATES](CRATES.en.md): crate catalog
-- [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md): nova-gfx / gpui boundary (Chinese)

@@ -17,7 +17,6 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
   [docs/CRATES.md](docs/CRATES.md)
 - 构建、feature、测试矩阵：[docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md)
 - 命名规范：[docs/NAMING.md](docs/NAMING.md)
-- gpui / nova-gfx 边界：[docs/adr/0001-nova-gfx-gpui-boundary.md](docs/adr/0001-nova-gfx-gpui-boundary.md)
 - 变更流程与提交规范：[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 ## 3. 硬性边界

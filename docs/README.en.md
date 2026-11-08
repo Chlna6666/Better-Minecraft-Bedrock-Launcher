@@ -16,7 +16,6 @@ English mirrors. Crate `README.md` files are English with a Chinese `README.zh-C
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.en.md) | Startup arguments for shortcuts, file associations and the updater, plus legacy aliases |
 | [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.en.md) | Cape pack manifests, textures, icons, localization and import formats |
 | [NAMING](NAMING.md) | Naming rules (Chinese; wgpu-aligned vocabulary) |
-| [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md) | gpui / nova-gfx boundary decision (Chinese) |
 
 Chinese originals: [README.md](README.md) · [ARCHITECTURE.md](ARCHITECTURE.md) ·
 [BUILD_AND_TEST.md](BUILD_AND_TEST.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CRATES.md](CRATES.md) ·
@@ -26,7 +25,7 @@ Chinese originals: [README.md](README.md) · [ARCHITECTURE.md](ARCHITECTURE.md) 
 ## Reading paths
 
 - **New to the project**: root [README](../README.md) → this page → [ARCHITECTURE](ARCHITECTURE.en.md).
-- **GPU/rendering changes**: [ADR 0001](adr/0001-nova-gfx-gpui-boundary.md), [NAMING](NAMING.md),
+- **GPU/rendering changes**: boundary rules in [ARCHITECTURE](ARCHITECTURE.en.md), [NAMING](NAMING.md),
   then the backend matrix in [BUILD_AND_TEST](BUILD_AND_TEST.en.md).
 - **Application features**: feature tables in the root README → the matching `src/` module →
   neighbouring crates in [CRATES](CRATES.en.md).

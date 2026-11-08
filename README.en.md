@@ -52,8 +52,7 @@ crates/bmcbl-plugin-api  plugin ABI and packing tools
 ```
 
 See [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) and [docs/CRATES.en.md](docs/CRATES.en.md)
-for the full layering and catalog. The gpui/nova-gfx boundary is recorded in
-[ADR 0001](docs/adr/0001-nova-gfx-gpui-boundary.md) (Chinese).
+for the full layering, crate catalog and the gpui/nova-gfx boundary rules.
 
 ## Build and run
 
