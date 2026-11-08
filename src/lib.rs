@@ -1,4 +1,8 @@
 #![recursion_limit = "512"]
+// Application-layer dead code is retained on purpose: unreached feature
+// scaffolding and in-progress work stay compiled so they keep passing check
+// without each feature committing to a release path.
+#![allow(dead_code)]
 
 mod app;
 mod archive;

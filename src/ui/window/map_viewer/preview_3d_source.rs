@@ -30,7 +30,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 mod collect_properties;
-use collect_properties::{BlockProperties, BlockPropertiesCache};
+use collect_properties::{BlockColorCache, BlockProperties, BlockPropertiesCache};
 
 const PREVIEW_3D_WATER_ALPHA: f32 = 0.46;
 const PREVIEW_3D_DEFAULT_WATER_RGB: [f32; 3] = [28.0 / 255.0, 76.0 / 255.0, 158.0 / 255.0];
@@ -2107,6 +2107,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
     biome_blend: Option<&Preview3dBiomeBlendField>,
 ) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::builtin_shared();
+    let mut color_cache = BlockColorCache::new(&palette);
     let initial_block_capacity = chunk.subchunks.len().saturating_mul(16 * 16 * 16);
     let mut occupied =
         HashSet::<BlockKey>::with_capacity_and_hasher(initial_block_capacity, Default::default());
@@ -2175,7 +2176,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
-                                &palette,
+                                &mut color_cache,
                                 &mut block_budget,
                                 &mut connection_kinds,
                                 &mut occupied,
@@ -2233,7 +2234,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
-                                &palette,
+                                &mut color_cache,
                                 &mut block_budget,
                                 &mut connection_kinds,
                                 &mut occupied,
@@ -2280,7 +2281,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                                 }),
                                 block_entity_states.get(&key).copied(),
                                 properties.resolve(state, block_class),
-                                &palette,
+                                &mut color_cache,
                                 &mut block_budget,
                                 &mut connection_kinds,
                                 &mut occupied,
@@ -2344,7 +2345,7 @@ fn preview_3d_push_collected_block(
     biome: Option<Preview3dBiomeSample>,
     block_entity_state: Option<Preview3dBlockEntityModelState>,
     properties: &BlockProperties,
-    palette: &RenderPalette,
+    colors: &mut BlockColorCache,
     block_budget: &mut Preview3dBlockBudget,
     connection_kinds: &mut HashMap<BlockKey, Preview3dConnectionKind>,
     occupied: &mut HashSet<BlockKey>,
@@ -2376,6 +2377,9 @@ fn preview_3d_push_collected_block(
     }
     let shape = properties.shape(state, block_entity_state);
     let neighbor_model = properties.neighbor_model;
+    // Colors depend only on the immutable palette entry and the biome sample;
+    // one resolution per (entry, biome) replaces the per-block palette probes.
+    let entry_colors = colors.resolve(state, biome);
     match block_class {
         Preview3dBlockClass::Opaque => {
             if let Some(shape) = shape {
@@ -2386,7 +2390,7 @@ fn preview_3d_push_collected_block(
                         neighbor_model,
                         stair_state,
                         shape,
-                        color: preview_3d_color_for_block(palette, state, biome),
+                        color: entry_colors.flat,
                         material,
                     });
                     return Ok(());
@@ -2395,7 +2399,7 @@ fn preview_3d_push_collected_block(
             occupied.insert(key);
             opaque_blocks.push(Preview3dBlockRecord::new(
                 key,
-                preview_3d_face_colors_for_block(palette, state, biome),
+                entry_colors.face,
                 material,
             ));
         }
@@ -2408,7 +2412,7 @@ fn preview_3d_push_collected_block(
                         neighbor_model,
                         stair_state,
                         shape,
-                        color: preview_3d_transparent_color_for_block(palette, state, biome),
+                        color: entry_colors.transparent,
                         material,
                     });
                     return Ok(());
@@ -2417,7 +2421,7 @@ fn preview_3d_push_collected_block(
             glass.insert(key);
             glass_blocks.push(Preview3dBlockRecord::uniform(
                 key,
-                preview_3d_transparent_color_for_block(palette, state, biome),
+                entry_colors.transparent,
                 material,
             ));
         }
@@ -2425,7 +2429,7 @@ fn preview_3d_push_collected_block(
             water.insert(key);
             water_blocks.push(Preview3dFluidBlock {
                 key,
-                color: preview_3d_water_color_for_block(palette, state, biome),
+                color: entry_colors.water,
                 material,
                 surface_only,
                 height: properties.fluid_height,
@@ -2435,7 +2439,7 @@ fn preview_3d_push_collected_block(
             lava.insert(key);
             lava_blocks.push(Preview3dFluidBlock {
                 key,
-                color: preview_3d_lava_color_for_block(palette, state, biome),
+                color: entry_colors.lava,
                 material,
                 surface_only,
                 height: properties.fluid_height,
@@ -2449,9 +2453,9 @@ fn preview_3d_push_collected_block(
                 return Ok(());
             }
             let color = if block_class == Preview3dBlockClass::DetailGlass {
-                preview_3d_transparent_color_for_block(palette, state, biome)
+                entry_colors.transparent
             } else {
-                preview_3d_color_for_block(palette, state, biome)
+                entry_colors.flat
             };
             let block = Preview3dDetailBlock {
                 key,
@@ -3247,7 +3251,7 @@ fn preview_3d_push_structure_state(
         None,
         None,
         &BlockProperties::new(state, block_class, None),
-        render_palette,
+        &mut BlockColorCache::new(render_palette),
         &mut builder.block_budget,
         &mut builder.blocks.connection_kinds,
         &mut builder.blocks.occupied,

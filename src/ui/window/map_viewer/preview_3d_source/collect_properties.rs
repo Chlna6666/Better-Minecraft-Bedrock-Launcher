@@ -1,13 +1,16 @@
 //! Resolves immutable palette-entry properties once instead of once for every occupied voxel.
 
 use super::{
-    Arc, BlockModelRepository, BlockState, HashMap, Preview3dBlockClass,
-    Preview3dBlockEntityModelState, Preview3dConnectionKind, Preview3dDetailShape,
-    Preview3dMaterialName, Preview3dNeighborModel, Preview3dStairState, preview_3d_connection_kind,
-    preview_3d_detail_shape_for_block, preview_3d_fluid_height,
-    preview_3d_material_block_name_for_state, preview_3d_material_name_for_block,
-    preview_3d_neighbor_model, preview_3d_normalized_block_name,
-    preview_3d_resolved_detail_shape_for_block, preview_3d_stair_state,
+    Arc, BlockModelRepository, BlockState, HashMap, Preview3dBiomeSample, Preview3dBlockClass,
+    Preview3dBlockEntityModelState, Preview3dBlockFaceColors, Preview3dConnectionKind,
+    Preview3dDetailShape, Preview3dMaterialName, Preview3dNeighborModel, Preview3dStairState,
+    RenderPalette, preview_3d_color_for_block, preview_3d_connection_kind,
+    preview_3d_detail_shape_for_block, preview_3d_face_colors_for_block, preview_3d_fluid_height,
+    preview_3d_lava_color_for_block, preview_3d_material_block_name_for_state,
+    preview_3d_material_name_for_block, preview_3d_neighbor_model,
+    preview_3d_normalized_block_name, preview_3d_resolved_detail_shape_for_block,
+    preview_3d_stair_state, preview_3d_transparent_color_for_block,
+    preview_3d_water_color_for_block,
 };
 
 pub(super) struct BlockPropertiesCache<'a> {
@@ -33,6 +36,80 @@ impl<'a> BlockPropertiesCache<'a> {
         self.entries
             .entry(std::ptr::from_ref(state) as usize)
             .or_insert_with(|| BlockProperties::new(state, class, self.models))
+    }
+}
+
+/// Hashable copy of the color-affecting part of one biome sample. Two blocks
+/// share one color resolution iff their palette entry and this key are equal.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct BiomeColorKey {
+    biome_id: Option<u32>,
+    legacy_color: Option<[u8; 4]>,
+    grass_tint: Option<[u8; 4]>,
+    foliage_tint: Option<[u8; 4]>,
+}
+
+impl BiomeColorKey {
+    fn from_sample(sample: Preview3dBiomeSample) -> Self {
+        Self {
+            biome_id: sample.biome_id,
+            legacy_color: sample.legacy_color.map(|color| {
+                [color.red, color.green, color.blue, color.alpha]
+            }),
+            grass_tint: sample.grass_tint.map(|color| {
+                [color.red, color.green, color.blue, color.alpha]
+            }),
+            foliage_tint: sample.foliage_tint.map(|color| {
+                [color.red, color.green, color.blue, color.alpha]
+            }),
+        }
+    }
+}
+
+/// One palette entry's color variants resolved against one biome sample.
+pub(super) struct BlockColorEntry {
+    pub(super) face: Preview3dBlockFaceColors,
+    pub(super) flat: [f32; 4],
+    pub(super) transparent: [f32; 4],
+    pub(super) water: [f32; 4],
+    pub(super) lava: [f32; 4],
+}
+
+/// Resolves per-block colors once per (palette entry, biome sample) instead of
+/// once for every occupied voxel. Mirrors [`BlockPropertiesCache`]: palette
+/// entries keep stable addresses for one immutable ChunkData traversal, so a
+/// pointer key replaces state-name hashing. A typical chunk resolves a few
+/// hundred entries instead of tens of thousands of multi-probe palette
+/// lookups and tint computations.
+pub(super) struct BlockColorCache<'a> {
+    palette: &'a RenderPalette,
+    entries: HashMap<(usize, Option<BiomeColorKey>), BlockColorEntry>,
+}
+
+impl<'a> BlockColorCache<'a> {
+    pub(super) fn new(palette: &'a RenderPalette) -> Self {
+        Self {
+            palette,
+            entries: HashMap::default(),
+        }
+    }
+
+    pub(super) fn resolve(
+        &mut self,
+        state: &BlockState,
+        biome: Option<Preview3dBiomeSample>,
+    ) -> &BlockColorEntry {
+        let key = (
+            std::ptr::from_ref(state) as usize,
+            biome.map(BiomeColorKey::from_sample),
+        );
+        self.entries.entry(key).or_insert_with(|| BlockColorEntry {
+            face: preview_3d_face_colors_for_block(self.palette, state, biome),
+            flat: preview_3d_color_for_block(self.palette, state, biome),
+            transparent: preview_3d_transparent_color_for_block(self.palette, state, biome),
+            water: preview_3d_water_color_for_block(self.palette, state, biome),
+            lava: preview_3d_lava_color_for_block(self.palette, state, biome),
+        })
     }
 }
 
