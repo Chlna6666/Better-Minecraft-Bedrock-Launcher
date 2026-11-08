@@ -2279,6 +2279,9 @@ struct Worker {
     cursor: ChunkCursor,
     cache: BTreeMap<ChunkPos, CachedChunk>,
     light_fields: HashMap<ChunkPos, Arc<lighting::ChunkLighting>>,
+    // Immutable per-Probe halo decode, reused by the nine overlapping
+    // 3x3 light solves as the camera crosses neighboring columns.
+    light_columns: HashMap<ChunkPos, lighting::CachedLightColumn>,
     published_sections: BTreeMap<(ChunkPos, i32), Weak<World3dChunkMesh>>,
     /// Bounded strong cache of recently published Sections. A revisit of a
     /// previously loaded area reuses the surviving Arc (stable GPU identity,
@@ -2411,6 +2414,7 @@ impl Worker {
             cursor: ChunkCursor::default(),
             cache: BTreeMap::new(),
             light_fields: HashMap::new(),
+            light_columns: HashMap::new(),
             published_sections: BTreeMap::new(),
             revisit_cache: BTreeMap::new(),
             revisit_order: std::collections::VecDeque::new(),
@@ -2606,6 +2610,7 @@ impl Worker {
         for pos in stale {
             self.cache.remove(&pos);
             self.light_fields.remove(&pos);
+            self.light_columns.remove(&pos);
             forget_published_sections(&mut self.published_sections, pos, &[]);
             forget_boundary_pairs(&mut self.boundary_pairs, pos);
             self.lod_modes.remove(&pos);
@@ -2618,6 +2623,15 @@ impl Worker {
                 pos,
             });
         }
+        self.light_columns.retain(|pos, _| {
+            inside_cache_hysteresis(
+                *pos,
+                self.view.dimension,
+                center_x,
+                center_z,
+                self.view.radius,
+            )
+        });
         self.light_fields.retain(|pos, _| {
             inside_cache_hysteresis(
                 *pos,
@@ -4491,6 +4505,8 @@ impl Worker {
             self.missing.remove(pos);
             self.failed_positions.remove(pos);
             self.probe_stash.remove(pos);
+            self.light_columns.remove(pos);
+            self.light_fields.remove(pos);
             self.deferred_columns.remove(pos);
             self.deferred_bands.retain(|(column, _)| column != pos);
             self.urgent_chunks.insert(*pos);

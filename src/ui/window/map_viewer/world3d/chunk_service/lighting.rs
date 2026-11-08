@@ -14,16 +14,26 @@ pub(super) struct ChunkLighting {
     has_sky: bool,
 }
 
+/// Decoded light input for one immutable column. Neighboring center columns
+/// share the same palette/classification work while keeping independent 48x
+/// full-height propagation, so no lighting result changes at Section seams.
+pub(super) struct CachedLightColumn {
+    probe: Weak<World3dChunkProbe>,
+    min_y: i32,
+    height: u32,
+    cells: Arc<[LightCell]>,
+}
+
 impl Worker {
-    pub(super) fn build_lighting(&self, pos: ChunkPos) -> Result<Arc<ChunkLighting>, String> {
-        let inputs = std::array::from_fn(|i| {
+    pub(super) fn build_lighting(&mut self, pos: ChunkPos) -> Result<Arc<ChunkLighting>, String> {
+        let probes: [Option<Arc<World3dChunkProbe>>; 9] = std::array::from_fn(|i| {
             self.light_probe_arc(ChunkPos {
                 x: pos.x + (i % 3) as i32 - 1,
                 z: pos.z + (i / 3) as i32 - 1,
                 dimension: pos.dimension,
-            })
-            .map(Arc::downgrade)
+            }).cloned()
         });
+        let inputs = std::array::from_fn(|i| probes[i].as_ref().map(Arc::downgrade));
         if let Some(old) = self.light_fields.get(&pos)
             && inputs.iter().zip(&old.inputs).all(|(a, b)| match (a, b) {
                 (Some(a), Some(b)) => Weak::ptr_eq(a, b),
@@ -33,8 +43,7 @@ impl Worker {
         {
             return Ok(old.clone());
         }
-        let probe = self
-            .light_probe(pos)
+        let probe = probes[4].as_ref()
             .ok_or_else(|| "光照计算缺少目标区块".to_string())?;
         let version = if probe.min_y < 0 {
             ChunkVersion::New
@@ -46,23 +55,17 @@ impl Worker {
         let size = [48, height, 48];
         let origin = [pos.x * 16 - 16, min_y, pos.z * 16 - 16];
         let mut cells = vec![LightCell::OPAQUE; (48 * height * 48) as usize];
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let neighbor = ChunkPos {
-                    x: pos.x + dx,
-                    z: pos.z + dz,
-                    dimension: pos.dimension,
-                };
-                let Some(probe) = self.light_probe(neighbor) else {
-                    continue;
-                };
-                write_probe_cells(
-                    &self.models,
-                    probe,
-                    &mut cells,
-                    [((dx + 1) * 16), min_y, ((dz + 1) * 16)],
-                );
-            }
+        for (index, neighbor_probe) in probes.iter().enumerate() {
+            let Some(probe) = neighbor_probe else { continue; };
+            let dx = index % 3;
+            let dz = index / 3;
+            let neighbor = ChunkPos {
+                x: pos.x + dx as i32 - 1,
+                z: pos.z + dz as i32 - 1,
+                dimension: pos.dimension,
+            };
+            let column = self.cached_light_column(neighbor, probe, min_y, height);
+            copy_light_column(&column, &mut cells, height as usize, dx, dz);
         }
         let has_sky = pos.dimension == Dimension::Overworld;
         let sources = if self.lighting == super::super::rendering::LightingMode::VibrantPreview {
@@ -94,9 +97,31 @@ impl Worker {
         }))
     }
 
-    fn light_probe(&self, pos: ChunkPos) -> Option<&World3dChunkProbe> {
-        self.light_probe_arc(pos).map(Arc::as_ref)
+    fn cached_light_column(
+        &mut self,
+        pos: ChunkPos,
+        probe: &Arc<World3dChunkProbe>,
+        min_y: i32,
+        height: u32,
+    ) -> Arc<[LightCell]> {
+        if let Some(cached) = self.light_columns.get(&pos)
+            && cached.min_y == min_y && cached.height == height
+            && Weak::ptr_eq(&cached.probe, &Arc::downgrade(probe))
+        {
+            return Arc::clone(&cached.cells);
+        }
+        let mut cells = vec![LightCell::AIR; 16 * height as usize * 16];
+        write_probe_cells_with_stride(&self.models, probe, &mut cells, [0, min_y, 0], 16);
+        let cells: Arc<[LightCell]> = cells.into();
+        self.light_columns.insert(pos, CachedLightColumn {
+            probe: Arc::downgrade(probe),
+            min_y,
+            height,
+            cells: Arc::clone(&cells),
+        });
+        cells
     }
+
     fn light_probe_arc(&self, pos: ChunkPos) -> Option<&Arc<World3dChunkProbe>> {
         self.probe_stash
             .get(&pos)
@@ -105,20 +130,50 @@ impl Worker {
     }
 }
 
+/// Copy a predecoded 16xH light column into a 48xH neighbor halo. Rows are
+/// contiguous so the hot path is memcpy rather than palette/BlockState lookups.
+fn copy_light_column(
+    source: &[LightCell],
+    destination: &mut [LightCell],
+    height: usize,
+    dx: usize,
+    dz: usize,
+) {
+    debug_assert_eq!(source.len(), 16 * height * 16);
+    for z in 0..16 {
+        for y in 0..height {
+            let src = (z * height + y) * 16;
+            let dst = ((dz * 16 + z) * height + y) * 48 + dx * 16;
+            destination[dst..dst + 16].copy_from_slice(&source[src..src + 16]);
+        }
+    }
+}
+
 /// Collate complete storage layers once per palette, including waterlogged solids.
+#[cfg(test)]
 fn write_probe_cells(
     models: &bedrock_block_model::BlockModelRepository,
     probe: &World3dChunkProbe,
     cells: &mut [LightCell],
     origin: [i32; 3],
 ) {
+    write_probe_cells_with_stride(models, probe, cells, origin, 48);
+}
+
+fn write_probe_cells_with_stride(
+    models: &bedrock_block_model::BlockModelRepository,
+    probe: &World3dChunkProbe,
+    cells: &mut [LightCell],
+    origin: [i32; 3],
+    stride: usize,
+) {
     let [ox, min_y, oz] = origin;
-    let height = cells.len() / (48 * 48);
+    let height = cells.len() / (stride * stride);
     let max_y = min_y + height as i32 - 1;
     let (ox, oz) = (ox as usize, oz as usize);
     for z in oz..oz + 16 {
         for y in 0..height {
-            let begin = (z * height + y) * 48 + ox;
+            let begin = (z * height + y) * stride + ox;
             cells[begin..begin + 16].fill(LightCell::AIR);
         }
     }
@@ -168,7 +223,7 @@ fn write_probe_cells(
                     }
                 }
             }
-            let index = ((oz + usize::from(z)) * height + (world_y - min_y) as usize) * 48
+            let index = ((oz + usize::from(z)) * height + (world_y - min_y) as usize) * stride
                 + ox
                 + usize::from(x);
             cells[index] = LightCell::new(emission, dampening).unwrap_or(LightCell::OPAQUE);
@@ -302,6 +357,27 @@ mod tests {
         boundary.levels[(7 * 384 + 127) * 18 + 7] = 0;
         assert_eq!(boundary.changed_bands(Some(&before)), vec![(0, 1)]);
         assert_eq!(before.changed_bands(None), vec![(-1, 4)]);
+    }
+
+    #[test]
+    fn cached_column_rows_match_full_halo_layout_at_negative_world_heights() {
+        let height = 32usize;
+        let source = (0..16 * height * 16)
+            .map(|index| LightCell::new((index % 16) as u8, (index / 16 % 16) as u8).unwrap())
+            .collect::<Vec<_>>();
+        let mut halo = vec![LightCell::OPAQUE; 48 * height * 48];
+        for dz in 0..3 {
+            for dx in 0..3 {
+                copy_light_column(&source, &mut halo, height, dx, dz);
+                for z in 0..16 {
+                    for y in 0..height {
+                        let a = ((dz * 16 + z) * height + y) * 48 + dx * 16;
+                        let b = (z * height + y) * 16;
+                        assert_eq!(&halo[a..a + 16], &source[b..b + 16]);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
