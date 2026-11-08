@@ -3259,6 +3259,17 @@ impl SceneResources {
         self.command_delta.as_ref()
     }
 
+    /// The indirect argument offset addresses the original Batch index.
+    /// Preserve the back-to-front order of the blended suffix when the
+    /// renderer groups opaque indirect commands by native state.
+    pub(super) fn first_blended_batch_index(&self) -> Option<usize> {
+        self.batches.iter().position(|batch| {
+            self.prepared.draws.get(batch.first_instance).is_some_and(|draw| {
+                draw.material.alpha_mode == AlphaMode::Blend
+            })
+        })
+    }
+
     pub(super) fn append_steps(
         &self,
         renderer: &RendererResources,

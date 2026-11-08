@@ -53,6 +53,7 @@ impl CachedCommands {
     fn append(
         &mut self,
         revision: u64,
+        blended_batch_start: Option<usize>,
         steps: &mut Vec<RenderCommand>,
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
     ) -> gpui::Result<()> {
@@ -66,7 +67,7 @@ impl CachedCommands {
         let first = steps.len();
         build(steps)?;
         self.commands.extend_from_slice(&steps[first..]);
-        self.grouped = group_indirect_commands(&self.commands);
+        self.grouped = group_indirect_commands(&self.commands, blended_batch_start);
         self.revision = Some(revision);
         // Backends coalesce adjacent identical-state draws into one native
         // indirect call; emit the regrouped list instead of the raw build
@@ -83,13 +84,14 @@ impl CachedCommands {
         &mut self,
         revision: u64,
         draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
         delta: Option<&StructuralDrawDelta>,
         steps: &mut Vec<RenderCommand>,
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
         mut build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
     ) -> gpui::Result<()> {
         if self.revision == Some(revision) {
-            steps.extend_from_slice(&self.commands);
+            self.publish(steps);
             return Ok(());
         }
         if let (Some(count), Some(delta), Some(previous)) = (draw_count, delta, self.revision)
@@ -107,13 +109,13 @@ impl CachedCommands {
                 );
             }
             self.commands = next;
-            self.grouped = group_indirect_commands(&self.commands);
+            self.grouped = group_indirect_commands(&self.commands, blended_batch_start);
             self.revision = Some(revision);
             self.generated_draw_count = Some(count);
             self.publish(steps);
             return Ok(());
         }
-        self.append(revision, steps, build)?;
+        self.append(revision, blended_batch_start, steps, build)?;
         self.generated_draw_count = draw_count;
         Ok(())
     }
@@ -231,10 +233,13 @@ fn generated_range_matches(commands: &[RenderCommand], range: std::ops::Range<us
 /// identical-state run as one native indirect call, so thousands of Section
 /// draws collapse into one native call per distinct binding state.
 ///
-/// Opaque draws (the leading pipeline run) are bucketed by bind group;
-/// blended draws keep their relative depth order. Non-indirect lists return
-/// `None` and are published in their original order.
-fn group_indirect_commands(commands: &[RenderCommand]) -> Option<Vec<RenderCommand>> {
+/// Opaque draws are bucketed by pipeline and bind group only before the
+/// first blended batch. Every subsequent command keeps its original order.
+/// Non-indirect lists return `None` and are published unchanged.
+fn group_indirect_commands(
+    commands: &[RenderCommand],
+    blended_batch_start: Option<usize>,
+) -> Option<Vec<RenderCommand>> {
     static DISABLED: OnceLock<bool> = OnceLock::new();
     if *DISABLED.get_or_init(|| std::env::var_os("GPUI_3D_NO_GROUP").is_some()) {
         return None;
@@ -246,17 +251,25 @@ fn group_indirect_commands(commands: &[RenderCommand]) -> Option<Vec<RenderComma
     {
         return None;
     }
-    // Sections frequently use several opaque pipeline variants (front-face
-    // culling), so bucket by (pipeline, bind groups) across the whole list
-    // instead of stopping at the first pipeline change. The output keeps each
-    // pipeline's first-appearance order and every bucket's internal order;
-    // back-to-front blended draws stay within their own pipeline bucket, so
-    // their relative depth order is preserved.
+    // Only opaque commands can be globally reordered. Transparent draws
+    // must keep their exact camera-sorted order even when Pipeline/BindGroup
+    // differs: collecting them by state would change alpha composition and
+    // could produce camera-dependent water/transparent flicker.
+    let opaque_len = blended_batch_start.map_or(commands.len(), |first_blend| {
+        commands.iter().position(|command| match command {
+            RenderCommand::DrawIndirect(draw) => draw.offset / 16 >= first_blend as u64,
+            _ => false,
+        }).unwrap_or(commands.len())
+    });
+    if opaque_len <= 1 {
+        return None;
+    }
+    let opaque_commands = &commands[..opaque_len];
     let mut pipeline_order = Vec::<gfx_core::RenderPipelineId>::new();
     let mut keys = Vec::<(gfx_core::RenderPipelineId, BindGroupList)>::new();
     let mut buckets =
         HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), Vec<RenderCommand>>::default();
-    for command in commands {
+    for command in opaque_commands {
         let RenderCommand::DrawIndirect(draw) = command else {
             continue;
         };
@@ -275,9 +288,9 @@ fn group_indirect_commands(commands: &[RenderCommand]) -> Option<Vec<RenderComma
             }
         }
     }
-    if keys.len() >= commands.len() {
-        // Every command already has a distinct state; regrouping cannot
-        // merge anything and would only reorder the list.
+    if keys.len() >= opaque_commands.len() {
+        // Opaque grouping cannot improve submission count. Leave all
+        // commands in original order rather than touch blended draws.
         return None;
     }
     let mut grouped = Vec::with_capacity(commands.len());
@@ -287,6 +300,7 @@ fn group_indirect_commands(commands: &[RenderCommand]) -> Option<Vec<RenderComma
             grouped.extend(buckets.remove(&lookup).unwrap_or_default());
         }
     }
+    grouped.extend_from_slice(&commands[opaque_len..]);
     debug_assert_eq!(grouped.len(), commands.len());
     // Regrouping must be a permutation of the original draws: every GPU
     // indirect argument record is still executed exactly once. Pipeline and
@@ -587,7 +601,7 @@ mod tests {
         let mut output = Vec::new();
         for revision in [1, 1, 2] {
             cache
-                .append(revision, &mut output, |steps| {
+                .append(revision, None, &mut output, |steps| {
                     builds += 1;
                     steps.push(RenderCommand::Draw(DrawCommand {
                         pipeline: RenderPipelineId::from_parts(revision as u32, 1),
@@ -614,6 +628,39 @@ mod tests {
                 RenderPipelineId::from_parts(2, 1),
             ]
         );
+    }
+
+    #[test]
+    fn indirect_grouping_never_reorders_blended_suffix() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        let pipeline = |id| RenderPipelineId::from_parts(id, 1);
+        let draw = |offset, pipeline_id| {
+            RenderCommand::DrawIndirect(DrawIndirectCommand {
+                pipeline: pipeline(pipeline_id),
+                bind_groups: bind_group_list([]),
+                arguments: BufferId::from_parts(1, 1),
+                offset,
+                scissor: None,
+            })
+        };
+        // Two opaque pipelines can be regrouped, but transparent A-B-A
+        // must remain in camera-sorted order, not be changed to A-A-B.
+        let input = vec![
+            draw(0, 1), draw(16, 2), draw(32, 1),
+            draw(48, 3), draw(64, 4), draw(80, 3),
+        ];
+        let grouped = super::group_indirect_commands(&input, Some(3))
+            .expect("opaque batching should regroup three commands");
+        let offsets = |commands: &[RenderCommand]| {
+            commands.iter().map(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset,
+                _ => unreachable!(),
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(offsets(&grouped[..3]), vec![0, 32, 16]);
+        assert_eq!(offsets(&grouped[3..]), vec![48, 64, 80]);
+        // When every command is transparent, no global reorder is legal.
+        assert!(super::group_indirect_commands(&input[3..], Some(0)).is_none());
     }
 
     #[test]
@@ -756,6 +803,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 .append_spliced(
                     scene.command_revision,
                     scene.generated_singleton_command_count(),
+                    scene.first_blended_batch_index(),
                     scene.native_command_delta(),
                     steps,
                     |steps| scene.append_steps(&self.resources, scene_view.voxel_shader, steps),
