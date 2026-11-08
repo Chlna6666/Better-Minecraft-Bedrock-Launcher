@@ -2101,6 +2101,86 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
     preview_3d_collect_chunk_blocks_with_biome_blend(chunk, block_models, None)
 }
 
+/// Cache the palette classification for one 16^3 subchunk. PackedIndices
+/// provides a direct O(1) palette index lookup, so there is no reason to
+/// normalize block names or check whether a water storage exists 4,096 times.
+/// A palette with no renderable states is guaranteed not to emit any geometry.
+struct Preview3dSubchunkPalette {
+    primary: Vec<Preview3dBlockClass>,
+    renderable: bool,
+    has_fluid: bool,
+}
+
+impl Preview3dSubchunkPalette {
+    fn classify(subchunk: &bedrock_world::SubChunk) -> Self {
+        let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
+            // Unknown/legacy subchunk formats keep the old conservative path.
+            return Self { primary: Vec::new(), renderable: true, has_fluid: true };
+        };
+        let mut primary = Vec::new();
+        let mut renderable = false;
+        let mut has_fluid = false;
+        for (index, storage) in storages.iter().enumerate() {
+            for state in &storage.states {
+                let class = preview_3d_block_class(&state.name);
+                if index == 0 {
+                    primary.push(class);
+                }
+                renderable |= preview_3d_block_class_is_renderable(class);
+                has_fluid |= matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava);
+            }
+        }
+        Self { primary, renderable, has_fluid }
+    }
+}
+
+#[cfg(test)]
+mod palette_collect_tests {
+    use super::*;
+
+    fn section(layers: &[&[&str]]) -> bedrock_world::SubChunk {
+        bedrock_world::SubChunk {
+            y: 0,
+            format: bedrock_world::SubChunkFormat::Paletted {
+                version: 9,
+                storages: layers.iter().map(|layer| {
+                    bedrock_world::BlockPalette::with_unpacked_indices(
+                        layer.iter().map(|name| BlockState {
+                            name: (*name).to_owned(),
+                            states: BTreeMap::new(),
+                            version: None,
+                        }).collect(),
+                        vec![0; 4096],
+                        None,
+                    )
+                }).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn skips_all_air_subchunks_without_losing_waterlogged_overlay() {
+        let air = Preview3dSubchunkPalette::classify(
+            &section(&[&["minecraft:air", "minecraft:cave_air"]])
+        );
+        assert!(!air.renderable);
+        assert!(!air.has_fluid);
+
+        let waterlogged = Preview3dSubchunkPalette::classify(
+            &section(&[&["minecraft:oak_stairs"], &["minecraft:water"]])
+        );
+        assert!(waterlogged.renderable);
+        assert!(waterlogged.has_fluid);
+        assert_eq!(waterlogged.primary, [Preview3dBlockClass::DetailOpaque]);
+
+        let stone = Preview3dSubchunkPalette::classify(
+            &section(&[&["minecraft:stone", "minecraft:deepslate"]])
+        );
+        assert_eq!(stone.primary, [Preview3dBlockClass::Opaque; 2]);
+        assert!(!stone.has_fluid);
+    }
+}
+
 pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
     chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
@@ -2108,7 +2188,18 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
 ) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::builtin_shared();
     let mut color_cache = BlockColorCache::new(&palette);
-    let initial_block_capacity = chunk.subchunks.len().saturating_mul(16 * 16 * 16);
+    // Parse each palette once; most generated air subchunks do not require
+    // any cell iteration, biome lookup, geometry expansion or hash allocation.
+    let subchunk_palettes = chunk
+        .subchunks
+        .iter()
+        .map(|(&y, subchunk)| (y, subchunk, Preview3dSubchunkPalette::classify(subchunk)))
+        .collect::<Vec<_>>();
+    let initial_block_capacity = subchunk_palettes
+        .iter()
+        .filter(|(_, _, classification)| classification.renderable)
+        .count()
+        .saturating_mul(16 * 16 * 16);
     let mut occupied =
         HashSet::<BlockKey>::with_capacity_and_hasher(initial_block_capacity, Default::default());
     let mut glass = HashSet::<BlockKey>::with_capacity_and_hasher(
@@ -2141,7 +2232,10 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
     let mut min_z = i32::MAX;
     let mut max_z = i32::MIN;
 
-    for (subchunk_y, subchunk) in &chunk.subchunks {
+    for (subchunk_y, subchunk, classification) in &subchunk_palettes {
+        if !classification.renderable {
+            continue;
+        }
         let base_y = i32::from(*subchunk_y) * 16;
         for local_y in 0u8..16 {
             let y = base_y + i32::from(local_y);
@@ -2156,8 +2250,19 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                     // blocks, whose primary and fluid layers share this coordinate.
                     let mut biome = None;
                     let primary_state = subchunk.block_state_at(local_x, local_y, local_z);
-                    let primary_class =
-                        primary_state.map(|state| preview_3d_block_class(&state.name));
+                    let primary_class = primary_state.and_then(|_| {
+                        if let bedrock_world::SubChunkFormat::Paletted { storages, .. } =
+                            &subchunk.format
+                        {
+                            let index = usize::from(
+                                storages.first()?
+                                    .palette_index_at(local_x, local_y, local_z)?
+                            );
+                            classification.primary.get(index).copied()
+                        } else {
+                            primary_state.map(|state| preview_3d_block_class(&state.name))
+                        }
+                    });
                     if let (Some(state), Some(block_class)) = (primary_state, primary_class) {
                         if preview_3d_block_class_is_renderable(block_class) {
                             preview_3d_push_collected_block(
@@ -2199,16 +2304,18 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                         }
                     }
 
-                    let fluid_state = subchunk
-                        .visible_block_states_at(local_x, local_y, local_z)
-                        .find_map(|state| {
-                            let class = preview_3d_block_class(&state.name);
-                            matches!(
-                                class,
-                                Preview3dBlockClass::Water | Preview3dBlockClass::Lava
-                            )
-                            .then_some((state, class))
-                        });
+                    let fluid_state = classification.has_fluid.then(|| {
+                        subchunk
+                            .visible_block_states_at(local_x, local_y, local_z)
+                            .find_map(|state| {
+                                let class = preview_3d_block_class(&state.name);
+                                matches!(
+                                    class,
+                                    Preview3dBlockClass::Water | Preview3dBlockClass::Lava
+                                )
+                                .then_some((state, class))
+                            })
+                    }).flatten();
                     if let Some((state, block_class)) = fluid_state {
                         if primary_class != Some(block_class) {
                             let surface_only = matches!(
