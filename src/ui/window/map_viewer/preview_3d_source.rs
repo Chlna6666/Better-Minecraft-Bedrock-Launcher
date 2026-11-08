@@ -2109,28 +2109,77 @@ struct Preview3dSubchunkPalette {
     primary: Vec<Preview3dBlockClass>,
     renderable: bool,
     has_fluid: bool,
+    /// Only storages with water/lava entries, ordered top layer first.
+    /// Dense palette indices are retained without per-block state-name checks.
+    fluid_layers: Vec<(usize, Vec<Option<Preview3dBlockClass>>)>,
 }
 
 impl Preview3dSubchunkPalette {
     fn classify(subchunk: &bedrock_world::SubChunk) -> Self {
         let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
             // Unknown/legacy subchunk formats keep the old conservative path.
-            return Self { primary: Vec::new(), renderable: true, has_fluid: true };
+            return Self {
+                primary: Vec::new(), renderable: true, has_fluid: true,
+                fluid_layers: Vec::new(),
+            };
         };
         let mut primary = Vec::new();
         let mut renderable = false;
-        let mut has_fluid = false;
+        let mut fluid_layers = Vec::new();
         for (index, storage) in storages.iter().enumerate() {
+            let mut classes = Vec::with_capacity(storage.states.len());
+            let mut contains_fluid = false;
             for state in &storage.states {
                 let class = preview_3d_block_class(&state.name);
                 if index == 0 {
                     primary.push(class);
                 }
                 renderable |= preview_3d_block_class_is_renderable(class);
-                has_fluid |= matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava);
+                let fluid = matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava)
+                    .then_some(class);
+                contains_fluid |= fluid.is_some();
+                classes.push(fluid);
+            }
+            if contains_fluid {
+                fluid_layers.push((index, classes));
             }
         }
-        Self { primary, renderable, has_fluid }
+        // Bedrock's visible_block_states_at scans storages in reverse; match
+        // that order when several distinct fluid layers overlap.
+        fluid_layers.reverse();
+        Self {
+            primary,
+            renderable,
+            has_fluid: !fluid_layers.is_empty(),
+            fluid_layers,
+        }
+    }
+
+    fn fluid_at<'a>(
+        &self,
+        subchunk: &'a bedrock_world::SubChunk,
+        x: u8,
+        y: u8,
+        z: u8,
+    ) -> Option<(&'a BlockState, Preview3dBlockClass)> {
+        if !self.has_fluid {
+            return None;
+        }
+        if let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format {
+            for (layer_index, classes) in &self.fluid_layers {
+                let storage = storages.get(*layer_index)?;
+                let palette_index = usize::from(storage.palette_index_at(x, y, z)?);
+                if let Some(&class) = classes.get(palette_index)?.as_ref() {
+                    return Some((storage.states.get(palette_index)?, class));
+                }
+            }
+            return None;
+        }
+        subchunk.visible_block_states_at(x, y, z).find_map(|state| {
+            let class = preview_3d_block_class(&state.name);
+            matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava)
+                .then_some((state, class))
+        })
     }
 }
 
@@ -2172,12 +2221,21 @@ mod palette_collect_tests {
         assert!(waterlogged.renderable);
         assert!(waterlogged.has_fluid);
         assert_eq!(waterlogged.primary, [Preview3dBlockClass::DetailOpaque]);
+        assert_eq!(waterlogged.fluid_layers.len(), 1);
+        assert_eq!(waterlogged.fluid_layers[0].0, 1);
+        let waterlogged_data = section(&[&["minecraft:oak_stairs"], &["minecraft:water"]]);
+        assert_eq!(
+            waterlogged.fluid_at(&waterlogged_data, 3, 4, 5)
+                .map(|(_, class)| class),
+            Some(Preview3dBlockClass::Water)
+        );
 
         let stone = Preview3dSubchunkPalette::classify(
             &section(&[&["minecraft:stone", "minecraft:deepslate"]])
         );
         assert_eq!(stone.primary, [Preview3dBlockClass::Opaque; 2]);
         assert!(!stone.has_fluid);
+        assert!(stone.fluid_layers.is_empty());
     }
 }
 
@@ -2310,18 +2368,8 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                         }
                     }
 
-                    let fluid_state = classification.has_fluid.then(|| {
-                        subchunk
-                            .visible_block_states_at(local_x, local_y, local_z)
-                            .find_map(|state| {
-                                let class = preview_3d_block_class(&state.name);
-                                matches!(
-                                    class,
-                                    Preview3dBlockClass::Water | Preview3dBlockClass::Lava
-                                )
-                                .then_some((state, class))
-                            })
-                    }).flatten();
+                    let fluid_state =
+                        classification.fluid_at(subchunk, local_x, local_y, local_z);
                     if let Some((state, block_class)) = fluid_state {
                         if primary_class != Some(block_class) {
                             let surface_only = matches!(
