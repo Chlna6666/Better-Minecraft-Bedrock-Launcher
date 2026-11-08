@@ -152,6 +152,7 @@ pub(super) struct SceneResources {
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
     binding_index: binding_index::BindingIndex,
     last_binding_report: Option<Instant>,
+    draw_sync_audit: DrawSyncAudit,
     sampler: Option<SamplerId>,
     // Resource-cache age only; frame-visible output samples the extension frame time.
     pub(super) last_used_at: Instant,
@@ -159,6 +160,84 @@ pub(super) struct SceneResources {
 }
 
 const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DrawSyncPath {
+    Resident,
+    Structural,
+    Full,
+}
+
+#[derive(Default)]
+struct DrawSyncAudit {
+    since: Option<Instant>,
+    resident: u64,
+    structural: u64,
+    full: u64,
+    full_no_gpu_cull: u64,
+    full_no_delta: u64,
+    full_no_slots: u64,
+    full_ineligible: u64,
+}
+
+impl DrawSyncAudit {
+    fn record(
+        &mut self,
+        path: DrawSyncPath,
+        gpu_culling: bool,
+        has_resident_delta: bool,
+        has_structural_delta: bool,
+        stable_culling_slots: bool,
+        draws: usize,
+    ) {
+        if !cfg!(debug_assertions) && !trace_timings() {
+            return;
+        }
+        match path {
+            DrawSyncPath::Resident => self.resident += 1,
+            DrawSyncPath::Structural => self.structural += 1,
+            DrawSyncPath::Full if !gpu_culling => {
+                self.full += 1;
+                self.full_no_gpu_cull += 1;
+            }
+            DrawSyncPath::Full if !has_resident_delta && !has_structural_delta => {
+                self.full += 1;
+                self.full_no_delta += 1;
+            }
+            DrawSyncPath::Full if !stable_culling_slots => {
+                self.full += 1;
+                self.full_no_slots += 1;
+            }
+            DrawSyncPath::Full => {
+                self.full += 1;
+                self.full_ineligible += 1;
+            }
+        }
+        let now = Instant::now();
+        let first = *self.since.get_or_insert(now);
+        if now.saturating_duration_since(first) < Duration::from_secs(2) {
+            return;
+        }
+        let total = self.resident + self.structural + self.full;
+        if total > 0 {
+            let upload = crate::gpu_upload_cost_estimate();
+            eprintln!(
+                "gpui3d draw_sync_audit draws={} samples={} resident={} structural={} full={} resident_pct={:.1} structural_pct={:.1} full_pct={:.1} full_no_gpu_cull={} full_no_delta={} full_no_slots={} full_ineligible={} gpu_owner_upload_samples={} gpu_owner_ns_per_mib={} gpu_owner_ns_per_write={}",
+                draws, total, self.resident, self.structural, self.full,
+                self.resident as f64 * 100.0 / total as f64,
+                self.structural as f64 * 100.0 / total as f64,
+                self.full as f64 * 100.0 / total as f64,
+                self.full_no_gpu_cull, self.full_no_delta,
+                self.full_no_slots, self.full_ineligible,
+                upload.map_or(0, |s| s.samples),
+                upload.map_or(0, |s| s.ns_per_mib),
+                upload.map_or(0, |s| s.ns_per_write),
+            );
+        }
+        *self = Self { since: Some(now), ..Self::default() };
+    }
+}
+
 
 /// Native Vulkan/DX12 uploads stage all buffer slices in a single command
 /// submission. Large scene deltas benefit from retaining more sparse spans,
@@ -533,6 +612,7 @@ impl SceneResources {
             binding_cache: HashMap::new(),
             binding_index: binding_index::BindingIndex::default(),
             last_binding_report: None,
+            draw_sync_audit: DrawSyncAudit::default(),
             sampler: None,
             last_used_at: Instant::now(),
             last_used_frame: 0,
@@ -944,6 +1024,7 @@ impl SceneResources {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BufferEncode);
             let bind_group_layout = renderer.bind_group_layout()?;
+            let mut selected_sync = DrawSyncPath::Full;
             {
                 // Fixed-layout opaque Candidate Deltas have already updated
                 // only their resident GPU Bounds rows in CullResources. Use
@@ -973,6 +1054,9 @@ impl SceneResources {
                     .map(|started| started.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
                 resident_commands_stable = result.unwrap_or(false);
+                if result.is_some() {
+                    selected_sync = DrawSyncPath::Resident;
+                }
                 if result.is_none() {
                     let stage_started = trace_timings().then(Instant::now);
                     let structural_updated = self
@@ -991,6 +1075,9 @@ impl SceneResources {
                         .map(|started| started.elapsed().as_secs_f64() * 1000.0)
                         .unwrap_or(0.0);
                     native_structural_updated = structural_updated;
+                    if structural_updated {
+                        selected_sync = DrawSyncPath::Structural;
+                    }
                     if !structural_updated {
                         let stage_started = trace_timings().then(Instant::now);
                         self.sync_buffers(
@@ -1008,6 +1095,14 @@ impl SceneResources {
                     }
                 }
             }
+            self.draw_sync_audit.record(
+                selected_sync,
+                gpu_culling,
+                self.prepared.resident_delta_draws().is_some(),
+                self.prepared.structural_draw_delta().is_some(),
+                self.culling.as_ref().is_some_and(CullResources::structural_slots_committed),
+                self.prepared.draws.len(),
+            );
             if let Some(started) = buffer_started {
                 buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
