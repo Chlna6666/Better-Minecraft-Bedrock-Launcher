@@ -213,6 +213,32 @@ fn section_graph(
     )
 }
 
+/// Invariant across all camera positions in the same connected air pocket:
+/// only the Section coordinate and its reachable boundary-face mask influence
+/// portal traversal. The editor uses this lightweight signature to avoid a
+/// whole-world graph walk for every block stepped through an open valley.
+pub(super) fn camera_signature(
+    probes: &BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    dimension: Dimension,
+    camera: [i32; 3],
+) -> Option<(ChunkPos, i32, u8)> {
+    let section = (
+        ChunkPos {
+            x: camera[0].div_euclid(16),
+            z: camera[2].div_euclid(16),
+            dimension,
+        },
+        camera[1].div_euclid(16),
+    );
+    let graph = section_graph(probes, section)?;
+    let local = [
+        camera[0].rem_euclid(16) as usize,
+        camera[1].rem_euclid(16) as usize,
+        camera[2].rem_euclid(16) as usize,
+    ];
+    Some((section.0, section.1, graph.camera_exits(local)?))
+}
+
 /// Return only render bands certified unreachable. Missing columns, unknown
 /// geometry, camera-in-solid and scenes above the bounded budget all fall
 /// through to the existing GPU-driven path instead of hiding any geometry.
@@ -232,25 +258,12 @@ pub(super) fn hidden_render_bands(
     if probes.is_empty() || meshes.is_empty() || probes.len() > MAX_COLUMNS {
         return empty;
     }
-    let camera_section = (
-        ChunkPos {
-            x: camera[0].div_euclid(16),
-            z: camera[2].div_euclid(16),
-            dimension,
-        },
-        camera[1].div_euclid(16),
-    );
-    let Some(camera_graph) = section_graph(probes, camera_section) else {
+    let Some((camera_pos, camera_y, camera_exits)) =
+        camera_signature(probes, dimension, camera)
+    else {
         return empty;
     };
-    let local = [
-        camera[0].rem_euclid(16) as usize,
-        camera[1].rem_euclid(16) as usize,
-        camera[2].rem_euclid(16) as usize,
-    ];
-    let Some(camera_exits) = camera_graph.camera_exits(local) else {
-        return empty;
-    };
+    let camera_section = (camera_pos, camera_y);
     let mut min_y = camera_section.1;
     let mut max_y = camera_section.1;
     for (pos, band) in meshes.keys() {
