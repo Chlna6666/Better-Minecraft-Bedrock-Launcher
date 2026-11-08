@@ -131,6 +131,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib async_portal_visibility_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib stream_probe_epoch_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -222,4 +226,6 @@ jobs:
           cargo test -p bmcbl --lib completely_hidden_plain_cube_column_never_expands_model_templates -- --nocapture
           cargo test -p gpui-3d --lib portal_visibility_tests -- --nocapture
           cargo test -p bmcbl --lib async_portal_visibility_tests -- --nocapture
+          cargo test -p bmcbl --lib stream_probe_epoch_tests -- --nocapture
+          cargo test -p gpui-3d --lib portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
