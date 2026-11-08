@@ -1947,7 +1947,7 @@ impl World3dEditorView {
     }
 
     fn raycast_world(&self, origin: [f64; 3], direction: [f64; 3]) -> Option<World3dTargetBlock> {
-        let (dimension, x, z, radius) = self.current_view_key();
+        let (dimension, x, _section_y, z, radius) = self.current_view_key();
         raycast::cast(
             |pos| {
                 if !super::chunk_service::inside_view(pos, dimension, x, z, radius) {
