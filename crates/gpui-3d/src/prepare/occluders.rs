@@ -21,6 +21,34 @@ impl PreparedScene {
             .flat_map(|(_, bounds)| bounds.iter().copied())
     }
 
+    /// The Portal Visibility overlay is independent of authored Scene nodes.
+    /// Hidden nodes must never remain in the Hi-Z depth proxy or sun-shadow
+    /// raster: their invisible faces would otherwise reject visible geometry.
+    /// Only called when the mask or occluder source actually changes.
+    pub(crate) fn occluder_bounds_excluding<'a>(
+        &'a self,
+        range: Option<Aabb>,
+        hidden: &'a std::collections::HashSet<NodeId>,
+    ) -> impl Iterator<Item = crate::Occluder> + 'a {
+        self.occluders
+            .iter()
+            .filter(move |(id, (origin, _))| {
+                !hidden.contains(*id)
+                    && match (range, origin) {
+                        (Some(range), Some(origin)) => {
+                            origin.x >= range.min.x
+                                && origin.x < range.max.x
+                                && origin.y >= range.min.y
+                                && origin.y < range.max.y
+                                && origin.z >= range.min.z
+                                && origin.z < range.max.z
+                        }
+                        _ => true,
+                    }
+            })
+            .flat_map(|(_, (_, bounds))| bounds.iter().copied())
+    }
+
     pub(super) fn record_occluders(&mut self, id: NodeId, node: &Node, world: Mat4) {
         if node.occluders.is_empty()
             || node
@@ -80,6 +108,27 @@ impl PreparedScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portal_hidden_nodes_do_not_occlude_other_rendered_sections() {
+        let mut scene = Scene::new();
+        let proxy = crate::Occluder {
+            bounds: Aabb::new(Vec3::new(-0.5, 0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)).unwrap(),
+            faces: 8,
+        };
+        let mut node = Node::new().with_mesh(Arc::new(Mesh::cube()));
+        node.occluders = Arc::from([proxy]);
+        let first = scene.insert(None, node.clone()).unwrap();
+        let second = scene.insert(None, node).unwrap();
+        let mut prepared = PreparedScene::default();
+        let camera = Camera::perspective(
+            Vec3::new(0., 2., 3.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
+        );
+        prepared.update(&scene, camera, 1.).unwrap();
+        assert_eq!(prepared.occluder_bounds(None).count(), 2);
+        assert_eq!(prepared.occluder_bounds_excluding(None, &std::collections::HashSet::from([first])).count(), 1);
+        assert_eq!(prepared.occluder_bounds_excluding(None, &std::collections::HashSet::from([first, second])).count(), 0);
+    }
+
     #[test]
     fn planar_occluders_survive_preparation_but_rotated_bounds_do_not() {
         let mut scene = Scene::new();
