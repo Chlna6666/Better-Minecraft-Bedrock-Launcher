@@ -418,7 +418,20 @@ fn record_boundary_pair(
 }
 
 fn forget_boundary_pairs(pairs: &mut BTreeSet<(ChunkPos, ChunkPos)>, pos: ChunkPos) {
-    pairs.retain(|(a, b)| *a != pos && *b != pos);
+    // A column has at most four shared edges. Remove those directly instead
+    // of scanning every active edge on each streaming unload (quadratic churn).
+    for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        let (Some(x), Some(z)) = (pos.x.checked_add(dx), pos.z.checked_add(dz)) else {
+            continue;
+        };
+        let neighbour = ChunkPos { x, z, ..pos };
+        let key = if pos <= neighbour {
+            (pos, neighbour)
+        } else {
+            (neighbour, pos)
+        };
+        pairs.remove(&key);
+    }
 }
 
 fn forget_published_sections(
