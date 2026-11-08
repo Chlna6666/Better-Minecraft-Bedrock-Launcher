@@ -337,6 +337,11 @@ impl StableDrawSlots {
     }
 }
 
+fn retain_physical_key_prefix<K: Clone>(previous: &[K], high_water: usize, next: &mut Vec<K>) {
+    next.clear();
+    next.extend_from_slice(&previous[..previous.len().min(high_water)]);
+}
+
 impl SceneResources {
     /// Encode only the exact physical Instance rows referenced by the last
     /// fixed-layout Section Delta. Unchanged GPU data is never visited or
@@ -412,14 +417,22 @@ impl SceneResources {
         scratch: &mut Vec<u8>,
     ) -> gpui::Result<usize> {
         const STRIDE: usize = INSTANCE_STRIDE as usize;
-        next.clear();
-        next.extend_from_slice(previous);
+        // Compacting the physical slot tail must also discard retired key
+        // identities. Otherwise dirty byte ranges can extend beyond the
+        // smaller encoded GPU instance table after streaming unloads.
+        retain_physical_key_prefix(previous, high_water, next);
+        if mapping.len() != self.prepared.draws.len() {
+            return Err(anyhow!("GPUI 3D instance mapping length mismatch").into());
+        }
         // Resolve exact physical record identities first. When none changed,
         // the last committed dense CPU snapshot can be moved after successful
         // GPU/BindGroup work instead of copied at all.
         let mut dirty = Vec::new();
         for (logical, &physical) in mapping.iter().enumerate() {
             let physical = physical as usize;
+            if physical >= high_water {
+                return Err(anyhow!("GPUI 3D instance slot outside physical table").into());
+            }
             let draw = &self.prepared.draws[logical];
             let key = self.instance_key(draw, true)?;
             let start = physical * STRIDE;
@@ -474,6 +487,18 @@ mod tests {
         let camera =
             Camera::perspective(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 200.);
         PreparedScene::new(&scene, camera, 1.).unwrap().draws
+    }
+
+    #[test]
+    fn compacted_instance_table_discards_retired_physical_key_tail() {
+        // Regression: 30,745 keys backed by only 29,173 encoded rows used
+        // to produce an out-of-bounds 144-byte GPU upload slice.
+        let previous: Vec<usize> = (0..30_745).collect();
+        let mut next = Vec::new();
+        retain_physical_key_prefix(&previous, 29_173, &mut next);
+        assert_eq!(next.len(), 29_173);
+        assert_eq!(next.last(), Some(&29_172));
+        assert_eq!(next.len() * INSTANCE_STRIDE as usize, 4_200_912);
     }
 
     #[test]

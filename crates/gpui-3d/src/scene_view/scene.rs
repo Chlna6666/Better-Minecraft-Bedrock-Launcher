@@ -1886,6 +1886,35 @@ impl SceneResources {
                 .saturating_mul(LIGHT_STRIDE as usize),
         );
         encode_lights_into(&self.prepared.lights, &mut light_bytes);
+        // An empty encoded table is a no-change sentinel only for an existing
+        // GPU buffer. Reallocation must populate the new resident allocation.
+        if replace_draw && draw_bytes.is_empty() {
+            draw_bytes.extend_from_slice(&self.uploaded_tables[0]);
+        }
+        if replace_instances && instance_bytes.is_empty() {
+            instance_bytes.extend_from_slice(&self.uploaded_tables[1]);
+        }
+        // Never allow compact-key diff ranges to address beyond actual
+        // encoded rows; fail before allocating replacement GPU buffers.
+        let expected_draw_bytes = next_draw_keys.len()
+            .checked_mul(DRAW_PARAMS_STRIDE as usize)
+            .ok_or_else(|| anyhow!("GPUI 3D DrawParams byte length overflow"))?;
+        let expected_instance_bytes = next_instance_keys.len()
+            .checked_mul(INSTANCE_STRIDE as usize)
+            .ok_or_else(|| anyhow!("GPUI 3D Instance byte length overflow"))?;
+        if next_draw_keys.len() > physical_count
+            || next_instance_keys.len() > physical_count
+            || (!draw_bytes.is_empty() && draw_bytes.len() < expected_draw_bytes)
+            || (!instance_bytes.is_empty() && instance_bytes.len() < expected_instance_bytes)
+            || (draw_bytes.is_empty() && (replace_draw || next_draw_keys != self.draw_slot_keys))
+            || (instance_bytes.is_empty() && (replace_instances || next_instance_keys != self.instance_slot_keys))
+        {
+            bail!(
+                "GPUI 3D physical table mismatch: slots={} draw_keys={} draw_bytes={} instance_keys={} instance_bytes={}",
+                physical_count, next_draw_keys.len(), draw_bytes.len(),
+                next_instance_keys.len(), instance_bytes.len()
+            );
+        }
         let encode_ms = trace_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         let new_draw = if replace_draw {
             Some(create_storage_buffer(
