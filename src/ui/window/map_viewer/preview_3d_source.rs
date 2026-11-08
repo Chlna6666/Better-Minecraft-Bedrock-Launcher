@@ -8692,6 +8692,24 @@ impl Preview3dMeshBuilder {
         selections: &std::collections::HashMap<ChunkPos, Preview3dBandSelection>,
         gpu_cubes: &std::collections::HashSet<ChunkPos>,
     ) -> Vec<Preview3dStreamChunkFaces> {
+        self.build_stream_faces_with_gpu_cubes_skipping(
+            targets,
+            selections,
+            gpu_cubes,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Skip certified unreachable Section bands before CPU face expansion.
+    /// Data needed by adjacent visible sections stays in block_chunks for
+    /// shared-face and ambient-occlusion queries.
+    pub(super) fn build_stream_faces_with_gpu_cubes_skipping(
+        &self,
+        targets: &[ChunkPos],
+        selections: &std::collections::HashMap<ChunkPos, Preview3dBandSelection>,
+        gpu_cubes: &std::collections::HashSet<ChunkPos>,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
+    ) -> Vec<Preview3dStreamChunkFaces> {
         let dimension = self.bounds.dimension;
         targets
             .par_iter()
@@ -8701,9 +8719,9 @@ impl Preview3dMeshBuilder {
                     return None;
                 }
                 let mut faces = Vec::new();
-                self.push_stream_cube_faces(blocks, &mut faces, selections.get(pos), true);
+                self.push_stream_cube_faces(blocks, &mut faces, selections.get(pos), true, *pos, hidden);
                 self.push_stream_detail_faces(blocks, &mut faces);
-                self.push_stream_fluid_faces(blocks, &mut faces);
+                self.push_stream_fluid_faces(blocks, &mut faces, *pos, hidden);
                 (!faces.is_empty()).then_some(Preview3dStreamChunkFaces {
                     pos: ChunkPos {
                         x: pos.x,
@@ -8911,6 +8929,8 @@ impl Preview3dMeshBuilder {
         faces: &mut Vec<Preview3dStreamFace>,
         selection: Option<&Preview3dBandSelection>,
         emit_opaque: bool,
+        pos: ChunkPos,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
     ) {
         let opaque = if emit_opaque {
             blocks.opaque_blocks.as_slice()
@@ -8918,7 +8938,9 @@ impl Preview3dMeshBuilder {
             &[]
         };
         for block in opaque {
-            if selection.is_some_and(|selection| !selection.includes_cube(block.key.y)) {
+            if section_is_hidden_with_face_halo(hidden, pos, block.key.y)
+                || selection.is_some_and(|selection| !selection.includes_cube(block.key.y))
+            {
                 continue;
             }
             for face in FACE_DEFINITIONS {
@@ -8937,6 +8959,9 @@ impl Preview3dMeshBuilder {
             }
         }
         for block in &blocks.glass_blocks {
+            if section_is_hidden_with_face_halo(hidden, pos, block.key.y) {
+                continue;
+            }
             for face in FACE_DEFINITIONS {
                 if self.is_preview_3d_glass_neighbor(block.key, face) {
                     continue;
@@ -9022,12 +9047,17 @@ impl Preview3dMeshBuilder {
         &self,
         blocks: &Preview3dChunkBlocks,
         faces: &mut Vec<Preview3dStreamFace>,
+        pos: ChunkPos,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
     ) {
         for (fluid_blocks, pass, water) in [
             (&blocks.water_blocks, Preview3dStreamPass::Water, true),
             (&blocks.lava_blocks, Preview3dStreamPass::Lava, false),
         ] {
             for block in fluid_blocks {
+                if section_is_hidden_with_face_halo(hidden, pos, block.key.y) {
+                    continue;
+                }
                 for face in FACE_DEFINITIONS {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
@@ -9052,6 +9082,24 @@ impl Preview3dMeshBuilder {
             }
         }
     }
+}
+
+/// A cube/fluid cell can emit a face into either vertically adjacent band.
+/// Suppress it only if the cell AND both one-block halo bands are unreachable.
+/// This deliberately preserves Section-boundary faces until all nearby bands
+/// are certified hidden (including at negative world heights).
+fn section_is_hidden_with_face_halo(
+    hidden: &BTreeSet<(ChunkPos, i32)>,
+    pos: ChunkPos,
+    block_y: i32,
+) -> bool {
+    [
+        block_y.saturating_sub(1),
+        block_y,
+        block_y.saturating_add(1),
+    ]
+    .into_iter()
+    .all(|y| hidden.contains(&(pos, y.div_euclid(64))))
 }
 
 fn is_preview_3d_unshaded_detail(name: &str) -> bool {
