@@ -115,6 +115,7 @@ impl Mailbox {
                     }
                 }
             };
+            let prepared_started = std::time::Instant::now();
             let mut prepared = PreparedScene::default();
             // Aspect ratio is finalized from the actual render target only
             // after the snapshot is consumed. The later update_camera call
@@ -123,14 +124,27 @@ impl Mailbox {
                 .update_transformed(&request.scene, request.camera, 1.0, request.transform)
                 .is_ok()
                 .then_some(prepared);
+            let elapsed = prepared_started.elapsed();
             let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if state.revision == request.revision {
+            let current = state.revision == request.revision;
+            let draw_count = completed.as_ref().map_or(0, |prepared| prepared.draws.len());
+            if current {
                 if let Some(prepared) = completed {
                     state.published = Some(Completed {
                         scene: request.scene, transform: request.transform,
                         camera: request.camera, prepared,
                     });
                 }
+            }
+            if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
+                eprintln!(
+                    "gpui3d sidecar_cpu_prepared revision={} current={} draws={} elapsed_ms={:.2} next_pending={}",
+                    request.revision,
+                    current,
+                    draw_count,
+                    elapsed.as_secs_f64() * 1000.0,
+                    state.pending.is_some(),
+                );
             }
         }
     }
@@ -282,6 +296,18 @@ mod tests {
         assert!(slot.take(&first, Mat4::IDENTITY, camera()).is_none());
         assert!(slot.take(&second, Mat4::IDENTITY, camera()).is_some());
         assert!(slot.take(&second, Mat4::IDENTITY, camera()).is_none());
+    }
+
+    #[test]
+    fn gpu_owner_fallback_cancels_a_superseded_cpu_snapshot() {
+        let slot = Arc::new(Mailbox::default());
+        let scene = Arc::new(Scene::new());
+        assert!(slot.enqueue(scene.clone(), Mat4::IDENTITY, camera()));
+        assert_eq!(slot.status(&scene, Mat4::IDENTITY), (true, true));
+        slot.discard(&scene, Mat4::IDENTITY);
+        slot.run();
+        assert_eq!(slot.status(&scene, Mat4::IDENTITY), (false, false));
+        assert!(slot.take(&scene, Mat4::IDENTITY, camera()).is_none());
     }
 
     #[test]
