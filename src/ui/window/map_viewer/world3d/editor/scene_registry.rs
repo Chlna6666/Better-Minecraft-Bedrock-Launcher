@@ -166,6 +166,29 @@ mod tests {
     }
 
     #[test]
+    fn gpu_node_visibility_preserves_fused_group_and_original_scene() {
+        let material = Arc::new(gpui_3d::Material::new());
+        let left = generated_chunk(0, material.clone());
+        let right = generated_chunk(1, material);
+        let left_key = (left.pos, left.section_y);
+        let right_key = (right.pos, right.section_y);
+        let meshes = BTreeMap::from([(left_key, left), (right_key, right)]);
+        let mut registry = ChunkScene::default();
+        let scene = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        assert_eq!(registry.fused.len(), 1);
+        let fused_id = registry.fused.values().next().unwrap().0;
+        let original_version = scene.version();
+        let one_hidden = registry.hidden_draw_nodes(&BTreeSet::from([left_key]));
+        assert!(one_hidden.contains(&registry.nodes[&left_key].0));
+        assert!(!one_hidden.contains(&fused_id));
+        let both_hidden = registry.hidden_draw_nodes(&BTreeSet::from([left_key, right_key]));
+        assert!(both_hidden.contains(&fused_id));
+        assert_eq!(scene.version(), original_version);
+        assert!(scene.node(fused_id).unwrap().visible);
+        assert!(registry.hidden_draw_nodes(&BTreeSet::new()).is_empty());
+    }
+
+    #[test]
     fn visibility_hides_fused_group_only_when_all_source_sections_are_hidden() {
         let material = Arc::new(gpui_3d::Material::new());
         let left = generated_chunk(0, material.clone());
@@ -1237,6 +1260,34 @@ impl ChunkScene {
         };
         self.nodes.insert(key, (id, mesh.clone()));
         Ok(())
+    }
+
+    /// Map stable Section keys to GPU-resident NodeIds without mutating
+    /// Scene::visible. The only GPU updates needed are the affected physical
+    /// Bounds visibility words, not a Scene fork or DrawParams re-encode.
+    /// Fused groups are hidden only if every contributing source is hidden.
+    pub(in super::super) fn hidden_draw_nodes(
+        &self,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
+    ) -> HashSet<NodeId> {
+        if hidden.is_empty() {
+            return HashSet::new();
+        }
+        let mut nodes = HashSet::with_capacity(hidden.len());
+        for key in hidden {
+            if let Some((id, _)) = self.nodes.get(key) {
+                nodes.insert(*id);
+            }
+        }
+        for (id, members) in self.fused.values() {
+            if members
+                .iter()
+                .all(|member| hidden.contains(&(member.pos, member.section_y)))
+            {
+                nodes.insert(*id);
+            }
+        }
+        nodes
     }
 
     /// Apply conservative Section visibility without recreating GPU meshes or
