@@ -148,26 +148,69 @@ pub(crate) fn dried_ghast_shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 pub(crate) fn rod_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
+    // Vanilla `end_rod` / `lightning_rod` sample their own texture columns instead of the
+    // block-space projection: the base plate and the shaft occupy separate rectangles.
     let local = if is_lightning_rod_name(name) {
         vec![
-            ModelCuboid::new([px(7.0), 0.0, px(7.0)], [px(9.0), px(12.0), px(9.0)]),
-            ModelCuboid::new([px(6.0), px(12.0), px(6.0)], [px(10.0), 1.0, px(10.0)]),
+            rod_cuboid(
+                ModelCuboid::new([px(7.0), 0.0, px(7.0)], [px(9.0), px(12.0), px(9.0)]),
+                [0.0, 4.0, 2.0, 16.0],
+                Some([0.0, 4.0, 2.0, 6.0]),
+            ),
+            rod_cuboid(
+                ModelCuboid::new([px(6.0), px(12.0), px(6.0)], [px(10.0), 1.0, px(10.0)]),
+                [0.0, 0.0, 4.0, 4.0],
+                Some([0.0, 0.0, 4.0, 4.0]),
+            ),
         ]
     } else {
         vec![
-            ModelCuboid::new([px(6.0), 0.0, px(6.0)], [px(10.0), px(1.0), px(10.0)]),
-            ModelCuboid::new([px(7.0), px(1.0), px(7.0)], [px(9.0), 1.0, px(9.0)]),
+            rod_cuboid(
+                ModelCuboid::new([px(6.0), 0.0, px(6.0)], [px(10.0), px(1.0), px(10.0)]),
+                [2.0, 6.0, 6.0, 7.0],
+                Some([6.0, 6.0, 2.0, 2.0]),
+            ),
+            rod_cuboid(
+                ModelCuboid::new([px(7.0), px(1.0), px(7.0)], [px(9.0), 1.0, px(9.0)]),
+                [0.0, 0.0, 2.0, 15.0],
+                None,
+            ),
         ]
     };
 
     ModelShape::from_cuboids(
         local
             .into_iter()
-            .map(|cuboid| {
-                detail_cuboid_with_local_uv(orient_cuboid_from_up(cuboid, facing_from_state(state)))
-            })
+            .map(|cuboid| orient_cuboid_from_up(cuboid, facing_from_state(state)))
             .collect::<Vec<_>>(),
     )
+}
+
+fn rod_cuboid(cuboid: ModelCuboid, sides: [f32; 4], bottom: Option<[f32; 4]>) -> ModelCuboid {
+    let side_uv = java_side_uv(sides);
+    let cuboid = cuboid
+        .with_face_uv(BlockFace::North, side_uv)
+        .with_face_uv(BlockFace::South, side_uv)
+        .with_face_uv(BlockFace::East, side_uv)
+        .with_face_uv(BlockFace::West, side_uv)
+        .with_face_uv(
+            BlockFace::Up,
+            java_top_uv([sides[0], sides[2], sides[1], sides[3]]),
+        );
+    match bottom {
+        Some(bottom) => cuboid.with_face_uv(BlockFace::Down, java_top_uv(bottom)),
+        None => cuboid,
+    }
+}
+
+fn java_side_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
+    let [u1, v1, u2, v2] = rect.map(|value| value / 16.0);
+    [[u2, v2], [u1, v2], [u1, v1], [u2, v1]]
+}
+
+fn java_top_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
+    let [u1, v1, u2, v2] = rect.map(|value| value / 16.0);
+    [[u1, v1], [u2, v1], [u2, v2], [u1, v2]]
 }
 
 pub(crate) fn sea_pickle_shape(state: &BlockStateQuery) -> ModelShape {
@@ -474,6 +517,18 @@ fn orient_cuboid_from_up(cuboid: ModelCuboid, facing: Facing) -> ModelCuboid {
     }
     let mut oriented = ModelCuboid::new(min, max);
     oriented.material_slot = cuboid.material_slot;
+    // Rotation moves each face to a new slot; keeping the original per-face UVs and material
+    // slots on the rotated box would sample the wrong texture region (rods, chains, signs).
+    oriented.face_material_slots = cuboid
+        .face_material_slots
+        .into_iter()
+        .map(|(face, slot)| (orient_face_from_up(face, facing), slot))
+        .collect();
+    oriented.face_uvs = cuboid
+        .face_uvs
+        .into_iter()
+        .map(|(face, uv)| (orient_face_from_up(face, facing), uv))
+        .collect();
     oriented
 }
 
@@ -486,6 +541,58 @@ fn orient_point_from_up(point: [f32; 3], facing: Facing) -> [f32; 3] {
         Facing::South => [x, z, y],
         Facing::West => [1.0 - y, z, x],
         Facing::East => [y, z, x],
+    }
+}
+
+/// Maps a block face to the face it becomes after [`orient_point_from_up`].
+///
+/// Derived from the same axis permutation the corner transform applies, so a rotated model
+/// keeps its per-face UVs and material slots on the correct side.
+fn orient_face_from_up(face: BlockFace, facing: Facing) -> BlockFace {
+    use BlockFace::{Down, East, North, South, Up, West};
+    match facing {
+        Facing::Up => face,
+        Facing::Down => match face {
+            Up => Down,
+            Down => Up,
+            other => other,
+        },
+        // model +Y -> world -Z, model +Z -> world +Y
+        Facing::North => match face {
+            Up => North,
+            Down => South,
+            North => Down,
+            South => Up,
+            other => other,
+        },
+        // model +Y -> world +Z, model +Z -> world +Y
+        Facing::South => match face {
+            Up => South,
+            Down => North,
+            North => Down,
+            South => Up,
+            other => other,
+        },
+        // model +Y -> world -X, model +X -> world +Z, model +Z -> world +Y
+        Facing::West => match face {
+            Up => West,
+            Down => East,
+            East => South,
+            West => North,
+            North => Down,
+            South => Up,
+            other => other,
+        },
+        // model +Y -> world +X, model +X -> world +Z, model +Z -> world +Y
+        Facing::East => match face {
+            Up => East,
+            Down => West,
+            East => South,
+            West => North,
+            North => Down,
+            South => Up,
+            other => other,
+        },
     }
 }
 

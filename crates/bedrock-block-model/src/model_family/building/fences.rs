@@ -4,7 +4,7 @@ use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, direction_connected, state_bool,
 };
 use crate::model_family::shape::{
-    ModelCuboid, ModelShape, apply_jmc_box_uv, detail_cuboid_with_local_uv,
+    ModelCuboid, ModelPlane, ModelShape, apply_jmc_box_uv, detail_cuboid_with_local_uv,
     projected_cuboid_with_uv, uv16,
 };
 use crate::state::BlockStateQuery;
@@ -22,25 +22,52 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     None
 }
 
+/// Vanilla `chain` model: two 3x16 px sheets rotated 45 degrees around the block axis.
+///
+/// The chain texture is a single unfolded strip, so each sheet samples one half of it
+/// (`[3,0,0,16]` / `[0,0,3,16]`) rather than projecting the whole texture onto a box face.
 pub(crate) fn chain_shape(state: &BlockStateQuery) -> ModelShape {
     let axis = crate::model_family::direction::state_string(state, "pillar_axis")
         .or_else(|| crate::model_family::direction::state_string(state, "axis"))
         .unwrap_or("y");
-    let cuboids = match axis {
-        "x" => vec![
-            ModelCuboid::new([0.0, 0.375, 0.40625], [1.0, 0.625, 0.59375]),
-            ModelCuboid::new([0.0, 0.40625, 0.375], [1.0, 0.59375, 0.625]),
-        ],
-        "z" => vec![
-            ModelCuboid::new([0.40625, 0.375, 0.0], [0.59375, 0.625, 1.0]),
-            ModelCuboid::new([0.375, 0.40625, 0.0], [0.625, 0.59375, 1.0]),
-        ],
-        _ => vec![
-            ModelCuboid::new([0.375, 0.0, 0.40625], [0.625, 1.0, 0.59375]),
-            ModelCuboid::new([0.40625, 0.0, 0.375], [0.59375, 1.0, 0.625]),
-        ],
+    let reach = 1.5 * std::f32::consts::FRAC_1_SQRT_2 / 16.0;
+    let uv_first = uv16(3.0, 0.0, 0.0, 16.0);
+    let uv_second = uv16(0.0, 0.0, 3.0, 16.0);
+    let (a, b) = ((-reach, reach), (reach, -reach));
+    let (c, d) = ((-reach, -reach), (reach, reach));
+    let sheet = |from: (f32, f32), to: (f32, f32), uv| match axis {
+        "x" => ModelPlane::new(
+            [
+                [0.0, 0.5 + from.0, 0.5 + from.1],
+                [0.0, 0.5 + to.0, 0.5 + to.1],
+                [1.0, 0.5 + to.0, 0.5 + to.1],
+                [1.0, 0.5 + from.0, 0.5 + from.1],
+            ],
+            [0, 1, 0],
+        )
+        .with_uv(uv),
+        "z" => ModelPlane::new(
+            [
+                [0.5 + from.0, 0.5 + from.1, 0.0],
+                [0.5 + to.0, 0.5 + to.1, 0.0],
+                [0.5 + to.0, 0.5 + to.1, 1.0],
+                [0.5 + from.0, 0.5 + from.1, 1.0],
+            ],
+            [1, 0, 0],
+        )
+        .with_uv(uv),
+        _ => ModelPlane::new(
+            [
+                [0.5 + from.0, 0.0, 0.5 + from.1],
+                [0.5 + to.0, 0.0, 0.5 + to.1],
+                [0.5 + to.0, 1.0, 0.5 + to.1],
+                [0.5 + from.0, 1.0, 0.5 + from.1],
+            ],
+            [0, 0, 1],
+        )
+        .with_uv(uv),
     };
-    ModelShape::from_cuboids(cuboids)
+    ModelShape::default().with_planes([sheet(a, b, uv_first), sheet(c, d, uv_second)])
 }
 
 pub(crate) fn fence_shape(name: &str, state: &BlockStateQuery) -> ModelShape {

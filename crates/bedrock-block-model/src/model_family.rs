@@ -2084,13 +2084,16 @@ mod tests {
         let chain = BlockStateQuery::new("minecraft:chain").with_state("pillar_axis", "x");
         let chain_shape =
             model_shape_for_block_state(&chain).unwrap_or_else(|| panic!("missing chain shape"));
-        assert_eq!(chain_shape.cuboids.len(), 2);
-        assert!(
-            chain_shape
-                .cuboids
+        // Vanilla chains are two 45-degree sheets spanning the whole axis, not a box.
+        assert_eq!(chain_shape.planes.len(), 2);
+        assert!(chain_shape.cuboids.is_empty());
+        assert!(chain_shape.planes.iter().all(|plane| {
+            plane
+                .corners
                 .iter()
-                .all(|cuboid| cuboid.max[0] - cuboid.min[0] == 1.0)
-        );
+                .all(|corner| corner[0] == 0.0 || corner[0] == 1.0)
+                && plane.uv.is_some()
+        }));
 
         let button = BlockStateQuery::new("minecraft:stone_button")
             .with_state("minecraft:cardinal_direction", "west");
@@ -2131,22 +2134,42 @@ mod tests {
             .with_state("minecraft:cardinal_direction", "south");
         let torch_shape = model_shape_for_block_state(&wall_torch)
             .unwrap_or_else(|| panic!("missing torch shape"));
+        // Vanilla torches are a 2x10 px post plus two full-texture cross sheets; a wall torch
+        // must sit against its support (south here) rather than at the block centre.
+        assert_eq!(torch_shape.cuboids.len(), 3);
         assert!(
             torch_shape
                 .cuboids
                 .iter()
-                .any(|cuboid| cuboid.min[2] >= 0.5 && cuboid.max[1] <= 0.875)
+                .any(|cuboid| cuboid.min[2] >= 0.4 && cuboid.max[2] >= 0.99),
+            "the torch post must reach the south support face"
+        );
+        assert!(
+            torch_shape.cuboids.iter().any(|cuboid| cuboid.max[1] > 0.9),
+            "torch cross sheets span the block height"
         );
 
         let lantern = BlockStateQuery::new("minecraft:lantern").with_state("hanging", true);
         let lantern_shape = model_shape_for_block_state(&lantern)
             .unwrap_or_else(|| panic!("missing lantern shape"));
-        assert_eq!(lantern_shape.cuboids.len(), 3);
+        assert_eq!(lantern_shape.cuboids.len(), 2);
         assert!(
             lantern_shape
                 .cuboids
                 .iter()
-                .any(|cuboid| cuboid.min[1] == 0.75 && cuboid.max[1] == 1.0)
+                .any(|cuboid| cuboid.max[1] > 0.5 && cuboid.max[1] < 0.7)
+        );
+        assert_eq!(lantern_shape.planes.len(), 2);
+        assert!(
+            lantern_shape.cuboids.iter().all(|cuboid| {
+                cuboid
+                    .face_uvs
+                    .contains_key(&crate::material::BlockFace::Up)
+                    && cuboid
+                        .face_uvs
+                        .contains_key(&crate::material::BlockFace::North)
+            }),
+            "lantern cuboids must sample their own texture rectangles"
         );
 
         let candles = BlockStateQuery::new("minecraft:candle").with_state("candles", 4);

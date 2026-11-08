@@ -172,11 +172,8 @@ mod tests {
     use super::*;
 
     fn vine_planes(bits: i64) -> Vec<ModelPlane> {
-        let state =
-            BlockStateQuery::new("minecraft:vine").with_state("vine_direction_bits", bits);
-        shape_for_vine("vine", &state)
-            .expect("vine shape")
-            .planes
+        let state = BlockStateQuery::new("minecraft:vine").with_state("vine_direction_bits", bits);
+        shape_for_vine("vine", &state).expect("vine shape").planes
     }
 
     #[test]
