@@ -309,6 +309,13 @@ impl DrawResourceKey {
 }
 
 impl SceneResources {
+    /// Whether this scene is already committed for the requested immutable
+    /// input. A pending worker must not hide or rebuild a matching GPU Scene.
+    pub(super) fn matches_published_scene(&self, view: &SceneView) -> bool {
+        self.scene.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &view.scene))
+            && self.scene_transform == Some(view.scene_transform)
+    }
+
     /// Keep the last fully published 3D geometry visible while an independent
     /// CPU worker prepares a completely unrelated Scene snapshot. Camera
     /// uniforms, culling and presentation still advance normally on GPU owner.
