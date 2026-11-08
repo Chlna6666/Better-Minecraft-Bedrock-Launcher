@@ -1045,7 +1045,13 @@ impl World3dEditorView {
         self.last_visibility_signature = signature;
         self.last_visibility_revision = Some(self.visibility_revision);
         self.last_visibility_radius = self.view_radius;
-        let hidden = if self.edit_busy || !self.invalidated_visibility.is_empty() {
+        // Explicit A/B switch for render/camera diagnostics. The absence of
+        // the flag preserves the default optimized path.
+        let trace_started = super::chunk_service::trace_timings().then(Instant::now);
+        let hidden = if self.edit_busy
+            || !self.invalidated_visibility.is_empty()
+            || std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
+        {
             BTreeSet::new()
         } else {
             super::visibility::hidden_render_bands(
@@ -1056,6 +1062,16 @@ impl World3dEditorView {
                 self.view_radius,
             )
         };
+        if let Some(started) = trace_started
+            && started.elapsed() >= Duration::from_millis(2)
+        {
+            eprintln!(
+                "world3d portal_visibility_eval_us={} hidden_bands={} resident_bands={}",
+                started.elapsed().as_micros(),
+                hidden.len(),
+                self.chunk_meshes.len(),
+            );
+        }
         if hidden != self.hidden_sections {
             if super::chunk_service::trace_timings() {
                 eprintln!(
@@ -1999,6 +2015,7 @@ impl World3dEditorView {
         };
         self.edit_busy = true;
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        self.update_section_visibility();
         self.status = SharedString::from("已提交世界写入任务，等待统一的 2D 历史系统确认");
         self.status_kind = StatusKind::Info;
         if owner
@@ -2009,6 +2026,7 @@ impl World3dEditorView {
         {
             self.edit_busy = false;
             self.visibility_revision = self.visibility_revision.wrapping_add(1);
+            self.update_section_visibility();
             self.status = "关联的 2D 文档已关闭，编辑未提交".into();
             self.status_kind = StatusKind::Error;
         }
@@ -2046,6 +2064,7 @@ impl World3dEditorView {
             chunks.iter().copied().filter(|pos| pos.dimension == self.dimension),
         );
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        self.update_section_visibility();
         if let Some(service) = self.service.as_ref() {
             service.send(super::types::ChunkServiceCommand::Invalidate {
                 generation: self.stream_generation,
