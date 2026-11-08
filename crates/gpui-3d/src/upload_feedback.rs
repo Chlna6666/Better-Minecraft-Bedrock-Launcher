@@ -102,8 +102,7 @@ pub fn gpu_upload_cost_estimate() -> Option<GpuUploadCostEstimate> {
 }
 
 fn smooth(previous: u64, sample: u64) -> u64 {
-    (u128::from(previous).saturating_mul(7) + u128::from(sample))
-        / 8
+    ((u128::from(previous).saturating_mul(7) + u128::from(sample)) / 8)
         .min(u128::from(u64::MAX)) as u64
 }
 
