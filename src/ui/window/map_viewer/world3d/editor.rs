@@ -1075,7 +1075,7 @@ impl World3dEditorView {
         let trace_started = super::chunk_service::trace_timings().then(Instant::now);
         let hidden = if self.edit_busy
             || !self.invalidated_visibility.is_empty()
-            || std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
+            || super::chunk_service::portal_culling_disabled()
         {
             BTreeSet::new()
         } else {
