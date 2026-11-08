@@ -557,6 +557,35 @@ fn visible_dirty_meshes(
     visible
 }
 
+/// A dirty rear Section remains dirty until the camera makes it relevant.
+/// This mirrors JE's visible-first dirty rebuild queue: the underlying
+/// immutable world/Probe is never discarded, and the old resident GPU mesh
+/// stays valid as a fallback until the replacement is ready.
+fn renderable_dirty_meshes(
+    dirty: &BTreeSet<ChunkPos>,
+    view: ViewState,
+) -> Vec<ChunkPos> {
+    let center_x = (view.camera[0] / 16.0).floor() as i32;
+    let center_z = (view.camera[2] / 16.0).floor() as i32;
+    visible_dirty_meshes(dirty, view.dimension, center_x, center_z, view.radius)
+        .into_iter()
+        .filter(|pos| !lazy_mesh_column(*pos, view))
+        .collect()
+}
+
+fn take_renderable_dirty_meshes(
+    dirty: &mut BTreeSet<ChunkPos>,
+    view: ViewState,
+    limit: usize,
+) -> Vec<ChunkPos> {
+    let mut visible = renderable_dirty_meshes(dirty, view);
+    visible.truncate(limit);
+    for pos in &visible {
+        dirty.remove(pos);
+    }
+    visible
+}
+
 fn retain_urgent_chunks(urgent: &mut BTreeSet<ChunkPos>, view: ViewState) {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
@@ -770,6 +799,31 @@ mod view_tests {
         let mut targets = [at(1, 0), at(0, -1), at(0, 2)];
         targets.sort_by_key(|pos| mesh_target_priority(*pos, &loaded, (0, 0), [0.0, 1.0]));
         assert_eq!(targets, [at(0, 2), at(0, -1), at(1, 0)]);
+    }
+
+    #[test]
+    fn rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state() {
+        let pos = |z| ChunkPos {
+            x: 0, z, dimension: Dimension::Overworld,
+        };
+        let mut dirty = BTreeSet::from([pos(-8), pos(-1), pos(2)]);
+        let mut view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [0.0, 1.0],
+            forward_y: 0.0,
+            radius: 10,
+            view_distance: 320.0,
+        };
+        let visible = super::take_renderable_dirty_meshes(&mut dirty, view, 8);
+        assert!(visible.contains(&pos(-1)) && visible.contains(&pos(2)));
+        if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_none() {
+            assert_eq!(dirty, BTreeSet::from([pos(-8)]));
+        }
+        view.forward_xz = [0.0, -1.0];
+        assert!(super::renderable_dirty_meshes(&dirty, view).contains(&pos(-8))
+            || dirty.is_empty());
     }
 
     #[test]
@@ -2465,12 +2519,9 @@ impl Worker {
         if let Ok(command) = commands.try_recv() {
             return Some(command);
         }
-        let remesh = take_visible_dirty_meshes(
+        let remesh = take_renderable_dirty_meshes(
             &mut self.dirty_meshes,
-            self.view.dimension,
-            center_x,
-            center_z,
-            self.view.radius,
+            self.view,
             REMESH_BATCH_CHUNKS,
         );
         if !remesh.is_empty() {
@@ -2657,13 +2708,7 @@ impl Worker {
                 self.publish_status(tx);
             }
         }
-        let dirty = visible_dirty_meshes(
-            &self.dirty_meshes,
-            self.view.dimension,
-            center_x,
-            center_z,
-            self.view.radius,
-        );
+        let dirty = renderable_dirty_meshes(&self.dirty_meshes, self.view);
         for remesh in dirty.chunks(REMESH_BATCH_CHUNKS) {
             if let Ok(command) = commands.try_recv() {
                 return Some(command);
