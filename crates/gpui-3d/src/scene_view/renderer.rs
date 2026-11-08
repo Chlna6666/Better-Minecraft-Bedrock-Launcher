@@ -1218,9 +1218,16 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let started = crate::gpu_submission_trace::enabled().then(Instant::now);
             let (commands, authored_scissors) =
                 capture_commands.expect("offscreen capture built immutable commands");
+            let gpu_work_tag = (crate::gpu_submission_trace::enabled()
+                && device.gpu_work_timestamps_supported()
+                && scene.gpu_batch_id != 0)
+                .then_some(gfx_core::GpuTimestampTag {
+                    batch_id: scene.gpu_batch_id,
+                    stage: gfx_core::GpuTimestampStage::DrawIndirect,
+                });
             surface.enqueue(
                 device, scene_view.id, &context, scene.capture_revision,
-                commands, authored_scissors, &mut self.pending_passes, steps,
+                gpu_work_tag, commands, authored_scissors, &mut self.pending_passes, steps,
             )?;
             if let Some(start) = started {
                 crate::gpu_submission_trace::observe(
