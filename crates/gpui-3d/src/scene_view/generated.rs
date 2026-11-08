@@ -721,6 +721,11 @@ fn create_many_impl(
             crate::upload_feedback::observe_buffer_upload(
                 *backend, bytes, staging_writes.len(), duration,
             );
+            if let Some(batch_id) = batch_id {
+                crate::upload_feedback::observe_tagged_upload(
+                    *backend, batch_id, bytes, staging_writes.len(),
+                );
+            }
         }
     }
     drop(staging_writes);
