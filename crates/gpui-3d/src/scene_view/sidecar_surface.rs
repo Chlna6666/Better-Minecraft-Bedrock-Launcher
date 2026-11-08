@@ -111,7 +111,7 @@ impl SidecarSurface {
         host: &RendererExtensionContext,
     ) -> gpui::Result<Self> {
         let mut allocations = Vec::<Allocation>::new();
-        let result = (|| {
+        let result: gpui::Result<Self> = (|| -> gpui::Result<Self> {
             let capture_format = host.color_format();
             let capture_pass = device.create_render_pass(&RenderPassDescriptor {
                 label: Some("gpui-3d independently submitted scene pass".into()),
