@@ -13,6 +13,10 @@ pub(super) struct RendererRegistry {
     /// extension must never mark another renderer's failed/old submission
     /// as published.
     submitted_types: Vec<TypeId>,
+    /// True only when every producer in the current frame explicitly opts
+    /// into a native secondary graphics queue. No role mixing across one
+    /// shared render-to-textures submission.
+    independent_producers_only: bool,
 }
 
 impl RendererRegistry {
@@ -23,8 +27,12 @@ impl RendererRegistry {
             }
         }
     }
+    pub(super) fn independent_producers_only(&self) -> bool {
+        !self.passes.is_empty() && self.independent_producers_only
+    }
     pub(super) fn begin_frame(&mut self) {
         self.passes.clear();
+        self.independent_producers_only = true;
         // A previous submit may have failed after draining producer passes.
         // Do not carry its pending acknowledgements to an unrelated frame.
         self.submitted_types.clear();
@@ -68,8 +76,11 @@ impl RendererRegistry {
         };
         renderer.render(input, device, context, steps)?;
         renderer.drain_render_passes(&mut self.passes);
-        if self.passes.len() > before && !self.submitted_types.contains(&type_id) {
-            self.submitted_types.push(type_id);
+        if self.passes.len() > before {
+            self.independent_producers_only &= renderer.prefers_independent_graphics_queue();
+            if !self.submitted_types.contains(&type_id) {
+                self.submitted_types.push(type_id);
+            }
         }
         Ok(())
     }
@@ -130,6 +141,27 @@ mod tests {
         fn destroy(&mut self, _device: &mut dyn ExtensionDevice) -> crate::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn independent_queue_requires_all_offscreen_producers_to_opt_in() {
+        let mut registry = RendererRegistry::default();
+        registry.begin_frame();
+        assert!(!registry.independent_producers_only());
+        registry.passes.push(crate::RendererExtensionPass {
+            target: TextureViewId::from_parts(1, 1),
+            resolve_target: None,
+            render_pass: RenderPassId::from_parts(1, 1),
+            commands: Vec::new(),
+            color_load_op: LoadOp::Load,
+            depth_attachment: None,
+        });
+        registry.independent_producers_only = true;
+        assert!(registry.independent_producers_only());
+        registry.independent_producers_only = false;
+        assert!(!registry.independent_producers_only());
+        registry.begin_frame();
+        assert!(!registry.independent_producers_only());
     }
 
     #[test]
