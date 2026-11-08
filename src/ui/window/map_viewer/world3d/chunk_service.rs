@@ -3046,7 +3046,15 @@ impl Worker {
                 }
             }
         }
-        let hidden_bands = self.portal_hidden_bands(&prospective_bands);
+        let hidden_bands = self
+            .portal_hidden_bands(&prospective_bands)
+            .into_iter()
+            .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
+            .collect::<BTreeSet<_>>();
+        // Record the full plan, not just Sections that survived face
+        // generation. Otherwise a fully skipped GPU band could never be
+        // promoted when its cave portal becomes reachable.
+        self.deferred_bands.extend(hidden_bands.iter().copied());
         if trace && !hidden_bands.is_empty() {
             eprintln!(
                 "world3d portal_mesh_skip gen={} targets={} hidden_bands={}",
@@ -3202,7 +3210,13 @@ impl Worker {
             let mut gpu_bands = HashMap::new();
             let mut gpu_sections = Vec::new();
             for pos in gpu_targets.clone() {
-                let Some(bands) = builder.gpu_cube_bands(pos, selections.get(&pos)) else {
+                let skipped = hidden_bands
+                    .iter()
+                    .filter_map(|(candidate, band)| (*candidate == pos).then_some(*band))
+                    .collect::<BTreeSet<_>>();
+                let Some(bands) =
+                    builder.gpu_cube_bands_skipping(pos, selections.get(&pos), &skipped)
+                else {
                     gpu_targets.remove(&pos);
                     continue;
                 };
@@ -3213,7 +3227,12 @@ impl Worker {
                 }
             }
             let mut faces =
-                builder.build_stream_faces_with_gpu_cubes(&fine, &selections, &gpu_targets);
+                builder.build_stream_faces_with_gpu_cubes_skipping(
+                    &fine,
+                    &selections,
+                    &gpu_targets,
+                    &hidden_bands,
+                );
             if !coarse.is_empty() && coarse_faces_by_pos.is_none() {
                 coarse_faces_by_pos = Some(
                     builder
