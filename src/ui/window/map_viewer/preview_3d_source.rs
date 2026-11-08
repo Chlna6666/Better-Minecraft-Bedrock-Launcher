@@ -8989,6 +8989,12 @@ impl Preview3dMeshBuilder {
         output: &mut Vec<Preview3dStreamFace>,
     ) {
         let mut faces = Vec::new();
+        // Neighbor-derived models (fences, panes, walls, stairs, redstone)
+        // have few distinct permutations compared with their block count.
+        // Resolve each immutable state once for this build rather than
+        // tessellating its model description for every placed block.
+        let mut shared_shapes =
+            HashMap::<gpu_models::QueryKey, Option<Arc<Preview3dDetailShape>>>::default();
         for (detail_blocks, pass) in [
             (&blocks.detail_blocks, Preview3dStreamPass::DetailOpaque),
             (
@@ -8997,8 +9003,19 @@ impl Preview3dMeshBuilder {
             ),
         ] {
             for block in detail_blocks {
-                let inferred_shape = self.preview_3d_inferred_detail_shape(block);
-                let shape = inferred_shape.as_ref().unwrap_or(&block.shape);
+                let shape = if let Some(query) = self.preview_3d_detail_shape_query(block) {
+                    shared_shapes
+                        .entry(gpu_models::QueryKey(query))
+                        .or_insert_with_key(|key| {
+                            model_shape_for_block_state(&key.0)
+                                .map(preview_3d_detail_shape_from_model_shape)
+                                .map(Arc::new)
+                        })
+                        .as_deref()
+                        .unwrap_or(&block.shape)
+                } else {
+                    &block.shape
+                };
                 preview_3d_push_detail_block_faces(block, shape, &mut faces);
                 // Vanilla plants and redstone dust render without directional shading.
                 let unshaded = block.normalized_name.ends_with("redstone_wire")
