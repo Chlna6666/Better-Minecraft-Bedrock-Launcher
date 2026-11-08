@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(rounded_mask(&plain), rounded_mask(&shifted));
         let rounded = gpui::ContentMask {
             corner_bounds: shifted.bounds,
-            corner_radii: gpui::Corners::from(gpui::ScaledPixels::from(14.0)),
+            corner_radii: gpui::Corners::all(gpui::ScaledPixels::from(14.0)),
             ..shifted
         };
         assert_ne!(rounded_mask(&plain), rounded_mask(&rounded));
