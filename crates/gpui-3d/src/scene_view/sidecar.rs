@@ -184,13 +184,41 @@ fn pool() -> Option<&'static ThreadPool> {
     }).as_ref()
 }
 
+/// Large world meshes may be packed into only a few Scene nodes (for
+/// example, a regional map preview). Counting nodes alone would wrongly
+/// disable async preparation for a single million-vertex mesh. Check only
+/// small graphs; big graphs skip this preflight altogether.
+fn merits_sidecar(scene: &Scene) -> bool {
+    if scene.len() >= 64 {
+        return true;
+    }
+    let mut stack = scene.roots().to_vec();
+    while let Some(id) = stack.pop() {
+        let Some(node) = scene.node(id) else { continue };
+        let expensive = |mesh: &crate::Mesh| {
+            mesh.vertex_count() >= 8_192
+                || mesh.parts().len() >= 64
+                || mesh.gpu_voxels().is_some()
+        };
+        if node.mesh.as_deref().is_some_and(expensive)
+            || node.lod.iter().any(|level| expensive(&level.mesh))
+        {
+            return true;
+        }
+        if let Some(children) = scene.children(id) {
+            stack.extend_from_slice(children);
+        }
+    }
+    false
+}
+
 /// Stage an immutable Scene for background traversal. No UI or GPU context
 /// is held while the work runs; a newer revision replaces queued old work.
 pub(super) fn schedule(view: &SceneView) {
     if std::env::var_os("GPUI_3D_DISABLE_SIDECAR").is_some()
-        // The thread handoff is only worthwhile for nontrivial scenes;
-        // small UI widgets are cheaper to prepare directly on GPU owner.
-        || view.scene.len() < 64
+        // A few large regional meshes are heavy even with very few nodes.
+        // Lightweight widgets still stay on the direct path.
+        || !merits_sidecar(&view.scene)
         || !view.animation.is_empty()
     {
         return;
@@ -251,6 +279,19 @@ mod tests {
 
     fn camera() -> Camera {
         Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 100.0)
+    }
+
+    #[test]
+    fn scene_job_selection_accounts_for_packed_meshes() {
+        let mut tiny = Scene::new();
+        tiny.insert(None, crate::Node::new()
+            .with_mesh(Arc::new(crate::Mesh::cube()))).unwrap();
+        assert!(!merits_sidecar(&tiny));
+        let mut many = Scene::new();
+        for _ in 0..65 {
+            many.insert(None, crate::Node::default()).unwrap();
+        }
+        assert!(merits_sidecar(&many));
     }
 
     #[test]
