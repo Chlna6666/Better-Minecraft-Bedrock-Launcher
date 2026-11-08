@@ -2,6 +2,7 @@
 use super::*;
 use gpui_3d::{MeshId, NodeId, SceneError};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// LRU bound for retained fused Section-cluster meshes. One entry holds one
 /// fused voxel plan (~tens of KiB per 64-block band), so the cap bounds the
@@ -25,6 +26,9 @@ struct FusionJobResult {
     key: (ChunkPos, i32),
     fingerprint: u64,
     mesh: Option<Arc<World3dChunkMesh>>,
+    // Distinguishes an obsolete task from a newly submitted task with the
+    // same geometry fingerprint after a Scene reset.
+    cancellation: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -42,6 +46,7 @@ pub(in super::super) struct ChunkScene {
     /// A single in-flight job per tile; the current source fingerprint is
     /// verified again when applying a result. Old jobs never commit stale data.
     fusion_jobs: HashMap<(ChunkPos, i32), u64>,
+    fusion_cancellations: HashMap<(ChunkPos, i32), Arc<AtomicBool>>,
     fusion_results: Arc<std::sync::Mutex<VecDeque<FusionJobResult>>>,
     fusion_completed: BTreeSet<(ChunkPos, i32)>,
     /// Negative cache for tiles which cannot reduce draw parts, so a failed
@@ -63,6 +68,19 @@ pub(in super::super) struct ChunkScene {
 mod tests {
     use super::{Arc, BTreeMap, BTreeSet, ChunkPos, ChunkScene, Dimension, World3dChunkMesh};
     use gpui_3d::Mesh;
+    #[test]
+    fn stale_fusion_token_is_revoked_before_worker_starts() {
+        let mut scene = ChunkScene::default();
+        let source = ChunkPos { x: 3, z: 7, dimension: Dimension::Overworld };
+        let key = (source, 0);
+        let group = super::fusion_key(key);
+        let token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        scene.fusion_cancellations.insert(group, token.clone());
+        scene.invalidate_fusion_job(key);
+        assert!(token.load(std::sync::atomic::Ordering::Acquire));
+        assert!(Arc::ptr_eq(scene.fusion_cancellations.get(&group).unwrap(), &token));
+    }
+
     fn generated_chunk(x: i32, material: Arc<gpui_3d::Material>) -> Arc<World3dChunkMesh> {
         let cube = Mesh::cube();
         let templates = cube
@@ -1031,6 +1049,13 @@ impl ChunkScene {
     ) -> Result<Scene, SceneError> {
         let mut scene = base.map_or_else(Scene::new, Scene::fork);
         if base.is_none() {
+            // A Scene reset may reuse the same group key and fingerprint.
+            // Invalidate the old queued worker before any new jobs are issued.
+            for cancellation in self.fusion_cancellations.values() {
+                cancellation.store(true, Ordering::Release);
+            }
+            self.fusion_cancellations.clear();
+            self.fusion_jobs.clear();
             self.nodes.clear();
             self.lights.clear();
             self.fused.clear();
@@ -1092,10 +1117,23 @@ impl ChunkScene {
         for result in completed {
             // A later edit might already have requested a different version:
             // never remove that pending job or publish its old mesh.
-            if self.fusion_jobs.get(&result.key) != Some(&result.fingerprint) {
+            if self.fusion_jobs.get(&result.key) != Some(&result.fingerprint)
+                || self
+                    .fusion_cancellations
+                    .get(&result.key)
+                    .is_none_or(|active| !Arc::ptr_eq(active, &result.cancellation))
+            {
                 continue;
             }
             self.fusion_jobs.remove(&result.key);
+            self.fusion_cancellations.remove(&result.key);
+            if result.cancellation.load(Ordering::Acquire) {
+                // The changed Section may need a new fusion. Do not install a
+                // stale mesh or add an incorrect "cannot merge" negative cache.
+                self.fusion_completed.insert(result.key);
+                changed = true;
+                continue;
+            }
             if let Some(mesh) = result.mesh {
                 self.fusion_rejected.remove(&result.key);
                 self.remember_fused(result.key, result.fingerprint, mesh);
@@ -1135,13 +1173,20 @@ impl ChunkScene {
                 return None;
             }
             self.fusion_jobs.insert(key, fingerprint);
+            let cancellation = Arc::new(AtomicBool::new(false));
+            self.fusion_cancellations.insert(key, Arc::clone(&cancellation));
             let source_snapshot = sources.to_vec();
             let results = Arc::clone(&self.fusion_results);
             rayon::spawn(move || {
-                let mesh = fused_section_cluster(&source_snapshot).map(Arc::new);
+                // Previous generation jobs can still be queued in Rayon when
+                // the camera or source Section changes. Refuse costly voxel
+                // fusion before it begins when the source is already obsolete.
+                let mesh = (!cancellation.load(Ordering::Acquire))
+                    .then(|| fused_section_cluster(&source_snapshot).map(Arc::new))
+                    .flatten();
                 let mut queue = results.lock()
                     .unwrap_or_else(|poison| poison.into_inner());
-                queue.push_back(FusionJobResult { key, fingerprint, mesh });
+                queue.push_back(FusionJobResult { key, fingerprint, mesh, cancellation });
             });
             None
         }
@@ -1314,7 +1359,14 @@ impl ChunkScene {
         Ok(())
     }
 
+    fn invalidate_fusion_job(&self, source: (ChunkPos, i32)) {
+        if let Some(cancellation) = self.fusion_cancellations.get(&fusion_key(source)) {
+            cancellation.store(true, Ordering::Release);
+        }
+    }
+
     fn remove_mesh(&mut self, scene: &mut Scene, key: &(ChunkPos, i32)) -> Result<(), SceneError> {
+        self.invalidate_fusion_job(*key);
         if let Some((id, _)) = self.nodes.remove(key) {
             scene.remove(id)?;
         }
@@ -1335,6 +1387,7 @@ impl ChunkScene {
         {
             return Ok(());
         }
+        self.invalidate_fusion_job(key);
         // Do not mutate per-Section Scene::visible during camera motion.
         // SceneView carries camera-relative culling bounds; GPU cs_cull
         // performs range/frustum/Hi-Z rejection of resident Sections.
