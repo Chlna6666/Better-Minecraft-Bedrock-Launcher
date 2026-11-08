@@ -166,7 +166,7 @@ impl OpenGlDevice {
         let viewport_size = viewport_size.unwrap_or(size);
         let scissor_extent = scissor_extent.unwrap_or(size);
         let depth_view = depth
-            .map(|attachment| self.views.get(attachment.target))
+            .map(|attachment| self.views.get(attachment.target).copied())
             .transpose()?;
         if depth_view.is_some_and(|view| {
             view.format != Format::Depth32Float
