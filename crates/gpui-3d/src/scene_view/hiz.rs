@@ -167,9 +167,15 @@ impl HiZ {
         let mut bounds = bounds
             .filter(|b| b.faces & 63 != 0 && Aabb::new(b.bounds.min, b.bounds.max).is_some())
             .collect::<Vec<_>>();
-        let key = |b: &Occluder| (eye.max(b.bounds.min).min(b.bounds.max) - eye).length_squared();
+        // The closest small voxel proxies used to monopolize the 512-box
+        // budget even when a slightly farther continuous roof or cliff would
+        // cover far more of the image. Favor conservative projected face area
+        // per distance, without a full sort or CPU visibility decisions.
+        // Omitting a proxy cannot hide geometry: it only reduces Hi-Z rejection.
         if bounds.len() > self.max_boxes {
-            bounds.select_nth_unstable_by(self.max_boxes, |a, b| key(a).total_cmp(&key(b)));
+            bounds.select_nth_unstable_by(self.max_boxes, |a, b| {
+                occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
+            });
             bounds.truncate(self.max_boxes);
         }
         let count = bounds.len();
@@ -319,6 +325,28 @@ impl HiZ {
     }
 }
 
+/// Estimated projected coverage for the axis-aligned faces that are actually
+/// certified opaque. Uses distance to the nearest point, avoiding center-distance
+/// bias against wide planar walls. The stabilizer prevents tiny nearby patches
+/// from crowding out all large roofs and cliff faces. This is a selection hint,
+/// never a visibility test.
+fn occluder_priority(occluder: &Occluder, eye: Vec3) -> f32 {
+    let extent = occluder.bounds.max - occluder.bounds.min;
+    let mut area = 0.0_f32;
+    if occluder.faces & 0b000011 != 0 {
+        area = area.max(extent.y * extent.z);
+    }
+    if occluder.faces & 0b001100 != 0 {
+        area = area.max(extent.x * extent.z);
+    }
+    if occluder.faces & 0b110000 != 0 {
+        area = area.max(extent.x * extent.y);
+    }
+    let nearest = eye.max(occluder.bounds.min).min(occluder.bounds.max);
+    let distance_sq = (nearest - eye).length_squared();
+    area / (distance_sq + 16.0)
+}
+
 fn encode_header(count: usize, forward: Vec3) -> [u8; 16] {
     let mut bytes = [0; 16];
     bytes[..4].copy_from_slice(&(count as u32).to_le_bytes());
@@ -368,6 +396,51 @@ fn choose_raster_threads(mean_coverage: f32) -> u32 {
     else if mean_coverage < 0.04 { 64 }
     else { 128 }
  }
+
+#[cfg(test)]
+mod occluder_selection_tests {
+    use super::*;
+
+    fn proxy(min: [f32; 3], max: [f32; 3], faces: u8) -> Occluder {
+        Occluder {
+            bounds: Aabb::new(
+                Vec3::new(min[0], min[1], min[2]),
+                Vec3::new(max[0], max[1], max[2]),
+            ).unwrap(),
+            faces,
+        }
+    }
+
+    #[test]
+    fn prioritizes_large_opaque_roofs_and_cliffs_over_nearby_tiny_faces() {
+        let eye = Vec3::ZERO;
+        let small = proxy([0., 0., 2.], [1., 1., 3.], 1 << 4);
+        let roof = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 3);
+        let wall = proxy([8., -8., -8.], [8., 8., 8.], 1 << 1);
+        assert!(occluder_priority(&roof, eye) > occluder_priority(&small, eye));
+        assert!(occluder_priority(&wall, eye) > occluder_priority(&small, eye));
+        assert_eq!(occluder_priority(&roof, eye), occluder_priority(&roof, eye));
+        // Face masks are authoritative: a Y plane without a Y face is
+        // not a certified occluder, regardless of its AABB footprint.
+        let no_y_face = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 1);
+        assert_eq!(occluder_priority(&no_y_face, eye), 0.0);
+    }
+
+    #[test]
+    fn selection_keeps_highest_coverage_without_sorting_every_occluder() {
+        let eye = Vec3::ZERO;
+        let mut proxies = (0..100)
+            .map(|i| proxy([i as f32, 0., 1.], [i as f32 + 1., 1., 2.], 1 << 4))
+            .collect::<Vec<_>>();
+        let roof = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 3);
+        proxies.push(roof);
+        proxies.select_nth_unstable_by(8, |a, b| {
+            occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
+        });
+        proxies.truncate(8);
+        assert!(proxies.iter().any(|b| b.bounds == roof.bounds));
+    }
+}
 
 #[cfg(test)]
 mod adaptive_raster_tests {
