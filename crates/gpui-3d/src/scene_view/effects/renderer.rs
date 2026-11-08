@@ -5,7 +5,7 @@ use super::super::{
 use super::{
     ScreenEffects,
     compositor::{Compositor, Inputs},
-    scene::EffectScene,
+    scene::{EffectScene, SHADOW_MAP_SIZE},
 };
 
 use anyhow::Context as _;
@@ -22,7 +22,7 @@ mod tests;
 pub(in crate::scene_view) struct EffectsRenderer {
     last_frame: Option<Instant>,
     pass: RenderPassId,
-    /// Single-sampled pass for the 1024x1024 shadow map.
+    /// Single-sampled pass for the light-aligned shadow map.
     shadow_pass: RenderPassId,
     hdr: RendererResources,
     surface: RendererResources,
@@ -107,7 +107,11 @@ impl EffectsRenderer {
                 PassKind::Shadow,
             ] {
                 let context = if kind == PassKind::Shadow {
-                    local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(1024, 1024)?)
+                    local.offscreen(
+                        shadow_pass,
+                        Format::Rgba16Float,
+                        Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                    )
                 } else {
                     local.clone()
                 };

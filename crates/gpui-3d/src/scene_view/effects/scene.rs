@@ -12,6 +12,48 @@ use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Shared capture dimensions. The enlarged shadow footprint covers more
+/// terrain without changing the old shadow texel density appreciably.
+pub(super) const SHADOW_MAP_SIZE: u32 = 1536;
+pub(super) const SHADOW_WORLD_HEIGHT: f32 = 320.0;
+const SHADOW_TEXEL_WORLD: f32 = SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32;
+
+/// Snap in light-space, rather than snapping world X/Y/Z to four-block steps.
+/// Reprojecting at world-grid transitions caused the whole shadow map to jump.
+fn stable_shadow_camera(eye: Vec3, sun: Vec3) -> gpui::Result<([i32; 6], Camera)> {
+    let sun = sun.normalized().ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
+    let quant = [
+        (sun.x * 4096.0).round() as i32,
+        (sun.y * 4096.0).round() as i32,
+        (sun.z * 4096.0).round() as i32,
+    ];
+    let direction = Vec3::new(quant[0] as f32, quant[1] as f32, quant[2] as f32)
+        .normalized().ok_or_else(|| anyhow::anyhow!("invalid shadow light axis"))?;
+    let up = if direction.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let right = up.cross(direction).normalized()
+        .ok_or_else(|| anyhow::anyhow!("invalid shadow right"))?;
+    let vertical = direction.cross(right).normalized()
+        .ok_or_else(|| anyhow::anyhow!("invalid shadow up"))?;
+    let key = [
+        (eye.dot(right) / SHADOW_TEXEL_WORLD).round() as i32,
+        (eye.dot(vertical) / SHADOW_TEXEL_WORLD).round() as i32,
+        (eye.dot(direction) / 4.0).round() as i32,
+        quant[0], quant[1], quant[2],
+    ];
+    let center = right * (key[0] as f32 * SHADOW_TEXEL_WORLD)
+        + vertical * (key[1] as f32 * SHADOW_TEXEL_WORLD)
+        + direction * (key[2] as f32 * 4.0);
+    Ok((key, Camera::orthographic(
+        center + direction * SHADOW_WORLD_HEIGHT,
+        center,
+        up,
+        SHADOW_WORLD_HEIGHT,
+        0.1,
+        SHADOW_WORLD_HEIGHT * 2.0,
+    )))
+}
+
 pub(super) struct EffectScene {
     pub(super) last_seen: Instant,
     pub(super) capture: Option<SceneView>,
@@ -154,7 +196,7 @@ impl EffectScene {
             });
             let shadow = Target::create(
                 device,
-                Extent2d::new(1024, 1024)?,
+                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
                 Format::Depth32Float,
                 true,
                 1,
@@ -162,7 +204,7 @@ impl EffectScene {
             shadow.record(&mut cleanup);
             let shadow_color = Target::create(
                 device,
-                Extent2d::new(1024, 1024)?,
+                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
                 Format::Rgba16Float,
                 false,
                 1,
@@ -240,16 +282,10 @@ impl EffectScene {
         if view.voxel_shading.shadow_strength <= 0. && self.shadow_valid {
             return Ok(());
         }
-        let sun = view.voxel_shading.sun_direction;
-        let eye = view.camera.eye;
-        let key = [
-            (eye.x / 4.).floor() as i32,
-            (eye.y / 4.).floor() as i32,
-            (eye.z / 4.).floor() as i32,
-            (sun.x * 256.).round() as i32,
-            (sun.y * 256.).round() as i32,
-            (sun.z * 256.).round() as i32,
-        ];
+        let (key, camera) = stable_shadow_camera(
+            view.camera.eye,
+            view.voxel_shading.sun_direction,
+        )?;
         let changed = !self.shadow_valid
             || self.shadow_key != Some(key)
             || self
@@ -278,25 +314,9 @@ impl EffectScene {
         self.shadow_scene = Some(view.scene.clone());
         self.shadow_transform = view.scene_transform;
         self.shadow_input = Some(view.clone());
-        let center = Vec3::new(key[0] as f32 * 4., key[1] as f32 * 4., key[2] as f32 * 4.);
-        let direction = Vec3::new(key[3] as f32, key[4] as f32, key[5] as f32)
-            .normalized()
-            .ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
-        let camera = Camera::orthographic(
-            center + direction * 192.,
-            center,
-            if direction.y.abs() > 0.99 {
-                Vec3::Z
-            } else {
-                Vec3::Y
-            },
-            192.,
-            0.1,
-            384.,
-        );
-        self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
+         self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
         let shadow_context =
-            local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(1024, 1024)?);
+            local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?);
         let commands = if view.voxel_shading.shadow_strength > 0. {
             self.scene
                 .shadow_steps(device, renderer, camera, &shadow_context)?
@@ -448,5 +468,29 @@ impl EffectScene {
         device.destroy_buffer(self.frame)?;
         device.destroy_buffer(self.composite_frame)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod stable_shadow_tests {
+    use super::*;
+    #[test]
+    fn projection_stays_in_same_light_texel_under_subpixel_motion() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let (key, camera) = stable_shadow_camera(Vec3::new(17.0, 80.0, -12.0), sun).unwrap();
+        let (moved, _) = stable_shadow_camera(Vec3::new(17.001, 80.0, -12.0), sun).unwrap();
+        assert_eq!(key, moved);
+        let light = (camera.eye - camera.target).normalized().unwrap();
+        let right = camera.up.cross(light).normalized().unwrap();
+        let vertical = light.cross(right).normalized().unwrap();
+        for axis in [right, vertical] {
+            let normalized = camera.target.dot(axis) / SHADOW_TEXEL_WORLD;
+            assert!((normalized - normalized.round()).abs() < 0.005);
+        }
+    }
+
+    #[test]
+    fn enlarged_shadow_map_keeps_previous_world_texel_density() {
+        assert!(SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32 < 0.22);
     }
 }
