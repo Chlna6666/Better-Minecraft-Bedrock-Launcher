@@ -18,7 +18,7 @@ struct GlPassState {
 
 impl OpenGlDevice {
     pub(crate) fn render_target(
-        &self,
+        &mut self,
         target: RenderTarget,
         pass: RenderPassId,
         steps: &[RenderCommand],
@@ -38,7 +38,7 @@ impl OpenGlDevice {
     }
 
     pub(crate) fn render_target_clipped(
-        &self,
+        &mut self,
         targets: &[RenderTarget],
         resolve_view: Option<TextureViewId>,
         pass: RenderPassId,
@@ -47,6 +47,23 @@ impl OpenGlDevice {
         depth: Option<DepthAttachment>,
         clear_region: Option<ScissorRect>,
         viewport: Option<Viewport>,
+    ) -> Result<()> {
+        self.render_target_clipped_profiled(
+            targets, resolve_view, pass, steps, load, depth, clear_region, viewport, None,
+        )
+    }
+
+    pub(crate) fn render_target_clipped_profiled(
+        &mut self,
+        targets: &[RenderTarget],
+        resolve_view: Option<TextureViewId>,
+        pass: RenderPassId,
+        steps: &[RenderCommand],
+        load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>,
+        clear_region: Option<ScissorRect>,
+        viewport: Option<Viewport>,
+        gpu_tag: Option<GpuTimestampTag>,
     ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
@@ -279,6 +296,11 @@ impl OpenGlDevice {
             // Draw-step scissor setup starts from a known state on every pass.
             self.gl.disable(glow::SCISSOR_TEST);
         }
+        // The timestamp starts strictly after GL attachment clear and
+        // before the first draw; no extra native render pass is submitted.
+        let has_depth = depth_view.is_some();
+        let probe = gpu_tag.map(|tag| self.begin_gpu_work(tag))
+            .transpose()?.flatten();
         let mut state = GlPassState::default();
         let result = (|| {
             let mut bindings = self.binding_cache.borrow_mut();
@@ -300,7 +322,7 @@ impl OpenGlDevice {
                     viewport
                         .is_some_and(|viewport| viewport.mapping == ViewportMapping::PixelExact),
                     &formats,
-                    depth_view.is_some(),
+                    has_depth,
                     &mut state,
                     &mut bindings,
                 )?;
@@ -315,6 +337,7 @@ impl OpenGlDevice {
                 Ok(())
             }
         })();
+        self.finish_gpu_work(probe, result.is_ok());
         // A sidecar can issue thousands of DrawIndirect calls against one
         // resident argument buffer. Avoid bind/unbind per Draw, but do not
         // leak this pass's GL_DRAW_INDIRECT_BUFFER into the next pass or an
