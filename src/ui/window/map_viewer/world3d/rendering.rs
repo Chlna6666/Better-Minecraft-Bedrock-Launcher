@@ -2,7 +2,7 @@
 use gpui_3d::{Vec3, VoxelDisplay, VoxelIllumination, VoxelShading};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum LightingMode {
+pub(in crate::ui::window::map_viewer) enum LightingMode {
     #[default]
     NightVision,
     Vanilla,

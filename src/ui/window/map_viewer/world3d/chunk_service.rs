@@ -1984,6 +1984,15 @@ struct Worker {
     cache: BTreeMap<ChunkPos, CachedChunk>,
     light_fields: HashMap<ChunkPos, Arc<lighting::ChunkLighting>>,
     published_sections: BTreeMap<(ChunkPos, i32), Weak<World3dChunkMesh>>,
+    /// Bounded strong cache of recently published Sections. A revisit of a
+    /// previously loaded area reuses the surviving Arc (stable GPU identity,
+    /// no re-upload) even after the scene dropped its reference; FIFO-bounded.
+    revisit_cache: BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
+    revisit_order: std::collections::VecDeque<(ChunkPos, i32)>,
+    /// Columns whose boundary faces were already re-meshed once against their
+    /// now-loaded neighbours. Guards the neighbour-completion re-mesh below
+    /// from ping-ponging between adjacent columns forever.
+    boundary_remeshed: BTreeSet<ChunkPos>,
     lod_modes: HashMap<ChunkPos, bool>,
     dirty_meshes: BTreeSet<ChunkPos>,
     urgent_chunks: BTreeSet<ChunkPos>,
@@ -2101,6 +2110,9 @@ impl Worker {
             cache: BTreeMap::new(),
             light_fields: HashMap::new(),
             published_sections: BTreeMap::new(),
+            revisit_cache: BTreeMap::new(),
+            revisit_order: std::collections::VecDeque::new(),
+            boundary_remeshed: BTreeSet::new(),
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
             urgent_chunks: BTreeSet::new(),
@@ -2678,7 +2690,11 @@ impl Worker {
         // Rehydrating each discarded target separately serializes world queries and block
         // collection. Reuse the normal parallel batch loader while keeping cached metadata
         // and neighbor-only boundary summaries owned by the original entries.
-        let rehydrate_positions = local_positions
+        // Boundary culling needs the BLOCK DATA of every x/z neighbour of a
+        // target: a metadata-only cache entry (blocks dropped after the first
+        // mesh) makes block_class_at return None at the seam, so re-meshed
+        // sections either grow conservative boundary faces or punch holes.
+        let mut rehydrate_positions = local_positions
             .iter()
             .copied()
             .filter(|pos| {
@@ -2687,6 +2703,29 @@ impl Worker {
                 })
             })
             .collect::<Vec<_>>();
+        // Boundary culling needs the BLOCK DATA of every x/z neighbour of a
+        // target: a metadata-only cache entry (blocks dropped after the first
+        // mesh) makes block_class_at return None at the seam, so re-meshed
+        // sections grow conservative boundary faces. Rehydrate those
+        // neighbours so the mesher culls the seams with real data — no
+        // boundary faces are built at all (saves their CPU parse too).
+        for pos in &targets {
+            for (dx, dz) in CHUNK_NEIGHBOR_OFFSETS {
+                let neighbour = ChunkPos {
+                    x: pos.x + dx,
+                    z: pos.z + dz,
+                    dimension,
+                };
+                if !target_set.contains(&neighbour)
+                    && self.cache.get(&neighbour).is_some_and(|chunk| {
+                        chunk.blocks.is_none() && chunk.boundary.is_some()
+                    })
+                    && !rehydrate_positions.contains(&neighbour)
+                {
+                    rehydrate_positions.push(neighbour);
+                }
+            }
+        }
         let mut rehydrated = if rehydrate_positions.is_empty() {
             HashMap::new()
         } else {
@@ -3081,8 +3120,13 @@ impl Worker {
                         }
                         let mut mesh = Arc::new(mesh);
                         let key = (pos, section_y);
-                        let previous = self.published_sections
-                            .get(&key).and_then(Weak::upgrade);
+                        let previous = self
+                            .revisit_cache
+                            .get(&key)
+                            .cloned()
+                            .or_else(|| {
+                                self.published_sections.get(&key).and_then(Weak::upgrade)
+                            });
                         if let Some(old) = previous
                             .as_ref()
                             .filter(|old| same_chunk_render_geometry(old, &mesh))
@@ -3096,6 +3140,16 @@ impl Worker {
                                 reuse_section_gpu_mesh(old, &mut mesh);
                             }
                             self.published_sections.insert(key, Arc::downgrade(&mesh));
+                            const REVISIT_CACHE_CAPACITY: usize = 1024;
+                            if self.revisit_cache.insert(key, mesh.clone()).is_none() {
+                                self.revisit_order.push_back(key);
+                            }
+                            while self.revisit_cache.len() > REVISIT_CACHE_CAPACITY {
+                                let Some(oldest) = self.revisit_order.pop_front() else {
+                                    break;
+                                };
+                                self.revisit_cache.remove(&oldest);
+                            }
                             let payload = World3dChunkPayload {
                                 lighting: self.lighting,
                                 generation,
@@ -3169,6 +3223,69 @@ impl Worker {
                     retained_meshes: retained_sections.remove(&pos).unwrap_or_default(),
                     probe,
                 });
+            }
+        }
+        // A freshly completed column culls its own interior, but columns
+        // meshed BEFORE this column arrived still carry boundary cross-section
+        // faces against it (the visible water/terrain wall at the loaded
+        // region's edge). Re-mesh those neighbours once; `boundary_remeshed`
+        // keeps this from ping-ponging between adjacent columns.
+        for pos in targets.iter().copied() {
+            if !self.boundary_remeshed.insert(pos) {
+                continue;
+            }
+            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let neighbour = ChunkPos {
+                    x: pos.x + dx,
+                    z: pos.z + dz,
+                    ..pos
+                };
+                let neighbour_meshed = self.revisit_cache.keys().any(|(key, _)| *key == neighbour)
+                    || self
+                        .published_sections
+                        .range(
+                            (neighbour, i32::MIN)..=(neighbour, i32::MAX),
+                        )
+                        .next()
+                        .is_some();
+                if neighbour_meshed
+                    && !self.boundary_remeshed.contains(&neighbour)
+                    && self.dirty_meshes.insert(neighbour)
+                {
+                    self.boundary_remeshed.insert(neighbour);
+                }
+            }
+        }
+        // A freshly completed column culls its own interior, but columns
+        // meshed BEFORE this column arrived treated it as an occluding halo
+        // (no boundary faces). If the neighbour revealed air at the seam, a
+        // one-shot boundary re-mesh restores those faces;
+        // `boundary_remeshed` keeps this from ping-ponging forever.
+        for pos in targets.iter().copied() {
+            if !self.boundary_remeshed.insert(pos) {
+                continue;
+            }
+            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let neighbour = ChunkPos {
+                    x: pos.x + dx,
+                    z: pos.z + dz,
+                    ..pos
+                };
+                let neighbour_meshed = self
+                    .revisit_cache
+                    .keys()
+                    .any(|(key, _)| *key == neighbour)
+                    || self
+                        .published_sections
+                        .range((neighbour, i32::MIN)..=(neighbour, i32::MAX))
+                        .next()
+                        .is_some();
+                if neighbour_meshed
+                    && self.boundary_remeshed.insert(neighbour)
+                    && self.dirty_meshes.insert(neighbour)
+                {
+                    // queued for the next visible dirty re-mesh batch
+                }
             }
         }
         let _ = tx.send(ChunkServiceEvent::Completed(completions));

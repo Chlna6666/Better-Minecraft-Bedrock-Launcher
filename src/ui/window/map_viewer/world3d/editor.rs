@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 mod rendering;
-mod scene_registry;
+pub(in super::super) mod scene_registry;
 
 const TOP_BAR_HEIGHT: f32 = 46.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
@@ -1091,7 +1091,6 @@ impl World3dEditorView {
             .as_ref()
             .filter(|_| {
                 !self.scene_rebuild_required
-                    && previous_origin == next_origin
                     && self.import_preview.is_none()
                     && !self.scene_has_preview
             })

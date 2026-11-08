@@ -23,6 +23,7 @@ impl Attachment {
                 usage,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             },
         )
         .unwrap();
@@ -66,17 +67,35 @@ pub(super) fn frame<D: Device + TextureTransferDevice>(
         .map(RendererExtensionPass::commands)
         .collect::<Vec<_>>();
     passes.push(RenderPassCommands {
-        texture_view: color.view,
+        color_attachments: std::slice::from_ref(&color.view),
         render_pass: context.render_pass(),
         commands: &commands,
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth.view,
             depth_load_op: LoadOp::Clear(1.),
+            stencil_load_op: None,
         }),
         clear_region: None,
         viewport: None,
-    });
+            resolve_target: None,
+
+        });
+    if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
+        let command_count: usize = passes.iter().map(|pass| pass.commands.len()).sum();
+        let indirect = passes
+            .iter()
+            .flat_map(|pass| pass.commands)
+            .filter(|c| matches!(c, RenderCommand::DrawIndirect(_)))
+            .count();
+        eprintln!(
+            "world3d frame_commands passes={} commands={} indirect={} path={:?}",
+            passes.len(),
+            command_count,
+            indirect,
+            device.compute_capabilities().voxel_execution_path(),
+        );
+    }
     let submitted = Instant::now();
     let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
     let record = submitted.elapsed().as_secs_f64() * 1000.;
@@ -116,17 +135,20 @@ pub(super) fn inspect_passes<D: Device>(
         .map(RendererExtensionPass::commands)
         .collect::<Vec<_>>();
     passes.push(RenderPassCommands {
-        texture_view: color.view,
+        color_attachments: std::slice::from_ref(&color.view),
         render_pass: context.render_pass(),
         commands: &commands,
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth.view,
             depth_load_op: LoadOp::Clear(1.),
+            stencil_load_op: None,
         }),
         clear_region: None,
         viewport: None,
-    });
+            resolve_target: None,
+
+        });
     for (index, pass) in passes.iter().enumerate() {
         let start = Instant::now();
         let submission =

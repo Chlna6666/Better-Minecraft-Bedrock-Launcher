@@ -990,3 +990,54 @@ fn audit_real_world_block_materials() {
     let packages = env_path("BMCBL_WORLD3D_TEST_PACKAGE").into_iter().collect();
     super::chunk_service::material_audit::run(world, packages);
 }
+
+#[test]
+#[ignore = "requires BMCBL_WORLD3D_TEST_WORLD; profiles editor scene-build fusion costs"]
+fn profile_scene_registry_fusion() {
+    let Some(world_path) = env_path("BMCBL_WORLD3D_TEST_WORLD") else {
+        eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
+        return;
+    };
+    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
+        .into_iter()
+        .collect::<Vec<_>>();
+    let spawn = read_world_spawn(&world_path);
+    let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS").unwrap_or(32);
+    let (world, mut service) =
+        collect_world(&world_path, package_roots, spawn, radius, usize::MAX);
+    service.shutdown();
+    assert!(!world.meshes.is_empty(), "no chunk meshes were produced");
+    let mut meshes = BTreeMap::new();
+    for mesh in world.meshes.values() {
+        meshes.insert((mesh.pos, mesh.section_y), mesh.clone());
+    }
+    let origin_shift = env_i32("BMCBL_WORLD3D_TEST_ORIGIN_SHIFT").unwrap_or(512);
+    let mut registry = super::editor::scene_registry::ChunkScene::default();
+    let started = Instant::now();
+    let scene = registry.update(None, &meshes, None, [0; 3]).unwrap();
+    let cold_full = started.elapsed();
+    let started = Instant::now();
+    let rebased = registry
+        .update(
+            Some(&scene), &meshes, Some(&BTreeSet::new()),
+            [origin_shift, 0, 0],
+        )
+        .unwrap();
+    let origin_rebase = started.elapsed();
+    let started = Instant::now();
+    registry.update(None, &meshes, None, [0; 3]).unwrap();
+    let warm_full = started.elapsed();
+    let mut fresh = super::editor::scene_registry::ChunkScene::default();
+    let started = Instant::now();
+    fresh.update(None, &meshes, None, [0; 3]).unwrap();
+    let cold_full_again = started.elapsed();
+    let _ = rebased;
+    eprintln!(
+        "world3d scene_registry: sections={} cold_full_ms={} origin_rebase_ms={} warm_full_ms={} cold_full_again_ms={}",
+        meshes.len(),
+        cold_full.as_millis(),
+        origin_rebase.as_millis(),
+        warm_full.as_millis(),
+        cold_full_again.as_millis(),
+    );
+}
