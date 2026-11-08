@@ -2966,6 +2966,28 @@ impl Default for Preview3dChunkBlocks {
 }
 
 impl Preview3dChunkBlocks {
+    /// Full opaque cube occupancy for 16^3 Section visibility propagation.
+    /// Unlike per-Section render records, `occupied` retains internal blocks
+    /// removed by meshing, so a solid wall is never mistaken for an air tunnel.
+    /// Detail geometry, glass, water and model-dependent opacity are NOT
+    /// certified blockers; letting those cells pass is conservative.
+    pub(in crate::ui::window::map_viewer) fn visibility_solid_masks(
+        &self,
+    ) -> BTreeMap<i8, [u64; 64]> {
+        let mut masks = BTreeMap::<i8, [u64; 64]>::new();
+        for key in &self.occupied {
+            let Ok(section_y) = i8::try_from(key.y.div_euclid(16)) else {
+                continue;
+            };
+            let index = (key.y.rem_euclid(16) * 256
+                + key.z.rem_euclid(16) * 16
+                + key.x.rem_euclid(16)) as usize;
+            masks.entry(section_y).or_insert([0; 64])[index / 64] |=
+                1u64 << (index % 64);
+        }
+        masks
+    }
+
     #[cfg(test)]
     pub(super) fn test_cubes(positions: &[[i32; 3]]) -> Self {
         let mut blocks = Self::default();
