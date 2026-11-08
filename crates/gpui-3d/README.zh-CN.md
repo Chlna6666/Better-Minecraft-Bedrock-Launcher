@@ -54,6 +54,12 @@ CPU 保留的方块模型索引在编号小于 255 时使用字节，并保留�
 体素网格不支持射线查询。世界解码、单元和模板提取、连接模型状态解析、LOD 选择及材质解析仍在 CPU；
 应用可继续用 CPU 生成实体几何。当前不包含独立异步计算队列。
 `GPUI_3D_TRACE_TIMINGS` 在原有绘制统计旁输出 `gpu_cull_batches_max`、`gpu_resident_draws_max`。
+开发构建默认提供 `gpui3d gpu_owner_phase` 主机/API 耗时，
+`gpui3d gpu_hardware_phase` 则在 DX11、DX12、Vulkan 和 OpenGL 上
+报告由已完成的原生 GPU 时间戳测得的 Generated Mesh Compute 及
+GPU Resident/输入上传命令区间，并携带 Section 更新批次 `batch_id`。
+不等待 GPU 栅栏完成，不把 CPU 命令编码耗时当成 GPU 执行时间。
+DrawIndirect 的独立 GPU 耗时与实机性能增益仍待进一步测量。
 
 `Scene::fork` 共享写时复制的节点页，记录发生变化的根叶节点，保留旧快照与稳定的
 Node/Mesh/Material ID。连续快照只准备变化节点，并增量维护资源引用计数；层级、LOD、

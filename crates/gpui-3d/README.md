@@ -74,6 +74,13 @@ World decoding, cell/template extraction, connected-model state resolution, LOD 
 material resolution remain CPU work. Applications may retain CPU generation for entity geometry;
 there is no independent asynchronous compute queue.
 `GPUI_3D_TRACE_TIMINGS` reports `gpu_cull_batches_max` and `gpu_resident_draws_max` alongside draws.
+In development builds, `gpui3d gpu_owner_phase` reports CPU host/API latency while
+`gpui3d gpu_hardware_phase` reports **completed native GPU timestamps** with the
+Section publication `batch_id`. The latter measures GPU Generated Mesh compute
+and resident/upload command windows on DX11, DX12, Vulkan and OpenGL, without
+waiting for GPU fences. Host command encoding and native GPU execution are distinct.
+Independent DrawIndirect hardware timings and production performance speedup
+numbers have not yet been established.
 
 `Scene::fork` shares copy-on-write node pages and records changed root leaves while preserving
 previous snapshots and stable node/mesh/material IDs. Consecutive snapshots prepare only changed

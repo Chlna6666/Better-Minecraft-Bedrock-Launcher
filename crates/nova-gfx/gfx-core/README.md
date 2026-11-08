@@ -64,6 +64,18 @@ completed probed frame as `FrameGpuTimestamps` (duration ticks plus timer freque
 never waits for GPU work. DX11, DX12 and Vulkan implement it; OpenGL, Metal and WebGL return
 `false` and `None`.
 
+`ResourceDevice::gpu_work_timestamps_supported`, `dispatch_compute_batch_profiled`,
+`write_buffer_batch_profiled` and `drain_gpu_work_timestamps` provide a separate
+non-blocking, batch-tagged workload timer. A `GpuTimestampTag` carries a stable
+`batch_id` plus `GpuTimestampStage`; completed `GpuTimestampSample` values
+return native ticks and frequency, never a CPU API-call duration. D3D11, D3D12,
+Vulkan and desktop OpenGL 4.5 provide native compute/upload probes. Metal and
+WebGL retain the unsupported default; profiled calls still execute normally.
+The OpenGL buffer-write probe measures the GPU command stream around
+`glBufferSubData` and does not guarantee isolation of a physical copy.
+`DrawIndirect` is a reserved stage but currently has no per-draw probe:
+a frame/offscreen-pass duration must not be mislabeled as indirect-draw time.
+
 `RenderPassDescriptor.color_attachments`, `RenderPipelineDescriptor.color_targets`, and
 `RenderPassCommands.color_attachments` accept multiple color attachments (up to
 `MAX_COLOR_ATTACHMENTS = 8`). Each `ColorTargetState` carries its own `BlendMode` and

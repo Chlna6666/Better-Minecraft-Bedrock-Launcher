@@ -52,6 +52,16 @@ DX11、DX12、Vulkan、OpenGL 与 Metal 映射此状态；WebGL 当前仍未实�
 频率）暴露最近一个已完成探测帧的 GPU 耗时。读取从不等待 GPU。DX11、DX12 与 Vulkan 实现
 该能力；OpenGL、Metal 与 WebGL 返回 `false` 与 `None`。
 
+独立的工作量时间戳接口为 `ResourceDevice::gpu_work_timestamps_supported`、
+`dispatch_compute_batch_profiled`、`write_buffer_batch_profiled` 和
+`drain_gpu_work_timestamps`。通过 `GpuTimestampTag` 的 `batch_id` 与
+`GpuTimestampStage` 关联同一批次；`GpuTimestampSample` 只返回已完成 GPU 查询
+的原生 tick 和频率，不把 CPU API 耗时伪装成 GPU 耗时。DX11、DX12、Vulkan
+及桌面 OpenGL 4.5 已接入 Compute/Buffer Upload 原生探针；Metal/WebGL
+保留不支持时的正常执行回退。OpenGL 对 `glBufferSubData` 的计时反映 GPU
+命令区间，并不保证能单独测得物理拷贝耗时。虽然定义了 `DrawIndirect` 阶段，
+目前仍未提供单独的逐绘制时间戳，不能用整帧或离屏 Pass 耗时代替。
+
 `RenderPassDescriptor.color_attachments`、`RenderPipelineDescriptor.color_targets` 与
 `RenderPassCommands.color_attachments` 接受多个颜色附件（上限 `MAX_COLOR_ATTACHMENTS = 8`）。
 每个 `ColorTargetState` 携带各自的 `BlendMode` 与 `ColorWrites` 掩码，因此管线可对单一附件
