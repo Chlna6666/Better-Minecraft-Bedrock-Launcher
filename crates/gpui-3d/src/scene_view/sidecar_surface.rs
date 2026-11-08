@@ -50,10 +50,25 @@ impl CaptureEpoch {
     }
 }
 
-impl Target {
+/// Uniform/bind-group generations are immutable while an older GUI frame
+/// may still be using them. Relocating a SceneView retires only this pair,
+/// not the expensive color/depth attachments.
+struct PlacementResources {
+    binding: BindGroupId,
+    buffer: BufferId,
+}
+
+impl PlacementResources {
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         device.destroy_bind_group(self.binding)?;
-        device.destroy_buffer(self.placement)?;
+        device.destroy_buffer(self.buffer)?;
+        Ok(())
+    }
+}
+
+impl Target {
+    fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        PlacementResources { binding: self.binding, buffer: self.placement }.destroy(device)?;
         device.destroy_texture_view(self.depth_view)?;
         device.destroy_texture(self.depth)?;
         device.destroy_texture_view(self.color_view)?;
@@ -105,10 +120,13 @@ fn placement_bytes(rect: ScissorRect, viewport: Extent2d) -> [u8; 16] {
     bytes
 }
 
-/// Keep the source 3D pass inside the same widget region as the final GUI
-/// composite. The offscreen target is full-window so projection coordinates
-/// remain identical; clipping here avoids rasterizing hidden world pixels.
-fn clipped_scissor(previous: Option<ScissorRect>, clip: ScissorRect) -> ScissorRect {
+/// SceneResources uses the cropped capture context: command scissors are
+/// already in target-local pixels. Intersect them with a local (0,0) extent,
+/// NEVER with the absolute window-space region a second time.
+fn clipped_scissor(previous: Option<ScissorRect>, extent: Extent2d) -> ScissorRect {
+    let clip = ScissorRect {
+        x: 0, y: 0, width: extent.width(), height: extent.height(),
+    };
     let Some(previous) = previous else { return clip };
     let x = previous.x.max(clip.x);
     let y = previous.y.max(clip.y);
@@ -144,6 +162,10 @@ pub(super) struct SidecarSurface {
     /// Fence-proven resources are destroyed by the next owner-thread device
     /// access. The completion callback intentionally has no ExtensionDevice.
     ready_to_release: Vec<Target>,
+    /// Placement-only generations are fence-retired independently. Moving an
+    /// unchanged-size view must not evict its color/depth GPU textures.
+    awaiting_placement_gpu: Vec<PlacementResources>,
+    ready_placement_release: Vec<PlacementResources>,
 }
 
 enum Allocation {
@@ -280,6 +302,8 @@ impl SidecarSurface {
                 targets: HashMap::new(),
                 awaiting_gpu: Vec::new(),
                 ready_to_release: Vec::new(),
+                awaiting_placement_gpu: Vec::new(),
+                ready_placement_release: Vec::new(),
             })
         })();
         if result.is_err() {
@@ -357,32 +381,43 @@ impl SidecarSurface {
                 return Err(error.into());
             }
         };
-        // Immutable per-target placement uniform. Recreate it when the
-        // widget moves/resizes, rather than rewriting a buffer that an
-        // in-flight GUI frame may still be sampling.
-        let placement = match device.create_buffer(&BufferDescriptor {
+        let PlacementResources { binding, buffer: placement } =
+            match self.create_placement(device, color_view, region, host_extent) {
+                Ok(placement) => placement,
+                Err(error) => {
+                    let _ = device.destroy_texture_view(depth_view);
+                    let _ = device.destroy_texture(depth);
+                    let _ = device.destroy_texture_view(color_view);
+                    let _ = device.destroy_texture(color);
+                    return Err(error);
+                }
+            };
+        Ok(Target {
+            color, color_view, depth, depth_view, binding, placement, extent,
+            region, host_extent,
+            capture: CaptureEpoch::default(),
+        })
+    }
+
+    /// Allocate a new immutable placement without reallocating an existing
+    /// render target. The old binding/buffer remain live until a host fence.
+    fn create_placement(
+        &self,
+        device: &mut dyn ExtensionDevice,
+        color_view: TextureViewId,
+        region: ScissorRect,
+        host_extent: Extent2d,
+    ) -> gpui::Result<PlacementResources> {
+        let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("gpui-3d sidecar crop placement".into()),
             size: 16,
             usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
             memory_location: MemoryLocation::GpuOnly,
-        }) {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                let _ = device.destroy_texture_view(depth_view);
-                let _ = device.destroy_texture(depth);
-                let _ = device.destroy_texture_view(color_view);
-                let _ = device.destroy_texture(color);
-                return Err(error.into());
-            }
-        };
+        })?;
         if let Err(error) = device.write_buffer(
-            placement, 0, &placement_bytes(region, host_extent),
+            buffer, 0, &placement_bytes(region, host_extent),
         ) {
-            let _ = device.destroy_buffer(placement);
-            let _ = device.destroy_texture_view(depth_view);
-            let _ = device.destroy_texture(depth);
-            let _ = device.destroy_texture_view(color_view);
-            let _ = device.destroy_texture(color);
+            let _ = device.destroy_buffer(buffer);
             return Err(error.into());
         }
         let binding = match device.create_bind_group(&BindGroupDescriptor {
@@ -404,7 +439,7 @@ impl SidecarSurface {
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::Buffer(BufferBinding {
-                        buffer: placement,
+                        buffer,
                         offset: 0,
                         size: 16,
                         stride: None,
@@ -414,34 +449,40 @@ impl SidecarSurface {
         }) {
             Ok(binding) => binding,
             Err(error) => {
-                let _ = device.destroy_buffer(placement);
-                let _ = device.destroy_texture_view(depth_view);
-                let _ = device.destroy_texture(depth);
-                let _ = device.destroy_texture_view(color_view);
-                let _ = device.destroy_texture(color);
+                let _ = device.destroy_buffer(buffer);
                 return Err(error.into());
             }
         };
-        Ok(Target {
-            color, color_view, depth, depth_view, binding, placement, extent,
-            region, host_extent,
-            capture: CaptureEpoch::default(),
-        })
+        Ok(PlacementResources { binding, buffer })
+    }
+
+    /// An element completely outside the host viewport must not allocate a
+    /// synthetic one-pixel color/depth target or schedule any 3D work.
+    pub(super) fn visible(host: &RendererExtensionContext) -> bool {
+        let clip = host.scissor();
+        let viewport = host.viewport();
+        !clip.is_empty() && clip.x < viewport.width() && clip.y < viewport.height()
     }
 
     /// Exposes only resources which are awaiting a real GPU fence.
     /// A submission acknowledgement alone is not enough to release them.
     pub(super) fn has_retired_targets(&self) -> bool {
-        !self.awaiting_gpu.is_empty()
+        !self.awaiting_gpu.is_empty() || !self.awaiting_placement_gpu.is_empty()
     }
 
     /// Called only after GPUI verifies all earlier graphics submissions
     /// completed. Destruction still occurs on the native device owner.
     pub(super) fn gpu_work_completed(&mut self) {
         self.ready_to_release.append(&mut self.awaiting_gpu);
+        self.ready_placement_release.append(&mut self.awaiting_placement_gpu);
     }
 
     fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        // Retired descriptor generations can reference still-active color
+        // targets, so release them separately after verified completion.
+        while let Some(placement) = self.ready_placement_release.pop() {
+            placement.destroy(device)?;
+        }
         // Destroy only fence-proven targets on the native owner. A backend
         // error propagates to GPUI rather than being silently ignored.
         while let Some(target) = self.ready_to_release.pop() {
@@ -458,8 +499,10 @@ impl SidecarSurface {
         self.release_completed(device)?;
         if self.host_pass == host.render_pass()
             && self.host_format == host.color_format()
-            && self.host_extent == host.viewport()
         {
+            // Native texture-pass viewport/scissor are dynamic. A window
+            // resize changes placement, not the composite pipeline PSO.
+            self.host_extent = host.viewport();
             return Ok(());
         }
         let next = composite_pipeline(
@@ -547,27 +590,37 @@ impl SidecarSurface {
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
         let region = visible_region(host);
-        // SceneResources prepared the same geometry for a local cropped
-        // viewport. Convert any authored command scissor to local coords;
-        // do not submit absolute window scissors against a small image.
+        // SceneResources already prepared commands for capture_context's
+        // local viewport. Never subtract region.x/y from those commands again.
+        let extent = region_extent(region);
         for draw in &mut geometry {
-            let clipped = clipped_scissor(draw.scissor(), region);
-            draw.set_scissor(Some(ScissorRect {
-                x: clipped.x.saturating_sub(region.x),
-                y: clipped.y.saturating_sub(region.y),
-                width: clipped.width,
-                height: clipped.height,
-            }));
+            draw.set_scissor(Some(clipped_scissor(draw.scissor(), extent)));
         }
         geometry.retain(|draw| draw.scissor().is_none_or(|rect| !rect.is_empty()));
         let recreate = self.targets.get(&id)
-            .is_none_or(|target| target.region != region
-                || target.host_extent != host.viewport());
+            .is_none_or(|target| target.extent != extent);
         if recreate {
             let new_target = self.create_target(device, region, host.viewport())?;
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
+        } else if self.targets.get(&id).is_some_and(|target| {
+            target.region != region || target.host_extent != host.viewport()
+        }) {
+            // Moving the element (or resizing only the host) does not change
+            // attachment dimensions: preserve the resident color/depth pair.
+            let view = self.targets.get(&id).expect("existing target").color_view;
+            let updated = self.create_placement(device, view, region, host.viewport())?;
+            let target = self.targets.get_mut(&id).expect("existing target");
+            let previous = PlacementResources {
+                binding: std::mem::replace(&mut target.binding, updated.binding),
+                buffer: std::mem::replace(&mut target.placement, updated.buffer),
+            };
+            target.region = region;
+            target.host_extent = host.viewport();
+            // Previous pixels are projected into the old widget region.
+            target.capture = CaptureEpoch::default();
+            self.awaiting_placement_gpu.push(previous);
         }
         let target = self.targets.get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("missing 3D offscreen target"))?;
@@ -629,6 +682,11 @@ impl SidecarSurface {
         for target in self.awaiting_gpu.drain(..).chain(self.ready_to_release.drain(..)) {
             target.destroy(device)?;
         }
+        for placement in self.awaiting_placement_gpu.drain(..)
+            .chain(self.ready_placement_release.drain(..))
+        {
+            placement.destroy(device)?;
+        }
         device.destroy_render_pipeline(self.composite_pipeline)?;
         device.destroy_pipeline_layout(self.pipeline_layout)?;
         device.destroy_bind_group_layout(self.bind_layout)?;
@@ -675,6 +733,8 @@ mod tests {
                 capture: CaptureEpoch::default(),
             }],
             ready_to_release: Vec::new(),
+            awaiting_placement_gpu: Vec::new(),
+            ready_placement_release: Vec::new(),
         };
         assert!(surface.has_retired_targets());
         assert_eq!(surface.ready_to_release.len(), 0);
@@ -739,13 +799,35 @@ mod tests {
     }
 
     #[test]
+    fn entirely_clipped_scene_does_not_request_an_offscreen_allocation() {
+        let viewport = Extent2d::new(1920, 1080).unwrap();
+        let host = RendererExtensionContext::for_target(
+            BackendKind::Vulkan, RenderPassId::from_parts(1, 1),
+            Format::Rgba8Unorm, viewport,
+        );
+        assert!(SidecarSurface::visible(&host));
+        let cropped = host.offscreen_region(
+            host.render_pass(), host.color_format(), (0, 0),
+            Extent2d::new(1, 1).unwrap(),
+        );
+        assert!(SidecarSurface::visible(&cropped));
+        // Region visibility is determined from the native scissor's overlap
+        // with the host viewport, not from a forced min-1px allocation.
+        let outside = ScissorRect { x: 1920, y: 1080, width: 10, height: 10 };
+        assert!(outside.x >= viewport.width());
+    }
+
+    #[test]
     fn offscreen_geometry_obeys_original_gui_clip() {
-        let element = ScissorRect { x: 40, y: 20, width: 200, height: 150 };
-        let source = ScissorRect { x: 100, y: 0, width: 150, height: 100 };
-        assert_eq!(clipped_scissor(Some(source), element),
-            ScissorRect { x: 100, y: 20, width: 140, height: 80 });
-        assert_eq!(clipped_scissor(None, element), element);
-        let outside = ScissorRect { x: 400, y: 300, width: 40, height: 40 };
-        assert!(clipped_scissor(Some(outside), element).is_empty());
+        // The absolute widget origin may be (400, 200), but its producer
+        // commands always operate on a (0, 0) local 480x320 attachment.
+        let local = Extent2d::new(480, 320).unwrap();
+        let source = ScissorRect { x: 100, y: 0, width: 450, height: 100 };
+        assert_eq!(clipped_scissor(Some(source), local),
+            ScissorRect { x: 100, y: 0, width: 380, height: 100 });
+        assert_eq!(clipped_scissor(None, local),
+            ScissorRect { x: 0, y: 0, width: 480, height: 320 });
+        let outside = ScissorRect { x: 500, y: 300, width: 40, height: 40 };
+        assert!(clipped_scissor(Some(outside), local).is_empty());
     }
 }
