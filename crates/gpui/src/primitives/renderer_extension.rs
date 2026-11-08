@@ -92,6 +92,22 @@ impl RendererExtensionContext {
             ..self.clone()
         }
     }
+    /// Replaces only the render target attachment for a 3D sidecar pass.
+    /// Keep the original element bounds, content mask, scissor and frame time,
+    /// unlike `offscreen` which describes a new full-extent target.
+    #[must_use]
+    pub fn offscreen_preserving_bounds(
+        &self,
+        render_pass: RenderPassId,
+        color_format: gfx_core::Format,
+    ) -> Self {
+        Self {
+            render_pass,
+            color_format,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn new(
         backend_kind: gfx_core::BackendKind,
         render_pass: RenderPassId,
