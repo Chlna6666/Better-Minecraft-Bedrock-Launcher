@@ -825,6 +825,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 .scenes
                 .values()
                 .any(SceneResources::has_retired_arena_ranges)
+            || self.offscreen.as_ref().is_some_and(SidecarSurface::has_retired_targets)
     }
 
     fn gpu_work_completed(&mut self) {
@@ -833,6 +834,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         self.argument_arena.borrow_mut().reclaim_after_gpu_idle();
         for scene in self.scenes.values_mut() {
             scene.reclaim_arena_after_gpu_idle();
+        }
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_work_completed();
         }
     }
 
