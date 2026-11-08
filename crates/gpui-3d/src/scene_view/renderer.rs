@@ -111,15 +111,16 @@ impl CachedCommands {
         if let Some((previous, shared, traits)) = self.shared_offscreen.as_ref()
             && *previous == revision
         {
-            // Clip and GPU-timestamp eligibility are immutable alongside the
-            // commands. A camera-only capture never scans the Draw table.
             return Ok((Arc::clone(shared), *traits));
         }
-        let mut commands = Vec::new();
-        self.append_spliced(
-            revision, draw_count, blended_batch_start, delta,
-            &mut commands, build, build_range,
+        // Refresh the canonical Section/Draw cache *without* publishing it
+        // to an intermediate Vec. The old path cloned O(draws) descriptors
+        // into scratch even though the offscreen submission borrows an Arc.
+        self.refresh_spliced(
+            revision, draw_count, blended_batch_start, delta, build, build_range,
         )?;
+        let commands: &[RenderCommand] = self.grouped.as_deref()
+            .unwrap_or(self.commands.as_slice());
         let traits = OffscreenCommandTraits {
             authored_scissors: commands.iter().any(|command| command.scissor().is_some()),
             indirect_only: !commands.is_empty() && commands.iter().all(|command| {
@@ -127,12 +128,10 @@ impl CachedCommands {
                     | RenderCommand::DrawIndexedIndirect(_))
             }),
         };
-        // Native grouped commands already live in a cache-owned Arc.
-        // Reuse the same allocation for the offscreen producer instead of
-        // retaining another full set of DrawIndirect descriptors.
-        let shared: Arc<[RenderCommand]> = self.grouped.as_ref()
-            .map(Arc::clone)
-            .unwrap_or_else(|| commands.into());
+        // The grouped native list is already retained in an Arc. Only the
+        // canonical ungrouped variant needs one immutable snapshot.
+        let shared = self.grouped.as_ref().map(Arc::clone)
+            .unwrap_or_else(|| Arc::from(self.commands.as_slice()));
         self.shared_offscreen = Some((revision, Arc::clone(&shared), traits));
         Ok((shared, traits))
     }
@@ -144,6 +143,30 @@ impl CachedCommands {
         }
     }
 
+    /// Build the canonical command plan once. Publication into a GUI command
+    /// list is intentionally a separate operation; native offscreen passes
+    /// consume shared immutable snapshots instead.
+    fn rebuild(
+        &mut self,
+        revision: u64,
+        blended_batch_start: Option<usize>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision == Some(revision) {
+            return Ok(());
+        }
+        // Stage a complete replacement before altering the old revision.
+        // Failed pipeline resolution must leave the prior cache intact.
+        let mut next = Vec::new();
+        build(&mut next)?;
+        let grouped = group_indirect_commands(&next, blended_batch_start).map(Arc::from);
+        self.commands = next;
+        self.grouped = grouped;
+        self.generated_draw_count = None;
+        self.revision = Some(revision);
+        Ok(())
+    }
+
     fn append(
         &mut self,
         revision: u64,
@@ -151,41 +174,23 @@ impl CachedCommands {
         steps: &mut Vec<RenderCommand>,
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
     ) -> gpui::Result<()> {
-        if self.revision == Some(revision) {
-            self.publish(steps);
-            return Ok(());
-        }
-        self.revision = None;
-        self.generated_draw_count = None;
-        self.commands.clear();
-        let first = steps.len();
-        build(steps)?;
-        self.commands.extend_from_slice(&steps[first..]);
-        self.grouped = group_indirect_commands(&self.commands, blended_batch_start).map(Arc::from);
-        self.revision = Some(revision);
-        // Backends coalesce adjacent identical-state draws into one native
-        // indirect call; emit the regrouped list instead of the raw build
-        // order so that coalescing actually happens.
-        steps.truncate(first);
+        self.rebuild(revision, blended_batch_start, build)?;
         self.publish(steps);
         Ok(())
     }
 
-    /// Reuse native commands belonging to survivor Sections and resolve only
-    /// the newly inserted/changed ranges. The final pass still flattens into a
-    /// RenderCommand slice, but does no survivor pipeline/mesh/BindGroup work.
-    fn append_spliced(
+    /// Update the stable canonical Section layout without creating or
+    /// copying a second render-command Vec for the offscreen producer.
+    fn refresh_spliced(
         &mut self,
         revision: u64,
         draw_count: Option<usize>,
         blended_batch_start: Option<usize>,
         delta: Option<&StructuralDrawDelta>,
-        steps: &mut Vec<RenderCommand>,
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
         mut build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
     ) -> gpui::Result<()> {
         if self.revision == Some(revision) {
-            self.publish(steps);
             return Ok(());
         }
         if let (Some(count), Some(delta), Some(previous)) = (draw_count, delta, self.revision)
@@ -202,15 +207,32 @@ impl CachedCommands {
                     next.len(),
                 );
             }
+            let grouped = group_indirect_commands(&next, blended_batch_start).map(Arc::from);
             self.commands = next;
-            self.grouped = group_indirect_commands(&self.commands, blended_batch_start).map(Arc::from);
+            self.grouped = grouped;
             self.revision = Some(revision);
             self.generated_draw_count = Some(count);
-            self.publish(steps);
             return Ok(());
         }
-        self.append(revision, blended_batch_start, steps, build)?;
+        self.rebuild(revision, blended_batch_start, build)?;
         self.generated_draw_count = draw_count;
+        Ok(())
+    }
+
+    fn append_spliced(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        steps: &mut Vec<RenderCommand>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        self.refresh_spliced(
+            revision, draw_count, blended_batch_start, delta, build, build_range,
+        )?;
+        self.publish(steps);
         Ok(())
     }
 
@@ -861,6 +883,46 @@ mod tests {
         assert_eq!(builds, 2);
         assert_eq!(first[0].pipeline(), RenderPipelineId::from_parts(1, 1));
         assert_eq!(next[0].pipeline(), RenderPipelineId::from_parts(2, 1));
+    }
+
+    #[test]
+    fn offscreen_rebuild_keeps_canonical_commands_without_scratch_publication() {
+        let mut cache = CachedCommands::default();
+        let (first, traits) = cache.shared_offscreen(
+            5, None, None, None,
+            |steps| {
+                steps.push(RenderCommand::Draw(DrawCommand {
+                    pipeline: RenderPipelineId::from_parts(5, 1),
+                    bind_groups: bind_group_list([]),
+                    vertex_count: 3,
+                    first_vertex: 0,
+                    instance_count: 1,
+                    first_instance: 0,
+                    scissor: None,
+                }));
+                Ok(())
+            },
+            |_, _| Ok(()),
+        ).unwrap();
+        assert_eq!(cache.commands.len(), 1);
+        assert_eq!(first.len(), 1);
+        assert!(!traits.indirect_only);
+        // Failed replacement preserves both the old canonical revision and
+        // its published immutable snapshot, without introducing a partial list.
+        let failed = cache.shared_offscreen(
+            6, None, None, None,
+            |_| Err(anyhow::anyhow!("test build failure")),
+            |_, _| Ok(()),
+        );
+        assert!(failed.is_err());
+        assert_eq!(cache.revision, Some(5));
+        assert_eq!(cache.commands.len(), 1);
+        let (again, _) = cache.shared_offscreen(
+            5, None, None, None,
+            |_| panic!("stable revision must not rebuild"),
+            |_, _| Ok(()),
+        ).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
     }
 
     #[test]
