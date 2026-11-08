@@ -381,19 +381,30 @@ impl RuntimeCaptureCatalog {
         }
         let recipe = self.states.get(&key)?;
         let mut shape = ModelShape::default();
+        let mut complete = !recipe.meshes.is_empty();
         for (geometry, appearance) in &recipe.meshes {
             let Some(mesh) = self.shared_geometry(geometry) else {
-                continue;
+                complete = false;
+                break;
             };
             let Some(appearance) = self.shared_appearance(appearance) else {
-                continue;
+                complete = false;
+                break;
             };
             let Some(mut planes) =
                 shared_mesh_planes(&mesh, &appearance, geometry, &recipe.texture_aliases)
             else {
-                continue;
+                complete = false;
+                break;
             };
             shape.planes.append(&mut planes);
+        }
+        // A captured state is an all-or-nothing geometry recipe. Rendering
+        // the successfully decoded fragments as if they were complete
+        // silently hides missing BlockEntity or connected-model parts.
+        // Keep the negative cache and let the explicit fallback path decide.
+        if !complete {
+            shape = ModelShape::default();
         }
         // Ordinary full-cube states belong to the 3D editor's greedy voxel
         // mesher, not its unmerged per-block detail mesh path. Preserve their
@@ -539,6 +550,23 @@ fn shared_mesh_planes(
     let points = &geometry.vertices;
     let attr = &appearance.corner_attributes;
     let slots = &appearance.triangle_texture_slots;
+    // Index each directed triangle edge once. Native triangulation and
+    // deduplicated Geometry Pool ordering need not put a quad's two halves
+    // next to one another. Hashing by vertex pair + texture slot reduces the
+    // common pairing path from O(triangles²) to O(triangles), while all UV,
+    // winding and coplanarity validation remains unchanged.
+    let mut half_edges =
+        HashMap::<(usize, usize, Option<usize>), Vec<(usize, usize)>>::with_capacity(count * 2);
+    for (j, &triangle) in geometry.triangles.iter().enumerate() {
+        if triangle.iter().any(|&index| index >= points.len()) {
+            return None;
+        }
+        for edge in 0..3 {
+            half_edges.entry((
+                triangle[edge], triangle[(edge + 1) % 3], slots[j],
+            )).or_default().push((j, edge));
+        }
+    }
     let mut used = vec![false; count];
     let mut planes = Vec::with_capacity(count / 2);
     for i in 0..count {
@@ -550,18 +578,24 @@ fn shared_mesh_planes(
             return None;
         }
         let mut selected = None;
-        'candidate: for j in i + 1..count {
-            if used[j] || slots[i] != slots[j] {
-                continue;
+        let mut candidates = Vec::new();
+        for ra in 0..3 {
+            let key = (a[ra], a[(ra + 2) % 3], slots[i]);
+            if let Some(mates) = half_edges.get(&key) {
+                candidates.extend(
+                    mates.iter().copied()
+                        .filter(|(j, _)| *j > i && !used[*j])
+                        .map(|(j, rb)| (j, ra, rb)),
+                );
             }
+        }
+        // Preserve the original deterministic first-valid pairing: lowest
+        // second-triangle index, then first and second edge rotations.
+        candidates.sort_unstable();
+        'candidate: for (j, ra, rb) in candidates {
             let b = geometry.triangles[j];
-            if b.iter().any(|&index| index >= points.len()) {
-                return None;
-            }
-            for ra in 0..3 {
-                let ai = [(ra) % 3, (ra + 1) % 3, (ra + 2) % 3];
-                for rb in 0..3 {
-                    let bj = [rb % 3, (rb + 1) % 3, (rb + 2) % 3];
+            let ai = [ra % 3, (ra + 1) % 3, (ra + 2) % 3];
+            let bj = [rb % 3, (rb + 1) % 3, (rb + 2) % 3];
                     if a[ai[0]] != b[bj[0]] || a[ai[2]] != b[bj[1]] || a[ai[1]] == b[bj[2]] {
                         continue;
                     }
@@ -645,8 +679,6 @@ fn shared_mesh_planes(
                     let plane = ModelPlane::new(corners, normal).with_uv(uvs).front_only();
                     selected = Some((j, plane));
                     break 'candidate;
-                }
-            }
         }
         let (j, mut plane) = selected?;
         if let Some(alias) = slots[i].and_then(|id| aliases.get(&id)) {
@@ -790,6 +822,71 @@ mod tests {
         invalid.triangle_texture_slots[1] = Some(9);
         assert!(shared_mesh_planes(&mesh, &invalid, &geo, &aliases).is_none());
     }
+    #[test]
+    fn many_interleaved_quads_pair_by_edge_without_adjacency() {
+        let mut vertices = Vec::new();
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut attrs_first = Vec::new();
+        let mut attrs_second = Vec::new();
+        for n in 0..256 {
+            let x = n as f32 * 2.0;
+            let base = vertices.len();
+            vertices.extend([
+                [x, 0.0, 0.0], [x + 1.0, 0.0, 0.0],
+                [x + 1.0, 1.0, 0.0], [x, 1.0, 0.0],
+            ]);
+            first.push([base, base + 2, base + 3]);
+            second.push([base, base + 1, base + 2]);
+            let row = |u: u8, v: u8| {
+                vec![json!(0), json!(0), json!(-1), json!(u), json!(v), json!(4294967295u32)]
+            };
+            attrs_first.extend([row(0, 0), row(1, 1), row(0, 1)]);
+            attrs_second.extend([row(0, 0), row(1, 0), row(1, 1)]);
+        }
+        first.extend(second);
+        attrs_first.extend(attrs_second);
+        let triangles = first;
+        let appearance = CaptureAppearanceV2 {
+            schema: 2,
+            geometry_ref: "a".repeat(64),
+            geometry_source: "registry_visual_bounds".into(),
+            uv_space: "block_face_local".into(),
+            corner_attributes: attrs_first,
+            triangle_texture_slots: vec![Some(2); triangles.len()],
+        };
+        let geometry = CaptureGeometryV2 {
+            schema: 2,
+            topology: "triangles".into(),
+            vertices, triangles,
+        };
+        let planes = shared_mesh_planes(
+            &geometry, &appearance, &"a".repeat(64),
+            &HashMap::from([(2, "test_material".to_owned())]),
+        ).expect("nonadjacent native triangle halves must pair");
+        assert_eq!(planes.len(), 256);
+        assert!(planes.iter().all(|plane| plane.uv.is_some()));
+    }
+
+    #[test]
+    fn missing_capture_pool_member_never_returns_partial_model() {
+        let dir = tempfile::tempdir().expect("temporary export");
+        let (geometry, appearance, _) = fixture(dir.path(), false);
+        let path = dir.path().join("blocks.json");
+        let mut index: Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        index["blocks"][0]["variants"][0]["shared_geometry_refs"] =
+            json!([geometry, "d".repeat(64)]);
+        index["blocks"][0]["variants"][0]["shared_appearance_refs"] =
+            json!([appearance, "e".repeat(64)]);
+        write(dir.path(), "blocks.json", &index);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
+        assert!(catalog.shape_for_state_shared(&state).is_none());
+        assert!(catalog.shape_for_state_shared(&state).is_none(),
+            "invalid geometry remains a negative cached state");
+    }
+
     #[test]
     fn embedded_zip_archive_reads_geometry_lazily() {
         use std::io::Write;
