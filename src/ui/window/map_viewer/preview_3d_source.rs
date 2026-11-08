@@ -2249,20 +2249,26 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                     // Air cells need no biome lookup. Cache the result for waterlogged
                     // blocks, whose primary and fluid layers share this coordinate.
                     let mut biome = None;
-                    let primary_state = subchunk.block_state_at(local_x, local_y, local_z);
-                    let primary_class = primary_state.and_then(|_| {
-                        if let bedrock_world::SubChunkFormat::Paletted { storages, .. } =
-                            &subchunk.format
-                        {
-                            let index = usize::from(
-                                storages.first()?
-                                    .palette_index_at(local_x, local_y, local_z)?
-                            );
-                            classification.primary.get(index).copied()
-                        } else {
-                            primary_state.map(|state| preview_3d_block_class(&state.name))
+                    let (primary_state, primary_class) = match &subchunk.format {
+                        bedrock_world::SubChunkFormat::Paletted { storages, .. } => {
+                            let storage = storages.first();
+                            let index = storage
+                                .and_then(|storage| {
+                                    storage.palette_index_at(local_x, local_y, local_z)
+                                })
+                                .map(usize::from);
+                            (
+                                storage.and_then(|storage| {
+                                    index.and_then(|i| storage.states.get(i))
+                                }),
+                                index.and_then(|i| classification.primary.get(i).copied()),
+                            )
                         }
-                    });
+                        _ => {
+                            let state = subchunk.block_state_at(local_x, local_y, local_z);
+                            (state, state.map(|state| preview_3d_block_class(&state.name)))
+                        }
+                    };
                     if let (Some(state), Some(block_class)) = (primary_state, primary_class) {
                         if preview_3d_block_class_is_renderable(block_class) {
                             preview_3d_push_collected_block(
