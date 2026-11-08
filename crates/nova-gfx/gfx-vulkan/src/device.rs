@@ -176,6 +176,7 @@ pub struct VulkanDevice {
     gpu_trace_enabled: bool,
     gpu_trace_totals: VulkanGpuTraceTotals,
     last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+    gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
     last_texture_transfer_time: Option<Duration>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
     next_upload_fence_value: u64,
@@ -481,6 +482,7 @@ impl VulkanDevice {
                 && log::log_enabled!(target: "gfx_vulkan::gpu", log::Level::Trace),
             gpu_trace_totals: VulkanGpuTraceTotals::default(),
             last_frame_gpu_timestamps: None,
+            gpu_work_samples: Vec::new(),
             last_texture_transfer_time: None,
             deferred_destroys: DeferredFreeQueue::new(),
             next_upload_fence_value: 1,
@@ -1575,6 +1577,7 @@ impl VulkanDevice {
         Ok(self.command_encoders.insert(VulkanCommandEncoder {
             command_pool,
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
+            gpu_work_tag: None,
             command_buffers,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
@@ -3897,17 +3900,27 @@ impl VulkanDevice {
                             query_pool,
                             0,
                             &mut ticks,
-                            vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                            vk::QueryResultFlags::TYPE_64,
                         )
                     }
                     .is_ok()
                     {
-                        let elapsed_ns = timestamp_clock.elapsed_nanoseconds(ticks[0], ticks[1]);
-                        self.last_texture_transfer_time =
-                            Some(Duration::from_secs_f64(elapsed_ns / 1_000_000_000.0));
+                        if let Some(tag) = commands.gpu_work_tag {
+                            self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                                tag,
+                                duration_ticks: timestamp_clock.duration_ticks(ticks[0], ticks[1]),
+                                frequency_hz: timestamp_clock.frequency_hz(),
+                            });
+                        } else {
+                            let elapsed_ns = timestamp_clock.elapsed_nanoseconds(ticks[0], ticks[1]);
+                            self.last_texture_transfer_time =
+                                Some(Duration::from_secs_f64(elapsed_ns / 1_000_000_000.0));
+                        }
                     }
                 }
                 destroy_fence_if_needed(&self.device, fence);
+                let mut commands = commands;
+                commands.gpu_work_tag = None;
                 if self.upload_command_pool.len() < self.upload_command_pool_capacity {
                     self.upload_command_pool.push(commands);
                 } else {
@@ -4018,6 +4031,24 @@ impl VulkanDevice {
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
+        if let (Some(tag), Some(pool), Some(clock)) = (
+            encoder.gpu_work_tag.take(), encoder.gpu_trace_query_pool, self.timestamp_clock,
+        ) {
+            let mut ticks = [0_u64; 2];
+            // SAFETY: The encoder's submission fence completed, and these two
+            // query slots are private to the submitted compute command buffer.
+            if unsafe {
+                self.device.get_query_pool_results(
+                    pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64,
+                )
+            }.is_ok() {
+                self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                    tag,
+                    duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
+                    frequency_hz: clock.frequency_hz(),
+                });
+            }
+        }
         // The deferred-queue completion predicate verified the submission fence.
         // Read native GPU timestamps only AFTER completion; never stall the rendering lane.
         if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
@@ -4293,6 +4324,31 @@ impl ResourceDevice for VulkanDevice {
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<()> {
         self.dispatch_buffer_batch(dispatches)
+    }
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        self.timestamp_clock.is_some()
+    }
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tag: gfx_core::GpuTimestampTag,
+    ) -> Result<()> {
+        self.dispatch_buffer_batch_profiled(dispatches, Some(tag))
+    }
+    fn write_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: gfx_core::GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch_profiled(writes, Some(tag))
+    }
+    fn drain_gpu_work_timestamps(
+        &mut self,
+        output: &mut Vec<gfx_core::GpuTimestampSample>,
+    ) -> Result<()> {
+        self.poll_cleanup();
+        output.append(&mut self.gpu_work_samples);
+        Ok(())
     }
     fn texture_copy_limits(&self) -> gfx_core::TextureCopyLimits {
         gfx_core::TextureCopyLimits {
@@ -5177,6 +5233,7 @@ struct VulkanCommandEncoder {
     /// One timestamp pair per command buffer; retained until its fence completes.
     gpu_trace_query_pool: Option<vk::QueryPool>,
     gpu_trace_passes: Vec<VulkanGpuPass>,
+    gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5243,6 +5300,7 @@ struct VulkanUploadCommands {
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
     timestamp_queries: Option<vk::QueryPool>,
+    gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
 }
 
 #[derive(Clone, Copy)]
@@ -6327,6 +6385,7 @@ fn create_upload_commands(
         command_pool,
         command_buffer,
         timestamp_queries,
+        gpu_work_tag: None,
     })
 }
 

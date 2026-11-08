@@ -10,6 +10,14 @@ impl VulkanDevice {
         &mut self,
         writes: impl IntoIterator<Item = BufferWrite<'a>>,
     ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch_profiled(writes, None)
+    }
+
+    pub(super) fn upload_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<BufferUploadStats> {
         let mut stats = BufferUploadStats::default();
         let mut copies = Vec::new();
         for write in writes {
@@ -46,7 +54,7 @@ impl VulkanDevice {
                 return Err(error);
             }
         };
-        let (commands, fence) = match self.submit_buffer_copies(&staged) {
+        let (commands, fence) = match self.submit_buffer_copies(&staged, tag) {
             Ok(submission) => submission,
             Err(error) => {
                 self.upload_ring.discard_unsubmitted();
@@ -83,12 +91,13 @@ impl VulkanDevice {
     fn submit_buffer_copies(
         &mut self,
         staged: &[StagedBufferCopy<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<(VulkanUploadCommands, vk::Fence)> {
-        // No timestamp queries: buffer copies must not overwrite texture-transfer timing.
-        let commands = if let Some(index) = self
+        let timed = tag.is_some() && self.timestamp_clock.is_some();
+        let mut commands = if let Some(index) = self
             .upload_command_pool
             .iter()
-            .position(|commands| commands.timestamp_queries.is_none())
+            .position(|commands| commands.timestamp_queries.is_some() == timed)
         {
             let commands = self.upload_command_pool.swap_remove(index);
             // SAFETY: command pools are recycled only after their upload fence completes.
@@ -101,11 +110,21 @@ impl VulkanDevice {
             }
             commands
         } else {
-            create_upload_commands(&self.device, self.graphics_queue_family_index, false)?
+            create_upload_commands(&self.device, self.graphics_queue_family_index, timed)?
         };
+        commands.gpu_work_tag = tag.filter(|_| timed);
         if let Err(error) = begin_one_time_commands(&self.device, commands.command_buffer) {
             destroy_upload_commands(&self.device, &commands);
             return Err(error);
+        }
+        if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
+            // SAFETY: An idle, fence-complete upload pool owns two writable query slots.
+            unsafe {
+                self.device.cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
+                self.device.cmd_write_timestamp(
+                    commands.command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                );
+            }
         }
         // Order earlier shader/indirect reads and writes before reusing destinations.
         let mut unique = std::collections::HashSet::new();
@@ -192,6 +211,14 @@ impl VulkanDevice {
                 &[],
                 &[],
             );
+        }
+        if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
+            // SAFETY: The query pool remains owned until the native upload fence completes.
+            unsafe {
+                self.device.cmd_write_timestamp(
+                    commands.command_buffer, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
+                );
+            }
         }
         let fence =
             match end_submit_deferred(&self.device, self.graphics_queue, commands.command_buffer) {

@@ -163,6 +163,14 @@ impl VulkanDevice {
         &mut self,
         dispatches: &[ComputeDispatch<'_>],
     ) -> Result<()> {
+        self.dispatch_buffer_batch_profiled(dispatches, None)
+    }
+
+    pub(super) fn dispatch_buffer_batch_profiled(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<()> {
         let mut calls: Vec<(usize, Arc<Call>)> = Vec::new();
         let mut descriptors = HashMap::<Vec<(u32, BufferId, u64, u64, u8)>, usize>::new();
         for (index, dispatch) in dispatches.iter().enumerate() {
@@ -195,6 +203,10 @@ impl VulkanDevice {
         }
         let encoder = self.create_command_encoder_with_buffer_count(1)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
+        let query = self.command_encoders.get(encoder)?
+            .gpu_trace_query_pool.filter(|_| tag.is_some());
+        self.command_encoders.get_mut(encoder)?.gpu_work_tag =
+            tag.filter(|_| query.is_some());
         self.command_encoders
             .get_mut(encoder)?
             .compute_resources
@@ -209,6 +221,12 @@ impl VulkanDevice {
                             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                     )
                     .map_err(VulkanError::from)?;
+                if let Some(query) = query {
+                    self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                    );
+                }
                 for (index, call) in &calls {
                     let dispatch = &dispatches[*index];
                     let mut before = Vec::new();
@@ -287,6 +305,11 @@ impl VulkanDevice {
                         &[],
                         &after,
                         &[],
+                    );
+                }
+                if let Some(query) = query {
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
                     );
                 }
                 self.device
