@@ -109,6 +109,12 @@ jobs:
         run: |
           cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib scene_view::sidecar::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib prepare::interruptible_prepare_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib initial_and_incompatible_scene_publications -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib world3d::visibility::tests -- --nocapture
@@ -210,6 +216,9 @@ jobs:
           # Unit-test builds must explicitly activate winit's Linux platform.
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::batching::tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 voxel_mesh::fusion_tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::sidecar::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 prepare::interruptible_prepare_tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 initial_and_incompatible_scene_publications -- --nocapture
 
       - name: Test editor four-Section fusion and removal recovery
         run: cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
