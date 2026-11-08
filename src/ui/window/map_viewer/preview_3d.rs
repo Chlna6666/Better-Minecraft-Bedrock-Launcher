@@ -622,11 +622,17 @@ fn convert_source_mesh(
 pub(super) fn preview_3d_scene_data(
     chunks: &[Preview3dChunkMesh],
 ) -> Result<([Arc<Scene>; 3], Arc<SceneView>), String> {
-    let scenes = [
-        build_map_scene(chunks, 0)?,
-        build_map_scene(chunks, 1)?,
-        build_map_scene(chunks, 2)?,
-    ];
+    let full = build_map_scene(chunks, 0)?;
+    // The progressive loader publishes before LOD geometry is available.
+    // Do not construct two redundant SceneGraphs containing exactly the
+    // same Meshes/Nodes after every batch of newly decoded chunks.
+    let scenes = if chunks.iter().all(|chunk| {
+        chunk.lod1_mesh.is_none() && chunk.lod2_mesh.is_none()
+    }) {
+        [full.clone(), full.clone(), full]
+    } else {
+        [full, build_map_scene(chunks, 1)?, build_map_scene(chunks, 2)?]
+    };
     let scene_view = SceneView::new(
         scenes[0].clone(),
         Camera::perspective(
@@ -747,6 +753,13 @@ fn extract_legacy_faces(
     let mesh = chunk.mesh.as_ref();
     for (face_index, indices) in mesh.indices().chunks_exact(6).enumerate() {
         let first_index = face_index.saturating_mul(6);
+        // The source mesher exports one quad as (0,1,2,0,2,3).
+        // Do not reinterpret unrelated triangles into an invented quad:
+        // a false fourth corner creates the long stretched triangles seen
+        // in malformed water/transparent preview geometry.
+        if indices[3] != indices[0] || indices[4] != indices[2] {
+            continue;
+        }
         let pass = pass_for_legacy_range(
             first_index,
             chunk.ranges,
@@ -782,10 +795,10 @@ fn extract_legacy_faces(
             uv: metadata.and_then(|metadata| metadata.uv),
             pass,
         };
-        for (key, split) in split_face_into_regions(face) {
+        for_each_region_face(face, |key, split| {
             groups.entry((key, pass)).or_default().push(split);
             *extracted_faces = extracted_faces.saturating_add(1);
-        }
+        });
     }
 }
 
@@ -818,67 +831,84 @@ fn material_is_cutout(material: &str) -> bool {
     .any(|needle| material.contains(needle))
 }
 
-fn split_face_into_regions(face: RegionFace) -> Vec<(Preview3dRegionKey, RegionFace)> {
+/// Directly emit region faces without constructing a temporary Vec for each
+/// quad. Large selections contain hundreds of thousands of single-region
+/// faces; avoiding one heap allocation per face materially reduces CPU churn.
+///
+/// Reconstruct only proven axis-aligned rectangles. Taking the min/max bounds
+/// of an irregular native quad used to replace its actual geometry with an
+/// invented rectangle, producing stretched transparent/water triangles.
+fn for_each_region_face(
+    face: RegionFace,
+    mut emit: impl FnMut(Preview3dRegionKey, RegionFace),
+) {
     if face.uv.is_some() {
-        return vec![(region_key_for_face(&face), face)];
+        emit(region_key_for_face(&face), face);
+        return;
     }
     let normal = face_normal(&face);
     let Some(axis) = dominant_axis(normal) else {
-        return vec![(region_key_for_face(&face), face)];
+        emit(region_key_for_face(&face), face);
+        return;
     };
-    if normal
-        .iter()
-        .enumerate()
+    if normal.iter().enumerate()
         .any(|(index, value)| index != axis && value.abs() > 1.0e-4)
     {
-        return vec![(region_key_for_face(&face), face)];
+        emit(region_key_for_face(&face), face);
+        return;
     }
     let (u_axis, v_axis) = match axis {
         0 => (2, 1),
         1 => (0, 2),
         2 => (0, 1),
-        _ => return vec![(region_key_for_face(&face), face)],
+        _ => {
+            emit(region_key_for_face(&face), face);
+            return;
+        }
     };
     let plane = face.corners[0][axis];
-    if face
-        .corners
-        .iter()
-        .any(|corner| (corner[axis] - plane).abs() > 1.0e-4)
+    if !face.corners.iter().flatten().all(|value| value.is_finite())
+        || face.corners.iter()
+            .any(|corner| (corner[axis] - plane).abs() > 1.0e-4)
     {
-        return vec![(region_key_for_face(&face), face)];
+        emit(region_key_for_face(&face), face);
+        return;
     }
-    let u0 = face
-        .corners
-        .iter()
-        .map(|corner| corner[u_axis])
-        .fold(f32::INFINITY, f32::min);
-    let u1 = face
-        .corners
-        .iter()
-        .map(|corner| corner[u_axis])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let v0 = face
-        .corners
-        .iter()
-        .map(|corner| corner[v_axis])
-        .fold(f32::INFINITY, f32::min);
-    let v1 = face
-        .corners
-        .iter()
-        .map(|corner| corner[v_axis])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let u_span = if u_axis == 1 {
-        REGION_BLOCKS_Y
-    } else {
-        REGION_BLOCKS_XZ
-    } as f32;
-    let v_span = if v_axis == 1 {
-        REGION_BLOCKS_Y
-    } else {
-        REGION_BLOCKS_XZ
-    } as f32;
-    let mut output = Vec::new();
+    let u0 = face.corners.iter()
+        .map(|corner| corner[u_axis]).fold(f32::INFINITY, f32::min);
+    let u1 = face.corners.iter()
+        .map(|corner| corner[u_axis]).fold(f32::NEG_INFINITY, f32::max);
+    let v0 = face.corners.iter()
+        .map(|corner| corner[v_axis]).fold(f32::INFINITY, f32::min);
+    let v1 = face.corners.iter()
+        .map(|corner| corner[v_axis]).fold(f32::NEG_INFINITY, f32::max);
+    // AABB reconstruction is valid only for four distinct corner combinations.
+    // Detail, fluid and custom capture quads may be sloped or irregular;
+    // they must be retained without synthetic axes/vertices.
+    let mut seen = [false; 4];
+    let mut rectangle = u1 > u0 + 1.0e-5 && v1 > v0 + 1.0e-5;
+    for corner in &face.corners {
+        let u = if (corner[u_axis] - u0).abs() < 1.0e-4 { Some(0) }
+            else if (corner[u_axis] - u1).abs() < 1.0e-4 { Some(1) }
+            else { None };
+        let v = if (corner[v_axis] - v0).abs() < 1.0e-4 { Some(0) }
+            else if (corner[v_axis] - v1).abs() < 1.0e-4 { Some(1) }
+            else { None };
+        match (u, v) {
+            (Some(u), Some(v)) if !seen[v * 2 + u] => {
+                seen[v * 2 + u] = true;
+            }
+            _ => rectangle = false,
+        }
+    }
+    if !rectangle || seen.iter().any(|was_seen| !was_seen) {
+        emit(region_key_for_face(&face), face);
+        return;
+    }
+    let u_span = if u_axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ } as f32;
+    let v_span = if v_axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ } as f32;
     let mut u = u0;
+    let mut emitted = false;
     while u < u1 - 1.0e-5 {
         let next_u = ((u / u_span).floor() + 1.0) * u_span;
         let end_u = u1.min(next_u.max(u + 1.0e-5));
@@ -887,18 +917,18 @@ fn split_face_into_regions(face: RegionFace) -> Vec<(Preview3dRegionKey, RegionF
             let next_v = ((v / v_span).floor() + 1.0) * v_span;
             let end_v = v1.min(next_v.max(v + 1.0e-5));
             let mut split = face.clone();
-            split.corners =
-                axis_aligned_face_corners(axis, normal[axis] >= 0.0, plane, u, end_u, v, end_v);
-            let key = region_key_for_face(&split);
-            output.push((key, split));
+            split.corners = axis_aligned_face_corners(
+                axis, normal[axis] >= 0.0, plane, u, end_u, v, end_v,
+            );
+            emit(region_key_for_face(&split), split);
+            emitted = true;
             v = end_v;
         }
         u = end_u;
     }
-    if output.is_empty() {
-        output.push((region_key_for_face(&face), face));
+    if !emitted {
+        emit(region_key_for_face(&face), face);
     }
-    output
 }
 
 fn axis_aligned_face_corners(
@@ -1208,4 +1238,71 @@ fn vec3_length(value: [f32; 3]) -> f32 {
 
 fn canonical_f32_bits(value: f32) -> u32 {
     if value == 0.0 { 0 } else { value.to_bits() }
+}
+
+#[cfg(test)]
+mod preview_region_geometry_tests {
+    use super::*;
+
+    fn face(corners: [[f32; 3]; 4]) -> RegionFace {
+        RegionFace {
+            corners,
+            color: [0.2, 0.5, 0.9, 0.75],
+            material: Arc::from("water"),
+            uv: None,
+            pass: Preview3dRegionPass::Transparent,
+        }
+    }
+
+    #[test]
+    fn single_region_water_quad_needs_no_split_or_new_geometry() {
+        let original = face([
+            [0.0, 64.0, 0.0], [2.0, 64.0, 0.0],
+            [2.0, 64.0, 2.0], [0.0, 64.0, 2.0],
+        ]);
+        let mut results = Vec::new();
+        for_each_region_face(original.clone(), |key, quad| results.push((key, quad)));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.corners, original.corners);
+    }
+
+    #[test]
+    fn axis_aligned_quad_crossing_tile_boundary_is_clipped_to_two_tiles() {
+        let original = face([
+            [127.0, 64.0, 8.0], [129.0, 64.0, 8.0],
+            [129.0, 64.0, 9.0], [127.0, 64.0, 9.0],
+        ]);
+        let mut results = Vec::new();
+        for_each_region_face(original, |key, quad| results.push((key, quad)));
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0.x, 0);
+        assert_eq!(results[1].0.x, 1);
+        for (key, quad) in results {
+            let origin = key.origin();
+            assert!(quad.corners.iter().all(|corner| {
+                corner[0] >= origin[0] as f32 - 1.0e-4
+                    && corner[0] <= (origin[0] + REGION_BLOCKS_XZ) as f32 + 1.0e-4
+            }));
+        }
+    }
+
+    #[test]
+    fn non_rectangular_water_face_keeps_actual_corners() {
+        let original = face([
+            [127.0, 64.0, 8.0], [129.0, 64.0, 8.0],
+            [129.0, 64.0, 9.0], [127.0, 64.0, 8.5],
+        ]);
+        let mut results = Vec::new();
+        for_each_region_face(original.clone(), |key, quad| results.push((key, quad)));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.corners, original.corners,
+            "irregular native water geometry must not expand to its AABB");
+    }
+
+    #[test]
+    fn progressive_preview_reuses_scene_until_lod_meshes_exist() {
+        let (scenes, _) = preview_3d_scene_data(&[]).expect("empty scene setup");
+        assert!(Arc::ptr_eq(&scenes[0], &scenes[1]));
+        assert!(Arc::ptr_eq(&scenes[1], &scenes[2]));
+    }
 }
