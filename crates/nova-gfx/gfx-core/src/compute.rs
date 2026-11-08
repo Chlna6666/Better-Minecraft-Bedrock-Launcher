@@ -326,6 +326,11 @@ impl ComputeDispatch<'_> {
         if capabilities.max_workgroups.contains(&0) {
             return Err(Error::Unavailable("buffer compute is unsupported".into()));
         }
+        if self.workgroups.contains(&0) {
+            return Err(Error::InvalidInput(
+                "compute workgroup counts must be nonzero".into(),
+            ));
+        }
         if self
             .workgroups
             .iter()
@@ -463,6 +468,9 @@ mod tests {
         assert!(dispatch.validate(caps).is_err());
         dispatch.bindings = &aliases[..1];
         assert!(dispatch.validate(caps).is_ok());
+        dispatch.workgroups = [1, 0, 1];
+        assert!(matches!(dispatch.validate(caps), Err(Error::InvalidInput(_))));
+        dispatch.workgroups = [1, 1, 1];
         dispatch.workgroups[0] = 65536;
         assert!(dispatch.validate(caps).is_err());
         assert!(matches!(

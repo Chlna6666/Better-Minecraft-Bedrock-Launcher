@@ -756,17 +756,22 @@ pub trait SubmissionDevice {
     }
 
     /// Submits a command encoder without waiting for GPU completion.
+    /// The backend must track a real GPU completion primitive and must not
+    /// return a fabricated already-complete submission identifier.
     ///
     /// # Errors
     ///
     /// Returns [`Error`] if the encoder is invalid, the backend cannot submit
     /// it, or the backend cannot track a deferred submission.
-    fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId>
+    fn submit_deferred(&mut self, _encoder: CommandEncoderId) -> Result<SubmissionId>
     where
         Self: CommandDevice,
     {
-        self.submit(encoder)?;
-        Ok(SubmissionId::from_parts(0, 0))
+        // Queuing a command buffer cannot prove GPU completion. Only backends
+        // with native fence/query tracking may return a SubmissionId.
+        Err(Error::Unavailable(
+            "deferred GPU submission tracking is not implemented".into(),
+        ))
     }
 
     /// Polls a previously returned submission.
@@ -774,15 +779,10 @@ pub trait SubmissionDevice {
     /// # Errors
     ///
     /// Returns [`Error`] when `submission` is not known to this device.
-    fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
-        if submission.raw() == 0 {
-            Ok(SubmissionStatus::Complete)
-        } else {
-            Err(Error::InvalidInput(format!(
-                "unknown submission {}",
-                submission.raw()
-            )))
-        }
+    fn poll_submission(&mut self, _submission: SubmissionId) -> Result<SubmissionStatus> {
+        Err(Error::Unavailable(
+            "deferred GPU submission polling is not implemented".into(),
+        ))
     }
 
     /// Blocks until a submission has completed.
@@ -814,6 +814,19 @@ mod submission_tests {
     fn queue_idle_requires_an_explicit_backend_implementation() {
         assert!(matches!(
             UnsupportedQueue.wait_queue_idle(),
+            Err(Error::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_submission_cannot_be_reported_complete_by_default() {
+        let invalid = crate::SubmissionId::from_parts(0, 0);
+        assert!(matches!(
+            UnsupportedQueue.poll_submission(invalid),
+            Err(Error::Unavailable(_))
+        ));
+        assert!(matches!(
+            UnsupportedQueue.wait_submission(invalid),
             Err(Error::Unavailable(_))
         ));
     }

@@ -68,7 +68,7 @@ pub(super) struct BatchScratch {
     cells: Option<ScratchPage>,
     params: Option<ScratchPage>,
     jobs: Option<ScratchPage>,
-    uniform_alignment: u64,
+    limits: gfx_core::BufferBindingLimits,
 }
 
 struct ScratchPage {
@@ -80,7 +80,11 @@ struct ScratchPage {
 
 impl ScratchPage {
     fn allocate(&mut self, bytes: u64) -> Option<u64> {
-        let aligned = self.used.next_multiple_of(self.alignment);
+        let aligned = self
+            .used
+            .checked_add(self.alignment.checked_sub(1)?)?
+            / self.alignment
+            * self.alignment;
         let end = aligned.checked_add(bytes)?;
         if end > self.capacity {
             return None;
@@ -97,7 +101,7 @@ impl BatchScratch {
             cells: None,
             params: None,
             jobs: None,
-            uniform_alignment: limits.uniform_offset_alignment.max(1),
+            limits,
         }
     }
 
@@ -109,16 +113,19 @@ impl BatchScratch {
         bytes: u64,
         alignment: u64,
         page_capacity: u64,
+        max_binding_bytes: u64,
     ) -> gpui::Result<(BufferId, u64)> {
+        if alignment == 0 || bytes == 0 || bytes > max_binding_bytes {
+            return Err(anyhow!("mesher scratch binding exceeds device limits").into());
+        }
         if let Some(existing) = page
             && let Some(offset) = existing.allocate(bytes)
         {
             return Ok((existing.buffer, offset));
         }
-        // Uniform pages stay at the D3D11 64 KiB constant-buffer limit and roll
-        // over to the next buffer when full; storage pages use the full arena
-        // page size.
-        let capacity = page_capacity.max(bytes.next_power_of_two());
+        // Page sizes are policy targets, not native binding limits. Cap
+        // allocations to the actual device limit and roll to a fresh page.
+        let capacity = page_capacity.min(max_binding_bytes).max(bytes);
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("gpui-3d mesher batch scratch".into()),
             size: capacity,
@@ -131,7 +138,9 @@ impl BatchScratch {
             capacity,
             alignment,
         };
-        let offset = created.allocate(bytes).unwrap_or(0);
+        let offset = created
+            .allocate(bytes)
+            .ok_or_else(|| anyhow!("mesher scratch page allocation failed"))?;
         *page = Some(created);
         buffers.push(buffer);
         Ok((buffer, offset))
@@ -142,14 +151,17 @@ impl BatchScratch {
         device: &mut dyn ExtensionDevice,
         bytes: u64,
     ) -> gpui::Result<(BufferId, u64)> {
+        self.limits.validate_range(0, bytes, false)?;
+        let alignment = MeshArena::generated_face_alignment(self.limits, 16)?;
         Self::page(
             device,
             &mut self.buffers,
             &mut self.cells,
             BufferUsage::STORAGE | BufferUsage::COPY_DST,
             bytes,
-            16,
+            alignment,
             VOXEL_ARENA_PAGE_BYTES,
+            self.limits.max_storage_binding_bytes,
         )
     }
 
@@ -158,16 +170,16 @@ impl BatchScratch {
         device: &mut dyn ExtensionDevice,
         bytes: u64,
     ) -> gpui::Result<(BufferId, u64)> {
-        let alignment = self.uniform_alignment;
+        self.limits.validate_range(0, bytes, true)?;
         Self::page(
             device,
             &mut self.buffers,
             &mut self.params,
             BufferUsage::UNIFORM | BufferUsage::COPY_DST,
             bytes,
-            alignment,
-            // D3D11 constant-buffer binding limit: 4096 * 16 bytes.
+            self.limits.uniform_offset_alignment,
             64 * 1024,
+            self.limits.max_uniform_binding_bytes,
         )
     }
 
@@ -176,14 +188,17 @@ impl BatchScratch {
         device: &mut dyn ExtensionDevice,
         bytes: u64,
     ) -> gpui::Result<(BufferId, u64)> {
+        self.limits.validate_range(0, bytes, false)?;
+        let alignment = MeshArena::generated_face_alignment(self.limits, 16)?;
         Self::page(
             device,
             &mut self.buffers,
             &mut self.jobs,
             BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
             bytes,
-            16,
+            alignment,
             VOXEL_ARENA_PAGE_BYTES,
+            self.limits.max_storage_binding_bytes,
         )
     }
 
@@ -2036,6 +2051,27 @@ mod tests {
         encode_voxel_mesh,
     };
     use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn scratch_pages_use_device_binding_alignment_and_check_overflow() {
+        let mut page = super::ScratchPage {
+            buffer: gfx_core::BufferId::new(1),
+            used: 0,
+            capacity: 1024,
+            alignment: 256,
+        };
+        assert_eq!(page.allocate(64), Some(0));
+        assert_eq!(page.allocate(64), Some(256));
+        assert_eq!(page.allocate(64), Some(512));
+        assert_eq!(page.allocate(64), Some(768));
+        assert_eq!(page.allocate(64), None);
+
+        page.alignment = 0;
+        assert_eq!(page.allocate(1), None);
+        page.alignment = 256;
+        page.used = u64::MAX;
+        assert_eq!(page.allocate(1), None);
+    }
 
     #[test]
     fn generated_pool_alignment_tracks_reported_device_limits() {
