@@ -356,7 +356,11 @@ fn group_indirect_commands(
     let mut pipeline_groups = Vec::<Vec<usize>>::new();
     let mut group_slots =
         HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), usize>::new();
-    let mut groups = Vec::<Vec<usize>>::new();
+    // One contiguous link table, not one heap allocation per unique
+    // BindGroup. This matters when a scene has mostly non-coalescible
+    // commands and the grouping probe ultimately returns None.
+    let mut links = vec![usize::MAX; opaque_len];
+    let mut groups = Vec::<(usize, usize)>::new(); // (first, last)
     for (index, command) in opaque_commands.iter().enumerate() {
         let RenderCommand::DrawIndirect(draw) = command else {
             continue;
@@ -371,17 +375,19 @@ fn group_indirect_commands(
                 index
             }
         };
-        let group_index = match group_slots.entry((pipeline, &draw.bind_groups)) {
-            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let index = groups.len();
-                groups.push(Vec::new());
-                pipeline_groups[pipeline_index].push(index);
-                entry.insert(index);
-                index
+        match group_slots.entry((pipeline, &draw.bind_groups)) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let (_, last) = &mut groups[*entry.get()];
+                links[*last] = index;
+                *last = index;
             }
-        };
-        groups[group_index].push(index);
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let group = groups.len();
+                groups.push((index, index));
+                pipeline_groups[pipeline_index].push(group);
+                entry.insert(group);
+            }
+        }
     }
     if groups.len() >= opaque_commands.len() {
         // No coalescing possible. Do not allocate or clone a second Draw
@@ -391,8 +397,16 @@ fn group_indirect_commands(
     let mut grouped = Vec::with_capacity(commands.len());
     for pipeline in &pipeline_groups {
         for &group in pipeline {
-            for &index in &groups[group] {
+            let (mut index, last) = groups[group];
+            loop {
                 grouped.push(commands[index].clone());
+                if index == last {
+                    break;
+                }
+                // Every link points to a strictly later original command,
+                // preventing cycles while preserving the group's draw order.
+                index = links[index];
+                debug_assert!(index != usize::MAX);
             }
         }
     }
