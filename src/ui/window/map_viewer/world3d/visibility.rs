@@ -14,6 +14,25 @@ const SIDE_COUNT: usize = 6;
 const ALL_SIDES: u8 = (1 << SIDE_COUNT) - 1;
 const CELL_COUNT: usize = 16 * 16 * 16;
 const SOLID_WORDS: usize = CELL_COUNT / 64;
+
+/// All six boundary planes form one connected shell when they contain no
+/// certified opaque cells. Detect this in 64 bitwise operations instead of
+/// flood-filling up to 4,096 air cells during every decoded Section update.
+const fn border_mask() -> [u64; SOLID_WORDS] {
+    let mut mask = [0u64; SOLID_WORDS];
+    let mut cell = 0usize;
+    while cell < CELL_COUNT {
+        let x = cell & 15;
+        let z = (cell >> 4) & 15;
+        let y = cell >> 8;
+        if x == 0 || x == 15 || z == 0 || z == 15 || y == 0 || y == 15 {
+            mask[cell / 64] |= 1u64 << (cell % 64);
+        }
+        cell += 1;
+    }
+    mask
+}
+const BORDER_CELLS: [u64; SOLID_WORDS] = border_mask();
 // Keep a camera-voxel transition bounded even for the supported 256-chunk
 // radius. Large scenes keep the existing GPU frustum/Hi-Z path unchanged.
 const MAX_COLUMNS: usize = 1_024;
@@ -48,6 +67,20 @@ impl SectionVisibility {
             return Self {
                 solid,
                 portals: [0; SIDE_COUNT],
+                all_air: false,
+            };
+        }
+        if solid
+            .iter()
+            .zip(BORDER_CELLS)
+            .all(|(&word, border)| word & border == 0)
+        {
+            // Every Section face is connected through its empty boundary
+            // shell. Internal disconnected air pockets remain correct because
+            // camera_exits still flood-fills from the camera voxel.
+            return Self {
+                solid,
+                portals: [ALL_SIDES; SIDE_COUNT],
                 all_air: false,
             };
         }
@@ -395,6 +428,23 @@ mod tests {
         let graph = SectionVisibility::from_solid_bits([u64::MAX; SOLID_WORDS]);
         assert!((0..SIDE_COUNT).all(|entry| graph.exits(entry) == 0));
         assert_eq!(graph.camera_exits([1, 1, 1]), None);
+    }
+
+    #[test]
+    fn empty_border_shell_fast_path_does_not_open_a_sealed_cave() {
+        let mut solids = [0u64; SOLID_WORDS];
+        for (x, y, z) in [
+            (7usize, 8usize, 8usize), (9, 8, 8),
+            (8, 7, 8), (8, 9, 8),
+            (8, 8, 7), (8, 8, 9),
+        ] {
+            let cell = (y * 16 + z) * 16 + x;
+            solids[cell / 64] |= 1u64 << (cell % 64);
+        }
+        let graph = SectionVisibility::from_solid_bits(solids);
+        assert_eq!(graph.portals, [ALL_SIDES; SIDE_COUNT]);
+        assert_eq!(graph.camera_exits([8, 8, 8]), Some(0));
+        assert_eq!(graph.camera_exits([0, 0, 0]), Some(ALL_SIDES));
     }
 
     #[test]
