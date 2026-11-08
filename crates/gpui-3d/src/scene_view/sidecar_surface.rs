@@ -719,6 +719,7 @@ impl SidecarSurface {
         id: SceneViewId,
         host: &RendererExtensionContext,
         capture_revision: u64,
+        gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
         mut geometry: Arc<[RenderCommand]>,
         authored_scissors: bool,
         passes: &mut Vec<RendererExtensionPass>,
@@ -747,6 +748,12 @@ impl SidecarSurface {
         self.trace.captured = self.trace.captured.saturating_add(1);
         passes.push(RendererExtensionPass {
             target: target.color_view,
+            gpu_work_tag: gpu_work_tag.filter(|_| {
+                !geometry.is_empty() && geometry.iter().all(|step| {
+                    matches!(step, RenderCommand::DrawIndirect(_)
+                        | RenderCommand::DrawIndexedIndirect(_))
+                })
+            }),
             resolve_target: None,
             render_pass: self.capture_pass,
             commands: geometry,
