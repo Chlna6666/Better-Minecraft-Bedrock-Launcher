@@ -255,6 +255,7 @@ mod platform {
         last_texture_transfer_time: Option<Duration>,
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
         gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
+        gpu_draw_query_pool: Vec<Dx12TimestampQueries>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
@@ -458,6 +459,7 @@ mod platform {
                 last_texture_transfer_time: None,
                 last_frame_gpu_timestamps: None,
                 gpu_work_samples: Vec::new(),
+                gpu_draw_query_pool: Vec::new(),
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
@@ -1876,6 +1878,7 @@ mod platform {
                 timestamps,
                 frame_probe: false,
                 gpu_work_tag: None,
+                gpu_draw_queries: Vec::new(),
                 submitted: false,
                 swapchain: None,
                 compute_resources: Vec::new(),
@@ -2055,6 +2058,18 @@ mod platform {
             passes: &[RenderPassCommands<'_>],
             independent: bool,
         ) -> Result<Option<SubmissionId>> {
+            self.record_texture_passes_profiled(passes, independent, None)
+        }
+
+        fn record_texture_passes_profiled(
+            &mut self,
+            passes: &[RenderPassCommands<'_>],
+            independent: bool,
+            tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+        ) -> Result<Option<SubmissionId>> {
+            if tags.is_some_and(|t| t.len() != passes.len()) {
+                return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+            }
             if passes.is_empty() {
                 return Ok(None);
             }
@@ -2081,7 +2096,7 @@ mod platform {
             let result = self
                 .begin_texture_command_encoder(encoder, initial_step)
                 .and_then(|()| {
-                    for pass in passes {
+                    for (index, pass) in passes.iter().enumerate() {
                         self.record_render_step_list_texture(
                             encoder,
                             pass.color_attachments,
@@ -2092,6 +2107,14 @@ mod platform {
                             pass.depth_attachment,
                             pass.clear_region,
                             pass.viewport,
+                            tags.and_then(|t| t[index]).filter(|tag| {
+                                tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
+                                    && !pass.commands.is_empty()
+                                    && pass.commands.iter().all(|command| matches!(
+                                        command, RenderCommand::DrawIndirect(_)
+                                        | RenderCommand::DrawIndexedIndirect(_)
+                                    ))
+                            }),
                         )?;
                     }
                     Ok(())
@@ -2604,6 +2627,7 @@ mod platform {
             let timestamp_frequency = self.timestamp_frequency;
             let last_frame_gpu_timestamps = &mut self.last_frame_gpu_timestamps;
             let gpu_work_samples = &mut self.gpu_work_samples;
+            let gpu_draw_query_pool = &mut self.gpu_draw_query_pool;
             self.deferred_command_encoders.retain_mut(|pending| {
                 if pending.fence_value > completed_fence {
                     return true;
@@ -2629,6 +2653,19 @@ mod platform {
                         frequency_hz: frequency,
                     });
                 }
+                for (tag, queries) in pending._encoder.gpu_draw_queries.drain(..) {
+                    if let Some(frequency) = timestamp_frequency
+                        && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback)
+                    {
+                        gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                            tag, duration_ticks: end.saturating_sub(start),
+                            frequency_hz: frequency,
+                        });
+                    }
+                    if gpu_draw_query_pool.len() < command_encoder_pool_capacity.saturating_mul(4) {
+                        gpu_draw_query_pool.push(queries);
+                    }
+                }
                 for resources in pending._encoder.compute_resources.drain(..) {
                     resources.release(resource_heap);
                 }
@@ -2642,6 +2679,7 @@ mod platform {
                         timestamps: pending._encoder.timestamps.take(),
                         frame_probe: false,
                         gpu_work_tag: None,
+                        gpu_draw_queries: Vec::new(),
                         submitted: false,
                         swapchain: None,
                         compute_resources: Vec::new(),
@@ -3423,6 +3461,7 @@ mod platform {
             depth_attachment: Option<DepthAttachment>,
             clear_region: Option<ScissorRect>,
             viewport: Option<gfx_core::Viewport>,
+            gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
         ) -> Result<()> {
             self.command_encoders.get_mut(encoder_id)?.swapchain = None;
             // Empty render-step lists are valid for attachment clears. Do not
@@ -3629,6 +3668,20 @@ mod platform {
             }
             let record_started = recording::start();
             let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            // GPU argument packing and color/depth clears are outside the query window.
+            let gpu_draw_query = if let (Some(tag), Some(_)) =
+                (gpu_draw_tag, self.timestamp_frequency)
+            {
+                let query = match self.gpu_draw_query_pool.pop() {
+                    Some(query) => query,
+                    None => create_dx12_timestamp_queries(
+                        &self.device, "nova-gfx indirect-only hardware timing",
+                    )?,
+                };
+                // SAFETY: This command list is open and owns both query slots.
+                unsafe { command_list.EndQuery(&query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+                Some((tag, query))
+            } else { None };
             let staging_ms =
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
@@ -3747,6 +3800,17 @@ mod platform {
                     )?;
                 }
             }
+            if let Some((_, query)) = &gpu_draw_query {
+                // SAFETY: Last draw was recorded; timestamp resolve is ordered
+                // before MSAA/attachment transitions on the same native list.
+                unsafe {
+                    command_list.EndQuery(&query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                    command_list.ResolveQueryData(
+                        &query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
+                        &query.readback, 0,
+                    );
+                }
+            }
             recording::finish(record_started, staging_ms, steps.len());
             if let (Some(resolve_view), Some((msaa_texture_id, msaa_resource, _, _))) =
                 (resolve_view, attachments.first())
@@ -3813,6 +3877,10 @@ mod platform {
                 );
                 self.textures.get_mut(*texture_id)?.state =
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+            if let Some((tag, queries)) = gpu_draw_query {
+                self.command_encoders.get_mut(encoder_id)?
+                    .gpu_draw_queries.push((tag, queries));
             }
             Ok(())
         }
@@ -5542,6 +5610,14 @@ mod platform {
             self.record_texture_passes(passes)
         }
 
+        fn render_to_textures_profiled(
+            &mut self,
+            passes: &[RenderPassCommands<'_>],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            self.record_texture_passes_profiled(passes, false, Some(tags))
+        }
+
         fn independent_graphics_queue_available(&self) -> bool {
             self.sidecar_queue.is_some() && self.sidecar_fence.is_some()
         }
@@ -5552,6 +5628,16 @@ mod platform {
         ) -> Result<Option<SubmissionId>> {
             self.record_texture_passes_on_queue(
                 passes, self.independent_graphics_queue_available(),
+            )
+        }
+
+        fn render_to_textures_independent_profiled(
+            &mut self,
+            passes: &[RenderPassCommands<'_>],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            self.record_texture_passes_profiled(
+                passes, self.independent_graphics_queue_available(), Some(tags),
             )
         }
     }
@@ -7324,6 +7410,7 @@ mod platform {
         /// presented frame. Prevents publishing offscreen work.
         frame_probe: bool,
         gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
+        gpu_draw_queries: Vec<(gfx_core::GpuTimestampTag, Dx12TimestampQueries)>,
         submitted: bool,
         swapchain: Option<(SwapchainId, u64)>,
     }
