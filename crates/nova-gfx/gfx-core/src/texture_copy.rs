@@ -32,6 +32,10 @@ impl TextureCopy {
         if self.source == self.destination
             || source.format != destination.format
             || source.format == Format::Depth32Float
+            || source.dimension != crate::TextureDimension::D2
+            || destination.dimension != crate::TextureDimension::D2
+            || source.sample_count != 1
+            || destination.sample_count != 1
             || !source.usage.contains(TextureUsage::COPY_SRC)
             || !destination.usage.contains(TextureUsage::COPY_DST)
         {
@@ -105,5 +109,15 @@ mod tests {
         let mut destination = source.clone();
         destination.usage = TextureUsage::SAMPLED;
         assert!(copy.validate(&source, &destination).is_err());
+        // The portable partial-rectangle ABI does not support MSAA copies.
+        // MSAA sources must be resolved before a texture-to-texture transfer.
+        let mut multisampled = source.clone();
+        multisampled.sample_count = 4;
+        assert!(copy.validate(&multisampled, &source).is_err());
+        assert!(copy.validate(&source, &multisampled).is_err());
+        // Layer selection is absent from the current copy descriptor.
+        let mut layered = source.clone();
+        layered.dimension = TextureDimension::D2Array { layers: 2 };
+        assert!(copy.validate(&layered, &source).is_err());
     }
 }
