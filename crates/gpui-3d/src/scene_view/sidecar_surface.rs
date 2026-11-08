@@ -20,6 +20,31 @@ struct Target {
     depth_view: TextureViewId,
     binding: BindGroupId,
     extent: Extent2d,
+    capture: CaptureEpoch,
+}
+
+/// Submission means the native device accepted the producer commands and
+/// the host will order subsequent GUI sampling after that queue submission.
+/// It does NOT imply GPU fence completion or permit immediate native reuse.
+#[derive(Default, Debug)]
+struct CaptureEpoch {
+    submitted: Option<u64>,
+    queued: Option<u64>,
+}
+
+impl CaptureEpoch {
+    fn reusable(&self, revision: u64) -> bool {
+        self.submitted == Some(revision)
+    }
+    fn enqueue(&mut self, revision: u64) {
+        self.queued = Some(revision);
+    }
+    fn acknowledge(&mut self, revision: u64) {
+        if self.queued == Some(revision) {
+            self.submitted = Some(revision);
+            self.queued = None;
+        }
+    }
 }
 
 impl Target {
@@ -291,7 +316,10 @@ impl SidecarSurface {
                 return Err(error.into());
             }
         };
-        Ok(Target { color, color_view, depth, depth_view, binding, extent })
+        Ok(Target {
+            color, color_view, depth, depth_view, binding, extent,
+            capture: CaptureEpoch::default(),
+        })
     }
 
     pub(super) fn sync(
@@ -317,11 +345,68 @@ impl SidecarSurface {
         Ok(())
     }
 
+    /// A successful 3D scene prepare did not change anything visible.
+    /// Reusing the already submitted producer texture avoids an entire
+    /// offscreen GPU pass and avoids rebuilding native Draw commands for an
+    /// unrelated GUI-only frame.
+    pub(super) fn can_reuse(
+        &self,
+        id: SceneViewId,
+        extent: Extent2d,
+        capture_revision: u64,
+    ) -> bool {
+        self.targets.get(&id).is_some_and(|target| {
+            target.extent == extent && target.capture.reusable(capture_revision)
+        })
+    }
+
+    /// Composite a completed previous producer texture without scheduling
+    /// another 3D draw. May also be used while a newer CPU render job is
+    /// preparing a Scene replacement. This is intentionally non-blocking.
+    pub(super) fn composite_existing(
+        &self,
+        id: SceneViewId,
+        extent: Extent2d,
+        gui_steps: &mut Vec<RenderCommand>,
+    ) -> bool {
+        let Some(target) = self.targets.get(&id) else {
+            return false;
+        };
+        if target.extent != extent || target.capture.submitted.is_none() {
+            return false;
+        }
+        gui_steps.push(RenderCommand::Draw(DrawCommand {
+            pipeline: self.composite_pipeline,
+            bind_groups: bind_group_list([target.binding]),
+            vertex_count: 3,
+            first_vertex: 0,
+            instance_count: 1,
+            first_instance: 0,
+            scissor: None,
+        }));
+        true
+    }
+
+    /// Accept only capture epochs whose producer passes were actually
+    /// drained and acknowledged by the host. Never treat a queued but failed
+    /// native submission as a published texture.
+    pub(super) fn render_passes_submitted(
+        &mut self,
+        submitted: &[(SceneViewId, u64)],
+    ) {
+        for &(id, revision) in submitted {
+            if let Some(target) = self.targets.get_mut(&id) {
+                target.capture.acknowledge(revision);
+            }
+        }
+    }
+
     pub(super) fn enqueue(
         &mut self,
         device: &mut dyn ExtensionDevice,
         id: SceneViewId,
         host: &RendererExtensionContext,
+        capture_revision: u64,
         mut geometry: Vec<RenderCommand>,
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
@@ -339,8 +424,9 @@ impl SidecarSurface {
                 previous.destroy(device)?;
             }
         }
-        let target = self.targets.get(&id)
+        let target = self.targets.get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("missing 3D offscreen target"))?;
+        target.capture.enqueue(capture_revision);
         passes.push(RendererExtensionPass {
             target: target.color_view,
             resolve_target: None,
@@ -361,6 +447,9 @@ impl SidecarSurface {
                 stencil_load_op: None,
             }),
         });
+        // Capture is queued, but only becomes reusable after the host
+        // acknowledges native submission. GUI sampling this same frame is
+        // ordered by the host's producer -> consumer dependency.
         gui_steps.push(RenderCommand::Draw(DrawCommand {
             pipeline: self.composite_pipeline,
             bind_groups: bind_group_list([target.binding]),
@@ -368,7 +457,7 @@ impl SidecarSurface {
             first_vertex: 0,
             instance_count: 1,
             first_instance: 0,
-            scissor: None, // the GPUI extension applies the element scissor
+            scissor: None,
         }));
         Ok(())
     }
@@ -402,6 +491,27 @@ impl SidecarSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_is_reused_only_after_matching_gpu_submission_acknowledgement() {
+        let mut capture = CaptureEpoch::default();
+        assert!(!capture.reusable(42));
+        capture.enqueue(42);
+        assert!(!capture.reusable(42),
+            "recorded commands are not evidence that the GPU accepted them");
+        capture.acknowledge(41);
+        assert!(!capture.reusable(42), "stale submission must not publish");
+        capture.acknowledge(42);
+        assert!(capture.reusable(42));
+        assert!(!capture.reusable(43));
+        capture.enqueue(43);
+        assert!(capture.reusable(42),
+            "a previously submitted texture remains readable until replaced");
+        assert!(!capture.reusable(43));
+        capture.acknowledge(43);
+        assert!(capture.reusable(43));
+        assert!(!capture.reusable(42));
+    }
 
     #[test]
     fn offscreen_geometry_obeys_original_gui_clip() {
