@@ -7,20 +7,21 @@
 //! the renderer consumes a completed snapshot without blocking on the worker.
 //! Final offscreen GPU submission continues through the shared gfx-core
 //! extension pass, which owns the required cross-backend synchronization.
-use super::{Mat4, Scene, SceneView, SceneViewId};
+use super::{Mat4, Scene, SceneView};
 use crate::{Camera, PreparedScene};
 use rayon::ThreadPool;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, Mutex, OnceLock};
 
-const MAX_RETAINED_VIEWS: usize = 32;
 const MAX_SIDECAR_THREADS: usize = 6;
 
 #[derive(Default)]
-struct Mailbox {
+pub(super) struct Mailbox {
     inner: Mutex<MailboxState>,
+}
+impl std::fmt::Debug for Mailbox {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScenePreparationMailbox")
+    }
 }
 #[derive(Default)]
 struct MailboxState {
@@ -150,38 +151,10 @@ impl Mailbox {
     }
 }
 
-#[derive(Default)]
-struct SidecarQueue {
-    slots: HashMap<SceneViewId, Arc<Mailbox>>,
-    order: VecDeque<SceneViewId>,
-}
-impl SidecarQueue {
-    fn mailbox(&mut self, id: SceneViewId) -> Arc<Mailbox> {
-        if let Some(existing) = self.slots.get(&id) {
-            return existing.clone();
-        }
-        while self.slots.len() >= MAX_RETAINED_VIEWS {
-            if let Some(oldest) = self.order.pop_front() {
-                self.slots.remove(&oldest);
-            }
-        }
-        let slot = Arc::new(Mailbox::default());
-        self.slots.insert(id, slot.clone());
-        self.order.push_back(id);
-        slot
-    }
-    fn forget(&mut self, id: SceneViewId) {
-        self.slots.remove(&id);
-        self.order.retain(|entry| *entry != id);
-    }
-}
-
-static SIDECAR: OnceLock<Mutex<SidecarQueue>> = OnceLock::new();
+// A SceneView owns its own latest-wins mailbox and releases it at drop.
+// No global per-frame map lock, stale IDs, or cache eviction of active views.
 static WORKERS: OnceLock<Option<ThreadPool>> = OnceLock::new();
 
-fn scheduler() -> &'static Mutex<SidecarQueue> {
-    SIDECAR.get_or_init(|| Mutex::new(SidecarQueue::default()))
-}
 fn pool() -> Option<&'static ThreadPool> {
     WORKERS.get_or_init(|| {
         let threads = std::thread::available_parallelism()
@@ -205,10 +178,7 @@ pub(super) fn schedule(view: &SceneView) {
     {
         return;
     }
-    let slot = {
-        let mut queue = scheduler().lock().unwrap_or_else(|e| e.into_inner());
-        queue.mailbox(view.id)
-    };
+    let slot = Arc::clone(&view.sidecar);
     if slot.enqueue(view.scene.clone(), view.scene_transform, view.camera) {
         if let Some(pool) = pool() {
             pool.spawn(move || slot.run());
@@ -220,33 +190,22 @@ pub(super) fn schedule(view: &SceneView) {
     }
 }
 
-fn current_mailbox(view: &SceneView) -> Option<Arc<Mailbox>> {
-    let queue = scheduler().lock().unwrap_or_else(|e| e.into_inner());
-    queue.slots.get(&view.id).cloned()
-}
-
 /// True while an immutable CPU job is not ready. Full scene replacement may
 /// retain the last GPU publication instead of blocking the device owner.
 pub(super) fn pending(view: &SceneView) -> bool {
-    current_mailbox(view).is_some_and(|slot| {
-        slot.status(&view.scene, view.scene_transform).0
-    })
+    view.sidecar.status(&view.scene, view.scene_transform).0
 }
 
 /// Keep the GPUI offscreen extension ticking until the sidecar producer has
 /// delivered and the GPU owner has consumed its final completed publication.
 pub(super) fn needs_frame(view: &SceneView) -> bool {
-    current_mailbox(view).is_some_and(|slot| {
-        slot.status(&view.scene, view.scene_transform).1
-    })
+    view.sidecar.status(&view.scene, view.scene_transform).1
 }
 
 /// GPU owner used its exact existing synchronous fast path. Cancel redundant
 /// queued work; an already executing traversal self-discards by revision.
 pub(super) fn discard(view: &SceneView) {
-    if let Some(slot) = current_mailbox(view) {
-        slot.discard(&view.scene, view.scene_transform);
-    }
+    view.sidecar.discard(&view.scene, view.scene_transform);
 }
 
 /// Never waits. GPU owner takes only a matching finished snapshot and then
@@ -257,23 +216,15 @@ pub(super) fn try_take(
     aspect: f32,
     gpu_culling: bool,
 ) -> anyhow::Result<Option<PreparedScene>> {
-    let Some(mut prepared) = current_mailbox(view).and_then(|slot| slot.take(
+    let Some(mut prepared) = view.sidecar.take(
         &view.scene, view.scene_transform, view.camera,
-    )) else {
+    ) else {
         return Ok(None);
     };
     prepared.set_gpu_culling(gpu_culling);
     prepared.set_culling_bounds(view.culling_bounds);
     prepared.update_camera(view.camera, aspect)?;
     Ok(Some(prepared))
-}
-
-/// Evict CPU-side preparation when the GPU owner retires a scene. Already
-/// running work is reference-counted and finishes without resurrecting it.
-pub(super) fn forget(id: SceneViewId) {
-    if let Some(queue) = SIDECAR.get() {
-        queue.lock().unwrap_or_else(|e| e.into_inner()).forget(id);
-    }
 }
 
 #[cfg(test)]
@@ -322,14 +273,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_eviction_keeps_the_number_of_live_mailboxes_bounded() {
-        let mut cache = SidecarQueue::default();
-        for n in 0..MAX_RETAINED_VIEWS + 8 {
-            cache.mailbox(SceneViewId(n as u64 + 1));
-        }
-        assert_eq!(cache.slots.len(), MAX_RETAINED_VIEWS);
-        assert!(!cache.slots.contains_key(&SceneViewId(1)));
-        cache.forget(SceneViewId((MAX_RETAINED_VIEWS + 8) as u64));
-        assert_eq!(cache.slots.len(), MAX_RETAINED_VIEWS - 1);
-    }
-}
+    fn preparation_mailboxes_have_independent_scene_lifetimes() {
+        let scene = Arc::new(Scene::new());
+        let left = Arc::new(Mailbox::default());
+        let right = Arc::new(Mailbox::default());
+        assert!(left.enqueue(scene.clone(), Mat4::IDENTITY, camera()));
+        assert!(right.enqueue(scene.clone(), Mat4::IDENTITY, camera()));
+        left.run();
+        assert!(left.take(&scene, Mat4::IDENTITY, camera()).is_some());
+        assert_eq!(right.status(&scene, Mat4::IDENTITY), (true, true));
+        right.run();
+        assert!(right.take(&scene, Mat4::IDENTITY, camera()).is_some());
+        assert_eq!(Arc::strong_count(&left), 1);
+    }}
