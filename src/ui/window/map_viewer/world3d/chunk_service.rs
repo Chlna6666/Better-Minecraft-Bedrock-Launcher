@@ -2866,6 +2866,9 @@ impl Worker {
             }
             loaded.chunks.into_iter().collect::<HashMap<_, _>>()
         };
+        // A deferred neighbor can be parsed for a newly visible seam before
+        // it is itself renderable. Do not promote it to a GPU mesh here: its
+        // opaque-block snapshot only supplies neighbor face decisions.
         for pos in local_positions {
             if !target_set.contains(&pos)
                 && let Some(boundary) = self
@@ -2888,6 +2891,15 @@ impl Worker {
                             self.cache.insert(pos, chunk);
                             continue;
                         };
+                        // A metadata-only column has no materialized frames or
+                        // certified portal blockers yet. Adopt the full probe
+                        // and frame-display metadata at its first real mesh
+                        // build. Already meshed columns get a fresh immutable
+                        // probe after a rehydration, too.
+                        chunk.probe = loaded.probe;
+                        chunk.version = loaded.version;
+                        chunk.state_version = loaded.state_version;
+                        chunk.frame_displays = loaded.frame_displays;
                         blocks
                     }
                     Ok(None) => {
