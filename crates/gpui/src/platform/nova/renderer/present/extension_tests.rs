@@ -155,6 +155,7 @@ mod native {
             accepted: Arc::new(AtomicBool::new(false)),
             pass: RendererExtensionPass {
                 target: view,
+                gpu_work_tag: None,
                 render_pass: pass,
                 commands: Vec::new().into(),
                 color_load_op: LoadOp::Clear(ClearColor {
