@@ -2167,11 +2167,20 @@ impl Preview3dSubchunkPalette {
         }
         if let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format {
             for (layer_index, classes) in &self.fluid_layers {
-                let storage = storages.get(*layer_index)?;
-                let palette_index = usize::from(storage.palette_index_at(x, y, z)?);
-                if let Some(&class) = classes.get(palette_index)?.as_ref() {
-                    return Some((storage.states.get(palette_index)?, class));
-                }
+                let Some(storage) = storages.get(*layer_index) else {
+                    continue;
+                };
+                let Some(palette_index) = storage.palette_index_at(x, y, z) else {
+                    continue;
+                };
+                let palette_index = usize::from(palette_index);
+                let Some(Some(class)) = classes.get(palette_index) else {
+                    continue;
+                };
+                let Some(state) = storage.states.get(palette_index) else {
+                    continue;
+                };
+                return Some((state, *class));
             }
             return None;
         }
@@ -2205,6 +2214,17 @@ mod palette_collect_tests {
                 }).collect(),
             },
         }
+    }
+
+    #[test]
+    fn multiple_fluid_storages_use_top_layer_priority() {
+        let data = section(&[&["minecraft:water"], &["minecraft:lava"]]);
+        let classified = Preview3dSubchunkPalette::classify(&data);
+        assert_eq!(classified.fluid_layers.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [1, 0]);
+        assert_eq!(
+            classified.fluid_at(&data, 2, 3, 4).map(|(_, class)| class),
+            Some(Preview3dBlockClass::Lava)
+        );
     }
 
     #[test]
