@@ -4306,7 +4306,12 @@ fn probe_flags_for_state(state: &BlockState) -> u8 {
     flags
 }
 
-fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> World3dChunkProbe {
+fn build_probe(
+    pos: ChunkPos,
+    data: ChunkData,
+    state_version: Option<i32>,
+    solid_masks: BTreeMap<i8, [u64; 64]>,
+) -> World3dChunkProbe {
     let mut subchunks = BTreeMap::new();
     let (min_y, _) = pos.y_range(data.version);
     for (y, subchunk) in data.subchunks {
@@ -4322,6 +4327,16 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
         }
         subchunks.insert(y, ProbingSubChunk { subchunk, flags });
     }
+    // Certified full-cube cells were collected with the rendered block model,
+    // not inferred from probe's generic "non-air" flag (which includes fluids,
+    // glass, fences and other non-occluding geometry).
+    let visibility = solid_masks
+        .into_iter()
+        .filter(|(_, solid)| solid.iter().any(|&word| word != 0))
+        .map(|(y, solid)| {
+            (y, Arc::new(super::visibility::SectionVisibility::from_solid_bits(solid)))
+        })
+        .collect::<BTreeMap<_, _>>();
     let storage_bytes = subchunks.values().fold(
         std::mem::size_of::<World3dChunkProbe>(),
         |bytes, subchunk| {
@@ -4329,11 +4344,15 @@ fn build_probe(pos: ChunkPos, data: ChunkData, state_version: Option<i32>) -> Wo
                 .saturating_add(std::mem::size_of::<i8>())
                 .saturating_add(subchunk.estimated_cpu_bytes())
         },
-    );
+    ).saturating_add(visibility.len().saturating_mul(
+        std::mem::size_of::<i8>()
+            + std::mem::size_of::<super::visibility::SectionVisibility>(),
+    ));
     World3dChunkProbe {
         pos,
         min_y,
         subchunks,
+        visibility,
         state_version,
         storage_bytes,
     }
@@ -4433,7 +4452,7 @@ fn collect_cached_chunk(
             .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
     let bytes = blocks.estimated_cpu_bytes();
     let version = data.version;
-    let probe = Arc::new(build_probe(pos, data, None));
+    let probe = Arc::new(build_probe(pos, data, None, blocks.visibility_solid_masks()));
     if trace {
         eprintln!(
             "world3d worker: collect chunk {},{} bytes={} in {}ms",
