@@ -311,6 +311,8 @@ pub struct World3dChunkProbe {
     pub pos: ChunkPos,
     pub min_y: i32,
     pub subchunks: BTreeMap<i8, ProbingSubChunk>,
+    /// Decoded once from certified opaque cube occupancy; shared by all Section events.
+    pub(super) visibility: BTreeMap<i8, Arc<super::visibility::SectionVisibility>>,
     pub state_version: Option<i32>,
     /// Logical CPU payload estimate, computed once when this immutable probe is built.
     pub(super) storage_bytes: usize,
