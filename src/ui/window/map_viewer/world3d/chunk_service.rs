@@ -416,6 +416,18 @@ fn neighbor_affected_bands(min_y: i32, max_y: i32) -> (i32, i32) {
     )
 }
 
+// A deferred column still owns real neighbor geometry. It may skip its own
+// GPU mesh, but must provide a full voxel/boundary mask while an adjacent
+// target is meshed; otherwise internal seam faces become visible until the
+// delayed column is eventually promoted.
+fn needs_mesh_neighbor_hydration(
+    is_target: bool,
+    has_blocks: bool,
+    has_boundary: bool,
+) -> bool {
+    !has_blocks && (is_target || !has_boundary)
+}
+
 const CHUNK_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
     (1, 0),
     (-1, 0),
@@ -696,6 +708,18 @@ mod view_tests {
     use std::sync::Mutex;
     use std::sync::mpsc::{channel, sync_channel};
     use std::time::Duration;
+
+    #[test]
+    fn deferred_neighbor_without_boundary_must_restore_seam_occupancy() {
+        use super::needs_mesh_neighbor_hydration as needs;
+        // A deferred chunk may be absent from the GPU draw set, but it must
+        // still suppress the covered side faces of adjacent loaded chunks.
+        assert!(needs(false, false, false));
+        assert!(needs(true, false, true));
+        assert!(!needs(false, false, true));
+        assert!(!needs(false, true, false));
+        assert!(!needs(true, true, false));
+    }
 
     #[test]
     fn boundary_pairs_are_order_independent_and_rearm_after_unload() {
@@ -3030,21 +3054,20 @@ impl Worker {
         // and neighbor-only boundary summaries owned by the original entries.
         // A non-target neighbour with a retained boundary summary already
         // supplies its seam classification to insert_stream_boundary below.
-        // Reload only a target's missing blocks, or a non-deferred neighbour
-        // that has neither full blocks nor a boundary summary.
+        // A deferred neighbor without a retained boundary is still a known,
+        // loaded column. Rehydrate it for seam classification even if its own
+        // GPU mesh remains deferred; retain existing compact boundaries.
         let rehydrate_positions = local_positions
             .iter()
             .copied()
             .filter(|pos| {
-                // Unmeshed rear neighbors have no source faces yet. Loading
-                // their full model data just to rebuild a front-facing seam
-                // negates lazy meshing. Use conservative exposed boundary
-                // faces until that neighbor itself becomes camera-relevant.
-                (target_set.contains(pos) || !self.deferred_columns.contains(pos))
-                    && self.cache.get(pos).is_some_and(|chunk| {
-                        chunk.blocks.is_none()
-                            && (target_set.contains(pos) || chunk.boundary.is_none())
-                    })
+                self.cache.get(pos).is_some_and(|chunk| {
+                    needs_mesh_neighbor_hydration(
+                        target_set.contains(pos),
+                        chunk.blocks.is_some(),
+                        chunk.boundary.is_some(),
+                    )
+                })
             })
             .collect::<Vec<_>>();
         // The previous second pass reloaded every neighbour with a cached
