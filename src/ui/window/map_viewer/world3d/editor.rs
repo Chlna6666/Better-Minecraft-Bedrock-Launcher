@@ -509,6 +509,36 @@ mod async_portal_visibility_tests {
     }
 
     #[test]
+    fn completed_regions_reuse_exact_arc_and_respect_lru_bound() {
+        let mut cache = PortalResultCache::default();
+        let pos = ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld };
+        let first = request(4, 1, 1);
+        let hidden = Arc::new(BTreeSet::from([(pos, 2)]));
+        cache.insert(first, Arc::clone(&hidden));
+        let nearby = request(4, 7, 1);
+        let hit = cache.find(nearby).expect("same air region must reuse cached graph");
+        assert!(Arc::ptr_eq(&hit, &hidden));
+        assert!(cache.find(request(5, 1, 1)).is_none());
+        assert!(cache.find(request(4, 1, 2)).is_none());
+
+        for exits in 2..=11 {
+            cache.insert(
+                request(4, 1, exits),
+                Arc::new(BTreeSet::from([(pos, i32::from(exits))])),
+            );
+        }
+        assert!(cache.entries.len() <= PORTAL_RESULT_CACHE_ENTRIES);
+        assert_eq!(
+            cache.total_bands,
+            cache.entries.iter().map(|(_, hidden)| hidden.len()).sum(),
+        );
+        assert!(cache.find(first).is_none(), "oldest region must be evicted");
+        cache.clear();
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.total_bands, 0);
+    }
+
+    #[test]
     fn changing_portal_revision_exits_dimension_or_radius_invalidates_result() {
         let key = request(4, 1, 0b001011);
         assert!(!same_portal_region(key, request(5, 1, 0b001011)));
@@ -1337,6 +1367,14 @@ impl World3dEditorView {
             return false;
         }
         if let Some(hidden) = self.visibility_cache.find(key) {
+            if super::chunk_service::trace_timings() {
+                eprintln!(
+                    "world3d portal_result_cache_hit revision={} hidden_bands={} retained_regions={}",
+                    key.revision,
+                    hidden.len(),
+                    self.visibility_cache.entries.len(),
+                );
+            }
             self.visibility_completed_key = Some(key);
             return self.apply_portal_visibility(hidden);
         }
