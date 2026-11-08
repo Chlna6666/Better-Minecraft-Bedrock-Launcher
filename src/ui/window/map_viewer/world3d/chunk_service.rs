@@ -737,6 +737,49 @@ mod view_tests {
     }
 
     #[test]
+    fn rear_metadata_batch_omits_unused_biomes_and_block_entity_nbt() {
+        let view = ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [1.0, 0.0],
+            forward_y: 0.0,
+            radius: 16,
+            view_distance: 320.0,
+        };
+        let rear = [
+            ChunkPos { x: -12, z: 0, dimension: view.dimension },
+            ChunkPos { x: -13, z: 0, dimension: view.dimension },
+        ];
+        let foreground = ChunkPos { x: 12, z: 0, dimension: view.dimension };
+        let full = super::ChunkLoadOptions {
+            data_request: super::ChunkDataRequest::new()
+                .full_3d_indices()
+                .biome(super::BiomeDataRequirement::All)
+                .block_entities(),
+            ..Default::default()
+        };
+        let lean = super::request_for_stream_batch(full.clone(), &rear, Some(view));
+        assert_eq!(lean.data_request.subchunks, full.data_request.subchunks);
+        assert_eq!(lean.data_request.biome, super::BiomeDataRequirement::None);
+        assert!(!lean.data_request.block_entities);
+        let mixed = super::request_for_stream_batch(
+            full.clone(),
+            &[rear[0], foreground],
+            Some(view),
+        );
+        assert_eq!(mixed.data_request, full.data_request);
+        assert_eq!(
+            super::request_for_stream_batch(full.clone(), &rear, None).data_request,
+            full.data_request
+        );
+        assert_eq!(
+            super::request_for_stream_batch(full.clone(), &[], Some(view)).data_request,
+            full.data_request
+        );
+    }
+
+    #[test]
     fn staged_stream_meshes_sort_front_before_rear_and_keep_every_chunk() {
         let dimension = Dimension::Overworld;
         let mut loaded = vec![
@@ -2256,6 +2299,24 @@ struct LoadedChunkBatch {
     collect_time: Duration,
 }
 
+/// Metadata-only rear batches need a full indexed Probe for eventual portal
+/// and light decisions, but never consume biome shading or block-entity NBT.
+/// Keep foreground/mixed batches unchanged to preserve cross-column biome
+/// blends; no additional DB query or worker thread is introduced.
+fn request_for_stream_batch(
+    mut options: ChunkLoadOptions,
+    positions: &[ChunkPos],
+    view: Option<ViewState>,
+) -> ChunkLoadOptions {
+    if view.is_some_and(|view| {
+        !positions.is_empty()
+            && positions.iter().all(|pos| lazy_mesh_column(*pos, view))
+    }) {
+        options.data_request = ChunkDataRequest::new().full_3d_indices();
+    }
+    options
+}
+
 fn load_batch_from_world(
     world: &World,
     models: &bedrock_block_model::BlockModelRepository,
@@ -2272,6 +2333,7 @@ fn load_batch_from_world(
         };
     }
     let started = Instant::now();
+    let options = request_for_stream_batch(options, positions, lazy_view);
     let cancel = options.cancel.clone();
     let (chunks, stats) =
         match world.query_chunk_data_with_stats(positions.iter().copied(), options) {
