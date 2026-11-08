@@ -2046,6 +2046,14 @@ mod platform {
             &mut self,
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
+            self.record_texture_passes_on_queue(passes, false)
+        }
+
+        fn record_texture_passes_on_queue(
+            &mut self,
+            passes: &[RenderPassCommands<'_>],
+            independent: bool,
+        ) -> Result<Option<SubmissionId>> {
             if passes.is_empty() {
                 return Ok(None);
             }
@@ -2088,7 +2096,13 @@ mod platform {
                     Ok(())
                 })
                 .and_then(|()| self.finish_texture_command_encoder(encoder))
-                .and_then(|()| self.submit_temporary_command_encoder_deferred_id(encoder));
+                .and_then(|()| {
+                    if independent {
+                        self.submit_sidecar_deferred(encoder)
+                    } else {
+                        self.submit_temporary_command_encoder_deferred_id(encoder)
+                    }
+                });
             match result {
                 Ok(submission) => Ok(Some(submission)),
                 Err(error) => {
@@ -5478,6 +5492,19 @@ mod platform {
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
             self.record_texture_passes(passes)
+        }
+
+        fn independent_graphics_queue_available(&self) -> bool {
+            self.sidecar_queue.is_some() && self.sidecar_fence.is_some()
+        }
+
+        fn render_to_textures_independent(
+            &mut self,
+            passes: &[RenderPassCommands<'_>],
+        ) -> Result<Option<SubmissionId>> {
+            self.record_texture_passes_on_queue(
+                passes, self.independent_graphics_queue_available(),
+            )
         }
     }
 
