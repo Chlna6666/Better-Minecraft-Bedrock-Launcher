@@ -312,7 +312,7 @@ impl Dx11Device {
         let mut indirect_count = 0;
         for command in commands {
             let indirect_index = indirect_count;
-            if matches!(command, RenderCommand::DrawIndirect(_)) {
+            if indirect::constant_source(command).is_some() {
                 indirect_count += 1;
             }
             let scissor = match (viewport, command.scissor()) {
@@ -478,24 +478,23 @@ impl Dx11Device {
                 self.indirect_constants
                     .bind(&self.context, indirect_index)?;
             } else {
-                if let RenderCommand::DrawIndirect(draw) = command {
-                    let buffer = self.buffers.get(draw.arguments)?;
+                if let Some((arguments, offset, bytes)) = indirect::constant_source(command) {
+                    let buffer = self.buffers.get(arguments)?;
                     if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
-                        || draw.offset % 4 != 0
-                        || draw
-                            .offset
-                            .checked_add(16)
+                        || offset % 4 != 0
+                        || offset
+                            .checked_add(bytes)
                             .is_none_or(|end| end > buffer.desc.size)
                     {
                         return Err(Error::InvalidInput(
                             "indirect argument range/usage mismatch".into(),
                         ));
                     }
-                    // Naga's DX11 ABI takes base offsets through b13 because native SV_*ID
-                    // excludes them. Copy these GPU-generated fields without CPU readback.
+                    // Copy the last two words of either native indirect ABI into
+                    // Naga's b13 constants, without synchronizing to the CPU.
                     let region = D3D11_BOX {
-                        left: (draw.offset + 8) as u32,
-                        right: (draw.offset + 16) as u32,
+                        left: (offset + bytes - 8) as u32,
+                        right: (offset + bytes) as u32,
                         top: 0,
                         bottom: 1,
                         front: 0,
