@@ -1745,6 +1745,11 @@ impl SceneResources {
             crate::upload_feedback::observe_buffer_upload(
                 self.backend, uploaded_bytes, writes.len(), elapsed,
             );
+            if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+                crate::upload_feedback::observe_tagged_upload(
+                    self.backend, self.gpu_batch_id, uploaded_bytes, writes.len(),
+                );
+            }
             crate::gpu_submission_trace::observe(
                 self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
                 writes.len(), uploaded_bytes, elapsed,
@@ -1972,6 +1977,11 @@ impl SceneResources {
             crate::upload_feedback::observe_buffer_upload(
                 self.backend, bytes_uploaded, writes.len(), elapsed,
             );
+            if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+                crate::upload_feedback::observe_tagged_upload(
+                    self.backend, self.gpu_batch_id, bytes_uploaded, writes.len(),
+                );
+            }
             crate::gpu_submission_trace::observe(
                 self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
                 writes.len(), bytes_uploaded, elapsed,
@@ -2450,6 +2460,11 @@ impl SceneResources {
                 crate::upload_feedback::observe_buffer_upload(
                     self.backend, uploaded_bytes, write_count, elapsed,
                 );
+                if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+                    crate::upload_feedback::observe_tagged_upload(
+                        self.backend, self.gpu_batch_id, uploaded_bytes, write_count,
+                    );
+                }
                 crate::gpu_submission_trace::observe(
                     self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
                     write_count, uploaded_bytes, elapsed,
