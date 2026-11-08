@@ -13,7 +13,7 @@ use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ChunkPos;
 use bedrock_world::{CancelFlag, SlimeChunkBounds};
 use gpui_3d::{
-    AlphaMode, Camera, Material, Mesh, MeshId, Node, ProjectionRegion, Scene, SceneView,
+    AlphaMode, Camera, Material, Mesh, MeshId, MeshPart, Node, ProjectionRegion, Scene, SceneView,
     ShadingModel, Transform, Vec2, Vec3, Vertex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -116,7 +116,7 @@ impl Preview3dMesh {
     pub(super) fn vertex_count(&self) -> usize {
         self.chunk_meshes
             .iter()
-            .map(|mesh| mesh.mesh.vertices().len())
+            .map(|mesh| mesh.mesh.vertex_count())
             .sum()
     }
 
@@ -196,17 +196,7 @@ pub(super) struct Preview3dChunkMesh {
 impl Preview3dChunkMesh {
     fn estimated_cpu_bytes(&self) -> usize {
         let mesh_bytes = |mesh: &Mesh| {
-            std::mem::size_of::<Mesh>()
-                .saturating_add(
-                    mesh.vertices()
-                        .len()
-                        .saturating_mul(std::mem::size_of::<Vertex>()),
-                )
-                .saturating_add(
-                    mesh.indices()
-                        .len()
-                        .saturating_mul(std::mem::size_of::<u32>()),
-                )
+            std::mem::size_of::<Mesh>().saturating_add(mesh.geometry_storage_bytes())
         };
         std::mem::size_of::<Self>()
             .saturating_add(mesh_bytes(&self.mesh))
@@ -560,13 +550,13 @@ fn convert_source_mesh(
             chunk
                 .lod1_mesh
                 .as_ref()
-                .map_or(0, |mesh| mesh.indices().len() / 6),
+                .map_or(0, |mesh| mesh.index_count() / 6),
         );
         lod2_faces = lod2_faces.saturating_add(
             chunk
                 .lod2_mesh
                 .as_ref()
-                .map_or(0, |mesh| mesh.indices().len() / 6),
+                .map_or(0, |mesh| mesh.index_count() / 6),
         );
         cache.chunks.insert(
             cache_key,
@@ -588,12 +578,12 @@ fn convert_source_mesh(
                 Preview3dRegionPass::Opaque | Preview3dRegionPass::Cutout
             )
         })
-        .map(|chunk| chunk.mesh.indices().len() / 6)
+        .map(|chunk| chunk.mesh.index_count() / 6)
         .sum();
     let transparent_faces = chunks
         .iter()
         .filter(|chunk| chunk.pass == Preview3dRegionPass::Transparent)
-        .map(|chunk| chunk.mesh.indices().len() / 6)
+        .map(|chunk| chunk.mesh.index_count() / 6)
         .sum::<usize>();
     tracing::debug!(
         processed_chunks = source_mesh.processed_chunk_count,
@@ -665,6 +655,9 @@ pub(super) fn preview_3d_scene_data(
             256.0,
         ),
     )
+    // Preview meshes consist only of authored colored quads. Expand them
+    // directly on the GPU rather than uploading a shared index table.
+    .with_voxel_shader()
     .with_projection_region(ProjectionRegion::VisibleContent)
     .with_projection_inset(6.0, 0.08)
     .map_err(|error| error.to_string())?
@@ -1104,9 +1097,10 @@ fn build_region_mesh(
     faces: &[RegionFace],
     origin: [i32; 3],
 ) -> (Arc<Mesh>, Arc<[Arc<str>]>, Arc<[Preview3dFaceMetadata]>) {
-    let mut vertices = Vec::with_capacity(faces.len().saturating_mul(4));
-    let mut indices = Vec::with_capacity(faces.len().saturating_mul(6));
-    let mut vertex_map = FxHashMap::<([u32; 3], [u32; 3], [u32; 2], [u32; 4]), u32>::default();
+    // Region faces are independent quads. Global vertex welding previously
+    // produced a large, shared, indexed topology; keep every face's four
+    // vertices together and let the voxel shader expand its two triangles.
+    let mut quads = Vec::<[Vertex; 4]>::with_capacity(faces.len());
     let mut materials = Vec::<Arc<str>>::new();
     let mut material_ids = FxHashMap::<Arc<str>, u16>::default();
     let mut metadata = Vec::with_capacity(faces.len());
@@ -1119,55 +1113,40 @@ fn build_region_mesh(
             material_ids.insert(face.material.clone(), id);
             id
         };
-        let mut face_indices = [0u32; 4];
-        for (slot, corner) in face.corners.iter().copied().enumerate() {
-            let position = [
-                corner[0] - origin[0] as f32,
-                corner[1] - origin[1] as f32,
-                corner[2] - origin[2] as f32,
-            ];
-            let normal = face_normal(face);
+        let normal = face_normal(face);
+        let quad = std::array::from_fn(|slot| {
+            let corner = face.corners[slot];
             let uv = face.uv.map_or(Vec2::ZERO, |coordinates| {
                 Vec2::new(coordinates[slot][0], coordinates[slot][1])
             });
-            let vertex_key = (
-                position.map(canonical_f32_bits),
-                normal.map(canonical_f32_bits),
-                [uv.x, uv.y].map(canonical_f32_bits),
-                face.color.map(canonical_f32_bits),
-            );
-            let index = if let Some(index) = vertex_map.get(&vertex_key).copied() {
-                index
-            } else {
-                let index = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
-                vertices.push(Vertex {
-                    position: Vec3::new(position[0], position[1], position[2]),
-                    normal: Vec3::new(normal[0], normal[1], normal[2]),
-                    uv,
-                    color: face.color,
-                });
-                vertex_map.insert(vertex_key, index);
-                index
-            };
-            face_indices[slot] = index;
-        }
-        indices.extend([
-            face_indices[0],
-            face_indices[1],
-            face_indices[2],
-            face_indices[0],
-            face_indices[2],
-            face_indices[3],
-        ]);
-        metadata.push(Preview3dFaceMetadata {
-            material_id,
-            uv: face.uv,
+            Vertex {
+                position: Vec3::new(
+                    corner[0] - origin[0] as f32,
+                    corner[1] - origin[1] as f32,
+                    corner[2] - origin[2] as f32,
+                ),
+                normal: Vec3::new(normal[0], normal[1], normal[2]),
+                uv,
+                color: face.color.map(|channel| channel.clamp(0.0, 1.0)),
+            }
         });
+        quads.push(quad);
+        metadata.push(Preview3dFaceMetadata { material_id, uv: face.uv });
     }
     let id = region_mesh_id(key, pass, lod);
-    let generation = region_mesh_generation(&vertices, &indices, &materials, &metadata);
-    let mesh = Mesh::new(vertices, indices)
-        .expect("region builder produces valid indexed triangles")
+    let generation = region_mesh_generation(&quads, &materials, &metadata);
+    let parts = if quads.is_empty() {
+        Vec::new()
+    } else {
+        vec![MeshPart::new(
+            0,
+            u32::try_from(quads.len().saturating_mul(6))
+                .expect("preview region quad index count must fit u32"),
+            0,
+        )]
+    };
+    let mesh = Mesh::from_voxel_quads_without_raycast(quads, parts)
+        .expect("preview region contains finite independent quads")
         .with_identity(id, generation);
     (
         Arc::new(mesh),
@@ -1193,8 +1172,7 @@ fn region_mesh_id(key: Preview3dRegionKey, pass: Preview3dRegionPass, lod: u8) -
 }
 
 fn region_mesh_generation(
-    vertices: &[Vertex],
-    indices: &[u32],
+    quads: &[[Vertex; 4]],
     materials: &[Arc<str>],
     metadata: &[Preview3dFaceMetadata],
 ) -> u64 {
@@ -1203,33 +1181,36 @@ fn region_mesh_generation(
         hash ^= u64::from(value);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     };
-    for vertex in vertices {
-        for value in
-            [vertex.position.x, vertex.position.y, vertex.position.z].map(canonical_f32_bits)
-        {
-            push(value);
+    // Domain-tag the indexed-to-procedural conversion: cached region geometry
+    // from an older publication must not be considered equivalent.
+    push(0x5155_4144);
+    push(quads.len() as u32);
+    for quad in quads {
+        for vertex in quad {
+            for value in
+                [vertex.position.x, vertex.position.y, vertex.position.z].map(canonical_f32_bits)
+            {
+                push(value);
+            }
+            for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z].map(canonical_f32_bits) {
+                push(value);
+            }
+            for value in [vertex.uv.x, vertex.uv.y].map(canonical_f32_bits) {
+                push(value);
+            }
+            for value in vertex.color.map(canonical_f32_bits) {
+                push(value);
+            }
         }
-        for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z].map(canonical_f32_bits) {
-            push(value);
-        }
-        for value in [vertex.uv.x, vertex.uv.y].map(canonical_f32_bits) {
-            push(value);
-        }
-        for value in vertex.color.map(canonical_f32_bits) {
-            push(value);
-        }
-    }
-    for index in indices {
-        push(*index);
     }
     for material in materials {
         for byte in material.as_bytes() {
             push(u32::from(*byte));
         }
     }
-    for metadata in metadata {
-        push(u32::from(metadata.material_id));
-        push(u32::from(metadata.uv.is_some()));
+    for meta in metadata {
+        push(u32::from(meta.material_id));
+        push(u32::from(meta.uv.is_some()));
     }
     hash
 }
@@ -1309,6 +1290,48 @@ fn canonical_f32_bits(value: f32) -> u32 {
 #[cfg(test)]
 mod preview_region_geometry_tests {
     use super::*;
+
+    #[test]
+    fn preview_region_uses_independent_quads_even_for_distant_faces() {
+        let base = face([
+            [0.0, 64.0, 0.0], [1.0, 64.0, 0.0],
+            [1.0, 64.0, 1.0], [0.0, 64.0, 1.0],
+        ]);
+        let mut distant = base.clone();
+        for point in &mut distant.corners {
+            point[0] += 108.0;
+        }
+        let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
+        let (mesh, _, _) = build_region_mesh(
+            key, Preview3dRegionPass::Transparent, 0,
+            &[base, distant], key.origin(),
+        );
+        assert_eq!(mesh.vertex_count(), 8);
+        assert_eq!(mesh.index_count(), 12);
+        assert_eq!(mesh.geometry_storage_bytes(), 8 * 27);
+        assert_eq!(mesh.indices(), &[0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+        assert_eq!(mesh.vertices()[0].position.x, 0.0);
+        assert_eq!(mesh.vertices()[4].position.x, 108.0);
+    }
+
+    #[test]
+    fn preview_region_quad_topology_survives_u16_index_boundary() {
+        let water = face([
+            [0.0, 64.0, 0.0], [1.0, 64.0, 0.0],
+            [1.0, 64.0, 1.0], [0.0, 64.0, 1.0],
+        ]);
+        let faces = vec![water; 16_400];
+        let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
+        let (mesh, _, _) =
+            build_region_mesh(key, Preview3dRegionPass::Transparent, 0, &faces, key.origin());
+        assert_eq!(mesh.vertex_count(), 65_600);
+        assert_eq!(mesh.index_count(), 98_400);
+        assert_eq!(mesh.parts()[0].index_count(), 98_400);
+        assert_eq!(
+            &mesh.indices()[98_394..],
+            &[65_596, 65_597, 65_598, 65_596, 65_598, 65_599]
+        );
+    }
 
     #[test]
     fn preview_region_rejects_stray_solid_and_fluid_quad_vertices() {
