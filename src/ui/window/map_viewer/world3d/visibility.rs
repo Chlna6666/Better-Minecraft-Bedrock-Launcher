@@ -764,33 +764,41 @@ mod tests {
         let dimension = Dimension::Overworld;
         let mut probes = BTreeMap::new();
         let mut meshes = BTreeSet::new();
-        // Three adjacent columns. The left edge is exposed to unknown
-        // terrain, while the middle cave band has a horizontal air tunnel.
-        for x in 0..3 {
-            let pos = ChunkPos { x, z: 0, dimension };
-            let mut visibility = BTreeMap::new();
-            for y in 0..12i8 {
-                let solids = if y == 6 {
-                    [0; SOLID_WORDS]
-                } else {
-                    [u64::MAX; SOLID_WORDS]
-                };
-                visibility.insert(y, Arc::new(SectionVisibility::from_solid_bits(solids)));
+        // The only exposed entrance to the y=6 tunnel is west of x=0.
+        // Solid neighbouring columns enclose its other three sides, and
+        // the camera sits in a separate sealed pocket in x=3, y=10.
+        for x in 0..=3 {
+            for z in -1..=1 {
+                let pos = ChunkPos { x, z, dimension };
+                let mut visibility = BTreeMap::new();
+                for y in 0..12i8 {
+                    let solids = if z == 0 && x < 3 && y == 6 {
+                        [0; SOLID_WORDS]
+                    } else if x == 3 && z == 0 && y == 10 {
+                        bits_except_air(&[(8, 8, 8)])
+                    } else {
+                        [u64::MAX; SOLID_WORDS]
+                    };
+                    visibility.insert(y, Arc::new(SectionVisibility::from_solid_bits(solids)));
+                }
+                probes.insert(pos, Arc::new(World3dChunkProbe {
+                    pos,
+                    min_y: 0,
+                    subchunks: BTreeMap::new(),
+                    visibility,
+                    state_version: None,
+                    storage_bytes: 0,
+                }));
+                if z == 0 && x < 3 {
+                    meshes.insert((pos, 1));
+                }
             }
-            probes.insert(pos, Arc::new(World3dChunkProbe {
-                pos,
-                min_y: 0,
-                subchunks: BTreeMap::new(),
-                visibility,
-                state_version: None,
-                storage_bytes: 0,
-            }));
-            meshes.insert((pos, 1));
         }
-        // From the last column, an exterior entry through the missing
-        // neighbour on the first column must keep the entire tunnel visible.
+        // The isolated camera cannot see the tunnel through any solid
+        // wall. External-space entry via the missing west column keeps it
+        // visible, even though the camera is not connected to its cells.
         let hidden = hidden_render_band_keys(
-            &probes, &meshes, dimension, [40, 104, 8], 3,
+            &probes, &meshes, dimension, [56, 168, 8], 5,
         );
         assert!(hidden.is_empty());
     }
