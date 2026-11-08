@@ -548,19 +548,19 @@ impl SidecarGpuBackend {
                 compute.indirect_draw,
             );
         }
-        // Probe native offscreen 3D submission only when explicitly enabled.
-        // It is deliberately opt-in until DX11/DX12/Vulkan/OpenGL timing and
-        // output parity tests confirm the extra GPU texture pass is beneficial.
-        let mut offscreen = if std::env::var_os("GPUI_3D_OFFSCREEN_SIDECAR").is_some() {
-            match SidecarSurface::new(device, &context) {
-                Ok(surface) => Some(surface),
-                Err(error) => {
-                    eprintln!("gpui3d offscreen_sidecar_unavailable backend={:?} error={error}", context.backend_kind());
-                    None
-                }
+        // Sidecar is the default development rendering path. A backend
+        // without the required render-to-texture support falls back to the
+        // existing direct draw path automatically; no environment toggle
+        // or user-facing configuration is required.
+        let mut offscreen = match SidecarSurface::new(device, &context) {
+            Ok(surface) => Some(surface),
+            Err(error) => {
+                eprintln!(
+                    "gpui3d offscreen_sidecar_unavailable backend={:?} error={error}",
+                    context.backend_kind()
+                );
+                None
             }
-        } else {
-            None
         };
         let render_context = offscreen.as_ref()
             .map(|surface| surface.capture_context(&context))
