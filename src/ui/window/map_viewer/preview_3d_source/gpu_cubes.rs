@@ -129,6 +129,56 @@ mod tests {
         assert_eq!(actual, expected);
     }
     #[test]
+    fn padded_gpu_classes_match_full_lookups_inside_and_across_columns() {
+        let pos = ChunkPos {
+            x: -1,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
+        let neighbor = ChunkPos { x: 0, ..pos };
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension,
+            min_chunk_x: -1,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(
+            pos,
+            Preview3dChunkBlocks::test_cubes(&[
+                [-16, 63, 5], [-15, 63, 5], [-1, 63, 5],
+                [-1, 64, 5], [-8, 65, 6],
+            ]),
+        );
+        builder.insert_stream_chunk(
+            neighbor,
+            Preview3dChunkBlocks::test_cubes(&[[0, 63, 5], [0, 64, 5]]),
+        );
+        for band in builder.gpu_cube_bands(pos, None).unwrap() {
+            for z in 0..band.size[2] {
+                for y in 0..band.size[1] {
+                    for x in 0..band.size[0] {
+                        let key = BlockKey {
+                            x: pos.x * 16 + band.origin.x as i32 + x as i32,
+                            y: band.origin.y as i32 + y as i32,
+                            z: pos.z * 16 + band.origin.z as i32 + z as i32,
+                        };
+                        let expected = match builder.block_class_at(key) {
+                            Some(Preview3dBlockClass::Opaque) => 1,
+                            Some(Preview3dBlockClass::TransparentGlass) => 2,
+                            Some(Preview3dBlockClass::Water) => 4,
+                            Some(Preview3dBlockClass::Lava) => 8,
+                            _ => 0,
+                        } | if builder.ambient_occludes_at(key) { 16 } else { 0 };
+                        let index = ((z * band.size[1] + y) * band.size[0] + x) as usize;
+                        assert_eq!(band.classes[index], expected, "cell {key:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gpu_cube_cells_match_cpu_faces_at_chunk_and_height_boundaries() {
         let pos = ChunkPos {
             x: 0,
@@ -291,7 +341,22 @@ impl Preview3dMeshBuilder {
                             y: min[1] + y as i32,
                             z: min[2] + z as i32,
                         };
-                        let class = match self.block_class_at(key) {
+                        // Most padded-grid cells belong to the target column.
+                        // Its full block data is already borrowed above: avoid
+                        // two global ChunkKey -> HashMap probes per cell (one
+                        // for material class, another for ambient occlusion).
+                        // Only the one-cell halo needs cross-column lookups.
+                        let (block_class, ao) =
+                            if ChunkKey::from_block(key) == ChunkKey::from_pos(pos) {
+                                (
+                                    blocks.class_at(key),
+                                    blocks.occupied.contains(&key)
+                                        && !blocks.ao_exclusions.contains(&key),
+                                )
+                            } else {
+                                (self.block_class_at(key), self.ambient_occludes_at(key))
+                            };
+                        let class = match block_class {
                             Some(Preview3dBlockClass::Opaque) => 1,
                             Some(Preview3dBlockClass::TransparentGlass) => 2,
                             Some(Preview3dBlockClass::Water) => 4,
@@ -299,7 +364,7 @@ impl Preview3dMeshBuilder {
                             _ => 0,
                         };
                         classes[((z * size[1] + y) * size[0] + x) as usize] =
-                            class | if self.ambient_occludes_at(key) { 16 } else { 0 };
+                            class | if ao { 16 } else { 0 };
                     }
                 }
             }
