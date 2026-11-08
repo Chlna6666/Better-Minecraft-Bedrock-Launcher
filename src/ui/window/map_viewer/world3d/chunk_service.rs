@@ -2165,6 +2165,9 @@ struct Worker {
     /// Unlike dirty_meshes, these are NOT automatically processed in the
     /// background while the camera still faces away.
     deferred_columns: BTreeSet<ChunkPos>,
+    /// Height bands whose CPU/GPU materialization was postponed by portal
+    /// culling. Reevaluate when the camera moves or adjacent probes arrive.
+    deferred_bands: BTreeSet<(ChunkPos, i32)>,
     urgent_chunks: BTreeSet<ChunkPos>,
     retained_invalidated: BTreeSet<ChunkPos>,
     missing: BTreeSet<ChunkPos>,
@@ -2285,6 +2288,7 @@ impl Worker {
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
             deferred_columns: BTreeSet::new(),
+            deferred_bands: BTreeSet::new(),
             urgent_chunks: BTreeSet::new(),
             retained_invalidated: BTreeSet::new(),
             missing: BTreeSet::new(),
@@ -2477,6 +2481,7 @@ impl Worker {
             self.lod_modes.remove(&pos);
             self.dirty_meshes.remove(&pos);
             self.deferred_columns.remove(&pos);
+            self.deferred_bands.retain(|(column, _)| *column != pos);
             self.mark_neighbor_meshes(pos);
             let _ = tx.send(ChunkServiceEvent::Unloaded {
                 generation: self.view.generation,
@@ -2804,6 +2809,58 @@ impl Worker {
         );
     }
 
+    /// Reuse the UI's conservative 6-face portal graph before any Section
+    /// mesh exists. Cached metadata-only columns are deliberately represented
+    /// as open space; they can never make another Section falsely invisible.
+    fn portal_hidden_bands(
+        &self,
+        candidates: &BTreeSet<(ChunkPos, i32)>,
+    ) -> BTreeSet<(ChunkPos, i32)> {
+        if candidates.is_empty()
+            || std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
+        {
+            return BTreeSet::new();
+        }
+        let mut probes = self
+            .cache
+            .iter()
+            .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
+            .collect::<BTreeMap<_, _>>();
+        probes.extend(
+            self.probe_stash
+                .iter()
+                .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
+        );
+        super::visibility::hidden_render_band_keys(
+            &probes,
+            candidates,
+            self.view.dimension,
+            self.view.camera.map(|value| value.floor() as i32),
+            self.view.radius,
+        )
+    }
+
+    /// A skipped GPU band is not a discarded or finished Section. Promote it
+    /// as soon as the camera crosses into a different air-connected region,
+    /// or an adjacent decoded column reveals a previously unknown opening.
+    fn promote_visible_bands(&mut self) {
+        if self.deferred_bands.is_empty() {
+            return;
+        }
+        let still_hidden = self.portal_hidden_bands(&self.deferred_bands);
+        let visible = self
+            .deferred_bands
+            .difference(&still_hidden)
+            .copied()
+            .collect::<Vec<_>>();
+        for (pos, band) in visible {
+            self.deferred_bands.remove(&(pos, band));
+            if self.cache.contains_key(&pos) {
+                self.dirty_meshes.insert(pos);
+            }
+        }
+    }
+
     fn mesh_targets(
         &mut self,
         tx: &SyncSender<ChunkServiceEvent>,
@@ -2976,6 +3033,26 @@ impl Worker {
                     chunk.faces,
                     chunk.frame_displays,
                 ),
+            );
+        }
+        // Test Section reachability before material/texture/GPU conversion.
+        // The candidate set is built from decoded 16-block subchunk keys,
+        // so not-yet-meshed Sections can be culled without allocating a Mesh.
+        let mut prospective_bands = BTreeSet::new();
+        for &pos in &targets {
+            if let Some((probe, _, _, _, _)) = self.probe_stash.get(&pos) {
+                for &subchunk in probe.subchunks.keys() {
+                    prospective_bands.insert((pos, i32::from(subchunk).div_euclid(4)));
+                }
+            }
+        }
+        let hidden_bands = self.portal_hidden_bands(&prospective_bands);
+        if trace && !hidden_bands.is_empty() {
+            eprintln!(
+                "world3d portal_mesh_skip gen={} targets={} hidden_bands={}",
+                self.view.generation,
+                targets.len(),
+                hidden_bands.len(),
             );
         }
         self.last_stage_ms = u64::try_from(mesh_started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3255,6 +3332,13 @@ impl Worker {
                 }
             }
             for (pos, section_y, mut faces, probe) in pending_sections {
+                if hidden_bands.contains(&(pos, section_y))
+                    && !self.retained_invalidated.contains(&pos)
+                {
+                    self.deferred_bands.insert((pos, section_y));
+                    continue;
+                }
+                self.deferred_bands.remove(&(pos, section_y));
                 if partial_bands.get(&pos).is_some_and(|bands| {
                     !bands
                         .iter()
@@ -3485,6 +3569,7 @@ impl Worker {
             );
         }
         self.probe_stash.clear();
+        self.promote_visible_bands();
         let positions = surrounded_chunk_candidates(loaded, |pos| self.cache.contains_key(&pos));
         for pos in positions {
             if let Some(chunk) = self.cache.get_mut(&pos) {
@@ -4278,6 +4363,7 @@ impl Worker {
             self.failed_positions.remove(pos);
             self.probe_stash.remove(pos);
             self.deferred_columns.remove(pos);
+            self.deferred_bands.retain(|(column, _)| column != pos);
             self.urgent_chunks.insert(*pos);
         }
     }
@@ -4931,6 +5017,7 @@ fn run_worker(
                     }
                     worker.dirty_meshes.clear();
                     worker.deferred_columns.clear();
+                    worker.deferred_bands.clear();
                     worker.lod_modes.clear();
                     worker.urgent_chunks.clear();
                     for pos in std::mem::take(&mut worker.retained_invalidated) {
@@ -4961,6 +5048,7 @@ fn run_worker(
                     worker.deferred_columns.remove(&pos);
                     worker.dirty_meshes.insert(pos);
                 }
+                worker.promote_visible_bands();
                 if old_center != new_center || old_radius != worker.view.radius {
                     worker.failed_positions.clear();
                 }
