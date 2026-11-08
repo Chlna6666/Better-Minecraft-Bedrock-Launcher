@@ -809,6 +809,16 @@ fn open_debug_window(cx: &mut App) {
     }
 }
 
+/// The window-system compositor alpha policy is independent of gpui-3d's
+/// offscreen premultiplied scene textures.
+#[cfg(any(windows, target_os = "linux"))]
+fn main_window_surface_background() -> WindowBackgroundAppearance {
+    #[cfg(windows)]
+    { WindowBackgroundAppearance::Opaque }
+    #[cfg(target_os = "linux")]
+    { WindowBackgroundAppearance::Transparent }
+}
+
 fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
     let fixed_size = crate::ui::main_window::MAIN_WINDOW_INITIAL_SIZE;
@@ -826,21 +836,19 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             ..Default::default()
         });
         options.window_corner_preference = WindowCornerPreference::Rounded;
-        // The main view paints every client pixel itself, so the native surface does not need an
-        // alpha channel. Keeping the WSI surface opaque lets DX12 use an HWND flip swapchain
-        // instead of DirectComposition and lets Vulkan request OPAQUE composite alpha. Both paths
-        // avoid forcing DWM to blend/copy a transparent full-window surface on every animation or
-        // live-resize present while GPUI's own in-window glass/backdrop effects remain unchanged.
-        options.window_background = WindowBackgroundAppearance::Opaque;
+        // The main view paints every client pixel itself, so the native
+        // surface must stay opaque, regardless of 3D sidecar transparency.
+        // HWND flip-swapchain, Vulkan WSI alpha and DWM policy are separate
+        // from any composited in-window rounded or backdrop effects.
+        options.window_background = main_window_surface_background();
     }
 
     #[cfg(target_os = "linux")]
     {
         options.window_decorations = Some(WindowDecorations::Client);
-        // Client-side decorations rely on the compositor's rounded window shape. Keep the
-        // surface alpha-enabled so pixels outside that shape reveal the desktop instead of the
-        // renderer's transparent-clear color (black).
-        options.window_background = WindowBackgroundAppearance::Transparent;
+        // Linux client-side decorations need alpha outside the outer rounded
+        // shape. The 3D sidecar still cannot alter the native alpha mode.
+        options.window_background = main_window_surface_background();
     }
 
     options
@@ -933,6 +941,24 @@ fn force_exit_after_delay(delay: Duration) {
 #[cfg(test)]
 mod tests {
     use super::{gpu_power_preference_for_adapter, should_quit_after_window_close};
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_main_window_swapchain_stays_opaque_when_sidecar_is_enabled() {
+        assert_eq!(
+            super::main_window_surface_background(),
+            gpui::WindowBackgroundAppearance::Opaque,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_client_side_window_preserves_rounded_transparency() {
+        assert_eq!(
+            super::main_window_surface_background(),
+            gpui::WindowBackgroundAppearance::Transparent,
+        );
+    }
 
     #[test]
     fn closing_child_never_closes_main() {
