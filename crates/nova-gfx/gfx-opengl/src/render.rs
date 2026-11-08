@@ -276,8 +276,8 @@ impl OpenGlDevice {
             // Draw-step scissor setup starts from a known state on every pass.
             self.gl.disable(glow::SCISSOR_TEST);
         }
+        let mut state = GlPassState::default();
         let result = (|| {
-            let mut state = GlPassState::default();
             let mut bindings = self.binding_cache.borrow_mut();
             bindings.reset();
             for step in steps.iter() {
@@ -316,9 +316,12 @@ impl OpenGlDevice {
         // resident argument buffer. Avoid bind/unbind per Draw, but do not
         // leak this pass's GL_DRAW_INDIRECT_BUFFER into the next pass or an
         // externally issued GL operation, including on a failed draw.
-        // SAFETY: owner thread holds the active GL context here.
-        unsafe {
-            self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+        // No extra GL calls for ordinary UI-only passes.
+        if state.indirect_buffer.is_some() {
+            // SAFETY: owner thread holds the active GL context here.
+            unsafe {
+                self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+            }
         }
         // A failed draw must not resolve invalid or partially recorded contents.
         // Still execute the common detach/cleanup path below.
