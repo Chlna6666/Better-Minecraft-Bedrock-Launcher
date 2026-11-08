@@ -98,6 +98,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             usage: TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })?;
         let texture_view = device.create_texture_view(&TextureViewDescriptor {
             label: Some("atlas metal texture view".to_string()),

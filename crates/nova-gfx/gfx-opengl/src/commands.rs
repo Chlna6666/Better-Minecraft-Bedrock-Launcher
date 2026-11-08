@@ -77,8 +77,14 @@ impl PresentationDevice for OpenGlDevice {
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+        let targets = pass
+            .color_attachments
+            .iter()
+            .map(|&view| RenderTarget::TextureView(view))
+            .collect::<Vec<_>>();
         self.render_target_clipped(
-            RenderTarget::TextureView(pass.texture_view),
+            &targets,
+            pass.resolve_target,
             pass.render_pass,
             pass.commands,
             pass.color_load_op,

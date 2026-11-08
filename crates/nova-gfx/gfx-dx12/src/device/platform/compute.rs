@@ -28,6 +28,10 @@ struct Program {
     root: ID3D12RootSignature,
     pipeline: ID3D12PipelineState,
 }
+// Indirect argument buffers retire through the frame fence just like command
+// encoders; this pool bound is independent of the device's encoder tuning.
+const DEFAULT_INDIRECT_BUFFER_POOL_CAPACITY: usize = 16;
+
 type ViewKey = (BufferId, u64, u64, u8);
 pub(super) struct Resources {
     slots: Vec<DescriptorSlot>,
@@ -51,11 +55,14 @@ pub(super) struct Indirect {
 
 pub(super) fn capabilities() -> ComputeCapabilities {
     ComputeCapabilities {
+        // D3D12 feature-level 11.0 guaranteed compute minimums; hardware may
+        // report larger optional limits, which this struct does not model yet.
         max_workgroups: [65535; 3],
         // D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP.
         max_invocations_per_workgroup: 1024,
         max_workgroup_size: [1024, 1024, 64],
         max_workgroup_shared_memory_bytes: 32 * 1024,
+        // ExecuteIndirect tier 1.0 is guaranteed above feature level 11.0.
         indirect_draw: true,
     }
 }
@@ -78,7 +85,7 @@ impl State {
             resource.state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
         }
         resource.signatures.clear();
-        if self.indirect_buffers.len() < DX12_FRAME_COMMAND_POOL_CAPACITY {
+        if self.indirect_buffers.len() < DEFAULT_INDIRECT_BUFFER_POOL_CAPACITY {
             self.indirect_buffers.push(resource);
         }
     }
@@ -139,7 +146,8 @@ impl Dx12Device {
         dispatch: &ComputeDispatch<'_>,
         views: &mut HashMap<ViewKey, DescriptorSlot>,
     ) -> Result<Option<Resources>> {
-        dispatch.validate_with_limits(capabilities(), self.buffer_binding_limits())?;
+        let limits = self.buffer_binding_limits();
+        dispatch.validate_with_limits(capabilities(), limits)?;
         let shader = self.shader_modules.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {
             return Err(Error::InvalidInput(
@@ -160,9 +168,15 @@ impl Dx12Device {
                     || buffer.desc.memory_location != MemoryLocation::GpuOnly))
                 || buffer.desc.memory_location == MemoryLocation::GpuToCpu
                 || binding.buffer.size == 0
-                || binding.buffer.offset % if uniform { 256 } else { 4 } != 0
+                || binding.buffer.offset
+                    % if uniform {
+                        limits.uniform_offset_alignment.max(1)
+                    } else {
+                        limits.storage_offset_alignment.max(1)
+                    }
+                    != 0
                 || (!uniform && binding.buffer.size % 4 != 0)
-                || (uniform && binding.buffer.size > 65536)
+                || (uniform && binding.buffer.size > limits.max_uniform_binding_bytes)
                 || binding
                     .buffer
                     .offset
@@ -499,7 +513,10 @@ impl Dx12Device {
             let RenderCommand::DrawIndirect(draw) = step else {
                 continue;
             };
-            if last_source.as_ref().is_none_or(|(id, _)| *id != draw.arguments) {
+            if last_source
+                .as_ref()
+                .is_none_or(|(id, _)| *id != draw.arguments)
+            {
                 let buffer = self.buffers.get(draw.arguments)?;
                 let source = buffer
                     .resource
@@ -518,8 +535,7 @@ impl Dx12Device {
                         buffer.state,
                         D3D12_RESOURCE_STATE_GENERIC_READ,
                     );
-                    self.buffers.get_mut(draw.arguments)?.state =
-                        D3D12_RESOURCE_STATE_GENERIC_READ;
+                    self.buffers.get_mut(draw.arguments)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
                 }
                 last_source = Some((draw.arguments, source));
             }
@@ -541,19 +557,33 @@ impl Dx12Device {
                 last_signature = Some((draw.pipeline, signature.clone()));
                 signature
             };
-            let contiguous = pending.as_ref().is_some_and(|(buffer, _, source_offset, _, length)| {
-                *buffer == draw.arguments
+            let contiguous =
+                pending
+                    .as_ref()
+                    .is_some_and(|(buffer, _, source_offset, _, length)| {
+                        *buffer == draw.arguments
                     && source_offset.checked_add(u64::from(*length) * 16) == Some(draw.offset)
                     // The compiled 64-thread kernel uses one dispatch grid.
                     && *length < 65535 * 64
-            });
+                    });
             if !contiguous {
                 if let Some((_, resource, source_offset, target, length)) = pending.take() {
                     self.pack_native_indirect_run(
-                        command, &resource, &indirect.buffer, source_offset, target, length,
+                        command,
+                        &resource,
+                        &indirect.buffer,
+                        source_offset,
+                        target,
+                        length,
                     )?;
                 }
-                pending = Some((draw.arguments, source.clone(), draw.offset, index as usize, 1));
+                pending = Some((
+                    draw.arguments,
+                    source.clone(),
+                    draw.offset,
+                    index as usize,
+                    1,
+                ));
             } else if let Some((_, _, _, _, length)) = pending.as_mut() {
                 *length += 1;
             }
@@ -562,7 +592,12 @@ impl Dx12Device {
         }
         if let Some((_, resource, source_offset, target, length)) = pending.take() {
             self.pack_native_indirect_run(
-                command, &resource, &indirect.buffer, source_offset, target, length,
+                command,
+                &resource,
+                &indirect.buffer,
+                source_offset,
+                target,
+                length,
             )?;
         }
         record_transition_barrier(
@@ -586,17 +621,29 @@ impl Dx12Device {
         first_target: usize,
         count: u32,
     ) -> Result<()> {
-        let first_word = u32::try_from(source_offset / 4)
-            .map_err(|_| Error::InvalidInput("DX12 indirect input offset exceeds shader address range".into()))?;
-        let target_word = first_target.checked_mul(8)
+        let first_word = u32::try_from(source_offset / 4).map_err(|_| {
+            Error::InvalidInput("DX12 indirect input offset exceeds shader address range".into())
+        })?;
+        let target_word = first_target
+            .checked_mul(8)
             .and_then(|word| u32::try_from(word).ok())
-            .ok_or_else(|| Error::InvalidInput("DX12 indirect output offset exceeds shader address range".into()))?;
-        let input_end = count.checked_mul(4)
+            .ok_or_else(|| {
+                Error::InvalidInput(
+                    "DX12 indirect output offset exceeds shader address range".into(),
+                )
+            })?;
+        let input_end = count
+            .checked_mul(4)
             .and_then(|len| first_word.checked_add(len))
-            .ok_or_else(|| Error::InvalidInput("DX12 indirect input span exceeds shader address range".into()))?;
-        let output_end = count.checked_mul(8)
+            .ok_or_else(|| {
+                Error::InvalidInput("DX12 indirect input span exceeds shader address range".into())
+            })?;
+        let output_end = count
+            .checked_mul(8)
             .and_then(|len| target_word.checked_add(len))
-            .ok_or_else(|| Error::InvalidInput("DX12 indirect output span exceeds shader address range".into()))?;
+            .ok_or_else(|| {
+                Error::InvalidInput("DX12 indirect output span exceeds shader address range".into())
+            })?;
         debug_assert!(input_end > first_word && output_end > target_word);
         let words = [first_word, target_word, count, 0u32];
         // SAFETY: command list is recording on its graphics queue; source is
@@ -623,10 +670,13 @@ impl Dx12Device {
         count: usize,
     ) -> Result<()> {
         let indirect = &self.command_encoders.get(encoder)?.indirect_resources[slot];
-        let end = index.checked_add(count)
+        let end = index
+            .checked_add(count)
             .ok_or_else(|| Error::InvalidInput("indirect draw range overflow".into()))?;
         if count == 0 || end > indirect.signatures.len() {
-            return Err(Error::InvalidInput("invalid staged indirect draw range".into()));
+            return Err(Error::InvalidInput(
+                "invalid staged indirect draw range".into(),
+            ));
         }
         let native_count = u32::try_from(count)
             .map_err(|_| Error::InvalidInput("indirect draw count exceeds u32".into()))?;
@@ -636,7 +686,14 @@ impl Dx12Device {
             .ok_or_else(|| Error::InvalidInput("invalid staged indirect index".into()))?;
         // SAFETY: scratch and signature are retained by the submitting encoder until its fence.
         unsafe {
-            command.ExecuteIndirect(signature, native_count, &indirect.buffer, index as u64 * 32, None, 0);
+            command.ExecuteIndirect(
+                signature,
+                native_count,
+                &indirect.buffer,
+                index as u64 * 32,
+                None,
+                0,
+            );
         }
         Ok(())
     }
@@ -646,20 +703,28 @@ fn create_native_indirect_pack(device: &ID3D12Device) -> Result<NativeIndirectPa
     let artifact = indirect_artifacts::native_indirect_dx12_shader("cs_pack_native_indirect")
         .ok_or_else(|| Error::Shader("missing offline DX12 indirect pack shader".into()))?;
     let gfx_core::EmbeddedShader::DxBytecode(bytecode) = artifact else {
-        return Err(Error::Shader("DX12 native indirect pack must be precompiled".into()));
+        return Err(Error::Shader(
+            "DX12 native indirect pack must be precompiled".into(),
+        ));
     };
     let parameters = [
         D3D12_ROOT_PARAMETER {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_SRV,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
-                Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: 0, RegisterSpace: 0 },
+                Descriptor: D3D12_ROOT_DESCRIPTOR {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                },
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
         },
         D3D12_ROOT_PARAMETER {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
-                Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: 1, RegisterSpace: 0 },
+                Descriptor: D3D12_ROOT_DESCRIPTOR {
+                    ShaderRegister: 1,
+                    RegisterSpace: 0,
+                },
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
         },
@@ -778,6 +843,38 @@ pub(super) fn create_indirect_signature(
     }
     .map_err(dx_error)?;
     signature.ok_or_else(|| Error::Backend("DX12 returned no indirect signature".into()))
+}
+
+/// Signature for `D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED` argument records.
+///
+/// Indexed records are 20 bytes, so this is a separate signature from the packed
+/// non-indexed one; the constant root parameter keeps Naga's draw constants usable.
+pub(super) fn create_indexed_indirect_signature(
+    device: &ID3D12Device,
+) -> Result<ID3D12CommandSignature> {
+    // Standard 20-byte DRAW_INDEXED records. The signature consumes no root parameters, so it
+    // is created without a root signature and the arguments stay portable across backends.
+    let arguments = [D3D12_INDIRECT_ARGUMENT_DESC {
+        Type: D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+        ..Default::default()
+    }];
+    // SAFETY: The signature consumes initialized 20-byte DRAW_INDEXED records and needs no
+    // root signature because it references no root parameters.
+    let mut signature = None;
+    unsafe {
+        device.CreateCommandSignature(
+            &D3D12_COMMAND_SIGNATURE_DESC {
+                ByteStride: 20,
+                NumArgumentDescs: arguments.len() as u32,
+                pArgumentDescs: arguments.as_ptr(),
+                NodeMask: 0,
+            },
+            None::<&ID3D12RootSignature>,
+            &mut signature,
+        )
+    }
+    .map_err(dx_error)?;
+    signature.ok_or_else(|| Error::Backend("DX12 returned no indexed indirect signature".into()))
 }
 
 fn raw_buffer_srv_desc(first: u64, count: u32) -> D3D12_SHADER_RESOURCE_VIEW_DESC {

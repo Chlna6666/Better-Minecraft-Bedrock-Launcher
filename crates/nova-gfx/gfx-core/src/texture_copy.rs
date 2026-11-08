@@ -75,6 +75,7 @@ mod tests {
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         }
     }
 

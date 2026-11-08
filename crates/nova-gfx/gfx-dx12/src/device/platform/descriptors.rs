@@ -189,6 +189,7 @@ mod tests {
                 usage: TextureUsage::SAMPLED,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             })
             .unwrap();
         let view = device

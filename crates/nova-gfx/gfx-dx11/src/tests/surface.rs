@@ -1,4 +1,76 @@
 use super::*;
+use gfx_core::DiagnosticsDevice as _;
+
+#[test]
+#[ignore = "requires Windows hardware D3D11 and a desktop session"]
+fn presented_frames_report_gpu_timestamps() {
+    let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("hardware DX11 device");
+    assert!(
+        device.frame_gpu_timestamps_supported(),
+        "FL11.0 timestamp queries must be available"
+    );
+    let window = TestWindow::new();
+    let surface = device
+        .create_surface(&window, &gfx_core::SurfaceDescriptor { label: None })
+        .expect("surface");
+    let chain = device
+        .create_swapchain(
+            surface,
+            gfx_core::SurfaceConfig {
+                size: Extent2d::new(64, 64).expect("extent"),
+                format: Format::Bgra8Unorm,
+                present_mode: PresentMode::Fifo,
+                alpha_mode: CompositeAlphaMode::Opaque,
+                desired_image_count: 0,
+                desired_maximum_frame_latency: 0,
+            },
+        )
+        .expect("swapchain");
+    let pass = device
+        .create_render_pass(&RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![ColorAttachmentDescriptor {
+                format: Format::Bgra8Unorm,
+            }],
+            depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
+        })
+        .expect("pass");
+
+    let mut reported = None;
+    for _ in 0..16 {
+        let frame = device
+            .render_and_present(&PresentFrameDescriptor {
+                swapchain: chain,
+                render_pass: pass,
+                commands: &[],
+                color_load_op: LoadOp::Clear(CLEAR),
+                depth_attachment: None,
+                present_region: None,
+            })
+            .expect("present")
+            .expect("presented frame");
+        if let Some(submission) = frame.submission {
+            device.wait_submission(submission).expect("submission wait");
+        }
+        if let Some(timestamps) = device
+            .last_frame_gpu_timestamps()
+            .expect("timestamp readback")
+        {
+            reported = Some(timestamps);
+            break;
+        }
+    }
+    let reported = reported.expect("a completed frame must report GPU timestamps");
+    assert!(reported.frequency > 0, "timestamp frequency must be usable");
+
+    device.destroy_swapchain(chain).expect("destroy chain");
+    device.destroy_surface(surface).expect("destroy surface");
+    device.destroy_render_pass(pass).expect("destroy pass");
+}
 
 #[test]
 #[ignore = "requires Windows hardware D3D11 and a desktop session"]
@@ -32,6 +104,8 @@ fn verify_resize_retirement(device: &mut Dx11Device, alpha: CompositeAlphaMode) 
                     format: Format::Bgra8Unorm,
                     present_mode: PresentMode::Mailbox,
                     alpha_mode: alpha,
+                    desired_image_count: 0,
+                    desired_maximum_frame_latency: 0,
                 },
             )
             .expect("swapchain")
@@ -56,10 +130,14 @@ fn verify_resize_retirement(device: &mut Dx11Device, alpha: CompositeAlphaMode) 
     let pass = device
         .create_render_pass(&RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Bgra8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         })
         .expect("pass");
     verify_window_retirement(device, chains, pass);
@@ -200,6 +278,8 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             format: Format::Bgra8Unorm,
             present_mode: PresentMode::Mailbox,
             alpha_mode: alpha,
+            desired_image_count: 0,
+            desired_maximum_frame_latency: 0,
         };
         let chain = device
             .create_swapchain(surface, config)
@@ -207,11 +287,15 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
         let pass = device
             .create_render_pass(&RenderPassDescriptor {
                 label: None,
-                color_attachment: ColorAttachmentDescriptor {
+                color_attachments: vec![ColorAttachmentDescriptor {
                     format: Format::Bgra8Unorm,
-                },
+                }],
                 depth_attachment: None,
-            })
+
+            sample_count: 1,
+            resolve_target: None,
+
+        })
             .expect("surface pass");
         for _ in 0..3 {
             device

@@ -44,17 +44,29 @@ impl BufferBindingLimits {
     /// Buffer allocation length is validated separately by the backend.
     pub fn validate_range(self, offset: u64, size: u64, uniform: bool) -> Result<()> {
         let (alignment, maximum) = if uniform {
-            (self.uniform_offset_alignment, self.max_uniform_binding_bytes)
+            (
+                self.uniform_offset_alignment,
+                self.max_uniform_binding_bytes,
+            )
         } else {
-            (self.storage_offset_alignment, self.max_storage_binding_bytes)
+            (
+                self.storage_offset_alignment,
+                self.max_storage_binding_bytes,
+            )
         };
         if alignment == 0 || maximum == 0 {
-            return Err(Error::Unavailable("buffer binding limits were not reported".into()));
+            return Err(Error::Unavailable(
+                "buffer binding limits were not reported".into(),
+            ));
         }
-        if size == 0 || size > maximum || offset % alignment != 0
+        if size == 0
+            || size > maximum
+            || offset % alignment != 0
             || offset.checked_add(size).is_none()
         {
-            return Err(Error::InvalidInput("buffer binding violates device limits".into()));
+            return Err(Error::InvalidInput(
+                "buffer binding violates device limits".into(),
+            ));
         }
         Ok(())
     }
@@ -63,16 +75,23 @@ impl BufferBindingLimits {
     pub fn storage_allocation_size(self, bytes: u64) -> Result<u64> {
         let align = self.storage_offset_alignment;
         if align == 0 || self.max_storage_binding_bytes == 0 {
-            return Err(Error::Unavailable("storage binding limits were not reported".into()));
+            return Err(Error::Unavailable(
+                "storage binding limits were not reported".into(),
+            ));
         }
         let requested = bytes.max(1);
         if requested > self.max_storage_binding_bytes {
-            return Err(Error::InvalidInput("storage allocation exceeds device binding limit".into()));
+            return Err(Error::InvalidInput(
+                "storage allocation exceeds device binding limit".into(),
+            ));
         }
-        requested.checked_add(align - 1)
+        requested
+            .checked_add(align - 1)
             .map(|value| value / align * align)
             .filter(|value| *value <= self.max_storage_binding_bytes)
-            .ok_or_else(|| Error::InvalidInput("aligned storage allocation exceeds device limits".into()))
+            .ok_or_else(|| {
+                Error::InvalidInput("aligned storage allocation exceeds device limits".into())
+            })
     }
 }
 
@@ -106,13 +125,17 @@ impl ComputeKernelProfile {
     /// Construct a simple one-dimensional shader profile with no shared memory.
     #[must_use]
     pub const fn one_dimensional(threads: u32) -> Self {
-        Self { workgroup_size: [threads, 1, 1], shared_memory_bytes: 0 }
+        Self {
+            workgroup_size: [threads, 1, 1],
+            shared_memory_bytes: 0,
+        }
     }
 
     /// Return the total number of shader invocations, or zero if invalid.
     #[must_use]
     pub fn invocations(self) -> u32 {
-        self.workgroup_size.iter()
+        self.workgroup_size
+            .iter()
             .try_fold(1u32, |count, &size| count.checked_mul(size))
             .unwrap_or(0)
     }
@@ -125,9 +148,7 @@ impl ComputeCapabilities {
     /// shader variants must remain consistent with this requirement.
     #[must_use]
     pub fn voxel_execution_path(self) -> VoxelExecutionPath {
-        if self.indirect_draw
-            && self.supports_kernel(ComputeKernelProfile::one_dimensional(64))
-        {
+        if self.indirect_draw && self.supports_kernel(ComputeKernelProfile::one_dimensional(64)) {
             VoxelExecutionPath::GpuDriven
         } else {
             VoxelExecutionPath::CpuFallback
@@ -151,7 +172,10 @@ impl ComputeCapabilities {
             && threads > 0
             && self.max_invocations_per_workgroup > 0
             && threads <= self.max_invocations_per_workgroup
-            && kernel.workgroup_size.iter().zip(self.max_workgroup_size)
+            && kernel
+                .workgroup_size
+                .iter()
+                .zip(self.max_workgroup_size)
                 .all(|(&requested, limit)| requested > 0 && requested <= limit)
             && self.max_workgroup_shared_memory_bytes > 0
             && kernel.shared_memory_bytes <= self.max_workgroup_shared_memory_bytes
@@ -167,7 +191,9 @@ impl ComputeCapabilities {
         profiles: &[ComputeKernelProfile],
         preferred_threads: u32,
     ) -> Option<usize> {
-        profiles.iter().enumerate()
+        profiles
+            .iter()
+            .enumerate()
             .filter(|(_, profile)| self.supports_kernel(**profile))
             .min_by_key(|(_, profile)| {
                 let threads = profile.invocations();
@@ -189,11 +215,15 @@ impl ComputeCapabilities {
         if !self.supports_compute() {
             return Err(Error::Unavailable("buffer compute is unsupported".into()));
         }
-        if logical_groups == 0 { return Ok([0, 1, 1]); }
+        if logical_groups == 0 {
+            return Ok([0, 1, 1]);
+        }
         let x = logical_groups.min(self.max_workgroups[0]);
         let y = logical_groups.div_ceil(x);
         if y > self.max_workgroups[1] {
-            return Err(Error::InvalidInput("2D compute dispatch exceeds device limits".into()));
+            return Err(Error::InvalidInput(
+                "2D compute dispatch exceeds device limits".into(),
+            ));
         }
         Ok([x, y, 1])
     }
@@ -234,6 +264,37 @@ pub struct ComputeDispatch<'a> {
     pub bindings: &'a [ComputeBufferBinding],
     /// Workgroup counts, not invocation counts.
     pub workgroups: [u32; 3],
+}
+
+/// Compute dispatch that binds one full resource set instead of individual buffers.
+///
+/// Use this when the shader needs textures, storage images or samplers; the buffer-only
+/// [`ComputeDispatch`] path cannot express those bindings. Backends that cannot bind a
+/// compute resource set report [`crate::Error::Unavailable`].
+#[derive(Clone, Copy, Debug)]
+pub struct ComputeBindGroupDispatch {
+    /// A compute-stage shader module; its entry point is fixed at module creation.
+    pub shader: crate::ShaderModuleId,
+    /// Resource set bound before the dispatch. Its layout must match the shader.
+    pub bind_group: crate::BindGroupId,
+    /// Workgroup counts, not invocation counts.
+    pub workgroups: [u32; 3],
+}
+
+impl ComputeBindGroupDispatch {
+    /// Validates the workgroup counts against a device's compute capabilities.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::InvalidInput`] when a count is zero or the total exceeds a
+    /// capability, and [`crate::Error::Unavailable`] when the device cannot dispatch.
+    pub fn validate(&self, capabilities: crate::ComputeCapabilities) -> crate::Result<()> {
+        crate::ComputeDispatch {
+            shader: self.shader,
+            bindings: &[],
+            workgroups: self.workgroups,
+        }
+        .validate(capabilities)
+    }
 }
 
 impl ComputeDispatch<'_> {
@@ -316,7 +377,11 @@ mod tests {
         assert_eq!(limits.storage_allocation_size(700).unwrap(), 1024);
         assert_eq!(limits.storage_allocation_size(2048).unwrap(), 2048);
         assert!(limits.storage_allocation_size(2049).is_err());
-        assert!(BufferBindingLimits::default().validate_range(0, 4, false).is_err());
+        assert!(
+            BufferBindingLimits::default()
+                .validate_range(0, 4, false)
+                .is_err()
+        );
     }
 
     #[test]
@@ -345,12 +410,22 @@ mod tests {
             workgroups: [1; 3],
         };
         assert!(dispatch.validate_with_limits(caps, limits).is_ok());
-        assert!(dispatch.validate_with_limits(caps, BufferBindingLimits::default()).is_err());
+        assert!(
+            dispatch
+                .validate_with_limits(caps, BufferBindingLimits::default())
+                .is_err()
+        );
         let bad = [ComputeBufferBinding {
-            buffer: BufferBinding { offset: 192, ..binding.buffer },
+            buffer: BufferBinding {
+                offset: 192,
+                ..binding.buffer
+            },
             ..binding
         }];
-        let dispatch = ComputeDispatch { bindings: &bad, ..dispatch };
+        let dispatch = ComputeDispatch {
+            bindings: &bad,
+            ..dispatch
+        };
         assert!(dispatch.validate_with_limits(caps, limits).is_err());
     }
 
@@ -415,13 +490,21 @@ mod tests {
         for kernel in [
             ComputeKernelProfile::one_dimensional(0),
             ComputeKernelProfile::one_dimensional(129),
-            ComputeKernelProfile { workgroup_size: [32, 8, 1], shared_memory_bytes: 0 },
-            ComputeKernelProfile { workgroup_size: [32, 4, 1], shared_memory_bytes: 20000 },
+            ComputeKernelProfile {
+                workgroup_size: [32, 8, 1],
+                shared_memory_bytes: 0,
+            },
+            ComputeKernelProfile {
+                workgroup_size: [32, 4, 1],
+                shared_memory_bytes: 20000,
+            },
         ] {
             assert!(!caps.supports_kernel(kernel));
         }
-        assert!(!ComputeCapabilities::default()
-            .supports_kernel(ComputeKernelProfile::one_dimensional(32)));
+        assert!(
+            !ComputeCapabilities::default()
+                .supports_kernel(ComputeKernelProfile::one_dimensional(32))
+        );
     }
 
     #[test]
@@ -431,21 +514,29 @@ mod tests {
         assert_eq!(caps.select_precompiled_kernel(&variants, 256), Some(2));
         assert_eq!(caps.select_precompiled_kernel(&variants, 48), Some(0));
         assert_eq!(caps.select_precompiled_kernel(&variants, 96), Some(1));
-        assert_eq!(ComputeCapabilities::default()
-            .select_precompiled_kernel(&variants, 64), None);
+        assert_eq!(
+            ComputeCapabilities::default().select_precompiled_kernel(&variants, 64),
+            None
+        );
     }
 
     #[test]
     fn linear_dispatch_plan_respects_y_limit_and_padding() {
         let caps = mock_caps();
         for (count, expected) in [
-            (0, [0, 1, 1]), (7, [7, 1, 1]),
-            (20, [7, 3, 1]), (28, [7, 4, 1]),
+            (0, [0, 1, 1]),
+            (7, [7, 1, 1]),
+            (20, [7, 3, 1]),
+            (28, [7, 4, 1]),
         ] {
             assert_eq!(caps.plan_linear_dispatch_2d(count).unwrap(), expected);
         }
         assert!(caps.plan_linear_dispatch_2d(29).is_err());
-        assert!(ComputeCapabilities::default().plan_linear_dispatch_2d(1).is_err());
+        assert!(
+            ComputeCapabilities::default()
+                .plan_linear_dispatch_2d(1)
+                .is_err()
+        );
     }
 
     #[test]
@@ -459,14 +550,24 @@ mod tests {
         };
         // This can represent any supported backend, including D3D11 and
         // OpenGL 4.3+, without a platform-specific branch.
-        assert_eq!(capable.voxel_execution_path(), VoxelExecutionPath::GpuDriven);
         assert_eq!(
-            ComputeCapabilities { indirect_draw: false, ..capable }.voxel_execution_path(),
+            capable.voxel_execution_path(),
+            VoxelExecutionPath::GpuDriven
+        );
+        assert_eq!(
+            ComputeCapabilities {
+                indirect_draw: false,
+                ..capable
+            }
+            .voxel_execution_path(),
             VoxelExecutionPath::CpuFallback,
         );
         assert_eq!(
-            ComputeCapabilities { max_invocations_per_workgroup: 32, ..capable }
-                .voxel_execution_path(),
+            ComputeCapabilities {
+                max_invocations_per_workgroup: 32,
+                ..capable
+            }
+            .voxel_execution_path(),
             VoxelExecutionPath::CpuFallback,
         );
         assert_eq!(
@@ -474,5 +575,4 @@ mod tests {
             VoxelExecutionPath::CpuFallback,
         );
     }
-
 }

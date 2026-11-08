@@ -280,11 +280,18 @@ mod platform {
 
         /// Creates a sampler record.
         fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+            desc.validate()?;
             Ok(self.samplers.insert(MetalSampler {
                 mag_filter: desc.mag_filter,
                 min_filter: desc.min_filter,
                 address_mode_u: desc.address_mode_u,
                 address_mode_v: desc.address_mode_v,
+                address_mode_w: desc.address_mode_w,
+                compare: desc.compare,
+                border_color: desc.border_color,
+                lod_min_clamp: desc.lod_min_clamp,
+                lod_max_clamp: desc.lod_max_clamp,
+                lod_bias: desc.lod_bias,
             }))
         }
 
@@ -375,8 +382,28 @@ mod platform {
 
         /// Creates a render pass record.
         fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
+            desc.validate()?;
+            if desc.color_attachments.len() != 1 {
+                return Err(Error::Unavailable(
+                    "Metal MRT is not implemented; use exactly one color attachment".into(),
+                ));
+            }
+            if desc.sample_count > 1
+                || desc
+                    .depth_attachment
+                    .as_ref()
+                    .is_some_and(|attachment| attachment.stencil_format.is_some())
+            {
+                return Err(Error::Unavailable(
+                    "Metal MSAA/stencil is not implemented".into(),
+                ));
+            }
             Ok(self.render_passes.insert(MetalRenderPass {
-                color_format: desc.color_attachment.format,
+                color_formats: desc
+                    .color_attachments
+                    .iter()
+                    .map(|attachment| attachment.format)
+                    .collect(),
             }))
         }
 
@@ -400,9 +427,12 @@ mod platform {
                 ));
             }
             let render_pass = self.render_passes.get(desc.render_pass)?;
-            if render_pass.color_format != desc.color_format {
+            let target = desc.color_targets.get(0).ok_or_else(|| {
+                Error::InvalidInput("Metal pipeline requires one color target".to_string())
+            })?;
+            if render_pass.color_formats.get(0) != Some(&target.format) {
                 return Err(Error::InvalidInput(
-                    "pipeline color_format must match render pass color attachment".to_string(),
+                    "pipeline color target must match render pass color attachment".to_string(),
                 ));
             }
             let pipeline_state = create_pipeline_state(
@@ -410,11 +440,19 @@ mod platform {
                 desc,
                 vertex_shader,
                 fragment_shader,
-                render_pass.color_format,
+                target.format,
             )?;
             Ok(self.render_pipelines.insert(MetalRenderPipeline {
-                color_format: desc.color_format,
-                blend_mode: desc.blend_mode,
+                color_formats: desc
+                    .color_targets
+                    .iter()
+                    .map(|target| target.format)
+                    .collect(),
+                blend_modes: desc
+                    .color_targets
+                    .iter()
+                    .map(|target| target.blend)
+                    .collect(),
                 primitive_topology: desc.primitive_topology,
                 raster: desc.raster,
                 pipeline_state,
@@ -519,9 +557,9 @@ mod platform {
             step: &RenderCommand,
         ) -> Result<PreparedMetalRenderStep> {
             let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
-            if render_pass.color_format != pipeline.color_format {
+            if render_pass.color_formats != pipeline.color_formats {
                 return Err(Error::InvalidInput(
-                    "render pass and pipeline color formats do not match".to_string(),
+                    "render pass and pipeline color targets do not match".to_string(),
                 ));
             }
             let bind_groups = step
@@ -754,6 +792,14 @@ mod platform {
     }
 
     impl ResourceDevice for MetalDevice {
+        fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+            // Metal MSAA is not implemented on this backend yet.
+            gfx_core::MultisampleCapabilities {
+                max_sample_count: 1,
+                stencil_supported: false,
+            }
+        }
+
         fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
             self.copy_texture_regions(copies)
         }
@@ -979,6 +1025,12 @@ mod platform {
         min_filter: FilterMode,
         address_mode_u: AddressMode,
         address_mode_v: AddressMode,
+        address_mode_w: AddressMode,
+        compare: Option<CompareFunction>,
+        border_color: Option<[f32; 4]>,
+        lod_min_clamp: f32,
+        lod_max_clamp: f32,
+        lod_bias: f32,
     }
 
     #[derive(Clone)]
@@ -1006,13 +1058,13 @@ mod platform {
 
     #[derive(Clone, Copy)]
     struct MetalRenderPass {
-        color_format: Format,
+        color_formats: Vec<Format>,
     }
 
     #[derive(Clone)]
     struct MetalRenderPipeline {
-        color_format: Format,
-        blend_mode: BlendMode,
+        color_formats: Vec<Format>,
+        blend_modes: Vec<BlendMode>,
         primitive_topology: PrimitiveTopology,
         raster: gfx_core::RasterState,
         pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
@@ -1134,7 +1186,12 @@ mod platform {
         let color_attachment =
             unsafe { pipeline_desc.colorAttachments().objectAtIndexedSubscript(0) };
         color_attachment.setPixelFormat(format_to_metal(color_format));
-        match desc.blend_mode {
+        match desc
+            .color_targets
+            .get(0)
+            .map(|target| target.blend)
+            .unwrap_or(BlendMode::Replace)
+        {
             BlendMode::Replace => color_attachment.setBlendingEnabled(false),
             BlendMode::Alpha => {
                 color_attachment.setBlendingEnabled(true);
@@ -1211,7 +1268,7 @@ mod platform {
         });
         for step in steps {
             let pipeline = &step.pipeline;
-            let _ = (pipeline.blend_mode, pipeline.pipeline_layout);
+            let _ = (pipeline.pipeline_layout,);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
             encoder.setFrontFacingWinding(match pipeline.raster.front_face {
                 gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
@@ -1374,6 +1431,14 @@ mod platform {
             Format::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
             Format::Rgba8UnormSrgb => MTLPixelFormat::RGBA8Unorm_sRGB,
             Format::Rgba16Float => MTLPixelFormat::RGBA16Float,
+            Format::Rg8Unorm => MTLPixelFormat::RG8Unorm,
+            Format::R16Float => MTLPixelFormat::R16Float,
+            Format::Rg16Float => MTLPixelFormat::RG16Float,
+            Format::R32Float => MTLPixelFormat::R32Float,
+            Format::Rgba32Float => MTLPixelFormat::RGBA32Float,
+            Format::R8Uint => MTLPixelFormat::R8Uint,
+            Format::Rg8Uint => MTLPixelFormat::RG8Uint,
+            Format::Rgba8Uint => MTLPixelFormat::RGBA8Uint,
             Format::Depth32Float => MTLPixelFormat::Depth32Float,
         }
     }

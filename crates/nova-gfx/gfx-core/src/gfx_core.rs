@@ -25,15 +25,25 @@
 //! ```
 
 mod backend;
+mod buffer_texture_copy;
 mod buffer_upload;
 mod compute;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 mod memory;
 mod texture_array;
 mod texture_copy;
-pub use texture_array::{TextureArrayCapabilities, TextureArrayLayerUpload, TextureArrayLayerWriteDescriptor, TextureArrayPlan};
+pub use buffer_texture_copy::{
+    CopyDirection, TextureBufferCopy, TextureCopyLimits, texture_copy_buffer_bytes,
+    texture_copy_row_pitch,
+};
 pub use compute::{
-    BufferBindingLimits, ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
-    ComputeKernelProfile, VoxelExecutionPath,
+    BufferBindingLimits, ComputeBindGroupDispatch, ComputeBufferAccess, ComputeBufferBinding,
+    ComputeCapabilities, ComputeDispatch, ComputeKernelProfile, VoxelExecutionPath,
+};
+pub use texture_array::{
+    TextureArrayCapabilities, TextureArrayLayerUpload, TextureArrayLayerWriteDescriptor,
+    TextureArrayPlan,
 };
 pub use texture_copy::TextureCopy;
 
@@ -56,9 +66,9 @@ use smallvec::SmallVec;
 use thiserror::Error as ThisError;
 
 pub use backend::{
-    Backend, CommandDevice, Device, DiagnosticsDevice, PipelineDevice, PresentTimings,
-    PresentationDevice, PresentedFrame, ResourceDevice, SubmissionDevice, SurfaceDevice,
-    TextureTransferDevice,
+    Backend, CommandDevice, Device, DiagnosticsDevice, FrameGpuTimestamps, PipelineDevice,
+    PresentTimings, PresentationDevice, PresentedFrame, ResourceDevice, SubmissionDevice,
+    SurfaceDevice, TextureTransferDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
@@ -73,6 +83,12 @@ pub enum Error {
     /// The native presentation surface changed and the current frame must be retried.
     #[error("graphics presentation surface is outdated")]
     SurfaceOutdated,
+    /// The GPU device was removed or reset; all GPU resources and submissions
+    /// are invalid and the device must be recreated. The payload carries the
+    /// backend's removal reason for diagnostics. This matches wgpu's
+    /// lost-device semantics.
+    #[error("graphics device lost: {0}")]
+    DeviceLost(String),
     /// A descriptor, handle, or command was invalid.
     #[error("invalid graphics input: {0}")]
     InvalidInput(String),
@@ -418,6 +434,54 @@ pub enum PowerPreference {
     HighPerformance,
 }
 
+/// Backend pool, descriptor-heap, and transfer tuning.
+///
+/// Every field uses zero to select the backend's built-in default. These knobs
+/// only affect backend-internal allocations and pacing; they never change the
+/// public resource semantics. Values outside a backend's native limits are
+/// rejected or clamped by that backend at device creation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeviceTuning {
+    /// Retained command encoders before excess encoders are destroyed.
+    ///
+    /// Used by DX12 and Vulkan. Zero selects 16.
+    pub command_encoder_pool_capacity: u32,
+    /// Retained upload command encoders/pools before excess ones are destroyed.
+    ///
+    /// Used by DX12 and Vulkan. Zero selects 4.
+    pub upload_command_pool_capacity: u32,
+    /// Shader-visible resource descriptor heap capacity.
+    ///
+    /// Used by DX12 for CBV/SRV/UAV descriptors. Zero selects 65536; the D3D12
+    /// limit of 1,000,000 descriptors is enforced. The sampler heap stays at
+    /// the D3D12 limit of 2048.
+    pub resource_descriptor_capacity: u32,
+    /// Non-shader-visible render-target-view descriptor heap capacity.
+    ///
+    /// Used by DX12. Zero selects 256.
+    pub render_target_descriptor_capacity: u32,
+    /// Non-shader-visible depth-stencil-view descriptor heap capacity.
+    ///
+    /// Used by DX12. Zero selects 256.
+    pub depth_stencil_descriptor_capacity: u32,
+    /// Upper bound for a persisted pipeline-cache blob.
+    ///
+    /// Used by DX12 and Vulkan. Zero selects 64 MiB.
+    pub pipeline_cache_limit_bytes: u64,
+    /// Bytes reserved by one transient upload-ring page.
+    ///
+    /// Used by DX12 and Vulkan. Zero selects 4 MiB.
+    pub upload_page_bytes: u64,
+    /// Idle upload-ring pages retained for reuse.
+    ///
+    /// Used by DX12 and Vulkan. Zero selects 2.
+    pub upload_retained_idle_pages: u32,
+    /// Bounded wait applied when a native frame slot is still busy.
+    ///
+    /// Used by Vulkan. Zero selects 8 ms.
+    pub present_timeout_micros: u64,
+}
+
 /// Logical device creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceDescriptor {
@@ -432,6 +496,8 @@ pub struct DeviceDescriptor {
     /// Backends place adapter-specific cache files below this directory. `None` keeps
     /// pipeline caches process-local only.
     pub pipeline_cache_dir: Option<PathBuf>,
+    /// Backend pool, descriptor-heap, and transfer tuning.
+    pub tuning: DeviceTuning,
 }
 
 impl Default for DeviceDescriptor {
@@ -441,6 +507,7 @@ impl Default for DeviceDescriptor {
             adapter_name: None,
             power_preference: PowerPreference::LowPower,
             pipeline_cache_dir: None,
+            tuning: DeviceTuning::default(),
         }
     }
 }
@@ -499,6 +566,24 @@ pub enum Format {
     Rgba16Float,
     /// 32-bit floating-point depth format.
     Depth32Float,
+    /// 8-bit unsigned normalized two-channel format for paired masks.
+    Rg8Unorm,
+    /// 16-bit half-float red channel; half the storage of [`Self::R32Float`].
+    R16Float,
+    /// 16-bit half-float red/green channels.
+    Rg16Float,
+    /// 32-bit floating-point red channel for depth-like or high-precision masks.
+    R32Float,
+    /// 32-bit floating-point RGBA for full-precision interchange.
+    Rgba32Float,
+    /// 8-bit unsigned integer red channel for identifiers.
+    ///
+    /// Sampling requires an integer-typed shader binding (`texture_2d<u32>`).
+    R8Uint,
+    /// 8-bit unsigned integer red/green channels for packed identifiers.
+    Rg8Uint,
+    /// 8-bit unsigned integer RGBA for identifiers and bit fields.
+    Rgba8Uint,
 }
 
 impl Format {
@@ -508,17 +593,43 @@ impl Format {
         matches!(self, Self::Bgra8UnormSrgb | Self::Rgba8UnormSrgb)
     }
 
+    /// Returns whether this format stores any depth component.
+    #[must_use]
+    pub const fn is_depth(self) -> bool {
+        matches!(self, Self::Depth32Float)
+    }
+
+    /// Returns whether this format stores integers instead of normalized/floating values.
+    ///
+    /// Integer formats cannot be blended or filtered, and shaders must declare an
+    /// integer-typed binding to read them.
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        matches!(self, Self::R8Uint | Self::Rg8Uint | Self::Rgba8Uint)
+    }
+
+    /// Returns whether this format can back a sampled or storage texture.
+    #[must_use]
+    pub const fn is_texture(self) -> bool {
+        !self.is_depth()
+    }
+
     /// Returns the number of bytes occupied by one pixel.
     #[must_use]
     pub const fn bytes_per_pixel(self) -> u32 {
         match self {
-            Self::R8Unorm => 1,
+            Self::R8Unorm | Self::R8Uint => 1,
+            Self::Rg8Unorm | Self::R16Float | Self::Rg8Uint => 2,
             Self::Bgra8Unorm
             | Self::Bgra8UnormSrgb
             | Self::Rgba8Unorm
             | Self::Rgba8UnormSrgb
-            | Self::Depth32Float => 4,
+            | Self::Rgba8Uint
+            | Self::Depth32Float
+            | Self::Rg16Float
+            | Self::R32Float => 4,
             Self::Rgba16Float => 8,
+            Self::Rgba32Float => 16,
         }
     }
 }
@@ -569,10 +680,22 @@ pub struct SurfaceConfig {
     pub present_mode: PresentMode,
     /// Alpha behavior.
     pub alpha_mode: CompositeAlphaMode,
+    /// Requested number of rotating swapchain images.
+    ///
+    /// Zero selects the backend default (DX11: 2, DX12: 3, Vulkan:
+    /// `min_image_count + 1`). Other backends may ignore the request. The value
+    /// is clamped to each backend's supported range.
+    pub desired_image_count: u32,
+    /// Requested maximum number of frames queued ahead of presentation.
+    ///
+    /// Zero selects the backend default (DX11: 1, DX12: 2, Vulkan: 2 frame
+    /// slots). Vulkan applies this to its frame-slot ring, not to swapchain
+    /// image count. Other backends may ignore the request.
+    pub desired_maximum_frame_latency: u32,
 }
 
 impl SurfaceConfig {
-    /// Creates a validated swapchain descriptor.
+    /// Creates a validated swapchain descriptor with backend-default pacing.
     ///
     /// # Errors
     ///
@@ -583,8 +706,43 @@ impl SurfaceConfig {
             format,
             present_mode: PresentMode::Fifo,
             alpha_mode: CompositeAlphaMode::Auto,
+            desired_image_count: 0,
+            desired_maximum_frame_latency: 0,
         })
     }
+
+    /// Resolves [`Self::desired_image_count`] against a backend range.
+    ///
+    /// `backend_default` applies when the request is zero. The result is always
+    /// within `minimum..=maximum`; an inverted range is treated as `minimum`.
+    #[must_use]
+    pub fn resolve_image_count(self, backend_default: u32, minimum: u32, maximum: u32) -> u32 {
+        let requested = backend_default_when_zero(self.desired_image_count, backend_default);
+        clamp_request(requested, minimum, maximum)
+    }
+
+    /// Resolves [`Self::desired_maximum_frame_latency`] against a backend range.
+    ///
+    /// `backend_default` applies when the request is zero. The result is always
+    /// within `minimum..=maximum`; an inverted range is treated as `minimum`.
+    #[must_use]
+    pub fn resolve_frame_latency(self, backend_default: u32, minimum: u32, maximum: u32) -> u32 {
+        let requested =
+            backend_default_when_zero(self.desired_maximum_frame_latency, backend_default);
+        clamp_request(requested, minimum, maximum)
+    }
+}
+
+fn backend_default_when_zero(requested: u32, backend_default: u32) -> u32 {
+    if requested == 0 {
+        backend_default
+    } else {
+        requested
+    }
+}
+
+fn clamp_request(requested: u32, minimum: u32, maximum: u32) -> u32 {
+    requested.max(minimum).min(maximum.max(minimum))
 }
 
 bitflags! {
@@ -622,6 +780,8 @@ bitflags! {
         const COLOR_ATTACHMENT = 1 << 3;
         /// Depth attachment.
         const DEPTH_ATTACHMENT = 1 << 4;
+        /// Shader storage image: read or written by a shader through a UAV / image unit.
+        const STORAGE = 1 << 5;
     }
 }
 
@@ -719,6 +879,15 @@ pub enum BindingType {
     StorageBuffer,
     /// Sampled texture or texture view.
     SampledTexture,
+    /// Storage texture view bound as a UAV / image unit.
+    ///
+    /// `format` must equal the bound view's format; `read_only` bindings reject writes.
+    StorageTexture {
+        /// Texel format the shader reads or writes.
+        format: Format,
+        /// `true` when the shader only reads the image.
+        read_only: bool,
+    },
     /// Sampler.
     Sampler,
 }
@@ -732,8 +901,10 @@ impl BindingType {
             (
                 Self::UniformBuffer | Self::StorageBuffer,
                 BindingResource::Buffer(_)
-            ) | (Self::SampledTexture, BindingResource::Texture(_))
-                | (Self::Sampler, BindingResource::Sampler(_))
+            ) | (
+                Self::SampledTexture | Self::StorageTexture { .. },
+                BindingResource::Texture(_)
+            ) | (Self::Sampler, BindingResource::Sampler(_))
         )
     }
 }
@@ -858,15 +1029,10 @@ pub struct PipelineLayoutDescriptor {
 impl PipelineLayoutDescriptor {
     /// Validates the descriptor.
     ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidInput`] when the layout is empty.
+    /// An empty layout is valid: pipelines without resource bindings (for
+    /// example vertex-color passes) must not be forced to declare a dummy
+    /// bind group layout.
     pub fn validate(&self) -> Result<()> {
-        if self.bind_group_layouts.is_empty() {
-            return Err(Error::InvalidInput(
-                "pipeline layout must contain at least one bind group layout".to_string(),
-            ));
-        }
         Ok(())
     }
 }
@@ -930,14 +1096,20 @@ pub enum TextureDimension {
     /// Single-layer 2D texture.
     D2,
     /// Array of identical 2D slices, with independent mip chains.
-    D2Array { layers: u32 },
+    D2Array {
+        /// Number of independently addressed slices.
+        layers: u32,
+    },
 }
 
 impl TextureDimension {
     /// Number of array layers per mip level.
     #[must_use]
     pub const fn layers(self) -> u32 {
-        match self { Self::D2 => 1, Self::D2Array { layers } => layers }
+        match self {
+            Self::D2 => 1,
+            Self::D2Array { layers } => layers,
+        }
     }
 }
 
@@ -958,6 +1130,8 @@ pub struct TextureDescriptor {
     pub memory_location: MemoryLocation,
     /// Texture dimension.
     pub dimension: TextureDimension,
+    /// Sample count for multisampled textures. `1` is single-sample.
+    pub sample_count: u32,
 }
 
 impl TextureDescriptor {
@@ -965,19 +1139,27 @@ impl TextureDescriptor {
     /// alignment, metadata and driver overhead. Use only with a valid descriptor.
     #[must_use]
     pub fn byte_size(&self) -> u64 {
-        (0..self.mip_level_count).fold(0_u64, |total, mip| {
-            total.saturating_add(
-                u64::from((self.size.width() >> mip).max(1))
-                    .saturating_mul(u64::from((self.size.height() >> mip).max(1)))
-                    .saturating_mul(u64::from(self.format.bytes_per_pixel())),
-            )
-        }).saturating_mul(u64::from(self.dimension.layers()))
+        (0..self.mip_level_count)
+            .fold(0_u64, |total, mip| {
+                total.saturating_add(
+                    u64::from((self.size.width() >> mip).max(1))
+                        .saturating_mul(u64::from((self.size.height() >> mip).max(1)))
+                        .saturating_mul(u64::from(self.format.bytes_per_pixel())),
+                )
+            })
+            .saturating_mul(u64::from(self.dimension.layers()))
     }
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] when no usage is set or the mip count exceeds the
+    /// Returns whether the texture uses a depth format.
+    #[must_use]
+    pub const fn is_format_depth(&self) -> bool {
+        self.format.is_depth()
+    }
+
     /// dimensions' complete mip chain.
     pub fn validate(&self) -> Result<()> {
         if self.usage.is_empty() {
@@ -985,18 +1167,50 @@ impl TextureDescriptor {
                 "texture usage must not be empty".to_string(),
             ));
         }
+        if self.sample_count == 0 || !self.sample_count.is_power_of_two() {
+            return Err(Error::InvalidInput(format!(
+                "texture sample_count {} must be a power of two greater than zero",
+                self.sample_count
+            )));
+        }
         if let TextureDimension::D2Array { layers } = self.dimension {
             if layers == 0 {
-                return Err(Error::InvalidInput("texture arrays require nonzero layers".into()));
+                return Err(Error::InvalidInput(
+                    "texture arrays require nonzero layers".into(),
+                ));
             }
             if self.format == Format::Depth32Float {
-                return Err(Error::Unavailable("depth texture arrays need a separate depth-view ABI".into()));
+                return Err(Error::Unavailable(
+                    "depth texture arrays need a separate depth-view ABI".into(),
+                ));
             }
             // Array render targets/readback need their own layer-aware ABI.
             if self.usage.intersects(
-                TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT | TextureUsage::COPY_SRC
+                TextureUsage::COLOR_ATTACHMENT
+                    | TextureUsage::DEPTH_ATTACHMENT
+                    | TextureUsage::COPY_SRC,
             ) {
-                return Err(Error::Unavailable("layered attachments and readback are not implemented".into()));
+                return Err(Error::Unavailable(
+                    "layered attachments and readback are not implemented".into(),
+                ));
+            }
+        }
+        if self.usage.contains(TextureUsage::STORAGE) {
+            // Storage images are single-sampled, single-level and never depth.
+            if self.sample_count > 1 {
+                return Err(Error::InvalidInput(
+                    "storage textures must be single-sampled".into(),
+                ));
+            }
+            if self.is_format_depth() {
+                return Err(Error::InvalidInput(
+                    "storage textures cannot use a depth format".into(),
+                ));
+            }
+            if self.mip_level_count != 1 {
+                return Err(Error::InvalidInput(
+                    "storage textures must have exactly one mip level".into(),
+                ));
             }
         }
         let largest_dimension = self.size.width().max(self.size.height());
@@ -1122,10 +1336,14 @@ pub enum AddressMode {
     ClampToEdge,
     /// Repeat texture coordinates.
     Repeat,
+    /// Mirror the texture before repeating.
+    MirrorRepeat,
+    /// Clamp to the border color.
+    ClampToBorder,
 }
 
 /// Sampler descriptor.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SamplerDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
@@ -1141,6 +1359,34 @@ pub struct SamplerDescriptor {
     pub address_mode_u: AddressMode,
     /// V address mode.
     pub address_mode_v: AddressMode,
+    /// W address mode.
+    pub address_mode_w: AddressMode,
+    /// Comparison function for shadow sampling. `None` uses ordinary (non-compare) sampling.
+    pub compare: Option<CompareFunction>,
+    /// Border color used with [`AddressMode::ClampToBorder`].
+    pub border_color: Option<[f32; 4]>,
+    /// Minimum level-of-detail clamp.
+    pub lod_min_clamp: f32,
+    /// Maximum level-of-detail clamp.
+    pub lod_max_clamp: f32,
+    /// Level-of-detail bias in mip units.
+    pub lod_bias: f32,
+}
+
+impl SamplerDescriptor {
+    /// Validates sampler fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the LOD range is inverted.
+    pub fn validate(&self) -> Result<()> {
+        if self.lod_min_clamp > self.lod_max_clamp {
+            return Err(Error::InvalidInput(
+                "sampler lod_min_clamp must not exceed lod_max_clamp".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for SamplerDescriptor {
@@ -1153,6 +1399,12 @@ impl Default for SamplerDescriptor {
             anisotropic: false,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            compare: None,
+            border_color: None,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            lod_bias: 0.0,
         }
     }
 }
@@ -1334,6 +1586,8 @@ pub enum EmbeddedShader {
         buffers: &'static [GlslBufferBinding],
         /// Combined GLSL sampler names and original texture/sampler slots.
         textures: &'static [GlslTextureBinding],
+        /// GLSL image unit names and the WGSL storage slots they came from.
+        images: &'static [GlslImageBinding],
     },
     /// DX12 HLSL source, compiled by the backend when a renderer is created.
     Hlsl(&'static str),
@@ -1360,6 +1614,7 @@ impl EmbeddedShader {
                 source,
                 buffers,
                 textures,
+                images,
             } => ShaderBinary {
                 stage,
                 entry_point: entry_point.into(),
@@ -1367,6 +1622,7 @@ impl EmbeddedShader {
                     source: Cow::Borrowed(source),
                     buffers: buffers.to_vec(),
                     textures: textures.to_vec(),
+                    images: images.to_vec(),
                 }),
             },
             Self::Hlsl(source) => ShaderBinary::hlsl(stage, entry_point, source.to_string()),
@@ -1400,6 +1656,21 @@ pub struct GlslShader {
     pub buffers: Vec<GlslBufferBinding>,
     /// Combined texture/sampler reflection required by desktop GLSL.
     pub textures: Vec<GlslTextureBinding>,
+    /// Storage image (image unit) reflection required by desktop GLSL.
+    pub images: Vec<GlslImageBinding>,
+}
+
+/// One GLSL storage image uniform and the WGSL slot it came from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlslImageBinding {
+    /// Linked image uniform name generated by Naga.
+    pub name: Cow<'static, str>,
+    /// WGSL group-zero binding number.
+    pub binding: u32,
+    /// Texel format declared by the WGSL storage texture.
+    pub format: Format,
+    /// `true` when the shader only reads the image.
+    pub read_only: bool,
 }
 
 /// Original group-zero resource slot for a GLSL buffer block.
@@ -1484,24 +1755,57 @@ impl ShaderModuleDescriptor {
 /// Vertex attribute format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VertexFormat {
+    /// One 32-bit float.
+    Float32,
     /// Two 32-bit floats.
     Float32x2,
     /// Three 32-bit floats.
     Float32x3,
     /// Four 32-bit floats.
     Float32x4,
+    /// One 32-bit unsigned integer.
+    Uint32,
+    /// Two 32-bit unsigned integers.
+    Uint32x2,
+    /// Three 32-bit unsigned integers.
+    Uint32x3,
+    /// Four 32-bit unsigned integers.
+    Uint32x4,
+    /// Four 8-bit unsigned normalized values packed from one `u32`.
+    Unorm8x4,
+    /// Four 8-bit unsigned integers packed from one `u32`.
+    Uint8x4,
+    /// Two 16-bit unsigned normalized values packed from one `u32`.
+    Unorm16x2,
+    /// Four 16-bit unsigned normalized values packed from two `u32`s.
+    Unorm16x4,
 }
 
 impl VertexFormat {
-    /// Returns the format size in bytes.
+    /// Returns the format size in bytes, matching how a native input layout declares it.
+    ///
+    /// `Unorm8x4`/`Uint8x4` occupy four bytes, and `Unorm16x2` four; `Unorm16x4` eight.
     #[must_use]
     pub const fn size(self) -> u32 {
         match self {
-            Self::Float32x2 => 8,
+            Self::Float32 | Self::Uint32 | Self::Unorm8x4 | Self::Uint8x4 | Self::Unorm16x2 => 4,
+            Self::Float32x2 | Self::Unorm16x4 => 8,
             Self::Float32x3 => 12,
-            Self::Float32x4 => 16,
+            Self::Float32x4 | Self::Uint32x4 => 16,
+            Self::Uint32x2 => 8,
+            Self::Uint32x3 => 12,
         }
     }
+}
+
+/// How often a vertex buffer advances while a draw runs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VertexStepMode {
+    /// One element per vertex.
+    #[default]
+    Vertex,
+    /// One element per instance.
+    Instance,
 }
 
 /// Single vertex attribute description.
@@ -1520,9 +1824,19 @@ pub struct VertexAttributeDescriptor {
 pub struct VertexBufferLayoutDescriptor {
     /// Vertex stride in bytes.
     pub stride: u32,
+    /// Element advance rate. Metadata for the shader-pulled vertex path; backends that
+    /// build native input layouts map it to their per-instance input slot class.
+    pub step_mode: VertexStepMode,
     /// Attributes in the vertex.
     pub attributes: Vec<VertexAttributeDescriptor>,
 }
+
+/// Portable upper bound for color attachments in one render pass.
+///
+/// D3D11 and D3D12 guarantee eight; Vulkan and OpenGL devices may report
+/// fewer through [`ResourceDevice::max_color_attachments`]. Callers must not
+/// request more than the smaller of this constant and the device limit.
+pub const MAX_COLOR_ATTACHMENTS: usize = 8;
 
 /// Color blend mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1586,11 +1900,82 @@ pub struct ColorAttachmentDescriptor {
     pub format: Format,
 }
 
+bitflags! {
+    /// Per-attachment color write mask.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub struct ColorWrites: u8 {
+        /// Write the red channel.
+        const RED = 1 << 0;
+        /// Write the green channel.
+        const GREEN = 1 << 1;
+        /// Write the blue channel.
+        const BLUE = 1 << 2;
+        /// Write the alpha channel.
+        const ALPHA = 1 << 3;
+        /// Write every RGB channel.
+        const COLOR = Self::RED.bits() | Self::GREEN.bits() | Self::BLUE.bits();
+        /// Write every channel.
+        const ALL = Self::COLOR.bits() | Self::ALPHA.bits();
+    }
+}
+
+impl Default for ColorWrites {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+/// Multisampling and stencil capabilities reported by a device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultisampleCapabilities {
+    /// Maximum multisample sample count the device supports. `1` means no MSAA.
+    pub max_sample_count: u32,
+    /// Whether the device supports a stencil buffer.
+    pub stencil_supported: bool,
+}
+
+impl Default for MultisampleCapabilities {
+    fn default() -> Self {
+        Self {
+            max_sample_count: 1,
+            stencil_supported: true,
+        }
+    }
+}
+
+/// One color output of a graphics pipeline.
+///
+/// The format must match the corresponding [`RenderPassDescriptor`] color
+/// attachment. Blend mode and write mask apply independently per attachment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ColorTargetState {
+    /// Attachment format.
+    pub format: Format,
+    /// Blend mode for this attachment.
+    pub blend: BlendMode,
+    /// Channels this attachment writes.
+    pub write_mask: ColorWrites,
+}
+
+impl ColorTargetState {
+    /// Creates a target with full color writes.
+    #[must_use]
+    pub const fn new(format: Format, blend: BlendMode) -> Self {
+        Self {
+            format,
+            blend,
+            write_mask: ColorWrites::ALL,
+        }
+    }
+}
+
 /// Depth attachment format for a render pass layout descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthAttachmentDescriptor {
     /// Attachment format.
     pub format: Format,
+    /// Optional stencil format when the attachment carries a stencil plane.
+    pub stencil_format: Option<Format>,
 }
 
 /// Render pass descriptor.
@@ -1598,10 +1983,57 @@ pub struct DepthAttachmentDescriptor {
 pub struct RenderPassDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
-    /// Color attachment.
-    pub color_attachment: ColorAttachmentDescriptor,
+    /// Color attachments in pipeline output order.
+    pub color_attachments: Vec<ColorAttachmentDescriptor>,
     /// Optional depth attachment.
     pub depth_attachment: Option<DepthAttachmentDescriptor>,
+    /// Sample count for a multisampled pass. `1` is single-sample.
+    pub sample_count: u32,
+    /// Optional single-sample resolve target for the first color attachment.
+    /// Valid only when [`Self::sample_count`] is greater than one.
+    pub resolve_target: Option<ColorAttachmentDescriptor>,
+}
+
+impl RenderPassDescriptor {
+    /// Validates the attachment layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the pass has no color attachment or
+    /// more than [`MAX_COLOR_ATTACHMENTS`], or an invalid sample count.
+    pub fn validate(&self) -> Result<()> {
+        if self.color_attachments.is_empty() {
+            return Err(Error::InvalidInput(
+                "render pass must contain at least one color attachment".to_string(),
+            ));
+        }
+        if self.color_attachments.len() > MAX_COLOR_ATTACHMENTS {
+            return Err(Error::InvalidInput(format!(
+                "render pass has {} color attachments; the maximum is {MAX_COLOR_ATTACHMENTS}",
+                self.color_attachments.len()
+            )));
+        }
+        if self.sample_count == 0 || !self.sample_count.is_power_of_two() {
+            return Err(Error::InvalidInput(format!(
+                "render pass sample_count {} must be a power of two greater than zero",
+                self.sample_count
+            )));
+        }
+        if self.sample_count == 1 && self.resolve_target.is_some() {
+            return Err(Error::InvalidInput(
+                "a single-sampled render pass cannot declare a resolve target".to_string(),
+            ));
+        }
+        if let Some(resolve) = &self.resolve_target
+            && let Some(first) = self.color_attachments.first()
+            && resolve.format != first.format
+        {
+            return Err(Error::InvalidInput(
+                "render pass resolve target format must match the first color attachment".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Depth comparison used by a graphics pipeline.
@@ -1626,6 +2058,76 @@ pub enum CompareFunction {
     Always,
 }
 
+/// Stencil operation applied when the stencil test passes or fails.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StencilOp {
+    /// Keep the current value.
+    #[default]
+    Keep,
+    /// Write zero.
+    Zero,
+    /// Write the reference value.
+    Replace,
+    /// Increment, clamped.
+    IncrementClamp,
+    /// Decrement, clamped.
+    DecrementClamp,
+    /// Bitwise invert.
+    Invert,
+    /// Increment with wrap-around.
+    IncrementWrap,
+    /// Decrement with wrap-around.
+    DecrementWrap,
+}
+
+/// Per-face stencil operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StencilFaceState {
+    /// Comparison applied to the stencil value.
+    pub compare: CompareFunction,
+    /// Operation when the stencil test fails.
+    pub fail_op: StencilOp,
+    /// Operation when the depth test fails.
+    pub depth_fail_op: StencilOp,
+    /// Operation when the stencil and depth tests pass.
+    pub pass_op: StencilOp,
+}
+
+impl Default for StencilFaceState {
+    fn default() -> Self {
+        Self {
+            compare: CompareFunction::Always,
+            fail_op: StencilOp::Keep,
+            depth_fail_op: StencilOp::Keep,
+            pass_op: StencilOp::Keep,
+        }
+    }
+}
+
+/// Stencil test configuration for a render pipeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StencilState {
+    /// Front-face operations.
+    pub front: StencilFaceState,
+    /// Back-face operations.
+    pub back: StencilFaceState,
+    /// Bitmask of the readable stencil bits (compared against the reference).
+    pub read_mask: u32,
+    /// Bitmask of the writable stencil bits.
+    pub write_mask: u32,
+}
+
+impl Default for StencilState {
+    fn default() -> Self {
+        Self {
+            front: StencilFaceState::default(),
+            back: StencilFaceState::default(),
+            read_mask: u32::MAX,
+            write_mask: u32::MAX,
+        }
+    }
+}
+
 /// Depth test and write behavior for a render pipeline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthState {
@@ -1633,6 +2135,8 @@ pub struct DepthState {
     pub compare: CompareFunction,
     /// Whether passing fragments update the depth attachment.
     pub write_enabled: bool,
+    /// Optional stencil test; `None` disables stencil.
+    pub stencil: Option<StencilState>,
 }
 
 impl Default for DepthState {
@@ -1640,6 +2144,7 @@ impl Default for DepthState {
         Self {
             compare: CompareFunction::default(),
             write_enabled: true,
+            stencil: None,
         }
     }
 }
@@ -1663,10 +2168,8 @@ pub struct RenderPipelineDescriptor {
     pub render_pass: RenderPassId,
     /// Optional pipeline layout.
     pub pipeline_layout: Option<PipelineLayoutId>,
-    /// Output color format.
-    pub color_format: Format,
-    /// Blend mode.
-    pub blend_mode: BlendMode,
+    /// Color outputs in render-pass attachment order.
+    pub color_targets: Vec<ColorTargetState>,
     /// Primitive topology.
     pub primitive_topology: PrimitiveTopology,
     /// Rasterizer winding and face culling.
@@ -1680,7 +2183,8 @@ impl RenderPipelineDescriptor {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] when an entry point is empty.
+    /// Returns [`Error::InvalidInput`] when an entry point is empty or the
+    /// color target count is outside `1..=MAX_COLOR_ATTACHMENTS`.
     pub fn validate(&self) -> Result<()> {
         if self.vertex_entry_point.is_empty() {
             return Err(Error::InvalidInput(
@@ -1691,6 +2195,53 @@ impl RenderPipelineDescriptor {
             return Err(Error::InvalidInput(
                 "fragment_entry_point must not be empty".to_string(),
             ));
+        }
+        if self.color_targets.is_empty() {
+            return Err(Error::InvalidInput(
+                "render pipeline must contain at least one color target".to_string(),
+            ));
+        }
+        if self.color_targets.len() > MAX_COLOR_ATTACHMENTS {
+            return Err(Error::InvalidInput(format!(
+                "render pipeline has {} color targets; the maximum is {MAX_COLOR_ATTACHMENTS}",
+                self.color_targets.len()
+            )));
+        }
+        // Integer render targets cannot blend on any backend; rejecting the state once
+        // keeps every backend from having to guard its native blend state.
+        for (index, target) in self.color_targets.iter().enumerate() {
+            if target.format.is_integer() && target.blend != BlendMode::Replace {
+                return Err(Error::InvalidInput(format!(
+                    "color target {index} uses integer format {:?}, which cannot blend",
+                    target.format
+                )));
+            }
+        }
+        // Vertex layouts must describe attributes that fit inside one element, so a
+        // native input layout never reads past the buffer element (or repeats a slot).
+        let mut locations = Vec::new();
+        for (buffer_index, layout) in self.vertex_buffers.iter().enumerate() {
+            if layout.stride == 0 {
+                return Err(Error::InvalidInput(format!(
+                    "vertex buffer {buffer_index} declares a zero stride"
+                )));
+            }
+            for attribute in &layout.attributes {
+                let end = attribute.offset + attribute.format.size();
+                if end > layout.stride {
+                    return Err(Error::InvalidInput(format!(
+                        "vertex buffer {buffer_index} attribute at location {} ends at byte {end}, past the stride {}",
+                        attribute.location, layout.stride
+                    )));
+                }
+                if locations.contains(&attribute.location) {
+                    return Err(Error::InvalidInput(format!(
+                        "shader location {} is declared by more than one vertex attribute",
+                        attribute.location
+                    )));
+                }
+                locations.push(attribute.location);
+            }
         }
         Ok(())
     }
@@ -1879,6 +2430,23 @@ pub struct DrawIndirectCommand {
     pub scissor: Option<ScissorRect>,
 }
 
+/// GPU-generated indexed draw; requires advertised indirect-draw support.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawIndexedIndirectCommand {
+    /// Render pipeline.
+    pub pipeline: RenderPipelineId,
+    /// Bind groups bound before drawing.
+    pub bind_groups: BindGroupList,
+    /// Buffer created with `INDIRECT` usage holding indexed argument records.
+    pub arguments: BufferId,
+    /// Four-byte aligned byte offset of the argument record.
+    pub offset: u64,
+    /// Index buffer bound for this draw. Part of pipeline state, not the argument record.
+    pub index_buffer: IndexBufferBinding,
+    /// Optional scissor rectangle in target pixels.
+    pub scissor: Option<ScissorRect>,
+}
+
 /// One recorded render command.
 ///
 /// Commands execute in recording order inside their render pass.
@@ -1890,6 +2458,8 @@ pub enum RenderCommand {
     DrawIndexed(DrawIndexedCommand),
     /// GPU-generated non-indexed draw; requires advertised indirect-draw support.
     DrawIndirect(DrawIndirectCommand),
+    /// GPU-generated indexed draw; requires advertised indirect-draw support.
+    DrawIndexedIndirect(DrawIndexedIndirectCommand),
 }
 
 impl RenderCommand {
@@ -1900,6 +2470,7 @@ impl RenderCommand {
             Self::Draw(command) => command.pipeline,
             Self::DrawIndexed(command) => command.pipeline,
             Self::DrawIndirect(command) => command.pipeline,
+            Self::DrawIndexedIndirect(command) => command.pipeline,
         }
     }
 
@@ -1910,6 +2481,7 @@ impl RenderCommand {
             Self::Draw(command) => command.bind_groups.as_slice(),
             Self::DrawIndexed(command) => command.bind_groups.as_slice(),
             Self::DrawIndirect(command) => command.bind_groups.as_slice(),
+            Self::DrawIndexedIndirect(command) => command.bind_groups.as_slice(),
         }
     }
 
@@ -1920,6 +2492,7 @@ impl RenderCommand {
             Self::Draw(command) => command.scissor,
             Self::DrawIndexed(command) => command.scissor,
             Self::DrawIndirect(command) => command.scissor,
+            Self::DrawIndexedIndirect(command) => command.scissor,
         }
     }
 
@@ -1929,6 +2502,7 @@ impl RenderCommand {
             Self::Draw(command) => command.scissor = scissor,
             Self::DrawIndexed(command) => command.scissor = scissor,
             Self::DrawIndirect(command) => command.scissor = scissor,
+            Self::DrawIndexedIndirect(command) => command.scissor = scissor,
         }
     }
 
@@ -1938,7 +2512,7 @@ impl RenderCommand {
         match self {
             Self::Draw(command) => Some(command.instance_count),
             Self::DrawIndexed(command) => Some(command.instance_count),
-            Self::DrawIndirect(_) => None,
+            Self::DrawIndirect(_) | Self::DrawIndexedIndirect(_) => None,
         }
     }
 }
@@ -2128,6 +2702,8 @@ pub struct DepthAttachment {
     pub target: TextureViewId,
     /// Depth load operation.
     pub depth_load_op: LoadOp<f32>,
+    /// Optional stencil load operation.
+    pub stencil_load_op: Option<LoadOp<u32>>,
 }
 
 /// Signed viewport origin used when a render region starts outside its attachment.
@@ -2306,13 +2882,13 @@ impl Viewport {
 /// One ordered render command list targeting an offscreen texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderPassCommands<'a> {
-    /// Color texture view receiving this pass.
-    pub texture_view: TextureViewId,
+    /// Color texture views receiving this pass, in render-pass attachment order.
+    pub color_attachments: &'a [TextureViewId],
     /// Render pass used by this operation.
     pub render_pass: RenderPassId,
     /// Borrowed commands recorded into the pass.
     pub commands: &'a [RenderCommand],
-    /// Color target load behavior.
+    /// Load behavior applied to every color attachment.
     pub color_load_op: LoadOp<ClearColor>,
     /// Optional rectangle limiting attachment Clear operations. A backend may
     /// conservatively clear the entire target when the optimization is unsupported.
@@ -2323,6 +2899,49 @@ pub struct RenderPassCommands<'a> {
     pub depth_attachment: Option<DepthAttachment>,
     /// Optional viewport mapped onto the target. `None` renders across the entire target.
     pub viewport: Option<Viewport>,
+    /// Single-sample texture view that receives the resolved result of a
+    /// multisampled pass. `Some` requires [`RenderPassDescriptor::sample_count`]
+    /// greater than one; `None` means single-sampled or no resolve.
+    pub resolve_target: Option<TextureViewId>,
+}
+
+/// Validates the attachment sample counts of one recorded pass against its render pass.
+///
+/// A multisampled pass requires every attachment to share the pass sample count, and a
+/// resolve destination must be single-sampled. Backends call this once per pass so the
+/// invariant (and its error text) lives in one place instead of being re-derived, or
+/// silently violated, per backend.
+///
+/// # Errors
+/// Returns [`Error::InvalidInput`] naming the offending attachment role.
+pub fn validate_pass_attachments(
+    pass_sample_count: u32,
+    color_samples: impl Iterator<Item = u32>,
+    depth_samples: Option<u32>,
+    resolve_samples: Option<u32>,
+) -> Result<()> {
+    for (index, samples) in color_samples.enumerate() {
+        if samples != pass_sample_count {
+            return Err(Error::InvalidInput(format!(
+                "color attachment {index} has {samples} samples but the render pass uses {pass_sample_count}"
+            )));
+        }
+    }
+    if let Some(samples) = depth_samples
+        && samples != pass_sample_count
+    {
+        return Err(Error::InvalidInput(format!(
+            "depth attachment has {samples} samples but the render pass uses {pass_sample_count}"
+        )));
+    }
+    if let Some(samples) = resolve_samples
+        && samples != 1
+    {
+        return Err(Error::InvalidInput(format!(
+            "resolve target must be single-sampled but has {samples} samples"
+        )));
+    }
+    Ok(())
 }
 
 /// One swapchain frame to record and present.
@@ -2423,8 +3042,39 @@ mod tests {
             DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: true,
+                stencil: None,
             }
         );
+    }
+
+    #[test]
+    fn stencil_state_defaults_to_always_pass_keep() {
+        let stencil = StencilState::default();
+        assert_eq!(stencil.front, StencilFaceState::default());
+        assert_eq!(stencil.back, StencilFaceState::default());
+        assert_eq!(stencil.read_mask, u32::MAX);
+        assert_eq!(stencil.write_mask, u32::MAX);
+        assert_eq!(stencil.front.compare, CompareFunction::Always);
+        assert_eq!(stencil.front.fail_op, StencilOp::Keep);
+        assert_eq!(stencil.front.pass_op, StencilOp::Keep);
+    }
+
+    #[test]
+    fn texture_sample_count_must_be_power_of_two() {
+        let mut descriptor = texture_desc(16, 16);
+        descriptor.sample_count = 0;
+        assert!(descriptor.validate().is_err());
+        descriptor.sample_count = 3;
+        assert!(descriptor.validate().is_err());
+        descriptor.sample_count = 4;
+        assert!(descriptor.validate().is_ok());
+    }
+
+    #[test]
+    fn multisample_capabilities_defaults_to_single_sample() {
+        let caps = MultisampleCapabilities::default();
+        assert_eq!(caps.max_sample_count, 1);
+        assert!(caps.stencil_supported);
     }
 
     #[test]
@@ -2432,6 +3082,81 @@ mod tests {
         assert!(Extent2d::new(0, 1).is_err());
         assert!(Extent2d::new(1, 0).is_err());
         assert!(Extent2d::new(1, 1).is_ok());
+    }
+
+    #[test]
+    fn surface_config_uses_backend_defaults_when_pacing_is_unset() {
+        let config = SurfaceConfig::new(640, 480, Format::Bgra8Unorm).expect("valid config");
+        assert_eq!(config.desired_image_count, 0);
+        assert_eq!(config.desired_maximum_frame_latency, 0);
+        assert_eq!(config.resolve_image_count(3, 2, 16), 3);
+        assert_eq!(config.resolve_frame_latency(2, 1, 15), 2);
+    }
+
+    #[test]
+    fn surface_config_clamps_requested_pacing_to_backend_range() {
+        let mut config = SurfaceConfig::new(640, 480, Format::Bgra8Unorm).expect("valid config");
+        config.desired_image_count = 1;
+        config.desired_maximum_frame_latency = 32;
+        assert_eq!(config.resolve_image_count(3, 2, 16), 2);
+        assert_eq!(config.resolve_frame_latency(2, 1, 15), 15);
+        config.desired_image_count = 24;
+        assert_eq!(config.resolve_image_count(3, 2, 16), 16);
+    }
+
+    #[test]
+    fn surface_config_keeps_explicit_pacing_inside_range() {
+        let mut config = SurfaceConfig::new(640, 480, Format::Bgra8Unorm).expect("valid config");
+        config.desired_image_count = 4;
+        config.desired_maximum_frame_latency = 3;
+        assert_eq!(config.resolve_image_count(3, 2, 16), 4);
+        assert_eq!(config.resolve_frame_latency(2, 1, 15), 3);
+    }
+
+    #[test]
+    fn surface_config_treats_inverted_range_as_minimum() {
+        let config = SurfaceConfig::new(640, 480, Format::Bgra8Unorm).expect("valid config");
+        assert_eq!(config.resolve_image_count(0, 4, 2), 4);
+        assert_eq!(config.resolve_frame_latency(0, 4, 2), 4);
+    }
+
+    #[test]
+    fn sampler_descriptor_rejects_inverted_lod_range() {
+        let mut sampler = SamplerDescriptor::default();
+        sampler.lod_min_clamp = 2.0;
+        sampler.lod_max_clamp = 1.0;
+        assert!(sampler.validate().is_err());
+
+        let mut sampler = SamplerDescriptor::default();
+        sampler.lod_min_clamp = 1.0;
+        sampler.lod_max_clamp = 2.0;
+        assert!(sampler.validate().is_ok());
+    }
+
+    #[test]
+    fn sampler_descriptor_defaults_to_opaque_sampling() {
+        let sampler = SamplerDescriptor::default();
+        assert_eq!(sampler.compare, None);
+        assert_eq!(sampler.border_color, None);
+        assert_eq!(sampler.address_mode_w, AddressMode::ClampToEdge);
+        assert_eq!(sampler.lod_min_clamp, 0.0);
+        assert_eq!(sampler.lod_max_clamp, f32::MAX);
+        assert_eq!(sampler.lod_bias, 0.0);
+    }
+
+    #[test]
+    fn device_tuning_defaults_to_backend_values() {
+        let tuning = DeviceTuning::default();
+        assert_eq!(tuning.command_encoder_pool_capacity, 0);
+        assert_eq!(tuning.upload_command_pool_capacity, 0);
+        assert_eq!(tuning.resource_descriptor_capacity, 0);
+        assert_eq!(tuning.render_target_descriptor_capacity, 0);
+        assert_eq!(tuning.depth_stencil_descriptor_capacity, 0);
+        assert_eq!(tuning.pipeline_cache_limit_bytes, 0);
+        assert_eq!(tuning.upload_page_bytes, 0);
+        assert_eq!(tuning.upload_retained_idle_pages, 0);
+        assert_eq!(tuning.present_timeout_micros, 0);
+        assert_eq!(DeviceDescriptor::default().tuning, tuning);
     }
 
     #[test]
@@ -2548,6 +3273,7 @@ mod tests {
             usage: TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         };
         assert_eq!(descriptor.byte_size(), (4 * 2 + 2 + 1) * 4);
     }
@@ -2610,6 +3336,7 @@ mod tests {
             usage: TextureUsage::empty(),
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         };
 
         assert!(descriptor.validate().is_err());
@@ -2734,8 +3461,302 @@ mod tests {
             vertex_buffers: Vec::new(),
             render_pass: RenderPassId::from_parts(3, 1),
             pipeline_layout: None,
-            color_format: Format::Bgra8Unorm,
-            blend_mode: BlendMode::Replace,
+            color_targets: vec![ColorTargetState::new(
+                Format::Bgra8Unorm,
+                BlendMode::Replace,
+            )],
+            primitive_topology: PrimitiveTopology::TriangleList,
+            raster: Default::default(),
+            depth_state: None,
+        };
+
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn color_target_state_defaults_to_full_write_mask() {
+        let target = ColorTargetState::new(Format::Rgba16Float, BlendMode::Alpha);
+        assert_eq!(target.format, Format::Rgba16Float);
+        assert_eq!(target.blend, BlendMode::Alpha);
+        assert_eq!(target.write_mask, ColorWrites::ALL);
+        assert_eq!(ColorWrites::default(), ColorWrites::ALL);
+    }
+
+    #[test]
+    fn color_writes_compose_color_and_alpha_channels() {
+        assert_eq!(
+            ColorWrites::COLOR,
+            ColorWrites::RED | ColorWrites::GREEN | ColorWrites::BLUE
+        );
+        assert!(ColorWrites::ALL.contains(ColorWrites::COLOR));
+        assert!(ColorWrites::ALL.contains(ColorWrites::ALPHA));
+        assert!(!ColorWrites::COLOR.contains(ColorWrites::ALPHA));
+    }
+
+    #[test]
+    fn render_pass_validation_requires_one_to_max_color_attachments() {
+        let attachment = ColorAttachmentDescriptor {
+            format: Format::Rgba16Float,
+        };
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: Vec::new(),
+            depth_attachment: None,
+            sample_count: 1,
+
+            resolve_target: None,
+        };
+        assert!(descriptor.validate().is_err());
+
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment; MAX_COLOR_ATTACHMENTS],
+            depth_attachment: None,
+            sample_count: 1,
+
+            resolve_target: None,
+        };
+        assert!(descriptor.validate().is_ok());
+
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment; MAX_COLOR_ATTACHMENTS + 1],
+            depth_attachment: None,
+            sample_count: 1,
+
+            resolve_target: None,
+        };
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    #[test]
+    fn storage_textures_are_single_sampled_single_level_and_color() {
+        let base = TextureDescriptor {
+            label: None,
+            size: Extent2d::new(4, 4).unwrap(),
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+            sample_count: 1,
+        };
+        assert!(base.validate().is_ok());
+        // Multisampled storage images are not addressable by a shader.
+        let mut multisampled = base.clone();
+        multisampled.sample_count = 4;
+        assert!(multisampled.validate().is_err());
+        // Storage images have no mip chain.
+        let mut mips = base.clone();
+        mips.mip_level_count = 2;
+        assert!(mips.validate().is_err());
+        // Depth formats cannot be storage images.
+        let mut depth = base.clone();
+        depth.format = Format::Depth32Float;
+        assert!(depth.validate().is_err());
+        // A storage-texture binding only accepts a texture resource.
+        assert!(
+            BindingType::StorageTexture {
+                format: Format::Rgba8Unorm,
+                read_only: false,
+            }
+            .matches(&BindingResource::Texture(TextureBinding {
+                texture_view: ResourceId::new(1),
+            }))
+        );
+    }
+
+    #[test]
+    fn indexed_indirect_command_exposes_its_draw_state() {
+        let command = RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
+            pipeline: ResourceId::new(7),
+            bind_groups: bind_group_list([ResourceId::new(9)]),
+            arguments: ResourceId::new(11),
+            offset: 32,
+            index_buffer: IndexBufferBinding {
+                buffer: ResourceId::new(13),
+                format: IndexFormat::Uint16,
+                offset: 4,
+            },
+            scissor: Some(ScissorRect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            }),
+        });
+        assert_eq!(command.pipeline(), ResourceId::new(7));
+        assert_eq!(command.bind_groups(), &[ResourceId::new(9)]);
+        assert_eq!(
+            command.scissor(),
+            Some(ScissorRect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            })
+        );
+        // Indexed indirect counts live in the GPU argument record, not on the CPU.
+        assert_eq!(command.instance_count(), None);
+    }
+
+    #[test]
+    fn integer_color_targets_reject_blending() {
+        let base = RenderPipelineDescriptor {
+            label: None,
+            vertex_shader: ResourceId::new(1),
+            vertex_entry_point: "vs".into(),
+            fragment_shader: ResourceId::new(2),
+            fragment_entry_point: "fs".into(),
+            vertex_buffers: Vec::new(),
+            render_pass: ResourceId::new(3),
+            pipeline_layout: None,
+            color_targets: vec![ColorTargetState::new(Format::Rgba8Uint, BlendMode::Replace)],
+            primitive_topology: PrimitiveTopology::TriangleList,
+            raster: RasterState::default(),
+            depth_state: None,
+        };
+        assert!(base.validate().is_ok());
+        let mut blended = base.clone();
+        blended.color_targets[0].blend = BlendMode::Alpha;
+        assert!(blended.validate().is_err());
+    }
+
+    #[test]
+    fn vertex_layouts_must_fit_the_stride_and_unique_locations() {
+        let descriptor = |layout: VertexBufferLayoutDescriptor| RenderPipelineDescriptor {
+            label: None,
+            vertex_shader: ResourceId::new(1),
+            vertex_entry_point: "vs".into(),
+            fragment_shader: ResourceId::new(2),
+            fragment_entry_point: "fs".into(),
+            vertex_buffers: vec![layout],
+            render_pass: ResourceId::new(3),
+            pipeline_layout: None,
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::Replace,
+            )],
+            primitive_topology: PrimitiveTopology::TriangleList,
+            raster: RasterState::default(),
+            depth_state: None,
+        };
+        let attribute = |location, offset, format| VertexAttributeDescriptor {
+            location,
+            offset,
+            format,
+        };
+        // Position + normal inside a 24-byte element is valid.
+        assert!(
+            descriptor(VertexBufferLayoutDescriptor {
+                stride: 24,
+                step_mode: VertexStepMode::Vertex,
+                attributes: vec![
+                    attribute(0, 0, VertexFormat::Float32x3),
+                    attribute(1, 12, VertexFormat::Float32x3),
+                ],
+            })
+            .validate()
+            .is_ok()
+        );
+        // An attribute past the stride is rejected.
+        assert!(
+            descriptor(VertexBufferLayoutDescriptor {
+                stride: 12,
+                step_mode: VertexStepMode::Instance,
+                attributes: vec![attribute(0, 8, VertexFormat::Float32x3)],
+            })
+            .validate()
+            .is_err()
+        );
+        // Repeating a shader location is rejected.
+        assert!(
+            descriptor(VertexBufferLayoutDescriptor {
+                stride: 32,
+                step_mode: VertexStepMode::Vertex,
+                attributes: vec![
+                    attribute(0, 0, VertexFormat::Float32x4),
+                    attribute(0, 16, VertexFormat::Float32x4),
+                ],
+            })
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pass_attachment_samples_must_match_the_render_pass() {
+        // Matching color/depth samples with a single-sampled resolve destination pass.
+        assert!(validate_pass_attachments(4, [4, 4].into_iter(), Some(4), Some(1)).is_ok());
+        assert!(validate_pass_attachments(1, [1].into_iter(), Some(1), None).is_ok());
+        // A color attachment with another sample count is rejected, naming its index.
+        assert!(validate_pass_attachments(4, [4, 1].into_iter(), None, None).is_err());
+        // The depth attachment must match too: a 4x pass cannot use a 1x depth map.
+        assert!(validate_pass_attachments(4, [4].into_iter(), Some(1), None).is_err());
+        // A resolve destination must be single-sampled.
+        assert!(validate_pass_attachments(4, [4].into_iter(), None, Some(4)).is_err());
+    }
+
+    fn render_pass_validation_requires_resolve_only_with_multisampling() {
+        let attachment = ColorAttachmentDescriptor {
+            format: Format::Rgba16Float,
+        };
+        // Single-sampled pass with a resolve target is rejected.
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment],
+            depth_attachment: None,
+            sample_count: 1,
+            resolve_target: Some(attachment),
+        };
+        assert!(descriptor.validate().is_err());
+
+        // Multisampled pass with a default single-sample resolve is valid.
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment],
+            depth_attachment: None,
+            sample_count: 4,
+            resolve_target: Some(attachment),
+        };
+        assert!(descriptor.validate().is_ok());
+
+        // Multisampled pass without a resolve target is still valid.
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment],
+            depth_attachment: None,
+            sample_count: 4,
+            resolve_target: None,
+        };
+        assert!(descriptor.validate().is_ok());
+
+        // Resolve format mismatch is rejected.
+        let descriptor = RenderPassDescriptor {
+            label: None,
+            color_attachments: vec![attachment],
+            depth_attachment: None,
+            sample_count: 4,
+            resolve_target: Some(ColorAttachmentDescriptor {
+                format: Format::Rgba8Unorm,
+            }),
+        };
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn pipeline_validation_rejects_empty_color_targets() {
+        let descriptor = RenderPipelineDescriptor {
+            label: None,
+            vertex_shader: ShaderModuleId::from_parts(1, 1),
+            vertex_entry_point: "vs_main".to_string(),
+            fragment_shader: ShaderModuleId::from_parts(2, 1),
+            fragment_entry_point: "fs_main".to_string(),
+            vertex_buffers: Vec::new(),
+            render_pass: RenderPassId::from_parts(3, 1),
+            pipeline_layout: None,
+            color_targets: Vec::new(),
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: Default::default(),
             depth_state: None,
@@ -2887,6 +3908,7 @@ mod tests {
             usage: TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         }
     }
 

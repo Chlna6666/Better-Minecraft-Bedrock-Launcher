@@ -33,9 +33,18 @@ impl WgslModule {
                         arrayed: false,
                         class: naga::ImageClass::Sampled {
                             kind: naga::ScalarKind::Float,
-                            multi: false
+                            // Multisampled textures map to `sampler2DMS` and are read with
+                            // `texelFetch`; GLSL 4.50 has both.
+                            multi: _
                         }
-                    } | naga::TypeInner::Sampler { comparison: false }
+                    }
+                    // Storage images map to `layout(...) image2D` image units.
+                    | naga::TypeInner::Image {
+                        dim: naga::ImageDimension::D2,
+                        arrayed: false,
+                        class: naga::ImageClass::Storage { .. }
+                    }
+                    | naga::TypeInner::Sampler { comparison: false }
                 );
                 if !supported {
                     return Err(ShaderError::Glsl(
@@ -87,6 +96,18 @@ impl WgslModule {
         }
         let mut textures = Vec::new();
         for (name, mapping) in reflection.texture_mapping {
+            // Naga also reports storage images in `texture_mapping`; they are image units,
+            // reflected separately below, and must not become sampler slots.
+            let handle = &self.module.global_variables[mapping.texture];
+            if matches!(
+                self.module.types[handle.ty].inner,
+                naga::TypeInner::Image {
+                    class: naga::ImageClass::Storage { .. },
+                    ..
+                }
+            ) {
+                continue;
+            }
             let texture = self.module.global_variables[mapping.texture]
                 .binding
                 .ok_or_else(|| ShaderError::Glsl("unbound texture".into()))?;
@@ -105,8 +126,46 @@ impl WgslModule {
                 sampler,
             });
         }
+        // Naga exposes image uniform names but no handle mapping, so the WGSL slot is
+        // recovered from the generated name and cross-checked against the reflection list.
+        let stage_suffix = match stage {
+            ShaderStage::Vertex => "vs",
+            ShaderStage::Fragment => "fs",
+            ShaderStage::Compute => "cs",
+        };
+        let mut images = Vec::new();
+        for (_, variable) in self.module.global_variables.iter() {
+            let naga::TypeInner::Image {
+                class: naga::ImageClass::Storage { format, access },
+                ..
+            } = self.module.types[variable.ty].inner
+            else {
+                continue;
+            };
+            let Some(binding) = variable.binding else {
+                continue;
+            };
+            let name = format!(
+                "_group_{}_binding_{}_{stage_suffix}",
+                binding.group, binding.binding
+            );
+            // Naga exposes no image reflection list, so the generated source is the check.
+            // An entry point only emits the images it references, so an absent name means
+            // this entry point does not use it (a naming change surfaces as a missing
+            // binding when the program is bound).
+            if !source.contains(&name) {
+                continue;
+            }
+            images.push(gfx_core::GlslImageBinding {
+                name: name.into(),
+                binding: binding.binding,
+                format: storage_format_to_format(format)?,
+                read_only: access == naga::StorageAccess::LOAD,
+            });
+        }
         buffers.sort_by(|left, right| left.name.cmp(&right.name));
         textures.sort_by(|left, right| left.name.cmp(&right.name));
+        images.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(ShaderBinary {
             stage,
             entry_point: entry_point.into(),
@@ -114,9 +173,33 @@ impl WgslModule {
                 source: source.into(),
                 buffers,
                 textures,
+                images,
             }),
         })
     }
+}
+
+/// Maps one WGSL storage-image format onto a core [`gfx_core::Format`].
+fn storage_format_to_format(format: naga::StorageFormat) -> Result<gfx_core::Format> {
+    use naga::StorageFormat as S;
+    Ok(match format {
+        S::R8Unorm => gfx_core::Format::R8Unorm,
+        S::Rg8Unorm => gfx_core::Format::Rg8Unorm,
+        S::R16Float => gfx_core::Format::R16Float,
+        S::Rg16Float => gfx_core::Format::Rg16Float,
+        S::R32Float => gfx_core::Format::R32Float,
+        S::Rgba8Unorm => gfx_core::Format::Rgba8Unorm,
+        S::Rgba16Float => gfx_core::Format::Rgba16Float,
+        S::Rgba32Float => gfx_core::Format::Rgba32Float,
+        S::R8Uint => gfx_core::Format::R8Uint,
+        S::Rg8Uint => gfx_core::Format::Rg8Uint,
+        S::Rgba8Uint => gfx_core::Format::Rgba8Uint,
+        other => {
+            return Err(ShaderError::Glsl(format!(
+                "storage image format {other:?} has no portable gfx_core format"
+            )));
+        }
+    })
 }
 
 #[cfg(test)]
@@ -124,6 +207,25 @@ mod tests {
     use super::*;
     use gfx_core::{BindingType, ShaderCode};
 
+    #[test]
+    fn storage_image_reflection_records_slot_format_and_access() {
+        let module = WgslModule::parse("@group(0) @binding(3) var dst: texture_storage_2d<rgba8unorm, write>; @group(0) @binding(4) var src: texture_storage_2d<r32float, read>; @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) { textureStore(dst, vec2<i32>(id.xy), textureLoad(src, vec2<i32>(id.xy))); }").unwrap();
+        let ShaderCode::Glsl(shader) = module
+            .compile_glsl(ShaderStage::Compute, "cs")
+            .unwrap()
+            .code
+        else {
+            panic!("GLSL");
+        };
+        assert_eq!(shader.images.len(), 2);
+        assert_eq!(shader.images[0].binding, 3);
+        assert_eq!(shader.images[0].format, gfx_core::Format::Rgba8Unorm);
+        assert!(!shader.images[0].read_only);
+        assert_eq!(shader.images[1].binding, 4);
+        assert_eq!(shader.images[1].format, gfx_core::Format::R32Float);
+        assert!(shader.images[1].read_only);
+        assert!(shader.source.contains(&shader.images[0].name.to_string()));
+    }
     #[test]
     fn reflection_retains_sparse_logical_slots_and_first_instance() {
         let module = WgslModule::parse("@group(0) @binding(31) var<storage,read> values:array<vec4<f32>>; @vertex fn vs(@builtin(instance_index) i:u32)->@builtin(position) vec4<f32>{return values[i];}").unwrap();

@@ -117,7 +117,7 @@ impl WgslModule {
     /// In this mode Naga returns exactly ONE reflected name for the selected
     /// entry point, not a list indexed by Module::entry_points. Indexing by
     /// the module position breaks every shader except the first in a WGSL
-    /// bundle (e.g. gpui's fs_solid_quad and gpui-3d's fs_effects).
+    /// bundle of host application shaders.
     /// Retain the reflected name because HLSL reserved names may be renamed.
     fn reflected_hlsl_entry(
         &self,

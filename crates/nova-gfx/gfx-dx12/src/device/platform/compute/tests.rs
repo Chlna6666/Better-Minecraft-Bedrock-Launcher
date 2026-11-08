@@ -22,7 +22,7 @@ fn native_indirect_scratch_reuses_completed_buffers_and_preserves_recording_stat
     device.trim_memory(MemoryTrimLevel::Aggressive).unwrap();
     assert_eq!(device.compute.indirect_bytes(), 0);
     assert_eq!(device.resource_stats().allocated_bytes + 128, accounting);
-    let resources = (0..DX12_FRAME_COMMAND_POOL_CAPACITY + 2)
+    let resources = (0..DEFAULT_INDIRECT_BUFFER_POOL_CAPACITY + 2)
         .map(|_| device.compute.acquire_indirect(&device.device, 64).unwrap())
         .collect::<Vec<_>>();
     for resource in resources {
@@ -30,6 +30,6 @@ fn native_indirect_scratch_reuses_completed_buffers_and_preserves_recording_stat
     }
     assert_eq!(
         device.compute.indirect_buffers.len(),
-        DX12_FRAME_COMMAND_POOL_CAPACITY
+        DEFAULT_INDIRECT_BUFFER_POOL_CAPACITY
     );
 }

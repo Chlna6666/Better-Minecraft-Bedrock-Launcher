@@ -35,4 +35,5 @@ glutin = { version = "0.32.3", default-features = false, features = ["wgl"] }
 glutin = { version = "0.32.3", default-features = false, features = ["egl", "x11", "wayland"] }
 
 [dev-dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core", features = ["conformance"] }
 gfx-shader = { path = "../gfx-shader" }

@@ -43,6 +43,7 @@ fn run(device: &mut Dx12Device) {
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("benchmark texture creation should succeed");
     let tile = vec![0x7f_u8; (TILE_EDGE * TILE_EDGE * 4) as usize];
@@ -129,6 +130,7 @@ fn create_mip_chain(device: &mut Dx12Device) -> (TextureId, Vec<(u32, u32, Vec<u
             usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("mip-chain texture creation should succeed");
     let levels = (0_u32..8)

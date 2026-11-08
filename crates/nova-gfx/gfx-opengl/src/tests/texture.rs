@@ -93,7 +93,7 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
     );
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &[RenderCommand::Draw(DrawCommand {
                 pipeline,
@@ -108,6 +108,7 @@ fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
             clear_region: None,
             depth_attachment: None,
             viewport: None,
+            resolve_target: None,
         }])
         .expect("sample draw");
     let result = device.read_texture(target).expect("sample readback");
@@ -137,32 +138,48 @@ fn sampled_texture_array_uses_distinct_native_subresources() {
         usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2Array { layers: 3 },
+        sample_count: 1,
     };
     let texture = device.create_texture(&desc).unwrap();
-    let view = device.create_texture_view(&TextureViewDescriptor {
-        label: None, texture,
-        base_mip_level: 0, mip_level_count: 2, format: Format::Rgba8Unorm,
-    }).unwrap();
+    let view = device
+        .create_texture_view(&TextureViewDescriptor {
+            label: None,
+            texture,
+            base_mip_level: 0,
+            mip_level_count: 2,
+            format: Format::Rgba8Unorm,
+        })
+        .unwrap();
     let image = [10, 45, 180, 255].repeat(4 * 4);
     let layer_write = TextureArrayLayerWriteDescriptor {
         texture,
         upload: TextureArrayLayerUpload {
-            layer: 2, mip_level: 1,
+            layer: 2,
+            mip_level: 1,
             origin: Origin2d::ZERO,
             extent: Extent2d::new(4, 4).unwrap(),
             layout: TextureDataLayout::new(0, 16, 4).unwrap(),
         },
     };
-    device.write_texture_array_layer(layer_write, &image).unwrap();
-    assert!(device.write_texture(
-        TextureWriteDescriptor {
-            texture, mip_level: 1, origin: Origin2d::ZERO,
-            size: Extent2d::new(4, 4).unwrap(),
-            layout: TextureDataLayout::new(0, 16, 4).unwrap(),
-        }, &image,
-    ).is_err(), "2D uploads must not alias layer zero of a D2Array");
+    device
+        .write_texture_array_layer(layer_write, &image)
+        .unwrap();
+    assert!(
+        device
+            .write_texture(
+                TextureWriteDescriptor {
+                    texture,
+                    mip_level: 1,
+                    origin: Origin2d::ZERO,
+                    size: Extent2d::new(4, 4).unwrap(),
+                    layout: TextureDataLayout::new(0, 16, 4).unwrap(),
+                },
+                &image,
+            )
+            .is_err(),
+        "2D uploads must not alias layer zero of a D2Array"
+    );
     assert_eq!(layer_write.subresource_index(2).unwrap(), 5);
     device.destroy_texture_view(view).unwrap();
     device.destroy_texture(texture).unwrap();
 }
-

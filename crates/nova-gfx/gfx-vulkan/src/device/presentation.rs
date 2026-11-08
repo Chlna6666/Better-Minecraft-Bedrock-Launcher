@@ -120,7 +120,9 @@ impl VulkanDevice {
             .map_err(VulkanError::from)?;
             chain.presentation.wait(&self.device)?;
         }
-        let old_fences = chain.in_flight_fences;
+        // Keep the native fence list in the swapchain for its later destruction;
+        // only this small handle snapshot is needed for submission bookkeeping.
+        let old_fences = chain.in_flight_fences.clone();
         // Retire encoder payloads before their borrowed frame fences are destroyed.
         self.poll_cleanup();
         self.submissions.for_each_live_mut(|submission| {

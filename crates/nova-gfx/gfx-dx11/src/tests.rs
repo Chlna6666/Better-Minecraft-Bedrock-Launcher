@@ -4,14 +4,15 @@ use crate::Dx11Device;
 use gfx_core::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBinding, BufferDescriptor, BufferUsage, ClearColor,
-    ColorAttachmentDescriptor, CommandEncoderDescriptor, CompareFunction, CompositeAlphaMode,
-    DepthAttachment, DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawCommand,
-    DrawIndexedCommand, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    Origin2d, PipelineLayoutDescriptor, PresentFrameDescriptor, PresentMode, PrimitiveTopology,
-    RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPipelineDescriptor,
-    SamplerBinding, SamplerDescriptor, ShaderBinary, ShaderCode, ShaderModuleDescriptor,
-    ShaderStage, ShaderStages, TextureBinding, TextureDataLayout, TextureDescriptor,
-    TextureDimension, TextureUsage, TextureViewDescriptor, TextureWriteDescriptor, bind_group_list,
+    ColorAttachmentDescriptor, ColorTargetState, CommandEncoderDescriptor, CompareFunction,
+    CompositeAlphaMode, DepthAttachment, DepthAttachmentDescriptor, DepthState, DeviceDescriptor,
+    DrawCommand, DrawIndexedCommand, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp,
+    MemoryLocation, Origin2d, PipelineLayoutDescriptor, PresentFrameDescriptor, PresentMode,
+    PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor,
+    RenderPipelineDescriptor, SamplerBinding, SamplerDescriptor, ShaderBinary, ShaderCode,
+    ShaderModuleDescriptor, ShaderStage, ShaderStages, TextureBinding, TextureDataLayout,
+    TextureDescriptor, TextureDimension, TextureUsage, TextureViewDescriptor,
+    TextureWriteDescriptor, bind_group_list,
 };
 use gfx_core::{
     PipelineDevice as _, PresentationDevice as _, ResourceDevice as _, SubmissionDevice as _,
@@ -146,6 +147,7 @@ fn texture(
             usage,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("texture");
     let view = device
@@ -163,12 +165,18 @@ fn pass(device: &mut Dx11Device, depth: bool) -> gfx_core::RenderPassId {
     device
         .create_render_pass(&RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: depth.then_some(DepthAttachmentDescriptor {
                 format: Format::Depth32Float,
+
+            stencil_format: None,
             }),
+
+            sample_count: 1,
+            resolve_target: None,
+
         })
         .expect("pass")
 }
@@ -193,14 +201,15 @@ fn pipeline(
                 vertex_buffers: Vec::new(),
                 render_pass: pass,
                 pipeline_layout: Some(layout),
-                color_format: Format::Rgba8Unorm,
-                blend_mode: blend,
+                color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, blend)],
                 primitive_topology: PrimitiveTopology::TriangleList,
                 raster: Default::default(),
                 depth_state: depth.then_some(DepthState {
                     compare: CompareFunction::Less,
                     write_enabled: true,
-                }),
+
+            stencil: None,
+            }),
             },
             Extent2d::new(16, 16).expect("extent"),
         )

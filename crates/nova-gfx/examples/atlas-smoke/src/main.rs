@@ -23,7 +23,8 @@ mod windows_example {
     use gfx_core::{
         BindGroupDescriptor, BindGroupEntry, BindGroupId, BindGroupLayoutDescriptor,
         BindGroupLayoutEntry, BindingResource, BindingType, BlendMode, BufferBinding,
-        BufferDescriptor, BufferUsage, ClearColor, ColorAttachmentDescriptor, DeviceDescriptor,
+        BufferDescriptor, BufferUsage, ClearColor, ColorAttachmentDescriptor, ColorTargetState,
+        DeviceDescriptor,
         Format, MemoryLocation, Origin2d, PipelineDevice, PipelineLayoutDescriptor, PresentMode,
         PresentationDevice, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
         RenderPipelineId, ResourceDevice, SamplerBinding, SamplerDescriptor,
@@ -253,11 +254,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             })?;
             let render_pass = device.create_render_pass(&RenderPassDescriptor {
                 label: Some("atlas render pass".to_string()),
-                color_attachment: ColorAttachmentDescriptor {
+                color_attachments: vec![ColorAttachmentDescriptor {
                     format: surface_config.format,
-                },
+                }],
                 depth_attachment: None,
-            })?;
+
+            sample_count: 1,
+            resolve_target: None,
+
+        })?;
             let layout = device.create_bind_group_layout(&atlas_layout_desc())?;
             let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("atlas pipeline layout".to_string()),
@@ -278,7 +283,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
-            })?;
+            sample_count: 1,
+        })?;
             let atlas = atlas_pixels();
             device.write_texture(
                 TextureWriteDescriptor {
@@ -331,8 +337,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     vertex_buffers: Vec::new(),
                     render_pass,
                     pipeline_layout: Some(pipeline_layout),
-                    color_format: surface_config.format,
-                    blend_mode: BlendMode::Replace,
+                    color_targets: vec![ColorTargetState::new(surface_config.format, BlendMode::Replace)],
                     primitive_topology: gfx_core::PrimitiveTopology::TriangleList,
                     raster: Default::default(),
                     depth_state: None,

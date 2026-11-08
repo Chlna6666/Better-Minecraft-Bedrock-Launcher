@@ -124,14 +124,21 @@ impl VulkanDevice {
             let desc = &old.desc;
             let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
                 create_image_view_range_with_layers(
-                    &self.device, texture.image, format_to_vk(desc.format),
-                    image_aspect_for_format(desc.format), desc.base_mip_level,
-                    desc.mip_level_count, layers,
+                    &self.device,
+                    texture.image,
+                    format_to_vk(desc.format),
+                    image_aspect_for_format(desc.format),
+                    desc.base_mip_level,
+                    desc.mip_level_count,
+                    layers,
                 )?
             } else {
                 create_image_view_range(
-                    &self.device, texture.image, format_to_vk(desc.format),
-                    image_aspect_for_format(desc.format), desc.base_mip_level,
+                    &self.device,
+                    texture.image,
+                    format_to_vk(desc.format),
+                    image_aspect_for_format(desc.format),
+                    desc.base_mip_level,
                     desc.mip_level_count,
                 )?
             };

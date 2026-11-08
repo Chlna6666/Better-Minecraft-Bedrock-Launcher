@@ -25,6 +25,11 @@ broken_intra_doc_links = "warn"
 all = "warn"
 pedantic = "warn"
 
+[features]
+# Enables backend conformance scenarios shared by the desktop backend test suites.
+# Off by default: the scenarios allocate and submit GPU work.
+conformance = []
+
 [dependencies]
 bitflags = "2.10.0"
 smallvec = "1.15.1"

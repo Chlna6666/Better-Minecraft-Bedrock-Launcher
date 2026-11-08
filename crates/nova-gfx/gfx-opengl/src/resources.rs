@@ -1,4 +1,5 @@
 use crate::device::{OpenGlDevice, native, native_extent};
+use crate::render::comparison;
 use gfx_core::*;
 use glow::HasContext as _;
 
@@ -22,6 +23,7 @@ pub(crate) struct View {
     pub(crate) size: Extent2d,
     pub(crate) format: Format,
     pub(crate) usage: TextureUsage,
+    pub(crate) sample_count: u32,
 }
 pub(crate) struct Mirror {
     pub(crate) size: u64,
@@ -40,11 +42,31 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
         Format::Rgba8Unorm => (glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE),
         Format::Rgba8UnormSrgb => (glow::SRGB8_ALPHA8, glow::RGBA, glow::UNSIGNED_BYTE),
         Format::Rgba16Float => (glow::RGBA16F, glow::RGBA, glow::HALF_FLOAT),
+        Format::Rg8Unorm => (glow::RG8, glow::RG, glow::UNSIGNED_BYTE),
+        Format::R16Float => (glow::R16F, glow::RED, glow::HALF_FLOAT),
+        Format::Rg16Float => (glow::RG16F, glow::RG, glow::HALF_FLOAT),
+        Format::R32Float => (glow::R32F, glow::RED, glow::FLOAT),
+        Format::Rgba32Float => (glow::RGBA32F, glow::RGBA, glow::FLOAT),
+        Format::R8Uint => (glow::R8UI, glow::RED_INTEGER, glow::UNSIGNED_BYTE),
+        Format::Rg8Uint => (glow::RG8UI, glow::RG_INTEGER, glow::UNSIGNED_BYTE),
+        Format::Rgba8Uint => (glow::RGBA8UI, glow::RGBA_INTEGER, glow::UNSIGNED_BYTE),
         Format::Depth32Float => (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT, glow::FLOAT),
     }
 }
 
 impl ResourceDevice for OpenGlDevice {
+    fn max_color_attachments(&self) -> u32 {
+        self.max_color_attachments_cap
+            .min(gfx_core::MAX_COLOR_ATTACHMENTS as u32)
+    }
+
+    fn multisample_capabilities(&self) -> MultisampleCapabilities {
+        MultisampleCapabilities {
+            max_sample_count: self.max_samples_cap,
+            stencil_supported: true,
+        }
+    }
+
     fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
         TextureArrayCapabilities {
             array_resources: true,
@@ -63,6 +85,15 @@ impl ResourceDevice for OpenGlDevice {
     }
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
+    }
+    fn dispatch_compute_bind_group(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        self.dispatch_bind_group(dispatch)
+    }
+    fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
+        self.copy_texture_buffer_regions(copies)
     }
     fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
         for copy in copies {
@@ -210,12 +241,18 @@ impl ResourceDevice for OpenGlDevice {
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
         let (width, height) = native_extent(desc.size)?;
+        // A multisampled texture must be bound to the multisample target; GL rejects
+        // rebinding one texture object to a different target.
         let target = match desc.dimension {
+            TextureDimension::D2 if desc.sample_count > 1 => glow::TEXTURE_2D_MULTISAMPLE,
             TextureDimension::D2 => glow::TEXTURE_2D,
             TextureDimension::D2Array { layers } => {
                 self.texture_array_capabilities().plan(
-                    desc.size.width(), desc.size.height(), layers,
-                    desc.mip_level_count, desc.format,
+                    desc.size.width(),
+                    desc.size.height(),
+                    layers,
+                    desc.mip_level_count,
+                    desc.format,
                 )?;
                 glow::TEXTURE_2D_ARRAY
             }
@@ -231,7 +268,26 @@ impl ResourceDevice for OpenGlDevice {
         let texture = unsafe {
             let texture = self.gl.create_texture().map_err(native)?;
             self.gl.bind_texture(target, Some(texture));
-            if let TextureDimension::D2Array { layers } = desc.dimension {
+            if desc.sample_count > 1 {
+                if desc.dimension != TextureDimension::D2
+                    || desc.mip_level_count != 1
+                    || desc.sample_count > self.max_samples_cap
+                {
+                    self.gl.delete_texture(texture);
+                    return Err(Error::InvalidInput(
+                        "OpenGL MSAA textures require a single-level D2 target within the sample cap"
+                            .into(),
+                    ));
+                }
+                self.gl.tex_storage_2d_multisample(
+                    target,
+                    desc.sample_count as i32,
+                    internal,
+                    width,
+                    height,
+                    true,
+                );
+            } else if let TextureDimension::D2Array { layers } = desc.dimension {
                 self.gl.tex_storage_3d(
                     target,
                     desc.mip_level_count as i32,
@@ -267,7 +323,9 @@ impl ResourceDevice for OpenGlDevice {
     fn write_texture(&mut self, desc: TextureWriteDescriptor, bytes: &[u8]) -> Result<()> {
         let texture = self.textures.get(desc.texture)?;
         if texture.desc.dimension != TextureDimension::D2 {
-            return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+            return Err(Error::InvalidInput(
+                "use write_texture_array_layer for D2Array".into(),
+            ));
         }
         desc.validate_against(&texture.desc, bytes.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST)
@@ -313,14 +371,17 @@ impl ResourceDevice for OpenGlDevice {
         let pixel_format = texture.desc.format;
         let upload = desc.upload;
         if upload.layout.bytes_per_row.get() % pixel_format.bytes_per_pixel() != 0 {
-            return Err(Error::InvalidInput("array row pitch must be pixel-aligned".into()));
+            return Err(Error::InvalidInput(
+                "array row pitch must be pixel-aligned".into(),
+            ));
         }
         let offset = usize::try_from(upload.layout.offset)
             .map_err(|_| Error::InvalidInput("array source offset exceeds usize".into()))?;
         let layer = i32::try_from(upload.layer)
             .map_err(|_| Error::InvalidInput("array layer exceeds GL signed index".into()))?;
-        let row_pixels = i32::try_from(upload.layout.bytes_per_row.get() / pixel_format.bytes_per_pixel())
-            .map_err(|_| Error::InvalidInput("array row pitch exceeds GL i32".into()))?;
+        let row_pixels =
+            i32::try_from(upload.layout.bytes_per_row.get() / pixel_format.bytes_per_pixel())
+                .map_err(|_| Error::InvalidInput("array row pitch exceeds GL i32".into()))?;
         let level = i32::try_from(upload.mip_level)
             .map_err(|_| Error::InvalidInput("array mip index exceeds GL i32".into()))?;
         let x = i32::try_from(upload.origin.x)
@@ -338,10 +399,7 @@ impl ResourceDevice for OpenGlDevice {
         unsafe {
             self.gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(native));
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            self.gl.pixel_store_i32(
-                glow::UNPACK_ROW_LENGTH,
-                row_pixels,
-            );
+            self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, row_pixels);
             self.gl.tex_sub_image_3d(
                 glow::TEXTURE_2D_ARRAY,
                 level,
@@ -371,6 +429,8 @@ impl ResourceDevice for OpenGlDevice {
         let size = texture.desc.mip_extent(desc.base_mip_level)?;
         let target = if matches!(texture.desc.dimension, TextureDimension::D2Array { .. }) {
             glow::TEXTURE_2D_ARRAY
+        } else if texture.desc.sample_count > 1 {
+            glow::TEXTURE_2D_MULTISAMPLE
         } else {
             glow::TEXTURE_2D
         };
@@ -404,16 +464,17 @@ impl ResourceDevice for OpenGlDevice {
             size,
             format: desc.format,
             usage: texture.desc.usage,
+            sample_count: texture.desc.sample_count,
         }))
     }
     fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+        desc.validate()?;
         self.park()?;
-        let address = |value| {
-            if value == AddressMode::Repeat {
-                glow::REPEAT
-            } else {
-                glow::CLAMP_TO_EDGE
-            }
+        let address = |value| match value {
+            AddressMode::ClampToEdge => glow::CLAMP_TO_EDGE,
+            AddressMode::Repeat => glow::REPEAT,
+            AddressMode::MirrorRepeat => glow::MIRRORED_REPEAT,
+            AddressMode::ClampToBorder => glow::CLAMP_TO_BORDER,
         };
         let min = match (desc.min_filter, desc.mipmap_filter) {
             (FilterMode::Nearest, FilterMode::Nearest) => glow::NEAREST_MIPMAP_NEAREST,
@@ -445,6 +506,33 @@ impl ResourceDevice for OpenGlDevice {
                 glow::TEXTURE_WRAP_T,
                 address(desc.address_mode_v) as i32,
             );
+            self.gl.sampler_parameter_i32(
+                sampler,
+                glow::TEXTURE_WRAP_R,
+                address(desc.address_mode_w) as i32,
+            );
+            if let Some(border) = desc.border_color {
+                self.gl
+                    .sampler_parameter_f32_slice(sampler, glow::TEXTURE_BORDER_COLOR, &border);
+            }
+            self.gl
+                .sampler_parameter_f32(sampler, glow::TEXTURE_MIN_LOD, desc.lod_min_clamp);
+            self.gl
+                .sampler_parameter_f32(sampler, glow::TEXTURE_MAX_LOD, desc.lod_max_clamp);
+            self.gl
+                .sampler_parameter_f32(sampler, glow::TEXTURE_LOD_BIAS, desc.lod_bias);
+            if let Some(compare) = desc.compare {
+                self.gl.sampler_parameter_i32(
+                    sampler,
+                    glow::TEXTURE_COMPARE_MODE,
+                    glow::COMPARE_REF_TO_TEXTURE as i32,
+                );
+                self.gl.sampler_parameter_i32(
+                    sampler,
+                    glow::TEXTURE_COMPARE_FUNC,
+                    comparison(compare) as i32,
+                );
+            }
             if desc.anisotropic {
                 if !self
                     .gl
@@ -686,5 +774,105 @@ impl OpenGlDevice {
             bytes_per_row: row,
             bytes,
         })
+    }
+}
+
+impl OpenGlDevice {
+    /// Copies between a buffer object and a texture through the pixel-pack/unpack paths.
+    pub(crate) fn copy_texture_buffer_regions(
+        &mut self,
+        copies: &[gfx_core::TextureBufferCopy],
+    ) -> Result<()> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        let limits = self.texture_copy_limits();
+        for copy in copies {
+            copy.validate(
+                &self.textures.get(copy.texture)?.desc,
+                &self.buffers.get(copy.buffer)?.desc,
+                limits,
+            )?;
+        }
+        self.park()?;
+        for copy in copies {
+            let texture = self.textures.get(copy.texture)?;
+            let buffer = self.buffers.get(copy.buffer)?;
+            let (_, external, kind) = format(texture.desc.format);
+            let bytes_per_texel = u64::from(texture.desc.format.bytes_per_pixel()).max(1);
+            let row_pitch =
+                gfx_core::texture_copy_row_pitch(copy.size.width(), texture.desc.format, limits);
+            let row_texels = i32::try_from(row_pitch / bytes_per_texel)
+                .map_err(|_| Error::InvalidInput("OpenGL copy row length exceeds i32".into()))?;
+            let offset = u32::try_from(copy.buffer_offset)
+                .map_err(|_| Error::InvalidInput("OpenGL copy offset exceeds u32".into()))?;
+            let x = i32::try_from(copy.texture_origin.x).unwrap_or(i32::MAX);
+            let y = i32::try_from(copy.texture_origin.y).unwrap_or(i32::MAX);
+            let width = i32::try_from(copy.size.width()).unwrap_or(i32::MAX);
+            let height = i32::try_from(copy.size.height()).unwrap_or(i32::MAX);
+            // SAFETY: The buffer and texture belong to this owner context; the offset and
+            // rectangle were validated against both descriptors.
+            unsafe {
+                match copy.direction {
+                    gfx_core::CopyDirection::TextureToBuffer => {
+                        // GL exposes no texture-source readback, so attach the mip and read
+                        // pixels; the pack row length carries the caller's row pitch.
+                        self.gl
+                            .bind_framebuffer(glow::FRAMEBUFFER, Some(self.framebuffer));
+                        self.gl.framebuffer_texture_2d(
+                            glow::FRAMEBUFFER,
+                            glow::COLOR_ATTACHMENT0,
+                            glow::TEXTURE_2D,
+                            Some(texture.native),
+                            0,
+                        );
+                        self.gl.read_buffer(glow::COLOR_ATTACHMENT0);
+                        self.gl
+                            .bind_buffer(glow::PIXEL_PACK_BUFFER, Some(buffer.native));
+                        self.gl.pixel_store_i32(glow::PACK_ROW_LENGTH, row_texels);
+                        self.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+                        self.gl.read_pixels(
+                            x,
+                            y,
+                            width,
+                            height,
+                            external,
+                            kind,
+                            glow::PixelPackData::BufferOffset(offset),
+                        );
+                        self.gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
+                        self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                        self.gl.framebuffer_texture_2d(
+                            glow::FRAMEBUFFER,
+                            glow::COLOR_ATTACHMENT0,
+                            glow::TEXTURE_2D,
+                            None,
+                            0,
+                        );
+                        self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+                    }
+                    gfx_core::CopyDirection::BufferToTexture => {
+                        self.gl
+                            .bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(buffer.native));
+                        self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, row_texels);
+                        self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                        self.gl.texture_sub_image_2d(
+                            texture.native,
+                            0,
+                            x,
+                            y,
+                            width,
+                            height,
+                            external,
+                            kind,
+                            glow::PixelUnpackData::BufferOffset(offset),
+                        );
+                        self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+                        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                    }
+                }
+            }
+        }
+        self.check()
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     device::{OpenGlDevice, native},
-    pipelines::BufferSlot,
+    pipelines::{BufferSlot, ImageSlot, TextureSlot},
 };
 use gfx_core::*;
 use glow::HasContext as _;
@@ -15,6 +15,8 @@ pub(crate) struct State {
 struct Program {
     native: glow::NativeProgram,
     buffers: Vec<BufferSlot>,
+    textures: Vec<TextureSlot>,
+    images: Vec<ImageSlot>,
 }
 
 impl State {
@@ -34,11 +36,14 @@ impl State {
                         .max(0) as u32
                 },
                 max_workgroup_size: unsafe {
-                    std::array::from_fn(|i| gl.get_parameter_indexed_i32(
-                        glow::MAX_COMPUTE_WORK_GROUP_SIZE, i as u32).max(0) as u32)
+                    std::array::from_fn(|i| {
+                        gl.get_parameter_indexed_i32(glow::MAX_COMPUTE_WORK_GROUP_SIZE, i as u32)
+                            .max(0) as u32
+                    })
                 },
                 max_workgroup_shared_memory_bytes: unsafe {
-                    gl.get_parameter_i32(glow::MAX_COMPUTE_SHARED_MEMORY_SIZE).max(0) as u32
+                    gl.get_parameter_i32(glow::MAX_COMPUTE_SHARED_MEMORY_SIZE)
+                        .max(0) as u32
                 },
                 indirect_draw: gl
                     .supported_extensions()
@@ -130,6 +135,8 @@ impl OpenGlDevice {
                 Program {
                     native: program,
                     buffers,
+                    textures: Vec::new(),
+                    images: Vec::new(),
                 },
             );
         }
@@ -200,4 +207,180 @@ pub(crate) fn native_instance_source(source: &str) -> Cow<'_, str> {
         &source[..newline],
         &source[newline + 1..]
     ))
+}
+
+impl OpenGlDevice {
+    /// Dispatches a compute shader with a full resource set bound.
+    ///
+    /// The buffer-only [`crate::compute::State::dispatch_buffers`] path cannot express
+    /// textures or storage images; this one binds the whole set, so a compute shader can
+    /// write a storage image.
+    pub(crate) fn dispatch_bind_group(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        dispatch.validate(self.compute.capabilities)?;
+        self.park()?;
+        let shader = self.shaders.get(dispatch.shader)?;
+        if shader.stage != ShaderStage::Compute {
+            return Err(Error::InvalidInput(
+                "OpenGL resource-set dispatch requires a compute shader".into(),
+            ));
+        }
+        if !self.compute.programs.contains_key(&dispatch.shader) {
+            // SAFETY: the current context owns the shader and the newly linked program.
+            let program = unsafe {
+                let program = self.gl.create_program().map_err(native)?;
+                self.gl.attach_shader(program, shader.native);
+                self.gl.link_program(program);
+                if !self.gl.get_program_link_status(program) {
+                    let message = self.gl.get_program_info_log(program);
+                    self.gl.delete_program(program);
+                    return Err(Error::Shader(message));
+                }
+                program
+            };
+            // SAFETY: the freshly linked program belongs to this context; uniform locations
+            // and image/texture units require it to be current before reflection.
+            unsafe { self.gl.use_program(Some(program)) };
+            let reflected = (|| {
+                Ok::<_, Error>((
+                    self.reflect_buffers(program, &[&shader.reflection])?,
+                    self.reflect_textures(program, &[&shader.reflection])?,
+                    self.reflect_images(program, &[&shader.reflection])?,
+                ))
+            })();
+            match reflected {
+                Ok((buffers, textures, images)) => {
+                    self.compute.programs.insert(
+                        dispatch.shader,
+                        Program {
+                            native: program,
+                            buffers,
+                            textures,
+                            images,
+                        },
+                    );
+                }
+                Err(error) => {
+                    // SAFETY: linking/reflection failed before any dispatch used this program.
+                    unsafe { self.gl.delete_program(program) };
+                    return Err(error);
+                }
+            }
+        }
+        if dispatch.workgroups.contains(&0) {
+            return Ok(());
+        }
+        let set = self.sets.get(dispatch.bind_group)?;
+        let program = &self.compute.programs[&dispatch.shader];
+        let resource = |logical: u32| -> Result<BindingResource> {
+            set.desc
+                .entries
+                .iter()
+                .find(|binding| binding.binding == logical)
+                .map(|binding| binding.resource)
+                .ok_or_else(|| Error::InvalidInput(format!("OpenGL missing resource {logical}")))
+        };
+        // SAFETY: every binding is validated before the dispatch; the context is current.
+        unsafe {
+            for slot in &program.buffers {
+                let BindingResource::Buffer(range) = resource(slot.logical)? else {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute buffer bound to a non-buffer".into(),
+                    ));
+                };
+                let buffer = self.buffers.get(range.buffer)?;
+                let uniform = slot.kind == BindingType::UniformBuffer;
+                if !buffer.desc.usage.contains(if uniform {
+                    BufferUsage::UNIFORM
+                } else {
+                    BufferUsage::STORAGE
+                }) {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute buffer lacks its usage".into(),
+                    ));
+                }
+                self.gl.bind_buffer_range(
+                    if uniform {
+                        glow::UNIFORM_BUFFER
+                    } else {
+                        glow::SHADER_STORAGE_BUFFER
+                    },
+                    slot.slot,
+                    Some(buffer.native),
+                    i32::try_from(range.offset).map_err(native)?,
+                    i32::try_from(range.size).map_err(native)?,
+                );
+            }
+            for slot in &program.textures {
+                let BindingResource::Texture(texture) = resource(slot.logical)? else {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute texture bound to a non-texture".into(),
+                    ));
+                };
+                let view = self.views.get(texture.texture_view)?;
+                if !view.usage.contains(TextureUsage::SAMPLED) {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute texture view lacks SAMPLED".into(),
+                    ));
+                }
+                let sampler = match slot.sampler {
+                    Some(logical) => {
+                        let BindingResource::Sampler(binding) = resource(logical)? else {
+                            return Err(Error::InvalidInput(
+                                "OpenGL compute sampler bound to a non-sampler".into(),
+                            ));
+                        };
+                        Some(*self.samplers.get(binding.sampler)?)
+                    }
+                    None => None,
+                };
+                self.gl.active_texture(glow::TEXTURE0 + slot.unit);
+                self.gl.bind_texture(view.target, Some(view.native));
+                self.gl.bind_sampler(slot.unit, sampler);
+            }
+            for slot in &program.images {
+                let BindingResource::Texture(texture) = resource(slot.logical)? else {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute storage image bound to a non-texture".into(),
+                    ));
+                };
+                let view = self.views.get(texture.texture_view)?;
+                if !view.usage.contains(TextureUsage::STORAGE) || view.format != slot.format {
+                    return Err(Error::InvalidInput(
+                        "OpenGL compute storage image view mismatches the shader".into(),
+                    ));
+                }
+                let (internal, _, _) = crate::resources::format(slot.format);
+                self.gl.bind_image_texture(
+                    slot.unit,
+                    Some(view.native),
+                    0,
+                    false,
+                    0,
+                    if slot.read_only {
+                        glow::READ_ONLY
+                    } else {
+                        glow::READ_WRITE
+                    },
+                    internal,
+                );
+            }
+            self.gl.use_program(Some(program.native));
+            self.gl.dispatch_compute(
+                dispatch.workgroups[0],
+                dispatch.workgroups[1],
+                dispatch.workgroups[2],
+            );
+            self.gl.memory_barrier(
+                glow::SHADER_STORAGE_BARRIER_BIT
+                    | glow::SHADER_IMAGE_ACCESS_BARRIER_BIT
+                    | glow::TEXTURE_FETCH_BARRIER_BIT
+                    | glow::COMMAND_BARRIER_BIT
+                    | glow::BUFFER_UPDATE_BARRIER_BIT,
+            );
+        }
+        self.check()
+    }
 }

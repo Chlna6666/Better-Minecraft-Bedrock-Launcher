@@ -255,6 +255,24 @@ pub trait ResourceDevice {
         crate::ComputeCapabilities::default()
     }
 
+    /// Number of color attachments one render pass may use.
+    ///
+    /// The trait default is one. Backends that support MRT report their native
+    /// limit; callers must also respect [`crate::MAX_COLOR_ATTACHMENTS`].
+    #[must_use]
+    fn max_color_attachments(&self) -> u32 {
+        1
+    }
+
+    /// Multisampling and stencil capabilities of the device.
+    ///
+    /// The trait default reports single-sampling with stencil support. Backends
+    /// that support MSAA query and report their native maximum sample count.
+    #[must_use]
+    fn multisample_capabilities(&self) -> crate::MultisampleCapabilities {
+        crate::MultisampleCapabilities::default()
+    }
+
     /// Queues buffer compute in device order without waiting or reading results to the CPU.
     /// Writes must be visible to subsequent device operations, including indirect draws.
     ///
@@ -264,6 +282,22 @@ pub trait ResourceDevice {
     fn dispatch_compute(&mut self, _dispatch: &crate::ComputeDispatch<'_>) -> Result<()> {
         Err(Error::Unavailable(
             "ordered buffer compute is unsupported".into(),
+        ))
+    }
+
+    /// Queues one compute dispatch that binds a full resource set.
+    ///
+    /// The default reports `Unavailable`: a backend must opt in once it can bind a compute
+    /// resource set, so a caller never silently loses its texture bindings.
+    ///
+    /// # Errors
+    /// Returns [`Error::Unavailable`] when unsupported, or a validation/backend error.
+    fn dispatch_compute_bind_group(
+        &mut self,
+        _dispatch: &crate::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        Err(Error::Unavailable(
+            "compute resource-set dispatches are not implemented by this backend".into(),
         ))
     }
 
@@ -286,6 +320,30 @@ pub trait ResourceDevice {
     /// # Errors
     /// Returns InvalidInput for invalid handles/rectangles, Backend for recording failure, or
     /// Unavailable when native texture copying is not implemented.
+    /// Alignment the device requires for buffer <-> texture copies.
+    ///
+    /// The default is tightly packed; backends whose native API pads rows or offsets report
+    /// their requirement instead of the caller assuming one.
+    fn texture_copy_limits(&self) -> crate::TextureCopyLimits {
+        crate::TextureCopyLimits::default()
+    }
+
+    /// Queues buffer <-> texture copies in order, without a CPU wait.
+    ///
+    /// # Errors
+    /// Returns [`Error::Unavailable`] when the backend cannot copy between buffers and
+    /// textures, or a validation/backend error.
+    fn copy_texture_buffer_batch(&mut self, copies: &[crate::TextureBufferCopy]) -> Result<()> {
+        let _ = copies;
+        Err(Error::Unavailable(
+            "buffer <-> texture copies are not implemented by this backend".into(),
+        ))
+    }
+
+    /// Queues texture-to-texture copies in order.
+    ///
+    /// # Errors
+    /// Returns the first validation or backend error; earlier copies may already be queued.
     fn copy_texture_batch(&mut self, copies: &[crate::TextureCopy]) -> Result<()> {
         if copies.is_empty() {
             return Ok(());
@@ -366,7 +424,9 @@ pub trait ResourceDevice {
         _desc: crate::TextureArrayLayerWriteDescriptor,
         _data: &[u8],
     ) -> Result<()> {
-        Err(Error::Unavailable("layered array uploads are not implemented".into()))
+        Err(Error::Unavailable(
+            "layered array uploads are not implemented".into(),
+        ))
     }
 
     /// Writes a batch of texture uploads in order.
@@ -881,6 +941,16 @@ pub trait PresentationDevice {
     }
 }
 
+/// GPU timestamp range of one submitted frame's render work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameGpuTimestamps {
+    /// GPU ticks between the frame's start and end probes.
+    pub duration_ticks: u64,
+    /// GPU timer frequency in ticks per second; zero when the backend cannot
+    /// report one.
+    pub frequency: u64,
+}
+
 /// Provides backend resource diagnostics.
 pub trait DiagnosticsDevice {
     /// Relocates live resources during explicit owner-thread memory maintenance, retaining public
@@ -918,6 +988,23 @@ pub trait DiagnosticsDevice {
     /// # Errors
     /// Returns a backend error when a supported driver query fails.
     fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+        Ok(None)
+    }
+
+    /// Whether the backend timestamps submitted frame render work on the GPU.
+    #[must_use]
+    fn frame_gpu_timestamps_supported(&self) -> bool {
+        false
+    }
+
+    /// Returns the GPU timestamp range of the most recently completed probed
+    /// frame. `None` when unsupported or no probed frame has completed yet.
+    /// Reading never waits for GPU work; it reports the latest completed
+    /// submission, so callers poll alongside their existing present loop.
+    ///
+    /// # Errors
+    /// Returns a backend error when a supported native query readback fails.
+    fn last_frame_gpu_timestamps(&mut self) -> Result<Option<FrameGpuTimestamps>> {
         Ok(None)
     }
 }

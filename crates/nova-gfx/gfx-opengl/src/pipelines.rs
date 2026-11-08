@@ -19,11 +19,18 @@ pub(crate) struct TextureSlot {
     pub(crate) sampler: Option<u32>,
     pub(crate) unit: u32,
 }
+pub(crate) struct ImageSlot {
+    pub(crate) logical: u32,
+    pub(crate) unit: u32,
+    pub(crate) format: Format,
+    pub(crate) read_only: bool,
+}
 pub(crate) struct Pipeline {
     pub(crate) native: glow::NativeProgram,
     pub(crate) desc: RenderPipelineDescriptor,
     pub(crate) buffers: Vec<BufferSlot>,
     pub(crate) textures: Vec<TextureSlot>,
+    pub(crate) images: Vec<ImageSlot>,
     pub(crate) first_instance: Option<glow::NativeUniformLocation>,
 }
 
@@ -89,6 +96,7 @@ impl PipelineDevice for OpenGlDevice {
         }))
     }
     fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
+        desc.validate()?;
         Ok(self.passes.insert(desc.clone()))
     }
     fn create_render_pipeline(
@@ -98,7 +106,12 @@ impl PipelineDevice for OpenGlDevice {
     ) -> Result<RenderPipelineId> {
         desc.validate()?;
         let pass = self.passes.get(desc.render_pass)?;
-        if pass.color_attachment.format != desc.color_format
+        if pass.color_attachments.len() != desc.color_targets.len()
+            || pass
+                .color_attachments
+                .iter()
+                .zip(&desc.color_targets)
+                .any(|(attachment, target)| attachment.format != target.format)
             || (desc.depth_state.is_some() && pass.depth_attachment.is_none())
         {
             return Err(Error::InvalidInput(
@@ -274,6 +287,35 @@ impl OpenGlDevice {
                     }
                 }
             }
+            // Storage images live in their own unit namespace and need an immutable
+            // format plus an access qualifier, both taken from the WGSL declaration.
+            let mut images = Vec::new();
+            for shader in shaders {
+                for binding in &shader.images {
+                    let Some(location) = self.gl.get_uniform_location(program, &binding.name)
+                    else {
+                        continue;
+                    };
+                    let unit = images.len() as u32;
+                    if unit >= self.gl.get_parameter_i32(glow::MAX_IMAGE_UNITS) as u32 {
+                        return Err(Error::Unavailable(
+                            "OpenGL program exceeds native image units".into(),
+                        ));
+                    }
+                    self.gl.uniform_1_i32(Some(&location), unit as i32);
+                    if !images
+                        .iter()
+                        .any(|image: &ImageSlot| image.logical == binding.binding)
+                    {
+                        images.push(ImageSlot {
+                            logical: binding.binding,
+                            unit,
+                            format: binding.format,
+                            read_only: binding.read_only,
+                        });
+                    }
+                }
+            }
             let first_instance = self
                 .gl
                 .get_uniform_location(program, "naga_vs_first_instance");
@@ -283,8 +325,94 @@ impl OpenGlDevice {
                 desc: desc.clone(),
                 buffers,
                 textures,
+                images,
                 first_instance,
             })
         }
+    }
+}
+
+impl OpenGlDevice {
+    /// Reflects sampler/texture units for a linked program.
+    pub(crate) fn reflect_textures(
+        &self,
+        program: glow::NativeProgram,
+        shaders: &[&GlslShader],
+    ) -> Result<Vec<TextureSlot>> {
+        let mut textures = Vec::new();
+        let mut texture_names = HashMap::new();
+        // SAFETY: reflection queries and assignments address this live linked native program.
+        unsafe {
+            for shader in shaders {
+                for binding in &shader.textures {
+                    let Some(location) = self.gl.get_uniform_location(program, &binding.name)
+                    else {
+                        continue;
+                    };
+                    let next = textures.len() as u32;
+                    let unit = *texture_names.entry(binding.name.clone()).or_insert(next);
+                    if unit
+                        >= self
+                            .gl
+                            .get_parameter_i32(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS)
+                            as u32
+                    {
+                        return Err(Error::Unavailable(
+                            "OpenGL program exceeds texture units".into(),
+                        ));
+                    }
+                    self.gl.uniform_1_i32(Some(&location), unit as i32);
+                    if unit == next {
+                        textures.push(TextureSlot {
+                            logical: binding.texture,
+                            sampler: binding.sampler,
+                            unit,
+                        });
+                    }
+                }
+            }
+        }
+        self.check()?;
+        Ok(textures)
+    }
+
+    /// Reflects storage image units for a linked program.
+    pub(crate) fn reflect_images(
+        &self,
+        program: glow::NativeProgram,
+        shaders: &[&GlslShader],
+    ) -> Result<Vec<ImageSlot>> {
+        let mut images = Vec::new();
+        // SAFETY: reflection queries and assignments address this live linked native program.
+        unsafe {
+            for shader in shaders {
+                for binding in &shader.images {
+                    let Some(location) = self.gl.get_uniform_location(program, &binding.name)
+                    else {
+                        continue;
+                    };
+                    let unit = images.len() as u32;
+                    if unit >= self.gl.get_parameter_i32(glow::MAX_IMAGE_UNITS) as u32 {
+                        return Err(Error::Unavailable(
+                            "OpenGL program exceeds native image units".into(),
+                        ));
+                    }
+                    self.gl.uniform_1_i32(Some(&location), unit as i32);
+                    if !images
+                        .iter()
+                        .any(|image: &ImageSlot| image.logical == binding.binding)
+                    {
+                        images.push(ImageSlot {
+                            logical: binding.binding,
+                            unit,
+                            format: binding.format,
+                            read_only: binding.read_only,
+                        });
+                    }
+                }
+            }
+        }
+        self.check()?;
+        Ok(images)
     }
 }

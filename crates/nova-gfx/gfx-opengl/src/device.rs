@@ -76,6 +76,8 @@ pub struct OpenGlDevice {
     pub(crate) storage_alignment: u64,
     pub(crate) binding_limits: BufferBindingLimits,
     pub(crate) texture_array_limits: TextureArrayCapabilities,
+    pub(crate) max_color_attachments_cap: u32,
+    pub(crate) max_samples_cap: u32,
     pub(crate) compute: crate::compute::State,
     pub(crate) binding_cache: RefCell<crate::bindings::Cache>,
     // Last field: the config's native DC must outlive every GL/glutin object.
@@ -201,23 +203,29 @@ impl OpenGlDevice {
         let binding_limits = unsafe {
             BufferBindingLimits {
                 storage_offset_alignment: storage_alignment,
-                max_storage_binding_bytes: gl.get_parameter_i64(
-                    glow::MAX_SHADER_STORAGE_BLOCK_SIZE,
-                ).max(0) as u64,
+                max_storage_binding_bytes: gl
+                    .get_parameter_i64(glow::MAX_SHADER_STORAGE_BLOCK_SIZE)
+                    .max(0) as u64,
                 uniform_offset_alignment: uniform_alignment,
-                max_uniform_binding_bytes: gl.get_parameter_i64(
-                    glow::MAX_UNIFORM_BLOCK_SIZE,
-                ).max(0) as u64,
+                max_uniform_binding_bytes: gl.get_parameter_i64(glow::MAX_UNIFORM_BLOCK_SIZE).max(0)
+                    as u64,
             }
         };
         let texture_array_limits = unsafe {
             TextureArrayCapabilities {
                 max_dimension_2d: gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as u32,
-                max_array_layers: gl.get_parameter_i32(glow::MAX_ARRAY_TEXTURE_LAYERS).max(0) as u32,
+                max_array_layers: gl.get_parameter_i32(glow::MAX_ARRAY_TEXTURE_LAYERS).max(0)
+                    as u32,
                 ..Default::default()
             }
         };
         let compute = crate::compute::State::new(&gl);
+        let max_color_attachments_cap = unsafe {
+            let attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS).max(1) as u32;
+            let draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS).max(1) as u32;
+            attachments.min(draw_buffers)
+        };
+        let max_samples_cap = unsafe { gl.get_parameter_i32(glow::MAX_SAMPLES).max(1) as u32 };
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
             binding_cache: RefCell::new(crate::bindings::Cache::default()),
@@ -262,6 +270,8 @@ impl OpenGlDevice {
             storage_alignment,
             binding_limits,
             texture_array_limits,
+            max_color_attachments_cap,
+            max_samples_cap,
             compute,
             #[cfg(target_os = "windows")]
             _bootstrap: bootstrap,

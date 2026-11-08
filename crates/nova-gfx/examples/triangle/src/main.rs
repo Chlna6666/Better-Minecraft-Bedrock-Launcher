@@ -21,7 +21,8 @@ mod windows_example {
     use std::{num::NonZeroIsize, time::Instant};
 
     use gfx_core::{
-        BlendMode, ClearColor, ColorAttachmentDescriptor, DeviceDescriptor, Format, PipelineDevice,
+        BlendMode, ClearColor, ColorAttachmentDescriptor, ColorTargetState, DeviceDescriptor,
+        Format, PipelineDevice,
         PresentMode, PresentationDevice, RenderPassDescriptor, RenderPassId,
         RenderPipelineDescriptor, RenderPipelineId, ShaderModuleDescriptor, ShaderStage,
         SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
@@ -225,11 +226,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             })?;
             let render_pass = device.create_render_pass(&RenderPassDescriptor {
                 label: Some("triangle render pass".to_string()),
-                color_attachment: ColorAttachmentDescriptor {
+                color_attachments: vec![ColorAttachmentDescriptor {
                     format: surface_config.format,
-                },
+                }],
                 depth_attachment: None,
-            })?;
+
+            sample_count: 1,
+            resolve_target: None,
+
+        })?;
             let pipeline = device.create_render_pipeline(
                 &RenderPipelineDescriptor {
                     label: Some("triangle pipeline".to_string()),
@@ -240,8 +245,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     vertex_buffers: Vec::new(),
                     render_pass,
                     pipeline_layout: None,
-                    color_format: surface_config.format,
-                    blend_mode: BlendMode::Replace,
+                    color_targets: vec![ColorTargetState::new(surface_config.format, BlendMode::Replace)],
                     primitive_topology: gfx_core::PrimitiveTopology::TriangleList,
                     raster: Default::default(),
                     depth_state: None,

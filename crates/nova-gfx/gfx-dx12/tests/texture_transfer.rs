@@ -38,6 +38,7 @@ fn texture_write_round_trips_offset_and_row_padding() {
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("texture creation should succeed");
     let populated = device.resource_stats();

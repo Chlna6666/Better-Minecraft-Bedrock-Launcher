@@ -19,12 +19,22 @@ impl OpenGlDevice {
         load: LoadOp<ClearColor>,
         depth: Option<DepthAttachment>,
     ) -> Result<()> {
-        self.render_target_clipped(target, pass, steps, load, depth, None, None)
+        self.render_target_clipped(
+            std::slice::from_ref(&target),
+            None,
+            pass,
+            steps,
+            load,
+            depth,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn render_target_clipped(
         &self,
-        target: RenderTarget,
+        targets: &[RenderTarget],
+        resolve_view: Option<TextureViewId>,
         pass: RenderPassId,
         steps: &[RenderCommand],
         load: LoadOp<ClearColor>,
@@ -34,60 +44,87 @@ impl OpenGlDevice {
     ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
-        let (texture, framebuffer, size, format, viewport_size, viewport_origin, scissor_extent) =
+        if targets.is_empty() || targets.len() != pass.color_attachments.len() {
+            return Err(Error::InvalidInput(
+                "OpenGL target count does not match the render pass attachments".into(),
+            ));
+        }
+        let mut textures = Vec::with_capacity(targets.len());
+        // Multisampled attachments must be attached with their multisample target.
+        let mut attach_targets = Vec::with_capacity(targets.len());
+        let mut sizes = Vec::with_capacity(targets.len());
+        let mut formats = Vec::with_capacity(targets.len());
+        let mut samples = Vec::with_capacity(targets.len());
+        let mut framebuffer = self.framebuffer;
+        let mut viewport_size = None;
+        let mut viewport_origin = SignedOrigin2d::ZERO;
+        let mut scissor_extent = None;
+        for target in targets {
             match target {
                 RenderTarget::TextureView(id) => {
-                    let view = self.views.get(id)?;
+                    let view = self.views.get(*id)?;
                     if !view.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
                         return Err(Error::InvalidInput(
                             "OpenGL target is not a color attachment".into(),
                         ));
                     }
-                    (
-                        view.native,
-                        self.framebuffer,
-                        view.size,
-                        view.format,
+                    viewport_size = Some(
                         viewport
                             .map(|viewport| viewport.for_target(view.size))
                             .transpose()?
                             .unwrap_or(view.size),
-                        viewport
-                            .map(|viewport| viewport.mapped_origin(view.size))
-                            .transpose()?
-                            .unwrap_or(SignedOrigin2d::ZERO),
+                    );
+                    viewport_origin = viewport
+                        .map(|viewport| viewport.mapped_origin(view.size))
+                        .transpose()?
+                        .unwrap_or(SignedOrigin2d::ZERO);
+                    scissor_extent = Some(
                         viewport
                             .map(|viewport| viewport.mapped_scissor_extent(view.size))
                             .transpose()?
                             .unwrap_or(view.size),
-                    )
+                    );
+                    textures.push(view.native);
+                    attach_targets.push(view.target);
+                    sizes.push(view.size);
+                    samples.push(view.sample_count);
+                    formats.push(view.format);
                 }
                 RenderTarget::Swapchain {
                     swapchain,
                     image_index,
                 } => {
-                    if image_index != 0 {
+                    if *image_index != 0 {
                         return Err(Error::InvalidInput(
                             "OpenGL presents logical image zero".into(),
                         ));
                     }
-                    let chain = self.swapchains.get(swapchain)?;
-                    (
-                        chain.color,
-                        chain.framebuffer,
-                        chain.config.size,
-                        chain.config.format,
-                        chain.source_extent,
-                        SignedOrigin2d::ZERO,
-                        chain.source_extent,
-                    )
+                    let chain = self.swapchains.get(*swapchain)?;
+                    framebuffer = chain.framebuffer;
+                    viewport_size = Some(chain.source_extent);
+                    viewport_origin = SignedOrigin2d::ZERO;
+                    scissor_extent = Some(chain.source_extent);
+                    textures.push(chain.color);
+                    attach_targets.push(glow::TEXTURE_2D);
+                    sizes.push(chain.config.size);
+                    samples.push(1);
+                    formats.push(chain.config.format);
                 }
             };
-        if pass.color_attachment.format != format {
+        }
+        if pass
+            .color_attachments
+            .iter()
+            .zip(formats.iter())
+            .any(|(attachment, format)| attachment.format != *format)
+        {
             return Err(Error::InvalidInput(
                 "OpenGL render pass color mismatch".into(),
             ));
         }
+        let size = sizes[0];
+        let viewport_size = viewport_size.unwrap_or(size);
+        let scissor_extent = scissor_extent.unwrap_or(size);
         let depth_view = depth
             .map(|attachment| self.views.get(attachment.target))
             .transpose()?;
@@ -100,6 +137,16 @@ impl OpenGlDevice {
                 "OpenGL depth extent/usage mismatch".into(),
             ));
         }
+        // Shared invariant: attachments match the pass sample count and a resolve
+        // destination is single-sampled.
+        gfx_core::validate_pass_attachments(
+            pass.sample_count,
+            samples.into_iter(),
+            depth_view.map(|view| view.sample_count),
+            resolve_view
+                .map(|id| self.views.get(id).map(|view| view.sample_count))
+                .transpose()?,
+        )?;
         let clear_region = match (viewport, clear_region) {
             (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, size)?),
             (_, clear_region) => clear_region,
@@ -147,21 +194,28 @@ impl OpenGlDevice {
         unsafe {
             self.gl
                 .bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-            self.gl.framebuffer_texture_2d(
-                glow::FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(texture),
-                0,
-            );
+            let draw_buffers = textures
+                .iter()
+                .enumerate()
+                .map(|(index, _)| glow::COLOR_ATTACHMENT0 + index as u32)
+                .collect::<Vec<_>>();
+            for (index, texture) in textures.iter().enumerate() {
+                self.gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0 + index as u32,
+                    attach_targets[index],
+                    Some(*texture),
+                    0,
+                );
+            }
             self.gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
                 glow::DEPTH_ATTACHMENT,
-                glow::TEXTURE_2D,
+                depth_view.map_or(glow::TEXTURE_2D, |view| view.target),
                 depth_view.map(|view| view.native),
                 0,
             );
-            self.gl.draw_buffer(glow::COLOR_ATTACHMENT0);
+            self.gl.draw_buffers(&draw_buffers);
             self.gl.read_buffer(glow::COLOR_ATTACHMENT0);
             // Validation forces a driver-side framebuffer completeness query. Blur uses
             // many short-lived attachments per frame, so check in debug builds only;
@@ -175,7 +229,7 @@ impl OpenGlDevice {
                 .viewport(viewport_x, viewport_y, viewport_width, viewport_height);
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.depth_mask(true);
-            if format.is_srgb() {
+            if formats[0].is_srgb() {
                 self.gl.enable(glow::FRAMEBUFFER_SRGB);
             } else {
                 self.gl.disable(glow::FRAMEBUFFER_SRGB);
@@ -222,7 +276,7 @@ impl OpenGlDevice {
                     scissor_extent,
                     viewport
                         .is_some_and(|viewport| viewport.mapping == ViewportMapping::PixelExact),
-                    format,
+                    &formats,
                     depth_view.is_some(),
                     &mut state,
                     &mut bindings,
@@ -238,23 +292,71 @@ impl OpenGlDevice {
                 Ok(())
             }
         })();
+        if let Some(resolve_view) = resolve_view {
+            let msaa_color = textures.first().copied().ok_or_else(|| {
+                Error::InvalidInput("OpenGL resolve needs an MSAA color source".into())
+            })?;
+            let resolve = self.views.get(resolve_view)?;
+            // SAFETY: A transient resolve FBO is created, bound as DRAW, and deleted
+            // after the glBlitFramebuffer blits the MSAA draw FBO into it.
+            unsafe {
+                let resolve_fbo = self.gl.create_framebuffer().map_err(native)?;
+                self.gl
+                    .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(resolve_fbo));
+                self.gl.framebuffer_texture_2d(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(resolve.native),
+                    0,
+                );
+                self.gl
+                    .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(framebuffer));
+                self.gl.blit_framebuffer(
+                    0,
+                    0,
+                    size.width() as i32,
+                    size.height() as i32,
+                    0,
+                    0,
+                    size.width() as i32,
+                    size.height() as i32,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+                self.gl.delete_framebuffer(resolve_fbo);
+                let _ = msaa_color;
+            }
+        }
         // SAFETY: detach transient targets before they are sampled, resized or destroyed.
         unsafe {
+            // The resolve blit unbinds both framebuffer targets; re-attach to the pass
+            // framebuffer before detaching, since the default one cannot be modified.
+            if resolve_view.is_some() {
+                self.gl
+                    .bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            }
+            // Detach with the target the attachment was created from: some drivers
+            // reject a mismatched textarget even when the texture name is zero.
             self.gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
                 glow::DEPTH_ATTACHMENT,
-                glow::TEXTURE_2D,
+                depth_view.map_or(glow::TEXTURE_2D, |view| view.target),
                 None,
                 0,
             );
-            if matches!(target, RenderTarget::TextureView(_)) {
-                self.gl.framebuffer_texture_2d(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    None,
-                    0,
-                );
+            for (index, texture_target) in targets.iter().enumerate() {
+                if matches!(texture_target, RenderTarget::TextureView(_)) {
+                    self.gl.framebuffer_texture_2d(
+                        glow::FRAMEBUFFER,
+                        glow::COLOR_ATTACHMENT0 + index as u32,
+                        attach_targets[index],
+                        None,
+                        0,
+                    );
+                }
             }
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
@@ -268,13 +370,21 @@ impl OpenGlDevice {
         viewport_size: Extent2d,
         scissor_extent: Extent2d,
         pixel_exact: bool,
-        format: Format,
+        formats: &[Format],
         depth: bool,
         state: &mut GlPassState,
         bindings: &mut crate::bindings::Cache,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
-        if pipeline.desc.color_format != format || (pipeline.desc.depth_state.is_some() && !depth) {
+        let formats_match = pipeline
+            .desc
+            .color_targets
+            .iter()
+            .map(|target| target.format)
+            .collect::<Vec<_>>()
+            .as_slice()
+            == formats;
+        if !formats_match || (pipeline.desc.depth_state.is_some() && !depth) {
             return Err(Error::InvalidInput(
                 "OpenGL pipeline attachments mismatch".into(),
             ));
@@ -339,16 +449,55 @@ impl OpenGlDevice {
                     self.gl.enable(glow::DEPTH_TEST);
                     self.gl.depth_func(comparison(depth.compare));
                     self.gl.depth_mask(depth.write_enabled);
+                    if let Some(stencil) = depth.stencil {
+                        self.gl.enable(glow::STENCIL_TEST);
+                        self.gl.stencil_func_separate(
+                            glow::FRONT,
+                            comparison(stencil.front.compare),
+                            0,
+                            stencil.read_mask,
+                        );
+                        self.gl.stencil_func_separate(
+                            glow::BACK,
+                            comparison(stencil.back.compare),
+                            0,
+                            stencil.read_mask,
+                        );
+                        self.gl.stencil_op_separate(
+                            glow::FRONT,
+                            stencil_op_to_gl(stencil.front.fail_op),
+                            stencil_op_to_gl(stencil.front.depth_fail_op),
+                            stencil_op_to_gl(stencil.front.pass_op),
+                        );
+                        self.gl.stencil_op_separate(
+                            glow::BACK,
+                            stencil_op_to_gl(stencil.back.fail_op),
+                            stencil_op_to_gl(stencil.back.depth_fail_op),
+                            stencil_op_to_gl(stencil.back.pass_op),
+                        );
+                        self.gl.stencil_mask(stencil.write_mask);
+                    } else {
+                        self.gl.disable(glow::STENCIL_TEST);
+                    }
                 } else {
                     self.gl.disable(glow::DEPTH_TEST);
                     self.gl.depth_mask(false);
+                    self.gl.disable(glow::STENCIL_TEST);
                 }
-                if pipeline.desc.blend_mode == BlendMode::Replace {
-                    self.gl.disable(glow::BLEND);
-                } else {
-                    self.gl.enable(glow::BLEND);
-                    self.gl.blend_equation(glow::FUNC_ADD);
-                    let (source, destination) = match pipeline.desc.blend_mode {
+                for (index, target) in pipeline.desc.color_targets.iter().enumerate() {
+                    let blend_mode = target.blend;
+                    if blend_mode == BlendMode::Replace {
+                        self.gl.disable_draw_buffer(glow::BLEND, index as u32);
+                    } else {
+                        self.gl.enable_draw_buffer(glow::BLEND, index as u32);
+                    }
+                    self.gl.blend_equation_separate_draw_buffer(
+                        index as u32,
+                        glow::FUNC_ADD,
+                        glow::FUNC_ADD,
+                    );
+                    let (source, destination) = match blend_mode {
+                        BlendMode::Replace => (glow::ONE, glow::ZERO),
                         BlendMode::Alpha => (glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA),
                         #[cfg(windows)]
                         BlendMode::SubpixelDualSource => {
@@ -356,15 +505,24 @@ impl OpenGlDevice {
                         }
                         _ => (glow::ONE, glow::ONE_MINUS_SRC_ALPHA),
                     };
-                    self.gl.blend_func_separate(
+                    self.gl.blend_func_separate_draw_buffer(
+                        index as u32,
                         source,
                         destination,
                         glow::ONE,
-                        if pipeline.desc.blend_mode == BlendMode::AdditiveAlpha {
+                        if blend_mode == BlendMode::AdditiveAlpha {
                             glow::ONE
                         } else {
                             glow::ONE_MINUS_SRC_ALPHA
                         },
+                    );
+                    let mask = target.write_mask;
+                    self.gl.color_mask_draw_buffer(
+                        index as u32,
+                        mask.contains(ColorWrites::RED),
+                        mask.contains(ColorWrites::GREEN),
+                        mask.contains(ColorWrites::BLUE),
+                        mask.contains(ColorWrites::ALPHA),
                     );
                 }
                 state.pipeline = Some(pipeline_key);
@@ -415,6 +573,53 @@ impl OpenGlDevice {
                         .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(buffer.native));
                     self.gl.draw_arrays_indirect_offset(
                         topology,
+                        i32::try_from(draw.offset).map_err(native)?,
+                    );
+                    self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+                }
+                RenderCommand::DrawIndexedIndirect(draw) => {
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "OpenGL indirect draws require ARB_shader_draw_parameters".into(),
+                        ));
+                    }
+                    let arguments = self.buffers.get(draw.arguments)?;
+                    if !arguments.desc.usage.contains(BufferUsage::INDIRECT)
+                        || draw.offset % 4 != 0
+                        || draw
+                            .offset
+                            .checked_add(20)
+                            .is_none_or(|end| end > arguments.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid OpenGL indexed indirect argument range or usage".into(),
+                        ));
+                    }
+                    let index = self.buffers.get(draw.index_buffer.buffer)?;
+                    let (bytes, kind) = if draw.index_buffer.format == IndexFormat::Uint16 {
+                        (2u64, glow::UNSIGNED_SHORT)
+                    } else {
+                        (4, glow::UNSIGNED_INT)
+                    };
+                    if !index.desc.usage.contains(BufferUsage::INDEX)
+                        || draw.index_buffer.offset % bytes != 0
+                        || draw
+                            .index_buffer
+                            .offset
+                            .checked_add(bytes)
+                            .is_none_or(|end| end > index.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "OpenGL index range/usage mismatch".into(),
+                        ));
+                    }
+                    self.gl
+                        .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
+                    self.gl
+                        .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
+                    self.gl.draw_elements_indirect_offset(
+                        topology,
+                        kind,
                         i32::try_from(draw.offset).map_err(native)?,
                     );
                     self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
@@ -493,7 +698,7 @@ impl OpenGlDevice {
         Ok(())
     }
 }
-fn comparison(value: CompareFunction) -> u32 {
+pub(crate) fn comparison(value: CompareFunction) -> u32 {
     match value {
         CompareFunction::Never => glow::NEVER,
         CompareFunction::Less => glow::LESS,
@@ -503,5 +708,18 @@ fn comparison(value: CompareFunction) -> u32 {
         CompareFunction::NotEqual => glow::NOTEQUAL,
         CompareFunction::GreaterEqual => glow::GEQUAL,
         CompareFunction::Always => glow::ALWAYS,
+    }
+}
+
+pub(crate) fn stencil_op_to_gl(op: StencilOp) -> u32 {
+    match op {
+        StencilOp::Keep => glow::KEEP,
+        StencilOp::Zero => glow::ZERO,
+        StencilOp::Replace => glow::REPLACE,
+        StencilOp::IncrementClamp => glow::INCR,
+        StencilOp::DecrementClamp => glow::DECR,
+        StencilOp::Invert => glow::INVERT,
+        StencilOp::IncrementWrap => glow::INCR_WRAP,
+        StencilOp::DecrementWrap => glow::DECR_WRAP,
     }
 }

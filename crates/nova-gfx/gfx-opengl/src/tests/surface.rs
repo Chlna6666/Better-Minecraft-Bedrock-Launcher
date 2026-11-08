@@ -17,6 +17,8 @@ fn live_resize_capacity_blit_presents_only_the_native_client_region() {
                 format: Format::Rgba8Unorm,
                 present_mode: PresentMode::Mailbox,
                 alpha_mode: CompositeAlphaMode::Opaque,
+                desired_image_count: 0,
+                desired_maximum_frame_latency: 0,
             },
         )
         .expect("capacity swapchain");
@@ -152,6 +154,8 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
             format: Format::Bgra8Unorm,
             present_mode: PresentMode::Mailbox,
             alpha_mode: alpha,
+            desired_image_count: 0,
+            desired_maximum_frame_latency: 0,
         };
         let chain = device
             .create_swapchain(surface, config)
@@ -159,10 +163,13 @@ fn native_swapchains_resize_frame_waits_and_foreign_handles() {
         let pass = device
             .create_render_pass(&RenderPassDescriptor {
                 label: None,
-                color_attachment: ColorAttachmentDescriptor {
+                color_attachments: vec![ColorAttachmentDescriptor {
                     format: Format::Bgra8Unorm,
-                },
+                }],
                 depth_attachment: None,
+
+                sample_count: 1,
+                resolve_target: None,
             })
             .expect("surface pass");
         for _ in 0..3 {

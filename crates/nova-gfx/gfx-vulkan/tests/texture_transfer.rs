@@ -23,7 +23,8 @@ fn moderate_and_aggressive_trim_preserve_live_pixels_and_release_empty_blocks() 
         usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
-    };
+            sample_count: 1,
+        };
     for empty_trim in [
         gfx_core::MemoryTrimLevel::Moderate,
         gfx_core::MemoryTrimLevel::Aggressive,
@@ -105,6 +106,7 @@ fn texture_write_round_trips_offset_and_row_padding() {
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("texture creation should succeed");
     let source = [
@@ -178,7 +180,8 @@ fn managed_texture_memory_reports_live_and_reserved_bytes() {
                     usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
                     memory_location: MemoryLocation::GpuOnly,
                     dimension: TextureDimension::D2,
-                })
+            sample_count: 1,
+        })
                 .expect("managed texture creation should succeed"),
         );
         if index == 0 {

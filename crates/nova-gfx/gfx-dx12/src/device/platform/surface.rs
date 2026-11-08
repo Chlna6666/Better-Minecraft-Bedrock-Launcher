@@ -198,7 +198,14 @@ impl Dx12Device {
             )));
         }
 
+        let image_count = config.resolve_image_count(DEFAULT_BACK_BUFFER_COUNT, 2, 16);
+        let frame_latency = config.resolve_frame_latency(
+            DEFAULT_MAX_FRAME_LATENCY,
+            1,
+            image_count.saturating_sub(1).max(1),
+        );
         let swapchain = self.swapchains.get_mut(swapchain)?;
+        let previous_image_count = swapchain.image_count;
 
         swapchain.render_targets.clear();
         swapchain.rtv_heap = None;
@@ -207,7 +214,7 @@ impl Dx12Device {
         // SAFETY: Swapchain is valid and all references to previous backbuffers were dropped.
         if let Err(error) = unsafe {
             swapchain.swapchain.ResizeBuffers(
-                BACK_BUFFER_COUNT,
+                image_count,
                 config.size.width(),
                 config.size.height(),
                 format_to_dxgi(config.format),
@@ -223,15 +230,21 @@ impl Dx12Device {
             return Err(Error::Backend(error.to_string()));
         }
 
+        swapchain.image_count = image_count;
+        if let Ok(native) = swapchain.swapchain.cast::<IDXGISwapChain2>() {
+            // SAFETY: The live flip-model swapchain accepts a new bounded latency.
+            let _ = unsafe { native.SetMaximumFrameLatency(frame_latency) };
+        }
         swapchain.generation = swapchain.generation.wrapping_add(1);
         swapchain.resize_retirement = None;
         if let Err(error) = Self::rebuild_render_targets(&device, swapchain) {
             swapchain.config = previous_config;
+            swapchain.image_count = previous_image_count;
             // SAFETY: Swapchain is valid and the failed render-target rebuild left no live
             // backbuffer references in this registry entry.
             let rollback = unsafe {
                 swapchain.swapchain.ResizeBuffers(
-                    BACK_BUFFER_COUNT,
+                    previous_image_count,
                     previous_config.size.width(),
                     previous_config.size.height(),
                     format_to_dxgi(previous_config.format),

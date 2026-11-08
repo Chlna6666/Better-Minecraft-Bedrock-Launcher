@@ -90,6 +90,7 @@ impl PipelineDevice for Dx11Device {
         Ok(self.shaders.insert(shader))
     }
     fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
+        desc.validate()?;
         Ok(self.passes.insert(desc.clone()))
     }
     fn create_render_pipeline(
@@ -98,7 +99,18 @@ impl PipelineDevice for Dx11Device {
         _extent: Extent2d,
     ) -> Result<RenderPipelineId> {
         desc.validate()?;
-        self.passes.get(desc.render_pass)?;
+        let render_pass = self.passes.get(desc.render_pass)?;
+        if desc.color_targets.len() != render_pass.color_attachments.len()
+            || desc
+                .color_targets
+                .iter()
+                .zip(render_pass.color_attachments.iter())
+                .any(|(target, attachment)| target.format != attachment.format)
+        {
+            return Err(Error::InvalidInput(
+                "D3D11 pipeline color targets and render pass attachments differ".into(),
+            ));
+        }
         if let Some(layout) = desc.pipeline_layout {
             self.pipeline_layouts.get(layout)?;
         }
@@ -164,28 +176,27 @@ impl Dx11Device {
         ID3D11RasterizerState,
         ID3D11DepthStencilState,
     )> {
-        let (src, dst) = match desc.blend_mode {
-            BlendMode::Replace => (D3D11_BLEND_ONE, D3D11_BLEND_ZERO),
-            BlendMode::Alpha => (D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA),
-            BlendMode::PremultipliedAlpha => (D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA),
-            BlendMode::SubpixelDualSource => (D3D11_BLEND_SRC1_COLOR, D3D11_BLEND_INV_SRC1_COLOR),
-            BlendMode::AdditiveAlpha => (D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA),
+        let mut blend_desc = D3D11_BLEND_DESC {
+            IndependentBlendEnable: (desc.color_targets.len() > 1).into(),
+            ..Default::default()
         };
-        let mut blend_desc = D3D11_BLEND_DESC::default();
-        blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
-            BlendEnable: (desc.blend_mode != BlendMode::Replace).into(),
-            SrcBlend: src,
-            DestBlend: dst,
-            BlendOp: D3D11_BLEND_OP_ADD,
-            SrcBlendAlpha: D3D11_BLEND_ONE,
-            DestBlendAlpha: match desc.blend_mode {
-                BlendMode::Replace => D3D11_BLEND_ZERO,
-                BlendMode::AdditiveAlpha => D3D11_BLEND_ONE,
-                _ => D3D11_BLEND_INV_SRC_ALPHA,
-            },
-            BlendOpAlpha: D3D11_BLEND_OP_ADD,
-            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
-        };
+        for (index, target) in desc.color_targets.iter().enumerate() {
+            let (src, dst) = blend_factors(target.blend);
+            blend_desc.RenderTarget[index] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: (target.blend != BlendMode::Replace).into(),
+                SrcBlend: src,
+                DestBlend: dst,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: match target.blend {
+                    BlendMode::Replace => D3D11_BLEND_ZERO,
+                    BlendMode::AdditiveAlpha => D3D11_BLEND_ONE,
+                    _ => D3D11_BLEND_INV_SRC_ALPHA,
+                },
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: color_write_mask(target.write_mask),
+            };
+        }
         let state = desc.depth_state;
         let mut blend = None;
         let mut raster = None;
@@ -226,6 +237,21 @@ impl Dx11Device {
                         DepthFunc: comparison(
                             state.map_or(CompareFunction::Always, |state| state.compare),
                         ),
+                        StencilEnable: state.is_some_and(|s| s.stencil.is_some()).into(),
+                        StencilReadMask: state
+                            .and_then(|s| s.stencil)
+                            .map_or(0xff, |s| s.read_mask as u8),
+                        StencilWriteMask: state
+                            .and_then(|s| s.stencil)
+                            .map_or(0xff, |s| s.write_mask as u8),
+                        FrontFace: state
+                            .and_then(|s| s.stencil)
+                            .map(d3d11_stencil_face)
+                            .unwrap_or_default(),
+                        BackFace: state
+                            .and_then(|s| s.stencil)
+                            .map(d3d11_stencil_face)
+                            .unwrap_or_default(),
                         ..Default::default()
                     },
                     Some(&mut depth),
@@ -236,7 +262,34 @@ impl Dx11Device {
     }
 }
 
-fn comparison(value: CompareFunction) -> D3D11_COMPARISON_FUNC {
+fn blend_factors(blend: BlendMode) -> (D3D11_BLEND, D3D11_BLEND) {
+    match blend {
+        BlendMode::Replace => (D3D11_BLEND_ONE, D3D11_BLEND_ZERO),
+        BlendMode::Alpha => (D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA),
+        BlendMode::PremultipliedAlpha => (D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA),
+        BlendMode::SubpixelDualSource => (D3D11_BLEND_SRC1_COLOR, D3D11_BLEND_INV_SRC1_COLOR),
+        BlendMode::AdditiveAlpha => (D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA),
+    }
+}
+
+fn color_write_mask(write_mask: ColorWrites) -> u8 {
+    let mut native = 0_u8;
+    if write_mask.contains(ColorWrites::RED) {
+        native |= D3D11_COLOR_WRITE_ENABLE_RED.0 as u8;
+    }
+    if write_mask.contains(ColorWrites::GREEN) {
+        native |= D3D11_COLOR_WRITE_ENABLE_GREEN.0 as u8;
+    }
+    if write_mask.contains(ColorWrites::BLUE) {
+        native |= D3D11_COLOR_WRITE_ENABLE_BLUE.0 as u8;
+    }
+    if write_mask.contains(ColorWrites::ALPHA) {
+        native |= D3D11_COLOR_WRITE_ENABLE_ALPHA.0 as u8;
+    }
+    native
+}
+
+pub(crate) fn comparison(value: CompareFunction) -> D3D11_COMPARISON_FUNC {
     match value {
         CompareFunction::Never => D3D11_COMPARISON_NEVER,
         CompareFunction::Less => D3D11_COMPARISON_LESS,
@@ -246,5 +299,42 @@ fn comparison(value: CompareFunction) -> D3D11_COMPARISON_FUNC {
         CompareFunction::NotEqual => D3D11_COMPARISON_NOT_EQUAL,
         CompareFunction::GreaterEqual => D3D11_COMPARISON_GREATER_EQUAL,
         CompareFunction::Always => D3D11_COMPARISON_ALWAYS,
+    }
+}
+
+fn d3d11_stencil_op(op: StencilOp) -> D3D11_STENCIL_OP {
+    match op {
+        StencilOp::Keep => D3D11_STENCIL_OP_KEEP,
+        StencilOp::Zero => D3D11_STENCIL_OP_ZERO,
+        StencilOp::Replace => D3D11_STENCIL_OP_REPLACE,
+        StencilOp::IncrementClamp => D3D11_STENCIL_OP_INCR_SAT,
+        StencilOp::DecrementClamp => D3D11_STENCIL_OP_DECR_SAT,
+        StencilOp::Invert => D3D11_STENCIL_OP_INVERT,
+        StencilOp::IncrementWrap => D3D11_STENCIL_OP_INCR,
+        StencilOp::DecrementWrap => D3D11_STENCIL_OP_DECR,
+    }
+}
+
+fn d3d11_stencil_face(stencil: StencilState) -> D3D11_DEPTH_STENCILOP_DESC {
+    D3D11_DEPTH_STENCILOP_DESC {
+        StencilFailOp: d3d11_stencil_op(stencil.front.fail_op),
+        StencilDepthFailOp: d3d11_stencil_op(stencil.front.depth_fail_op),
+        StencilPassOp: d3d11_stencil_op(stencil.front.pass_op),
+        StencilFunc: comparison(stencil.front.compare),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_write_mask_maps_channels_to_d3d11_flags() {
+        assert_eq!(color_write_mask(ColorWrites::ALL), 15);
+        assert_eq!(color_write_mask(ColorWrites::COLOR), 7);
+        assert_eq!(color_write_mask(ColorWrites::RED), 1);
+        assert_eq!(color_write_mask(ColorWrites::ALPHA), 8);
+        assert_eq!(color_write_mask(ColorWrites::RED | ColorWrites::ALPHA), 9);
+        assert_eq!(color_write_mask(ColorWrites::empty()), 0);
     }
 }

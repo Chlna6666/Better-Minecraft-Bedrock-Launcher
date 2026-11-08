@@ -1,7 +1,10 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
 use std::cell::RefCell;
-use windows::Win32::Graphics::Direct3D::{D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2DARRAY};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2DARRAY,
+    D3D_SRV_DIMENSION_TEXTURE2DMS, D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
+};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
 mod buffer_upload;
@@ -45,6 +48,7 @@ pub(crate) struct View {
     pub(crate) dsv: Option<ID3D11DepthStencilView>,
     pub(crate) size: Extent2d,
     pub(crate) format: Format,
+    pub(crate) sample_count: u32,
 }
 pub(crate) enum Bound {
     Uniform {
@@ -69,17 +73,55 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
         Format::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
         Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
+        Format::Rg8Unorm => DXGI_FORMAT_R8G8_UNORM,
+        Format::R16Float => DXGI_FORMAT_R16_FLOAT,
+        Format::Rg16Float => DXGI_FORMAT_R16G16_FLOAT,
+        Format::R32Float => DXGI_FORMAT_R32_FLOAT,
+        Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        Format::R8Uint => DXGI_FORMAT_R8_UINT,
+        Format::Rg8Uint => DXGI_FORMAT_R8G8_UINT,
+        Format::Rgba8Uint => DXGI_FORMAT_R8G8B8A8_UINT,
     }
 }
 
 impl ResourceDevice for Dx11Device {
+    fn max_color_attachments(&self) -> u32 {
+        // D3D11 feature level 11.0 guarantees eight simultaneous render targets.
+        gfx_core::MAX_COLOR_ATTACHMENTS as u32
+    }
+
+    fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+        let mut max_sample_count = 1;
+        for count in [1, 2, 4, 8, 16, 32, 64] {
+            // SAFETY: device is live; the binding returns the supported quality level.
+            let quality = unsafe {
+                self.native
+                    .CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, count)
+            }
+            .unwrap_or_default();
+            if quality > 0 {
+                max_sample_count = count;
+            } else {
+                break;
+            }
+        }
+        gfx_core::MultisampleCapabilities {
+            max_sample_count,
+            stencil_supported: true,
+        }
+    }
+
     fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
-        // This backend requires FL11_0, so D3D11's mandatory resource
-        // limits apply. Array resource creation and layer sampling are not
-        // wired into gfx-core yet: do not advertise them as available.
+        // This backend requires FL11_0, so D3D11's mandatory resource limits
+        // apply; they are not queryable per adapter. Array resource creation
+        // and layer sampling are wired below, while dynamic indexed shader
+        // sampling stays disabled.
         TextureArrayCapabilities {
-            max_dimension_2d: 16_384,
-            max_array_layers: 2_048,
+            max_dimension_2d:
+                windows::Win32::Graphics::Direct3D11::D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+            max_array_layers:
+                windows::Win32::Graphics::Direct3D11::D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
             array_resources: true,
             layer_uploads: true,
             indexed_sampling: false,
@@ -100,17 +142,24 @@ impl ResourceDevice for Dx11Device {
 
     fn compute_capabilities(&self) -> ComputeCapabilities {
         ComputeCapabilities {
+            // D3D11 feature-level 11.0 guaranteed compute minimums.
             max_workgroups: [65535; 3],
             // Shader model 5 compute threads per group (D3D11_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP).
             max_invocations_per_workgroup: 1024,
             max_workgroup_size: [1024, 1024, 64],
             max_workgroup_shared_memory_bytes: 32 * 1024,
+            // DrawIndirect is always accepted; devices without D3D11.1
+            // constant-buffer offsetting take the per-draw CPU staging path
+            // in commands::indirect instead of GPU base-offset packing.
             indirect_draw: true,
         }
     }
 
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
+    }
+    fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
+        self.copy_texture_buffer_regions(copies)
     }
     fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
         for copy in copies {
@@ -160,7 +209,12 @@ impl ResourceDevice for Dx11Device {
                 "unsupported D3D11 buffer usage/placement".into(),
             ));
         }
-        let alignment = if uniform { 256 } else { 4 };
+        let limits = self.buffer_binding_limits();
+        let alignment = if uniform {
+            u64::from(limits.uniform_offset_alignment)
+        } else {
+            u64::from(limits.storage_offset_alignment)
+        };
         let native_size = u32::try_from(
             desc.size
                 .checked_add(alignment - 1)
@@ -169,9 +223,9 @@ impl ResourceDevice for Dx11Device {
                 * alignment,
         )
         .map_err(|_| Error::InvalidInput("D3D11 buffer exceeds 32-bit size".into()))?;
-        if uniform && native_size > 65536 {
+        if uniform && u64::from(native_size) > limits.max_uniform_binding_bytes {
             return Err(Error::InvalidInput(
-                "D3D11 uniform buffer exceeds 64KiB".into(),
+                "D3D11 uniform buffer exceeds the reported binding limit".into(),
             ));
         }
         let mut bind = 0;
@@ -286,8 +340,11 @@ impl ResourceDevice for Dx11Device {
         }
         if let TextureDimension::D2Array { layers } = desc.dimension {
             self.texture_array_capabilities().plan(
-                desc.size.width(), desc.size.height(), layers,
-                desc.mip_level_count, desc.format,
+                desc.size.width(),
+                desc.size.height(),
+                layers,
+                desc.mip_level_count,
+                desc.format,
             )?;
         }
         let mut bind = 0;
@@ -300,6 +357,9 @@ impl ResourceDevice for Dx11Device {
         if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
             bind |= D3D11_BIND_DEPTH_STENCIL.0 as u32;
         }
+        if desc.usage.contains(TextureUsage::STORAGE) {
+            bind |= D3D11_BIND_UNORDERED_ACCESS.0 as u32;
+        }
         let mut native = None;
         // SAFETY: initialized texture descriptor, no borrowed initial data.
         unsafe {
@@ -309,6 +369,7 @@ impl ResourceDevice for Dx11Device {
                     Height: desc.size.height(),
                     MipLevels: desc.mip_level_count,
                     ArraySize: desc.dimension.layers(),
+                    // Depth maps are sampled through typed views, so the resource is typeless.
                     Format: if desc.format == Format::Depth32Float
                         && desc.usage.contains(TextureUsage::SAMPLED)
                     {
@@ -317,7 +378,7 @@ impl ResourceDevice for Dx11Device {
                         format(desc.format)
                     },
                     SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
+                        Count: desc.sample_count,
                         Quality: 0,
                     },
                     Usage: D3D11_USAGE_DEFAULT,
@@ -337,7 +398,9 @@ impl ResourceDevice for Dx11Device {
     fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
         let texture = self.textures.get(desc.texture)?;
         if texture.desc.dimension != TextureDimension::D2 {
-            return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+            return Err(Error::InvalidInput(
+                "use write_texture_array_layer for D2Array".into(),
+            ));
         }
         desc.validate_against(&texture.desc, data.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST) {
@@ -410,6 +473,7 @@ impl ResourceDevice for Dx11Device {
             dsv: None,
             size: texture.desc.mip_extent(desc.base_mip_level)?,
             format: desc.format,
+            sample_count: texture.desc.sample_count,
         };
         // SAFETY: the texture is live; each view descriptor selects a validated mip range.
         unsafe {
@@ -423,12 +487,20 @@ impl ResourceDevice for Dx11Device {
                             } else {
                                 format(desc.format)
                             },
-                            ViewDimension: if texture.desc.dimension == TextureDimension::D2 {
-                                D3D_SRV_DIMENSION_TEXTURE2D
-                            } else {
-                                D3D_SRV_DIMENSION_TEXTURE2DARRAY
+                            // Multisampled textures need the MS view dimension; a plain
+                            // TEXTURE2D SRV over MS storage is E_INVALIDARG on D3D11.
+                            ViewDimension: match (
+                                texture.desc.dimension == TextureDimension::D2,
+                                texture.desc.sample_count > 1,
+                            ) {
+                                (true, false) => D3D_SRV_DIMENSION_TEXTURE2D,
+                                (false, false) => D3D_SRV_DIMENSION_TEXTURE2DARRAY,
+                                (true, true) => D3D_SRV_DIMENSION_TEXTURE2DMS,
+                                (false, true) => D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
                             },
-                            Anonymous: if let TextureDimension::D2Array { layers } = texture.desc.dimension {
+                            Anonymous: if let TextureDimension::D2Array { layers } =
+                                texture.desc.dimension
+                            {
                                 D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                                     Texture2DArray: D3D11_TEX2D_ARRAY_SRV {
                                         MostDetailedMip: desc.base_mip_level,
@@ -460,18 +532,29 @@ impl ResourceDevice for Dx11Device {
                         "attachment view must select one mip".into(),
                     ));
                 }
+                // Multisampled storage requires the MS view dimensions; TEXTURE2D is
+                // E_INVALIDARG over a multisampled resource on D3D11.
+                let multisampled = texture.desc.sample_count > 1;
                 if desc.format == Format::Depth32Float {
                     self.native
                         .CreateDepthStencilView(
                             &texture.native,
                             Some(&D3D11_DEPTH_STENCIL_VIEW_DESC {
                                 Format: format(desc.format),
-                                ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+                                ViewDimension: if multisampled {
+                                    D3D11_DSV_DIMENSION_TEXTURE2DMS
+                                } else {
+                                    D3D11_DSV_DIMENSION_TEXTURE2D
+                                },
                                 Flags: 0,
-                                Anonymous: D3D11_DEPTH_STENCIL_VIEW_DESC_0 {
-                                    Texture2D: D3D11_TEX2D_DSV {
-                                        MipSlice: desc.base_mip_level,
-                                    },
+                                Anonymous: if multisampled {
+                                    D3D11_DEPTH_STENCIL_VIEW_DESC_0::default()
+                                } else {
+                                    D3D11_DEPTH_STENCIL_VIEW_DESC_0 {
+                                        Texture2D: D3D11_TEX2D_DSV {
+                                            MipSlice: desc.base_mip_level,
+                                        },
+                                    }
                                 },
                             }),
                             Some(&mut view.dsv),
@@ -483,11 +566,19 @@ impl ResourceDevice for Dx11Device {
                             &texture.native,
                             Some(&D3D11_RENDER_TARGET_VIEW_DESC {
                                 Format: format(desc.format),
-                                ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
-                                Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 {
-                                    Texture2D: D3D11_TEX2D_RTV {
-                                        MipSlice: desc.base_mip_level,
-                                    },
+                                ViewDimension: if multisampled {
+                                    D3D11_RTV_DIMENSION_TEXTURE2DMS
+                                } else {
+                                    D3D11_RTV_DIMENSION_TEXTURE2D
+                                },
+                                Anonymous: if multisampled {
+                                    D3D11_RENDER_TARGET_VIEW_DESC_0::default()
+                                } else {
+                                    D3D11_RENDER_TARGET_VIEW_DESC_0 {
+                                        Texture2D: D3D11_TEX2D_RTV {
+                                            MipSlice: desc.base_mip_level,
+                                        },
+                                    }
                                 },
                             }),
                             Some(&mut view.rtv),
@@ -499,28 +590,35 @@ impl ResourceDevice for Dx11Device {
         Ok(self.views.insert(view))
     }
     fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+        desc.validate()?;
         let address = |value| match value {
             AddressMode::ClampToEdge => D3D11_TEXTURE_ADDRESS_CLAMP,
             AddressMode::Repeat => D3D11_TEXTURE_ADDRESS_WRAP,
+            AddressMode::MirrorRepeat => D3D11_TEXTURE_ADDRESS_MIRROR,
+            AddressMode::ClampToBorder => D3D11_TEXTURE_ADDRESS_BORDER,
         };
         let filter = if desc.anisotropic {
-            D3D11_FILTER_ANISOTROPIC
+            if desc.compare.is_some() {
+                D3D11_FILTER_COMPARISON_ANISOTROPIC
+            } else {
+                D3D11_FILTER_ANISOTROPIC
+            }
         } else {
-            D3D11_FILTER(
-                (if desc.min_filter == FilterMode::Linear {
-                    0x10
-                } else {
-                    0
-                }) | (if desc.mag_filter == FilterMode::Linear {
-                    0x4
-                } else {
-                    0
-                }) | (if desc.mipmap_filter == FilterMode::Linear {
-                    0x1
-                } else {
-                    0
-                }),
-            )
+            let bits = (if desc.min_filter == FilterMode::Linear {
+                0x10
+            } else {
+                0
+            }) | (if desc.mag_filter == FilterMode::Linear {
+                0x4
+            } else {
+                0
+            }) | (if desc.mipmap_filter == FilterMode::Linear {
+                0x1
+            } else {
+                0
+            });
+            let comparison_bit = if desc.compare.is_some() { 0x80 } else { 0 };
+            D3D11_FILTER(bits | comparison_bit)
         };
         let mut sampler = None;
         // SAFETY: initialized sampler descriptor and owned output.
@@ -530,11 +628,19 @@ impl ResourceDevice for Dx11Device {
                     Filter: filter,
                     AddressU: address(desc.address_mode_u),
                     AddressV: address(desc.address_mode_v),
-                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: address(desc.address_mode_w),
                     MaxAnisotropy: if desc.anisotropic { 16 } else { 1 },
-                    ComparisonFunc: D3D11_COMPARISON_NEVER,
-                    MinLOD: 0.0,
-                    MaxLOD: f32::MAX,
+                    ComparisonFunc: desc
+                        .compare
+                        .map(crate::pipelines::comparison)
+                        .unwrap_or(D3D11_COMPARISON_NEVER),
+                    MinLOD: desc.lod_min_clamp,
+                    MaxLOD: desc.lod_max_clamp,
+                    MipLODBias: desc.lod_bias,
+                    BorderColor: desc
+                        .border_color
+                        .map(|c| [c[0], c[1], c[2], c[3]])
+                        .unwrap_or([0.0; 4]),
                     ..Default::default()
                 },
                 Some(&mut sampler),
@@ -553,6 +659,11 @@ impl ResourceDevice for Dx11Device {
                 BindingType::UniformBuffer => 13,
                 BindingType::Sampler => 16,
                 BindingType::StorageBuffer | BindingType::SampledTexture => 128,
+                BindingType::StorageTexture { .. } => {
+                    return Err(Error::Unavailable(
+                        "D3D11 storage textures need an unordered-access-view binding path".into(),
+                    ));
+                }
             };
             if entry.binding >= limit {
                 return Err(Error::InvalidInput(
@@ -693,4 +804,258 @@ impl Dx11Device {
             }
         }
     }
+}
+
+impl Dx11Device {
+    /// Copies between a buffer and a texture through D3D11 staging resources.
+    ///
+    /// D3D11 has no buffer/texture copy primitive, so the portable row pitch is tight and the
+    /// staging object carries the rectangle to or from CPU-visible memory.
+    pub(crate) fn copy_texture_buffer_regions(
+        &mut self,
+        copies: &[gfx_core::TextureBufferCopy],
+    ) -> Result<()> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        let limits = self.texture_copy_limits();
+        for copy in copies {
+            copy.validate(
+                &self.textures.get(copy.texture)?.desc,
+                &self.buffers.get(copy.buffer)?.desc,
+                limits,
+            )?;
+        }
+        for copy in copies {
+            let texture = self.textures.get(copy.texture)?;
+            let buffer = self.buffers.get(copy.buffer)?;
+            let width = copy.size.width();
+            let height = copy.size.height();
+            let row = u64::from(width) * u64::from(texture.desc.format.bytes_per_pixel());
+            let bytes = usize::try_from(row * u64::from(height))
+                .map_err(|_| Error::InvalidInput("D3D11 copy size exceeds usize".into()))?;
+            let staging_texture = create_staging_texture(
+                &self.native,
+                width,
+                height,
+                crate::resources::format(texture.desc.format),
+                copy.direction == gfx_core::CopyDirection::BufferToTexture,
+            )?;
+            let region = windows::Win32::Graphics::Direct3D11::D3D11_BOX {
+                left: copy.texture_origin.x,
+                top: copy.texture_origin.y,
+                front: 0,
+                right: copy.texture_origin.x + width,
+                bottom: copy.texture_origin.y + height,
+                back: 1,
+            };
+            match copy.direction {
+                gfx_core::CopyDirection::TextureToBuffer => {
+                    // SAFETY: Both textures are live, same format; the box is inside the source.
+                    unsafe {
+                        self.context.CopySubresourceRegion(
+                            &staging_texture,
+                            0,
+                            0,
+                            0,
+                            0,
+                            &texture.native,
+                            0,
+                            Some(&region),
+                        );
+                    }
+                    let mut mapped =
+                        windows::Win32::Graphics::Direct3D11::D3D11_MAPPED_SUBRESOURCE::default();
+                    // SAFETY: Staging texture is CPU-readable and not bound to the pipeline.
+                    unsafe {
+                        self.context
+                            .Map(
+                                &staging_texture,
+                                0,
+                                windows::Win32::Graphics::Direct3D11::D3D11_MAP_READ,
+                                0,
+                                Some(&mut mapped),
+                            )
+                            .map_err(backend)?;
+                    }
+                    let mut pixels = vec![0u8; bytes];
+                    // SAFETY: The mapped region covers the whole staging texture.
+                    unsafe {
+                        let source = std::slice::from_raw_parts(
+                            mapped.pData.cast::<u8>(),
+                            mapped.RowPitch as usize * height as usize,
+                        );
+                        for y in 0..height as usize {
+                            let from = y * mapped.RowPitch as usize;
+                            let to = y * row as usize;
+                            pixels[to..to + row as usize]
+                                .copy_from_slice(&source[from..from + row as usize]);
+                        }
+                        self.context.Unmap(&staging_texture, 0);
+                    }
+                    let target = windows::Win32::Graphics::Direct3D11::D3D11_BOX {
+                        left: u32::try_from(copy.buffer_offset).map_err(|_| {
+                            Error::InvalidInput("D3D11 copy offset exceeds u32".into())
+                        })?,
+                        top: 0,
+                        front: 0,
+                        right: u32::try_from(copy.buffer_offset + row * u64::from(height))
+                            .map_err(|_| {
+                                Error::InvalidInput("D3D11 copy end exceeds u32".into())
+                            })?,
+                        bottom: 1,
+                        back: 1,
+                    };
+                    // SAFETY: The destination box lies inside the validated buffer range.
+                    unsafe {
+                        self.context.UpdateSubresource(
+                            &buffer.native,
+                            0,
+                            Some(&target),
+                            pixels.as_ptr().cast(),
+                            0,
+                            0,
+                        );
+                    }
+                }
+                gfx_core::CopyDirection::BufferToTexture => {
+                    let staging_buffer = create_staging_buffer(&self.native, buffer.native_size)?;
+                    // SAFETY: Both buffers are live; CopyResource needs identical descriptors,
+                    // so the staging buffer is created with the source's byte width.
+                    unsafe {
+                        self.context.CopyResource(&staging_buffer, &buffer.native);
+                    }
+                    let mut mapped =
+                        windows::Win32::Graphics::Direct3D11::D3D11_MAPPED_SUBRESOURCE::default();
+                    // SAFETY: Staging buffer is CPU-readable and not bound to the pipeline.
+                    unsafe {
+                        self.context
+                            .Map(
+                                &staging_buffer,
+                                0,
+                                windows::Win32::Graphics::Direct3D11::D3D11_MAP_READ,
+                                0,
+                                Some(&mut mapped),
+                            )
+                            .map_err(backend)?;
+                    }
+                    let mut pixels = vec![0u8; bytes];
+                    // SAFETY: The mapped region covers the staged buffer bytes.
+                    unsafe {
+                        let offset = usize::try_from(copy.buffer_offset).unwrap_or(usize::MAX);
+                        let source = std::slice::from_raw_parts(
+                            mapped.pData.cast::<u8>(),
+                            usize::try_from(buffer.native_size).unwrap_or(0),
+                        );
+                        match source.get(offset..offset + bytes) {
+                            Some(range) => pixels.copy_from_slice(range),
+                            None => {
+                                self.context.Unmap(&staging_buffer, 0);
+                                return Err(Error::InvalidInput(
+                                    "D3D11 copy range exceeds the source buffer".into(),
+                                ));
+                            }
+                        }
+                        self.context.Unmap(&staging_buffer, 0);
+                    }
+                    let mut write =
+                        windows::Win32::Graphics::Direct3D11::D3D11_MAPPED_SUBRESOURCE::default();
+                    // SAFETY: Staging texture is CPU-writable and not bound to the pipeline.
+                    unsafe {
+                        self.context
+                            .Map(
+                                &staging_texture,
+                                0,
+                                windows::Win32::Graphics::Direct3D11::D3D11_MAP_WRITE,
+                                0,
+                                Some(&mut write),
+                            )
+                            .map_err(backend)?;
+                        let target = std::slice::from_raw_parts_mut(
+                            write.pData.cast::<u8>(),
+                            write.RowPitch as usize * height as usize,
+                        );
+                        for y in 0..height as usize {
+                            let from = y * row as usize;
+                            let to = y * write.RowPitch as usize;
+                            target[to..to + row as usize]
+                                .copy_from_slice(&pixels[from..from + row as usize]);
+                        }
+                        self.context.Unmap(&staging_texture, 0);
+                        self.context.CopySubresourceRegion(
+                            &texture.native,
+                            0,
+                            copy.texture_origin.x,
+                            copy.texture_origin.y,
+                            0,
+                            &staging_texture,
+                            0,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn create_staging_texture(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    width: u32,
+    height: u32,
+    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    write: bool,
+) -> Result<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D> {
+    use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_SAMPLE_DESC};
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: if write {
+            D3D11_CPU_ACCESS_WRITE.0 as u32
+        } else {
+            D3D11_CPU_ACCESS_READ.0 as u32
+        },
+        MiscFlags: 0,
+    };
+    let mut staging = None;
+    // SAFETY: The descriptor describes a CPU-visible staging texture.
+    unsafe {
+        device
+            .CreateTexture2D(&desc, None, Some(&mut staging))
+            .map_err(backend)?
+    };
+    required(staging)
+}
+
+fn create_staging_buffer(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    size: u32,
+) -> Result<windows::Win32::Graphics::Direct3D11::ID3D11Buffer> {
+    use windows::Win32::Graphics::Direct3D11::*;
+    let desc = D3D11_BUFFER_DESC {
+        ByteWidth: size,
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        MiscFlags: 0,
+        StructureByteStride: 0,
+    };
+    let mut staging = None;
+    // SAFETY: The descriptor describes a CPU-visible staging buffer.
+    unsafe {
+        device
+            .CreateBuffer(&desc, None, Some(&mut staging))
+            .map_err(backend)?
+    };
+    required(staging)
 }

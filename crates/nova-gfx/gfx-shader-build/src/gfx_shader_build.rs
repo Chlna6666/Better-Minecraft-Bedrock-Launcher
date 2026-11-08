@@ -325,7 +325,8 @@ impl ShaderSet {
                 if let Some(glsl) = glsl {
                     let buffers = glsl.buffers.iter().map(|buffer| format!("::gfx_core::GlslBufferBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, kind: ::gfx_core::BindingType::{:?} }}", buffer.name, buffer.binding, buffer.kind)).collect::<Vec<_>>().join(",");
                     let textures = glsl.textures.iter().map(|texture| format!("::gfx_core::GlslTextureBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), texture: {}, sampler: {:?} }}", texture.name, texture.texture, texture.sampler)).collect::<Vec<_>>().join(",");
-                    generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}] }};\n"));
+                    let images = glsl.images.iter().map(|image| format!("::gfx_core::GlslImageBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, format: ::gfx_core::Format::{:?}, read_only: {} }}", image.name, image.binding, image.format, image.read_only)).collect::<Vec<_>>().join(",");
+                    generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}], images: &[{images}] }};\n"));
                 } else {
                     generated.push_str(&format!(
                     "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::{constructor}({include_macro}!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")));\n"
@@ -413,7 +414,9 @@ impl ShaderSet {
                 Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None))
             }
             Backend::Dx12 => {
-                let binary = prepared.module.compile_hlsl(stage, entry_point)
+                let binary = prepared
+                    .module
+                    .compile_hlsl(stage, entry_point)
                     .map_err(|error| Error::Translate {
                         shader: shader.name.clone(),
                         entry_point: entry_point.to_owned(),
@@ -421,15 +424,17 @@ impl ShaderSet {
                     })?;
                 let native_entry = binary.entry_point;
                 let gfx_core::ShaderCode::Hlsl(hlsl) = binary.code else {
-                    return Err(Error::Invalid("DX12 translation did not produce HLSL".into()));
+                    return Err(Error::Invalid(
+                        "DX12 translation did not produce HLSL".into(),
+                    ));
                 };
-                match compile_hlsl_to_dxbc(&hlsl, &native_entry, stage, false).map_err(|message| {
-                    Error::Compile {
+                match compile_hlsl_to_dxbc(&hlsl, &native_entry, stage, false).map_err(
+                    |message| Error::Compile {
                         shader: shader.name.clone(),
                         entry_point: entry_point.to_string(),
                         message,
-                    }
-                })? {
+                    },
+                )? {
                     Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None)),
                     None => match self.dx12_artifact_policy {
                         Dx12ArtifactPolicy::AllowRuntimeCompilation => {
@@ -947,9 +952,13 @@ mod tests {
             .entry("fs_main", ShaderStage::Fragment);
         let prepared = PreparedShader::new(&shader).expect("WGSL bundle should validate once");
 
-        let vertex = prepared.module.compile_hlsl(ShaderStage::Vertex, "vs_main")
+        let vertex = prepared
+            .module
+            .compile_hlsl(ShaderStage::Vertex, "vs_main")
             .expect("validated module should translate vertex entry");
-        let fragment = prepared.module.compile_hlsl(ShaderStage::Fragment, "fs_main")
+        let fragment = prepared
+            .module
+            .compile_hlsl(ShaderStage::Fragment, "fs_main")
             .expect("validated module should translate fragment entry");
 
         assert!(!vertex.is_empty());

@@ -179,6 +179,7 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
             usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("target");
     let view = device
@@ -193,10 +194,14 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
     let pass = device
         .create_render_pass(&RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         })
         .expect("pass");
     let mut pipeline_desc = RenderPipelineDescriptor {
@@ -208,8 +213,7 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
         vertex_buffers: vec![],
         render_pass: pass,
         pipeline_layout: Some(pipeline_layout),
-        color_format: Format::Rgba8Unorm,
-        blend_mode: BlendMode::Replace,
+        color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
         primitive_topology: PrimitiveTopology::TriangleList,
         raster: Default::default(),
         depth_state: None,
@@ -296,14 +300,16 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
             .expect("dispatch");
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: pass,
                 commands: &commands,
                 color_load_op: LoadOp::Clear(ClearColor::default()),
                 depth_attachment: None,
                 clear_region: None,
                 viewport: None,
-            }])
+            resolve_target: None,
+
+        }])
             .expect("indirect draw");
         let pixels = device.read_texture(target).expect("pixels");
         assert_eq!(
@@ -358,14 +364,16 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
                 })];
                 device
                     .render_to_textures(&[RenderPassCommands {
-                        texture_view: view,
+                        color_attachments: std::slice::from_ref(&view),
                         render_pass: pass,
                         commands: &commands,
                         color_load_op: LoadOp::Clear(ClearColor::default()),
                         depth_attachment: None,
                         clear_region: None,
                         viewport: None,
-                    }])
+            resolve_target: None,
+
+        }])
                     .unwrap();
                 let is_front = (front_face == FrontFace::Ccw) != reversed;
                 let visible = match cull_mode {

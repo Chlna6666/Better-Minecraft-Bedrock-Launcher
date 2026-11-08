@@ -28,11 +28,11 @@ use gfx_core::{
     AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BeginRenderPassDescriptor,
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
     BindingResource, BindingType, BlendMode, BufferDescriptor, BufferId, BufferUploadStats,
-    BufferUsage, BufferWrite, ClearColor, ColorAttachmentDescriptor, CommandDevice,
-    CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
+    BufferUsage, BufferWrite, ClearColor, ColorAttachmentDescriptor, ColorTargetState, ColorWrites,
+    CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
     DepthAttachment, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice, DrawCommand,
-    DrawDescriptor, Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
-    MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
+    DrawDescriptor, Error, FilterMode, Format, FrameGpuTimestamps, IndexBufferBinding, IndexFormat,
+    LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentFrameDescriptor,
     PresentMode, PresentTimings, PresentationDevice, PresentedFrame, PrimitiveTopology,
     RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPassId,
@@ -57,14 +57,14 @@ mod descriptors;
 mod presentation;
 mod relocation;
 
-const FRAMES_IN_FLIGHT: usize = 2;
+const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
 // Bound the wait so a hidden/occluded window cannot block the GPU owner indefinitely.
-const PRESENT_BACKPRESSURE_TIMEOUT_NS: u64 = 8_000_000;
-const UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
+const DEFAULT_PRESENT_TIMEOUT_NS: u64 = 8_000_000;
+const DEFAULT_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
 // GPU-completed command pools are recycled instead of recreated for each blur/frame pass.
-const COMMAND_ENCODER_POOL_CAPACITY: usize = 16;
-const MAX_PIPELINE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_COMMAND_ENCODER_POOL_CAPACITY: usize = 16;
+const DEFAULT_PIPELINE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Native presentation target accepted by the Vulkan backend.
 pub trait VulkanSurfaceTarget: HasDisplayHandle + HasWindowHandle {}
@@ -130,10 +130,15 @@ pub struct VulkanDevice {
     physical_device: vk::PhysicalDevice,
     adapter_name: String,
     max_sampler_anisotropy: f32,
+    max_color_attachment_count: Option<u32>,
+    max_sample_count: u32,
+    stencil_supported: bool,
     multi_draw_indirect: bool,
     max_draw_indirect_count: u32,
     binding_limits: gfx_core::BufferBindingLimits,
     texture_array_limits: gfx_core::TextureArrayCapabilities,
+    copy_row_pitch_alignment: u64,
+    copy_offset_alignment: u64,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -167,11 +172,16 @@ pub struct VulkanDevice {
     /// Opt-in hardware timestamps for main/offscreen draw, not CPU command encoding.
     gpu_trace_enabled: bool,
     gpu_trace_totals: VulkanGpuTraceTotals,
+    last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
     last_texture_transfer_time: Option<Duration>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
     next_upload_fence_value: u64,
     submitted_frames: u64,
     incremental_presentation: bool,
+    command_encoder_pool_capacity: usize,
+    upload_command_pool_capacity: usize,
+    pipeline_cache_limit_bytes: u64,
+    present_timeout_ns: u64,
 }
 
 fn vulkan_pipeline_cache_path(
@@ -200,10 +210,10 @@ fn vulkan_pipeline_cache_path(
     )))
 }
 
-fn read_pipeline_cache_data(path: &Path) -> Option<Vec<u8>> {
+fn read_pipeline_cache_data(path: &Path, limit_bytes: u64) -> Option<Vec<u8>> {
     let bytes = fs::read(path).ok()?;
     let size = u64::try_from(bytes.len()).ok()?;
-    if bytes.is_empty() || size > MAX_PIPELINE_CACHE_BYTES {
+    if bytes.is_empty() || size > limit_bytes {
         return None;
     }
     Some(bytes)
@@ -236,7 +246,12 @@ fn create_pipeline_cache(
     }
 }
 
-fn persist_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache, path: Option<&Path>) {
+fn persist_pipeline_cache(
+    device: &ash::Device,
+    cache: vk::PipelineCache,
+    path: Option<&Path>,
+    limit_bytes: u64,
+) {
     let Some(path) = path else {
         return;
     };
@@ -247,7 +262,7 @@ fn persist_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache, path: 
     let Ok(size) = u64::try_from(bytes.len()) else {
         return;
     };
-    if bytes.is_empty() || size > MAX_PIPELINE_CACHE_BYTES {
+    if bytes.is_empty() || size > limit_bytes {
         return;
     }
     if let Err(error) = fs::write(path, bytes) {
@@ -281,6 +296,9 @@ impl VulkanDevice {
             uniform_offset_alignment: native_limits.min_uniform_buffer_offset_alignment.max(1),
             max_uniform_binding_bytes: u64::from(native_limits.max_uniform_buffer_range),
         };
+        // Driver-reported optimal alignments; never a fixed constant.
+        let copy_row_pitch_alignment = native_limits.optimal_buffer_copy_row_pitch_alignment.max(1);
+        let copy_offset_alignment = native_limits.optimal_buffer_copy_offset_alignment.max(1);
         let texture_array_limits = gfx_core::TextureArrayCapabilities {
             max_dimension_2d: native_limits.max_image_dimension2_d,
             max_array_layers: native_limits.max_image_array_layers,
@@ -308,11 +326,13 @@ impl VulkanDevice {
             } else {
                 [0; 3]
             },
-            max_invocations_per_workgroup:
-                adapter_properties.limits.max_compute_work_group_invocations,
+            max_invocations_per_workgroup: adapter_properties
+                .limits
+                .max_compute_work_group_invocations,
             max_workgroup_size: adapter_properties.limits.max_compute_work_group_size,
-            max_workgroup_shared_memory_bytes:
-                adapter_properties.limits.max_compute_shared_memory_size,
+            max_workgroup_shared_memory_bytes: adapter_properties
+                .limits
+                .max_compute_shared_memory_size,
             indirect_draw: native_features.draw_indirect_first_instance == vk::TRUE,
         };
         let (
@@ -340,6 +360,16 @@ impl VulkanDevice {
         } else {
             1.0
         };
+        let max_color_attachment_count = adapter_properties
+            .limits
+            .max_color_attachments
+            .gt(&0)
+            .then_some(adapter_properties.limits.max_color_attachments);
+        let max_sample_count =
+            sample_count_of(adapter_properties.limits.framebuffer_color_sample_counts);
+        // Stencil is a core Vulkan feature; support is determined by the
+        // depth-stencil format chosen later.
+        let stencil_supported = true;
         let device = Arc::new(device);
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
         let allocator = MemoryAllocator::new_vulkan(VulkanMemoryAllocatorDesc {
@@ -347,12 +377,46 @@ impl VulkanDevice {
             device: (*device).clone(),
             physical_device,
         })?;
-        let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())?;
+        let tuning = desc.tuning;
+        let upload_defaults = UploadRingAllocatorDesc::default();
+        let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+            page_size: if tuning.upload_page_bytes == 0 {
+                upload_defaults.page_size
+            } else {
+                tuning.upload_page_bytes
+            },
+            alignment: upload_defaults.alignment,
+            max_retained_idle_pages: if tuning.upload_retained_idle_pages == 0 {
+                upload_defaults.max_retained_idle_pages
+            } else {
+                tuning.upload_retained_idle_pages as usize
+            },
+        })?;
+        let command_encoder_pool_capacity = if tuning.command_encoder_pool_capacity == 0 {
+            DEFAULT_COMMAND_ENCODER_POOL_CAPACITY
+        } else {
+            tuning.command_encoder_pool_capacity as usize
+        };
+        let upload_command_pool_capacity = if tuning.upload_command_pool_capacity == 0 {
+            DEFAULT_UPLOAD_COMMAND_POOL_CAPACITY
+        } else {
+            tuning.upload_command_pool_capacity as usize
+        };
+        let pipeline_cache_limit_bytes = if tuning.pipeline_cache_limit_bytes == 0 {
+            DEFAULT_PIPELINE_CACHE_BYTES
+        } else {
+            tuning.pipeline_cache_limit_bytes
+        };
+        let present_timeout_ns = tuning
+            .present_timeout_micros
+            .checked_mul(1_000)
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(DEFAULT_PRESENT_TIMEOUT_NS);
         let pipeline_cache_path =
             vulkan_pipeline_cache_path(desc.pipeline_cache_dir.as_deref(), &adapter_properties);
         let pipeline_cache_data = pipeline_cache_path
             .as_deref()
-            .and_then(read_pipeline_cache_data);
+            .and_then(|path| read_pipeline_cache_data(path, pipeline_cache_limit_bytes));
         let pipeline_cache = create_pipeline_cache(
             &device,
             pipeline_cache_data.as_deref(),
@@ -369,10 +433,15 @@ impl VulkanDevice {
             physical_device,
             adapter_name,
             max_sampler_anisotropy,
+            max_color_attachment_count,
+            max_sample_count,
+            stencil_supported,
             multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
             max_draw_indirect_count: native_limits.max_draw_indirect_count.max(1),
             binding_limits,
             texture_array_limits,
+            copy_row_pitch_alignment,
+            copy_offset_alignment,
             device,
             graphics_queue,
             present_queue,
@@ -392,7 +461,7 @@ impl VulkanDevice {
             render_passes: ResourceRegistry::new("render pass"),
             render_pipelines: ResourceRegistry::new("render pipeline"),
             command_encoders: ResourceRegistry::new("command encoder"),
-            free_command_encoders: Vec::with_capacity(COMMAND_ENCODER_POOL_CAPACITY),
+            free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
             submissions: ResourceRegistry::new("submission"),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
@@ -401,16 +470,21 @@ impl VulkanDevice {
             pipeline_cache_path,
             upload_ring,
             upload_pages: Vec::new(),
-            upload_command_pool: Vec::with_capacity(UPLOAD_COMMAND_POOL_CAPACITY),
+            upload_command_pool: Vec::with_capacity(upload_command_pool_capacity),
             timestamp_clock,
             gpu_trace_enabled: timestamp_clock.is_some()
                 && log::log_enabled!(target: "gfx_vulkan::gpu", log::Level::Trace),
             gpu_trace_totals: VulkanGpuTraceTotals::default(),
+            last_frame_gpu_timestamps: None,
             last_texture_transfer_time: None,
             deferred_destroys: DeferredFreeQueue::new(),
             next_upload_fence_value: 1,
             submitted_frames: 0,
             incremental_presentation,
+            command_encoder_pool_capacity,
+            upload_command_pool_capacity,
+            pipeline_cache_limit_bytes,
+            present_timeout_ns,
         })
     }
 
@@ -574,7 +648,7 @@ impl VulkanDevice {
         });
         if !pending {
             self.swapchains.for_each_live(|swapchain| {
-                for fence in swapchain.in_flight_fences {
+                for &fence in &swapchain.in_flight_fences {
                     pending |=
                         fence != vk::Fence::null() && !fence_is_complete(&self.device, fence);
                 }
@@ -730,8 +804,11 @@ impl VulkanDevice {
         let layers = desc.dimension.layers();
         if let TextureDimension::D2Array { .. } = desc.dimension {
             self.texture_array_capabilities().plan(
-                desc.size.width(), desc.size.height(), layers,
-                desc.mip_level_count, desc.format,
+                desc.size.width(),
+                desc.size.height(),
+                layers,
+                desc.mip_level_count,
+                desc.format,
             )?;
         }
         let create_info = vk::ImageCreateInfo::default()
@@ -744,7 +821,7 @@ impl VulkanDevice {
             })
             .mip_levels(desc.mip_level_count)
             .array_layers(layers)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(sample_flag_for(desc.sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
                 texture_usage_to_vk(desc.usage)
@@ -774,7 +851,14 @@ impl VulkanDevice {
             image,
             allocation,
             desc: desc.clone(),
-            layout: vk::ImageLayout::UNDEFINED,
+            // A storage image is bound as a UAV, which every backend must expose in a
+            // layout the image never leaves; GENERAL is that single layout. Other textures
+            // start undefined and acquire a layout on first use.
+            layout: if desc.usage.contains(TextureUsage::STORAGE) {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::UNDEFINED
+            },
         }))
     }
 
@@ -787,7 +871,9 @@ impl VulkanDevice {
         let (image, old_layout, mip_level_count) = {
             let texture = self.textures.get(desc.texture)?;
             if texture.desc.dimension != TextureDimension::D2 {
-                return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+                return Err(Error::InvalidInput(
+                    "use write_texture_array_layer for D2Array".into(),
+                ));
             }
             desc.validate_against(&texture.desc, data.len())?;
             (texture.image, texture.layout, texture.desc.mip_level_count)
@@ -822,7 +908,9 @@ impl VulkanDevice {
             let (image, old_layout, mip_level_count) = {
                 let texture = self.textures.get(descriptor.texture)?;
                 if texture.desc.dimension != TextureDimension::D2 {
-                    return Err(Error::InvalidInput("batch 2D upload cannot write a D2Array".into()));
+                    return Err(Error::InvalidInput(
+                        "batch 2D upload cannot write a D2Array".into(),
+                    ));
                 }
                 descriptor.validate_against(&texture.desc, write.data.len())?;
                 (texture.image, texture.layout, texture.desc.mip_level_count)
@@ -1041,6 +1129,7 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when Vulkan sampler creation fails.
     fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+        desc.validate()?;
         let create_info = sampler_create_info(desc, self.max_sampler_anisotropy);
         // SAFETY: Device is valid and sampler create info is self-contained.
         let sampler =
@@ -1058,6 +1147,7 @@ impl VulkanDevice {
         desc: &BindGroupLayoutDescriptor,
     ) -> Result<BindGroupLayoutId> {
         desc.validate()?;
+
         let bindings = desc
             .entries
             .iter()
@@ -1257,19 +1347,30 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when Vulkan render pass creation fails.
     fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
+        desc.validate()?;
         let depth_format = desc
             .depth_attachment
             .as_ref()
             .map(|attachment| attachment.format);
-        let color_format_vk = format_to_vk(desc.color_attachment.format);
+        let color_formats_vk = desc
+            .color_attachments
+            .iter()
+            .map(|attachment| format_to_vk(attachment.format))
+            .collect::<Vec<_>>();
         let depth_format_vk = depth_format.map(format_to_vk);
         let mut created = Vec::with_capacity(if depth_format.is_some() { 6 } else { 3 });
+        let sample_count = desc.sample_count;
+        let stencil_format = desc
+            .depth_attachment
+            .as_ref()
+            .and_then(|attachment| attachment.stencil_format);
         let result = (|| {
             let mut create = |config| -> Result<vk::RenderPass> {
                 let render_pass = create_native_render_pass(
                     &self.device,
-                    color_format_vk,
+                    &color_formats_vk,
                     depth_format_vk,
+                    sample_count,
                     config,
                 )?;
                 created.push(render_pass);
@@ -1299,8 +1400,14 @@ impl VulkanDevice {
                 offscreen_depth_load_render_pass,
                 offscreen_load_depth_load_render_pass,
                 present_depth_load_render_pass,
-                color_format: desc.color_attachment.format,
+                color_formats: desc
+                    .color_attachments
+                    .iter()
+                    .map(|attachment| attachment.format)
+                    .collect(),
                 depth_format,
+                sample_count,
+                stencil_format,
             })
         })();
         if result.is_err() {
@@ -1331,6 +1438,17 @@ impl VulkanDevice {
                 "Vulkan depth pipeline requires a render pass depth attachment".to_string(),
             ));
         }
+        if desc.color_targets.len() != render_pass_record.color_formats.len()
+            || desc
+                .color_targets
+                .iter()
+                .zip(render_pass_record.color_formats.iter())
+                .any(|(target, format)| target.format != *format)
+        {
+            return Err(Error::InvalidInput(
+                "Vulkan pipeline color targets and render pass attachments differ".to_string(),
+            ));
+        }
         let render_pass = render_pass_record.pipeline_render_pass;
         let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
         let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
@@ -1359,6 +1477,7 @@ impl VulkanDevice {
             vertex_entry_point: &desc.vertex_entry_point,
             fragment_shader,
             fragment_entry_point: &desc.fragment_entry_point,
+            sample_count: render_pass_record.sample_count,
             desc,
         })?;
         Ok(self.render_pipelines.insert(VulkanRenderPipeline {
@@ -1415,7 +1534,9 @@ impl VulkanDevice {
                     return Err(error);
                 }
             };
-        let gpu_trace_query_pool = if self.gpu_trace_enabled {
+        // Frame probes need the same two timestamp slots even when trace logging
+        // is disabled, so allocate the pool whenever the queue can timestamp.
+        let gpu_trace_query_pool = if self.timestamp_clock.is_some() {
             let query_count = buffer_count.checked_mul(2).ok_or_else(|| {
                 Error::InvalidInput("Vulkan GPU trace query count overflow".into())
             })?;
@@ -1539,7 +1660,10 @@ impl VulkanDevice {
             let traced_slot = if trace.is_some() { slot } else { None };
             (trace, traced_slot)
         };
-        let render_pass_record = *self.render_passes.get(pass.render_pass)?;
+        let render_pass_record = self.render_passes.get(pass.render_pass)?;
+        let color_format_count = u32::try_from(render_pass_record.color_formats.len())
+            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        let render_pass_record = render_pass_record.clone();
         let depth_view =
             self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
         let target_extent = match pass.target {
@@ -1602,7 +1726,7 @@ impl VulkanDevice {
                     let framebuffer = create_framebuffer(
                         &self.device,
                         native_render_pass,
-                        image_view,
+                        std::slice::from_ref(&image_view),
                         Some(depth_view),
                         swapchain_record.extent,
                     )?;
@@ -1633,7 +1757,7 @@ impl VulkanDevice {
                 let framebuffer = create_framebuffer(
                     &self.device,
                     native_render_pass,
-                    texture_view.view,
+                    std::slice::from_ref(&texture_view.view),
                     depth_view.map(|(view, _)| view),
                     vk::Extent2D {
                         width: texture.desc.size.width(),
@@ -1751,6 +1875,42 @@ impl VulkanDevice {
                         first_instance: step.first_instance,
                     }
                 }
+                RenderCommand::DrawIndexedIndirect(step) => {
+                    let arguments = self.buffers.get(step.arguments)?;
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "Vulkan indirect first-instance is unsupported".into(),
+                        ));
+                    }
+                    if !arguments.desc.usage.contains(BufferUsage::INDIRECT)
+                        || step.offset % 4 != 0
+                        || step
+                            .offset
+                            .checked_add(20)
+                            .is_none_or(|end| end > arguments.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid Vulkan indexed indirect argument range or usage".into(),
+                        ));
+                    }
+                    let index = self.buffers.get(step.index_buffer.buffer)?;
+                    // The index range itself comes from the argument record, so only the
+                    // binding and one element at the offset can be validated here.
+                    validate_index_buffer_range(
+                        index.desc.usage,
+                        index.desc.size,
+                        step.index_buffer,
+                        0,
+                        1,
+                    )?;
+                    CommandDrawStepKind::IndexedIndirect {
+                        buffer: arguments.buffer,
+                        offset: step.offset,
+                        index_buffer: index.buffer,
+                        index_offset: step.index_buffer.offset,
+                        index_type: index_format_to_vk(step.index_buffer.format),
+                    }
+                }
             };
             draw_steps.push(CommandDrawStepInfo {
                 pipeline: pipeline_record.pipeline,
@@ -1761,6 +1921,10 @@ impl VulkanDevice {
             });
         }
         let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
+        let transitions = render_target_transition
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(&[]);
         let result = record_command_buffer(&CommandRecordInfo {
             depth_accesses: &depth_accesses,
             device: &self.device,
@@ -1777,8 +1941,10 @@ impl VulkanDevice {
             scissor_extent,
             color_load_op,
             depth_load_op,
-            render_target_transition,
+            color_attachment_count: color_format_count,
+            render_target_transitions: transitions,
             clear_region,
+            resolve: None,
             gpu_trace,
             graph_write_hazard,
         });
@@ -1795,6 +1961,337 @@ impl VulkanDevice {
                     };
             }
             if let Some(texture_id) = render_target_texture {
+                self.textures.get_mut(texture_id)?.layout =
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            }
+        }
+        if let Some(framebuffer) = transient_framebuffer {
+            self.command_encoders
+                .get_mut(encoder_id)?
+                .transient_framebuffers
+                .push(framebuffer);
+        }
+        result
+    }
+
+    /// Records one offscreen pass writing `color_views.len()` color attachments
+    /// plus an optional depth attachment. Used for MRT (multi-color) targets.
+    fn record_render_step_list_views(
+        &mut self,
+        encoder_id: CommandEncoderId,
+        command_buffer: vk::CommandBuffer,
+        render_pass_id: RenderPassId,
+        color_views: &[TextureViewId],
+        resolve_view: Option<TextureViewId>,
+        steps: &[RenderCommand],
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<DepthAttachment>,
+        clear_region: Option<ScissorRect>,
+        viewport: Option<Viewport>,
+        graph_write_hazard: bool,
+    ) -> Result<()> {
+        if color_views.is_empty() {
+            return Err(Error::InvalidInput(
+                "Vulkan offscreen pass must have at least one color attachment".into(),
+            ));
+        }
+        let render_pass_record = self.render_passes.get(render_pass_id)?.clone();
+        if color_views.len() != render_pass_record.color_formats.len() {
+            return Err(Error::InvalidInput(
+                "Vulkan offscreen attachment and render pass counts differ".into(),
+            ));
+        }
+        let depth_view =
+            self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
+        let mut transient_framebuffer = None;
+        let mut transitions = Vec::with_capacity(color_views.len());
+        let mut render_target_textures = Vec::with_capacity(color_views.len());
+        let mut extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        // Shared invariant: attachments match the pass sample count and a resolve
+        // destination is single-sampled.
+        let color_samples = color_views
+            .iter()
+            .map(|view| {
+                let view = self.texture_views.get(*view)?;
+                Ok(self.textures.get(view.texture)?.desc.sample_count)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let depth_samples = match depth_attachment {
+            Some(attachment) => {
+                let view = self.texture_views.get(attachment.target)?;
+                Some(self.textures.get(view.texture)?.desc.sample_count)
+            }
+            None => None,
+        };
+        let resolve_samples = match resolve_view {
+            Some(view) => {
+                let view = self.texture_views.get(view)?;
+                Some(self.textures.get(view.texture)?.desc.sample_count)
+            }
+            None => None,
+        };
+        gfx_core::validate_pass_attachments(
+            render_pass_record.sample_count,
+            color_samples.into_iter(),
+            depth_samples,
+            resolve_samples,
+        )?;
+        let mut viewport_extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        let mut viewport_origin = gfx_core::SignedOrigin2d::ZERO;
+        let mut scissor_extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        let mut image_views = Vec::with_capacity(color_views.len());
+        for (index, texture_view_id) in color_views.iter().enumerate() {
+            let texture_view = self.texture_views.get(*texture_view_id)?;
+            if texture_view.desc.format != render_pass_record.color_formats[index] {
+                return Err(Error::InvalidInput(
+                    "Vulkan texture view and render pass color formats differ".into(),
+                ));
+            }
+            let texture = self.textures.get(texture_view.texture)?;
+            let texture_extent = vk::Extent2D {
+                width: texture.desc.size.width(),
+                height: texture.desc.size.height(),
+            };
+            if image_views.is_empty() {
+                extent = texture_extent;
+            } else if extent != texture_extent {
+                return Err(Error::InvalidInput(
+                    "Vulkan color attachments must share one extent".into(),
+                ));
+            }
+            if transitions
+                .iter()
+                .any(|transition: &CommandRenderTargetTransition| transition.image == texture.image)
+            {
+                return Err(Error::InvalidInput(
+                    "Vulkan color attachments must not repeat a texture".into(),
+                ));
+            }
+            transitions.push(CommandRenderTargetTransition {
+                image: texture.image,
+                old_layout: texture.layout,
+            });
+            image_views.push(texture_view.view);
+            render_target_textures.push(texture_view.texture);
+        }
+        let depth_load_op = depth_view.map(|(_, load_op)| {
+            if clear_region.is_some_and(ScissorRect::is_empty) {
+                LoadOp::Load
+            } else {
+                load_op
+            }
+        });
+        let color_load = matches!(&color_load_op, LoadOp::Load);
+        let depth_load = depth_load_op
+            .as_ref()
+            .is_some_and(|load_op| matches!(load_op, LoadOp::Load));
+        let native_render_pass =
+            render_pass_record.offscreen_render_pass(color_load, depth_load)?;
+        let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
+        viewport_extent = viewport
+            .map(|viewport| {
+                viewport.for_target(target_size).map(|extent| vk::Extent2D {
+                    width: extent.width(),
+                    height: extent.height(),
+                })
+            })
+            .transpose()?
+            .unwrap_or(extent);
+        viewport_origin = viewport
+            .map(|viewport| viewport.mapped_origin(target_size))
+            .transpose()?
+            .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
+        scissor_extent = viewport
+            .map(|viewport| viewport.mapped_scissor_extent(target_size))
+            .transpose()?
+            .map(|extent| vk::Extent2D {
+                width: extent.width(),
+                height: extent.height(),
+            })
+            .unwrap_or(extent);
+        let framebuffer = create_framebuffer(
+            &self.device,
+            native_render_pass,
+            &image_views,
+            depth_view.map(|(view, _)| view),
+            extent,
+        )?;
+        transient_framebuffer = Some(framebuffer);
+        let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
+        let clear_region = match (viewport, clear_region) {
+            (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, target_size)?),
+            (_, clear_region) => clear_region,
+        };
+        let color_load_op = if clear_region.is_some_and(ScissorRect::is_empty) {
+            LoadOp::Load
+        } else {
+            color_load_op
+        };
+        let mut draw_steps = Vec::with_capacity(steps.len());
+        let mut descriptor_sets =
+            Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
+        for step in steps.iter() {
+            let scissor = match (viewport, step.scissor()) {
+                (Some(viewport), Some(scissor)) => {
+                    Some(viewport.map_scissor(scissor, target_size)?)
+                }
+                (_, scissor) => scissor,
+            };
+            if scissor.is_some_and(ScissorRect::is_empty) {
+                continue;
+            }
+            let pipeline_record = self.render_pipelines.get(step.pipeline())?;
+            let first_set = descriptor_sets.len();
+            for &bind_group in step.bind_groups() {
+                descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
+            }
+            let set_range = first_set..descriptor_sets.len();
+            let draw = match step {
+                RenderCommand::DrawIndirect(step) => {
+                    let buffer = self.buffers.get(step.arguments)?;
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "Vulkan indirect first-instance is unsupported".into(),
+                        ));
+                    }
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || step.offset % 4 != 0
+                        || step
+                            .offset
+                            .checked_add(16)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid Vulkan indirect argument range or usage".into(),
+                        ));
+                    }
+                    CommandDrawStepKind::Indirect {
+                        buffer: buffer.buffer,
+                        offset: step.offset,
+                    }
+                }
+                RenderCommand::Draw(step) => CommandDrawStepKind::NonIndexed {
+                    vertex_count: step.vertex_count,
+                    first_vertex: step.first_vertex,
+                    instance_count: step.instance_count,
+                    first_instance: step.first_instance,
+                },
+                RenderCommand::DrawIndexed(step) => {
+                    let index_buffer = self.buffers.get(step.index_buffer.buffer)?;
+                    validate_index_buffer_range(
+                        index_buffer.desc.usage,
+                        index_buffer.desc.size,
+                        step.index_buffer,
+                        step.first_index,
+                        step.index_count,
+                    )?;
+                    CommandDrawStepKind::Indexed {
+                        buffer: index_buffer.buffer,
+                        offset: step.index_buffer.offset,
+                        index_type: index_format_to_vk(step.index_buffer.format),
+                        index_count: step.index_count,
+                        first_index: step.first_index,
+                        base_vertex: step.base_vertex,
+                        instance_count: step.instance_count,
+                        first_instance: step.first_instance,
+                    }
+                }
+                RenderCommand::DrawIndexedIndirect(step) => {
+                    let arguments = self.buffers.get(step.arguments)?;
+                    if !self.compute.capabilities.indirect_draw {
+                        return Err(Error::Unavailable(
+                            "Vulkan indirect first-instance is unsupported".into(),
+                        ));
+                    }
+                    if !arguments.desc.usage.contains(BufferUsage::INDIRECT)
+                        || step.offset % 4 != 0
+                        || step
+                            .offset
+                            .checked_add(20)
+                            .is_none_or(|end| end > arguments.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid Vulkan indexed indirect argument range or usage".into(),
+                        ));
+                    }
+                    let index = self.buffers.get(step.index_buffer.buffer)?;
+                    // The index range itself comes from the argument record, so only the
+                    // binding and one element at the offset can be validated here.
+                    validate_index_buffer_range(
+                        index.desc.usage,
+                        index.desc.size,
+                        step.index_buffer,
+                        0,
+                        1,
+                    )?;
+                    CommandDrawStepKind::IndexedIndirect {
+                        buffer: arguments.buffer,
+                        offset: step.offset,
+                        index_buffer: index.buffer,
+                        index_offset: step.index_buffer.offset,
+                        index_type: index_format_to_vk(step.index_buffer.format),
+                    }
+                }
+            };
+            draw_steps.push(CommandDrawStepInfo {
+                pipeline: pipeline_record.pipeline,
+                pipeline_layout: pipeline_record.pipeline_layout,
+                descriptor_sets: set_range,
+                draw,
+                scissor,
+            });
+        }
+        let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
+        let resolve = match resolve_view {
+            Some(resolve_view_id) => {
+                let src_image = {
+                    let texture = self.textures.get(render_target_textures[0])?;
+                    texture.image
+                };
+                let dst_texture_view = self.texture_views.get(resolve_view_id)?;
+                let dst_image = self.textures.get(dst_texture_view.texture)?.image;
+                Some((src_image, dst_image, extent))
+            }
+            None => None,
+        };
+        let result = record_command_buffer(&CommandRecordInfo {
+            depth_accesses: &depth_accesses,
+            device: &self.device,
+            command_buffer,
+            render_pass: native_render_pass,
+            framebuffer,
+            steps: &draw_steps,
+            descriptor_sets: &descriptor_sets,
+            multi_draw_indirect: self.multi_draw_indirect,
+            max_draw_indirect_count: self.max_draw_indirect_count,
+            extent,
+            viewport_extent,
+            viewport_origin,
+            scissor_extent,
+            color_load_op,
+            depth_load_op,
+            color_attachment_count: u32::try_from(color_views.len())
+                .map_err(|error| Error::InvalidInput(error.to_string()))?,
+            render_target_transitions: &transitions,
+            clear_region,
+            resolve,
+            gpu_trace: None,
+            graph_write_hazard,
+        });
+        if result.is_ok() {
+            for access in depth_accesses {
+                self.textures.get_mut(access.texture)?.layout = access.new_layout;
+            }
+            for texture_id in render_target_textures {
                 self.textures.get_mut(texture_id)?.layout =
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             }
@@ -1931,7 +2428,8 @@ impl VulkanDevice {
         timings.queue_present = present_started.elapsed();
         let post_present_cleanup_started = Instant::now();
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
-        swapchain.frame_index = (present_frame.frame_index + 1) % FRAMES_IN_FLIGHT;
+        let frame_slots = swapchain.in_flight_fences.len().max(1);
+        swapchain.frame_index = (present_frame.frame_index + 1) % frame_slots;
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         let submission = self.submissions.insert(VulkanSubmission {
             fence: present_frame.fence,
@@ -1949,12 +2447,17 @@ impl VulkanDevice {
             return Ok(());
         }
 
-        let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::with_capacity(passes.len());
+        let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::new();
         for pass in passes {
-            let color = self.texture_views.get(pass.texture_view)?.texture;
             let depths = self.depth_accesses(pass.commands, pass.depth_attachment)?;
-            for texture_id in
-                std::iter::once(color).chain(depths.iter().map(|access| access.texture))
+            let color_ids = pass
+                .color_attachments
+                .iter()
+                .map(|view| self.texture_views.get(*view).map(|v| v.texture))
+                .collect::<Result<Vec<_>>>()?;
+            for texture_id in color_ids
+                .into_iter()
+                .chain(depths.iter().map(|access| access.texture))
             {
                 if target_layouts.iter().all(|(known, _)| *known != texture_id) {
                     target_layouts.push((texture_id, self.textures.get(texture_id)?.layout));
@@ -1970,19 +2473,24 @@ impl VulkanDevice {
         // access barrier before entering the render pass.
         let mut previous_writers = Vec::<TextureId>::new();
         for (index, pass) in passes.iter().enumerate() {
-            let texture_id = self.texture_views.get(pass.texture_view)?.texture;
-            let graph_write_hazard =
-                graph_color_write_requires_barrier(&mut previous_writers, texture_id);
+            let graph_write_hazard = pass.color_attachments.iter().any(|view| {
+                let texture_id = self.texture_views.get(*view).map(|v| v.texture);
+                match texture_id {
+                    Ok(texture_id) => {
+                        graph_color_write_requires_barrier(&mut previous_writers, texture_id)
+                    }
+                    Err(_) => false,
+                }
+            });
             let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
-            let result = self.record_render_step_list_desc_into(
+            let result = self.record_render_step_list_views(
                 encoder,
                 command_buffer,
-                BeginRenderPassDescriptor {
-                    render_pass: pass.render_pass,
-                    target: RenderTarget::TextureView(pass.texture_view),
-                    color_load_op: pass.color_load_op,
-                },
+                pass.render_pass,
+                pass.color_attachments,
+                pass.resolve_target,
                 pass.commands,
+                pass.color_load_op,
                 pass.depth_attachment,
                 pass.clear_region,
                 pass.viewport,
@@ -2124,7 +2632,7 @@ impl VulkanDevice {
             // fence miss. A bounded wait absorbs a normal display refresh interval.
             match unsafe {
                 self.device
-                    .wait_for_fences(&[fence], true, PRESENT_BACKPRESSURE_TIMEOUT_NS)
+                    .wait_for_fences(&[fence], true, self.present_timeout_ns)
             } {
                 Ok(()) => {}
                 Err(vk::Result::TIMEOUT) => {
@@ -2142,7 +2650,7 @@ impl VulkanDevice {
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
-                PRESENT_BACKPRESSURE_TIMEOUT_NS,
+                self.present_timeout_ns,
                 image_available,
                 vk::Fence::null(),
             )
@@ -2591,10 +3099,19 @@ impl VulkanDevice {
                 config.size.height(),
             )
         };
-        let mut image_count = support.capabilities.min_image_count.saturating_add(1);
-        if support.capabilities.max_image_count > 0 {
-            image_count = image_count.min(support.capabilities.max_image_count);
-        }
+        let default_image_count = support.capabilities.min_image_count.saturating_add(1);
+        let maximum_image_count = if support.capabilities.max_image_count == 0 {
+            u32::MAX
+        } else {
+            support.capabilities.max_image_count
+        };
+        let image_count = config.resolve_image_count(
+            default_image_count,
+            support.capabilities.min_image_count.max(1),
+            maximum_image_count,
+        );
+        let frame_slots =
+            config.resolve_frame_latency(DEFAULT_FRAME_SLOTS, 1, image_count.clamp(1, 8)) as usize;
 
         let queue_family_indices = [
             self.graphics_queue_family_index,
@@ -2653,19 +3170,26 @@ impl VulkanDevice {
             .collect::<Result<Vec<_>>>()?;
         let render_pass = create_native_render_pass(
             &self.device,
-            surface_format.format,
+            std::slice::from_ref(&surface_format.format),
             None,
+            1,
             VulkanRenderPassConfig::swapchain(false),
         )?;
         let framebuffers = image_views
             .iter()
             .copied()
             .map(|image_view| {
-                create_framebuffer(&self.device, render_pass, image_view, None, extent)
+                create_framebuffer(
+                    &self.device,
+                    render_pass,
+                    std::slice::from_ref(&image_view),
+                    None,
+                    extent,
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            create_sync_objects(&self.device, images.len())?;
+            create_sync_objects(&self.device, images.len(), frame_slots)?;
         log::debug!(
             "nova-gfx Vulkan swapchain initialization: total_ms={} support_ms={} native_swapchain_ms={} image_resources_ms={} requested_images={} images={} format={:?} present_mode={:?} alpha={:?} extent={}x{}",
             started_at.elapsed().as_millis(),
@@ -3254,7 +3778,7 @@ impl VulkanDevice {
                     }
                 }
                 destroy_fence_if_needed(&self.device, fence);
-                if self.upload_command_pool.len() < UPLOAD_COMMAND_POOL_CAPACITY {
+                if self.upload_command_pool.len() < self.upload_command_pool_capacity {
                     self.upload_command_pool.push(commands);
                 } else {
                     destroy_upload_commands(&self.device, &commands);
@@ -3331,7 +3855,6 @@ impl VulkanDevice {
     }
 
     fn destroy_render_pass_now(&self, render_pass: &VulkanRenderPass) {
-        let _ = render_pass.color_format;
         // SAFETY: Every render-pass variant was created by this device and is destroyed once here.
         unsafe {
             self.device
@@ -3389,12 +3912,22 @@ impl VulkanDevice {
                     )
                 };
                 if result.is_ok() {
-                    let gpu_us = clock.elapsed_nanoseconds(ticks[0], ticks[1]) / 1000.0;
-                    self.gpu_trace_totals.record(*pass, gpu_us);
+                    if *pass == VulkanGpuPass::Main {
+                        self.last_frame_gpu_timestamps = Some(FrameGpuTimestamps {
+                            duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
+                            frequency: clock.frequency_hz(),
+                        });
+                    }
+                    if self.gpu_trace_enabled {
+                        let gpu_us = clock.elapsed_nanoseconds(ticks[0], ticks[1]) / 1000.0;
+                        self.gpu_trace_totals.record(*pass, gpu_us);
+                    }
                 }
                 *pass = VulkanGpuPass::Unused;
             }
-            self.gpu_trace_totals.log_if_due();
+            if self.gpu_trace_enabled {
+                self.gpu_trace_totals.log_if_due();
+            }
         }
         // Destroy transient render targets before resetting the command pool, then
         // keep only bounded, fully idle native pools for subsequent frame submissions.
@@ -3409,7 +3942,7 @@ impl VulkanDevice {
         encoder.fence = vk::Fence::null();
         encoder.owns_fence = false;
 
-        if self.free_command_encoders.len() >= COMMAND_ENCODER_POOL_CAPACITY {
+        if self.free_command_encoders.len() >= self.command_encoder_pool_capacity {
             // SAFETY: all command buffers and their timestamp queries have finished executing.
             if let Some(query_pool) = encoder.gpu_trace_query_pool {
                 unsafe { self.device.destroy_query_pool(query_pool, None) };
@@ -3503,7 +4036,7 @@ impl SurfaceDevice for VulkanDevice {
         if !chain.presentation.poll(&self.device)? {
             return Ok(false);
         }
-        for fence in chain.in_flight_fences {
+        for &fence in &chain.in_flight_fences {
             // SAFETY: these fences remain live until this swapchain is retired.
             if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
                 return Ok(false);
@@ -3585,12 +4118,26 @@ impl SurfaceDevice for VulkanDevice {
 }
 
 impl ResourceDevice for VulkanDevice {
+    fn max_color_attachments(&self) -> u32 {
+        let limit = self
+            .max_color_attachment_count
+            .unwrap_or(gfx_core::MAX_COLOR_ATTACHMENTS as u32);
+        limit.min(gfx_core::MAX_COLOR_ATTACHMENTS as u32)
+    }
+
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
         gfx_core::TextureArrayCapabilities {
             array_resources: true,
             layer_uploads: true,
             indexed_sampling: false,
             ..self.texture_array_limits
+        }
+    }
+
+    fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+        gfx_core::MultisampleCapabilities {
+            max_sample_count: self.max_sample_count,
+            stencil_supported: self.stencil_supported,
         }
     }
 
@@ -3610,6 +4157,17 @@ impl ResourceDevice for VulkanDevice {
     ) -> Result<()> {
         self.dispatch_buffer_batch(dispatches)
     }
+    fn texture_copy_limits(&self) -> gfx_core::TextureCopyLimits {
+        gfx_core::TextureCopyLimits {
+            row_pitch_alignment: self.copy_row_pitch_alignment,
+            buffer_offset_alignment: self.copy_offset_alignment,
+        }
+    }
+
+    fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
+        self.copy_texture_buffer_regions(copies)
+    }
+
     fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
         self.copy_texture_regions(copies)
     }
@@ -3643,10 +4201,13 @@ impl ResourceDevice for VulkanDevice {
     ) -> Result<()> {
         let (image, old_layout, mip_level_count, format) = {
             let texture = self.textures.get(desc.texture)?;
-            desc.validate_against(
-                &texture.desc, self.texture_array_capabilities(), data.len(),
-            )?;
-            (texture.image, texture.layout, texture.desc.mip_level_count, texture.desc.format)
+            desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
+            (
+                texture.image,
+                texture.layout,
+                texture.desc.mip_level_count,
+                texture.desc.format,
+            )
         };
         let slice = desc.upload;
         let staging_descriptor = TextureWriteDescriptor {
@@ -3900,6 +4461,17 @@ impl DiagnosticsDevice for VulkanDevice {
         }
         Ok(Some(result))
     }
+
+    fn frame_gpu_timestamps_supported(&self) -> bool {
+        self.timestamp_clock.is_some()
+    }
+
+    fn last_frame_gpu_timestamps(&mut self) -> Result<Option<FrameGpuTimestamps>> {
+        // Recycle fence-complete encoders so their Main-pass queries are read
+        // without waiting for in-flight GPU work.
+        self.poll_cleanup();
+        Ok(self.last_frame_gpu_timestamps)
+    }
 }
 
 impl TextureTransferDevice for VulkanDevice {
@@ -3928,6 +4500,7 @@ impl Drop for VulkanDevice {
             &self.device,
             self.pipeline_cache,
             self.pipeline_cache_path.as_deref(),
+            self.pipeline_cache_limit_bytes,
         );
         for resource in self.deferred_destroys.drain_all() {
             let _ = self.destroy_deferred_now(resource);
@@ -4061,10 +4634,13 @@ impl VulkanTriangle {
         })?;
         let render_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("triangle render pass".to_string()),
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: config.surface_config.format,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
         })?;
         let pipeline = device.create_render_pipeline(
             &RenderPipelineDescriptor {
@@ -4076,8 +4652,10 @@ impl VulkanTriangle {
                 vertex_buffers: Vec::new(),
                 render_pass,
                 pipeline_layout: None,
-                color_format: config.surface_config.format,
-                blend_mode: BlendMode::Replace,
+                color_targets: vec![ColorTargetState::new(
+                    config.surface_config.format,
+                    BlendMode::Replace,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleList,
                 raster: Default::default(),
                 depth_state: None,
@@ -4330,7 +4908,7 @@ struct VulkanShaderModule {
     entry_point: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct VulkanRenderPass {
     pipeline_render_pass: vk::RenderPass,
     offscreen_load_render_pass: vk::RenderPass,
@@ -4338,8 +4916,10 @@ struct VulkanRenderPass {
     offscreen_depth_load_render_pass: Option<vk::RenderPass>,
     offscreen_load_depth_load_render_pass: Option<vk::RenderPass>,
     present_depth_load_render_pass: Option<vk::RenderPass>,
-    color_format: Format,
+    color_formats: Vec<Format>,
     depth_format: Option<Format>,
+    sample_count: u32,
+    stencil_format: Option<Format>,
 }
 
 impl VulkanRenderPass {
@@ -4521,15 +5101,33 @@ struct VulkanTimestampClock {
 }
 
 impl VulkanTimestampClock {
-    #[allow(clippy::cast_precision_loss)]
-    fn elapsed_nanoseconds(self, start: u64, end: u64) -> f64 {
+    fn duration_ticks(self, start: u64, end: u64) -> u64 {
         let mask = if self.valid_bits >= u64::BITS {
             u64::MAX
         } else {
             (1_u64 << self.valid_bits) - 1
         };
-        let elapsed_ticks = end.wrapping_sub(start) & mask;
-        elapsed_ticks as f64 * self.period_ns
+        end.wrapping_sub(start) & mask
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn elapsed_nanoseconds(self, start: u64, end: u64) -> f64 {
+        self.duration_ticks(start, end) as f64 * self.period_ns
+    }
+
+    /// Converts the nanosecond period to whole ticks per second. Zero means the
+    /// driver did not report a usable period.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn frequency_hz(self) -> u64 {
+        if !self.period_ns.is_finite() || self.period_ns <= 0.0 {
+            return 0;
+        }
+        let frequency = (1_000_000_000.0 / self.period_ns).round();
+        if frequency.is_finite() && frequency >= 1.0 {
+            frequency as u64
+        } else {
+            0
+        }
     }
 }
 
@@ -4567,9 +5165,9 @@ struct VulkanSwapchain {
     image_views: Vec<vk::ImageView>,
     internal_render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
-    image_available_semaphores: [vk::Semaphore; FRAMES_IN_FLIGHT],
+    image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: [vk::Fence; FRAMES_IN_FLIGHT],
+    in_flight_fences: Vec<vk::Fence>,
     frame_index: usize,
     config: SurfaceConfig,
 }
@@ -5104,11 +5702,12 @@ fn create_image_view_range(
 
 fn color_attachment_description(
     format: vk::Format,
+    sample_count: u32,
     config: VulkanRenderPassConfig,
 ) -> vk::AttachmentDescription {
     vk::AttachmentDescription::default()
         .format(format)
-        .samples(vk::SampleCountFlags::TYPE_1)
+        .samples(sample_flag_for(sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
         .load_op(config.color_load_op)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -5119,11 +5718,12 @@ fn color_attachment_description(
 
 fn depth_attachment_description(
     format: vk::Format,
+    sample_count: u32,
     config: VulkanRenderPassConfig,
 ) -> vk::AttachmentDescription {
     vk::AttachmentDescription::default()
         .format(format)
-        .samples(vk::SampleCountFlags::TYPE_1)
+        .samples(sample_flag_for(sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
         .load_op(config.depth_load_op)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -5134,23 +5734,37 @@ fn depth_attachment_description(
 
 fn create_native_render_pass(
     device: &ash::Device,
-    format: vk::Format,
+    formats: &[vk::Format],
     depth_format: Option<vk::Format>,
+    sample_count: u32,
     config: VulkanRenderPassConfig,
 ) -> Result<vk::RenderPass> {
-    let color_attachment = color_attachment_description(format, config);
-    let color_attachment_ref = vk::AttachmentReference::default()
-        .attachment(0)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-    let color_attachments = [color_attachment_ref];
-    let depth_attachment =
-        depth_format.map(|depth_format| depth_attachment_description(depth_format, config));
+    let mut attachments = formats
+        .iter()
+        .map(|&format| color_attachment_description(format, sample_count, config))
+        .collect::<Vec<_>>();
+    let color_attachment_refs = formats
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            vk::AttachmentReference::default()
+                .attachment(u32::try_from(index).unwrap_or(u32::MAX))
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        })
+        .collect::<Vec<_>>();
+    let depth_attachment = depth_format
+        .map(|depth_format| depth_attachment_description(depth_format, sample_count, config));
+    let depth_index =
+        u32::try_from(formats.len()).map_err(|error| Error::InvalidInput(error.to_string()))?;
     let depth_attachment_ref = vk::AttachmentReference::default()
-        .attachment(1)
+        .attachment(depth_index)
         .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    if let Some(depth_attachment) = depth_attachment {
+        attachments.push(depth_attachment);
+    }
     let mut subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_attachments);
+        .color_attachments(&color_attachment_refs);
     if depth_attachment.is_some() {
         subpass = subpass.depth_stencil_attachment(&depth_attachment_ref);
     }
@@ -5170,10 +5784,6 @@ fn create_native_render_pass(
         .dst_stage_mask(dependency_stage_mask)
         .src_access_mask(source_access_mask)
         .dst_access_mask(destination_access_mask);
-    let mut attachments = vec![color_attachment];
-    if let Some(depth_attachment) = depth_attachment {
-        attachments.push(depth_attachment);
-    }
     let subpasses = [subpass];
     let dependencies = [dependency];
     let render_pass_info = vk::RenderPassCreateInfo::default()
@@ -5201,6 +5811,7 @@ struct GraphicsPipelineBuild<'a> {
     vertex_entry_point: &'a str,
     fragment_shader: &'a VulkanShaderModule,
     fragment_entry_point: &'a str,
+    sample_count: u32,
     desc: &'a RenderPipelineDescriptor,
 }
 
@@ -5287,63 +5898,76 @@ fn create_graphics_pipeline(
         .depth_bias_enable(false);
     let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
         .sample_shading_enable(false)
-        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-    let mut color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(
-            vk::ColorComponentFlags::R
-                | vk::ColorComponentFlags::G
-                | vk::ColorComponentFlags::B
-                | vk::ColorComponentFlags::A,
+        .rasterization_samples(
+            sample_flag_for(build.sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1),
         );
-    match build.desc.blend_mode {
-        BlendMode::Replace => {}
-        BlendMode::Alpha => {
-            color_blend_attachment = color_blend_attachment
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .alpha_blend_op(vk::BlendOp::ADD);
-        }
-        BlendMode::PremultipliedAlpha => {
-            color_blend_attachment = color_blend_attachment
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::ONE)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .alpha_blend_op(vk::BlendOp::ADD);
-        }
-        BlendMode::AdditiveAlpha => {
-            color_blend_attachment = color_blend_attachment
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::ONE)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-                .alpha_blend_op(vk::BlendOp::ADD);
-        }
-        #[cfg(target_os = "windows")]
-        BlendMode::SubpixelDualSource => {
-            color_blend_attachment = color_blend_attachment
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::SRC1_COLOR)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC1_COLOR)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                .alpha_blend_op(vk::BlendOp::ADD);
-        }
-    }
-    let color_blend_attachments = [color_blend_attachment];
+    let color_blend_attachments = build
+        .desc
+        .color_targets
+        .iter()
+        .map(|target| {
+            let mut attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(color_write_flags(target.write_mask));
+            let blend_mode = target.blend;
+            match blend_mode {
+                BlendMode::Replace => {}
+                BlendMode::Alpha => {
+                    attachment = attachment
+                        .blend_enable(true)
+                        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .alpha_blend_op(vk::BlendOp::ADD);
+                }
+                BlendMode::PremultipliedAlpha => {
+                    attachment = attachment
+                        .blend_enable(true)
+                        .src_color_blend_factor(vk::BlendFactor::ONE)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .alpha_blend_op(vk::BlendOp::ADD);
+                }
+                BlendMode::AdditiveAlpha => {
+                    attachment = attachment
+                        .blend_enable(true)
+                        .src_color_blend_factor(vk::BlendFactor::ONE)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .alpha_blend_op(vk::BlendOp::ADD);
+                }
+                #[cfg(target_os = "windows")]
+                BlendMode::SubpixelDualSource => {
+                    attachment = attachment
+                        .blend_enable(true)
+                        .src_color_blend_factor(vk::BlendFactor::SRC1_COLOR)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC1_COLOR)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                        .alpha_blend_op(vk::BlendOp::ADD);
+                }
+            }
+            attachment
+        })
+        .collect::<Vec<_>>();
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_attachments);
     let depth_state = build.desc.depth_state;
+    let stencil = depth_state.and_then(|state| state.stencil);
+    let stencil_op_state = |face: gfx_core::StencilFaceState| {
+        vk::StencilOpState::default()
+            .fail_op(stencil_op_to_vk(face.fail_op))
+            .pass_op(stencil_op_to_vk(face.pass_op))
+            .depth_fail_op(stencil_op_to_vk(face.depth_fail_op))
+            .compare_op(depth_compare_function(face.compare))
+    };
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(depth_state.is_some())
         .depth_write_enable(depth_state.is_some_and(|state| state.write_enabled))
@@ -5351,7 +5975,9 @@ fn create_graphics_pipeline(
             depth_compare_function(state.compare)
         }))
         .depth_bounds_test_enable(false)
-        .stencil_test_enable(false);
+        .stencil_test_enable(stencil.is_some())
+        .front(stencil.map_or(vk::StencilOpState::default(), |s| stencil_op_state(s.front)))
+        .back(stencil.map_or(vk::StencilOpState::default(), |s| stencil_op_state(s.back)));
     let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input)
@@ -5375,6 +6001,47 @@ fn create_graphics_pipeline(
     Ok((build.pipeline_layout, pipeline))
 }
 
+fn sample_count_of(flags: vk::SampleCountFlags) -> u32 {
+    for count in [64u32, 32, 16, 8, 4, 2, 1] {
+        if let Some(flag) = sample_flag_for(count)
+            && flags.contains(flag)
+        {
+            return count;
+        }
+    }
+    1
+}
+
+fn sample_flag_for(count: u32) -> Option<vk::SampleCountFlags> {
+    Some(match count {
+        1 => vk::SampleCountFlags::TYPE_1,
+        2 => vk::SampleCountFlags::TYPE_2,
+        4 => vk::SampleCountFlags::TYPE_4,
+        8 => vk::SampleCountFlags::TYPE_8,
+        16 => vk::SampleCountFlags::TYPE_16,
+        32 => vk::SampleCountFlags::TYPE_32,
+        64 => vk::SampleCountFlags::TYPE_64,
+        _ => return None,
+    })
+}
+
+fn color_write_flags(write_mask: ColorWrites) -> vk::ColorComponentFlags {
+    let mut flags = vk::ColorComponentFlags::empty();
+    if write_mask.contains(ColorWrites::RED) {
+        flags |= vk::ColorComponentFlags::R;
+    }
+    if write_mask.contains(ColorWrites::GREEN) {
+        flags |= vk::ColorComponentFlags::G;
+    }
+    if write_mask.contains(ColorWrites::BLUE) {
+        flags |= vk::ColorComponentFlags::B;
+    }
+    if write_mask.contains(ColorWrites::ALPHA) {
+        flags |= vk::ColorComponentFlags::A;
+    }
+    flags
+}
+
 fn depth_compare_function(compare: CompareFunction) -> vk::CompareOp {
     match compare {
         CompareFunction::Never => vk::CompareOp::NEVER,
@@ -5388,14 +6055,28 @@ fn depth_compare_function(compare: CompareFunction) -> vk::CompareOp {
     }
 }
 
+fn stencil_op_to_vk(op: gfx_core::StencilOp) -> vk::StencilOp {
+    use gfx_core::StencilOp;
+    match op {
+        StencilOp::Keep => vk::StencilOp::KEEP,
+        StencilOp::Zero => vk::StencilOp::ZERO,
+        StencilOp::Replace => vk::StencilOp::REPLACE,
+        StencilOp::IncrementClamp => vk::StencilOp::INCREMENT_AND_CLAMP,
+        StencilOp::DecrementClamp => vk::StencilOp::DECREMENT_AND_CLAMP,
+        StencilOp::Invert => vk::StencilOp::INVERT,
+        StencilOp::IncrementWrap => vk::StencilOp::INCREMENT_AND_WRAP,
+        StencilOp::DecrementWrap => vk::StencilOp::DECREMENT_AND_WRAP,
+    }
+}
+
 fn create_framebuffer(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    image_view: vk::ImageView,
+    color_views: &[vk::ImageView],
     depth_view: Option<vk::ImageView>,
     extent: vk::Extent2D,
 ) -> Result<vk::Framebuffer> {
-    let mut attachments = vec![image_view];
+    let mut attachments = color_views.to_vec();
     if let Some(depth_view) = depth_view {
         attachments.push(depth_view);
     }
@@ -5501,21 +6182,19 @@ fn create_fence(device: &ash::Device, signaled: bool) -> Result<vk::Fence> {
 fn create_sync_objects(
     device: &ash::Device,
     image_count: usize,
-) -> Result<(
-    [vk::Semaphore; FRAMES_IN_FLIGHT],
-    Vec<vk::Semaphore>,
-    [vk::Fence; FRAMES_IN_FLIGHT],
-)> {
-    let mut image_available_semaphores = [vk::Semaphore::null(); FRAMES_IN_FLIGHT];
+    frame_slots: usize,
+) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>)> {
+    let mut image_available_semaphores = Vec::with_capacity(frame_slots);
     let mut render_finished_semaphores = Vec::with_capacity(image_count);
-    let mut in_flight_fences = [vk::Fence::null(); FRAMES_IN_FLIGHT];
+    let mut in_flight_fences = Vec::with_capacity(frame_slots);
     let semaphore_info = vk::SemaphoreCreateInfo::default();
-    for index in 0..FRAMES_IN_FLIGHT {
+    for _ in 0..frame_slots {
         // SAFETY: Device is valid and creation info is well-formed.
-        image_available_semaphores[index] =
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?;
+        image_available_semaphores.push(
+            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
+        );
         // SAFETY: Device is valid and creation info is well-formed.
-        in_flight_fences[index] = create_fence(device, true)?;
+        in_flight_fences.push(create_fence(device, true)?);
     }
     for _ in 0..image_count {
         // SAFETY: Device is valid and creation info is well-formed. Each swapchain image
@@ -5547,8 +6226,13 @@ struct CommandRecordInfo<'a> {
     scissor_extent: vk::Extent2D,
     color_load_op: LoadOp<ClearColor>,
     depth_load_op: Option<LoadOp<f32>>,
-    render_target_transition: Option<CommandRenderTargetTransition>,
+    /// Number of color attachments in this render pass. Controls clear values.
+    color_attachment_count: u32,
+    render_target_transitions: &'a [CommandRenderTargetTransition],
     clear_region: Option<ScissorRect>,
+    /// MSAA color source -> single-sample resolve destination image pair plus the
+    /// shared extent. `Some` triggers `vkCmdResolveImage` after the pass.
+    resolve: Option<(vk::Image, vk::Image, vk::Extent2D)>,
     /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
     gpu_trace: Option<(vk::QueryPool, u32)>,
     /// A later native attachment write reuses physical texture storage that
@@ -5574,6 +6258,14 @@ enum CommandDrawStepKind {
     Indirect {
         buffer: vk::Buffer,
         offset: u64,
+    },
+    /// Indexed indirect: the index range lives in the argument record, the buffer is bound.
+    IndexedIndirect {
+        buffer: vk::Buffer,
+        offset: u64,
+        index_buffer: vk::Buffer,
+        index_offset: u64,
+        index_type: vk::IndexType,
     },
     NonIndexed {
         vertex_count: u32,
@@ -5820,7 +6512,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             );
         }
     }
-    if let Some(transition) = info.render_target_transition {
+    for transition in info.render_target_transitions {
         transition_image_layout(
             info.device,
             info.command_buffer,
@@ -5834,7 +6526,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         LoadOp::Clear(color) => color,
         LoadOp::Load => ClearColor::default(),
     };
-    let mut clear_values = vec![vk::ClearValue {
+    let color_clear = vk::ClearValue {
         color: vk::ClearColorValue {
             float32: [
                 clear_color.red,
@@ -5843,7 +6535,14 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 clear_color.alpha,
             ],
         },
-    }];
+    };
+    let mut clear_values = Vec::with_capacity(
+        usize::try_from(info.color_attachment_count).unwrap_or(1)
+            + usize::from(info.depth_load_op.is_some()),
+    );
+    for _ in 0..info.color_attachment_count {
+        clear_values.push(color_clear);
+    }
     if let Some(depth_load_op) = info.depth_load_op {
         let depth = match depth_load_op {
             LoadOp::Clear(depth) => depth,
@@ -5853,9 +6552,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
         });
     }
+    let has_transition = !info.render_target_transitions.is_empty();
     let render_area = scoped_offscreen_clear_area(
         info.extent,
-        info.render_target_transition.is_some(),
+        has_transition,
         info.color_load_op,
         info.depth_load_op,
         info.clear_region,
@@ -5864,7 +6564,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     .unwrap_or_else(|| {
         retained_offscreen_render_area(
             info.extent,
-            info.render_target_transition.is_some(),
+            has_transition,
             info.color_load_op,
             info.depth_load_op,
             info.steps.iter().map(|step| step.scissor),
@@ -5940,7 +6640,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                             let CommandDrawStepKind::Indirect {
                                 buffer: next_buffer,
                                 offset: next_offset,
-                            } = next.draw else { break };
+                            } = next.draw
+                            else {
+                                break;
+                            };
                             if next_buffer != buffer
                                 || next.pipeline != step.pipeline
                                 || next.pipeline_layout != step.pipeline_layout
@@ -5958,7 +6661,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                         }
                     }
                     info.device.cmd_draw_indirect(
-                        info.command_buffer, buffer, offset, draw_count, 16,
+                        info.command_buffer,
+                        buffer,
+                        offset,
+                        draw_count,
+                        16,
                     );
                 }
                 CommandDrawStepKind::NonIndexed {
@@ -6000,10 +6707,78 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                         first_instance,
                     );
                 }
+                CommandDrawStepKind::IndexedIndirect {
+                    buffer,
+                    offset,
+                    index_buffer,
+                    index_offset,
+                    index_type,
+                } => {
+                    info.device.cmd_bind_index_buffer(
+                        info.command_buffer,
+                        index_buffer,
+                        index_offset,
+                        index_type,
+                    );
+                    info.device.cmd_draw_indexed_indirect(
+                        info.command_buffer,
+                        buffer,
+                        offset,
+                        1,
+                        20,
+                    );
+                }
             }
         }
         info.device.cmd_end_render_pass(info.command_buffer);
-        if let Some(transition) = info.render_target_transition {
+        if let Some((src, dst, extent)) = info.resolve {
+            // MSAA source stays in the render-pass output layout; the resolve
+            // destination is a single-sample texture we own for this pass.
+            transition_image_layout(
+                info.device,
+                info.command_buffer,
+                src,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            );
+            transition_image_layout(
+                info.device,
+                info.command_buffer,
+                dst,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            let region = vk::ImageResolve::default()
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_offset(vk::Offset3D::default())
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .dst_offset(vk::Offset3D::default())
+                .extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                });
+            // SAFETY: Both images are live and in transfer layouts; region is within bounds.
+            info.device.cmd_resolve_image(
+                info.command_buffer,
+                src,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+        for transition in info.render_target_transitions {
             transition_image_layout(
                 info.device,
                 info.command_buffer,
@@ -6120,8 +6895,14 @@ fn transition_image_layout_levels(
     aspect: vk::ImageAspectFlags,
 ) {
     transition_image_layout_levels_with_layers(
-        device, command_buffer, image, old_layout, new_layout,
-        mip_level_count, 1, aspect,
+        device,
+        command_buffer,
+        image,
+        old_layout,
+        new_layout,
+        mip_level_count,
+        1,
+        aspect,
     );
 }
 
@@ -6299,6 +7080,14 @@ fn format_to_vk(format: Format) -> vk::Format {
         Format::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
         Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
         Format::Depth32Float => vk::Format::D32_SFLOAT,
+        Format::Rg8Unorm => vk::Format::R8G8_UNORM,
+        Format::R16Float => vk::Format::R16_SFLOAT,
+        Format::Rg16Float => vk::Format::R16G16_SFLOAT,
+        Format::R32Float => vk::Format::R32_SFLOAT,
+        Format::Rgba32Float => vk::Format::R32G32B32A32_SFLOAT,
+        Format::R8Uint => vk::Format::R8_UINT,
+        Format::Rg8Uint => vk::Format::R8G8_UINT,
+        Format::Rgba8Uint => vk::Format::R8G8B8A8_UINT,
     }
 }
 
@@ -6310,7 +7099,15 @@ fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
         | Format::Bgra8UnormSrgb
         | Format::Rgba8Unorm
         | Format::Rgba8UnormSrgb
-        | Format::Rgba16Float => vk::ImageAspectFlags::COLOR,
+        | Format::Rgba16Float
+        | Format::Rg8Unorm
+        | Format::R16Float
+        | Format::Rg16Float
+        | Format::R32Float
+        | Format::Rgba32Float
+        | Format::R8Uint
+        | Format::Rg8Uint
+        | Format::Rgba8Uint => vk::ImageAspectFlags::COLOR,
     }
 }
 
@@ -6357,6 +7154,9 @@ fn texture_usage_to_vk(usage: TextureUsage) -> vk::ImageUsageFlags {
     if usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
         flags |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
     }
+    if usage.contains(TextureUsage::STORAGE) {
+        flags |= vk::ImageUsageFlags::STORAGE;
+    }
     flags
 }
 
@@ -6383,12 +7183,22 @@ fn sampler_create_info(
         .min_filter(filter_to_vk(desc.min_filter))
         .address_mode_u(address_mode_to_vk(desc.address_mode_u))
         .address_mode_v(address_mode_to_vk(desc.address_mode_v))
-        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(address_mode_to_vk(desc.address_mode_w))
         .mipmap_mode(match desc.mipmap_filter {
             FilterMode::Nearest => vk::SamplerMipmapMode::NEAREST,
             FilterMode::Linear => vk::SamplerMipmapMode::LINEAR,
         })
-        .max_lod(f32::MAX);
+        .min_lod(desc.lod_min_clamp)
+        .max_lod(desc.lod_max_clamp)
+        .mip_lod_bias(desc.lod_bias);
+    if let Some(compare) = desc.compare {
+        create_info = create_info
+            .compare_enable(true)
+            .compare_op(depth_compare_op(compare));
+    }
+    if let Some(color) = desc.border_color {
+        create_info = create_info.border_color(border_color_to_vk(color));
+    }
     if desc.anisotropic && max_anisotropy > 1.0 {
         create_info = create_info
             .anisotropy_enable(true)
@@ -6401,6 +7211,34 @@ fn address_mode_to_vk(mode: AddressMode) -> vk::SamplerAddressMode {
     match mode {
         AddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
         AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
+        AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+        AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
+    }
+}
+
+/// Maps an RGBA border color to the closest Vulkan [`vk::BorderColor`] enum.
+/// wgpu exposes a fixed set; arbitrary float borders are approximated.
+fn border_color_to_vk(color: [f32; 4]) -> vk::BorderColor {
+    let [r, g, b, a] = color;
+    if a == 0.0 {
+        vk::BorderColor::FLOAT_TRANSPARENT_BLACK
+    } else if r == 1.0 && g == 1.0 && b == 1.0 {
+        vk::BorderColor::FLOAT_OPAQUE_WHITE
+    } else {
+        vk::BorderColor::FLOAT_OPAQUE_BLACK
+    }
+}
+
+fn depth_compare_op(compare: CompareFunction) -> vk::CompareOp {
+    match compare {
+        CompareFunction::Never => vk::CompareOp::NEVER,
+        CompareFunction::Less => vk::CompareOp::LESS,
+        CompareFunction::Equal => vk::CompareOp::EQUAL,
+        CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+        CompareFunction::Greater => vk::CompareOp::GREATER,
+        CompareFunction::NotEqual => vk::CompareOp::NOT_EQUAL,
+        CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
+        CompareFunction::Always => vk::CompareOp::ALWAYS,
     }
 }
 
@@ -6409,6 +7247,7 @@ fn resource_binding_type_to_vk(binding_type: BindingType) -> vk::DescriptorType 
         BindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
         BindingType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
         BindingType::SampledTexture => vk::DescriptorType::SAMPLED_IMAGE,
+        BindingType::StorageTexture { .. } => vk::DescriptorType::STORAGE_IMAGE,
         BindingType::Sampler => vk::DescriptorType::SAMPLER,
     }
 }
@@ -6426,9 +7265,18 @@ fn shader_stages_to_vk(stages: ShaderStages) -> vk::ShaderStageFlags {
 
 fn vertex_format_to_vk(format: VertexFormat) -> vk::Format {
     match format {
+        VertexFormat::Float32 => vk::Format::R32_SFLOAT,
         VertexFormat::Float32x2 => vk::Format::R32G32_SFLOAT,
         VertexFormat::Float32x3 => vk::Format::R32G32B32_SFLOAT,
         VertexFormat::Float32x4 => vk::Format::R32G32B32A32_SFLOAT,
+        VertexFormat::Uint32 => vk::Format::R32_UINT,
+        VertexFormat::Uint32x2 => vk::Format::R32G32_UINT,
+        VertexFormat::Uint32x3 => vk::Format::R32G32B32_UINT,
+        VertexFormat::Uint32x4 => vk::Format::R32G32B32A32_UINT,
+        VertexFormat::Unorm8x4 => vk::Format::R8G8B8A8_UNORM,
+        VertexFormat::Uint8x4 => vk::Format::R8G8B8A8_UINT,
+        VertexFormat::Unorm16x2 => vk::Format::R16G16_UNORM,
+        VertexFormat::Unorm16x4 => vk::Format::R16G16B16A16_UNORM,
     }
 }
 
@@ -6448,6 +7296,25 @@ enum PendingDescriptorWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn frame_gpu_timestamps_follow_the_queue_clock() {
+        let mut device =
+            VulkanDevice::new(&gfx_core::DeviceDescriptor::default()).expect("Vulkan device");
+        assert_eq!(
+            device.frame_gpu_timestamps_supported(),
+            device.timestamp_clock.is_some(),
+            "timestamp support must follow the graphics queue clock"
+        );
+        assert_eq!(
+            device
+                .last_frame_gpu_timestamps()
+                .expect("non-blocking timestamp read"),
+            None,
+            "no swapchain frame has been probed yet"
+        );
+    }
 
     #[test]
     fn native_graph_barrier_tracks_physical_images_not_logical_variants() {
@@ -6828,10 +7695,12 @@ mod tests {
     fn offscreen_render_pass_preserves_color_for_load() {
         let clear = color_attachment_description(
             vk::Format::R8G8B8A8_UNORM,
+            1,
             VulkanRenderPassConfig::offscreen(false, false),
         );
         let load = color_attachment_description(
             vk::Format::R8G8B8A8_UNORM,
+            1,
             VulkanRenderPassConfig::offscreen(true, false),
         );
 
@@ -6856,6 +7725,7 @@ mod tests {
     fn swapchain_render_pass_keeps_present_layout_contract() {
         let attachment = color_attachment_description(
             vk::Format::B8G8R8A8_UNORM,
+            1,
             VulkanRenderPassConfig::swapchain(false),
         );
 
@@ -6868,6 +7738,7 @@ mod tests {
     fn depth_load_render_pass_preserves_depth_contents() {
         let attachment = depth_attachment_description(
             vk::Format::D32_SFLOAT,
+            1,
             VulkanRenderPassConfig::offscreen(false, true),
         );
 
@@ -7067,8 +7938,10 @@ mod tests {
         assert!(!texture_uploads_overlap(&first, &second));
         second.mip_level = 0;
         second.layer = 1;
-        assert!(!texture_uploads_overlap(&first, &second),
-            "copies to different array slices must not alias");
+        assert!(
+            !texture_uploads_overlap(&first, &second),
+            "copies to different array slices must not alias"
+        );
         second.layer = 0;
         assert!(texture_uploads_overlap(&first, &second));
     }
@@ -7161,5 +8034,117 @@ mod tests {
         };
 
         assert!((clock.elapsed_nanoseconds(10, 15) - 5.0).abs() < f64::EPSILON);
+        assert_eq!(clock.duration_ticks(10, 15), 5);
+        assert_eq!(clock.frequency_hz(), 1_000_000_000);
+    }
+
+    #[test]
+    fn color_write_flags_maps_channels_to_vk_components() {
+        use vk::ColorComponentFlags as F;
+        assert_eq!(
+            color_write_flags(ColorWrites::ALL),
+            F::R | F::G | F::B | F::A
+        );
+        assert_eq!(color_write_flags(ColorWrites::COLOR), F::R | F::G | F::B);
+        assert_eq!(color_write_flags(ColorWrites::RED), F::R);
+        assert_eq!(color_write_flags(ColorWrites::ALPHA), F::A);
+        assert_eq!(
+            color_write_flags(ColorWrites::RED | ColorWrites::ALPHA),
+            F::R | F::A
+        );
+        assert!(color_write_flags(ColorWrites::empty()).is_empty());
+    }
+
+    #[test]
+    fn sampler_compare_and_address_modes_map_to_vk() {
+        assert_eq!(
+            address_mode_to_vk(AddressMode::ClampToEdge),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            address_mode_to_vk(AddressMode::Repeat),
+            vk::SamplerAddressMode::REPEAT
+        );
+        assert_eq!(
+            address_mode_to_vk(AddressMode::MirrorRepeat),
+            vk::SamplerAddressMode::MIRRORED_REPEAT
+        );
+        assert_eq!(
+            address_mode_to_vk(AddressMode::ClampToBorder),
+            vk::SamplerAddressMode::CLAMP_TO_BORDER
+        );
+        assert_eq!(depth_compare_op(CompareFunction::Less), vk::CompareOp::LESS);
+        assert_eq!(
+            depth_compare_op(CompareFunction::GreaterEqual),
+            vk::CompareOp::GREATER_OR_EQUAL
+        );
+    }
+
+    #[test]
+    fn sampler_border_color_maps_to_nearest_vk_enum() {
+        assert_eq!(
+            border_color_to_vk([0.0, 0.0, 0.0, 0.0]),
+            vk::BorderColor::FLOAT_TRANSPARENT_BLACK
+        );
+        assert_eq!(
+            border_color_to_vk([1.0, 1.0, 1.0, 1.0]),
+            vk::BorderColor::FLOAT_OPAQUE_WHITE
+        );
+        assert_eq!(
+            border_color_to_vk([0.0, 0.0, 0.0, 1.0]),
+            vk::BorderColor::FLOAT_OPAQUE_BLACK
+        );
+    }
+
+    #[test]
+    fn timestamp_clock_reports_wrapped_duration_and_frequency() {
+        let clock = VulkanTimestampClock {
+            period_ns: 2.0,
+            valid_bits: 8,
+        };
+
+        assert_eq!(clock.duration_ticks(250, 5), 11);
+        assert_eq!(clock.frequency_hz(), 500_000_000);
+    }
+
+    #[test]
+    fn timestamp_clock_rejects_unusable_period() {
+        let clock = VulkanTimestampClock {
+            period_ns: 0.0,
+            valid_bits: 64,
+        };
+
+        assert_eq!(clock.frequency_hz(), 0);
+    }
+}
+
+#[cfg(test)]
+mod conformance_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires Vulkan hardware"]
+    fn msaa_resolve_roundtrip() {
+        let mut device =
+            VulkanDevice::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::msaa_resolve_roundtrip(&mut device).expect("MSAA resolve roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn format_allocation_roundtrip() {
+        let mut device =
+            VulkanDevice::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::format_allocation_roundtrip(&mut device)
+            .expect("format allocation roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn texture_buffer_roundtrip() {
+        let mut device =
+            VulkanDevice::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::texture_buffer_roundtrip(&mut device)
+            .expect("texture buffer roundtrip");
     }
 }

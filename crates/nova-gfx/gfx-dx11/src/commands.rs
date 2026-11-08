@@ -1,8 +1,11 @@
 use crate::{device::Dx11Device, resources::Bound};
 use gfx_core::*;
-use windows::Win32::{
-    Foundation::RECT,
-    Graphics::{Direct3D::*, Direct3D11::*, Dxgi::Common::*},
+use windows::{
+    Win32::{
+        Foundation::RECT,
+        Graphics::{Direct3D::*, Direct3D11::*, Dxgi::Common::*},
+    },
+    core::Interface,
 };
 
 mod bindings;
@@ -25,7 +28,12 @@ impl CommandDevice for Dx11Device {
         Ok(self.encoders.insert(Vec::new()))
     }
     fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDescriptor) -> Result<()> {
-        self.passes.get(draw.pass.render_pass)?;
+        let render_pass = self.passes.get(draw.pass.render_pass)?;
+        if render_pass.color_attachments.len() != 1 {
+            return Err(Error::InvalidInput(
+                "D3D11 record_draw_desc requires exactly one color attachment".into(),
+            ));
+        }
         self.pipelines.get(draw.pipeline)?;
         self.encoders.get_mut(encoder)?.push(draw);
         Ok(())
@@ -77,12 +85,22 @@ impl Dx11Device {
         load: LoadOp<ClearColor>,
         depth: Option<DepthAttachment>,
     ) -> Result<()> {
-        self.render_target_clipped(target, pass, commands, load, depth, None, None)
+        self.render_target_clipped(
+            std::slice::from_ref(&target),
+            None,
+            pass,
+            commands,
+            load,
+            depth,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn render_target_clipped(
         &mut self,
-        target: RenderTarget,
+        targets: &[RenderTarget],
+        resolve_view: Option<TextureViewId>,
         pass: RenderPassId,
         commands: &[RenderCommand],
         load: LoadOp<ClearColor>,
@@ -91,51 +109,102 @@ impl Dx11Device {
         viewport: Option<Viewport>,
     ) -> Result<()> {
         let pass = self.passes.get(pass)?;
-        let (rtv, size, target_format, viewport_size, viewport_origin) = match target {
-            RenderTarget::TextureView(id) => {
-                let view = self.views.get(id)?;
-                (
-                    view.rtv.as_ref().ok_or_else(|| {
-                        Error::InvalidInput("target view is not renderable".into())
-                    })?,
-                    view.size,
-                    view.format,
-                    viewport
-                        .map(|viewport| viewport.for_target(view.size))
-                        .transpose()?
-                        .unwrap_or(view.size),
-                    viewport
-                        .map(|viewport| viewport.mapped_origin(view.size))
-                        .transpose()?
-                        .unwrap_or(SignedOrigin2d::ZERO),
-                )
-            }
-            RenderTarget::Swapchain {
-                swapchain,
-                image_index,
-            } => {
-                let chain = self.swapchains.get_mut(swapchain)?;
-                chain.resize_retirement = None;
-                if image_index != 0 {
-                    return Err(Error::InvalidInput(
-                        "D3D11 presents logical backbuffer zero".into(),
-                    ));
-                }
-                (
-                    chain.view.as_ref().ok_or_else(|| {
-                        Error::Unavailable("D3D11 backbuffer view is unavailable".into())
-                    })?,
-                    chain.config.size,
-                    chain.config.format,
-                    chain.source_extent,
-                    SignedOrigin2d::ZERO,
-                )
-            }
-        };
-        if pass.color_attachment.format != target_format {
+        if targets.is_empty() || targets.len() != pass.color_attachments.len() {
             return Err(Error::InvalidInput(
-                "render pass color format mismatch".into(),
+                "D3D11 target count does not match the render pass attachments".into(),
             ));
+        }
+        // Shared invariant: attachments match the pass sample count and a resolve
+        // destination is single-sampled.
+        let mut color_samples = Vec::with_capacity(targets.len());
+        for target in targets {
+            color_samples.push(match target {
+                RenderTarget::TextureView(id) => self.views.get(*id)?.sample_count,
+                RenderTarget::Swapchain { .. } => 1,
+            });
+        }
+        let depth_samples = match depth {
+            Some(attachment) => Some(self.views.get(attachment.target)?.sample_count),
+            None => None,
+        };
+        let resolve_samples = match resolve_view {
+            Some(id) => Some(self.views.get(id)?.sample_count),
+            None => None,
+        };
+        gfx_core::validate_pass_attachments(
+            pass.sample_count,
+            color_samples.into_iter(),
+            depth_samples,
+            resolve_samples,
+        )?;
+        let mut rtvs = Vec::with_capacity(targets.len());
+        let mut size = Extent2d::new(1, 1)?;
+        let mut viewport_size = viewport
+            .map(|viewport| viewport.for_target(size))
+            .transpose()?
+            .unwrap_or(size);
+        let mut viewport_origin = SignedOrigin2d::ZERO;
+        for (index, target) in targets.iter().enumerate() {
+            let (rtv, target_size, target_format, pass_size, origin) = match target {
+                RenderTarget::TextureView(id) => {
+                    let view = self.views.get(*id)?;
+                    (
+                        view.rtv.clone().ok_or_else(|| {
+                            Error::InvalidInput("target view is not renderable".into())
+                        })?,
+                        view.size,
+                        view.format,
+                        view.size,
+                        viewport
+                            .map(|viewport| viewport.mapped_origin(view.size))
+                            .transpose()?
+                            .unwrap_or(SignedOrigin2d::ZERO),
+                    )
+                }
+                RenderTarget::Swapchain {
+                    swapchain,
+                    image_index,
+                } => {
+                    let chain = self.swapchains.get_mut(*swapchain)?;
+                    chain.resize_retirement = None;
+                    if *image_index != 0 {
+                        return Err(Error::InvalidInput(
+                            "D3D11 presents logical backbuffer zero".into(),
+                        ));
+                    }
+                    (
+                        chain.view.clone().ok_or_else(|| {
+                            Error::Unavailable("D3D11 backbuffer view is unavailable".into())
+                        })?,
+                        chain.config.size,
+                        chain.config.format,
+                        chain.source_extent,
+                        SignedOrigin2d::ZERO,
+                    )
+                }
+            };
+            if pass.color_attachments[index].format != target_format {
+                return Err(Error::InvalidInput(
+                    "render pass color format mismatch".into(),
+                ));
+            }
+            if rtvs.is_empty() {
+                size = target_size;
+                viewport_size = viewport
+                    .map(|viewport| viewport.for_target(target_size))
+                    .transpose()?
+                    .unwrap_or(target_size);
+                viewport_origin = origin;
+            } else if size != target_size {
+                return Err(Error::InvalidInput(
+                    "D3D11 color attachment extent mismatch".into(),
+                ));
+            }
+            if pass_size != target_size {
+                // The swapchain source extent can differ from the configured size.
+                let _ = pass_size;
+            }
+            rtvs.push(rtv);
         }
         let depth_view = depth
             .map(|depth| self.views.get(depth.target))
@@ -190,8 +259,8 @@ impl Dx11Device {
                     self.context.PSSetShaderResources(first, Some(empty_span));
                 }
             }
-            self.context
-                .OMSetRenderTargets(Some(&[Some(rtv.clone())]), dsv);
+            let rtv_slice = rtvs.iter().map(|rtv| Some(rtv.clone())).collect::<Vec<_>>();
+            self.context.OMSetRenderTargets(Some(&rtv_slice), dsv);
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "D3D11 viewport coordinates and dimensions are f32 by API contract"
@@ -209,10 +278,12 @@ impl Dx11Device {
             if let LoadOp::Clear(color) = load {
                 if clear_region.is_none() || clear_rect.is_some() {
                     let rgba = [color.red, color.green, color.blue, color.alpha];
-                    if let Some(rects) = clear_rect.as_ref() {
-                        self.context.ClearView(rtv, &rgba, Some(rects));
-                    } else {
-                        self.context.ClearRenderTargetView(rtv, &rgba);
+                    for rtv in &rtvs {
+                        if let Some(rects) = clear_rect.as_ref() {
+                            self.context.ClearView(rtv, &rgba, Some(rects));
+                        } else {
+                            self.context.ClearRenderTargetView(rtv, &rgba);
+                        }
                     }
                 }
             }
@@ -251,11 +322,16 @@ impl Dx11Device {
             if scissor.is_some_and(ScissorRect::is_empty) {
                 continue;
             }
+            let target_formats = pass
+                .color_attachments
+                .iter()
+                .map(|attachment| attachment.format)
+                .collect::<Vec<_>>();
             self.draw_step(
                 command,
                 scissor,
                 viewport_size,
-                target_format,
+                &target_formats,
                 dsv.is_some(),
                 &mut state,
                 indirect_index,
@@ -265,6 +341,39 @@ impl Dx11Device {
         unsafe {
             self.context.OMSetRenderTargets(None, None);
         }
+        if let Some(resolve_view_id) = resolve_view {
+            // The first color target is the multisampled source; its RTV exposes
+            // the underlying texture resource.
+            let source_rtv = rtvs
+                .first()
+                .ok_or_else(|| Error::InvalidInput("D3D11 resolve needs a color source".into()))?
+                .clone();
+            let resolve_view = self.views.get(resolve_view_id)?;
+            let resolve_rtv = resolve_view.rtv.clone().ok_or_else(|| {
+                Error::InvalidInput("D3D11 resolve target is not renderable".into())
+            })?;
+            // SAFETY: RTVs are live; GetResource returns the underlying texture.
+            let source_resource =
+                unsafe { source_rtv.GetResource() }.map_err(crate::device::backend)?;
+            let resolve_resource =
+                unsafe { resolve_rtv.GetResource() }.map_err(crate::device::backend)?;
+            let source_texture: ID3D11Texture2D =
+                source_resource.cast().map_err(crate::device::backend)?;
+            let resolve_texture: ID3D11Texture2D =
+                resolve_resource.cast().map_err(crate::device::backend)?;
+            let format = resolve_view.format;
+            // SAFETY: Both textures are live owner resources of matching format
+            // and single-level; subresource zero resolves the full extent.
+            unsafe {
+                self.context.ResolveSubresource(
+                    &resolve_texture,
+                    0,
+                    &source_texture,
+                    0,
+                    crate::resources::format(format),
+                );
+            }
+        }
         Ok(())
     }
     fn draw_step(
@@ -272,15 +381,21 @@ impl Dx11Device {
         command: &RenderCommand,
         step_scissor: Option<ScissorRect>,
         size: Extent2d,
-        target_format: Format,
+        target_formats: &[Format],
         has_depth: bool,
         state: &mut Dx11PassState,
         indirect_index: usize,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(command.pipeline())?;
-        if pipeline.desc.color_format != target_format
-            || (pipeline.desc.depth_state.is_some() && !has_depth)
-        {
+        let formats_match = pipeline
+            .desc
+            .color_targets
+            .iter()
+            .map(|target| target.format)
+            .collect::<Vec<_>>()
+            .as_slice()
+            == target_formats;
+        if !formats_match || (pipeline.desc.depth_state.is_some() && !has_depth) {
             return Err(Error::InvalidInput(
                 "D3D11 pipeline attachment mismatch".into(),
             ));
@@ -350,13 +465,15 @@ impl Dx11Device {
         let (vertex_offset, instance_offset) = match command {
             RenderCommand::Draw(draw) => (draw.first_vertex, draw.first_instance),
             RenderCommand::DrawIndexed(draw) => (draw.base_vertex as u32, draw.first_instance),
-            RenderCommand::DrawIndirect(_) => (0, 0),
+            RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_) => (0, 0),
         };
         let constants = [vertex_offset, instance_offset, 0, 0];
         // SAFETY: constants contain 16 initialized bytes and match the reserved NagaConstants ABI.
         unsafe {
-            if matches!(command, RenderCommand::DrawIndirect(_))
-                && self.indirect_constants.is_active()
+            if matches!(
+                command,
+                RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)
+            ) && self.indirect_constants.is_active()
             {
                 self.indirect_constants
                     .bind(&self.context, indirect_index)?;
@@ -418,15 +535,15 @@ impl Dx11Device {
                         .DrawInstanced(draw.vertex_count, draw.instance_count, 0, 0)
                 }
                 RenderCommand::DrawIndexed(draw) => {
-                    let buffer = self.buffers.get(draw.index_buffer.buffer)?;
-                    let index_size = match draw.index_buffer.format {
+                    let index = draw.index_buffer;
+                    let buffer = self.buffers.get(index.buffer)?;
+                    let index_size = match index.format {
                         IndexFormat::Uint16 => 2u64,
                         IndexFormat::Uint32 => 4,
                     };
                     if !buffer.desc.usage.contains(BufferUsage::INDEX)
-                        || draw.index_buffer.offset % index_size != 0
-                        || draw
-                            .index_buffer
+                        || index.offset % index_size != 0
+                        || index
                             .offset
                             .checked_add(
                                 (u64::from(draw.first_index) + u64::from(draw.index_count))
@@ -438,15 +555,7 @@ impl Dx11Device {
                             "index buffer range/usage mismatch".into(),
                         ));
                     }
-                    self.context.IASetIndexBuffer(
-                        &buffer.native,
-                        if index_size == 2 {
-                            DXGI_FORMAT_R16_UINT
-                        } else {
-                            DXGI_FORMAT_R32_UINT
-                        },
-                        draw.index_buffer.offset as u32,
-                    );
+                    self.bind_index_buffer(index)?;
                     self.context.DrawIndexedInstanced(
                         draw.index_count,
                         draw.instance_count,
@@ -455,7 +564,52 @@ impl Dx11Device {
                         0,
                     );
                 }
+                RenderCommand::DrawIndexedIndirect(draw) => {
+                    let buffer = self.buffers.get(draw.arguments)?;
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || draw.offset % 4 != 0
+                        || draw
+                            .offset
+                            .checked_add(20)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid index buffer or indirect argument range".into(),
+                        ));
+                    }
+                    // The index range travels in the argument record, so only the binding
+                    // and the buffer usage can be checked here.
+                    self.bind_index_buffer(draw.index_buffer)?;
+                    self.context
+                        .DrawIndexedInstancedIndirect(&buffer.native, draw.offset as u32);
+                }
             }
+        }
+        Ok(())
+    }
+    /// Validates and binds one index buffer for the next indexed draw.
+    fn bind_index_buffer(&self, index: IndexBufferBinding) -> Result<()> {
+        let buffer = self.buffers.get(index.buffer)?;
+        let index_size = match index.format {
+            IndexFormat::Uint16 => 2u64,
+            IndexFormat::Uint32 => 4,
+        };
+        if !buffer.desc.usage.contains(BufferUsage::INDEX) || index.offset % index_size != 0 {
+            return Err(Error::InvalidInput(
+                "index buffer range/usage mismatch".into(),
+            ));
+        }
+        // SAFETY: The buffer is live and its offset was validated above.
+        unsafe {
+            self.context.IASetIndexBuffer(
+                &buffer.native,
+                if index_size == 2 {
+                    DXGI_FORMAT_R16_UINT
+                } else {
+                    DXGI_FORMAT_R32_UINT
+                },
+                index.offset as u32,
+            );
         }
         Ok(())
     }
@@ -537,8 +691,14 @@ impl PresentationDevice for Dx11Device {
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+        let targets = pass
+            .color_attachments
+            .iter()
+            .map(|view| RenderTarget::TextureView(*view))
+            .collect::<Vec<_>>();
         self.render_target_clipped(
-            RenderTarget::TextureView(pass.texture_view),
+            &targets,
+            pass.resolve_target,
             pass.render_pass,
             pass.commands,
             pass.color_load_op,

@@ -1,5 +1,23 @@
 //! Native retirement checks; no shader compilation or application event loop is required.
 use super::*;
+use gfx_core::DiagnosticsDevice as _;
+
+#[test]
+#[ignore = "requires Windows hardware D3D12 and a desktop session"]
+fn frame_gpu_timestamps_report_support_before_the_first_probed_frame() {
+    let mut device = Dx12Device::new(&DeviceDescriptor::default()).expect("DX12 device");
+    assert!(
+        device.frame_gpu_timestamps_supported(),
+        "DX12 queue timestamp frequency must be available"
+    );
+    assert_eq!(
+        device
+            .last_frame_gpu_timestamps()
+            .expect("non-blocking timestamp read"),
+        None,
+        "no swapchain frame has been probed yet"
+    );
+}
 
 // Only the two window-lifetime calls are needed by this backend test. Keep them local
 // rather than enabling the UI feature set in the production windows dependency.
@@ -98,6 +116,8 @@ fn verify_retirement(device: &mut Dx12Device, alpha: CompositeAlphaMode) {
                 format: Format::Bgra8Unorm,
                 present_mode: PresentMode::Mailbox,
                 alpha_mode: alpha,
+                desired_image_count: 0,
+                desired_maximum_frame_latency: 0,
             },
         )
         .expect("native swapchain");

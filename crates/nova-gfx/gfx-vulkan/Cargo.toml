@@ -31,6 +31,7 @@ raw-window-handle = "0.6"
 thiserror = "2.0.17"
 
 [dev-dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core", features = ["conformance"] }
 criterion = "0.5.1"
 
 [[bench]]

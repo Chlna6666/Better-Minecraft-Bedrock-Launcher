@@ -49,9 +49,92 @@ pub struct Dx11Device {
     pub(crate) ps_srv_slots: Cell<u128>,
     pending: VecDeque<(u32, ID3D11Query)>,
     queries: Vec<ID3D11Query>,
+    frame_timestamp_queries: Vec<Dx11TimestampQueries>,
+    pending_frame_timestamps: Vec<(u32, Dx11TimestampQueries)>,
+    /// Probes opened by `present_steps` and consumed by the next `signal`.
+    next_frame_timestamps: Option<Dx11TimestampQueries>,
+    last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+    timestamp_queries_supported: bool,
     submission_generation: u32,
     submitted: u32,
     completed: u32,
+}
+
+struct Dx11TimestampQueries {
+    disjoint: ID3D11Query,
+    start: ID3D11Query,
+    end: ID3D11Query,
+}
+
+impl Dx11TimestampQueries {
+    fn new(device: &ID3D11Device) -> Result<Self> {
+        Ok(Self {
+            disjoint: create_dx11_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)?,
+            start: create_dx11_query(device, D3D11_QUERY_TIMESTAMP)?,
+            end: create_dx11_query(device, D3D11_QUERY_TIMESTAMP)?,
+        })
+    }
+}
+
+fn create_dx11_query(device: &ID3D11Device, query: D3D11_QUERY) -> Result<ID3D11Query> {
+    let mut native = None;
+    // SAFETY: The descriptor is initialized, the output slot is valid, and the
+    // device is live.
+    unsafe {
+        device.CreateQuery(
+            &D3D11_QUERY_DESC {
+                Query: query,
+                MiscFlags: 0,
+            },
+            Some(&mut native),
+        )
+    }
+    .map_err(backend)?;
+    required(native)
+}
+
+fn read_dx11_frame_timestamps(
+    context: &ID3D11DeviceContext1,
+    queries: &Dx11TimestampQueries,
+) -> Option<FrameGpuTimestamps> {
+    let mut disjoint = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+    let mut start = 0u64;
+    let mut end = 0u64;
+    // SAFETY: All three queries completed before their submission event query;
+    // DONOTFLUSH keeps this a non-blocking owner-thread read.
+    unsafe {
+        context
+            .GetData(
+                &queries.disjoint,
+                Some((&raw mut disjoint).cast()),
+                u32::try_from(std::mem::size_of_val(&disjoint)).ok()?,
+                D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+            )
+            .ok()?;
+        context
+            .GetData(
+                &queries.start,
+                Some((&raw mut start).cast()),
+                u32::try_from(std::mem::size_of::<u64>()).ok()?,
+                D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+            )
+            .ok()?;
+        context
+            .GetData(
+                &queries.end,
+                Some((&raw mut end).cast()),
+                u32::try_from(std::mem::size_of::<u64>()).ok()?,
+                D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+            )
+            .ok()?;
+    }
+    if disjoint.Disjoint.as_bool() || disjoint.Frequency == 0 {
+        return None;
+    }
+    Some(FrameGpuTimestamps {
+        duration_ticks: end.saturating_sub(start),
+        frequency: disjoint.Frequency,
+    })
 }
 
 pub(crate) fn backend(error: windows::core::Error) -> Error {
@@ -63,13 +146,16 @@ pub(crate) fn backend_with_device_reason(
     error: windows::core::Error,
 ) -> Error {
     // SAFETY: The device is a live COM object owned by this backend.
-    let reason = match unsafe { device.GetDeviceRemovedReason() } {
-        Ok(()) => "S_OK".to_string(),
-        Err(reason) => reason.to_string(),
-    };
-    Error::Backend(format!(
-        "D3D11 {operation}: {error}; device_removed_reason={reason}"
-    ))
+    match unsafe { device.GetDeviceRemovedReason() } {
+        Ok(()) => Error::Backend(format!(
+            "D3D11 {operation}: {error}; device_removed_reason=S_OK"
+        )),
+        // A failed removal query means the device is gone; every resource and
+        // submission is invalid and the caller must recreate the device.
+        Err(reason) => Error::DeviceLost(format!(
+            "D3D11 {operation}: {error}; device_removed_reason={reason}"
+        )),
+    }
 }
 pub(crate) fn required<T>(value: Option<T>) -> Result<T> {
     value.ok_or_else(|| Error::Backend("D3D11 returned no object".into()))
@@ -109,6 +195,14 @@ impl Dx11Device {
             info.name
         );
         let indirect_constants = IndirectConstants::new(&native);
+        let (frame_timestamp_queries, timestamp_queries_supported) =
+            match Dx11TimestampQueries::new(&native) {
+                Ok(queries) => (vec![queries], true),
+                Err(error) => {
+                    log::warn!("nova-gfx DX11 frame timestamps unavailable: {error}");
+                    (Vec::new(), false)
+                }
+            };
         Ok(Self {
             native,
             context,
@@ -133,6 +227,11 @@ impl Dx11Device {
             ps_srv_slots: Cell::new(0),
             pending: VecDeque::new(),
             queries: Vec::new(),
+            frame_timestamp_queries,
+            pending_frame_timestamps: Vec::new(),
+            next_frame_timestamps: None,
+            last_frame_gpu_timestamps: None,
+            timestamp_queries_supported,
             submission_generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
             submitted: 0,
             completed: 0,
@@ -194,6 +293,56 @@ impl Dx11Device {
         self.surfaces.trim();
         self.swapchains.trim();
     }
+    /// Opens the timestamp-disjoint scope and start timestamp for the frame
+    /// about to be recorded by `present_steps`. The matching end timestamps are
+    /// closed by [`Self::end_frame_timestamps`] and attached to the next
+    /// `signal` submission.
+    pub(crate) fn begin_frame_timestamps(&mut self) {
+        if self.next_frame_timestamps.is_some() {
+            // A previous frame failed before signaling; drop its unrecycled
+            // probes instead of attaching them to this frame.
+            self.next_frame_timestamps = None;
+        }
+        if !self.timestamp_queries_supported {
+            return;
+        }
+        let queries = match self.frame_timestamp_queries.pop() {
+            Some(queries) => queries,
+            None => match Dx11TimestampQueries::new(&self.native) {
+                Ok(queries) => queries,
+                Err(error) => {
+                    log::warn!("nova-gfx DX11 frame timestamps disabled: {error}");
+                    self.timestamp_queries_supported = false;
+                    return;
+                }
+            },
+        };
+        // SAFETY: The immediate context is owned by this device; one disjoint
+        // scope is open at a time and the start timestamp belongs to it.
+        unsafe {
+            self.context.Begin(&queries.disjoint);
+            self.context.End(&queries.start);
+        }
+        self.next_frame_timestamps = Some(queries);
+    }
+
+    /// Closes the frame timestamp queries opened by [`Self::begin_frame_timestamps`].
+    pub(crate) fn end_frame_timestamps(&mut self) {
+        let Some(queries) = self.next_frame_timestamps.as_ref() else {
+            return;
+        };
+        // SAFETY: These calls close the disjoint scope opened for this frame.
+        unsafe {
+            self.context.End(&queries.end);
+            self.context.End(&queries.disjoint);
+        }
+    }
+
+    /// Drops the probes of a frame that failed before submission.
+    pub(crate) fn discard_frame_timestamps(&mut self) {
+        self.next_frame_timestamps = None;
+    }
+
     pub(crate) fn signal(&mut self) -> Result<SubmissionId> {
         self.retire()?;
         let serial = self
@@ -224,6 +373,9 @@ impl Dx11Device {
         }
         self.submitted = serial;
         self.pending.push_back((serial, query));
+        if let Some(timestamps) = self.next_frame_timestamps.take() {
+            self.pending_frame_timestamps.push((serial, timestamps));
+        }
         Ok(SubmissionId::from_parts(serial, self.submission_generation))
     }
     fn retire(&mut self) -> Result<()> {
@@ -247,7 +399,24 @@ impl Dx11Device {
                 self.queries.push(query);
             }
         }
+        self.read_completed_frame_timestamps();
         Ok(())
+    }
+
+    fn read_completed_frame_timestamps(&mut self) {
+        let completed = self.completed;
+        let mut index = 0;
+        while index < self.pending_frame_timestamps.len() {
+            if self.pending_frame_timestamps[index].0 <= completed {
+                let (_, queries) = self.pending_frame_timestamps.remove(index);
+                if let Some(sample) = read_dx11_frame_timestamps(&self.context, &queries) {
+                    self.last_frame_gpu_timestamps = Some(sample);
+                }
+                self.frame_timestamp_queries.push(queries);
+            } else {
+                index += 1;
+            }
+        }
     }
 }
 
@@ -481,6 +650,15 @@ impl DiagnosticsDevice for Dx11Device {
             non_local: Some(query(DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL)?),
         }))
     }
+
+    fn frame_gpu_timestamps_supported(&self) -> bool {
+        self.timestamp_queries_supported
+    }
+
+    fn last_frame_gpu_timestamps(&mut self) -> Result<Option<FrameGpuTimestamps>> {
+        self.retire()?;
+        Ok(self.last_frame_gpu_timestamps)
+    }
 }
 impl TextureTransferDevice for Dx11Device {
     fn texture_transfer_timestamps_supported(&self) -> bool {
@@ -495,5 +673,36 @@ impl TextureTransferDevice for Dx11Device {
     }
     fn read_texture(&mut self, texture: TextureId) -> Result<TextureReadback> {
         self.readback(texture)
+    }
+}
+
+#[cfg(test)]
+mod conformance_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires D3D11 hardware"]
+    fn msaa_resolve_roundtrip() {
+        let mut device =
+            Dx11Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::msaa_resolve_roundtrip(&mut device).expect("MSAA resolve roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn format_allocation_roundtrip() {
+        let mut device =
+            Dx11Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::format_allocation_roundtrip(&mut device)
+            .expect("format allocation roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn texture_buffer_roundtrip() {
+        let mut device =
+            Dx11Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::texture_buffer_roundtrip(&mut device)
+            .expect("texture buffer roundtrip");
     }
 }

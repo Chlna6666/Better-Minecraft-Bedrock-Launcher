@@ -4,14 +4,14 @@ use crate::OpenGlDevice;
 use gfx_core::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBinding, BufferDescriptor, BufferUsage, ClearColor,
-    ColorAttachmentDescriptor, CommandEncoderDescriptor, CompareFunction, CompositeAlphaMode,
-    DepthAttachment, DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawCommand,
-    DrawIndexedCommand, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    Origin2d, PipelineLayoutDescriptor, PresentFrameDescriptor, PresentMode, PrimitiveTopology,
-    RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPipelineDescriptor,
-    SamplerBinding, SamplerDescriptor, ShaderModuleDescriptor, ShaderStage, ShaderStages,
-    TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureUsage,
-    TextureViewDescriptor, TextureWriteDescriptor, bind_group_list,
+    ColorAttachmentDescriptor, ColorTargetState, CommandEncoderDescriptor, CompareFunction,
+    CompositeAlphaMode, DepthAttachment, DepthAttachmentDescriptor, DepthState, DeviceDescriptor,
+    DrawCommand, DrawIndexedCommand, Extent2d, Format, IndexBufferBinding, IndexFormat, LoadOp,
+    MemoryLocation, Origin2d, PipelineLayoutDescriptor, PresentFrameDescriptor, PresentMode,
+    PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor,
+    RenderPipelineDescriptor, SamplerBinding, SamplerDescriptor, ShaderModuleDescriptor,
+    ShaderStage, ShaderStages, TextureBinding, TextureDataLayout, TextureDescriptor,
+    TextureDimension, TextureUsage, TextureViewDescriptor, TextureWriteDescriptor, bind_group_list,
 };
 use gfx_core::{
     PipelineDevice as _, PresentationDevice as _, ResourceDevice as _, SubmissionDevice as _,
@@ -111,6 +111,7 @@ fn texture(
             usage,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("texture");
     let view = device
@@ -128,12 +129,17 @@ fn pass(device: &mut OpenGlDevice, depth: bool) -> gfx_core::RenderPassId {
     device
         .create_render_pass(&RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: depth.then_some(DepthAttachmentDescriptor {
                 format: Format::Depth32Float,
+
+                stencil_format: None,
             }),
+
+            sample_count: 1,
+            resolve_target: None,
         })
         .expect("pass")
 }
@@ -158,13 +164,14 @@ fn pipeline(
                 vertex_buffers: Vec::new(),
                 render_pass: pass,
                 pipeline_layout: Some(layout),
-                color_format: Format::Rgba8Unorm,
-                blend_mode: blend,
+                color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, blend)],
                 primitive_topology: PrimitiveTopology::TriangleList,
                 raster: Default::default(),
                 depth_state: depth.then_some(DepthState {
                     compare: CompareFunction::Less,
                     write_enabled: true,
+
+                    stencil: None,
                 }),
             },
             Extent2d::new(16, 16).expect("extent"),
@@ -235,3 +242,177 @@ impl Drop for TestWindow {
 mod draw;
 mod surface;
 mod texture;
+
+#[test]
+#[ignore = "requires OpenGL 4.5 hardware"]
+fn conformance_msaa_resolve() {
+    let mut device = open_device();
+    gfx_core::conformance::msaa_resolve_roundtrip(&mut device).expect("MSAA resolve roundtrip");
+}
+
+#[test]
+#[ignore = "requires OpenGL 4.5 hardware"]
+fn conformance_format_allocation() {
+    let mut device = open_device();
+    gfx_core::conformance::format_allocation_roundtrip(&mut device)
+        .expect("format allocation roundtrip");
+}
+
+#[test]
+#[ignore = "requires OpenGL 4.5 hardware"]
+fn conformance_texture_buffer() {
+    let mut device = open_device();
+    gfx_core::conformance::texture_buffer_roundtrip(&mut device).expect("texture buffer roundtrip");
+}
+
+#[test]
+#[ignore = "requires OpenGL 4.5 hardware"]
+fn storage_image_writes_from_fragment_shader() {
+    let mut device = open_device();
+    let (storage, storage_view) = texture(
+        &mut device,
+        Format::Rgba8Unorm,
+        TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+        1,
+    );
+    let (color, color_view) = texture(
+        &mut device,
+        Format::Rgba8Unorm,
+        TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+        1,
+    );
+    let pass = pass(&mut device, false);
+    let layout = device
+        .create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::StorageTexture {
+                    format: Format::Rgba8Unorm,
+                    read_only: false,
+                },
+                stages: ShaderStages::FRAGMENT,
+            }],
+        })
+        .expect("layout");
+    let pipeline_layout = device
+        .create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: vec![layout],
+        })
+        .expect("pipeline layout");
+    let source = "@group(0) @binding(0) var dst: texture_storage_2d<rgba8unorm, write>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    return vec4<f32>(p[i], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    textureStore(dst, vec2<i32>(at.xy), vec4<f32>(0.25, 0.5, 0.75, 1.0));
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}";
+    let pipeline = pipeline(
+        &mut device,
+        source,
+        pass,
+        pipeline_layout,
+        gfx_core::BlendMode::Replace,
+        false,
+    );
+    let bind_group = device
+        .create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: vec![BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: storage_view,
+                }),
+            }],
+        })
+        .expect("bind group");
+    let commands = [RenderCommand::Draw(DrawCommand {
+        pipeline,
+        bind_groups: bind_group_list([bind_group]),
+        vertex_count: 3,
+        first_vertex: 0,
+        instance_count: 1,
+        first_instance: 0,
+        scissor: None,
+    })];
+    device
+        .render_to_textures(&[RenderPassCommands {
+            color_attachments: std::slice::from_ref(&color_view),
+            render_pass: pass,
+            commands: &commands,
+            color_load_op: LoadOp::Clear(ClearColor::default()),
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+            resolve_target: None,
+        }])
+        .expect("storage image pass");
+    let pixels = device.read_texture(storage).expect("readback");
+    let at = (4 * 16 + 4) * 4;
+    assert_eq!(
+        &pixels.bytes[at..at + 4],
+        &[64, 128, 191, 255],
+        "fragment shader must write through the image unit"
+    );
+    let _ = color;
+}
+
+#[test]
+#[ignore = "requires OpenGL 4.5 hardware"]
+fn compute_writes_storage_image_through_bind_group() {
+    let mut device = open_device();
+    let (storage, storage_view) = texture(
+        &mut device,
+        Format::Rgba8Unorm,
+        TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+        1,
+    );
+    let layout = device
+        .create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::StorageTexture {
+                    format: Format::Rgba8Unorm,
+                    read_only: false,
+                },
+                stages: ShaderStages::FRAGMENT,
+            }],
+        })
+        .expect("layout");
+    let source = "@group(0) @binding(0) var dst: texture_storage_2d<rgba8unorm, write>;
+@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    textureStore(dst, vec2<i32>(id.xy), vec4<f32>(0.25, 0.5, 0.75, 1.0));
+}";
+    let shader = shader(&mut device, source, ShaderStage::Compute, "cs");
+    let bind_group = device
+        .create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: vec![BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: storage_view,
+                }),
+            }],
+        })
+        .expect("bind group");
+    device
+        .dispatch_compute_bind_group(&gfx_core::ComputeBindGroupDispatch {
+            shader,
+            bind_group,
+            workgroups: [16, 16, 1],
+        })
+        .expect("compute dispatch");
+    let pixels = device.read_texture(storage).expect("readback");
+    let at = (8 * 16 + 8) * 4;
+    assert_eq!(
+        &pixels.bytes[at..at + 4],
+        &[64, 128, 191, 255],
+        "compute shader must write through the storage image binding"
+    );
+}

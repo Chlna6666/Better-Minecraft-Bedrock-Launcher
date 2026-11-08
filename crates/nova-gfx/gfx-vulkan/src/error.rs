@@ -28,6 +28,11 @@ impl From<VulkanError> for Error {
             VulkanError::Loader(message) | VulkanError::Unavailable(message) => {
                 Self::Backend(message)
             }
+            // Device loss invalidates every resource and submission; callers
+            // must stop submitting and recreate the device.
+            VulkanError::Vk(vk::Result::ERROR_DEVICE_LOST) => {
+                Self::DeviceLost("VK_ERROR_DEVICE_LOST".to_string())
+            }
             VulkanError::Vk(error) => Self::Backend(format!("{error:?}")),
         }
     }

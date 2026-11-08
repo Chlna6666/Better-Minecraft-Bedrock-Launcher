@@ -79,6 +79,9 @@ impl SurfaceDevice for Dx11Device {
                 "DXGI flip swapchains require a non-sRGB color format".into(),
             ));
         }
+        let image_count = config.resolve_image_count(2, 2, 16);
+        let frame_latency =
+            config.resolve_frame_latency(1, 1, image_count.saturating_sub(1).max(1));
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: config.size.width(),
             Height: config.size.height(),
@@ -88,7 +91,7 @@ impl SurfaceDevice for Dx11Device {
                 Quality: 0,
             },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            BufferCount: 2,
+            BufferCount: image_count,
             // An HWND can grow before the matching Scene/ResizeBuffers is ready.
             // Let DWM scale the last presented frame across that exposed client
             // strip instead of showing undefined black pixels. The swapchain is
@@ -119,7 +122,7 @@ impl SurfaceDevice for Dx11Device {
         .cast()
         .map_err(backend)?;
         // SAFETY: live DXGI swapchain owns native pacing state.
-        unsafe { native.SetMaximumFrameLatency(1) }.map_err(backend)?;
+        unsafe { native.SetMaximumFrameLatency(frame_latency) }.map_err(backend)?;
         let latency = unsafe { native.GetFrameLatencyWaitableObject() };
         if latency.is_invalid() {
             return Err(Error::Backend(
@@ -379,7 +382,8 @@ impl Dx11Device {
         // D3D11 rotates the identity of buffer zero at Present. Its retained view always
         // targets the next writable image; D3D12's physical image indexing does not apply.
         let record_started = std::time::Instant::now();
-        self.render_target(
+        self.begin_frame_timestamps();
+        if let Err(error) = self.render_target(
             RenderTarget::Swapchain {
                 swapchain: id,
                 image_index: 0,
@@ -388,7 +392,11 @@ impl Dx11Device {
             commands,
             load,
             depth,
-        )?;
+        ) {
+            self.discard_frame_timestamps();
+            return Err(error);
+        }
+        self.end_frame_timestamps();
         let command_record = record_started.elapsed();
         let chain = self.swapchains.get_mut(id)?;
         let source: IDXGISwapChain2 = chain.native.cast().map_err(backend)?;

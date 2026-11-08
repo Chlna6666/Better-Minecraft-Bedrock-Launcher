@@ -1,6 +1,6 @@
 use crate::{
     device::OpenGlDevice,
-    pipelines::{BufferSlot, Pipeline, TextureSlot},
+    pipelines::{BufferSlot, ImageSlot, Pipeline, TextureSlot},
     resources::BindGroup,
 };
 use gfx_core::*;
@@ -125,6 +125,51 @@ impl OpenGlDevice {
         }
         for binding in &pipeline.textures {
             self.bind_sampled_texture(set, binding, cache)?;
+        }
+        for binding in &pipeline.images {
+            self.bind_storage_image(set, binding)?;
+        }
+        Ok(())
+    }
+
+    /// Binds one storage image to its image unit.
+    ///
+    /// Image units are independent of texture units, so this does not touch the sampler
+    /// cache; the call is cheap enough to issue per draw.
+    fn bind_storage_image(&self, set: &BindGroup, binding: &ImageSlot) -> Result<()> {
+        let BindingResource::Texture(texture) = Self::binding(set, binding.logical)? else {
+            return Err(Error::InvalidInput(
+                "OpenGL storage image bound to a non-texture".into(),
+            ));
+        };
+        let view = self.views.get(texture.texture_view)?;
+        if !view.usage.contains(TextureUsage::STORAGE) {
+            return Err(Error::InvalidInput(
+                "OpenGL storage image view lacks STORAGE".into(),
+            ));
+        }
+        if view.format != binding.format {
+            return Err(Error::InvalidInput(
+                "OpenGL storage image format differs from the shader declaration".into(),
+            ));
+        }
+        let (internal, _, _) = crate::resources::format(binding.format);
+        let access = if binding.read_only {
+            glow::READ_ONLY
+        } else {
+            glow::READ_WRITE
+        };
+        // SAFETY: The view belongs to this owner context and its storage is immutable.
+        unsafe {
+            self.gl.bind_image_texture(
+                binding.unit,
+                Some(view.native),
+                0,
+                false,
+                0,
+                access,
+                internal,
+            );
         }
         Ok(())
     }

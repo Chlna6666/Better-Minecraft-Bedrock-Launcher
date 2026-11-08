@@ -53,16 +53,17 @@ mod platform {
         AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindGroupDescriptor,
         BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId, BindingResource, BindingType,
         BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
-        BufferWrite, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-        CompareFunction, CompositeAlphaMode, DepthAttachment, DepthState, DeviceDescriptor,
-        DeviceMemoryBudget, DiagnosticsDevice, DrawDescriptor, FilterMode, Format,
-        IndexBufferBinding, IndexFormat, LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation,
-        MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
-        PowerPreference, PresentFrameDescriptor, PresentMode, PresentationDevice,
-        PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPassId,
-        RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice, ResourceStats,
-        SamplerDescriptor, SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor,
-        ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice, SubmissionId,
+        BufferWrite, ClearColor, ColorTargetState, ColorWrites, CommandDevice,
+        CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
+        DepthAttachment, DepthState, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice,
+        DrawDescriptor, FilterMode, Format, FrameGpuTimestamps, IndexBufferBinding, IndexFormat,
+        LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
+        PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentFrameDescriptor,
+        PresentMode, PresentationDevice, PrimitiveTopology, RenderCommand, RenderPassCommands,
+        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
+        RenderTarget, ResourceDevice, ResourceStats, SamplerDescriptor, SamplerId, ScissorRect,
+        ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages,
+        StencilFaceState, StencilOp, StencilState, SubmissionDevice, SubmissionId,
         SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
         TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureTransferDevice,
         TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
@@ -88,7 +89,9 @@ mod platform {
                 D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA,
                 D3D12_BLEND_INV_SRC1_COLOR, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
                 D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_SRC1_COLOR, D3D12_BLEND_ZERO,
-                D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL,
+                D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
+                D3D12_COLOR_WRITE_ENABLE_ALPHA, D3D12_COLOR_WRITE_ENABLE_BLUE,
+                D3D12_COLOR_WRITE_ENABLE_GREEN, D3D12_COLOR_WRITE_ENABLE_RED,
                 D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
                 D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC, D3D12_COMPARISON_FUNC_ALWAYS,
                 D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_GREATER,
@@ -97,13 +100,14 @@ mod platform {
                 D3D12_COMPARISON_FUNC_NOT_EQUAL, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS,
                 D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
-                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO,
-                D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
-                D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-                D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID,
+                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
+                D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC,
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID,
                 D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT,
                 D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
                 D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -122,17 +126,21 @@ mod platform {
                 D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC,
                 D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
                 D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-                D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS,
-                D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-                D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATES,
+                D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_PARAMETER,
+                D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
                 D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SAMPLER_DESC,
                 D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_VISIBILITY,
-                D3D12_SHADER_VISIBILITY_ALL, D3D12_STREAM_OUTPUT_DESC, D3D12_TEXTURE_COPY_LOCATION,
+                D3D12_SHADER_VISIBILITY_ALL, D3D12_STENCIL_OP, D3D12_STENCIL_OP_DECR,
+                D3D12_STENCIL_OP_DECR_SAT, D3D12_STENCIL_OP_INCR, D3D12_STENCIL_OP_INCR_SAT,
+                D3D12_STENCIL_OP_INVERT, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_REPLACE,
+                D3D12_STENCIL_OP_ZERO, D3D12_STREAM_OUTPUT_DESC, D3D12_TEXTURE_COPY_LOCATION,
                 D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
                 D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
                 D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_VIEWPORT, D3D12CreateDevice,
@@ -172,15 +180,23 @@ mod platform {
     };
     use windows_numerics::Matrix3x2;
 
-    const BACK_BUFFER_COUNT: u32 = 3;
+    const DEFAULT_BACK_BUFFER_COUNT: u32 = 3;
     // Keep rendering overlapped with presentation while bounding the queue below buffer count.
-    const DX12_MAX_FRAME_LATENCY: u32 = 2;
-    const DX12_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
+    const DEFAULT_MAX_FRAME_LATENCY: u32 = 2;
+    const DEFAULT_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
     // Command allocators/lists are only reusable after the submitting fence completes.
-    const DX12_FRAME_COMMAND_POOL_CAPACITY: usize = 16;
+    const DEFAULT_FRAME_COMMAND_POOL_CAPACITY: usize = 16;
+    // Flights can hold thousands of section descriptors; 4096 exhausts during
+    // large streamed scenes. The D3D12 shader-visible heap limit is 1,000,000.
+    const DEFAULT_RESOURCE_DESCRIPTOR_HEAP_CAPACITY: u32 = 65_536;
+    const MAX_SHADER_VISIBLE_DESCRIPTOR_CAPACITY: u32 = 1_000_000;
+    const DEFAULT_ATTACHMENT_DESCRIPTOR_HEAP_CAPACITY: u32 = 256;
+    const DEFAULT_PIPELINE_CACHE_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+    const DEFAULT_UPLOAD_PAGE_BYTES: u64 = 4 * 1024 * 1024;
+    const DEFAULT_UPLOAD_RETAINED_IDLE_PAGES: usize = 2;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
-    const DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY: u32 = 4096;
+    // D3D12 limits a shader-visible sampler heap to 2048 descriptors.
     const DX12_SAMPLER_DESCRIPTOR_HEAP_CAPACITY: u32 = NAGA_HLSL_SAMPLER_HEAP_SIZE;
     const NAGA_HLSL_SAMPLER_HEAP_SIZE: u32 = 2048;
     const NAGA_HLSL_SAMPLER_INDEX_SPACE: u32 = 255;
@@ -232,10 +248,14 @@ mod platform {
         upload_command_pool: Vec<Dx12UploadCommands>,
         timestamp_frequency: Option<u64>,
         last_texture_transfer_time: Option<Duration>,
+        last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
         pipeline_cache_dir: Option<PathBuf>,
+        command_encoder_pool_capacity: usize,
+        upload_command_pool_capacity: usize,
+        pipeline_cache_limit_bytes: u64,
     }
 
     impl Dx12Device {
@@ -271,11 +291,70 @@ mod platform {
             let fence = create_fence(&device)?;
             let fence_event = FenceEvent::new()?;
             let queue_elapsed = queue_started_at.elapsed();
+            let tuning = desc.tuning;
+            let resource_descriptor_capacity = if tuning.resource_descriptor_capacity == 0 {
+                DEFAULT_RESOURCE_DESCRIPTOR_HEAP_CAPACITY
+            } else {
+                tuning.resource_descriptor_capacity
+            };
+            if resource_descriptor_capacity > MAX_SHADER_VISIBLE_DESCRIPTOR_CAPACITY {
+                return Err(Error::InvalidInput(format!(
+                    "DX12 resource descriptor capacity {resource_descriptor_capacity} exceeds the {MAX_SHADER_VISIBLE_DESCRIPTOR_CAPACITY}-descriptor shader-visible heap limit"
+                )));
+            }
+            let attachment_descriptor_capacity = if tuning.render_target_descriptor_capacity == 0 {
+                DEFAULT_ATTACHMENT_DESCRIPTOR_HEAP_CAPACITY
+            } else {
+                tuning.render_target_descriptor_capacity
+            };
+            let depth_stencil_descriptor_capacity = if tuning.depth_stencil_descriptor_capacity == 0
+            {
+                DEFAULT_ATTACHMENT_DESCRIPTOR_HEAP_CAPACITY
+            } else {
+                tuning.depth_stencil_descriptor_capacity
+            };
+            if attachment_descriptor_capacity > MAX_SHADER_VISIBLE_DESCRIPTOR_CAPACITY
+                || depth_stencil_descriptor_capacity > MAX_SHADER_VISIBLE_DESCRIPTOR_CAPACITY
+            {
+                return Err(Error::InvalidInput(
+                    "DX12 attachment descriptor capacity exceeds the D3D12 heap limit".into(),
+                ));
+            }
+            let command_encoder_pool_capacity = if tuning.command_encoder_pool_capacity == 0 {
+                DEFAULT_FRAME_COMMAND_POOL_CAPACITY
+            } else {
+                tuning.command_encoder_pool_capacity as usize
+            };
+            let upload_command_pool_capacity = if tuning.upload_command_pool_capacity == 0 {
+                DEFAULT_UPLOAD_COMMAND_POOL_CAPACITY
+            } else {
+                tuning.upload_command_pool_capacity as usize
+            };
+            let pipeline_cache_limit_bytes = if tuning.pipeline_cache_limit_bytes == 0 {
+                DEFAULT_PIPELINE_CACHE_BLOB_BYTES
+            } else {
+                tuning.pipeline_cache_limit_bytes
+            };
+            let upload_page_bytes = if tuning.upload_page_bytes == 0 {
+                DEFAULT_UPLOAD_PAGE_BYTES
+            } else {
+                tuning.upload_page_bytes
+            };
+            let upload_retained_idle_pages = if tuning.upload_retained_idle_pages == 0 {
+                DEFAULT_UPLOAD_RETAINED_IDLE_PAGES
+            } else {
+                tuning.upload_retained_idle_pages as usize
+            };
+            let resource_binding_tier = query_resource_binding_tier(&device);
+            log::info!(
+                "nova-gfx DX12 descriptor limits: binding_tier={resource_binding_tier:?} resource_capacity={resource_descriptor_capacity} sampler_capacity={DX12_SAMPLER_DESCRIPTOR_HEAP_CAPACITY} rtv_capacity={attachment_descriptor_capacity} dsv_capacity={depth_stencil_descriptor_capacity} pipeline_cache_bytes={pipeline_cache_limit_bytes} upload_page_bytes={upload_page_bytes}"
+            );
             let heaps_started_at = Instant::now();
-            let resource_heap = DescriptorHeapAllocator::new(
+            let resource_heap = create_capped_descriptor_heap(
                 &device,
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY,
+                resource_descriptor_capacity,
+                resource_descriptor_capacity.min(4096),
                 true,
             )?;
             let sampler_heap = DescriptorHeapAllocator::new(
@@ -284,15 +363,26 @@ mod platform {
                 DX12_SAMPLER_DESCRIPTOR_HEAP_CAPACITY,
                 true,
             )?;
-            let rtv_heap =
-                DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 256, false)?;
-            let dsv_heap =
-                DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 256, false)?;
+            let rtv_heap = create_capped_descriptor_heap(
+                &device,
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                attachment_descriptor_capacity,
+                attachment_descriptor_capacity.min(DEFAULT_ATTACHMENT_DESCRIPTOR_HEAP_CAPACITY),
+                false,
+            )?;
+            let dsv_heap = create_capped_descriptor_heap(
+                &device,
+                D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                depth_stencil_descriptor_capacity,
+                depth_stencil_descriptor_capacity.min(DEFAULT_ATTACHMENT_DESCRIPTOR_HEAP_CAPACITY),
+                false,
+            )?;
             let heaps_elapsed = heaps_started_at.elapsed();
             let upload_started_at = Instant::now();
             let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+                page_size: upload_page_bytes,
                 alignment: DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
-                ..UploadRingAllocatorDesc::default()
+                max_retained_idle_pages: upload_retained_idle_pages,
             })?;
             log::info!(
                 "nova-gfx DX12 device initialization: total_ms={} adapter_ms={} native_device_ms={} queue_fence_ms={} descriptor_heaps_ms={} upload_allocator_ms={}",
@@ -335,15 +425,19 @@ mod platform {
                 upload_ring,
                 upload_pages: Vec::new(),
                 deferred_command_encoders: Vec::new(),
-                free_command_encoders: Vec::with_capacity(DX12_FRAME_COMMAND_POOL_CAPACITY),
+                free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
                 pending_texture_uploads: DeferredFreeQueue::new(),
                 upload_command_pool: Vec::new(),
                 timestamp_frequency,
                 last_texture_transfer_time: None,
+                last_frame_gpu_timestamps: None,
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
                 pipeline_cache_dir,
+                command_encoder_pool_capacity,
+                upload_command_pool_capacity,
+                pipeline_cache_limit_bytes,
             })
         }
 
@@ -434,6 +528,12 @@ mod platform {
             if self.allow_tearing && !uses_composition {
                 creation_flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32;
             }
+            let image_count = config.resolve_image_count(DEFAULT_BACK_BUFFER_COUNT, 2, 16);
+            let frame_latency = config.resolve_frame_latency(
+                DEFAULT_MAX_FRAME_LATENCY,
+                1,
+                image_count.saturating_sub(1).max(1),
+            );
             let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: config.size.width(),
                 Height: config.size.height(),
@@ -444,7 +544,7 @@ mod platform {
                     Quality: 0,
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: BACK_BUFFER_COUNT,
+                BufferCount: image_count,
                 // CreateSwapChainForComposition requires STRETCH. The HWND fallback
                 // also stretches so a client area that grew ahead of its next Scene is
                 // covered by the previous frame instead of undefined black pixels.
@@ -469,7 +569,12 @@ mod platform {
                             "DX12 DirectComposition swapchain unavailable; falling back to HWND swapchain: {error:?}"
                         );
                         (
-                            self.build_hwnd_swapchain(hwnd, config, hwnd_creation_flags)?,
+                            self.build_hwnd_swapchain(
+                                hwnd,
+                                config,
+                                image_count,
+                                hwnd_creation_flags,
+                            )?,
                             None,
                             hwnd_creation_flags,
                         )
@@ -477,7 +582,7 @@ mod platform {
                 }
             } else {
                 (
-                    self.build_hwnd_swapchain(hwnd, config, hwnd_creation_flags)?,
+                    self.build_hwnd_swapchain(hwnd, config, image_count, hwnd_creation_flags)?,
                     None,
                     hwnd_creation_flags,
                 )
@@ -490,9 +595,7 @@ mod platform {
                 != 0
             {
                 // SAFETY: Swapchain was created with the frame-latency waitable flag.
-                if let Err(error) =
-                    unsafe { swapchain.SetMaximumFrameLatency(DX12_MAX_FRAME_LATENCY) }
-                {
+                if let Err(error) = unsafe { swapchain.SetMaximumFrameLatency(frame_latency) } {
                     log!(
                         log::Level::Warn,
                         "DX12 SetMaximumFrameLatency failed; frame pacing falls back to Present: {error:?}"
@@ -522,7 +625,8 @@ mod platform {
                 frame_latency_waitable,
                 frame_pacing: FrameLatencyWait::default(),
                 partial_presentation,
-                pending_damage: vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize],
+                image_count,
+                pending_damage: vec![Dx12BackBufferDamage::Full; image_count as usize],
                 generation: 0,
                 resize_retirement: None,
             };
@@ -621,6 +725,7 @@ mod platform {
             &self,
             hwnd: HWND,
             config: SurfaceConfig,
+            image_count: u32,
             creation_flags: u32,
         ) -> Result<IDXGISwapChain1> {
             let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -633,7 +738,7 @@ mod platform {
                     Quality: 0,
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: BACK_BUFFER_COUNT,
+                BufferCount: image_count,
                 // Native client geometry may overtake the next Scene/ResizeBuffers.
                 // Let DWM scale the last presented frame across that exposed strip
                 // instead of showing undefined black pixels. The matching new-size
@@ -713,8 +818,11 @@ mod platform {
             desc.validate()?;
             if let TextureDimension::D2Array { layers } = desc.dimension {
                 self.texture_array_capabilities().plan(
-                    desc.size.width(), desc.size.height(), layers,
-                    desc.mip_level_count, desc.format,
+                    desc.size.width(),
+                    desc.size.height(),
+                    layers,
+                    desc.mip_level_count,
+                    desc.format,
                 )?;
             }
             let resource = create_texture_resource(&self.device, desc)?;
@@ -732,7 +840,9 @@ mod platform {
         /// Returns [`Error`] when upload resources or command recording fail.
         fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
             if self.textures.get(desc.texture)?.desc.dimension != TextureDimension::D2 {
-                return Err(Error::InvalidInput("use write_texture_array_layer for D2Array".into()));
+                return Err(Error::InvalidInput(
+                    "use write_texture_array_layer for D2Array".into(),
+                ));
             }
             let copy = self.prepare_texture_copy(desc, data)?;
             let fence_value = self.upload_textures_2d(std::slice::from_ref(&copy))?;
@@ -1019,7 +1129,9 @@ mod platform {
             let desc = write.descriptor;
             let texture = self.textures.get(desc.texture)?;
             if texture.desc.dimension != TextureDimension::D2 {
-                return Err(Error::InvalidInput("batch 2D upload cannot write a D2Array".into()));
+                return Err(Error::InvalidInput(
+                    "batch 2D upload cannot write a D2Array".into(),
+                ));
             }
             desc.validate_against(&texture.desc, write.data.len())?;
             let texture_resource = texture
@@ -1107,12 +1219,24 @@ mod platform {
                 };
                 // SAFETY: Texture was created by this device with depth usage and DSV handle is valid.
                 unsafe {
-                    self.device
-                        .CreateDepthStencilView(&resource, Some(&windows::Win32::Graphics::Direct3D12::D3D12_DEPTH_STENCIL_VIEW_DESC {
-                            Format: format_to_dxgi(desc.format),
-                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_DSV_DIMENSION_TEXTURE2D,
-                            ..Default::default()
-                        }), slot.cpu_handle);
+                    // Multisampled depth needs the MS view dimension: TEXTURE2D over a
+                    // multisampled resource is an invalid call that removes the device.
+                    let view_dimension = if texture_desc.sample_count > 1 {
+                        windows::Win32::Graphics::Direct3D12::D3D12_DSV_DIMENSION_TEXTURE2DMS
+                    } else {
+                        windows::Win32::Graphics::Direct3D12::D3D12_DSV_DIMENSION_TEXTURE2D
+                    };
+                    self.device.CreateDepthStencilView(
+                        &resource,
+                        Some(
+                            &windows::Win32::Graphics::Direct3D12::D3D12_DEPTH_STENCIL_VIEW_DESC {
+                                Format: format_to_dxgi(desc.format),
+                                ViewDimension: view_dimension,
+                                ..Default::default()
+                            },
+                        ),
+                        slot.cpu_handle,
+                    );
                 }
                 Some(slot)
             } else {
@@ -1135,6 +1259,7 @@ mod platform {
             reason = "inherent helper mirrors the fallible ResourceDevice trait method"
         )]
         fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+            desc.validate()?;
             Ok(self.samplers.insert(Dx12Sampler {
                 mag_filter: desc.mag_filter,
                 min_filter: desc.min_filter,
@@ -1142,6 +1267,12 @@ mod platform {
                 anisotropic: desc.anisotropic,
                 address_mode_u: desc.address_mode_u,
                 address_mode_v: desc.address_mode_v,
+                address_mode_w: desc.address_mode_w,
+                compare: desc.compare,
+                border_color: desc.border_color.unwrap_or([0.0; 4]),
+                lod_min_clamp: desc.lod_min_clamp,
+                lod_max_clamp: desc.lod_max_clamp,
+                lod_bias: desc.lod_bias,
             }))
         }
 
@@ -1212,6 +1343,12 @@ mod platform {
                                 Error::Backend("DX12 buffer has no native resource".to_string())
                             })?;
                             match entry.binding_type {
+                                BindingType::StorageTexture { .. } => {
+                                    return Err(Error::Unavailable(
+                                        "D3D12 storage textures need an unordered-access-view path"
+                                            .into(),
+                                    ));
+                                }
                                 BindingType::UniformBuffer => {
                                     validate_uniform_buffer_binding(
                                         buffer_binding,
@@ -1247,6 +1384,9 @@ mod platform {
                                 ))?;
                             if fresh {
                                 match entry.binding_type {
+                                    BindingType::StorageTexture { .. } => {
+                                        unreachable!("storage textures are rejected above")
+                                    }
                                     BindingType::UniformBuffer => {
                                         let size = align_to_u32(buffer_binding.size, 256)?;
                                         let desc =
@@ -1312,6 +1452,16 @@ mod platform {
                             });
                         }
                         BindingResource::Texture(texture_binding) => {
+                            let entry = layout
+                                .entries
+                                .iter()
+                                .find(|entry| entry.binding == binding.binding)
+                                .ok_or_else(|| {
+                                    Error::InvalidInput(format!(
+                                        "bind group layout is missing binding {}",
+                                        binding.binding
+                                    ))
+                                })?;
                             let view = self.texture_views.get(texture_binding.texture_view)?;
                             let texture = self.textures.get(view.texture)?;
                             let resource = texture.resource.as_ref().ok_or_else(|| {
@@ -1321,21 +1471,64 @@ mod platform {
                                 DescriptorKey::Texture(texture_binding.texture_view),
                             )?;
                             if fresh {
+                                if matches!(entry.binding_type, BindingType::StorageTexture { .. })
+                                {
+                                    if !texture.desc.usage.contains(TextureUsage::STORAGE) {
+                                        return Err(Error::InvalidInput(
+                                            "DX12 storage texture view lacks STORAGE".into(),
+                                        ));
+                                    }
+                                    let uav =
+                                        windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                                            Format: format_to_dxgi(view.format),
+                                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE2D,
+                                            ..Default::default()
+                                        };
+                                    // SAFETY: UAV descriptor references a live storage texture
+                                    // resource and a heap slot owned by this device.
+                                    unsafe {
+                                        self.device.CreateUnorderedAccessView(
+                                            Some(resource),
+                                            None,
+                                            Some(&raw const uav),
+                                            slot.cpu_handle,
+                                        );
+                                    }
+                                    resource_tables.push(Dx12DescriptorTable {
+                                        binding: binding.binding,
+                                        gpu_handle: slot.gpu_handle,
+                                        descriptor_index: slot.index,
+                                        resource: Some(binding.resource),
+                                    });
+                                    continue;
+                                }
                                 let array_layers = texture.desc.dimension.layers();
-                                let array = matches!(texture.desc.dimension, TextureDimension::D2Array { .. });
+                                let array = matches!(
+                                    texture.desc.dimension,
+                                    TextureDimension::D2Array { .. }
+                                );
                                 let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
                                     Format: if view.format == Format::Depth32Float {
                                         windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT
                                     } else {
                                         format_to_dxgi(view.format)
                                     },
-                                    ViewDimension: if array {
-                                        windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-                                    } else {
-                                        windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D
+                                    // Multisampled textures must use the MS view dimensions.
+                                    ViewDimension: match (array, texture.desc.sample_count > 1) {
+                                        (false, false) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D,
+                                        (true, false) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+                                        (false, true) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DMS,
+                                        (true, true) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY,
                                     },
                                     Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                                    Anonymous: if array {
+                                    Anonymous: if array && texture.desc.sample_count > 1 {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                            Texture2DMSArray: windows::Win32::Graphics::Direct3D12::D3D12_TEX2DMS_ARRAY_SRV {
+                                                FirstArraySlice: 0,
+                                                ArraySize: array_layers,
+                                            },
+                                        }
+                                    } else if array {
                                         windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                                             Texture2DArray: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_ARRAY_SRV {
                                                 MostDetailedMip: view.base_mip_level,
@@ -1344,6 +1537,12 @@ mod platform {
                                                 ArraySize: array_layers,
                                                 PlaneSlice: 0,
                                                 ResourceMinLODClamp: 0.0,
+                                            },
+                                        }
+                                    } else if texture.desc.sample_count > 1 {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                            Texture2DMS: windows::Win32::Graphics::Direct3D12::D3D12_TEX2DMS_SRV {
+                                                UnusedField_NothingToDefine: 0,
                                             },
                                         }
                                     } else {
@@ -1379,7 +1578,7 @@ mod platform {
                                 .sampler_heap
                                 .allocate_shared(DescriptorKey::Sampler(sampler_binding.sampler))?;
                             if fresh {
-                                let sampler_desc = sampler_desc_to_dx12(*sampler);
+                                let sampler_desc = sampler_desc_to_dx12(sampler);
                                 // SAFETY: Sampler heap CPU slot is valid and descriptor is self-contained.
                                 unsafe {
                                     self.device
@@ -1476,12 +1675,22 @@ mod platform {
             reason = "inherent helper mirrors the fallible PipelineDevice trait method"
         )]
         fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
+            desc.validate()?;
             Ok(self.render_passes.insert(Dx12RenderPass {
-                color_format: desc.color_attachment.format,
+                color_formats: desc
+                    .color_attachments
+                    .iter()
+                    .map(|attachment| attachment.format)
+                    .collect(),
                 depth_format: desc
                     .depth_attachment
                     .as_ref()
                     .map(|attachment| attachment.format),
+                stencil_format: desc
+                    .depth_attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.stencil_format),
+                sample_count: desc.sample_count,
             }))
         }
 
@@ -1514,6 +1723,17 @@ mod platform {
                     "DX12 depth pipeline requires a render pass depth attachment".to_string(),
                 ));
             }
+            if desc.color_targets.len() != render_pass.color_formats.len()
+                || desc
+                    .color_targets
+                    .iter()
+                    .zip(render_pass.color_formats.iter())
+                    .any(|(target, format)| target.format != *format)
+            {
+                return Err(Error::InvalidInput(
+                    "DX12 pipeline color targets and render pass attachments differ".to_string(),
+                ));
+            }
             let (
                 root_signature,
                 draw_step_constants_root_index,
@@ -1540,28 +1760,32 @@ mod platform {
                 &root_signature,
                 vertex_shader,
                 fragment_shader,
-                desc.color_format,
-                desc.blend_mode,
+                &desc.color_targets,
                 render_pass.depth_format,
+                render_pass.stencil_format.is_some(),
+                render_pass.sample_count,
                 desc.depth_state,
                 desc.raster,
                 pipeline_layout_cache_key,
                 self.pipeline_cache_dir.as_deref(),
+                self.pipeline_cache_limit_bytes,
             )?;
             let indirect_signature = Some(compute::create_indirect_signature(
                 &self.device,
                 &root_signature,
                 draw_step_constants_root_index,
             )?);
+            let indirect_signature_indexed =
+                Some(compute::create_indexed_indirect_signature(&self.device)?);
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
-                color_format: desc.color_format,
-                blend_mode: desc.blend_mode,
+                color_targets: desc.color_targets.clone(),
                 primitive_topology: desc.primitive_topology,
                 pipeline_state: Some(pipeline_state),
                 root_signature: Some(root_signature),
                 bind_group_layouts,
                 draw_step_constants_root_index,
                 indirect_signature,
+                indirect_signature_indexed,
             }))
         }
 
@@ -1576,7 +1800,7 @@ mod platform {
                 self.poll_cleanup();
             }
 
-            let (allocator, command_list) = if let Some(mut retired) =
+            let (allocator, command_list, timestamps) = if let Some(mut retired) =
                 self.free_command_encoders.pop()
             {
                 let allocator = retired.allocator.take().ok_or_else(|| {
@@ -1595,19 +1819,35 @@ mod platform {
                 // again with their actual pipeline state before recording.
                 unsafe { command_list.Close() }
                     .map_err(|error| Error::Backend(error.to_string()))?;
-                (allocator, command_list)
+                (allocator, command_list, retired.timestamps.take())
             } else {
                 let allocator = create_command_allocator(&self.device)?;
                 let command_list = create_command_list(&self.device, &allocator)?;
                 // SAFETY: Newly created command lists start open; close it so frame recording can reset it.
                 unsafe { command_list.Close() }
                     .map_err(|error| Error::Backend(error.to_string()))?;
-                (allocator, command_list)
+                let timestamps = if self.timestamp_frequency.is_some() {
+                    match create_dx12_timestamp_queries(
+                        &self.device,
+                        "nova-gfx DX12 frame timestamps",
+                    ) {
+                        Ok(queries) => Some(queries),
+                        Err(error) => {
+                            log::warn!("nova-gfx DX12 frame timestamps unavailable: {error}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                (allocator, command_list, timestamps)
             };
 
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 allocator: Some(allocator),
                 command_list: Some(command_list),
+                timestamps,
+                frame_probe: false,
                 submitted: false,
                 swapchain: None,
                 compute_resources: Vec::new(),
@@ -1629,7 +1869,12 @@ mod platform {
                 ));
             };
             let _swapchain = self.swapchains.get(swapchain)?;
-            let _render_pass = self.render_passes.get(draw.pass.render_pass)?;
+            let render_pass = self.render_passes.get(draw.pass.render_pass)?;
+            if render_pass.color_formats.len() != 1 {
+                return Err(Error::InvalidInput(
+                    "DX12 record_draw_desc requires exactly one color attachment".to_string(),
+                ));
+            }
             let _pipeline = self.render_pipelines.get(draw.pipeline)?;
             for bind_group in &draw.bind_groups {
                 let _ = self.bind_groups.get(*bind_group)?;
@@ -1731,15 +1976,16 @@ mod platform {
                 return Ok(None);
             }
 
-            let mut target_states =
-                Vec::<(TextureId, D3D12_RESOURCE_STATES)>::with_capacity(passes.len());
+            let mut target_states = Vec::<(TextureId, D3D12_RESOURCE_STATES)>::new();
             for pass in passes {
-                let texture_id = self.texture_views.get(pass.texture_view)?.texture;
-                if target_states
-                    .iter()
-                    .all(|(known_texture, _)| *known_texture != texture_id)
-                {
-                    target_states.push((texture_id, self.textures.get(texture_id)?.state));
+                for texture_view in pass.color_attachments {
+                    let texture_id = self.texture_views.get(*texture_view)?.texture;
+                    if target_states
+                        .iter()
+                        .all(|(known_texture, _)| *known_texture != texture_id)
+                    {
+                        target_states.push((texture_id, self.textures.get(texture_id)?.state));
+                    }
                 }
             }
 
@@ -1755,7 +2001,8 @@ mod platform {
                     for pass in passes {
                         self.record_render_step_list_texture(
                             encoder,
-                            pass.texture_view,
+                            pass.color_attachments,
+                            pass.resolve_target,
                             pass.render_pass,
                             pass.commands,
                             pass.color_load_op,
@@ -2264,9 +2511,22 @@ mod platform {
             let free_encoders = &mut self.free_command_encoders;
             let resource_heap = &mut self.resource_heap;
             let compute = &mut self.compute;
+            let command_encoder_pool_capacity = self.command_encoder_pool_capacity;
+            let timestamp_frequency = self.timestamp_frequency;
+            let last_frame_gpu_timestamps = &mut self.last_frame_gpu_timestamps;
             self.deferred_command_encoders.retain_mut(|pending| {
                 if pending.fence_value > completed_fence {
                     return true;
+                }
+                if pending._encoder.frame_probe
+                    && let (Some(queries), Some(frequency)) =
+                        (pending._encoder.timestamps.as_ref(), timestamp_frequency)
+                    && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback)
+                {
+                    *last_frame_gpu_timestamps = Some(FrameGpuTimestamps {
+                        duration_ticks: end.saturating_sub(start),
+                        frequency,
+                    });
                 }
                 for resources in pending._encoder.compute_resources.drain(..) {
                     resources.release(resource_heap);
@@ -2274,10 +2534,12 @@ mod platform {
                 for resource in pending._encoder.indirect_resources.drain(..) {
                     compute.recycle_indirect(resource, true);
                 }
-                if free_encoders.len() < DX12_FRAME_COMMAND_POOL_CAPACITY {
+                if free_encoders.len() < command_encoder_pool_capacity {
                     free_encoders.push(Dx12CommandEncoder {
                         allocator: pending._encoder.allocator.take(),
                         command_list: pending._encoder.command_list.take(),
+                        timestamps: pending._encoder.timestamps.take(),
+                        frame_probe: false,
                         submitted: false,
                         swapchain: None,
                         compute_resources: Vec::new(),
@@ -2577,26 +2839,26 @@ mod platform {
             };
             let swapchain = self.swapchains.get(swapchain_id)?;
             let render_pass = self.render_passes.get(render_pass_id)?;
-            let (pipeline_state, root_signature, pipeline_color_format, blend_mode) = {
+            if render_pass.color_formats.len() != 1 {
+                return Err(Error::InvalidInput(
+                    "DX12 swapchain frames require exactly one color attachment".to_string(),
+                ));
+            }
+            let (pipeline_state, root_signature) = {
                 let pipeline = self.render_pipelines.get(pipeline_id)?;
+                if !color_targets_match(render_pass, &pipeline.color_targets) {
+                    return Err(Error::InvalidInput(
+                        "render pass and pipeline color targets differ".to_string(),
+                    ));
+                }
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                     Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
                 let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
                     Error::Backend("DX12 pipeline has no native root signature".to_string())
                 })?;
-                (
-                    pipeline_state,
-                    root_signature,
-                    pipeline.color_format,
-                    pipeline.blend_mode,
-                )
+                (pipeline_state, root_signature)
             };
-            if render_pass.color_format != pipeline_color_format {
-                return Err(Error::InvalidInput(
-                    "render pass and pipeline color formats differ".to_string(),
-                ));
-            }
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
                 Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
@@ -2672,7 +2934,6 @@ mod platform {
             );
             // SAFETY: Command list is open and can be closed after recording.
             unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
-            let _ = blend_mode;
             Ok(())
         }
 
@@ -2703,32 +2964,32 @@ mod platform {
             };
             let swapchain = self.swapchains.get(swapchain_id)?;
             let source_extent = swapchain.source_extent;
-            let render_pass = *self.render_passes.get(render_pass_id)?;
+            let render_pass = self.render_passes.get(render_pass_id)?.clone();
+            if render_pass.color_formats.len() != 1 {
+                return Err(Error::InvalidInput(
+                    "DX12 swapchain frames require exactly one color attachment".to_string(),
+                ));
+            }
             let depth_handle =
                 self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
                 Error::InvalidInput("DX12 render command list must not be empty".to_string())
             })?;
-            let (pipeline_state, root_signature, pipeline_color_format, primitive_topology) = {
+            let (pipeline_state, root_signature, primitive_topology) = {
                 let pipeline = self.render_pipelines.get(first_step.pipeline())?;
+                if !color_targets_match(&render_pass, &pipeline.color_targets) {
+                    return Err(Error::InvalidInput(
+                        "render pass and pipeline color targets differ".to_string(),
+                    ));
+                }
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                     Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
                 let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
                     Error::Backend("DX12 pipeline has no native root signature".to_string())
                 })?;
-                (
-                    pipeline_state,
-                    root_signature,
-                    pipeline.color_format,
-                    pipeline.primitive_topology,
-                )
+                (pipeline_state, root_signature, pipeline.primitive_topology)
             };
-            if render_pass.color_format != pipeline_color_format {
-                return Err(Error::InvalidInput(
-                    "render pass and pipeline color formats differ".to_string(),
-                ));
-            }
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
                 Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
@@ -2755,6 +3016,16 @@ mod platform {
             // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
                 .map_err(|error| Error::Backend(error.to_string()))?;
+            let timestamp_queries = self
+                .command_encoders
+                .get(encoder_id)?
+                .timestamps
+                .as_ref()
+                .map(|queries| (queries.heap.clone(), queries.readback.clone()));
+            if let Some((heap, _)) = &timestamp_queries {
+                // SAFETY: The frame command list is recording and query slot zero is valid.
+                unsafe { command_list.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+            }
             record_transition_barrier(
                 &command_list,
                 &render_target,
@@ -2880,9 +3151,9 @@ mod platform {
                     let root_signature = pipeline.root_signature.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
-                    if render_pass.color_format != pipeline.color_format {
+                    if !color_targets_match(&render_pass, &pipeline.color_targets) {
                         return Err(Error::InvalidInput(
-                            "render pass and pipeline color formats differ".to_string(),
+                            "render pass and pipeline color targets differ".to_string(),
                         ));
                     }
                     (
@@ -2948,6 +3219,56 @@ mod platform {
                         indirect_index,
                         run_count,
                     )?;
+                } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
+                    let buffer = self.buffers.get(draw.arguments)?;
+                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
+                        || draw.offset % 4 != 0
+                        || draw
+                            .offset
+                            .checked_add(20)
+                            .is_none_or(|end| end > buffer.desc.size)
+                    {
+                        return Err(Error::InvalidInput(
+                            "invalid DX12 indexed indirect argument range or usage".into(),
+                        ));
+                    }
+                    // The index range comes from the argument record, so the view covers the
+                    // whole remaining buffer and the generated record selects the indices.
+                    let index_view = self.index_buffer_view(draw.index_buffer, 0, 1)?;
+                    let signature = self
+                        .render_pipelines
+                        .get(step.pipeline())?
+                        .indirect_signature_indexed
+                        .clone()
+                        .ok_or_else(|| {
+                            Error::Backend("DX12 pipeline has no indexed indirect signature".into())
+                        })?;
+                    let arguments = buffer.resource.as_ref().cloned().ok_or_else(|| {
+                        Error::Backend("indexed indirect arguments have no resource".into())
+                    })?;
+                    if buffer.state != D3D12_RESOURCE_STATE_GENERIC_READ {
+                        record_transition_barrier(
+                            &command_list,
+                            &arguments,
+                            buffer.state,
+                            D3D12_RESOURCE_STATE_GENERIC_READ,
+                        );
+                        self.buffers.get_mut(draw.arguments)?.state =
+                            D3D12_RESOURCE_STATE_GENERIC_READ;
+                    }
+                    // SAFETY: Signature, argument buffer and index buffer are live; the
+                    // pipeline and root signature are already bound for this step.
+                    unsafe {
+                        command_list.IASetIndexBuffer(Some(&index_view));
+                        command_list.ExecuteIndirect(
+                            &signature,
+                            1,
+                            &arguments,
+                            draw.offset,
+                            None,
+                            0,
+                        );
+                    }
                 } else {
                     self.record_render_step_draw(
                         &command_list,
@@ -2963,8 +3284,25 @@ mod platform {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
+            if let Some((heap, readback)) = &timestamp_queries {
+                // SAFETY: Both timestamp slots and the 16-byte readback range are valid.
+                unsafe {
+                    command_list.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                    command_list.ResolveQueryData(
+                        heap,
+                        D3D12_QUERY_TYPE_TIMESTAMP,
+                        0,
+                        2,
+                        readback,
+                        0,
+                    );
+                }
+            }
             // SAFETY: Command list is open and can be closed after recording.
             unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
+            if timestamp_queries.is_some() {
+                self.command_encoders.get_mut(encoder_id)?.frame_probe = true;
+            }
             Ok(())
         }
 
@@ -2975,7 +3313,8 @@ mod platform {
         fn record_render_step_list_texture(
             &mut self,
             encoder_id: CommandEncoderId,
-            texture_view_id: TextureViewId,
+            texture_view_ids: &[TextureViewId],
+            resolve_view: Option<TextureViewId>,
             render_pass_id: RenderPassId,
             steps: &[RenderCommand],
             color_load_op: LoadOp<ClearColor>,
@@ -2994,59 +3333,119 @@ mod platform {
                 .ok_or_else(|| {
                     Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
-            let texture_view = *self.texture_views.get(texture_view_id)?;
-            let render_pass = *self.render_passes.get(render_pass_id)?;
+            let render_pass = self.render_passes.get(render_pass_id)?.clone();
+            if texture_view_ids.len() != render_pass.color_formats.len() {
+                return Err(Error::InvalidInput(
+                    "DX12 offscreen attachment and render pass counts differ".to_string(),
+                ));
+            }
             let depth_handle =
                 self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
-            let (texture_resource, texture_state, texture_desc) = {
+            let mut attachments = Vec::with_capacity(texture_view_ids.len());
+            let mut rtv_handles = Vec::with_capacity(texture_view_ids.len());
+            let mut target_size = None;
+            for (index, texture_view_id) in texture_view_ids.iter().enumerate() {
+                let texture_view = *self.texture_views.get(*texture_view_id)?;
+                if texture_view.format != render_pass.color_formats[index] {
+                    return Err(Error::InvalidInput(
+                        "texture view and render pass color formats differ".to_string(),
+                    ));
+                }
                 let texture = self.textures.get(texture_view.texture)?;
+                if !texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+                    return Err(Error::InvalidInput(
+                        "DX12 offscreen target texture must include COLOR_ATTACHMENT usage"
+                            .to_string(),
+                    ));
+                }
+                if let Some(size) = target_size
+                    && size != texture.desc.size
+                {
+                    return Err(Error::InvalidInput(
+                        "DX12 offscreen color attachments must share one extent".to_string(),
+                    ));
+                }
+                target_size = Some(texture.desc.size);
+                if attachments
+                    .iter()
+                    .any(|(texture_id, _, _, _)| *texture_id == texture_view.texture)
+                {
+                    return Err(Error::InvalidInput(
+                        "DX12 offscreen color attachments must not repeat a texture".to_string(),
+                    ));
+                }
                 let resource = texture.resource.clone().ok_or_else(|| {
                     Error::Backend("DX12 texture has no native resource".to_string())
                 })?;
-                (resource, texture.state, texture.desc.clone())
+                let rtv_handle = texture_view
+                    .rtv_slot
+                    .map(|slot| slot.cpu_handle)
+                    .ok_or_else(|| {
+                        Error::Backend("DX12 color texture view has no RTV handle".to_string())
+                    })?;
+                attachments.push((
+                    texture_view.texture,
+                    resource,
+                    texture.state,
+                    texture.desc.size,
+                ));
+                rtv_handles.push(rtv_handle);
+            }
+            // Shared invariant: every attachment shares the pass sample count and a
+            // resolve destination is single-sampled. One check, one message, all backends.
+            let color_samples = attachments
+                .iter()
+                .map(|(texture_id, _, _, _)| Ok(self.textures.get(*texture_id)?.desc.sample_count))
+                .collect::<Result<Vec<_>>>()?;
+            let depth_samples = match depth_attachment {
+                Some(attachment) => {
+                    let view = self.texture_views.get(attachment.target)?;
+                    Some(self.textures.get(view.texture)?.desc.sample_count)
+                }
+                None => None,
             };
-            if !texture_desc.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
-                return Err(Error::InvalidInput(
-                    "DX12 offscreen target texture must include COLOR_ATTACHMENT usage".to_string(),
-                ));
-            }
-            if texture_view.format != render_pass.color_format {
-                return Err(Error::InvalidInput(
-                    "texture view and render pass color formats differ".to_string(),
-                ));
-            }
-            let rtv_handle = texture_view
-                .rtv_slot
-                .map(|slot| slot.cpu_handle)
-                .ok_or_else(|| {
-                    Error::Backend("DX12 color texture view has no RTV handle".to_string())
-                })?;
+            let resolve_samples = match resolve_view {
+                Some(view) => {
+                    let view = self.texture_views.get(view)?;
+                    Some(self.textures.get(view.texture)?.desc.sample_count)
+                }
+                None => None,
+            };
+            gfx_core::validate_pass_attachments(
+                render_pass.sample_count,
+                color_samples.into_iter(),
+                depth_samples,
+                resolve_samples,
+            )?;
+            let target_size = target_size.ok_or_else(|| {
+                Error::InvalidInput("DX12 offscreen pass must have a color attachment".to_string())
+            })?;
             let viewport_size = viewport
-                .map(|viewport| viewport.for_target(texture_desc.size))
+                .map(|viewport| viewport.for_target(target_size))
                 .transpose()?
-                .unwrap_or(texture_desc.size);
+                .unwrap_or(target_size);
             let viewport_origin = viewport
-                .map(|viewport| viewport.mapped_origin(texture_desc.size))
+                .map(|viewport| viewport.mapped_origin(target_size))
                 .transpose()?
                 .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
             let scissor_extent = viewport
-                .map(|viewport| viewport.mapped_scissor_extent(texture_desc.size))
+                .map(|viewport| viewport.mapped_scissor_extent(target_size))
                 .transpose()?
-                .unwrap_or(texture_desc.size);
+                .unwrap_or(target_size);
             let clear_region = match (viewport, clear_region) {
-                (Some(viewport), Some(region)) => {
-                    Some(viewport.map_scissor(region, texture_desc.size)?)
-                }
+                (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, target_size)?),
                 (_, clear_region) => clear_region,
             };
 
-            if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
-                record_transition_barrier(
-                    &command_list,
-                    &texture_resource,
-                    texture_state,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                );
+            for (_, resource, state, _) in &attachments {
+                if *state != D3D12_RESOURCE_STATE_RENDER_TARGET {
+                    record_transition_barrier(
+                        &command_list,
+                        resource,
+                        *state,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    );
+                }
             }
             #[expect(
                 clippy::cast_precision_loss,
@@ -3075,7 +3474,8 @@ mod platform {
                 .filter(|region| !region.is_empty())
                 .and_then(|region| dx12_rect_for_scissor(region, scissor_extent).ok())
                 .map(|rect| [rect]);
-            let rtv_handle_pointer = &raw const rtv_handle;
+            let rtv_count = u32::try_from(rtv_handles.len())
+                .map_err(|error| Error::InvalidInput(error.to_string()))?;
             let dsv_handle_pointer = depth_handle
                 .as_ref()
                 .map(|(handle, _)| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE);
@@ -3089,8 +3489,8 @@ mod platform {
                 command_list.RSSetViewports(&[native_viewport]);
                 command_list.RSSetScissorRects(&[scissor]);
                 command_list.OMSetRenderTargets(
-                    1,
-                    Some(rtv_handle_pointer),
+                    rtv_count,
+                    Some(rtv_handles.as_ptr()),
                     false,
                     dsv_handle_pointer,
                 );
@@ -3102,11 +3502,13 @@ mod platform {
                             clear_color.blue,
                             clear_color.alpha,
                         ];
-                        command_list.ClearRenderTargetView(
-                            rtv_handle,
-                            &clear,
-                            clear_rect.as_ref().map(|rects| rects.as_slice()),
-                        );
+                        for rtv_handle in &rtv_handles {
+                            command_list.ClearRenderTargetView(
+                                *rtv_handle,
+                                &clear,
+                                clear_rect.as_ref().map(|rects| rects.as_slice()),
+                            );
+                        }
                     }
                 }
                 if let Some((dsv_handle, depth_load_op)) = depth_handle {
@@ -3138,7 +3540,7 @@ mod platform {
 
                 let step_scissor = if let Some(region) = step.scissor() {
                     let region = match viewport {
-                        Some(viewport) => viewport.map_scissor(region, texture_desc.size)?,
+                        Some(viewport) => viewport.map_scissor(region, target_size)?,
                         None => region,
                     };
                     if region.is_empty() {
@@ -3167,9 +3569,9 @@ mod platform {
                     let root_signature = pipeline.root_signature.as_ref().ok_or_else(|| {
                         Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
-                    if render_pass.color_format != pipeline.color_format {
+                    if !color_targets_match(&render_pass, &pipeline.color_targets) {
                         return Err(Error::InvalidInput(
-                            "render pass and pipeline color formats differ".to_string(),
+                            "render pass and pipeline color targets differ".to_string(),
                         ));
                     }
                     (
@@ -3244,14 +3646,72 @@ mod platform {
                 }
             }
             recording::finish(record_started, staging_ms, steps.len());
-            record_transition_barrier(
-                &command_list,
-                &texture_resource,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            );
-            self.textures.get_mut(texture_view.texture)?.state =
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            if let (Some(resolve_view), Some((msaa_texture_id, msaa_resource, _, _))) =
+                (resolve_view, attachments.first())
+            {
+                if *msaa_texture_id == self.texture_views.get(resolve_view)?.texture {
+                    return Err(Error::InvalidInput(
+                        "DX12 resolve target must differ from the MSAA source".to_string(),
+                    ));
+                }
+                let resolve_view_record = *self.texture_views.get(resolve_view)?;
+                let (resolve_texture_id, resolve_resource) = {
+                    let texture = self.textures.get(resolve_view_record.texture)?;
+                    let resource = texture.resource.clone().ok_or_else(|| {
+                        Error::Backend("DX12 resolve target has no native resource".to_string())
+                    })?;
+                    (resolve_view_record.texture, resource)
+                };
+                // ResolveSubresource requires RESOLVE_SOURCE / RESOLVE_DEST, not the
+                // COPY states. The MSAA source is still in RENDER_TARGET from the pass.
+                record_transition_barrier(
+                    &command_list,
+                    msaa_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                );
+                record_transition_barrier(
+                    &command_list,
+                    &resolve_resource,
+                    self.textures.get(resolve_texture_id)?.state,
+                    D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                );
+                // SAFETY: MSAA source and single-sample dest are live, same format, subresource 0.
+                unsafe {
+                    command_list.ResolveSubresource(
+                        &resolve_resource,
+                        0,
+                        msaa_resource,
+                        0,
+                        format_to_dxgi(resolve_view_record.format),
+                    )
+                };
+                record_transition_barrier(
+                    &command_list,
+                    &resolve_resource,
+                    D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                // Restore the source so the shared post-pass transition below stays valid.
+                record_transition_barrier(
+                    &command_list,
+                    msaa_resource,
+                    D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                );
+                self.textures.get_mut(resolve_texture_id)?.state =
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+            for (texture_id, resource, _, _) in &attachments {
+                record_transition_barrier(
+                    &command_list,
+                    resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                self.textures.get_mut(*texture_id)?.state =
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
             Ok(())
         }
 
@@ -3303,6 +3763,9 @@ mod platform {
             match step {
                 RenderCommand::DrawIndirect(_) => Err(Error::Unavailable(
                     "indirect draws are not implemented by this backend".into(),
+                )),
+                RenderCommand::DrawIndexedIndirect(_) => Err(Error::Unavailable(
+                    "indexed indirect draws are recorded by the pass recorder".into(),
                 )),
                 RenderCommand::Draw(step) => {
                     let offsets = non_indexed_draw_offsets(step.first_vertex, step.first_instance);
@@ -3440,7 +3903,7 @@ mod platform {
             {
                 self.last_texture_transfer_time = Some(elapsed);
             }
-            if self.upload_command_pool.len() < DX12_UPLOAD_COMMAND_POOL_CAPACITY {
+            if self.upload_command_pool.len() < self.upload_command_pool_capacity {
                 self.upload_command_pool.push(commands.commands);
             }
         }
@@ -3539,10 +4002,20 @@ mod platform {
         }
 
         fn backend_error_with_device_reason(&self, operation: &str, error: &WindowsError) -> Error {
-            Error::Backend(format!(
+            // SAFETY: The D3D12 device is a live COM object owned by this backend.
+            let removed_reason = unsafe { self.device.GetDeviceRemovedReason() }
+                .err()
+                .map(|reason| reason.to_string());
+            let detail = format!(
                 "{operation} failed: {error}; device_removed_reason={}",
-                self.device_removed_reason()
-            ))
+                removed_reason.as_deref().unwrap_or("S_OK")
+            );
+            match removed_reason {
+                // A failed removal query means the device is gone; callers
+                // must stop submitting and recreate the device.
+                Some(_) => Error::DeviceLost(detail),
+                None => Error::Backend(detail),
+            }
         }
 
         fn device_removed_reason(&self) -> String {
@@ -3756,6 +4229,54 @@ mod platform {
             .map_err(|error| Error::Backend(error.to_string()))
     }
 
+    fn query_resource_binding_tier(
+        device: &ID3D12Device,
+    ) -> Option<windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BINDING_TIER> {
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_FEATURE_D3D12_OPTIONS, D3D12_FEATURE_DATA_D3D12_OPTIONS,
+        };
+        let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+        // SAFETY: Node zero belongs to this live device; the output struct matches
+        // the requested feature and its declared size.
+        unsafe {
+            device.CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS,
+                (&raw mut options).cast(),
+                std::mem::size_of_val(&options) as u32,
+            )
+        }
+        .ok()?;
+        Some(options.ResourceBindingTier)
+    }
+
+    /// Creates a descriptor heap at `requested` capacity, halving down to
+    /// `minimum` when the driver cannot reserve the larger heap. The old fixed
+    /// capacity failed large streamed scenes; the fallback keeps constrained
+    /// devices usable.
+    fn create_capped_descriptor_heap(
+        device: &ID3D12Device,
+        heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
+        requested: u32,
+        minimum: u32,
+        shader_visible: bool,
+    ) -> Result<DescriptorHeapAllocator> {
+        let floor = minimum.max(1);
+        let mut capacity = requested.max(floor);
+        loop {
+            match DescriptorHeapAllocator::new(device, heap_type, capacity, shader_visible) {
+                Ok(heap) => return Ok(heap),
+                Err(error) if capacity > floor => {
+                    let next = (capacity / 2).max(floor);
+                    log::warn!(
+                        "nova-gfx DX12 descriptor heap with {capacity} descriptors failed; retrying with {next}: {error}"
+                    );
+                    capacity = next;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn create_command_allocator(device: &ID3D12Device) -> Result<ID3D12CommandAllocator> {
         // SAFETY: Device is valid and allocator type is direct.
         unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }
@@ -3822,7 +4343,6 @@ mod platform {
         }
     }
 
-    const MAX_PIPELINE_CACHE_BLOB_BYTES: u64 = 16 * 1024 * 1024;
     const FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV1A64_PRIME: u64 = 0x100000001b3;
 
@@ -3886,8 +4406,7 @@ mod platform {
         pipeline_layout_cache_key: u64,
         vertex_shader: &Dx12ShaderModule,
         fragment_shader: &Dx12ShaderModule,
-        color_format: Format,
-        blend_mode: BlendMode,
+        color_targets: &[ColorTargetState],
         depth_format: Option<Format>,
         depth_state: Option<DepthState>,
     ) -> u64 {
@@ -3897,20 +4416,24 @@ mod platform {
         extend_stable_hash(&mut hash, &fragment_shader.cache_key.to_le_bytes());
         extend_stable_hash(
             &mut hash,
-            format!("{color_format:?}|{blend_mode:?}|{depth_format:?}|{depth_state:?}").as_bytes(),
+            format!("{color_targets:?}|{depth_format:?}|{depth_state:?}").as_bytes(),
         );
         hash
     }
 
-    fn read_pipeline_cache_blob(path: &Path) -> Option<Vec<u8>> {
+    fn read_pipeline_cache_blob(path: &Path, limit_bytes: u64) -> Option<Vec<u8>> {
         let bytes = fs::read(path).ok()?;
-        if bytes.is_empty() || bytes.len() as u64 > MAX_PIPELINE_CACHE_BLOB_BYTES {
+        if bytes.is_empty() || bytes.len() as u64 > limit_bytes {
             return None;
         }
         Some(bytes)
     }
 
-    fn persist_pipeline_cache_blob(path: &Path, pipeline_state: &ID3D12PipelineState) {
+    fn persist_pipeline_cache_blob(
+        path: &Path,
+        pipeline_state: &ID3D12PipelineState,
+        limit_bytes: u64,
+    ) {
         // SAFETY: The pipeline state is live and D3D12 owns the returned blob.
         let Ok(blob) = (unsafe { pipeline_state.GetCachedBlob() }) else {
             return;
@@ -3919,7 +4442,7 @@ mod platform {
         let bytes = unsafe {
             std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
         };
-        if bytes.is_empty() || bytes.len() as u64 > MAX_PIPELINE_CACHE_BLOB_BYTES {
+        if bytes.is_empty() || bytes.len() as u64 > limit_bytes {
             return;
         }
         if let Err(error) = fs::write(path, bytes) {
@@ -3939,19 +4462,25 @@ mod platform {
         root_signature: &ID3D12RootSignature,
         vertex_shader: &Dx12ShaderModule,
         fragment_shader: &Dx12ShaderModule,
-        color_format: Format,
-        blend_mode: BlendMode,
+        color_targets: &[ColorTargetState],
         depth_format: Option<Format>,
+        stencil_enabled: bool,
+        sample_count: u32,
         depth_state: Option<DepthState>,
         raster: gfx_core::RasterState,
         pipeline_layout_cache_key: u64,
         pipeline_cache_dir: Option<&Path>,
+        pipeline_cache_limit_bytes: u64,
     ) -> Result<ID3D12PipelineState> {
-        let blend_desc = D3D12_BLEND_DESC {
+        let mut blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: false.into(),
-            IndependentBlendEnable: false.into(),
-            RenderTarget: [render_target_blend_desc(blend_mode); 8],
+            IndependentBlendEnable: (color_targets.len() > 1).into(),
+            ..Default::default()
         };
+        for (index, target) in color_targets.iter().enumerate() {
+            blend_desc.RenderTarget[index] =
+                render_target_blend_desc(target.blend, target.write_mask);
+        }
         let rasterizer_desc = D3D12_RASTERIZER_DESC {
             FillMode: D3D12_FILL_MODE_SOLID,
             CullMode: match raster.cull_mode {
@@ -3968,7 +4497,7 @@ mod platform {
             DepthBiasClamp: D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
             SlopeScaledDepthBias: D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
             DepthClipEnable: true.into(),
-            MultisampleEnable: false.into(),
+            MultisampleEnable: (sample_count > 1).into(),
             AntialiasedLineEnable: false.into(),
             ForcedSampleCount: 0,
             ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
@@ -3991,22 +4520,36 @@ mod platform {
                         D3D12_DEPTH_WRITE_MASK_ZERO
                     },
                     DepthFunc: depth_compare_function(depth_state.compare),
+                    StencilEnable: depth_state.stencil.is_some().into(),
+                    StencilReadMask: depth_state.stencil.map_or(0xff, |s| s.read_mask as u8),
+                    StencilWriteMask: depth_state.stencil.map_or(0xff, |s| s.write_mask as u8),
+                    FrontFace: depth_state
+                        .stencil
+                        .map(stencil_face_to_dx12)
+                        .unwrap_or_default(),
+                    BackFace: depth_state
+                        .stencil
+                        .map(stencil_face_to_dx12)
+                        .unwrap_or_default(),
                     ..Default::default()
                 }
             });
+        desc.SampleDesc = DXGI_SAMPLE_DESC {
+            Count: sample_count,
+            Quality: 0,
+        };
         desc.InputLayout = D3D12_INPUT_LAYOUT_DESC {
             pInputElementDescs: ptr::null(),
             NumElements: 0,
         };
         desc.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
         desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        desc.NumRenderTargets = 1;
-        desc.RTVFormats[0] = format_to_dxgi(color_format);
+        desc.NumRenderTargets = u32::try_from(color_targets.len())
+            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        for (index, target) in color_targets.iter().enumerate() {
+            desc.RTVFormats[index] = format_to_dxgi(target.format);
+        }
         desc.DSVFormat = depth_format.map_or(DXGI_FORMAT_UNKNOWN, format_to_dxgi);
-        desc.SampleDesc = DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        };
         desc.NodeMask = 0;
         desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
@@ -4017,8 +4560,7 @@ mod platform {
                     pipeline_layout_cache_key,
                     vertex_shader,
                     fragment_shader,
-                    color_format,
-                    blend_mode,
+                    color_targets,
                     depth_format,
                     depth_state,
                 ),
@@ -4026,7 +4568,9 @@ mod platform {
                 raster.cull_mode
             ))
         });
-        let cached_blob = cache_path.as_deref().and_then(read_pipeline_cache_blob);
+        let cached_blob = cache_path
+            .as_deref()
+            .and_then(|path| read_pipeline_cache_blob(path, pipeline_cache_limit_bytes));
         if let Some(bytes) = cached_blob.as_deref() {
             desc.CachedPSO = D3D12_CACHED_PIPELINE_STATE {
                 pCachedBlob: bytes.as_ptr().cast(),
@@ -4074,7 +4618,6 @@ mod platform {
         if (cached_blob.is_none() || rejected_cached_blob)
             && let Some(cache_path) = cache_path.as_deref()
         {
-            persist_pipeline_cache_blob(cache_path, &pipeline_state);
         }
 
         Ok(pipeline_state)
@@ -4093,6 +4636,29 @@ mod platform {
         }
     }
 
+    fn stencil_op_to_dx12(op: StencilOp) -> D3D12_STENCIL_OP {
+        match op {
+            StencilOp::Keep => D3D12_STENCIL_OP_KEEP,
+            StencilOp::Zero => D3D12_STENCIL_OP_ZERO,
+            StencilOp::Replace => D3D12_STENCIL_OP_REPLACE,
+            StencilOp::IncrementClamp => D3D12_STENCIL_OP_INCR_SAT,
+            StencilOp::DecrementClamp => D3D12_STENCIL_OP_DECR_SAT,
+            StencilOp::Invert => D3D12_STENCIL_OP_INVERT,
+            StencilOp::IncrementWrap => D3D12_STENCIL_OP_INCR,
+            StencilOp::DecrementWrap => D3D12_STENCIL_OP_DECR,
+        }
+    }
+
+    fn stencil_face_to_dx12(stencil: StencilState) -> D3D12_DEPTH_STENCILOP_DESC {
+        use windows::Win32::Graphics::Direct3D12::D3D12_DEPTH_STENCILOP_DESC;
+        D3D12_DEPTH_STENCILOP_DESC {
+            StencilFailOp: stencil_op_to_dx12(stencil.front.fail_op),
+            StencilDepthFailOp: stencil_op_to_dx12(stencil.front.depth_fail_op),
+            StencilPassOp: stencil_op_to_dx12(stencil.front.pass_op),
+            StencilFunc: depth_compare_function(stencil.front.compare),
+        }
+    }
+
     fn shader_bytecode(bytecode: &[u8]) -> D3D12_SHADER_BYTECODE {
         D3D12_SHADER_BYTECODE {
             pShaderBytecode: bytecode.as_ptr().cast(),
@@ -4100,7 +4666,38 @@ mod platform {
         }
     }
 
-    fn render_target_blend_desc(blend_mode: BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
+    fn color_write_mask(write_mask: ColorWrites) -> u8 {
+        let mut native = 0_u8;
+        if write_mask.contains(ColorWrites::RED) {
+            native |= D3D12_COLOR_WRITE_ENABLE_RED.0 as u8;
+        }
+        if write_mask.contains(ColorWrites::GREEN) {
+            native |= D3D12_COLOR_WRITE_ENABLE_GREEN.0 as u8;
+        }
+        if write_mask.contains(ColorWrites::BLUE) {
+            native |= D3D12_COLOR_WRITE_ENABLE_BLUE.0 as u8;
+        }
+        if write_mask.contains(ColorWrites::ALPHA) {
+            native |= D3D12_COLOR_WRITE_ENABLE_ALPHA.0 as u8;
+        }
+        native
+    }
+
+    fn color_targets_match(
+        render_pass: &Dx12RenderPass,
+        color_targets: &[ColorTargetState],
+    ) -> bool {
+        color_targets.len() == render_pass.color_formats.len()
+            && color_targets
+                .iter()
+                .zip(render_pass.color_formats.iter())
+                .all(|(target, format)| target.format == *format)
+    }
+
+    fn render_target_blend_desc(
+        blend_mode: BlendMode,
+        write_mask: ColorWrites,
+    ) -> D3D12_RENDER_TARGET_BLEND_DESC {
         let (blend_enable, src_blend, dest_blend, src_blend_alpha, dest_blend_alpha) =
             match blend_mode {
                 BlendMode::Replace => (
@@ -4149,7 +4746,7 @@ mod platform {
             DestBlendAlpha: dest_blend_alpha,
             BlendOpAlpha: D3D12_BLEND_OP_ADD,
             LogicOp: D3D12_LOGIC_OP_NOOP,
-            RenderTargetWriteMask: u8::try_from(D3D12_COLOR_WRITE_ENABLE_ALL.0).unwrap_or(u8::MAX),
+            RenderTargetWriteMask: color_write_mask(write_mask),
         }
     }
 
@@ -4223,9 +4820,10 @@ mod platform {
     }
 
     fn rebuild_render_targets(device: &ID3D12Device, swapchain: &mut Dx12Swapchain) -> Result<()> {
+        let image_count = swapchain.image_count;
         let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-            NumDescriptors: BACK_BUFFER_COUNT,
+            NumDescriptors: image_count,
             Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
             NodeMask: 0,
         };
@@ -4238,8 +4836,8 @@ mod platform {
             unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) };
         // SAFETY: Descriptor heap is valid and owns CPU descriptors.
         let heap_start = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
-        let mut render_targets = Vec::with_capacity(BACK_BUFFER_COUNT as usize);
-        for index in 0..BACK_BUFFER_COUNT {
+        let mut render_targets = Vec::with_capacity(image_count as usize);
+        for index in 0..image_count {
             // SAFETY: Backbuffer index is within BufferCount.
             let resource: ID3D12Resource = unsafe { swapchain.swapchain.GetBuffer(index) }
                 .map_err(|error| Error::Backend(error.to_string()))?;
@@ -4255,7 +4853,7 @@ mod platform {
         swapchain.rtv_heap = Some(rtv_heap);
         swapchain.render_targets = render_targets;
         swapchain.rtv_descriptor_size = descriptor_size;
-        swapchain.pending_damage = vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize];
+        swapchain.pending_damage = vec![Dx12BackBufferDamage::Full; image_count as usize];
         Ok(())
     }
 
@@ -4425,15 +5023,27 @@ mod platform {
 
     impl ResourceDevice for Dx12Device {
         fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
-            // Required DX12 resource limits; dynamic indexed sampling for
-            // Generated Mesh stays disabled until its shader path is wired.
+            // FL11.0 guarantees these D3D12 resource limits; they are not
+            // queryable per adapter. Dynamic indexed sampling for Generated
+            // Mesh stays disabled until its shader path is wired.
             gfx_core::TextureArrayCapabilities {
-                max_dimension_2d: 16_384,
-                max_array_layers: 2_048,
+                max_dimension_2d:
+                    windows::Win32::Graphics::Direct3D12::D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+                max_array_layers:
+                    windows::Win32::Graphics::Direct3D12::D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
                 array_resources: true,
                 layer_uploads: true,
                 indexed_sampling: false,
             }
+        }
+
+        fn max_color_attachments(&self) -> u32 {
+            // D3D12 feature level 11.0 guarantees eight simultaneous render targets.
+            gfx_core::MAX_COLOR_ATTACHMENTS as u32
+        }
+
+        fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+            dx12_multisample_capabilities(&self.device)
         }
 
         fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
@@ -4459,6 +5069,22 @@ mod platform {
         ) -> Result<()> {
             self.dispatch_buffer_batch(dispatches)
         }
+        fn texture_copy_limits(&self) -> gfx_core::TextureCopyLimits {
+            // D3D12 placed footprints pad rows to 256 bytes and place them on a 512-byte
+            // boundary; both are spec constants rather than queryable limits.
+            gfx_core::TextureCopyLimits {
+                row_pitch_alignment: 256,
+                buffer_offset_alignment: 512,
+            }
+        }
+
+        fn copy_texture_buffer_batch(
+            &mut self,
+            copies: &[gfx_core::TextureBufferCopy],
+        ) -> Result<()> {
+            self.copy_texture_buffer_regions(copies)
+        }
+
         fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
             self.copy_texture_regions(copies)
         }
@@ -4493,7 +5119,11 @@ mod platform {
         ) -> Result<()> {
             let (resource, old_state, format, mip_levels) = {
                 let texture = self.textures.get(desc.texture)?;
-                desc.validate_against(&texture.desc, self.texture_array_capabilities(), data.len())?;
+                desc.validate_against(
+                    &texture.desc,
+                    self.texture_array_capabilities(),
+                    data.len(),
+                )?;
                 (
                     texture.resource.clone().ok_or_else(|| {
                         Error::Backend("DX12 layered texture has no resource".into())
@@ -4831,6 +5461,15 @@ mod platform {
                 )?),
             }))
         }
+
+        fn frame_gpu_timestamps_supported(&self) -> bool {
+            self.timestamp_frequency.is_some()
+        }
+
+        fn last_frame_gpu_timestamps(&mut self) -> Result<Option<gfx_core::FrameGpuTimestamps>> {
+            self.poll_cleanup();
+            Ok(self.last_frame_gpu_timestamps)
+        }
     }
 
     impl TextureTransferDevice for Dx12Device {
@@ -4957,6 +5596,7 @@ mod platform {
                     BindingType::StorageBuffer | BindingType::SampledTexture => {
                         D3D12_DESCRIPTOR_RANGE_TYPE_SRV
                     }
+                    BindingType::StorageTexture { .. } => D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
                     BindingType::Sampler => unreachable!("sampler handled above"),
                 };
                 ranges.push(D3D12_DESCRIPTOR_RANGE {
@@ -5242,16 +5882,23 @@ mod platform {
         if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
             resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         }
+        if desc.usage.contains(TextureUsage::STORAGE) {
+            resource_flags |=
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        }
         let resource_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
             Alignment: 0,
             Width: u64::from(desc.size.width()),
             Height: desc.size.height(),
-            DepthOrArraySize: u16::try_from(desc.dimension.layers())
-                .map_err(|_| Error::InvalidInput("D3D12 texture array layer count exceeds u16".into()))?,
+            DepthOrArraySize: u16::try_from(desc.dimension.layers()).map_err(|_| {
+                Error::InvalidInput("D3D12 texture array layer count exceeds u16".into())
+            })?,
             MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
                 Error::InvalidInput(format!("texture mip level count overflow: {error}"))
             })?,
+            // Depth maps are sampled through typed views (R32_FLOAT for the SRV,
+            // D32_FLOAT for the DSV), so the resource itself stays typeless.
             Format: if desc.format == Format::Depth32Float
                 && desc.usage.contains(TextureUsage::SAMPLED)
             {
@@ -5260,7 +5907,7 @@ mod platform {
                 format_to_dxgi(desc.format)
             },
             SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
+                Count: desc.sample_count,
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
@@ -5282,6 +5929,47 @@ mod platform {
         resource.ok_or_else(|| {
             Error::Backend("CreateCommittedResource returned no texture".to_string())
         })
+    }
+
+    fn dx12_multisample_capabilities(device: &ID3D12Device) -> gfx_core::MultisampleCapabilities {
+        use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
+        // A multisampled pass needs its color *and* depth attachments at one sample count, so
+        // the reported maximum is the intersection across the formats the stack actually uses.
+        let mut max_sample_count = u32::MAX;
+        for format in [
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_D32_FLOAT,
+        ] {
+            let mut format_max = 1;
+            for sample_count in [1, 2, 4, 8, 16, 32, 64] {
+                let mut levels = D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
+                    Format: format,
+                    SampleCount: sample_count,
+                    Flags: D3D12_MULTISAMPLE_QUALITY_LEVEL_FLAGS::default(),
+                    ..Default::default()
+                };
+                // SAFETY: The descriptor matches the feature struct and node zero is valid.
+                let ok = unsafe {
+                    device.CheckFeatureSupport(
+                        D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+                        (&raw mut levels).cast(),
+                        std::mem::size_of_val(&levels) as u32,
+                    )
+                }
+                .is_ok();
+                if ok && levels.NumQualityLevels > 0 {
+                    format_max = sample_count;
+                } else {
+                    break;
+                }
+            }
+            max_sample_count = max_sample_count.min(format_max);
+        }
+        gfx_core::MultisampleCapabilities {
+            max_sample_count: max_sample_count.max(1),
+            stencil_supported: true,
+        }
     }
 
     /// Resource state a buffer starts in for its memory placement.
@@ -5482,26 +6170,10 @@ mod platform {
         let allocator = create_command_allocator(device)?;
         let graphics_command_list = create_command_list(device, &allocator)?;
         let timestamps = if timestamps_enabled {
-            let query_desc = D3D12_QUERY_HEAP_DESC {
-                Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                Count: 2,
-                NodeMask: 0,
-            };
-            let mut heap = None;
-            // SAFETY: The descriptor and output slot are valid and the device is live.
-            unsafe { device.CreateQueryHeap(&raw const query_desc, &raw mut heap) }
-                .map_err(|error| Error::Backend(error.to_string()))?;
-            let heap = heap.ok_or_else(|| {
-                Error::Backend("DX12 timestamp query heap creation returned null".to_string())
-            })?;
-            let readback_desc = BufferDescriptor {
-                label: Some("nova-gfx DX12 upload timestamps".to_string()),
-                size: 16,
-                usage: BufferUsage::COPY_DST,
-                memory_location: MemoryLocation::GpuToCpu,
-            };
-            let readback = create_buffer_resource(device, &readback_desc)?;
-            Some(Dx12TimestampQueries { heap, readback })
+            Some(create_dx12_timestamp_queries(
+                device,
+                "nova-gfx DX12 upload timestamps",
+            )?)
         } else {
             None
         };
@@ -5512,7 +6184,33 @@ mod platform {
         })
     }
 
-    fn read_dx12_timestamps(readback: &ID3D12Resource, frequency: u64) -> Result<Duration> {
+    fn create_dx12_timestamp_queries(
+        device: &ID3D12Device,
+        label: &str,
+    ) -> Result<Dx12TimestampQueries> {
+        let query_desc = D3D12_QUERY_HEAP_DESC {
+            Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+            Count: 2,
+            NodeMask: 0,
+        };
+        let mut heap = None;
+        // SAFETY: The descriptor and output slot are valid and the device is live.
+        unsafe { device.CreateQueryHeap(&raw const query_desc, &raw mut heap) }
+            .map_err(|error| Error::Backend(error.to_string()))?;
+        let heap = heap.ok_or_else(|| {
+            Error::Backend("DX12 timestamp query heap creation returned null".to_string())
+        })?;
+        let readback_desc = BufferDescriptor {
+            label: Some(label.to_string()),
+            size: 16,
+            usage: BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::GpuToCpu,
+        };
+        let readback = create_buffer_resource(device, &readback_desc)?;
+        Ok(Dx12TimestampQueries { heap, readback })
+    }
+
+    fn read_dx12_timestamp_ticks(readback: &ID3D12Resource) -> Result<(u64, u64)> {
         let mut mapped = ptr::null_mut();
         let read_range = D3D12_RANGE { Begin: 0, End: 16 };
         // SAFETY: The resource is a readback buffer containing two resolved u64 timestamps.
@@ -5536,6 +6234,11 @@ mod platform {
         let written_range = D3D12_RANGE { Begin: 0, End: 0 };
         // SAFETY: The mapping was used for reads and is balanced once.
         unsafe { readback.Unmap(0, Some(&raw const written_range)) };
+        Ok((start, end))
+    }
+
+    fn read_dx12_timestamps(readback: &ID3D12Resource, frequency: u64) -> Result<Duration> {
+        let (start, end) = read_dx12_timestamp_ticks(readback)?;
         let elapsed_nanoseconds = u128::from(end.saturating_sub(start))
             .saturating_mul(1_000_000_000)
             .checked_div(u128::from(frequency))
@@ -5769,10 +6472,56 @@ mod platform {
             .ok_or_else(|| Error::InvalidInput("sampler binding count overflow".to_string()))
     }
 
-    fn sampler_desc_to_dx12(sampler: Dx12Sampler) -> D3D12_SAMPLER_DESC {
+    fn sampler_desc_to_dx12(sampler: &Dx12Sampler) -> D3D12_SAMPLER_DESC {
+        use windows::Win32::Graphics::Direct3D12 as d3d12;
         D3D12_SAMPLER_DESC {
             Filter: if sampler.anisotropic {
-                D3D12_FILTER_ANISOTROPIC
+                if sampler.compare.is_some() {
+                    d3d12::D3D12_FILTER_COMPARISON_ANISOTROPIC
+                } else {
+                    d3d12::D3D12_FILTER_ANISOTROPIC
+                }
+            } else if sampler.compare.is_some() {
+                use d3d12::{
+                    D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT,
+                    D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
+                    D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+                    D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR,
+                    D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
+                    D3D12_FILTER_COMPARISON_MIN_MAG_POINT_MIP_LINEAR,
+                    D3D12_FILTER_COMPARISON_MIN_POINT_MAG_LINEAR_MIP_POINT,
+                    D3D12_FILTER_COMPARISON_MIN_POINT_MAG_MIP_LINEAR,
+                };
+                match (
+                    sampler.min_filter,
+                    sampler.mag_filter,
+                    sampler.mipmap_filter,
+                ) {
+                    (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Nearest) => {
+                        D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT
+                    }
+                    (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Linear) => {
+                        D3D12_FILTER_COMPARISON_MIN_MAG_POINT_MIP_LINEAR
+                    }
+                    (FilterMode::Nearest, FilterMode::Linear, FilterMode::Nearest) => {
+                        D3D12_FILTER_COMPARISON_MIN_POINT_MAG_LINEAR_MIP_POINT
+                    }
+                    (FilterMode::Nearest, FilterMode::Linear, FilterMode::Linear) => {
+                        D3D12_FILTER_COMPARISON_MIN_POINT_MAG_MIP_LINEAR
+                    }
+                    (FilterMode::Linear, FilterMode::Nearest, FilterMode::Nearest) => {
+                        D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT
+                    }
+                    (FilterMode::Linear, FilterMode::Nearest, FilterMode::Linear) => {
+                        D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_POINT_MIP_LINEAR
+                    }
+                    (FilterMode::Linear, FilterMode::Linear, FilterMode::Nearest) => {
+                        D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT
+                    }
+                    (FilterMode::Linear, FilterMode::Linear, FilterMode::Linear) => {
+                        D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR
+                    }
+                }
             } else {
                 match (
                     sampler.min_filter,
@@ -5780,53 +6529,55 @@ mod platform {
                     sampler.mipmap_filter,
                 ) {
                     (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Nearest) => {
-                        D3D12_FILTER_MIN_MAG_MIP_POINT
+                        d3d12::D3D12_FILTER_MIN_MAG_MIP_POINT
                     }
                     (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Linear) => {
-                        D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR
+                        d3d12::D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR
                     }
                     (FilterMode::Nearest, FilterMode::Linear, FilterMode::Nearest) => {
-                        D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT
+                        d3d12::D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT
                     }
                     (FilterMode::Nearest, FilterMode::Linear, FilterMode::Linear) => {
-                        D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR
+                        d3d12::D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR
                     }
                     (FilterMode::Linear, FilterMode::Nearest, FilterMode::Nearest) => {
-                        D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT
+                        d3d12::D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT
                     }
                     (FilterMode::Linear, FilterMode::Nearest, FilterMode::Linear) => {
-                        D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR
+                        d3d12::D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR
                     }
                     (FilterMode::Linear, FilterMode::Linear, FilterMode::Nearest) => {
-                        D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT
+                        d3d12::D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT
                     }
                     (FilterMode::Linear, FilterMode::Linear, FilterMode::Linear) => {
-                        D3D12_FILTER_MIN_MAG_MIP_LINEAR
+                        d3d12::D3D12_FILTER_MIN_MAG_MIP_LINEAR
                     }
                 }
             },
-            AddressU: address_mode_to_dx12(sampler.address_mode_u),
-            AddressV: address_mode_to_dx12(sampler.address_mode_v),
-            AddressW: address_mode_to_dx12(AddressMode::ClampToEdge),
-            MipLODBias: 0.0,
+            AddressU: address_mode_to_dx12(&sampler.address_mode_u),
+            AddressV: address_mode_to_dx12(&sampler.address_mode_v),
+            AddressW: address_mode_to_dx12(&sampler.address_mode_w),
+            MipLODBias: sampler.lod_bias,
             MaxAnisotropy: if sampler.anisotropic { 16 } else { 1 },
-            ComparisonFunc: D3D12_COMPARISON_FUNC::default(),
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: f32::MAX,
+            ComparisonFunc: sampler
+                .compare
+                .map(depth_compare_function)
+                .unwrap_or(D3D12_COMPARISON_FUNC_ALWAYS),
+            BorderColor: sampler.border_color,
+            MinLOD: sampler.lod_min_clamp,
+            MaxLOD: sampler.lod_max_clamp,
         }
     }
 
     fn address_mode_to_dx12(
-        mode: AddressMode,
+        mode: &AddressMode,
     ) -> windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_ADDRESS_MODE {
+        use windows::Win32::Graphics::Direct3D12 as d3d12;
         match mode {
-            AddressMode::ClampToEdge => {
-                windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_ADDRESS_MODE_CLAMP
-            }
-            AddressMode::Repeat => {
-                windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_ADDRESS_MODE_WRAP
-            }
+            AddressMode::ClampToEdge => d3d12::D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            AddressMode::Repeat => d3d12::D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            AddressMode::MirrorRepeat => d3d12::D3D12_TEXTURE_ADDRESS_MODE_MIRROR,
+            AddressMode::ClampToBorder => d3d12::D3D12_TEXTURE_ADDRESS_MODE_BORDER,
         }
     }
 
@@ -5890,7 +6641,8 @@ mod platform {
                 match entry.binding_type {
                     BindingType::UniformBuffer
                     | BindingType::StorageBuffer
-                    | BindingType::SampledTexture => {
+                    | BindingType::SampledTexture
+                    | BindingType::StorageTexture { .. } => {
                         let table = set
                             .resource_tables
                             .iter()
@@ -6060,8 +6812,10 @@ mod platform {
     ) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT,
-            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UINT,
+            DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
         };
         match format {
             Format::R8Unorm => DXGI_FORMAT_R8_UNORM,
@@ -6071,6 +6825,14 @@ mod platform {
             Format::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
             Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
             Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
+            Format::Rg8Unorm => DXGI_FORMAT_R8G8_UNORM,
+            Format::R16Float => DXGI_FORMAT_R16_FLOAT,
+            Format::Rg16Float => DXGI_FORMAT_R16G16_FLOAT,
+            Format::R32Float => DXGI_FORMAT_R32_FLOAT,
+            Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
+            Format::R8Uint => DXGI_FORMAT_R8_UINT,
+            Format::Rg8Uint => DXGI_FORMAT_R8G8_UINT,
+            Format::Rgba8Uint => DXGI_FORMAT_R8G8B8A8_UINT,
         }
     }
 
@@ -6205,6 +6967,12 @@ mod platform {
         anisotropic: bool,
         address_mode_u: AddressMode,
         address_mode_v: AddressMode,
+        address_mode_w: AddressMode,
+        compare: Option<CompareFunction>,
+        border_color: [f32; 4],
+        lod_min_clamp: f32,
+        lod_max_clamp: f32,
+        lod_bias: f32,
     }
 
     #[derive(Clone)]
@@ -6370,17 +7138,21 @@ mod platform {
         cache_key: u64,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct Dx12RenderPass {
-        color_format: Format,
+        color_formats: Vec<Format>,
         depth_format: Option<Format>,
+        stencil_format: Option<Format>,
+        sample_count: u32,
     }
 
     #[derive(Clone)]
     struct Dx12RenderPipeline {
         indirect_signature: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
-        color_format: Format,
-        blend_mode: BlendMode,
+        /// 20-byte indexed argument records for `DrawIndexedIndirect`.
+        indirect_signature_indexed:
+            Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
+        color_targets: Vec<ColorTargetState>,
         primitive_topology: PrimitiveTopology,
         pipeline_state: Option<ID3D12PipelineState>,
         root_signature: Option<ID3D12RootSignature>,
@@ -6394,6 +7166,12 @@ mod platform {
         indirect_resources: Vec<compute::Indirect>,
         allocator: Option<ID3D12CommandAllocator>,
         command_list: Option<ID3D12GraphicsCommandList>,
+        /// Reused two-slot timestamp heap for swapchain frames. Offscreen
+        /// encoders own one but never record it.
+        timestamps: Option<Dx12TimestampQueries>,
+        /// Whether the last submission recorded timestamp probes for a
+        /// presented frame. Prevents publishing offscreen work.
+        frame_probe: bool,
         submitted: bool,
         swapchain: Option<(SwapchainId, u64)>,
     }
@@ -6471,6 +7249,8 @@ mod platform {
         frame_pacing: FrameLatencyWait,
         /// Flip-sequential swapchains can preserve pixels outside native dirty rectangles.
         partial_presentation: bool,
+        /// Rotating swapchain image count fixed at creation.
+        image_count: u32,
         /// Damage accumulated since each rotating back buffer was last current.
         pending_damage: Vec<Dx12BackBufferDamage>,
         generation: u64,
@@ -6521,14 +7301,73 @@ mod platform {
         }
 
         #[test]
+        fn color_write_mask_maps_channels_to_d3d12_flags() {
+            assert_eq!(color_write_mask(ColorWrites::ALL), 15);
+            assert_eq!(color_write_mask(ColorWrites::COLOR), 7);
+            assert_eq!(color_write_mask(ColorWrites::RED), 1);
+            assert_eq!(color_write_mask(ColorWrites::ALPHA), 8);
+            assert_eq!(color_write_mask(ColorWrites::RED | ColorWrites::ALPHA), 9);
+            assert_eq!(color_write_mask(ColorWrites::empty()), 0);
+        }
+
+        #[test]
+        fn sampler_compare_enables_dx12_comparison_filter() {
+            use windows::Win32::Graphics::Direct3D12::*;
+            let desc = sampler_desc_to_dx12(&Dx12Sampler {
+                mag_filter: FilterMode::Linear,
+                min_filter: FilterMode::Linear,
+                mipmap_filter: FilterMode::Linear,
+                anisotropic: false,
+                address_mode_u: AddressMode::ClampToEdge,
+                address_mode_v: AddressMode::ClampToEdge,
+                address_mode_w: AddressMode::ClampToEdge,
+                compare: Some(CompareFunction::Less),
+                border_color: [0.0; 4],
+                lod_min_clamp: 0.0,
+                lod_max_clamp: f32::MAX,
+                lod_bias: 0.0,
+            });
+
+            assert_eq!(desc.Filter, D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR);
+            assert_eq!(desc.ComparisonFunc, D3D12_COMPARISON_FUNC_LESS);
+        }
+
+        #[test]
+        fn sampler_address_modes_map_to_dx12() {
+            use windows::Win32::Graphics::Direct3D12::*;
+            assert_eq!(
+                address_mode_to_dx12(&AddressMode::ClampToEdge),
+                D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+            );
+            assert_eq!(
+                address_mode_to_dx12(&AddressMode::Repeat),
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP
+            );
+            assert_eq!(
+                address_mode_to_dx12(&AddressMode::MirrorRepeat),
+                D3D12_TEXTURE_ADDRESS_MODE_MIRROR
+            );
+            assert_eq!(
+                address_mode_to_dx12(&AddressMode::ClampToBorder),
+                D3D12_TEXTURE_ADDRESS_MODE_BORDER
+            );
+        }
+
+        #[test]
         fn anisotropic_sampler_uses_dx12_filter_and_limit() {
-            let desc = sampler_desc_to_dx12(Dx12Sampler {
+            let desc = sampler_desc_to_dx12(&Dx12Sampler {
                 mag_filter: FilterMode::Linear,
                 min_filter: FilterMode::Linear,
                 mipmap_filter: FilterMode::Linear,
                 anisotropic: true,
                 address_mode_u: AddressMode::ClampToEdge,
                 address_mode_v: AddressMode::ClampToEdge,
+                address_mode_w: AddressMode::ClampToEdge,
+                compare: None,
+                border_color: [0.0; 4],
+                lod_min_clamp: 0.0,
+                lod_max_clamp: f32::MAX,
+                lod_bias: 0.0,
             });
 
             assert_eq!(desc.Filter, D3D12_FILTER_ANISOTROPIC);
@@ -6537,13 +7376,19 @@ mod platform {
 
         #[test]
         fn regular_sampler_keeps_configured_dx12_filters() {
-            let desc = sampler_desc_to_dx12(Dx12Sampler {
+            let desc = sampler_desc_to_dx12(&Dx12Sampler {
                 mag_filter: FilterMode::Linear,
                 min_filter: FilterMode::Linear,
                 mipmap_filter: FilterMode::Linear,
                 anisotropic: false,
                 address_mode_u: AddressMode::ClampToEdge,
                 address_mode_v: AddressMode::ClampToEdge,
+                address_mode_w: AddressMode::ClampToEdge,
+                compare: None,
+                border_color: [0.0; 4],
+                lod_min_clamp: 0.0,
+                lod_max_clamp: f32::MAX,
+                lod_bias: 0.0,
             });
 
             assert_eq!(desc.Filter, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
@@ -6646,7 +7491,7 @@ mod platform {
 
         #[test]
         fn gpu_only_buffer_staging_write_round_trips() {
-            let mut device = match Dx12Device::new(&DeviceDescriptor::default()) {
+            let mut device = match Dx12Device::new(&gfx_core::DeviceDescriptor::default()) {
                 Ok(device) => device,
                 Err(Error::Unavailable(reason)) => {
                     eprintln!("NOVA_GFX_SKIP=dx12 unavailable: {reason}");
@@ -7170,3 +8015,34 @@ mod platform {
 }
 
 pub use platform::*;
+
+#[cfg(test)]
+mod conformance_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires D3D12 hardware"]
+    fn msaa_resolve_roundtrip() {
+        let mut device =
+            Dx12Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::msaa_resolve_roundtrip(&mut device).expect("MSAA resolve roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn format_allocation_roundtrip() {
+        let mut device =
+            Dx12Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::format_allocation_roundtrip(&mut device)
+            .expect("format allocation roundtrip");
+    }
+
+    #[test]
+    #[ignore = "requires GPU hardware"]
+    fn texture_buffer_roundtrip() {
+        let mut device =
+            Dx12Device::new(&gfx_core::DeviceDescriptor::default()).expect("hardware device");
+        gfx_core::conformance::texture_buffer_roundtrip(&mut device)
+            .expect("texture buffer roundtrip");
+    }
+}

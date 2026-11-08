@@ -119,13 +119,14 @@ fn viewport_scissor_fragment_coordinates_and_texture_rows_share_top_origin() {
     };
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &[RenderCommand::Draw(draw)],
             color_load_op: LoadOp::Clear(CLEAR),
             clear_region: None,
             depth_attachment: None,
             viewport: None,
+            resolve_target: None,
         }])
         .expect("top scissor draw");
     let readback = device.read_texture(target).expect("row readback");
@@ -266,7 +267,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         .expect("near green");
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &steps,
             color_load_op: LoadOp::Clear(CLEAR),
@@ -274,8 +275,10 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
             depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Clear(1.0),
+                stencil_load_op: None,
             }),
             viewport: None,
+            resolve_target: None,
         }])
         .expect("near draw");
     device
@@ -287,7 +290,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         .expect("far red");
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &steps,
             color_load_op: LoadOp::Load,
@@ -295,8 +298,10 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
             depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Load,
+                stencil_load_op: None,
             }),
             viewport: None,
+            resolve_target: None,
         }])
         .expect("occluded draw");
     let result = device.read_texture(target).expect("native GPU readback");
@@ -340,7 +345,7 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
     );
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &steps,
             color_load_op: LoadOp::Load,
@@ -348,8 +353,10 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
             depth_attachment: Some(DepthAttachment {
                 target: depth,
                 depth_load_op: LoadOp::Load,
+                stencil_load_op: None,
             }),
             viewport: None,
+            resolve_target: None,
         }])
         .expect("alpha draw");
     let result = device.read_texture(target).expect("alpha readback");
