@@ -436,6 +436,13 @@ struct FrameCounter {
     average_frame_ms: f32,
     frame_ms_accum: f32,
     frame_ms_samples: u32,
+    // Bounded actual UI redraw intervals, not native GPU execution time.
+    // Keep collection O(1) per frame and compute quantiles periodically.
+    frame_gap_us: [u32; 256],
+    frame_gap_count: usize,
+    frame_gap_next: usize,
+    frame_gap_quantiles: [u32; 3],
+    last_frame_gap_quantiles: Instant,
 }
 
 impl FrameCounter {
@@ -449,6 +456,11 @@ impl FrameCounter {
             average_frame_ms: 0.0,
             frame_ms_accum: 0.0,
             frame_ms_samples: 0,
+            frame_gap_us: [0; 256],
+            frame_gap_count: 0,
+            frame_gap_next: 0,
+            frame_gap_quantiles: [0; 3],
+            last_frame_gap_quantiles: Instant::now(),
         }
     }
 
@@ -460,9 +472,25 @@ impl FrameCounter {
                 self.last_frame_ms = ms;
                 self.frame_ms_accum += ms;
                 self.frame_ms_samples += 1;
+                self.frame_gap_us[self.frame_gap_next] =
+                    u32::try_from(now.duration_since(previous).as_micros()).unwrap_or(u32::MAX);
+                self.frame_gap_next = (self.frame_gap_next + 1) % self.frame_gap_us.len();
+                self.frame_gap_count = (self.frame_gap_count + 1).min(self.frame_gap_us.len());
             }
         }
         self.last_frame_at = Some(now);
+        if now.saturating_duration_since(self.last_frame_gap_quantiles) >= Duration::from_secs(2) {
+            if self.frame_gap_count >= 32 {
+                let mut values = self.frame_gap_us[..self.frame_gap_count].to_vec();
+                values.sort_unstable();
+                self.frame_gap_quantiles = [
+                    frame_percentile_us(&values, 50),
+                    frame_percentile_us(&values, 95),
+                    frame_percentile_us(&values, 99),
+                ];
+            }
+            self.last_frame_gap_quantiles = now;
+        }
         let elapsed = now - self.started_at;
         if elapsed >= Duration::from_millis(500) {
             self.fps = self.frames as f32 / elapsed.as_secs_f32().max(0.001);
@@ -475,6 +503,13 @@ impl FrameCounter {
             }
         }
     }
+}
+
+/// Nearest-rank latency percentile. Input is a sorted bounded sliding window.
+fn frame_percentile_us(sorted: &[u32], percentile: usize) -> u32 {
+    if sorted.is_empty() { return 0; }
+    let at = sorted.len().saturating_mul(percentile).div_ceil(100).saturating_sub(1);
+    sorted[at.min(sorted.len()-1)]
 }
 
 /// Immutable section graph source; cache one snapshot per chunk-stream
@@ -3351,7 +3386,7 @@ impl World3dEditorView {
         );
         if super::chunk_service::trace_timings() {
             eprintln!(
-                "world3d ui ts={} gen={} camera={:.1},{:.1},{:.1} yaw_deg={:.1} pitch_deg={:.1} radius={} refresh_fps={:.1} gpu_submits_1s={} ui_draw_p95_ms={:.1} ui_frame_gap_p95_ms={:.1} poll_count={} poll_max_ms={:.1} scene_build_count={} scene_build_max_ms={:.1} nodes={} lod_chunks={} cpu_mesh_mib={:.1} decoded_mib={:.1} gpu_mib={:.1}",
+                "world3d ui ts={} gen={} camera={:.1},{:.1},{:.1} yaw_deg={:.1} pitch_deg={:.1} radius={} refresh_fps={:.1} gpu_submits_1s={} ui_draw_p95_ms={:.1} ui_frame_gap_p95_ms={:.1} frame_gap_p50_ms={:.1} frame_gap_p95_ms={:.1} frame_gap_p99_ms={:.1} poll_count={} poll_max_ms={:.1} scene_build_count={} scene_build_max_ms={:.1} nodes={} lod_chunks={} cpu_mesh_mib={:.1} decoded_mib={:.1} gpu_mib={:.1}",
                 super::chunk_service::trace_timestamp_ms(),
                 self.stream_generation,
                 self.camera.position[0],
@@ -3366,6 +3401,9 @@ impl World3dEditorView {
                     / 1000.0),
                 window_metrics.map_or(0.0, |sample| sample.present_interval_p95_micros as f64
                     / 1000.0),
+                self.frame.frame_gap_quantiles[0] as f64 / 1000.0,
+                self.frame.frame_gap_quantiles[1] as f64 / 1000.0,
+                self.frame.frame_gap_quantiles[2] as f64 / 1000.0,
                 self.trace_poll_count,
                 self.trace_poll_max_us as f64 / 1000.0,
                 self.trace_scene_build_count,
