@@ -58,7 +58,10 @@ const PREVIEW_3D_MIN_FOV_Y_RADIANS: f32 = 14.0_f32.to_radians();
 const PREVIEW_3D_MAX_GEOMETRIC_ZOOM: f32 = 1.5;
 const PREVIEW_3D_MIN_NEAR_PLANE: f32 = 0.02;
 const PREVIEW_3D_FAR_PLANE: f32 = 256.0;
-const PREVIEW_3D_INCREMENTAL_TARGET_UPDATES: usize = 12;
+// A source update regenerates all currently loaded faces and the spatial
+// region graph. Publish a few bounded snapshots, not dozens of ever smaller
+// tail batches which repeatedly remesh the same earlier chunks.
+const PREVIEW_3D_INCREMENTAL_TARGET_UPDATES: usize = 5;
 type Preview3dMaterialName = Arc<str>;
 type Preview3dMaterialSlot = Arc<str>;
 
@@ -885,10 +888,16 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     let chunk_total = positions.len();
     let mut builder = Preview3dMeshBuilder::new(bounds, truncated_chunk_count);
     let options = preview_3d_render_chunk_load_options(chunk_total, bounds, cancel.clone());
-    for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
+    let mut completed_chunks = 0usize;
+    while completed_chunks < chunk_total {
         check_preview_3d_cancelled(cancel.as_ref())?;
+        let count = preview_3d_incremental_batch_size(completed_chunks, chunk_total);
+        let next_completed = (completed_chunks + count).min(chunk_total);
         let chunks = world
-            .query_chunk_data_many(chunk_positions.iter().copied(), options.clone())
+            .query_chunk_data_many(
+                positions[completed_chunks..next_completed].iter().copied(),
+                options.clone(),
+            )
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
             .into_par_iter()
@@ -902,7 +911,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
         for processed_chunk in processed_chunks {
             builder.push_processed_chunk(processed_chunk);
         }
-        let completed_chunks = builder.processed_chunk_count.min(chunk_total);
+        completed_chunks = next_completed;
         if preview_3d_should_emit_incremental_mesh(completed_chunks, chunk_total) {
             let status = Preview3dBuildStatus::new(
                 "拼接模型",
@@ -1118,22 +1127,21 @@ fn preview_3d_subchunk_decode_workers(total_chunks: usize) -> usize {
 }
 
 fn preview_3d_incremental_batch_size(completed_chunks: usize, total_chunks: usize) -> usize {
-    let remaining_chunks = total_chunks.saturating_sub(completed_chunks);
-    if completed_chunks == 0 {
-        // A four-chunk first publication still appears immediately, but avoids rebuilding
-        // the complete mesh/region graph after only one mostly isolated chunk.
-        return remaining_chunks.min(4);
+    let remaining = total_chunks.saturating_sub(completed_chunks);
+    if remaining == 0 {
+        return 0;
     }
-    let remaining_updates = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES
-        .saturating_sub(1)
-        .max(1);
-    (remaining_chunks.saturating_add(remaining_updates - 1) / remaining_updates).max(1)
-}
-
-fn preview_3d_incremental_mesh_batch_size(total_chunks: usize) -> usize {
-    (total_chunks.saturating_add(PREVIEW_3D_INCREMENTAL_TARGET_UPDATES - 1)
-        / PREVIEW_3D_INCREMENTAL_TARGET_UPDATES)
-        .max(1)
+    let first_batch = total_chunks.min(4);
+    if completed_chunks == 0 {
+        return first_batch;
+    }
+    // Recompute a fixed *target* batch width from the original total, not
+    // the remaining count. Dividing the remainder at every iteration
+    // generated a long tail of 1-2 chunk batches, each triggering a full
+    // mesh/LOD/spatial-region rebuild (quadratic accumulated CPU work).
+    let later_batches = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES.saturating_sub(1).max(1);
+    let later_total = total_chunks.saturating_sub(first_batch);
+    remaining.min(later_total.div_ceil(later_batches).max(1))
 }
 
 fn preview_3d_should_emit_incremental_mesh(completed_chunks: usize, total_chunks: usize) -> bool {
@@ -1498,6 +1506,12 @@ impl Preview3dMeshBuilder {
                 let blocks = blocks.1;
                 let mut merger = Preview3dFaceMerger::new();
                 for block in &blocks.water_blocks {
+                    // Partial-height liquid geometry is emitted below using
+                    // its real top height. A full-height greedy cube here
+                    // would overlap those faces and produce false water walls.
+                    if block.height < 0.999 {
+                        continue;
+                    }
                     for face in FACE_DEFINITIONS {
                         if block.surface_only && face.normal != [0, 1, 0] {
                             continue;
@@ -1552,6 +1566,9 @@ impl Preview3dMeshBuilder {
                 let blocks = blocks.1;
                 let mut merger = Preview3dFaceMerger::new();
                 for block in &blocks.lava_blocks {
+                    if block.height < 0.999 {
+                        continue;
+                    }
                     for face in FACE_DEFINITIONS {
                         if block.surface_only && face.normal != [0, 1, 0] {
                             continue;
@@ -6680,8 +6697,34 @@ mod tests {
     fn map_viewer_preview_3d_starts_large_selection_with_one_visible_chunk() {
         let total_chunks = 625;
 
-        assert_eq!(preview_3d_incremental_batch_size(0, total_chunks), 1);
-        assert_eq!(preview_3d_incremental_batch_size(1, total_chunks), 57);
+        assert_eq!(preview_3d_incremental_batch_size(0, total_chunks), 4);
+        assert_eq!(preview_3d_incremental_batch_size(4, total_chunks), 156);
+    }
+
+    #[test]
+    fn progressive_meshing_never_creates_one_chunk_tail_rebuilds() {
+        for total in [1, 4, 5, 12, 120, 625, 1000] {
+            let mut completed = 0usize;
+            let mut updates = 0usize;
+            while completed < total {
+                let batch = preview_3d_incremental_batch_size(completed, total);
+                assert!(batch > 0);
+                assert!(batch <= total - completed);
+                completed += batch;
+                updates += 1;
+            }
+            assert_eq!(completed, total);
+            assert!(updates <= PREVIEW_3D_INCREMENTAL_TARGET_UPDATES);
+        }
+        // At 120 chunks, publish 4 early chunks, then four equal batches;
+        // never remesh 100+ finished chunks for a 1-chunk tail update.
+        let mut completed = 0;
+        let mut stages = Vec::new();
+        while completed < 120 {
+            completed += preview_3d_incremental_batch_size(completed, 120);
+            stages.push(completed);
+        }
+        assert_eq!(stages, vec![4, 33, 62, 91, 120]);
     }
 
     #[test]
