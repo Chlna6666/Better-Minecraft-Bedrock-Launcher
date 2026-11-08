@@ -5571,8 +5571,8 @@ fn queue_family_indices_without_surface(
 /// multiple real native queues. Having distinct Present/Compute families
 /// does NOT qualify: sharing resources between them requires ownership
 /// transfer barriers that this sidecar does not yet need to implement.
-fn independent_graphics_queue_enabled(requested: bool, available: u32) -> bool {
-    requested && available >= 2
+fn independent_graphics_queue_enabled(available: u32) -> bool {
+    available >= 2
 }
 
 fn create_device(
@@ -5593,10 +5593,10 @@ fn create_device(
     let graphics_queue_count = queue_families
         .get(indices.graphics as usize)
         .map_or(0, |properties| properties.queue_count);
-    let dedicated = independent_graphics_queue_enabled(
-        std::env::var_os("GPUI_3D_NATIVE_QUEUE").is_some(),
-        graphics_queue_count,
-    );
+    // The secondary native graphics queue is used automatically on a
+    // capable adapter. One-queue devices retain the ordered submission
+    // path without requiring a flag or separate queue-family transfers.
+    let dedicated = independent_graphics_queue_enabled(graphics_queue_count);
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
         unique_families.push(indices.present);
@@ -7504,11 +7504,11 @@ mod tests {
 
     #[test]
     fn native_sidecar_requires_second_queue_in_same_graphics_family() {
-        assert!(!independent_graphics_queue_enabled(false, 4));
-        assert!(!independent_graphics_queue_enabled(true, 0));
-        assert!(!independent_graphics_queue_enabled(true, 1));
-        assert!(independent_graphics_queue_enabled(true, 2));
-        assert!(independent_graphics_queue_enabled(true, 8));
+        assert!(!independent_graphics_queue_enabled(0));
+        assert!(!independent_graphics_queue_enabled(1));
+        assert!(independent_graphics_queue_enabled(2));
+        assert!(independent_graphics_queue_enabled(4));
+        assert!(independent_graphics_queue_enabled(8));
     }
 
     #[test]
