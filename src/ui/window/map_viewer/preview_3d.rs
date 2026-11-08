@@ -444,7 +444,7 @@ fn load_incremental_with_converter(
     let source_mesh = loader(Box::new(move |source_mesh, status| {
         let signature = source_mesh_signature(&source_mesh);
         let converted = match convert_source_mesh(
-            source_mesh.as_ref().clone(),
+            source_mesh.as_ref(),
             &mut callback_cache
                 .lock()
                 .expect("preview 3D region reuse cache poisoned"),
@@ -476,7 +476,7 @@ fn load_incremental_with_converter(
         }
     }
     convert_source_mesh(
-        source_mesh,
+        &source_mesh,
         &mut cache
             .lock()
             .expect("preview 3D region reuse cache poisoned"),
@@ -493,18 +493,18 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
         anchor_chunk,
         origin_y,
     )
-    .and_then(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
+    .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
 }
 
 pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
     copied_chunk: &super::model::CopiedChunkData,
 ) -> Result<Preview3dMesh, String> {
     super::preview_3d_source::load_preview_3d_mesh_from_copied_chunk_blocking(copied_chunk)
-        .and_then(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
+        .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
 }
 
 fn convert_source_mesh(
-    source_mesh: super::preview_3d_source::Preview3dMesh,
+    source_mesh: &super::preview_3d_source::Preview3dMesh,
     cache: &mut RegionMeshReuseCache,
 ) -> Result<Preview3dMesh, String> {
     let started_at = Instant::now();
