@@ -254,7 +254,11 @@ impl MeshAssets {
             let average = sum.map(|value| value / samples);
             let maximum = average[0].max(average[1]).max(average[2]);
             let minimum = average[0].min(average[1]).min(average[2]);
-            maximum - minimum <= 12
+            // Vanilla masks are rarely perfectly neutral: jungle leaves average
+            // (157,154,143), chroma 14, and must still receive the biome tint.
+            // Pre-tinted variants (carried textures, azalea/cherry leaves) stay well above
+            // this spread, so 16 admits the masks without tinting colored textures.
+            maximum - minimum <= 16
         };
         self.grayscale_masks.insert(id, mask);
         mask
@@ -371,6 +375,11 @@ mod tests {
             .unwrap(),
         );
         assert!(assets.is_grayscale_mask(&mask));
+        // Jungle leaves: near-neutral mask with faint yellow spots, chroma 14.
+        let jungle = Arc::new(
+            TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([157, 154, 143, 255])).unwrap(),
+        );
+        assert!(assets.is_grayscale_mask(&jungle));
         let colored =
             Arc::new(TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([51, 127, 8, 255])).unwrap());
         assert!(!assets.is_grayscale_mask(&colored));
