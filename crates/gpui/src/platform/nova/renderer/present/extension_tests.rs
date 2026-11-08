@@ -156,7 +156,7 @@ mod native {
             pass: RendererExtensionPass {
                 target: view,
                 render_pass: pass,
-                commands: Vec::new(),
+                commands: Vec::new().into(),
                 color_load_op: LoadOp::Clear(ClearColor {
                     red: 1.,
                     ..ClearColor::default()

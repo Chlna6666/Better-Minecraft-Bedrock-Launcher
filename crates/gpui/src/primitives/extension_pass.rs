@@ -1,5 +1,6 @@
 //! Owned offscreen commands encoded by an extension and submitted by its host.
 use gfx_core::*;
+use std::sync::Arc;
 
 /// One ordered offscreen pass. All handles belong to the host's current device.
 /// Extensions keep referenced handles valid until submission. Submitted resources may then be
@@ -13,8 +14,12 @@ pub struct RendererExtensionPass {
     pub resolve_target: Option<TextureViewId>,
     /// Attachment-compatible render pass.
     pub render_pass: RenderPassId,
-    /// Commands in draw order. Scissors are local to this offscreen target.
-    pub commands: Vec<RenderCommand>,
+    /// Immutable draw plan shared between producer frames. A camera-only
+    /// update can submit another offscreen capture without copying hundreds
+    /// of thousands of otherwise unchanged DrawIndirect descriptors.
+    /// Scissors are local to the target, and the GPU owner retains this Arc
+    /// until its native queue accepts the producer submission.
+    pub commands: Arc<[RenderCommand]>,
     /// Color load/clear operation.
     pub color_load_op: LoadOp<ClearColor>,
     /// Optional depth attachment.

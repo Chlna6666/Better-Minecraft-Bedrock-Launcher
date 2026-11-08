@@ -152,7 +152,7 @@ mod tests {
             target: TextureViewId::from_parts(1, 1),
             resolve_target: None,
             render_pass: RenderPassId::from_parts(1, 1),
-            commands: Vec::new(),
+            commands: Vec::new().into(),
             color_load_op: LoadOp::Load,
             depth_attachment: None,
         });

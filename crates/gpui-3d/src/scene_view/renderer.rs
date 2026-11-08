@@ -11,7 +11,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::Rc,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -87,9 +87,37 @@ struct CachedCommands {
     /// native indirect call, so a 100K-command scene records as a handful of
     /// native draws. Rebuilt only when the logical list changes.
     grouped: Option<Vec<RenderCommand>>,
+    /// Immutable producer snapshot. Reuse this allocation while camera,
+    /// frame uniforms or GPU culling change without changing Draw commands.
+    shared_offscreen: Option<(u64, Arc<[RenderCommand]>)>,
 }
 
 impl CachedCommands {
+    fn shared_offscreen(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<Arc<[RenderCommand]>> {
+        if let Some((previous, shared)) = self.shared_offscreen.as_ref()
+            && *previous == revision
+        {
+            // Arc clone is O(1); previous code cloned every RenderCommand.
+            return Ok(Arc::clone(shared));
+        }
+        let mut commands = Vec::new();
+        self.append_spliced(
+            revision, draw_count, blended_batch_start, delta,
+            &mut commands, build, build_range,
+        )?;
+        let shared: Arc<[RenderCommand]> = commands.into();
+        self.shared_offscreen = Some((revision, Arc::clone(&shared)));
+        Ok(shared)
+    }
+
     fn publish(&self, steps: &mut Vec<RenderCommand>) {
         match &self.grouped {
             Some(grouped) => steps.extend_from_slice(grouped),
@@ -747,6 +775,41 @@ mod tests {
     }
 
     #[test]
+    fn offscreen_reuses_the_same_immutable_gpu_command_allocation() {
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let mut builds = 0;
+        let make = |rev: u64, cache: &mut CachedCommands, builds: &mut usize| {
+            cache.shared_offscreen(
+                rev, None, None, None,
+                |commands| {
+                    *builds += 1;
+                    commands.push(RenderCommand::Draw(DrawCommand {
+                        pipeline: RenderPipelineId::from_parts(rev as u32, 1),
+                        bind_groups: bind_group_list([]),
+                        vertex_count: 3,
+                        first_vertex: 0,
+                        instance_count: 1,
+                        first_instance: 0,
+                        scissor: None,
+                    }));
+                    Ok(())
+                },
+                |_, _| Ok(()),
+            ).unwrap()
+        };
+        let first = make(1, &mut cache, &mut builds);
+        let same = make(1, &mut cache, &mut builds);
+        assert!(Arc::ptr_eq(&first, &same), "camera-only capture must not duplicate the native command table");
+        assert_eq!(builds, 1);
+        let next = make(2, &mut cache, &mut builds);
+        assert!(!Arc::ptr_eq(&first, &next), "a structural draw change must publish a new snapshot");
+        assert_eq!(builds, 2);
+        assert_eq!(first[0].pipeline(), RenderPipelineId::from_parts(1, 1));
+        assert_eq!(next[0].pipeline(), RenderPipelineId::from_parts(2, 1));
+    }
+
+    #[test]
     fn indirect_grouping_never_reorders_blended_suffix() {
         use gfx_core::{BufferId, DrawIndirectCommand};
         let pipeline = |id| RenderPipelineId::from_parts(id, 1);
@@ -1018,40 +1081,51 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             return Ok(());
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
-        let mut capture_steps = Vec::new();
+        let mut capture_commands: Option<Arc<[RenderCommand]>> = None;
         let commands_count = {
-            // The same Draw/Instance/Shader layout is used by both paths.
-            // Only the final consumer changes: own offscreen pass vs GPUI
-            // root render pass. No extra scene traversal or mesh copies.
-            let output = if self.offscreen.is_some() {
-                &mut capture_steps
-            } else {
-                &mut *steps
-            };
-            let first_step = output.len();
+            // Both paths retain the same canonical native Draw command
+            // cache. The offscreen path shares an immutable command snapshot
+            // until the logical draw revision changes, avoiding an O(draws)
+            // Vec copy on each camera/culling-only producer submission.
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CommandEncode);
-            self.command_cache
-                .entry(scene_view.id)
-                .or_default()
-                .append_spliced(
+            let cache = self.command_cache.entry(scene_view.id).or_default();
+            let build = |output: &mut Vec<RenderCommand>| {
+                scene.append_steps(&self.resources, scene_view.voxel_shader, output)
+            };
+            let build_range = |range: std::ops::Range<usize>, output: &mut Vec<RenderCommand>| {
+                scene.append_generated_singleton_range(&self.resources, output, range)
+            };
+            if self.offscreen.is_some() {
+                let shared = cache.shared_offscreen(
                     scene.command_revision,
                     scene.generated_singleton_command_count(),
                     scene.first_blended_batch_index(),
                     scene.native_command_delta(),
-                    output,
-                    |output| scene.append_steps(&self.resources, scene_view.voxel_shader, output),
-                    |range, output| {
-                        scene.append_generated_singleton_range(&self.resources, output, range)
-                    },
+                    build, build_range,
                 )?;
-            output.len() - first_step
+                let count = shared.len();
+                capture_commands = Some(shared);
+                count
+            } else {
+                let first_step = steps.len();
+                cache.append_spliced(
+                    scene.command_revision,
+                    scene.generated_singleton_command_count(),
+                    scene.first_blended_batch_index(),
+                    scene.native_command_delta(),
+                    steps,
+                    build, build_range,
+                )?;
+                steps.len() - first_step
+            }
         };
         if let Some(surface) = self.offscreen.as_mut() {
             let started = crate::gpu_submission_trace::enabled().then(Instant::now);
             surface.enqueue(
                 device, scene_view.id, &context, scene.capture_revision,
-                capture_steps, &mut self.pending_passes, steps,
+                capture_commands.expect("offscreen capture built immutable commands"),
+                &mut self.pending_passes, steps,
             )?;
             if let Some(start) = started {
                 crate::gpu_submission_trace::observe(

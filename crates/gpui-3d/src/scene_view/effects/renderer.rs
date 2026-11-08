@@ -316,7 +316,7 @@ impl EffectsRenderer {
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
             render_pass: self.compositor.post_pass,
-            commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])],
+            commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])].into(),
             color_load_op: LoadOp::Clear(ClearColor::default()),
             depth_attachment: None,
             resolve_target: None,
@@ -380,7 +380,7 @@ pub(super) fn pass(
     RendererExtensionPass {
         target,
         render_pass,
-        commands,
+        commands: commands.into(),
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth,

@@ -8,7 +8,7 @@
 use super::{SceneViewId, resources::embedded_shader};
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
-use std::{collections::HashMap, time::{Duration, Instant}};
+use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 /// Each SceneView gets a separate target: sharing one color image across
 /// multiple painter-order elements would make every composite sample the last
@@ -155,16 +155,22 @@ fn clipped_scissor(previous: Option<ScissorRect>, extent: Extent2d) -> ScissorRe
 /// Native render-pass bounds already clip commands with no explicit scissor.
 /// Preserve that fast path: rewriting every DrawIndirect to a full-target
 /// scissor prevents some backends from retaining/coalescing its native state.
-fn clip_local_commands(commands: &mut Vec<RenderCommand>, extent: Extent2d) {
+fn clip_local_commands(commands: &mut Arc<[RenderCommand]>, extent: Extent2d) {
+    // The common GPU-generated path has no authored scissors. Keep its
+    // immutable Arc allocation shared with CachedCommands across all frames.
     if !commands.iter().any(|command| command.scissor().is_some()) {
         return;
     }
-    for command in commands.iter_mut() {
+    // A rare explicitly clipped pass gets a private, compacted snapshot:
+    // never mutate a command list that other in-flight passes may borrow.
+    let mut clipped: Vec<RenderCommand> = commands.iter().cloned().collect();
+    for command in &mut clipped {
         if let Some(scissor) = command.scissor() {
             command.set_scissor(Some(clipped_scissor(Some(scissor), extent)));
         }
     }
-    commands.retain(|command| command.scissor().is_none_or(|rect| !rect.is_empty()));
+    clipped.retain(|command| command.scissor().is_none_or(|rect| !rect.is_empty()));
+    *commands = clipped.into();
 }
 
 /// Capture and allocation counters are only emitted when the existing 3D
@@ -708,7 +714,7 @@ impl SidecarSurface {
         id: SceneViewId,
         host: &RendererExtensionContext,
         capture_revision: u64,
-        mut geometry: Vec<RenderCommand>,
+        mut geometry: Arc<[RenderCommand]>,
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
@@ -949,16 +955,18 @@ mod tests {
     #[test]
     fn unscissored_indirect_draws_keep_the_native_full_target_fast_path() {
         let extent = Extent2d::new(480, 320).unwrap();
-        let mut commands = vec![RenderCommand::DrawIndirect(DrawIndirectCommand {
+        let mut commands: Arc<[RenderCommand]> = vec![RenderCommand::DrawIndirect(DrawIndirectCommand {
             pipeline: RenderPipelineId::from_parts(1, 1),
             bind_groups: bind_group_list([]),
             arguments: BufferId::from_parts(1, 1),
             offset: 0,
             scissor: None,
-        })];
+        })].into();
+        let original = Arc::clone(&commands);
         clip_local_commands(&mut commands, extent);
         assert_eq!(commands.len(), 1);
         assert!(commands[0].scissor().is_none());
+        assert!(Arc::ptr_eq(&commands, &original), "no clipping must preserve the original GPU command allocation");
     }
 
     #[test]
