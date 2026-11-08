@@ -49,6 +49,30 @@ impl StableDrawSlots {
         self.identities.len()
     }
 
+    /// Reclaim the unused *trailing* physical index space after a successful
+    /// GPU publication. Interior holes remain stable/reusable; compacting them
+    /// would relocate live DrawParams/Instance records and invalidate bindings.
+    ///
+    /// Delay this O(trailing holes) operation until occupancy falls below half
+    /// of a reasonably large high-water mark, avoiding resize churn during
+    /// ordinary camera streaming. The backing GPU buffer is not destroyed here.
+    pub(in crate::scene_view) fn trim_unused_tail(&mut self) -> usize {
+        let previous = self.identities.len();
+        if previous < 256
+            || previous <= self.occupied.len().saturating_mul(2)
+        {
+            return previous;
+        }
+        let next = self.identities.iter()
+            .rposition(Option::is_some)
+            .map_or(0, |last| last + 1);
+        if next < previous {
+            self.identities.truncate(next);
+            self.free.retain(|&slot| slot < next);
+        }
+        next
+    }
+
     /// Validate a retained physical slot before applying a sparse Section
     /// change. Material, mesh and part identity changes require a complete
     /// transactional re-plan (including duplicate occurrence assignment).
@@ -612,6 +636,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bulk_unload_reclaims_only_trailing_free_slot_metadata() {
+        let original = draws(1024);
+        let (mut resident, old_map) = StableDrawSlots::default().plan(&original).unwrap();
+        let survivors = original[..128].to_vec();
+        let (next, mapping) = resident.plan(&survivors).unwrap();
+        resident = next;
+        assert_eq!(mapping, old_map[..128]);
+        assert_eq!(resident.high_water(), 1024);
+        assert_eq!(resident.trim_unused_tail(), 128);
+        assert!(resident.free.is_empty());
+        assert_eq!(resident.occupied.len(), 128);
+
+        let added = original[..129].to_vec();
+        let (restored, remap) = resident.plan(&added).unwrap();
+        assert_eq!(remap[..128], mapping);
+        assert_eq!(remap[128], 128);
+        assert_eq!(restored.high_water(), 129);
+    }
+
+    #[test]
+    fn middle_holes_survive_tail_compaction_without_relocation() {
+        let original = draws(1024);
+        let (mut resident, old_map) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut survivors = original[..300].to_vec();
+        survivors.remove(21);
+        let (next, mapping) = resident.plan(&survivors).unwrap();
+        resident = next;
+        assert_eq!(mapping[..21], old_map[..21]);
+        assert_eq!(mapping[21..], old_map[22..300]);
+        assert_eq!(resident.trim_unused_tail(), 300);
+        assert_eq!(resident.free, vec![21]);
+        assert!(resident.identities[21].is_none());
+    }
+
+    #[test]
+    fn structural_bulk_tail_retirement_retains_first_physical_slots() {
+        let original = draws(512);
+        let (mut resident, old_map) = StableDrawSlots::default().plan(&original).unwrap();
+        let survivors = original[..64].to_vec();
+        let plan = resident.plan_structural(
+            &survivors, &old_map,
+            &crate::prepare::StructuralDrawDelta {
+                previous_count: 512,
+                edits: vec![crate::prepare::StructuralDrawEdit {
+                    old: 64..512, new: 64..64,
+                }],
+            },
+        ).unwrap().unwrap();
+        let mapping = plan.mapping.clone();
+        plan.commit(&mut resident);
+        assert_eq!(mapping, old_map[..64]);
+        assert_eq!(resident.trim_unused_tail(), 64);
+        assert!(resident.free.is_empty());
     }
 
     #[test]
