@@ -236,7 +236,10 @@ fn discard_pending_generated(
 ) {
     for mesh in pending {
         for (slot, &buffer) in mesh.buffers.iter().enumerate() {
-            if (slot != 2 || mesh.allocation.is_none())
+            // Shared mesher input pages belong to BatchScratch and are
+            // destroyed exactly once by its owner, not by each Section.
+            if !mesh.shared_scratch[slot]
+                && (slot != 2 || mesh.allocation.is_none())
                 && (slot != 1 || mesh.template_allocation.is_none())
                 && (slot != 3 || mesh.argument_allocation.is_none())
             {
@@ -554,6 +557,9 @@ fn prepare_generated(
         let compute_caps = device.compute_capabilities();
         let stage_grids = stages
             .into_iter()
+            // The shared ComputeDispatch contract rejects zero-sized grids.
+            // Do not submit optional mesher stages without any work.
+            .filter(|(_, count)| *count != 0)
             .map(|(stage, count)| {
                 let count = u32::try_from(count).context("voxel dispatch overflow")?;
                 Ok((stage, compute_caps.plan_linear_dispatch_2d(count)?))
@@ -698,7 +704,7 @@ fn create_many_impl(
     if !staging_writes.is_empty() {
         let bytes = staging_writes.iter().map(|write| write.data.len()).sum::<usize>();
         let started = crate::gpu_submission_trace::enabled().then(Instant::now);
-        if let Some(batch_id) = batch_id {
+        let upload_result = if let Some(batch_id) = batch_id {
             device.write_buffer_batch_profiled(
                 &staging_writes,
                 gfx_core::GpuTimestampTag {
@@ -708,7 +714,21 @@ fn create_many_impl(
             )
         } else {
             device.write_buffer_batch(&staging_writes)
-        }.map_err(anyhow::Error::from)?;
+        };
+        if let Err(error) = upload_result {
+            // A partial native upload cannot publish any Section as resident.
+            // Release every prepared output and pooled allocation, then let
+            // BatchScratch retire its shared buffers in the outer caller.
+            drop(staging_writes);
+            discard_pending_generated(
+                device,
+                pending,
+                arena.as_mut().map(|(faces, templates, arguments, _)| {
+                    (&mut **faces, &mut **templates, &mut **arguments)
+                }),
+            );
+            return Err(error.into());
+        }
         if let (Some(start), Some((_, _, _, backend))) = (started, arena.as_ref()) {
             let duration = start.elapsed();
             crate::gpu_submission_trace::observe(
