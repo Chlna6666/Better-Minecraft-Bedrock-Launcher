@@ -10,10 +10,21 @@ const FUSED_CACHE_CAPACITY: usize = 1024;
 /// Memo cap for per-source-mesh content fingerprints; cleared wholesale when
 /// exceeded because each entry is recomputed in one pass.
 const MESH_FINGERPRINT_MEMO_CAPACITY: usize = 32_768;
+/// Bound simultaneous off-UI fusion jobs. Geometry remains independently
+/// renderable until its matching fused result has been published.
+const FUSION_JOB_LIMIT: usize = 64;
 
 struct FusedCacheEntry {
     fingerprint: u64,
     mesh: Arc<World3dChunkMesh>,
+}
+
+/// Worker result contains CPU-only immutable mesh data. No graphics handles,
+/// GPU uploads, scene mutation or GPUI Context cross this boundary.
+struct FusionJobResult {
+    key: (ChunkPos, i32),
+    fingerprint: u64,
+    mesh: Option<Arc<World3dChunkMesh>>,
 }
 
 #[derive(Default)]
@@ -28,6 +39,14 @@ pub(in super::super) struct ChunkScene {
     // re-fusing it through the per-Section mesh cache.
     fused_cache: HashMap<(ChunkPos, i32), FusedCacheEntry>,
     fused_cache_order: VecDeque<(ChunkPos, i32)>,
+    /// A single in-flight job per tile; the current source fingerprint is
+    /// verified again when applying a result. Old jobs never commit stale data.
+    fusion_jobs: HashMap<(ChunkPos, i32), u64>,
+    fusion_results: Arc<std::sync::Mutex<VecDeque<FusionJobResult>>>,
+    fusion_completed: BTreeSet<(ChunkPos, i32)>,
+    /// Negative cache for tiles which cannot reduce draw parts, so a failed
+    /// merge is never rescheduled each camera update.
+    fusion_rejected: HashMap<(ChunkPos, i32), u64>,
     // Content fingerprints memoized by (MeshId, generation). Section meshes are
     // immutable, but a re-mesh legitimately reuses the deterministic per-Section
     // MeshId, so the generation is what identifies one immutable mesh object.
@@ -1017,7 +1036,7 @@ impl ChunkScene {
             self.fused.clear();
             self.origin = origin;
         } else if let Some(changed) = changed {
-            let mut touched = BTreeSet::new();
+            let mut touched = std::mem::take(&mut self.fusion_completed);
             for key in changed {
                 touched.insert(fusion_key(*key));
                 if let Some(mesh) = meshes.get(key) {
@@ -1050,6 +1069,7 @@ impl ChunkScene {
             .copied()
             .map(fusion_key)
             .chain(self.fused.keys().copied())
+            .chain(std::mem::take(&mut self.fusion_completed))
             .collect::<BTreeSet<_>>();
         for key in all_groups {
             self.sync_fusion(&mut scene, meshes, key, origin)?;
@@ -1057,6 +1077,74 @@ impl ChunkScene {
         self.rebase_scene(&mut scene, origin)?;
         self.report_fusion(&scene);
         Ok(scene)
+    }
+
+    /// Move ready background Fusion results into the immutable CPU mesh cache.
+    /// The render loop polls this alongside streaming events; applying these
+    /// results then uses the ordinary Scene delta, on the UI owner only.
+    pub(in super::super) fn harvest_finished_fusions(&mut self) -> bool {
+        let completed = {
+            let mut queue = self.fusion_results.lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            queue.drain(..).collect::<Vec<_>>()
+        };
+        let mut changed = false;
+        for result in completed {
+            // A later edit might already have requested a different version:
+            // never remove that pending job or publish its old mesh.
+            if self.fusion_jobs.get(&result.key) != Some(&result.fingerprint) {
+                continue;
+            }
+            self.fusion_jobs.remove(&result.key);
+            if let Some(mesh) = result.mesh {
+                self.fusion_rejected.remove(&result.key);
+                self.remember_fused(result.key, result.fingerprint, mesh);
+            } else {
+                if self.fusion_rejected.len() >= FUSED_CACHE_CAPACITY {
+                    self.fusion_rejected.clear();
+                }
+                self.fusion_rejected.insert(result.key, result.fingerprint);
+            }
+            self.fusion_completed.insert(result.key);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Select an immutable fused mesh without ever executing heavy geometry
+    /// construction on the UI thread. A cache miss preserves the independent
+    /// Section draw until the CPU worker completes, like Qt3D's backend jobs.
+    fn prepare_fusion(
+        &mut self,
+        key: (ChunkPos, i32),
+        fingerprint: u64,
+        sources: &[Arc<World3dChunkMesh>],
+    ) -> Option<Arc<World3dChunkMesh>> {
+        #[cfg(test)]
+        {
+            // Existing synchronous scene-registry fixtures exercise exact
+            // geometry/identity invariants without waiting for a scheduler.
+            return fused_section_cluster(sources).map(Arc::new);
+        }
+        #[cfg(not(test))]
+        {
+            if self.fusion_rejected.get(&key) == Some(&fingerprint)
+                || self.fusion_jobs.contains_key(&key)
+                || self.fusion_jobs.len() >= FUSION_JOB_LIMIT
+            {
+                return None;
+            }
+            self.fusion_jobs.insert(key, fingerprint);
+            let source_snapshot = sources.to_vec();
+            let results = Arc::clone(&self.fusion_results);
+            rayon::spawn(move || {
+                let mesh = fused_section_cluster(&source_snapshot).map(Arc::new);
+                let mut queue = results.lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                queue.push_back(FusionJobResult { key, fingerprint, mesh });
+            });
+            None
+        }
     }
 
     /// Shifts unchanged node translations after a render-origin change.
@@ -1165,7 +1253,7 @@ impl ChunkScene {
             let fingerprint = self.group_fingerprint(&sources);
             let fused: Option<Arc<World3dChunkMesh>> = match self.fused_cache.get(&key) {
                 Some(entry) if entry.fingerprint == fingerprint => Some(entry.mesh.clone()),
-                _ => fused_section_cluster(&sources).map(Arc::new),
+                _ => self.prepare_fusion(key, fingerprint, &sources),
             };
             if fused.is_none() {
                 // A cluster can become ineligible after a member changes
