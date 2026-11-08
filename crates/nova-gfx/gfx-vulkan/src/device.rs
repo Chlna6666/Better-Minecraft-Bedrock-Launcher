@@ -801,6 +801,12 @@ impl VulkanDevice {
     /// Returns [`Error`] when validation or Vulkan allocation fails.
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
+        if desc.sample_count > self.max_sample_count {
+            return Err(Error::Unavailable(format!(
+                "Vulkan texture requests {} samples, device supports at most {}",
+                desc.sample_count, self.max_sample_count
+            )));
+        }
         let layers = desc.dimension.layers();
         if let TextureDimension::D2Array { .. } = desc.dimension {
             self.texture_array_capabilities().plan(
@@ -1348,6 +1354,12 @@ impl VulkanDevice {
     /// Returns [`Error`] when Vulkan render pass creation fails.
     fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
         desc.validate()?;
+        if desc.sample_count > self.max_sample_count {
+            return Err(Error::Unavailable(format!(
+                "Vulkan render pass requests {} samples, device supports at most {}",
+                desc.sample_count, self.max_sample_count
+            )));
+        }
         let depth_format = desc
             .depth_attachment
             .as_ref()
