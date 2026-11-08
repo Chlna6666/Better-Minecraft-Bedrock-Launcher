@@ -62,9 +62,14 @@ fn stream_upload_budget_reached(bytes: usize, sections: usize) -> bool {
     let Some(cost) = gpui_3d::gpu_upload_cost_estimate() else {
         return false;
     };
-    cost.samples >= 8
+    let host_pressure = cost.samples >= 8
         && cost.predicted_submit_us(bytes, sections.saturating_mul(3))
-            >= MESH_GPU_OWNER_SUBMIT_BUDGET_US
+            >= MESH_GPU_OWNER_SUBMIT_BUDGET_US;
+    // Native GPU timer samples are measured independently from the host
+    // driver submission time. Refuse to throttle on unpaired/partial probes.
+    let device_pressure = cost.predicted_hardware_us(bytes)
+        .is_some_and(|micros| micros >= MESH_GPU_OWNER_SUBMIT_BUDGET_US);
+    host_pressure || device_pressure
 }
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 const SECTION_EPOCH_MAX_TOMBSTONES: usize = 32_768;
