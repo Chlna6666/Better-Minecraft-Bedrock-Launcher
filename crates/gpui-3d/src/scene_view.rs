@@ -58,6 +58,7 @@ pub(crate) mod gpu;
 mod hiz;
 mod projection;
 mod renderer;
+mod sidecar;
 mod resources;
 mod scene;
 mod shadow;
@@ -175,7 +176,7 @@ impl SceneView {
     /// Creates a scene view for an immutable scene and camera.
     #[must_use]
     pub fn new(scene: Arc<Scene>, camera: Camera) -> Self {
-        Self {
+        let view = Self {
             id: SceneViewId(NEXT_SCENE_VIEW_ID.fetch_add(1, Ordering::Relaxed)),
             scene,
             scene_transform: Mat4::IDENTITY,
@@ -197,7 +198,9 @@ impl SceneView {
             screen_effects: None,
             culling_bounds: None,
             hidden_nodes: Arc::new(HashSet::new()),
-        }
+        };
+        sidecar::schedule(&view);
+        view
     }
 
     /// Returns a scene view with a new scene and the same scene-view identity.
@@ -206,7 +209,7 @@ impl SceneView {
     /// scene. Attach tracks for the replacement scene with [`SceneView::with_animation`].
     #[must_use]
     pub fn with_scene(&self, scene: Arc<Scene>) -> Self {
-        Self {
+        let view = Self {
             id: self.id,
             scene,
             scene_transform: self.scene_transform,
@@ -228,7 +231,9 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
-        }
+        };
+        sidecar::schedule(&view);
+        view
     }
 
     /// Returns a scene view with a new camera and the same scene-view identity.
@@ -332,7 +337,7 @@ impl SceneView {
         if scene_transform.inverse().is_none() {
             return Err(SceneViewConfigError::InvalidSceneTransform);
         }
-        Ok(Self {
+        let view = Self {
             id: self.id,
             scene: self.scene.clone(),
             scene_transform,
@@ -354,7 +359,9 @@ impl SceneView {
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
-        })
+        };
+        sidecar::schedule(&view);
+        Ok(view)
     }
 
     /// Returns a scene view projected into the selected frame-local rectangle.
