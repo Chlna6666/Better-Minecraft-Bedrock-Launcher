@@ -80,6 +80,11 @@ impl TextureBufferCopy {
                 "buffer copies do not support depth formats".into(),
             ));
         }
+        if texture.sample_count != 1 {
+            return Err(Error::InvalidInput(
+                "buffer copies require a single-sampled texture; resolve MSAA first".into(),
+            ));
+        }
         if texture.dimension != crate::TextureDimension::D2 {
             return Err(Error::InvalidInput(
                 "buffer copies support only 2D textures".into(),
@@ -155,4 +160,38 @@ pub fn texture_copy_row_pitch(width: u32, format: Format, limits: TextureCopyLim
 #[must_use]
 pub fn texture_copy_buffer_bytes(size: Extent2d, format: Format, limits: TextureCopyLimits) -> u64 {
     texture_copy_row_pitch(size.width(), format, limits) * u64::from(size.height())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_texture_copy_rejects_msaa_instead_of_relying_on_backend_failure() {
+        let texture = crate::TextureDescriptor {
+            label: None,
+            size: Extent2d::new(4, 4).unwrap(),
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::COPY_DST,
+            memory_location: crate::MemoryLocation::GpuOnly,
+            dimension: crate::TextureDimension::D2,
+            sample_count: 4,
+        };
+        let buffer = BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: BufferUsage::COPY_SRC,
+            memory_location: crate::MemoryLocation::GpuOnly,
+        };
+        let copy = TextureBufferCopy {
+            buffer: crate::BufferId::new(1),
+            texture: crate::TextureId::new(2),
+            direction: CopyDirection::BufferToTexture,
+            buffer_offset: 0,
+            texture_origin: Origin2d::ZERO,
+            size: texture.size,
+        };
+        assert!(copy.validate(&texture, &buffer, TextureCopyLimits::TIGHT).is_err());
+    }
 }
