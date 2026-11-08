@@ -166,6 +166,33 @@ mod tests {
     }
 
     #[test]
+    fn visibility_hides_fused_group_only_when_all_source_sections_are_hidden() {
+        let material = Arc::new(gpui_3d::Material::new());
+        let left = generated_chunk(0, material.clone());
+        let right = generated_chunk(1, material);
+        let left_key = (left.pos, left.section_y);
+        let right_key = (right.pos, right.section_y);
+        let meshes = BTreeMap::from([(left_key, left), (right_key, right)]);
+        let mut registry = ChunkScene::default();
+        let mut scene = registry.update(None, &meshes, None, [0; 3]).unwrap();
+        assert_eq!(registry.fused.len(), 1);
+        let fused_id = registry.fused.values().next().unwrap().0;
+        registry
+            .apply_visibility(&mut scene, &BTreeSet::from([left_key]))
+            .unwrap();
+        assert!(!scene.node(registry.nodes[&left_key].0).unwrap().visible);
+        assert!(scene.node(registry.nodes[&right_key].0).unwrap().visible);
+        assert!(scene.node(fused_id).unwrap().visible);
+        registry
+            .apply_visibility(&mut scene, &BTreeSet::from([left_key, right_key]))
+            .unwrap();
+        assert!(!scene.node(fused_id).unwrap().visible);
+        registry.apply_visibility(&mut scene, &BTreeSet::new()).unwrap();
+        assert!(scene.node(fused_id).unwrap().visible);
+        assert!(registry.nodes.values().all(|(id, _)| scene.node(*id).unwrap().visible));
+    }
+
+    #[test]
     fn adjacent_generated_sections_render_as_one_mesh_part_and_restore_on_removal() {
         let mut material = gpui_3d::Material::new();
         material.shading_model = gpui_3d::ShadingModel::Unlit;
@@ -1209,6 +1236,34 @@ impl ChunkScene {
             scene.insert(None, node)?
         };
         self.nodes.insert(key, (id, mesh.clone()));
+        Ok(())
+    }
+
+    /// Apply conservative Section visibility without recreating GPU meshes or
+    /// changing stable NodeIds. The authored source nodes retain their mesh,
+    /// materials and per-Section occluders; a hidden source cannot occlude
+    /// another visible Section. Fused 2x2 meshes are only hidden when ALL
+    /// contributing Sections are hidden, so one visible cave entrance never
+    /// causes a different member's exterior to disappear.
+    pub(in super::super) fn apply_visibility(
+        &self,
+        scene: &mut Scene,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
+    ) -> Result<(), SceneError> {
+        for (key, (id, _)) in &self.nodes {
+            let visible = !hidden.contains(key);
+            if scene.node(*id).ok_or(SceneError::StaleNode)?.visible != visible {
+                scene.node_mut(*id).ok_or(SceneError::StaleNode)?.visible = visible;
+            }
+        }
+        for (id, members) in self.fused.values() {
+            let visible = members
+                .iter()
+                .any(|member| !hidden.contains(&(member.pos, member.section_y)));
+            if scene.node(*id).ok_or(SceneError::StaleNode)?.visible != visible {
+                scene.node_mut(*id).ok_or(SceneError::StaleNode)?.visible = visible;
+            }
+        }
         Ok(())
     }
 
