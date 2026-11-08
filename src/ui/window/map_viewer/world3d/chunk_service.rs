@@ -769,9 +769,9 @@ fn take_visible_urgent_chunks(
 #[cfg(test)]
 mod view_tests {
     use super::{
-        ChunkCursor, ChunkServiceEvent, ChunkServiceHandle, cached_texture_source, chunk_mesh_id,
-        coarse_lod_for_view, desired_chunk_positions, downsample_texture, face_band_y,
-        face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
+        ChunkCursor, ChunkServiceEvent, ChunkServiceHandle, ViewState, cached_texture_source,
+        chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
+        face_band_y, face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
         inside_cache_hysteresis, inside_view, intern_face_materials,
         is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
         mipmapped_texture, p3d,
@@ -1925,6 +1925,7 @@ mod cache_tests {
                 pos,
                 min_y: 0,
                 subchunks: Default::default(),
+                visibility: Default::default(),
                 state_version: None,
                 storage_bytes: 0,
             }),
@@ -1957,6 +1958,7 @@ mod cache_tests {
                 pos,
                 min_y: 0,
                 subchunks: Default::default(),
+                visibility: Default::default(),
                 state_version: None,
                 storage_bytes: 8192,
             }),
@@ -3535,10 +3537,11 @@ impl Worker {
         // neighbors. Models and edit invalidations can affect geometry beyond this range.
         let mut partial_bands = HashMap::<ChunkPos, Vec<(i32, i32)>>::new();
         let light_started = Instant::now();
+        let lighting_is_lit = self.lighting.is_lit();
         let light_fields = targets
             .iter()
             .copied()
-            .filter(|_| self.lighting.is_lit())
+            .filter(|_| lighting_is_lit)
             .map(|pos| (pos, self.build_lighting(pos)))
             .collect::<HashMap<_, _>>();
         if trace && light_started.elapsed() >= Duration::from_millis(1) {

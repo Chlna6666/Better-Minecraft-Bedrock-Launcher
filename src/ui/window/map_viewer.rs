@@ -39,7 +39,7 @@ mod prelude;
 // or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
 pub(crate) mod bedrock_world_domains {
     pub(crate) use ::bedrock_world::biome::{Biome2d, Biome3d, BiomeStorage};
-    pub(crate) use ::bedrock_world::block::{BlockState, block_storage_index};
+    pub(crate) use ::bedrock_world::block::{BlockPalette, BlockState, block_storage_index};
     pub(crate) use ::bedrock_world::chunk::{
         ChunkKey, ChunkValue, ChunkVersion, LegacyTerrain, LevelChunk, SubChunk,
         SubChunkDecodeMode, SubChunkFormat,

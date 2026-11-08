@@ -99,7 +99,9 @@ fn upsert_shared_probe<K: Ord, V>(
 
 #[cfg(test)]
 mod stream_probe_epoch_tests {
-    use super::*;
+    use super::upsert_shared_probe;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     #[test]
     fn redundant_section_events_do_not_invalidate_shared_portal_probe() {
@@ -532,7 +534,13 @@ fn same_portal_region(a: PortalVisibilityKey, b: PortalVisibilityKey) -> bool {
 
 #[cfg(test)]
 mod async_portal_visibility_tests {
-    use super::*;
+    use super::{
+        PORTAL_RESULT_CACHE_ENTRIES, PortalResultCache, PortalVisibilityKey,
+        portal_snapshot_compatible, same_portal_region,
+    };
+    use bedrock_render::{ChunkPos, Dimension};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
 
     fn request(revision: u64, x: i32, exits: u8) -> PortalVisibilityKey {
         PortalVisibilityKey {
@@ -605,7 +613,11 @@ mod async_portal_visibility_tests {
         assert!(cache.entries.len() <= PORTAL_RESULT_CACHE_ENTRIES);
         assert_eq!(
             cache.total_bands,
-            cache.entries.iter().map(|(_, hidden)| hidden.len()).sum(),
+            cache
+                .entries
+                .iter()
+                .map(|(_, hidden)| hidden.len())
+                .sum::<usize>(),
         );
         assert!(cache.find(first).is_none(), "oldest region must be evicted");
         cache.clear();
