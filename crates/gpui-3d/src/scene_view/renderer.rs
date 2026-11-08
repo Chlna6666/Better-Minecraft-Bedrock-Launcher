@@ -17,6 +17,52 @@ use std::{
 
 const SCENE_MEMORY_TRIM_IDLE: Duration = Duration::from_secs(1);
 
+#[derive(Clone, Copy)]
+enum OffscreenFrameKind {
+    Captured,
+    Reused,
+    RetainedWhilePreparing,
+}
+
+#[derive(Default)]
+struct OffscreenTrace {
+    window_start: Option<Instant>,
+    captured: u64,
+    reused: u64,
+    retained: u64,
+}
+
+impl OffscreenTrace {
+    fn record(&mut self, kind: OffscreenFrameKind) {
+        if !trace_timings() {
+            return;
+        }
+        match kind {
+            OffscreenFrameKind::Captured => self.captured += 1,
+            OffscreenFrameKind::Reused => self.reused += 1,
+            OffscreenFrameKind::RetainedWhilePreparing => self.retained += 1,
+        }
+        let now = Instant::now();
+        let start = self.window_start.get_or_insert(now);
+        if now.saturating_duration_since(*start) < Duration::from_secs(1) {
+            return;
+        }
+        let total = self.captured + self.reused + self.retained;
+        eprintln!(
+            "gpui3d offscreen_sidecar frames={} capture={} reuse={} pending_hold={} capture_ratio={:.3}",
+            total,
+            self.captured,
+            self.reused,
+            self.retained,
+            self.captured as f64 / total.max(1) as f64,
+        );
+        *self = Self {
+            window_start: Some(now),
+            ..Self::default()
+        };
+    }
+}
+
 #[derive(Default)]
 struct RendererTimingTrace {
     last_report: Option<Instant>,
@@ -470,6 +516,7 @@ struct SidecarGpuBackend {
     /// passes, and published only after the host accepts the GPU submission.
     pending_capture_epochs: Vec<(SceneViewId, u64)>,
     submitted_capture_epochs: Vec<(SceneViewId, u64)>,
+    offscreen_trace: OffscreenTrace,
     frame_time: Option<Instant>,
     frame_index: u64,
     timing_trace: RendererTimingTrace,
@@ -551,6 +598,7 @@ impl SidecarGpuBackend {
             pending_passes: Vec::new(),
             pending_capture_epochs: Vec::new(),
             submitted_capture_epochs: Vec::new(),
+            offscreen_trace: OffscreenTrace::default(),
             frame_time: None,
             frame_index: 0,
             timing_trace: RendererTimingTrace::default(),
@@ -881,8 +929,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             // Do not force the GUI to blank while a newer, incompatible Scene
             // is prepared. Reuse the last *submitted* texture when possible;
             // this branch must not allocate/upload or block the GPU owner.
-            if let Some(surface) = self.offscreen.as_ref() {
-                surface.composite_existing(scene_view.id, context.viewport(), steps);
+            if let Some(surface) = self.offscreen.as_ref()
+                && surface.composite_existing(scene_view.id, context.viewport(), steps)
+            {
+                self.offscreen_trace.record(OffscreenFrameKind::RetainedWhilePreparing);
             }
             return Ok(());
         }
@@ -929,6 +979,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             )
         {
             surface.composite_existing(scene_view.id, context.viewport(), steps);
+            self.offscreen_trace.record(OffscreenFrameKind::Reused);
             return Ok(());
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
@@ -967,6 +1018,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 capture_steps, &mut self.pending_passes, steps,
             )?;
             self.pending_capture_epochs.push((scene_view.id, scene.capture_revision));
+            self.offscreen_trace.record(OffscreenFrameKind::Captured);
         }
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
