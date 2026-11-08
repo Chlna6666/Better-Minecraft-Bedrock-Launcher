@@ -474,6 +474,15 @@ struct PortalVisibilityKey {
 
 /// Camera movement within an already evaluated connected air component
 /// preserves the graph result. Stream revisions and radius changes do not.
+/// The camera may move while a portal graph task runs. A completed
+/// result from another air pocket is still a valid LRU candidate provided
+/// the decoded world snapshot, dimension and radius have not changed.
+fn portal_snapshot_compatible(a: PortalVisibilityKey, b: PortalVisibilityKey) -> bool {
+    a.revision == b.revision
+        && a.dimension == b.dimension
+        && a.radius == b.radius
+}
+
 fn same_portal_region(a: PortalVisibilityKey, b: PortalVisibilityKey) -> bool {
     a.revision == b.revision
         && a.dimension == b.dimension
@@ -498,6 +507,21 @@ mod async_portal_visibility_tests {
                 exits,
             )),
         }
+    }
+
+    #[test]
+    fn stale_camera_results_are_cacheable_only_with_the_same_world_snapshot() {
+        let old = request(4, 1, 2);
+        let moved = request(4, 7, 3);
+        assert!(!same_portal_region(old, moved));
+        assert!(portal_snapshot_compatible(old, moved));
+        assert!(!portal_snapshot_compatible(old, request(5, 1, 2)));
+        assert!(!portal_snapshot_compatible(old, PortalVisibilityKey {
+            radius: 18, ..old
+        }));
+        assert!(!portal_snapshot_compatible(old, PortalVisibilityKey {
+            dimension: Dimension::Nether, ..old
+        }));
     }
 
     #[test]
@@ -1328,17 +1352,24 @@ impl World3dEditorView {
             Some(Ok(result)) => {
                 self.visibility_job = None;
                 self.visibility_job_key = None;
-                if safe && same_portal_region(result.key, key) {
+                if safe && portal_snapshot_compatible(result.key, key) {
                     if super::chunk_service::trace_timings() && result.solve_us >= 2_000 {
                         eprintln!(
-                            "world3d portal_visibility_async_us={} hidden_bands={}",
-                            result.solve_us, result.hidden.len(),
+                            "world3d portal_visibility_async_us={} hidden_bands={} current_component={}",
+                            result.solve_us,
+                            result.hidden.len(),
+                            same_portal_region(result.key, key),
                         );
                     }
                     let hidden = Arc::new(result.hidden);
-                    self.visibility_cache.insert(key, Arc::clone(&hidden));
-                    self.visibility_completed_key = Some(key);
-                    return self.apply_portal_visibility(hidden);
+                    // Keep useful work done for a previous camera region in
+                    // the bounded cache instead of discarding it when the
+                    // camera moves faster than the background traversal.
+                    self.visibility_cache.insert(result.key, Arc::clone(&hidden));
+                    if same_portal_region(result.key, key) {
+                        self.visibility_completed_key = Some(key);
+                        return self.apply_portal_visibility(hidden);
+                    }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
