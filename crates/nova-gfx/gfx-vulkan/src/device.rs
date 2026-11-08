@@ -1577,6 +1577,7 @@ impl VulkanDevice {
         Ok(self.command_encoders.insert(VulkanCommandEncoder {
             command_pool,
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
+            gpu_draw_tags: vec![None; command_buffers.len()],
             gpu_work_tag: None,
             command_buffers,
             transient_framebuffers: Vec::new(),
@@ -1967,6 +1968,7 @@ impl VulkanDevice {
             clear_region,
             resolve: None,
             gpu_trace,
+            gpu_indirect_trace: None,
             graph_write_hazard,
         });
         if result.is_ok() {
@@ -2010,12 +2012,22 @@ impl VulkanDevice {
         clear_region: Option<ScissorRect>,
         viewport: Option<Viewport>,
         graph_write_hazard: bool,
+        gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
                 "Vulkan offscreen pass must have at least one color attachment".into(),
             ));
         }
+        let gpu_query = if gpu_draw_tag.is_some() {
+            let encoder = self.command_encoders.get(encoder_id)?;
+            let slot = encoder.command_buffers.iter().position(|&cmd| cmd == command_buffer);
+            slot.and_then(|index| {
+                let pool = encoder.gpu_trace_query_pool?;
+                let start = u32::try_from(index).ok()?.checked_mul(2)?;
+                Some((pool, start, index))
+            })
+        } else { None };
         let render_pass_record = self.render_passes.get(render_pass_id)?.clone();
         if color_views.len() != render_pass_record.color_formats.len() {
             return Err(Error::InvalidInput(
@@ -2306,9 +2318,13 @@ impl VulkanDevice {
             clear_region,
             resolve,
             gpu_trace: None,
+            gpu_indirect_trace: gpu_query.map(|(pool, first, _)| (pool, first)),
             graph_write_hazard,
         });
         if result.is_ok() {
+            if let (Some(tag), Some((_, _, index))) = (gpu_draw_tag, gpu_query) {
+                self.command_encoders.get_mut(encoder_id)?.gpu_draw_tags[index] = Some(tag);
+            }
             for access in depth_accesses {
                 self.textures.get_mut(access.texture)?.layout = access.new_layout;
             }
@@ -2472,6 +2488,18 @@ impl VulkanDevice {
         passes: &[RenderPassCommands<'_>],
         independent: bool,
     ) -> Result<Option<SubmissionId>> {
+        self.record_texture_passes_profiled(passes, independent, None)
+    }
+
+    fn record_texture_passes_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        independent: bool,
+        tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+    ) -> Result<Option<SubmissionId>> {
+        if tags.is_some_and(|t| t.len() != passes.len()) {
+            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+        }
         if passes.is_empty() {
             return Ok(None);
         }
@@ -2524,6 +2552,14 @@ impl VulkanDevice {
                 pass.clear_region,
                 pass.viewport,
                 graph_write_hazard,
+                tags.and_then(|tags| tags[index]).filter(|tag| {
+                    tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
+                        && !pass.commands.is_empty()
+                        && pass.commands.iter().all(|command| matches!(
+                            command, RenderCommand::DrawIndirect(_)
+                            | RenderCommand::DrawIndexedIndirect(_)
+                        ))
+                }),
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -4052,6 +4088,25 @@ impl VulkanDevice {
         // The deferred-queue completion predicate verified the submission fence.
         // Read native GPU timestamps only AFTER completion; never stall the rendering lane.
         if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
+            for (index, entry) in encoder.gpu_draw_tags.iter_mut().enumerate() {
+                let Some(tag) = entry.take() else { continue; };
+                let Some(start) = u32::try_from(index).ok().and_then(|i| i.checked_mul(2)) else {
+                    continue;
+                };
+                let mut ticks = [0_u64; 2];
+                // SAFETY: Encoder's fence has completed. Do not use WAIT.
+                if unsafe { self.device.get_query_pool_results(
+                    pool, start, &mut ticks, vk::QueryResultFlags::TYPE_64,
+                ) }.is_ok() {
+                    self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                        tag,
+                        duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
+                        frequency_hz: clock.frequency_hz(),
+                    });
+                }
+            }
+        }
+        if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
             for (index, pass) in encoder.gpu_trace_passes.iter_mut().enumerate() {
                 if *pass == VulkanGpuPass::Unused {
                     continue;
@@ -4617,6 +4672,14 @@ impl PresentationDevice for VulkanDevice {
         Ok(None)
     }
 
+    fn render_to_textures_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        self.record_texture_passes_profiled(passes, false, Some(tags))
+    }
+
     fn independent_graphics_queue_available(&self) -> bool {
         self.sidecar_queue.is_some()
     }
@@ -4626,6 +4689,14 @@ impl PresentationDevice for VulkanDevice {
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
         self.record_texture_passes_on_queue(passes, self.sidecar_queue.is_some())
+    }
+
+    fn render_to_textures_independent_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        self.record_texture_passes_profiled(passes, self.sidecar_queue.is_some(), Some(tags))
     }
 }
 
@@ -5233,6 +5304,9 @@ struct VulkanCommandEncoder {
     /// One timestamp pair per command buffer; retained until its fence completes.
     gpu_trace_query_pool: Option<vk::QueryPool>,
     gpu_trace_passes: Vec<VulkanGpuPass>,
+    /// Pure indirect-only GPU draw windows recorded in the offscreen pair
+    /// formerly unused by frame tracing. One tag per native command buffer.
+    gpu_draw_tags: Vec<Option<gfx_core::GpuTimestampTag>>,
     gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
 }
 
@@ -6480,6 +6554,8 @@ struct CommandRecordInfo<'a> {
     resolve: Option<(vk::Image, vk::Image, vk::Extent2D)>,
     /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
     gpu_trace: Option<(vk::QueryPool, u32)>,
+    /// Timestamp pair reserved for the native indirect draw loop ONLY.
+    gpu_indirect_trace: Option<(vk::QueryPool, u32)>,
     /// A later native attachment write reuses physical texture storage that
     /// appeared earlier in this ordered Render Graph batch.
     graph_write_hazard: bool,
@@ -6732,6 +6808,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             );
         }
     }
+    if let Some((pool, slot)) = info.gpu_indirect_trace {
+        // SAFETY: This dedicated command buffer owns this probe pair and is
+        // reset only before entering its render pass.
+        unsafe { info.device.cmd_reset_query_pool(info.command_buffer, pool, slot, 2) };
+    }
     depth::record_depth_accesses(info.device, info.command_buffer, info.depth_accesses);
     if info.graph_write_hazard {
         // WAW on the same physical VkImage. Preserve execution/memory ordering
@@ -6842,6 +6923,12 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         );
         info.device
             .cmd_set_viewport(info.command_buffer, 0, &[viewport]);
+        if let Some((pool, slot)) = info.gpu_indirect_trace {
+            // The clear/attachment setup has completed: start at native draw.
+            info.device.cmd_write_timestamp(
+                info.command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, pool, slot,
+            );
+        }
         let mut previous_pipeline = None;
         let mut previous_scissor = None;
         let mut previous_bindings = None;
@@ -6974,6 +7061,13 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                     );
                 }
             }
+        }
+        if let Some((pool, slot)) = info.gpu_indirect_trace {
+            // Ends after the last indirect command, before MSAA resolve,
+            // attachment layout changes or GUI composition.
+            info.device.cmd_write_timestamp(
+                info.command_buffer, vk::PipelineStageFlags::BOTTOM_OF_PIPE, pool, slot + 1,
+            );
         }
         info.device.cmd_end_render_pass(info.command_buffer);
         if let Some((src, dst, extent)) = info.resolve {
