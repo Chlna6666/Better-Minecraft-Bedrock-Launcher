@@ -10,13 +10,19 @@
 use super::{Mat4, Scene, SceneView};
 use crate::{Camera, PreparedScene};
 use rayon::ThreadPool;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 const MAX_SIDECAR_THREADS: usize = 6;
 
 #[derive(Default)]
 pub(super) struct Mailbox {
     inner: Mutex<MailboxState>,
+    /// Zero-contention cancellation token read by CPU RenderJobs. The
+    /// mutable mailbox remains under its short critical-section mutex.
+    generation: AtomicU64,
 }
 impl std::fmt::Debug for Mailbox {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,6 +63,7 @@ impl Mailbox {
         }
         state.revision = state.revision.wrapping_add(1);
         let revision = state.revision;
+        self.generation.store(revision, Ordering::Release);
         state.target = Some(Target { scene: scene.clone(), transform });
         state.pending = Some(Request { revision, scene, transform, camera });
         state.published = None;
@@ -88,6 +95,7 @@ impl Mailbox {
         }
         // Invalidate the running job without waiting for the worker.
         state.revision = state.revision.wrapping_add(1);
+        self.generation.store(state.revision, Ordering::Release);
         state.pending = None;
         state.published = None;
     }
@@ -122,9 +130,16 @@ impl Mailbox {
             // after the snapshot is consumed. The later update_camera call
             // refreshes frustum/alpha ordering for the exact viewport.
             let completed = prepared
-                .update_transformed(&request.scene, request.camera, 1.0, request.transform)
-                .is_ok()
-                .then_some(prepared);
+                .update_transformed_interruptible(
+                    &request.scene,
+                    request.camera,
+                    1.0,
+                    request.transform,
+                    || self.generation.load(Ordering::Acquire) != request.revision,
+                )
+                .ok()
+                .filter(|&finished| finished)
+                .map(|_| prepared);
             let elapsed = prepared_started.elapsed();
             let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let current = state.revision == request.revision;
@@ -261,6 +276,20 @@ mod tests {
         slot.run();
         assert_eq!(slot.status(&scene, Mat4::IDENTITY), (false, false));
         assert!(slot.take(&scene, Mat4::IDENTITY, camera()).is_none());
+    }
+
+    #[test]
+    fn mailbox_cancellation_token_invalidates_old_work() {
+        let slot = Mailbox::default();
+        let old = Arc::new(Scene::new());
+        let next = Arc::new(Scene::new());
+        assert!(slot.enqueue(old, Mat4::IDENTITY, camera()));
+        let first = slot.generation.load(Ordering::Acquire);
+        assert!(!slot.enqueue(next.clone(), Mat4::IDENTITY, camera()));
+        assert_ne!(slot.generation.load(Ordering::Acquire), first);
+        assert!(slot.generation.load(Ordering::Acquire) > first);
+        slot.discard(&next, Mat4::IDENTITY);
+        assert_ne!(slot.generation.load(Ordering::Acquire), first + 1);
     }
 
     #[test]
