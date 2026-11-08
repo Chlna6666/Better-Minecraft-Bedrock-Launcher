@@ -191,6 +191,9 @@ mod structural_light_delta_tests {
             measured_submit_us: 1_000,
             ns_per_mib: 500_000,
             ns_per_write: 50_000,
+            hardware_samples: 0,
+            measured_hardware_upload_us: 0,
+            hardware_ns_per_mib: 0,
         };
         assert_eq!(sparse_upload_range_budget_with_cost(BackendKind::Vulkan, 65_536, None), 64);
         assert_eq!(sparse_upload_range_budget_with_cost(
