@@ -435,6 +435,17 @@ pub(super) struct Renderer {
 /// CPU Scene preparation is performed by the independent sidecar scheduler.
 /// Keeping this boundary explicit lets the host's extension pass supply the
 /// final attachment without owning MeshArena or Draw Slot lifetime.
+/// Qt3D RenderJob handoff policy. The GPU owner never traverses a newly
+/// replaced large Scene solely to fill a missing worker result. Previously
+/// committed matching/compatible geometry may still be presented.
+fn defer_unprepared_scene(
+    worker_pending: bool,
+    committed_matches: bool,
+    retained_compatible: bool,
+) -> bool {
+    worker_pending && !committed_matches && !retained_compatible
+}
+
 struct SidecarGpuBackend {
     backend: BackendKind,
     render_pass: RenderPassId,
@@ -664,6 +675,15 @@ mod tests {
     }
 
     #[test]
+    fn initial_and_incompatible_scene_publications_wait_for_cpu_render_jobs() {
+        use super::defer_unprepared_scene;
+        assert!(defer_unprepared_scene(true, false, false));
+        assert!(!defer_unprepared_scene(true, true, false));
+        assert!(!defer_unprepared_scene(true, false, true));
+        assert!(!defer_unprepared_scene(false, false, false));
+    }
+
+    #[test]
     fn memory_trim_preserves_recent_scenes_until_aggressive_trim() {
         let now = Instant::now();
         let recent = now - SCENE_MEMORY_TRIM_IDLE + Duration::from_millis(1);
@@ -762,6 +782,22 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             self.begin_frame(context.frame_time());
             self.retire_idle_scenes(device)?;
         }
+        // A Qt3D-like CPU RenderJob may still be preparing the initial
+        // scene or an incompatible full replacement. Do not turn the shared
+        // GPU owner into a second synchronous geometry traversal. The host
+        // extension keeps its frame alive until the worker publishes.
+        let worker_pending = super::sidecar::pending(&scene_view);
+        let retained = if worker_pending {
+            self.scenes.get(&scene_view.id)
+                .and_then(|scene| scene.retained_sidecar_view(&scene_view))
+        } else {
+            None
+        };
+        let matching = self.scenes.get(&scene_view.id)
+            .is_some_and(|scene| scene.matches_published_scene(&scene_view));
+        if defer_unprepared_scene(worker_pending, matching, retained.is_some()) {
+            return Ok(());
+        }
         if !self.scenes.contains_key(&scene_view.id) {
             self.scenes.insert(
                 scene_view.id,
@@ -784,8 +820,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // versioned CPU-sidecar job. Until it is prepared, continue showing
         // the last published GPU geometry with the current camera instead
         // of blocking every window's shared GPU submission owner.
-        let retained_sidecar = scene.retained_sidecar_view(&scene_view);
-        let prepared_view = retained_sidecar.as_ref().unwrap_or(&scene_view);
+        let prepared_view = retained.as_ref().unwrap_or(&scene_view);
         let prepare_started = trace_timings().then(Instant::now);
         {
             let _phase =
