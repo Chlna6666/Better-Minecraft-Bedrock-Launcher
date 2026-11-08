@@ -4612,7 +4612,9 @@ fn build_probe(
     ).saturating_add(visibility.len().saturating_mul(
         std::mem::size_of::<i8>()
             + std::mem::size_of::<super::visibility::SectionVisibility>(),
-    ));
+    )).saturating_add(visibility.values().fold(0usize, |total, graph| {
+        total.saturating_add(graph.heap_bytes())
+    }));
     World3dChunkProbe {
         pos,
         min_y,
