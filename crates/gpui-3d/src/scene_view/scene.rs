@@ -522,8 +522,6 @@ impl SceneResources {
         let camera_changed = self.camera != Some(scene_view.camera)
             || self.projection.map(FrameProjection::aspect) != Some(projection.aspect());
         let culling_bounds_changed = self.culling_bounds != scene_view.culling_bounds;
-        let node_mask_changed = !Arc::ptr_eq(&self.hidden_nodes, &scene_view.hidden_nodes)
-            && self.hidden_nodes != scene_view.hidden_nodes;
         // A camera-only update can reuse the retained draw list unless distance-based LOD may
         // select a different mesh. In that case re-walk the scene before uploading draw state.
         // Device-neutral GPU path: DX11, DX12, Vulkan and OpenGL use the
@@ -534,6 +532,17 @@ impl SceneResources {
             && renderer.cull_shader.is_some();
         // A resized/recreated culling buffer invalidates old bind groups even
         // if the scene change only added assets.
+        // Portal masks are a GPU compute overlay. The CPU fallback still
+        // draws the original authored geometry and must retain its shadows.
+        let node_mask_changed = gpu_culling
+            && !Arc::ptr_eq(&self.hidden_nodes, &scene_view.hidden_nodes)
+            && self.hidden_nodes != scene_view.hidden_nodes;
+        let empty_hidden_nodes = HashSet::new();
+        let shadow_hidden_nodes = if gpu_culling {
+            scene_view.hidden_nodes.as_ref()
+        } else {
+            &empty_hidden_nodes
+        };
         let previous_visible_instances = self
             .culling
             .as_ref()
@@ -845,7 +854,7 @@ impl SceneResources {
                 device,
                 self.prepared.occluder_bounds_excluding(
                     scene_view.culling_bounds,
-                    &scene_view.hidden_nodes,
+                    shadow_hidden_nodes,
                 ),
                 scene_view.camera.eye,
                 shading.sun_direction,
