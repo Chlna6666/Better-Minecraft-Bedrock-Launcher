@@ -920,6 +920,14 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             if let Some(surface) = self.offscreen.as_mut() {
                 surface.sync(device, &context)?;
             }
+            // Clipped/scroll-hidden SceneViews have no visible producer pixels.
+            // Skip GPU scene upload, culling, command encoding and allocation,
+            // but continue the owner-thread lifetime/idle-cache housekeeping.
+            if self.offscreen.is_some() && !SidecarSurface::visible(&context) {
+                self.begin_frame(context.frame_time());
+                self.retire_idle_scenes(device)?;
+                return Ok(());
+            }
             let render_context = self.offscreen.as_ref()
                 .map(|surface| surface.capture_context(&context))
                 .unwrap_or_else(|| context.clone());
