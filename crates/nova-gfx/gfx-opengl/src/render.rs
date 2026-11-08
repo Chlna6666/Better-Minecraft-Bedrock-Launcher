@@ -123,6 +123,23 @@ impl OpenGlDevice {
             ));
         }
         let size = sizes[0];
+        if sizes.iter().any(|&extent| extent != size) {
+            return Err(Error::InvalidInput(
+                "OpenGL color attachment extents must match".into(),
+            ));
+        }
+        if let Some(resolve_id) = resolve_view {
+            let resolve = self.views.get(resolve_id)?;
+            if pass.sample_count == 1
+                || resolve.format != formats[0]
+                || resolve.size != size
+                || !resolve.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+            {
+                return Err(Error::InvalidInput(
+                    "OpenGL resolve must match the first MSAA color attachment in format and extent, and be renderable".into(),
+                ));
+            }
+        }
         let viewport_size = viewport_size.unwrap_or(size);
         let scissor_extent = scissor_extent.unwrap_or(size);
         let depth_view = depth
@@ -229,7 +246,7 @@ impl OpenGlDevice {
                 .viewport(viewport_x, viewport_y, viewport_width, viewport_height);
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.depth_mask(true);
-            if formats[0].is_srgb() {
+            if formats.iter().any(|format| format.is_srgb()) {
                 self.gl.enable(glow::FRAMEBUFFER_SRGB);
             } else {
                 self.gl.disable(glow::FRAMEBUFFER_SRGB);
@@ -292,10 +309,9 @@ impl OpenGlDevice {
                 Ok(())
             }
         })();
-        if let Some(resolve_view) = resolve_view {
-            let msaa_color = textures.first().copied().ok_or_else(|| {
-                Error::InvalidInput("OpenGL resolve needs an MSAA color source".into())
-            })?;
+        // A failed draw must not resolve invalid or partially recorded contents.
+        // Still execute the common detach/cleanup path below.
+        if let Some(resolve_view) = resolve_view.filter(|_| result.is_ok()) {
             let resolve = self.views.get(resolve_view)?;
             // SAFETY: A transient resolve FBO is created, bound as DRAW, and deleted
             // after the glBlitFramebuffer blits the MSAA draw FBO into it.
@@ -327,14 +343,13 @@ impl OpenGlDevice {
                 self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
                 self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
                 self.gl.delete_framebuffer(resolve_fbo);
-                let _ = msaa_color;
             }
         }
         // SAFETY: detach transient targets before they are sampled, resized or destroyed.
         unsafe {
             // The resolve blit unbinds both framebuffer targets; re-attach to the pass
             // framebuffer before detaching, since the default one cannot be modified.
-            if resolve_view.is_some() {
+            if resolve_view.is_some_and(|_| result.is_ok()) {
                 self.gl
                     .bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
             }
