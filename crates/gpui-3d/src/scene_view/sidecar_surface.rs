@@ -23,6 +23,10 @@ struct Target {
     extent: Extent2d,
     region: ScissorRect,
     host_extent: Extent2d,
+    /// Mask is part of placement identity, not the 3D capture revision.
+    /// Animated or relocated rounded clips must refresh the UI compositor
+    /// without unnecessarily reallocating the producer texture.
+    content_mask: gpui::ContentMask<gpui::ScaledPixels>,
     capture: CaptureEpoch,
 }
 
@@ -112,20 +116,33 @@ fn region_extent(rect: ScissorRect) -> Extent2d {
         .expect("cropped sidecar region must be nonzero")
 }
 
-/// Four f32 uniforms: NDC top-left followed by NDC delta per unit UV.
-/// Full-screen-triangle vertex coordinates (0, 0), (2, 0), (0, 2)
-/// directly sample the cropped texture with no separate vertex buffer.
-fn placement_bytes(rect: ScissorRect, viewport: Extent2d) -> [u8; 16] {
+/// Three 16-byte aligned vectors, shared with sidecar_composite.wgsl:
+/// NDC top-left/delta, GPUI rounded content-mask bounds and corner radii.
+/// The mask is expressed in host-window pixels because @builtin(position)
+/// on the composite fragment is also in host-window pixels.
+fn placement_bytes(
+    rect: ScissorRect,
+    viewport: Extent2d,
+    mask: &gpui::ContentMask<gpui::ScaledPixels>,
+) -> [u8; 48] {
     let width = viewport.width() as f32;
     let height = viewport.height() as f32;
-    let rect_data = [
+    let values = [
         -1.0 + 2.0 * rect.x as f32 / width,
         1.0 - 2.0 * rect.y as f32 / height,
         2.0 * rect.width as f32 / width,
         -2.0 * rect.height as f32 / height,
+        mask.corner_bounds.origin.x.0,
+        mask.corner_bounds.origin.y.0,
+        mask.corner_bounds.size.width.0,
+        mask.corner_bounds.size.height.0,
+        mask.corner_radii.top_left.0,
+        mask.corner_radii.top_right.0,
+        mask.corner_radii.bottom_right.0,
+        mask.corner_radii.bottom_left.0,
     ];
-    let mut bytes = [0u8; 16];
-    for (chunk, value) in bytes.chunks_exact_mut(4).zip(rect_data) {
+    let mut bytes = [0u8; 48];
+    for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
     bytes
@@ -385,9 +402,10 @@ impl SidecarSurface {
         &self,
         device: &mut dyn ExtensionDevice,
         region: ScissorRect,
-        host_extent: Extent2d,
+        host: &RendererExtensionContext,
     ) -> gpui::Result<Target> {
         let extent = region_extent(region);
+        let host_extent = host.viewport();
         let color = device.create_texture(&TextureDescriptor {
             label: Some("gpui-3d sidecar color".into()),
             size: extent,
@@ -438,7 +456,7 @@ impl SidecarSurface {
             }
         };
         let PlacementResources { binding, buffer: placement } =
-            match self.create_placement(device, color_view, region, host_extent) {
+            match self.create_placement(device, color_view, region, host) {
                 Ok(placement) => placement,
                 Err(error) => {
                     let _ = device.destroy_texture_view(depth_view);
@@ -450,7 +468,7 @@ impl SidecarSurface {
             };
         Ok(Target {
             color, color_view, depth, depth_view, binding, placement, extent,
-            region, host_extent,
+            region, host_extent, content_mask: *host.content_mask(),
             capture: CaptureEpoch::default(),
         })
     }
@@ -462,17 +480,16 @@ impl SidecarSurface {
         device: &mut dyn ExtensionDevice,
         color_view: TextureViewId,
         region: ScissorRect,
-        host_extent: Extent2d,
+        host: &RendererExtensionContext,
     ) -> gpui::Result<PlacementResources> {
+        let bytes = placement_bytes(region, host.viewport(), host.content_mask());
         let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("gpui-3d sidecar crop placement".into()),
-            size: 16,
+            label: Some("gpui-3d sidecar crop placement and rounded mask".into()),
+            size: bytes.len() as u64,
             usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
             memory_location: MemoryLocation::GpuOnly,
         })?;
-        if let Err(error) = device.write_buffer(
-            buffer, 0, &placement_bytes(region, host_extent),
-        ) {
+        if let Err(error) = device.write_buffer(buffer, 0, &bytes) {
             let _ = device.destroy_buffer(buffer);
             return Err(error.into());
         }
@@ -497,7 +514,7 @@ impl SidecarSurface {
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer,
                         offset: 0,
-                        size: 16,
+                        size: 48,
                         stride: None,
                     }),
                 },
@@ -648,14 +665,16 @@ impl SidecarSurface {
             return Ok(());
         };
         if !target.can_relocate(extent)
-            || (target.region == region && target.host_extent == host.viewport())
+            || (target.region == region
+                && target.host_extent == host.viewport()
+                && target.content_mask == *host.content_mask())
         {
             // Resizes and still-pending painter-order producers require a new
             // attachment; enqueue owns the transactional replacement.
             return Ok(());
         }
         let updated = self.create_placement(
-            device, target.color_view, region, host.viewport(),
+            device, target.color_view, region, host,
         )?;
         let target = self.targets.get_mut(&id).expect("checked above");
         let previous = PlacementResources {
@@ -664,6 +683,7 @@ impl SidecarSurface {
         };
         target.region = region;
         target.host_extent = host.viewport();
+        target.content_mask = *host.content_mask();
         self.awaiting_placement_gpu.push(previous);
         self.trace.relocated = self.trace.relocated.saturating_add(1);
         Ok(())
@@ -683,6 +703,7 @@ impl SidecarSurface {
         self.targets.get(&id).is_some_and(|target| {
             target.region == region
                 && target.host_extent == host.viewport()
+                && target.content_mask == *host.content_mask()
                 && target.capture.reusable(capture_revision)
         })
     }
@@ -701,6 +722,7 @@ impl SidecarSurface {
         };
         if target.region != visible_region(host)
             || target.host_extent != host.viewport()
+            || target.content_mask != *host.content_mask()
             || target.capture.submitted.is_none()
         {
             return false;
@@ -753,7 +775,7 @@ impl SidecarSurface {
         let recreate = self.targets.get(&id)
             .is_none_or(|target| !target.can_relocate(extent));
         if recreate {
-            let new_target = self.create_target(device, region, host.viewport())?;
+            let new_target = self.create_target(device, region, host)?;
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
@@ -879,6 +901,7 @@ mod tests {
                 extent: Extent2d::new(32, 32).unwrap(),
                 region: ScissorRect { x: 0, y: 0, width: 32, height: 32 },
                 host_extent: Extent2d::new(32, 32).unwrap(),
+                content_mask: gpui::ContentMask::default(),
                 capture: CaptureEpoch::default(),
             }],
             ready_to_release: Vec::new(),
@@ -956,7 +979,7 @@ mod tests {
         let before = u64::from(viewport.width()) * u64::from(viewport.height()) * 8;
         let after = u64::from(extent.width()) * u64::from(extent.height()) * 8;
         assert!(after * 10 < before, "two RGBA/depth 32-bit targets should be ~13x smaller");
-        let bytes = placement_bytes(rect, viewport);
+        let bytes = placement_bytes(rect, viewport, &gpui::ContentMask::default());
         let values = std::array::from_fn::<_, 4, _>(|i| {
             f32::from_le_bytes(bytes[i * 4..(i + 1) * 4].try_into().unwrap())
         });
@@ -966,6 +989,38 @@ mod tests {
         assert!((values[3] - (-640.0 / 1080.0)).abs() < 1.0e-5);
         assert_eq!(host.viewport(), viewport);
         assert_eq!(bounds.size.width, gpui::ScaledPixels::from(480.0));
+    }
+
+    #[test]
+    fn rounded_content_mask_has_separate_premultiplied_composite_uniforms() {
+        let viewport = Extent2d::new(1920, 1080).unwrap();
+        let rect = ScissorRect { x: 400, y: 200, width: 480, height: 320 };
+        let mask = gpui::ContentMask {
+            bounds: gpui::bounds(
+                gpui::point(gpui::ScaledPixels(400.0), gpui::ScaledPixels(200.0)),
+                gpui::size(gpui::ScaledPixels(480.0), gpui::ScaledPixels(320.0)),
+            ),
+            corner_bounds: gpui::bounds(
+                gpui::point(gpui::ScaledPixels(405.0), gpui::ScaledPixels(205.0)),
+                gpui::size(gpui::ScaledPixels(470.0), gpui::ScaledPixels(310.0)),
+            ),
+            corner_radii: gpui::Corners {
+                top_left: gpui::ScaledPixels(12.0),
+                top_right: gpui::ScaledPixels(8.0),
+                bottom_right: gpui::ScaledPixels(16.0),
+                bottom_left: gpui::ScaledPixels(4.0),
+            },
+        };
+        let bytes = placement_bytes(rect, viewport, &mask);
+        assert_eq!(bytes.len(), 3 * 16);
+        let values: Vec<f32> = bytes.chunks_exact(4)
+            .map(|word| f32::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        assert_eq!(&values[4..8], &[405.0, 205.0, 470.0, 310.0]);
+        assert_eq!(&values[8..12], &[12.0, 8.0, 16.0, 4.0]);
+        let rectangular = placement_bytes(rect, viewport, &gpui::ContentMask::default());
+        assert_eq!(&rectangular[32..48], &[0u8; 16],
+            "rectangular widgets must take the shader's zero-mask fast path");
     }
 
     #[test]
