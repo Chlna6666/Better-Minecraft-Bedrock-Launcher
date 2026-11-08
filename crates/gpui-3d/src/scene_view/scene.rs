@@ -55,6 +55,8 @@ pub(super) struct SceneResources {
     animation_scratch: AnimationScratch,
     camera: Option<Camera>,
     culling_bounds: Option<Aabb>,
+    /// Per-view occlusion mask keeps immutable Scene and physical Draw Slots.
+    hidden_nodes: Arc<HashSet<NodeId>>,
     scene_transform: Option<Mat4>,
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
@@ -419,6 +421,7 @@ impl SceneResources {
             animation_scratch: AnimationScratch::new(),
             camera: None,
             culling_bounds: None,
+            hidden_nodes: Arc::new(HashSet::new()),
             scene_transform: None,
             projection: None,
             prepared: PreparedScene::default(),
@@ -519,6 +522,8 @@ impl SceneResources {
         let camera_changed = self.camera != Some(scene_view.camera)
             || self.projection.map(FrameProjection::aspect) != Some(projection.aspect());
         let culling_bounds_changed = self.culling_bounds != scene_view.culling_bounds;
+        let node_mask_changed = !Arc::ptr_eq(&self.hidden_nodes, &scene_view.hidden_nodes)
+            && self.hidden_nodes != scene_view.hidden_nodes;
         // A camera-only update can reuse the retained draw list unless distance-based LOD may
         // select a different mesh. In that case re-walk the scene before uploading draw state.
         // Device-neutral GPU path: DX11, DX12, Vulkan and OpenGL use the
@@ -557,6 +562,7 @@ impl SceneResources {
         if !draw_state_changed
             && !frame_changed
             && !culling_bounds_changed
+            && !node_mask_changed
             && !sampler_changed
             && !voxel_shader_changed
         {
@@ -994,6 +1000,17 @@ impl SceneResources {
             )?;
         }
         if gpu_culling {
+            // Patch only changed 4-byte portal visibility words at the
+            // stable physical Bounds slots. No Scene fork / DrawParams upload.
+            // Do this AFTER structural/sparse Bounds updates, so newly reused
+            // slots cannot inherit another Section's hidden state.
+            let mask_uploaded = if let Some(culling) = &mut self.culling {
+                culling.update_hidden_nodes(
+                    device, &self.prepared.draws, &scene_view.hidden_nodes,
+                )?
+            } else {
+                false
+            };
             if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
                 && let Some(culling) = &mut self.culling
             {
@@ -1005,7 +1022,9 @@ impl SceneResources {
                     draw_state_changed || culling_bounds_changed || wire_changed,
                 )?;
             }
-            if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed {
+            if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed
+                || mask_uploaded
+            {
                 let dispatch_started = trace_timings().then(Instant::now);
                 self.culling
                     .as_mut()
@@ -1081,6 +1100,7 @@ impl SceneResources {
         self.animation_time = Some(scene_view.animation_time);
         self.camera = Some(scene_view.camera);
         self.culling_bounds = scene_view.culling_bounds;
+        self.hidden_nodes = Arc::clone(&scene_view.hidden_nodes);
         self.scene_transform = Some(scene_view.scene_transform);
         self.projection = Some(projection);
         self.sampler = Some(sampler);
