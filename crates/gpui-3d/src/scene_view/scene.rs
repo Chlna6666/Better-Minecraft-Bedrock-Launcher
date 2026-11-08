@@ -3740,6 +3740,8 @@ fn upload_pending_meshes(
             data: &upload.bytes,
         })
         .collect::<Vec<_>>();
+    let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
+    let write_count = writes.len();
     let upload_started = Instant::now();
     if let Err(error) = device.write_buffer_batch(&writes) {
         discard_pending_meshes(
@@ -3752,10 +3754,9 @@ fn upload_pending_meshes(
         )?;
         return Err(error.into());
     }
-    if !writes.is_empty() {
+    if write_count > 0 {
         crate::upload_feedback::observe_buffer_upload(
-            backend, writes.iter().map(|write| write.data.len()).sum(),
-            writes.len(), upload_started.elapsed(),
+            backend, uploaded_bytes, write_count, upload_started.elapsed(),
         );
     }
     for (id, mesh, _) in pending.drain(..) {
