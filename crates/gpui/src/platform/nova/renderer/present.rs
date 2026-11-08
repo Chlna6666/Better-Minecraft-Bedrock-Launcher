@@ -64,15 +64,20 @@ impl ExtensionSubmission<'_> {
             .iter()
             .map(crate::RendererExtensionPass::commands)
             .collect::<Vec<_>>();
+        let tags = self.registry.passes().iter()
+            .map(|pass| pass.gpu_work_tag)
+            .collect::<Vec<_>>();
+        let timed = tags.iter().any(Option::is_some);
+        let independent = self.registry.independent_producers_only()
+            && device.independent_graphics_queue_available();
         let submission = if passes.is_empty() {
             None
-        } else if self.registry.independent_producers_only()
-            && device.independent_graphics_queue_available()
-        {
-            // Backends must GPU-signal the 3D producer and enqueue a native
-            // graphics-queue wait before the compositor can sample its image.
-            // The submitted fence tracks the consumer-side dependency too.
+        } else if independent && timed {
+            device.render_to_textures_independent_profiled(&passes, &tags)?
+        } else if independent {
             device.render_to_textures_independent(&passes)?
+        } else if timed {
+            device.render_to_textures_profiled(&passes, &tags)?
         } else {
             device.render_to_textures(&passes)?
         };
