@@ -103,4 +103,32 @@ impl PresentationDevice for OpenGlDevice {
         }
         Ok(None)
     }
+
+    fn render_to_textures_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+        }
+        for (pass, tag) in passes.iter().zip(tags) {
+            let tag = tag.filter(|tag| {
+                tag.stage == GpuTimestampStage::DrawIndirect
+                    && !pass.commands.is_empty()
+                    && pass.commands.iter().all(|command| matches!(
+                        command, RenderCommand::DrawIndirect(_)
+                        | RenderCommand::DrawIndexedIndirect(_)
+                    ))
+            });
+            let targets = pass.color_attachments.iter().copied()
+                .map(RenderTarget::TextureView).collect::<Vec<_>>();
+            self.render_target_clipped_profiled(
+                &targets, pass.resolve_target, pass.render_pass, pass.commands,
+                pass.color_load_op, pass.depth_attachment,
+                pass.clear_region, pass.viewport, tag,
+            )?;
+        }
+        Ok(None)
+    }
 }
