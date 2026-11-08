@@ -129,6 +129,42 @@ mod tests {
         assert_eq!(actual, expected);
     }
     #[test]
+    fn hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances() {
+        let pos = ChunkPos {
+            x: -1,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension,
+            min_chunk_x: -1,
+            max_chunk_x: -1,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(
+            pos,
+            Preview3dChunkBlocks::test_cubes(&[[-15, -72, 3], [-14, 8, 3], [-13, 72, 3]]),
+        );
+        let original = builder
+            .gpu_cube_bands(pos, None)
+            .expect("full GPU band plan");
+        let kept = builder
+            .gpu_cube_bands_skipping(pos, None, &std::collections::BTreeSet::from([0]))
+            .expect("reduced GPU band plan");
+        assert!(original.iter().any(|band| band.section_y == 0));
+        assert!(!kept.iter().any(|band| band.section_y == 0));
+        let original_other = original
+            .iter()
+            .filter(|band| band.section_y != 0)
+            .map(|band| band.section_y)
+            .collect::<Vec<_>>();
+        let kept_bands = kept.iter().map(|band| band.section_y).collect::<Vec<_>>();
+        assert_eq!(kept_bands, original_other);
+        assert!(kept.len() < original.len());
+    }
+
+    #[test]
     fn padded_gpu_classes_match_full_lookups_inside_and_across_columns() {
         let pos = ChunkPos {
             x: -1,
