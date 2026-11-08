@@ -209,6 +209,9 @@ impl SceneView {
     /// scene. Attach tracks for the replacement scene with [`SceneView::with_animation`].
     #[must_use]
     pub fn with_scene(&self, scene: Arc<Scene>) -> Self {
+        // Preserve the direct Structural Delta path for cheap Section edits.
+        // Only a full independent scene replacement needs a background walk.
+        let needs_full_walk = scene.changed_nodes(&self.scene).is_none();
         let view = Self {
             id: self.id,
             scene,
@@ -232,7 +235,9 @@ impl SceneView {
             culling_bounds: self.culling_bounds,
             hidden_nodes: self.hidden_nodes.clone(),
         };
-        sidecar::schedule(&view);
+        if needs_full_walk {
+            sidecar::schedule(&view);
+        }
         view
     }
 
@@ -839,6 +844,7 @@ pub fn scene_view(scene_view: Arc<SceneView>) -> impl IntoElement {
 impl RendererExtension for SceneView {
     fn is_time_dependent(&self) -> bool {
         self.continuous_presentation
+            || sidecar::needs_frame(self)
             || self.screen_effects.is_some_and(|effects| {
                 effects.water || effects.clouds && effects.cloud_texture.is_some()
             })
