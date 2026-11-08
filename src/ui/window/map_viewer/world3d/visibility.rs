@@ -50,6 +50,12 @@ pub(super) struct SectionVisibility {
     /// Entry face -> all exit faces connected by a passable cell component.
     portals: [u8; SIDE_COUNT],
     all_air: bool,
+    /// Most terrain sections have one connected air volume. A single exit
+    /// mask then answers camera movement queries in O(1), with no voxel BFS.
+    uniform_camera_exits: Option<u8>,
+    /// Allocate 4 KiB only when at least two distinct air components exist.
+    /// Solid cells are checked via `solid` before indexing this table.
+    cell_camera_exits: Option<Box<[u8; CELL_COUNT]>>,
 }
 
 impl SectionVisibility {
@@ -57,6 +63,8 @@ impl SectionVisibility {
         solid: [0; SOLID_WORDS],
         portals: [ALL_SIDES; SIDE_COUNT],
         all_air: true,
+        uniform_camera_exits: Some(ALL_SIDES),
+        cell_camera_exits: None,
     };
 
     pub(super) fn from_solid_bits(solid: [u64; SOLID_WORDS]) -> Self {
@@ -68,6 +76,8 @@ impl SectionVisibility {
                 solid,
                 portals: [0; SIDE_COUNT],
                 all_air: false,
+                uniform_camera_exits: None,
+                cell_camera_exits: None,
             };
         }
         if solid
@@ -82,15 +92,23 @@ impl SectionVisibility {
                 solid,
                 portals: [ALL_SIDES; SIDE_COUNT],
                 all_air: false,
+                // A sealed pocket can still exist inside an open boundary
+                // shell: keep the rare camera query on its conservative BFS.
+                uniform_camera_exits: None,
+                cell_camera_exits: None,
             };
         }
         let mut graph = Self {
             solid,
             portals: [0; SIDE_COUNT],
             all_air: false,
+            uniform_camera_exits: None,
+            cell_camera_exits: None,
         };
         let mut visited = [0u64; SOLID_WORDS];
         let mut queue = Vec::<usize>::new();
+        let mut first_component_faces = None;
+        let mut first_component_cells = Vec::<usize>::new();
         for first in 0..CELL_COUNT {
             if graph.is_solid(first) || test_bit(&visited, first) {
                 continue;
@@ -116,8 +134,39 @@ impl SectionVisibility {
                     graph.portals[entry] |= faces;
                 }
             }
+
+            if let Some(ref mut exits) = graph.cell_camera_exits {
+                for &index in &queue {
+                    exits[index] = faces;
+                }
+            } else if let Some(first_faces) = first_component_faces {
+                let mut exits = Box::new([0u8; CELL_COUNT]);
+                for &index in &first_component_cells {
+                    exits[index] = first_faces;
+                }
+                for &index in &queue {
+                    exits[index] = faces;
+                }
+                graph.cell_camera_exits = Some(exits);
+                first_component_cells.clear();
+            } else {
+                first_component_faces = Some(faces);
+                first_component_cells = std::mem::take(&mut queue);
+            }
+        }
+        if graph.cell_camera_exits.is_none() {
+            graph.uniform_camera_exits = first_component_faces;
         }
         graph
+    }
+
+    #[inline]
+    pub(super) fn heap_bytes(&self) -> usize {
+        if self.cell_camera_exits.is_some() {
+            CELL_COUNT
+        } else {
+            0
+        }
     }
 
     #[inline]
@@ -137,9 +186,14 @@ impl SectionVisibility {
         if self.is_solid(start) {
             return None;
         }
-        if self.all_air {
-            return Some(ALL_SIDES);
+        if let Some(exits) = self.uniform_camera_exits {
+            return Some(exits);
         }
+        if let Some(ref exits) = self.cell_camera_exits {
+            return Some(exits[start]);
+        }
+        // Boundary-shell fast path can contain a sealed internal cavity.
+        // Only those exceptional sections still need a local flood fill.
         let mut visited = [0u64; SOLID_WORDS];
         let mut queue = Vec::with_capacity(256);
         queue.push(start);
@@ -428,6 +482,34 @@ mod tests {
         let graph = SectionVisibility::from_solid_bits([u64::MAX; SOLID_WORDS]);
         assert!((0..SIDE_COUNT).all(|entry| graph.exits(entry) == 0));
         assert_eq!(graph.camera_exits([1, 1, 1]), None);
+    }
+
+    #[test]
+    fn one_connected_air_region_uses_constant_time_exit_mask() {
+        let solid = bits_except_air(&(0..16)
+            .map(|x| (x, 8, 8))
+            .collect::<Vec<_>>());
+        let graph = SectionVisibility::from_solid_bits(solid);
+        assert_eq!(graph.uniform_camera_exits, Some(0b000011));
+        assert!(graph.cell_camera_exits.is_none());
+        for x in 0..16 {
+            assert_eq!(graph.camera_exits([x, 8, 8]), Some(0b000011));
+        }
+        assert_eq!(graph.camera_exits([0, 0, 0]), None);
+    }
+
+    #[test]
+    fn two_disconnected_air_regions_cache_per_voxel_exit_masks() {
+        let mut air = (0..16).map(|x| (x, 4, 4)).collect::<Vec<_>>();
+        air.extend((0..16).map(|z| (4, 12, z)));
+        air.push((8, 8, 8));
+        let graph = SectionVisibility::from_solid_bits(bits_except_air(&air));
+        assert!(graph.cell_camera_exits.is_some());
+        assert_eq!(graph.heap_bytes(), 4096);
+        assert_eq!(graph.camera_exits([8, 4, 4]), Some(0b000011));
+        assert_eq!(graph.camera_exits([4, 12, 8]), Some(0b110000));
+        assert_eq!(graph.camera_exits([8, 8, 8]), Some(0));
+        assert_eq!(graph.camera_exits([5, 5, 5]), None);
     }
 
     #[test]
