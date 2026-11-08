@@ -192,8 +192,31 @@ impl SectionVisibility {
         if let Some(ref exits) = self.cell_camera_exits {
             return Some(exits[start]);
         }
-        // Boundary-shell fast path can contain a sealed internal cavity.
-        // Only those exceptional sections still need a local flood fill.
+        // The common open-shell shortcut avoids building a 4 KiB component
+        // table, but a sealed internal cave is still possible. Try six
+        // straight voxel rays (at most 96 bit checks) first: reaching ANY
+        // clear boundary cell proves connectivity to the entire open shell.
+        // Only a completely enclosed camera position falls back to BFS.
+        if self.portals == [ALL_SIDES; SIDE_COUNT] {
+            if boundary_faces(start) != 0 {
+                return Some(ALL_SIDES);
+            }
+            for axis in 0..SIDE_COUNT {
+                let mut cursor = start;
+                while let Some(next) = cell_neighbours(cursor)[axis] {
+                    if self.is_solid(next) {
+                        break;
+                    }
+                    if boundary_faces(next) != 0 {
+                        return Some(ALL_SIDES);
+                    }
+                    cursor = next;
+                }
+            }
+        }
+        // Camera is potentially inside a sealed internal cavity; in this
+        // rare case run an exact local BFS instead of incorrectly opening all
+        // six portals and producing a false visibility result.
         let mut visited = [0u64; SOLID_WORDS];
         let mut queue = Vec::with_capacity(256);
         queue.push(start);
@@ -510,6 +533,22 @@ mod tests {
         assert_eq!(graph.camera_exits([4, 12, 8]), Some(0b110000));
         assert_eq!(graph.camera_exits([8, 8, 8]), Some(0));
         assert_eq!(graph.camera_exits([5, 5, 5]), None);
+    }
+
+    #[test]
+    fn open_border_ray_proves_full_connectivity_but_sealed_pocket_stays_closed() {
+        let mut solids = [0u64; SOLID_WORDS];
+        for (x, y, z) in [
+            (7usize, 8usize, 8usize), (9, 8, 8),
+            (8, 7, 8), (8, 9, 8),
+            (8, 8, 7), (8, 8, 9),
+        ] {
+            let index = (y * 16 + z) * 16 + x;
+            solids[index / 64] |= 1u64 << (index % 64);
+        }
+        let graph = SectionVisibility::from_solid_bits(solids);
+        assert_eq!(graph.camera_exits([1, 3, 4]), Some(ALL_SIDES));
+        assert_eq!(graph.camera_exits([8, 8, 8]), Some(0));
     }
 
     #[test]
