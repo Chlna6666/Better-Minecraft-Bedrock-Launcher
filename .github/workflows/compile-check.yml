@@ -136,6 +136,7 @@ jobs:
           cargo test -p bmcbl --lib palette_collect_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib portal_face_pruning_tests -- --nocapture
+          cargo test -p bmcbl --lib streaming_fluid_level_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -243,6 +244,7 @@ jobs:
           cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
           cargo test -p bmcbl --lib palette_collect_tests -- --nocapture
           cargo test -p bmcbl --lib portal_face_pruning_tests -- --nocapture
+          cargo test -p bmcbl --lib streaming_fluid_level_tests -- --nocapture
           cargo test -p bmcbl --lib hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances -- --nocapture
           cargo test -p bmcbl --lib completely_hidden_plain_cube_column_never_expands_model_templates -- --nocapture
           cargo test -p gpui-3d --lib portal_visibility_tests -- --nocapture
