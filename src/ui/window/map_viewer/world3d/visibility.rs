@@ -460,10 +460,16 @@ pub(super) fn hidden_render_band_keys(
             && (i64::from(pos.x) - i64::from(camera_section.0.x)).abs() <= i64::from(radius)
             && (i64::from(pos.z) - i64::from(camera_section.0.z)).abs() <= i64::from(radius)
     };
+    // Build one compact column index per background solve. The border
+    // flood-fill uses repeated adjacency probes; hashing avoids ordered-tree
+    // traversal for each Section face.
+    let columns = probes.iter()
+        .filter(|(pos, _)| inside(**pos))
+        .map(|(pos, probe)| (*pos, probe.as_ref()))
+        .collect::<HashMap<_, _>>();
     let is_known = |section: CellSection| {
         (min_y..=max_y).contains(&section.1)
-            && inside(section.0)
-            && probes.contains_key(&section.0)
+            && columns.contains_key(&section.0)
     };
 
     let mut queue = VecDeque::new();
@@ -481,16 +487,25 @@ pub(super) fn hidden_render_band_keys(
         }
     }
 
-    // All unknown/unloaded outer space is potentially visible, not opaque.
-    // A blocked border Section itself remains renderable, but it cannot
-    // propagate farther unless its air cells actually connect two faces.
-    for pos in probes.keys().copied().filter(|pos| inside(*pos)) {
+    // Only the top and bottom planes are exterior for an interior column.
+    // Precompute side gaps once per column, instead of probing six neighbours
+    // for every height slice (including all the fully surrounded Sections).
+    // Missing columns remain external *openings*, never solid occluders.
+    for &pos in columns.keys() {
+        enqueue(&mut queue, &mut entries, (pos, min_y), 2);
+        enqueue(&mut queue, &mut entries, (pos, max_y), 3);
+        let side_entries = [0usize, 1, 4, 5].into_iter()
+            .filter(|&face| {
+                adjacent((pos, min_y), face)
+                    .is_none_or(|next| !columns.contains_key(&next.0))
+            })
+            .collect::<Vec<_>>();
+        if side_entries.is_empty() {
+            continue;
+        }
         for y in min_y..=max_y {
-            let section = (pos, y);
-            for face in 0..SIDE_COUNT {
-                if adjacent(section, face).is_none_or(|next| !is_known(next)) {
-                    enqueue(&mut queue, &mut entries, section, face);
-                }
+            for &face in &side_entries {
+                enqueue(&mut queue, &mut entries, (pos, y), face);
             }
         }
     }
@@ -498,9 +513,14 @@ pub(super) fn hidden_render_band_keys(
         if entries.len() > MAX_VISITED_SECTIONS {
             return empty;
         }
-        let Some(graph) = section_graph(probes, section) else {
+        let Some(probe) = columns.get(&section.0) else {
             return empty;
         };
+        let graph = i8::try_from(section.1)
+            .ok()
+            .and_then(|y| probe.visibility.get(&y))
+            .map(Arc::as_ref)
+            .unwrap_or(&SectionVisibility::OPEN);
         let exits = graph.exits(entry);
         for face in 0..SIDE_COUNT {
             if exits & (1 << face) == 0 {
@@ -516,7 +536,7 @@ pub(super) fn hidden_render_band_keys(
     let reachable = entries
         .keys()
         .map(|(pos, section_y)| (*pos, section_y.div_euclid(4)))
-        .collect::<BTreeSet<_>>();
+        .collect::<std::collections::HashSet<_>>();
     keys
         .iter()
         .filter(|(pos, band)| {
@@ -737,6 +757,42 @@ mod tests {
             &probes, &meshes, Dimension::Overworld, [8, 88, 8], 3,
         );
         assert!(noclip.is_empty());
+    }
+
+    #[test]
+    fn missing_lateral_column_is_an_open_external_portal() {
+        let dimension = Dimension::Overworld;
+        let mut probes = BTreeMap::new();
+        let mut meshes = BTreeSet::new();
+        // Three adjacent columns. The left edge is exposed to unknown
+        // terrain, while the middle cave band has a horizontal air tunnel.
+        for x in 0..3 {
+            let pos = ChunkPos { x, z: 0, dimension };
+            let mut visibility = BTreeMap::new();
+            for y in 0..12i8 {
+                let solids = if y == 6 {
+                    [0; SOLID_WORDS]
+                } else {
+                    [u64::MAX; SOLID_WORDS]
+                };
+                visibility.insert(y, Arc::new(SectionVisibility::from_solid_bits(solids)));
+            }
+            probes.insert(pos, Arc::new(World3dChunkProbe {
+                pos,
+                min_y: 0,
+                subchunks: BTreeMap::new(),
+                visibility,
+                state_version: None,
+                storage_bytes: 0,
+            }));
+            meshes.insert((pos, 1));
+        }
+        // From the last column, an exterior entry through the missing
+        // neighbour on the first column must keep the entire tunnel visible.
+        let hidden = hidden_render_band_keys(
+            &probes, &meshes, dimension, [40, 104, 8], 3,
+        );
+        assert!(hidden.is_empty());
     }
 
     #[test]
