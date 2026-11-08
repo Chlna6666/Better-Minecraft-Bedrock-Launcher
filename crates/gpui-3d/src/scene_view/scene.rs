@@ -1561,11 +1561,21 @@ impl SceneResources {
         self.dirty_instance_run = scratch;
         let instance_patches = instance_result?;
 
-        let mut slot_suffix = Vec::with_capacity((count - offset) * 4);
-        for &slot in &mapping[offset..] {
-            slot_suffix.extend_from_slice(&slot.to_le_bytes());
-        }
-        let mut writes = Vec::with_capacity(draw_patches.len() + instance_patches.len() + 1);
+        // The culler already committed exact structural physical slots.
+        // Publish the same narrow changed logical ranges to Draw Slot shaders
+        // instead of re-encoding the full suffix after every Section edit.
+        let slot_patches = structural_draw_slot_patches(
+            &self.uploaded_slot_map, mapping, delta,
+        ).unwrap_or_else(|| {
+            let mut suffix = Vec::with_capacity((count - offset) * 4);
+            for &slot in &mapping[offset..] {
+                suffix.extend_from_slice(&slot.to_le_bytes());
+            }
+            if suffix.is_empty() { Vec::new() } else { vec![(offset * 4, suffix)] }
+        });
+        let mut writes = Vec::with_capacity(
+            draw_patches.len() + instance_patches.len() + slot_patches.len(),
+        );
         for (slot, _, bytes) in &draw_patches {
             writes.push(BufferWrite {
                 descriptor: BufferWriteDescriptor {
@@ -1584,13 +1594,13 @@ impl SceneResources {
                 data: &bytes[..],
             });
         }
-        if !slot_suffix.is_empty() {
+        for (offset, bytes) in &slot_patches {
             writes.push(BufferWrite {
                 descriptor: BufferWriteDescriptor {
                     buffer: self.draw_slot_buffer,
-                    offset: offset as u64 * 4,
+                    offset: *offset as u64,
                 },
-                data: &slot_suffix,
+                data: bytes,
             });
         }
         let bytes_uploaded = writes.iter().map(|write| write.data.len()).sum::<usize>();
@@ -1657,7 +1667,9 @@ impl SceneResources {
                 .copy_from_slice(&bytes);
         }
         self.uploaded_slot_map.resize(count * 4, 0);
-        self.uploaded_slot_map[offset * 4..].copy_from_slice(&slot_suffix);
+        for (offset, bytes) in &slot_patches {
+            self.uploaded_slot_map[*offset..*offset + bytes.len()].copy_from_slice(bytes);
+        }
         // Canonical singleton DrawIndirect offsets are a function of their
         // current logical index, independent of which Section owns the slot.
         // The structural path must update the effective native command
@@ -1674,11 +1686,12 @@ impl SceneResources {
         }
         if let Some(started) = trace_started {
             eprintln!(
-                "gpui3d structural_slot_delta previous={} current={} dirty={} slot_suffix={} uploaded_bytes={} ms={:.2}",
+                "gpui3d structural_slot_delta previous={} current={} dirty={} slot_patch_ranges={} slot_patch_bytes={} uploaded_bytes={} ms={:.2}",
                 previous_count,
                 count,
                 dirty.len(),
-                count - offset,
+                slot_patches.len(),
+                slot_patches.iter().map(|(_, data)| data.len()).sum::<usize>(),
                 bytes_uploaded,
                 started.elapsed().as_secs_f64() * 1000.0,
             );
@@ -4384,6 +4397,191 @@ mod sparse_upload_budget_tests {
         assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 10_000), 16);
         assert_eq!(sparse_upload_range_budget(BackendKind::Dx11, 103_305), 16);
         assert_eq!(sparse_upload_range_budget(BackendKind::OpenGl, 103_305), 16);
+    }
+}
+
+/// Derive narrow logical-to-physical u32 writes from validated Section
+/// splices. Surviving physical GPU records stay at their original addresses,
+/// and only logical indirection entries which changed need a driver write.
+///
+/// A middle insertion/removal moves the intervening logical indices, but once
+/// opposing splices restore the offset the untouched tail needs no upload.
+/// Malformed or heavily fragmented deltas use the established suffix fallback.
+fn structural_draw_slot_patches(
+    previous: &[u8],
+    next: &[u32],
+    delta: &crate::prepare::StructuralDrawDelta,
+) -> Option<Vec<(usize, Vec<u8>)>> {
+    if previous.len() % 4 != 0
+        || delta.previous_count != previous.len() / 4
+        || delta.edits.is_empty()
+    {
+        return None;
+    }
+    let old_len = previous.len() / 4;
+    let mut ranges = Vec::<std::ops::Range<usize>>::new();
+    let mut push_range = |range: std::ops::Range<usize>| {
+        if range.is_empty() {
+            return;
+        }
+        if let Some(last) = ranges.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            ranges.push(range);
+        }
+    };
+    let (mut old_cursor, mut new_cursor) = (0usize, 0usize);
+    for edit in &delta.edits {
+        if edit.old.start < old_cursor
+            || edit.new.start < new_cursor
+            || edit.old.start > edit.old.end
+            || edit.new.start > edit.new.end
+            || edit.old.end > old_len
+            || edit.new.end > next.len()
+            || edit.old.start - old_cursor != edit.new.start - new_cursor
+        {
+            return None;
+        }
+        if old_cursor != new_cursor {
+            push_range(new_cursor..edit.new.start);
+        }
+        if edit.old.start == edit.new.start && edit.old.len() == edit.new.len() {
+            // Equal-size edits may preserve most physical slots. Compare
+            // only their small exact changed interval, not the full table.
+            let mut dirty_start = None;
+            for logical in edit.new.clone() {
+                let start = logical * 4;
+                let unchanged = previous.get(start..start + 4)
+                    == Some(&next[logical].to_le_bytes()[..]);
+                if !unchanged && dirty_start.is_none() {
+                    dirty_start = Some(logical);
+                } else if unchanged && let Some(first) = dirty_start.take() {
+                    push_range(first..logical);
+                }
+            }
+            if let Some(first) = dirty_start {
+                push_range(first..edit.new.end);
+            }
+        } else {
+            push_range(edit.new.clone());
+        }
+        old_cursor = edit.old.end;
+        new_cursor = edit.new.end;
+    }
+    if old_len - old_cursor != next.len() - new_cursor {
+        return None;
+    }
+    if old_cursor != new_cursor {
+        push_range(new_cursor..next.len());
+    }
+    drop(push_range);
+    // Avoid excessive driver writes when many small independent edits arrive.
+    if ranges.len() > 12 {
+        return None;
+    }
+    Some(ranges.into_iter().map(|range| {
+        let mut bytes = Vec::with_capacity(range.len() * 4);
+        for &physical in &next[range.clone()] {
+            bytes.extend_from_slice(&physical.to_le_bytes());
+        }
+        (range.start * 4, bytes)
+    }).collect())
+}
+
+#[cfg(test)]
+mod structural_draw_slot_patch_tests {
+    use super::structural_draw_slot_patches;
+    use crate::prepare::{StructuralDrawDelta, StructuralDrawEdit};
+
+    fn edit(old: std::ops::Range<usize>, new: std::ops::Range<usize>) -> StructuralDrawEdit {
+        StructuralDrawEdit { old, new }
+    }
+
+    fn encoded(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    fn patched(previous: &[u32], next: &[u32], delta: StructuralDrawDelta) -> (Vec<u8>, usize) {
+        let mut bytes = encoded(previous);
+        let patches = structural_draw_slot_patches(&bytes, next, &delta).unwrap();
+        bytes.resize(next.len() * 4, 0);
+        let uploaded = patches.iter().map(|(_, bytes)| bytes.len()).sum();
+        for (offset, data) in patches {
+            bytes[offset..offset + data.len()].copy_from_slice(&data);
+        }
+        (bytes, uploaded)
+    }
+
+    #[test]
+    fn append_uploads_only_new_slots_and_tail_retirement_uploads_nothing() {
+        let old = (0..65_536).collect::<Vec<u32>>();
+        let mut appended = old.clone();
+        appended.extend([75_001, 75_002]);
+        let (bytes, uploaded) = patched(&old, &appended, StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(old.len()..old.len(), old.len()..appended.len())],
+        });
+        assert_eq!(bytes, encoded(&appended));
+        assert_eq!(uploaded, 8);
+        let retained = &old[..old.len() - 5];
+        let (bytes, uploaded) = patched(&old, retained, StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(retained.len()..old.len(), retained.len()..retained.len())],
+        });
+        assert_eq!(bytes, encoded(retained));
+        assert_eq!(uploaded, 0);
+    }
+
+    #[test]
+    fn fixed_width_slot_edits_do_not_upload_unchanged_rows() {
+        let old = (0..4096).collect::<Vec<u32>>();
+        let mut next = old.clone();
+        next[1024] = 8001;
+        next[1027] = 8002;
+        let (bytes, uploaded) = patched(&old, &next, StructuralDrawDelta {
+            previous_count: old.len(), edits: vec![edit(1000..1030, 1000..1030)],
+        });
+        assert_eq!(bytes, encoded(&next));
+        assert_eq!(uploaded, 8);
+    }
+
+    #[test]
+    fn opposite_middle_splices_leave_the_later_tail_resident() {
+        let old = (0..4096).collect::<Vec<u32>>();
+        let mut next = old.clone();
+        next.splice(100..100, [9001, 9002]);
+        next.drain(504..506);
+        let (bytes, uploaded) = patched(&old, &next, StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(100..100, 100..102), edit(502..504, 504..504)],
+        });
+        assert_eq!(bytes, encoded(&next));
+        assert!(uploaded <= 404 * 4);
+    }
+
+    #[test]
+    fn invalid_or_fragmented_edits_use_the_general_fallback() {
+        let old = (0..1024).collect::<Vec<u32>>();
+        let bytes = encoded(&old);
+        let bad = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(30..31, 30..31), edit(20..21, 20..21)],
+        };
+        assert!(structural_draw_slot_patches(&bytes, &old, &bad).is_none());
+        let mut edits = Vec::new();
+        for n in 0..15 {
+            let start = n * 40;
+            edits.push(edit(start..start + 1, start..start + 1));
+        }
+        let mut changed = old.clone();
+        for n in 0..15 {
+            changed[n * 40] += 10_000;
+        }
+        assert!(structural_draw_slot_patches(&bytes, &changed, &StructuralDrawDelta {
+            previous_count: old.len(), edits,
+        }).is_none());
     }
 }
 
