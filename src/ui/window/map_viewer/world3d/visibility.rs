@@ -44,6 +44,13 @@ impl SectionVisibility {
         if solid.iter().all(|&word| word == 0) {
             return Self::OPEN;
         }
+        if solid.iter().all(|&word| word == u64::MAX) {
+            return Self {
+                solid,
+                portals: [0; SIDE_COUNT],
+                all_air: false,
+            };
+        }
         let mut graph = Self {
             solid,
             portals: [0; SIDE_COUNT],
@@ -388,6 +395,85 @@ mod tests {
         assert_eq!(graph.exits(0), 0b000011);
         assert_eq!(graph.exits(4), 0b110000);
         assert_eq!(graph.exits(0) & graph.exits(4), 0);
+    }
+
+    #[test]
+    fn sealed_cave_band_is_hidden_until_camera_enters_its_air_pocket() {
+        let mut probes = BTreeMap::new();
+        let center = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let pos = ChunkPos { x, z, ..center };
+                let mut visibility = BTreeMap::new();
+                for y in 0..12i8 {
+                    let solids = if (x, z, y) == (0, 0, 6) {
+                        bits_except_air(&[(8, 8, 8)])
+                    } else if (x, z, y) == (-1, -1, 10) {
+                        [0; SOLID_WORDS]
+                    } else {
+                        [u64::MAX; SOLID_WORDS]
+                    };
+                    visibility.insert(y, Arc::new(SectionVisibility::from_solid_bits(solids)));
+                }
+                probes.insert(pos, Arc::new(World3dChunkProbe {
+                    pos,
+                    min_y: 0,
+                    subchunks: BTreeMap::new(),
+                    visibility,
+                    state_version: None,
+                    storage_bytes: 0,
+                }));
+            }
+        }
+        let meshes = (0..3)
+            .map(|section_y| {
+                (
+                    (center, section_y),
+                    Arc::new(World3dChunkMesh {
+                        occluders: Arc::from([]),
+                        pos: center,
+                        section_y,
+                        origin: [0; 3],
+                        mesh: Arc::new(gpui_3d::Mesh::cube()),
+                        materials: Arc::from([]),
+                        textures: Arc::from([]),
+                        triangles: 12,
+                        faces: 6,
+                        missing_texture_faces: 0,
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        // The other eight columns surround the sealed center cave. No face
+        // portal reaches the cave band despite external sky/edge seeds.
+        let hidden = hidden_render_bands(
+            &probes, &meshes, Dimension::Overworld, [-8, 168, -8], 3,
+        );
+        assert!(hidden.contains(&(center, 1)));
+        // Teleport into the isolated air pocket. The cave band is now reachable
+        // even though there is no portal to an adjacent Section.
+        let inside = hidden_render_bands(
+            &probes, &meshes, Dimension::Overworld, [8, 104, 8], 3,
+        );
+        assert!(!inside.contains(&(center, 1)));
+        // Noclip into a certified solid voxel: never hide authored geometry.
+        let noclip = hidden_render_bands(
+            &probes, &meshes, Dimension::Overworld, [8, 88, 8], 3,
+        );
+        assert!(noclip.is_empty());
+    }
+
+    #[test]
+    fn camera_outside_decoded_columns_disables_visibility_pruning() {
+        let probes = BTreeMap::new();
+        let meshes = BTreeMap::new();
+        assert!(hidden_render_bands(
+            &probes, &meshes, Dimension::Overworld, [0, 96, 0], 8,
+        ).is_empty());
     }
 
     #[test]
