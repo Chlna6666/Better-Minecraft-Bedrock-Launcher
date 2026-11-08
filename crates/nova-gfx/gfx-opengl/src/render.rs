@@ -187,6 +187,12 @@ impl OpenGlDevice {
                 .map(|id| self.views.get(id).map(|view| view.sample_count))
                 .transpose()?,
         )?;
+        // Retain only plain native handles after attachment validation. The
+        // borrowed arena view must not stay live across mutable GPU timestamp
+        // probe setup/retirement on the same device.
+        let depth_target = depth_view.map_or(glow::TEXTURE_2D, |view| view.target);
+        let depth_native = depth_view.map(|view| view.native);
+        let has_depth = depth_view.is_some();
         let clear_region = match (viewport, clear_region) {
             (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, size)?),
             (_, clear_region) => clear_region,
@@ -251,8 +257,8 @@ impl OpenGlDevice {
             self.gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
                 glow::DEPTH_ATTACHMENT,
-                depth_view.map_or(glow::TEXTURE_2D, |view| view.target),
-                depth_view.map(|view| view.native),
+                depth_target,
+                depth_native,
                 0,
             );
             self.gl.draw_buffers(&draw_buffers);
@@ -298,7 +304,6 @@ impl OpenGlDevice {
         }
         // The timestamp starts strictly after GL attachment clear and
         // before the first draw; no extra native render pass is submitted.
-        let has_depth = depth_view.is_some();
         let probe = gpu_tag.map(|tag| self.begin_gpu_work(tag))
             .transpose()?.flatten();
         let mut state = GlPassState::default();
@@ -398,7 +403,7 @@ impl OpenGlDevice {
             self.gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
                 glow::DEPTH_ATTACHMENT,
-                depth_view.map_or(glow::TEXTURE_2D, |view| view.target),
+                depth_target,
                 None,
                 0,
             );
