@@ -67,6 +67,13 @@ impl PlacementResources {
 }
 
 impl Target {
+    /// A SceneView may be painted more than once before the batch is submitted.
+    /// Do not overwrite its producer attachment while an earlier painter-order
+    /// command in the same pending frame still refers to that image.
+    fn can_relocate(&self, extent: Extent2d) -> bool {
+        self.extent == extent && self.capture.queued.is_none()
+    }
+
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         PlacementResources { binding: self.binding, buffer: self.placement }.destroy(device)?;
         device.destroy_texture_view(self.depth_view)?;
@@ -537,10 +544,11 @@ impl SidecarSurface {
         let Some(target) = self.targets.get(&id) else {
             return Ok(());
         };
-        if target.extent != extent
+        if !target.can_relocate(extent)
             || (target.region == region && target.host_extent == host.viewport())
         {
-            // A size change is handled by enqueue's normal attachment swap.
+            // Resizes and still-pending painter-order producers require a new
+            // attachment; enqueue owns the transactional replacement.
             return Ok(());
         }
         let updated = self.create_placement(
@@ -638,7 +646,7 @@ impl SidecarSurface {
         }
         geometry.retain(|draw| draw.scissor().is_none_or(|rect| !rect.is_empty()));
         let recreate = self.targets.get(&id)
-            .is_none_or(|target| target.extent != extent);
+            .is_none_or(|target| !target.can_relocate(extent));
         if recreate {
             let new_target = self.create_target(device, region, host.viewport())?;
             if let Some(previous) = self.targets.insert(id, new_target) {
@@ -763,6 +771,15 @@ mod tests {
         };
         assert!(surface.has_retired_targets());
         assert_eq!(surface.ready_to_release.len(), 0);
+        let extent = Extent2d::new(32, 32).unwrap();
+        assert!(surface.awaiting_gpu[0].can_relocate(extent));
+        surface.awaiting_gpu[0].capture.enqueue(10);
+        assert!(!surface.awaiting_gpu[0].can_relocate(extent));
+        surface.awaiting_gpu[0].capture.acknowledge(10);
+        assert!(surface.awaiting_gpu[0].can_relocate(extent));
+        assert!(!surface.awaiting_gpu[0].can_relocate(
+            Extent2d::new(64, 32).unwrap(),
+        ));
         surface.awaiting_placement_gpu.push(PlacementResources {
             binding: BindGroupId::from_parts(7, 1),
             buffer: BufferId::from_parts(8, 1),
