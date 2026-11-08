@@ -239,6 +239,89 @@ fn resident_mapping_patches(previous: &[u32], next: &[u32]) -> Vec<(u64, Vec<u8>
         }).collect()
 }
 
+/// A validated structural Section splice already tells us which logical
+/// indices changed. Avoid scanning every resident u32 mapping on an append,
+/// tail removal, or fixed-width replacement (the common streaming cases).
+///
+/// When an insertion/removal shifts indices, write the affected suffix until
+/// subsequent edits restore the old logical offset. All untouched regions
+/// are copied verbatim by StableDrawSlots::plan_structural. Fall back to the
+/// general diff for heavily fragmented updates to retain bounded driver
+/// write counts without uploading the gaps between distant Sections.
+fn resident_structural_mapping_patches(
+    previous: &[u32],
+    next: &[u32],
+    delta: &StructuralDrawDelta,
+) -> Option<Vec<(u64, Vec<u8>)>> {
+    if delta.previous_count != previous.len() || delta.edits.is_empty() {
+        return None;
+    }
+    let mut ranges = Vec::<std::ops::Range<usize>>::new();
+    let (mut old_cursor, mut new_cursor) = (0usize, 0usize);
+    for edit in &delta.edits {
+        if edit.old.start < old_cursor
+            || edit.new.start < new_cursor
+            || edit.old.end > previous.len()
+            || edit.new.end > next.len()
+            || edit.old.start > edit.old.end
+            || edit.new.start > edit.new.end
+            || edit.old.start - old_cursor != edit.new.start - new_cursor
+        {
+            return None;
+        }
+        // A gap between edits is unchanged in *identity*, but its logical
+        // index moved while the insertion/removal offset is nonzero.
+        if old_cursor != new_cursor && new_cursor < edit.new.start {
+            ranges.push(new_cursor..edit.new.start);
+        }
+        if edit.old.start == edit.new.start && edit.old.len() == edit.new.len() {
+            // Fixed-size replacements retain the same ordinal. Compare only
+            // the small changed Section, not the entire resident draw table.
+            for bytes in super::uploads::changed_ranges_for_u32_records(
+                &previous[edit.old.clone()],
+                &next[edit.new.clone()],
+                1,
+                12,
+                3,
+            ) {
+                ranges.push(
+                    edit.new.start + bytes.start / 4..edit.new.start + bytes.end / 4,
+                );
+            }
+        } else if !edit.new.is_empty() {
+            ranges.push(edit.new.clone());
+        }
+        old_cursor = edit.old.end;
+        new_cursor = edit.new.end;
+    }
+    if previous.len() - old_cursor != next.len() - new_cursor {
+        return None;
+    }
+    if old_cursor != new_cursor && new_cursor < next.len() {
+        ranges.push(new_cursor..next.len());
+    }
+    let mut merged = Vec::<std::ops::Range<usize>>::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    if merged.len() > 12 {
+        return None;
+    }
+    Some(merged.into_iter().map(|range| {
+        let mut bytes = Vec::with_capacity(range.len() * std::mem::size_of::<u32>());
+        for &physical in &next[range.clone()] {
+            bytes.extend_from_slice(&physical.to_le_bytes());
+        }
+        (range.start as u64 * 4, bytes)
+    }).collect())
+}
+
 /// A fixed-layout Candidate Delta retains the exact mapping between logical
 /// draws and resident physical GPU slots. Reject any inconsistent identity,
 /// batch layout or resource-kind change and let the full planner handle it.
@@ -641,9 +724,15 @@ impl CullResources {
         };
 
         // The compact map is the only data affected by logical reordering.
-        let mapping_patches = resident_mapping_patches(
-            &self.uploaded_slot_map, &logical_to_physical,
-        );
+        let mapping_patches = structural_plan.as_ref()
+            .and_then(|_| structural.and_then(|delta| {
+                resident_structural_mapping_patches(
+                    &self.uploaded_slot_map, &logical_to_physical, delta,
+                )
+            }))
+            .unwrap_or_else(|| {
+                resident_mapping_patches(&self.uploaded_slot_map, &logical_to_physical)
+            });
 
         let mut writes = Vec::with_capacity(bounds_patches.len() + mapping_patches.len() + 12);
         for (offset, data) in &bounds_patches {
@@ -1040,6 +1129,129 @@ impl CullResources {
         device.destroy_buffer(self.range)?;
         device.destroy_buffer(self.slot_map)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod structural_mapping_tests {
+    use super::*;
+    use crate::prepare::StructuralDrawEdit;
+
+    fn edit(old: std::ops::Range<usize>, new: std::ops::Range<usize>) -> StructuralDrawEdit {
+        StructuralDrawEdit { old, new }
+    }
+
+    fn apply(previous: &[u32], next_len: usize, patches: &[(u64, Vec<u8>)]) -> Vec<u32> {
+        let mut bytes = previous.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        bytes.resize(next_len * 4, 0);
+        for (offset, patch) in patches {
+            let start = *offset as usize;
+            assert!(start + patch.len() <= bytes.len());
+            bytes[start..start + patch.len()].copy_from_slice(patch);
+        }
+        bytes.chunks_exact(4).map(|chunk| {
+            u32::from_le_bytes(chunk.try_into().unwrap())
+        }).collect()
+    }
+
+    #[test]
+    fn append_and_tail_retirement_skip_existing_gpu_mapping() {
+        let old = (0..32_768u32).collect::<Vec<_>>();
+        let mut appended = old.clone();
+        appended.extend([40_000, 40_001]);
+        let added = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(old.len()..old.len(), old.len()..appended.len())],
+        };
+        let patches = resident_structural_mapping_patches(&old, &appended, &added).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, (old.len() * 4) as u64);
+        assert_eq!(patches[0].1.len(), 8);
+        assert_eq!(apply(&old, appended.len(), &patches), appended);
+
+        let shortened = &old[..old.len() - 7];
+        let removed = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(shortened.len()..old.len(), shortened.len()..shortened.len())],
+        };
+        let patches = resident_structural_mapping_patches(&old, shortened, &removed).unwrap();
+        assert!(patches.is_empty(), "retired GPU tail is outside the live draw count");
+        assert_eq!(apply(&old, shortened.len(), &patches), shortened);
+    }
+
+    #[test]
+    fn fixed_width_section_replacement_uploads_only_changed_slots() {
+        let old = (0..4096u32).collect::<Vec<_>>();
+        let mut next = old.clone();
+        next[2048] = 50_000;
+        next[2050] = 50_002;
+        let delta = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(2040..2060, 2040..2060)],
+        };
+        let patches = resident_structural_mapping_patches(&old, &next, &delta).unwrap();
+        assert!(patches.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() <= 20 * 4);
+        assert_eq!(apply(&old, next.len(), &patches), next);
+        assert!(resident_structural_mapping_patches(&old, &old, &delta).unwrap().is_empty());
+    }
+
+    #[test]
+    fn middle_insertion_and_removal_preserve_unmodified_prefix() {
+        let old = (0..16_384u32).collect::<Vec<_>>();
+        let mut inserted = old.clone();
+        inserted.splice(300..300, [50_000, 50_001]);
+        let add = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(300..300, 300..302)],
+        };
+        let patches = resident_structural_mapping_patches(&old, &inserted, &add).unwrap();
+        assert_eq!(patches[0].0, 300 * 4);
+        assert_eq!(apply(&old, inserted.len(), &patches), inserted);
+
+        let mut removed = old.clone();
+        removed.drain(300..302);
+        let remove = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(300..302, 300..300)],
+        };
+        let patches = resident_structural_mapping_patches(&old, &removed, &remove).unwrap();
+        assert_eq!(patches[0].0, 300 * 4);
+        assert_eq!(apply(&old, removed.len(), &patches), removed);
+    }
+
+    #[test]
+    fn opposing_splices_stop_uploading_after_logical_offset_recovers() {
+        let old = (0..4096u32).collect::<Vec<_>>();
+        let mut next = old.clone();
+        next.splice(100..100, [60_000, 60_001]);
+        next.drain(504..506); // original indices 502..504
+        let delta = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(100..100, 100..102), edit(502..504, 504..504)],
+        };
+        let patches = resident_structural_mapping_patches(&old, &next, &delta).unwrap();
+        assert!(patches.iter().all(|(start, bytes)| *start as usize + bytes.len() <= 504 * 4));
+        assert_eq!(apply(&old, next.len(), &patches), next);
+    }
+
+    #[test]
+    fn fragmented_splices_fall_back_to_bounded_general_diff() {
+        let old = (0..1024u32).collect::<Vec<_>>();
+        let mut next = old.clone();
+        let edits = (0..18).map(|i| {
+            let at = i * 40;
+            next[at] += 10_000;
+            edit(at..at + 1, at..at + 1)
+        }).collect();
+        let delta = StructuralDrawDelta { previous_count: old.len(), edits };
+        assert!(resident_structural_mapping_patches(&old, &next, &delta).is_none());
+        let patches = resident_mapping_patches(&old, &next);
+        assert_eq!(apply(&old, next.len(), &patches), next);
+        let malformed = StructuralDrawDelta {
+            previous_count: old.len(),
+            edits: vec![edit(50..51, 50..51), edit(40..41, 40..41)],
+        };
+        assert!(resident_structural_mapping_patches(&old, &next, &malformed).is_none());
     }
 }
 
