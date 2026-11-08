@@ -2828,9 +2828,15 @@ impl Worker {
             .iter()
             .copied()
             .filter(|pos| {
-                self.cache.get(pos).is_some_and(|chunk| {
-                    chunk.blocks.is_none() && (target_set.contains(pos) || chunk.boundary.is_none())
-                })
+                // Unmeshed rear neighbors have no source faces yet. Loading
+                // their full model data just to rebuild a front-facing seam
+                // negates lazy meshing. Use conservative exposed boundary
+                // faces until that neighbor itself becomes camera-relevant.
+                (target_set.contains(pos) || !self.deferred_columns.contains(pos))
+                    && self.cache.get(pos).is_some_and(|chunk| {
+                        chunk.blocks.is_none()
+                            && (target_set.contains(pos) || chunk.boundary.is_none())
+                    })
             })
             .collect::<Vec<_>>();
         // Boundary culling needs the BLOCK DATA of every x/z neighbour of a
