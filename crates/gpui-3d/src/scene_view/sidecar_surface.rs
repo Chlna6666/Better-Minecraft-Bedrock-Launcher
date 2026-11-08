@@ -346,7 +346,15 @@ impl SidecarSurface {
             resolve_target: None,
             render_pass: self.capture_pass,
             commands: geometry,
-            color_load_op: LoadOp::Clear(ClearColor::default()),
+            // Unlike the ordinary swapchain clear (alpha=1), this is a
+            // composited *producer* texture. Pixels outside the 3D widget
+            // must stay transparent or they would obscure the GPUI scene.
+            color_load_op: LoadOp::Clear(ClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 0.0,
+            }),
             depth_attachment: Some(DepthAttachment {
                 target: target.depth_view,
                 depth_load_op: LoadOp::Clear(1.0),
