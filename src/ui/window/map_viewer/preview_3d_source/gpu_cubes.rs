@@ -285,6 +285,18 @@ impl Preview3dMeshBuilder {
         pos: ChunkPos,
         selection: Option<&Preview3dBandSelection>,
     ) -> Option<Vec<GpuCubeBand>> {
+        self.gpu_cube_bands_skipping(pos, selection, &std::collections::BTreeSet::new())
+    }
+
+    /// Skip unreachable 64-block bands before allocating GPU voxel grids,
+    /// face templates or instance records. Visibility is conservative and
+    /// rechecked when a deferred band is promoted by the streaming worker.
+    pub(in crate::ui::window::map_viewer) fn gpu_cube_bands_skipping(
+        &self,
+        pos: ChunkPos,
+        selection: Option<&Preview3dBandSelection>,
+        hidden: &std::collections::BTreeSet<i32>,
+    ) -> Option<Vec<GpuCubeBand>> {
         let blocks = self.block_chunks.get(&ChunkKey::from_pos(pos))?;
         let plan = super::gpu_models::ModelPlan::new(self, blocks);
         let mut bands = std::collections::BTreeMap::<i32, Vec<_>>::new();
@@ -294,6 +306,9 @@ impl Preview3dMeshBuilder {
                 return None;
             }
             for band in min..=max {
+                if hidden.contains(&band) {
+                    continue;
+                }
                 if selection.is_none_or(|selection| {
                     !selection.retained.contains(&band)
                         || selection
