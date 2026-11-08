@@ -446,6 +446,15 @@ pub struct World3dEditorView {
     section_epochs: HashMap<ChunkPos, u64>,
     dirty_sections: BTreeSet<(ChunkPos, i32)>,
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    /// Monotonic decoded-portal snapshot revision, independent of mesh generation.
+    visibility_revision: u64,
+    last_visibility_revision: Option<u64>,
+    last_visibility_voxel: Option<[i32; 3]>,
+    last_visibility_radius: i32,
+    /// Mesh render bands unreachable from the camera or any unknown exterior.
+    hidden_sections: BTreeSet<(ChunkPos, i32)>,
+    /// Edited columns whose old portal data must not suppress geometry.
+    invalidated_visibility: HashSet<ChunkPos>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
     texture_bytes: usize,
     texture_prune_pending: bool,
@@ -567,6 +576,12 @@ impl World3dEditorView {
             section_epochs: HashMap::new(),
             dirty_sections: BTreeSet::new(),
             probes: BTreeMap::new(),
+            visibility_revision: 0,
+            last_visibility_revision: None,
+            last_visibility_voxel: None,
+            last_visibility_radius: 0,
+            hidden_sections: BTreeSet::new(),
+            invalidated_visibility: HashSet::new(),
             textures: HashMap::new(),
             texture_bytes: 0,
             texture_prune_pending: false,
@@ -779,6 +794,7 @@ impl World3dEditorView {
                         .saturating_add(geometry_bytes)
                         .saturating_add(new_texture_bytes);
                     self.probes.insert(payload.mesh.pos, payload.probe.clone());
+                    self.invalidated_visibility.remove(&payload.mesh.pos);
                     probes_changed = true;
                     let key = (payload.mesh.pos, payload.mesh.section_y);
                     if self.chunk_meshes.insert(key, payload.mesh).is_some() {
@@ -835,6 +851,7 @@ impl World3dEditorView {
                             &completion.sections,
                         );
                         self.probes.insert(completion.pos, completion.probe);
+                        self.invalidated_visibility.remove(&completion.pos);
                         probes_changed = true;
                     }
                     textures_may_be_unused |= removed;
@@ -857,6 +874,7 @@ impl World3dEditorView {
                     );
                     textures_may_be_unused |= removed;
                     self.probes.remove(&pos);
+                    self.invalidated_visibility.remove(&pos);
                     probes_changed = true;
                     self.stream_scene_pending |= removed;
                 }
@@ -923,6 +941,9 @@ impl World3dEditorView {
         self.texture_prune_pending |= textures_may_be_unused;
         self.texture_table_dirty |= self.textures.len() != previous_texture_count;
         self.target_pick_dirty |= probes_changed;
+        if probes_changed {
+            self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        }
         if meshes_added > 0 {
             self.last_chunk_update_at = Some(Instant::now());
         }
@@ -992,7 +1013,48 @@ impl World3dEditorView {
         cx.notify();
     }
 
+    fn update_section_visibility(&mut self) {
+        // The renderer samples camera motion at frame rate without a Scene
+        // rebuild. Recompute this much coarser graph only on voxel transitions,
+        // decoded-column changes or radius updates; publish a new scene only
+        // when the resulting Section visibility actually changes.
+        let voxel = self.camera.position.map(|component| component.floor() as i32);
+        if self.last_visibility_voxel == Some(voxel)
+            && self.last_visibility_revision == Some(self.visibility_revision)
+            && self.last_visibility_radius == self.view_radius
+        {
+            return;
+        }
+        self.last_visibility_voxel = Some(voxel);
+        self.last_visibility_revision = Some(self.visibility_revision);
+        self.last_visibility_radius = self.view_radius;
+        let hidden = if self.edit_busy || !self.invalidated_visibility.is_empty() {
+            BTreeSet::new()
+        } else {
+            super::visibility::hidden_render_bands(
+                &self.probes,
+                &self.chunk_meshes,
+                self.dimension,
+                voxel,
+                self.view_radius,
+            )
+        };
+        if hidden != self.hidden_sections {
+            if super::chunk_service::trace_timings() {
+                eprintln!(
+                    "world3d portal_visibility hidden_bands={} resident_bands={} probes={}",
+                    hidden.len(),
+                    self.chunk_meshes.len(),
+                    self.probes.len(),
+                );
+            }
+            self.hidden_sections = hidden;
+            self.scene_dirty = true;
+        }
+    }
+
     fn maybe_update_view(&mut self, cx: &mut Context<Self>) {
+        self.update_section_visibility();
         // Camera/radius changes update SceneView::culling_bounds and trigger
         // GPU visibility, not a full CPU Scene fork and Section-visible walk.
         if self.stream_scene_pending
@@ -1121,6 +1183,17 @@ impl World3dEditorView {
             self.scene_rebuild_required = true;
             self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
             self.status = format!("更新世界光源失败：{error}").into();
+            self.status_kind = StatusKind::Error;
+            return true;
+        }
+        if let Err(error) = self
+            .scene_nodes
+            .apply_visibility(&mut scene, &self.hidden_sections)
+        {
+            self.scene_nodes = scene_registry::ChunkScene::default();
+            self.scene_rebuild_required = true;
+            self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
+            self.status = format!("更新 Section 可见性失败：{error}").into();
             self.status_kind = StatusKind::Error;
             return true;
         }
@@ -1519,6 +1592,11 @@ impl World3dEditorView {
         self.chunk_lights.clear();
         self.dirty_light_chunks.clear();
         self.probes.clear();
+        self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        self.last_visibility_revision = None;
+        self.last_visibility_voxel = None;
+        self.hidden_sections.clear();
+        self.invalidated_visibility.clear();
         self.textures.clear();
         self.texture_bytes = 0;
         self.texture_prune_pending = false;
@@ -1896,6 +1974,7 @@ impl World3dEditorView {
             kind,
         };
         self.edit_busy = true;
+        self.visibility_revision = self.visibility_revision.wrapping_add(1);
         self.status = SharedString::from("已提交世界写入任务，等待统一的 2D 历史系统确认");
         self.status_kind = StatusKind::Info;
         if owner
@@ -1905,6 +1984,7 @@ impl World3dEditorView {
             .is_err()
         {
             self.edit_busy = false;
+            self.visibility_revision = self.visibility_revision.wrapping_add(1);
             self.status = "关联的 2D 文档已关闭，编辑未提交".into();
             self.status_kind = StatusKind::Error;
         }
@@ -1916,6 +1996,7 @@ impl World3dEditorView {
             return;
         }
         self.edit_busy = false;
+        self.visibility_revision = self.visibility_revision.wrapping_add(1);
         self.status = SharedString::from(outcome.message.clone());
         self.status_kind = if outcome.ok {
             StatusKind::Success
@@ -1937,6 +2018,10 @@ impl World3dEditorView {
         if chunks.is_empty() {
             return;
         }
+        self.invalidated_visibility.extend(
+            chunks.iter().copied().filter(|pos| pos.dimension == self.dimension),
+        );
+        self.visibility_revision = self.visibility_revision.wrapping_add(1);
         if let Some(service) = self.service.as_ref() {
             service.send(super::types::ChunkServiceCommand::Invalidate {
                 generation: self.stream_generation,
