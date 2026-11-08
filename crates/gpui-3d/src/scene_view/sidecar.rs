@@ -137,6 +137,8 @@ impl Mailbox {
                     });
                 }
             }
+            let next_pending = state.pending.is_some();
+            drop(state);
             if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
                 eprintln!(
                     "gpui3d sidecar_cpu_prepared revision={} current={} draws={} elapsed_ms={:.2} next_pending={}",
@@ -144,7 +146,7 @@ impl Mailbox {
                     current,
                     draw_count,
                     elapsed.as_secs_f64() * 1000.0,
-                    state.pending.is_some(),
+                    next_pending,
                 );
             }
         }
@@ -285,4 +287,5 @@ mod tests {
         right.run();
         assert!(right.take(&scene, Mat4::IDENTITY, camera()).is_some());
         assert_eq!(Arc::strong_count(&left), 1);
-    }}
+     }
+}
