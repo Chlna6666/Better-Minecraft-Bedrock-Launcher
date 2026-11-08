@@ -420,7 +420,7 @@ impl EffectScene {
             }
             for values in [
                 [0.12f32, 0.045, 0.018, 0.],
-                [16., 0.0002, 3072., 1.],
+                [4., 0.0002, 16., 1.],
                 settings
                     .background_color
                     .map_or([shading.sky_brightness, 0., 0., 0.], |color| {

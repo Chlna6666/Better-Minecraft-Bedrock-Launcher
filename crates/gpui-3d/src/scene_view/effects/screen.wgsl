@@ -62,13 +62,28 @@ fn refraction_uv(uv:vec2<f32>,p:vec3<f32>,ray:vec3<f32>,n:vec3<f32>,depth:f32,wa
     if(any(candidate.xy<=vec2<f32>(0.001)) || any(candidate.xy>=vec2<f32>(0.999)) || candidate.z<0.0 || candidate.z>=1.0){return uv;}
     return select(uv,candidate.xy,textureLoad(opaque_depth,pixel(candidate.xy),0).r>depth);
 }
+// The native cloud texture is a grid of occupied 16-block cells, not a
+// smoothly interpolated volume. Point-load cells so the underside, side and
+// upper outlines remain cuboidal at oblique viewing angles.
+fn cloud_cell(cell:vec2<i32>)->vec4<f32>{
+    let dimensions=vec2<i32>(textureDimensions(cloud_texture));
+    let wrapped=((cell%dimensions)+dimensions)%dimensions;
+    let material=textureLoad(cloud_texture,wrapped,0);
+    return vec4<f32>(material.rgb,select(0.0,1.0,material.a>=0.5));
+}
+fn cloud_drift()->vec2<f32>{
+    let dimensions=vec2<f32>(textureDimensions(cloud_texture));
+    return frame.work.w*frame.cloud.y*vec2<f32>(dimensions.x,dimensions.y*0.3)*frame.cloud.z;
+}
 fn cloud_material(p:vec3<f32>)->vec4<f32>{
-    if(frame.flags.w<0.5){return vec4<f32>(0.0);}let absolute=p+frame.origin.xyz;let h=(absolute.y-frame.options.z)/frame.cloud.x;
-    if(h<=0.0 || h>=1.0){return vec4<f32>(0.0);}
-    let uv=absolute.xz/frame.cloud.z+frame.work.w*frame.cloud.y*vec2<f32>(1.0,0.3)+vec2<f32>(0.004,-0.003)*(h-0.5);
-    let material=textureSampleLevel(cloud_texture,cloud_sampler,uv,0.0);
-    let edge=smoothstep(0.0,0.18,h)*(1.0-smoothstep(0.72,1.0,h));
-    return vec4<f32>(material.rgb,smoothstep(0.02,0.6,material.a)*edge*frame.cloud.w);
+    if(frame.flags.w<0.5){return vec4<f32>(0.0);}
+    let absolute=p+frame.origin.xyz;
+    if(absolute.y<=frame.options.z || absolute.y>=frame.options.z+frame.cloud.x){
+        return vec4<f32>(0.0);
+    }
+    let cell=vec2<i32>(floor((absolute.xz+cloud_drift())/frame.cloud.z));
+    let material=cloud_cell(cell);
+    return vec4<f32>(material.rgb,material.a*frame.cloud.w);
 }
 fn cloud_density(p:vec3<f32>)->f32{return cloud_material(p).a;}
 fn cloud_visibility(p:vec3<f32>)->f32{
@@ -104,15 +119,61 @@ fn atmosphere(direction:vec3<f32>)->vec3<f32>{
     let disk=smoothstep(0.99994,0.99998,mu)*8.0;
     return rayleigh+frame.sun_color.rgb*frame.sun_color.w*(mie+disk)+vec3<f32>(0.001,0.002,0.005);
 }
+// Exact slab/column traversal replaces fixed 16-step raymarching. Uniform
+// steps cut diagonal slices through the cloud texture into horizontal stripes
+// at grazing view angles; cell-boundary stepping produces native box sides
+// while still keeping all geometry on the GPU.
 fn cloud_volume(origin:vec3<f32>,direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
-    if(frame.flags.w<0.5 || abs(direction.y)<0.001){return vec4<f32>(0.0,0.0,0.0,1.0);}
-    let a=(frame.options.z-frame.origin.y-origin.y)/direction.y;let b=(frame.options.z+frame.cloud.x-frame.origin.y-origin.y)/direction.y;
-    let start=max(min(a,b),0.0);let end=min(max(a,b),distance_limit);if(end<=start){return vec4<f32>(0.0,0.0,0.0,1.0);}
-    let step=(end-start)/frame.work.z;var transmittance=1.0;var radiance=vec3<f32>(0.0);
-    for(var i=0u;i<u32(frame.work.z);i++){let p=origin+direction*(start+(f32(i)+0.5)*step);let material=cloud_material(p);if(material.a<=0.0){continue;}let extinction=exp(-material.a*step*0.09);
-        let lighting=material.rgb*(vec3<f32>(0.12)*frame.sun.w+frame.sun_color.rgb*frame.sun_color.w*(0.25+0.75*cloud_visibility(p)));
-        radiance+=transmittance*(1.0-extinction)*lighting;transmittance*=extinction;if(transmittance<0.01){break;}
-    }return vec4<f32>(radiance,transmittance);
+    if(frame.flags.w<0.5 || abs(direction.y)<0.001){
+        return vec4<f32>(0.0,0.0,0.0,1.0);
+    }
+    let bottom=(frame.options.z-frame.origin.y-origin.y)/direction.y;
+    let top=(frame.options.z+frame.cloud.x-frame.origin.y-origin.y)/direction.y;
+    let start=max(min(bottom,top),0.0);
+    let end=min(max(bottom,top),distance_limit);
+    if(end<=start){return vec4<f32>(0.0,0.0,0.0,1.0);}
+    let absolute_origin=(origin+frame.origin.xyz).xz+cloud_drift();
+    let cell_width=frame.cloud.z;
+    var t=start;
+    var transmittance=1.0;
+    var radiance=vec3<f32>(0.0);
+    // Most rays touch only 1-4 cells of the four-block-thick slab.
+    // The bounded traversal prevents horizon rays from taking unbounded time.
+    for(var i=0u;i<96u;i++){
+        if(t>=end || transmittance<0.01){break;}
+        let current=absolute_origin+direction.xz*t;
+        let cell=floor(current/cell_width);
+        var horizontal=1.0e20;
+        var vertical=1.0e20;
+        if(abs(direction.x)>0.000001){
+            let edge=(cell.x+select(0.0,1.0,direction.x>0.0))*cell_width;
+            horizontal=max((edge-current.x)/direction.x,0.0);
+        }
+        if(abs(direction.z)>0.000001){
+            let edge=(cell.y+select(0.0,1.0,direction.z>0.0))*cell_width;
+            vertical=max((edge-current.y)/direction.z,0.0);
+        }
+        let distance=min(end-t,min(horizontal,vertical));
+        if(distance<=0.00001){
+            t+=min(0.0002,end-t);
+            continue;
+        }
+        let material=cloud_cell(vec2<i32>(cell));
+        let occupancy=material.a*frame.cloud.w;
+        if(occupancy>0.0){
+            let extinction=exp(-occupancy*distance*0.22);
+            let sunlight=clamp(frame.sun.y*0.65+0.35,0.15,1.0);
+            let lighting=material.rgb*(
+                vec3<f32>(0.13)*frame.sun.w+
+                frame.sun_color.rgb*frame.sun_color.w*(0.28+0.72*sunlight)
+            );
+            radiance+=transmittance*(1.0-extinction)*lighting;
+            transmittance*=extinction;
+        }
+        t+=distance;
+        if(t<end){t+=min(0.0002,end-t);}
+    }
+    return vec4<f32>(radiance,transmittance);
 }
 fn sky(direction:vec3<f32>)->vec3<f32>{let cloud=cloud_volume(frame.eye.xyz,direction,4096.0);return atmosphere(direction)*cloud.a+cloud.rgb;}
 fn trace_reflection(origin:vec3<f32>,direction:vec3<f32>)->vec4<f32>{

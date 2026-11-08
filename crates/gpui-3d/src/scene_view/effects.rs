@@ -57,7 +57,7 @@ impl Default for ScreenEffects {
             resolution_scale: 0.75,
             exposure: 1.,
             fog_density: 0.004,
-            cloud_height: 192.,
+            cloud_height: 192.33,
             world_origin: Vec3::ZERO,
             underwater: false,
         }
