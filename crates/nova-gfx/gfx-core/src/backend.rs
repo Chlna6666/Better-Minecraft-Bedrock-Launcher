@@ -11,7 +11,7 @@ use crate::{
     BindGroupLayoutId, BufferDescriptor, BufferId, BufferUploadStats, BufferWrite,
     GpuTimestampSample, GpuTimestampTag,
     CommandEncoderDescriptor, CommandEncoderId, CompositeAlphaMode, DeviceMemoryBudget,
-    DrawDescriptor, Error, Extent2d, MemoryArchitecture, PipelineLayoutDescriptor,
+    DrawDescriptor, Error, Extent2d, GpuTimestampTag, MemoryArchitecture, PipelineLayoutDescriptor,
     PipelineLayoutId, PresentFrameDescriptor, RenderPassCommands, RenderPassDescriptor,
     RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceStats, Result,
     SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
@@ -988,6 +988,24 @@ pub trait PresentationDevice {
         Ok(None)
     }
 
+    /// Tags offscreen native indirect-only draw windows without granting
+    /// extensions native command queues or changing submission ordering.
+    /// Tags align positionally with passes; unsupported devices still render
+    /// without claiming hardware samples.
+    ///
+    /// # Errors
+    /// Returns InvalidInput for mismatched lengths or a native backend error.
+    fn render_to_textures_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(Error::InvalidInput("GPU timing tag/pass count mismatch".into()));
+        }
+        self.render_to_textures(passes)
+    }
+
     /// True only if this device owns an actual second native GRAPHICS queue
     /// and implements device-side producer/consumer synchronization.
     /// DX11/OpenGL and unsupported Vulkan adapters report false.
@@ -1007,6 +1025,36 @@ pub trait PresentationDevice {
     ) -> Result<Option<SubmissionId>> {
         self.render_to_textures(passes)
     }
+
+    /// Tagged offscreen draws with native producer/consumer queue ordering.
+    ///
+    /// # Errors
+    /// Returns InvalidInput for mismatched lengths or a native backend error.
+    fn render_to_textures_independent_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(Error::InvalidInput("GPU timing tag/pass count mismatch".into()));
+        }
+        self.render_to_textures_independent(passes)
+    }
+}
+
+/// A two-timestamp window is eligible only for a nonempty, purely indirect
+/// command sequence: regular draws would contaminate the native measurement.
+#[must_use]
+pub fn eligible_indirect_timestamp_tag(
+    commands: &[crate::RenderCommand],
+    tag: Option<GpuTimestampTag>,
+) -> Option<GpuTimestampTag> {
+    tag.filter(|_| {
+        !commands.is_empty() && commands.iter().all(|command| {
+            matches!(command, crate::RenderCommand::DrawIndirect(_)
+                | crate::RenderCommand::DrawIndexedIndirect(_))
+        })
+    })
 }
 
 /// GPU timestamp range of one submitted frame's render work.
