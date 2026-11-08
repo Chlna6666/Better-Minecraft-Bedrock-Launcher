@@ -994,6 +994,12 @@ impl World3dEditorView {
         self.target_pick_dirty |= probes_changed;
         if probes_changed {
             self.visibility_revision = self.visibility_revision.wrapping_add(1);
+            self.visibility_snapshot = None;
+            self.visibility_signature_voxel = None;
+            self.visibility_completed_key = None;
+            // Any in-flight graph may contain already invalidated or unloaded
+            // Sections. Do not keep its old GPU occlusion mask while streaming.
+            ui_changed |= self.apply_portal_visibility(BTreeSet::new());
         }
         if meshes_added > 0 {
             self.last_chunk_update_at = Some(Instant::now());
@@ -1347,17 +1353,10 @@ impl World3dEditorView {
             self.status_kind = StatusKind::Error;
             return true;
         }
-        if let Err(error) = self
-            .scene_nodes
-            .apply_visibility(&mut scene, &self.hidden_sections)
-        {
-            self.scene_nodes = scene_registry::ChunkScene::default();
-            self.scene_rebuild_required = true;
-            self.scene_retry_at = Some(Instant::now() + STREAM_SCENE_INTERVAL);
-            self.status = format!("更新 Section 可见性失败：{error}").into();
-            self.status_kind = StatusKind::Error;
-            return true;
-        }
+        // Camera portal visibility is now a per-view GPU resident Bounds
+        // overlay. Never fork a Scene merely to change Node::visible.
+        self.hidden_draw_nodes =
+            Arc::new(self.scene_nodes.hidden_draw_nodes(&self.hidden_sections));
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
             && let Err(error) = preview
@@ -1385,6 +1384,7 @@ impl World3dEditorView {
                 Some(view) => view.with_scene(scene).with_camera(camera),
                 None => SceneView::new(scene, camera),
             }
+            .with_hidden_nodes(Arc::clone(&self.hidden_draw_nodes))
             .with_sampling(TextureSampling::PixelArt)
             .with_voxel_shader()
             .with_continuous_presentation();
@@ -3169,7 +3169,10 @@ impl World3dEditorView {
                 fog_end,
             );
             let fog = if self.render_settings.fog { fog } else { None };
-            let snapshot = scene_view.with_camera(camera).with_fog(fog);
+            let snapshot = scene_view
+                .with_camera(camera)
+                .with_fog(fog)
+                .with_hidden_nodes(Arc::clone(&self.hidden_draw_nodes));
             let snapshot = match snapshot
                 .with_voxel_shading(self.render_settings.shading_for_dimension(self.dimension))
             {
