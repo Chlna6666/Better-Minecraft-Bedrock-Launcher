@@ -3959,19 +3959,22 @@ fn upload_pending_meshes(
         .collect::<Vec<_>>();
     let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
     let write_count = writes.len();
-    let upload_started = Instant::now();
-    if let Err(error) = device.write_buffer_batch(&writes) {
-        discard_pending_meshes(
-            device,
-            pending,
-            arena,
-            generated_arena,
-            template_arena,
-            argument_arena,
-        )?;
-        return Err(error.into());
-    }
+    // GPU-generated meshes have already submitted their compute work. When
+    // every pending entry uses resident device buffers there are no CPU bytes
+    // to stage; skip the empty native buffer submission entirely.
     if write_count > 0 {
+        let upload_started = Instant::now();
+        if let Err(error) = device.write_buffer_batch(&writes) {
+            discard_pending_meshes(
+                device,
+                pending,
+                arena,
+                generated_arena,
+                template_arena,
+                argument_arena,
+            )?;
+            return Err(error.into());
+        }
         crate::upload_feedback::observe_buffer_upload(
             backend, uploaded_bytes, write_count, upload_started.elapsed(),
         );
