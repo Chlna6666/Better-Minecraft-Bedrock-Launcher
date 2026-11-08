@@ -6,9 +6,10 @@
 //! to forecast its next submission cost; missing samples retain the old
 //! conservative byte budget.
 
-use gfx_core::BackendKind;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use gfx_core::{BackendKind, GpuTimestampSample, GpuTimestampStage};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock, atomic::{AtomicU64, AtomicUsize, Ordering}};
+use std::time::{Duration, Instant};
 
 const MIB: u128 = 1024 * 1024;
 const DEFAULT_NS_PER_MIB: u64 = 500_000;
@@ -22,6 +23,9 @@ struct Model {
     submit_ns: AtomicU64,
     ns_per_mib: AtomicU64,
     ns_per_write: AtomicU64,
+    hardware_samples: AtomicU64,
+    hardware_upload_ns: AtomicU64,
+    hardware_ns_per_mib: AtomicU64,
 }
 
 impl Model {
@@ -33,6 +37,9 @@ impl Model {
             submit_ns: AtomicU64::new(0),
             ns_per_mib: AtomicU64::new(DEFAULT_NS_PER_MIB),
             ns_per_write: AtomicU64::new(DEFAULT_NS_PER_WRITE),
+            hardware_samples: AtomicU64::new(0),
+            hardware_upload_ns: AtomicU64::new(0),
+            hardware_ns_per_mib: AtomicU64::new(0),
         }
     }
 }
@@ -71,6 +78,11 @@ pub struct GpuUploadCostEstimate {
     pub measured_submit_us: u64,
     pub ns_per_mib: u64,
     pub ns_per_write: u64,
+    /// Completed, batch-correlated native GPU upload samples. These are
+    /// separate from the GPU-owner/CPU submission samples above.
+    pub hardware_samples: u64,
+    pub measured_hardware_upload_us: u64,
+    pub hardware_ns_per_mib: u64,
 }
 
 impl GpuUploadCostEstimate {
@@ -81,6 +93,16 @@ impl GpuUploadCostEstimate {
             .saturating_mul(u128::from(self.ns_per_mib)) / MIB)
             .saturating_add((writes as u128).saturating_mul(u128::from(self.ns_per_write)));
         (nanoseconds.saturating_add(999) / 1000).min(u128::from(u64::MAX)) as u64
+    }
+
+    /// GPU execution estimate; None means not enough completed hardware probes
+    /// to safely train on this adapter. Do not substitute host API timings.
+    pub fn predicted_hardware_us(self, bytes: usize) -> Option<u64> {
+        if self.hardware_samples < 8 || self.hardware_ns_per_mib == 0 {
+            return None;
+        }
+        let nanos = (bytes as u128).saturating_mul(u128::from(self.hardware_ns_per_mib)) / MIB;
+        Some((nanos.saturating_add(999) / 1000).min(u128::from(u64::MAX)) as u64)
     }
 }
 
@@ -98,6 +120,9 @@ pub fn gpu_upload_cost_estimate() -> Option<GpuUploadCostEstimate> {
         measured_submit_us: model.submit_ns.load(Ordering::Relaxed) / 1_000,
         ns_per_mib: model.ns_per_mib.load(Ordering::Relaxed),
         ns_per_write: model.ns_per_write.load(Ordering::Relaxed),
+        hardware_samples: model.hardware_samples.load(Ordering::Relaxed),
+        measured_hardware_upload_us: model.hardware_upload_ns.load(Ordering::Relaxed) / 1000,
+        hardware_ns_per_mib: model.hardware_ns_per_mib.load(Ordering::Relaxed),
     })
 }
 
@@ -145,6 +170,100 @@ pub(crate) fn observe_buffer_upload(
     LAST_BACKEND.store(index, Ordering::Relaxed);
 }
 
+/// One submission group may contain several native buffer-copy calls.
+    /// Accept a hardware rate ONLY after every expected tagged call has
+    /// produced a completed timestamp. Missing/unsupported samples expire
+    /// without corrupting the cost model.
+#[derive(Clone, Copy)]
+struct TimedBatch {
+    bytes: u64,
+    writes: u64,
+    expected: u32,
+    completed: u32,
+    gpu_ns: u128,
+    updated: Instant,
+}
+
+static PENDING_HARDWARE: OnceLock<Mutex<HashMap<(usize, u64), TimedBatch>>> = OnceLock::new();
+
+fn pending_hardware() -> &'static Mutex<HashMap<(usize, u64), TimedBatch>> {
+    PENDING_HARDWARE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register one successful profiled native buffer upload against its Section
+/// batch. No GPU wait; this runs after the normal upload API returns.
+pub(crate) fn observe_tagged_upload(
+    backend: BackendKind,
+    batch_id: u64,
+    bytes: usize,
+    writes: usize,
+) {
+    if batch_id == 0 || bytes == 0 || writes == 0 {
+        return;
+    }
+    let Ok(mut pending) = pending_hardware().lock() else { return; };
+    let now = Instant::now();
+    if pending.len() >= 256 {
+        pending.retain(|_, record| now.saturating_duration_since(record.updated) < Duration::from_secs(15));
+        // Missing native probes or a device loss must not leak an unbounded
+        // backlog of stale Section publications.
+        if pending.len() >= 1024 {
+            pending.clear();
+        }
+    }
+    let entry = pending.entry((backend_index(backend), batch_id)).or_insert(TimedBatch {
+        bytes: 0, writes: 0, expected: 0, completed: 0, gpu_ns: 0, updated: now,
+    });
+    entry.bytes = entry.bytes.saturating_add(bytes as u64);
+    entry.writes = entry.writes.saturating_add(writes as u64);
+    entry.expected = entry.expected.saturating_add(1);
+    entry.updated = now;
+}
+
+/// Match fence-completed native hardware ticks to the original upload batch.
+/// A partial batch cannot train the per-byte rate.
+pub(crate) fn observe_completed_gpu_upload(backend: BackendKind, sample: GpuTimestampSample) {
+    if sample.tag.stage != GpuTimestampStage::BufferUpload {
+        return;
+    }
+    let Some(duration) = sample.duration() else { return; };
+    let nanos = duration.as_nanos();
+    if nanos == 0 { return; }
+    let index = backend_index(backend);
+    let Ok(mut pending) = pending_hardware().lock() else { return; };
+    let key = (index, sample.tag.batch_id);
+    let Some(record) = pending.get_mut(&key) else { return; };
+    record.gpu_ns = record.gpu_ns.saturating_add(nanos);
+    record.completed = record.completed.saturating_add(1);
+    if record.completed != record.expected {
+        return;
+    }
+    let record = pending.remove(&key).expect("completed hardware batch");
+    drop(pending);
+    // Tiny patch timings are often below query clock resolution and should
+    // not dominate a per-MiB throughput estimate.
+    if record.bytes < 64 * 1024 {
+        return;
+    }
+    let Some(rate) = normalized_gpu_rate(record.gpu_ns, record.bytes) else { return; };
+    let model = &MODELS[index];
+    let previous_samples = model.hardware_samples.fetch_add(1, Ordering::Relaxed);
+    let previous = model.hardware_ns_per_mib.load(Ordering::Relaxed);
+    model.hardware_ns_per_mib.store(
+        if previous_samples == 0 { rate } else { smooth(previous, rate) },
+        Ordering::Relaxed,
+    );
+    model.hardware_upload_ns.fetch_add(
+        u64::try_from(record.gpu_ns).unwrap_or(u64::MAX), Ordering::Relaxed,
+    );
+}
+
+fn normalized_gpu_rate(nanos: u128, bytes: u64) -> Option<u64> {
+    if bytes == 0 || nanos == 0 { return None; }
+    Some((nanos.saturating_mul(MIB) / u128::from(bytes))
+        .clamp(1_000, 200_000_000) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,10 +278,28 @@ mod tests {
             measured_submit_us: 0,
             ns_per_mib: 1_000_000,
             ns_per_write: 10_000,
+            hardware_samples: 0,
+            measured_hardware_upload_us: 0,
+            hardware_ns_per_mib: 0,
         };
         assert_eq!(stats.predicted_submit_us(1024 * 1024, 4), 1040);
         assert_eq!(stats.predicted_submit_us(1024 * 1024, 100), 2000);
         assert_eq!(stats.predicted_submit_us(0, 0), 0);
+    }
+
+    #[test]
+    fn hardware_cost_requires_completed_samples() {
+        let mut cost = GpuUploadCostEstimate {
+            backend: BackendKind::Vulkan, samples: 10, measured_bytes: 0,
+            measured_writes: 0, measured_submit_us: 0,
+            ns_per_mib: 1_000_000, ns_per_write: 20_000,
+            hardware_samples: 7, measured_hardware_upload_us: 0,
+            hardware_ns_per_mib: 2_000_000,
+        };
+        assert_eq!(cost.predicted_hardware_us(1024 * 1024), None);
+        cost.hardware_samples = 8;
+        assert_eq!(cost.predicted_hardware_us(1024 * 1024), Some(2000));
+        assert_eq!(normalized_gpu_rate(1_000_000, 1024 * 1024), Some(1_000_000));
     }
 
     #[test]
