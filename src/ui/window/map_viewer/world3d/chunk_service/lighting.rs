@@ -328,6 +328,7 @@ mod tests {
             min_y: 0,
             state_version: None,
             storage_bytes: 0,
+            visibility: BTreeMap::new(),
             subchunks: BTreeMap::from([(
                 0,
                 super::super::super::types::ProbingSubChunk {
