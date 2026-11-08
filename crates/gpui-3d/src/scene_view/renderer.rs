@@ -735,11 +735,17 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             .ok_or_else(|| anyhow!("GPUI 3D scene-view state was not initialized"))?;
         scene.last_used_frame = self.frame_index;
         scene.last_used_at = Instant::now();
+        // A full unrelated Scene replacement is allowed to arrive as a
+        // versioned CPU-sidecar job. Until it is prepared, continue showing
+        // the last published GPU geometry with the current camera instead
+        // of blocking every window's shared GPU submission owner.
+        let retained_sidecar = scene.retained_sidecar_view(&scene_view);
+        let prepared_view = retained_sidecar.as_ref().unwrap_or(&scene_view);
         let prepare_started = trace_timings().then(Instant::now);
         {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
-            scene.prepare(device, &mut self.resources, &scene_view, &context)?;
+            scene.prepare(device, &mut self.resources, prepared_view, &context)?;
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let first_step = steps.len();
