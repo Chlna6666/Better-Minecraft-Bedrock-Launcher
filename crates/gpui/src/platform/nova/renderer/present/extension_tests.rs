@@ -90,6 +90,7 @@ mod native {
                 usage,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             })
             .unwrap();
         let view = device
@@ -107,7 +108,7 @@ mod native {
     #[test]
     #[ignore = "requires D3D12; ordered extension producer, Root consumer and failure fence retention"]
     fn extension_precedes_root_capture_dx12() {
-        use gfx_core::TextureTransferDevice;
+        use gfx_core::{BackendKind, TextureTransferDevice};
         let mut device = gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap();
         let extent = Extent2d::new(4, 4).unwrap();
         let (color, view) = target(
@@ -126,18 +127,23 @@ mod native {
             &mut device,
             &RenderPassDescriptor {
                 label: None,
-                color_attachment: ColorAttachmentDescriptor {
+                color_attachments: vec![ColorAttachmentDescriptor {
                     format: Format::Rgba8Unorm,
-                },
+                }],
                 depth_attachment: Some(DepthAttachmentDescriptor {
                     format: Format::Depth32Float,
+                    stencil_format: None,
                 }),
+
+                sample_count: 1,
+                resolve_target: None,
             },
         )
         .unwrap();
         let depth_attachment = DepthAttachment {
             target: depth_view,
             depth_load_op: LoadOp::Clear(1.),
+            stencil_load_op: None,
         };
         let context = RendererExtensionContext::for_target(
             BackendKind::Dx12,
@@ -156,6 +162,7 @@ mod native {
                     ..ClearColor::default()
                 }),
                 depth_attachment: Some(depth_attachment),
+                resolve_target: None,
             },
         };
         let mut registry = super::super::super::extensions::RendererRegistry::default();

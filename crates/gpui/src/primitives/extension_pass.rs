@@ -8,6 +8,9 @@ use gfx_core::*;
 pub struct RendererExtensionPass {
     /// Output color attachment, distinct from every sampled input in this pass.
     pub target: TextureViewId,
+    /// Optional single-sample resolve destination when [`Self::target`] is
+    /// multisampled. The MSAA color is resolved into this view after the pass.
+    pub resolve_target: Option<TextureViewId>,
     /// Attachment-compatible render pass.
     pub render_pass: RenderPassId,
     /// Commands in draw order. Scissors are local to this offscreen target.
@@ -21,13 +24,14 @@ impl RendererExtensionPass {
     /// Borrows this owned plan for the host graphics submission.
     pub fn commands(&self) -> RenderPassCommands<'_> {
         RenderPassCommands {
-            texture_view: self.target,
+            color_attachments: std::slice::from_ref(&self.target),
             render_pass: self.render_pass,
             commands: &self.commands,
             color_load_op: self.color_load_op,
             depth_attachment: self.depth_attachment,
             clear_region: None,
             viewport: None,
+            resolve_target: self.resolve_target,
         }
     }
 }

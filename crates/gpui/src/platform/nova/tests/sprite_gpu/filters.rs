@@ -68,7 +68,7 @@ where
             .expect("blur pass bindings");
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: output,
+                color_attachments: std::slice::from_ref(&output),
                 render_pass: resources.pipelines.filter_render_pass,
                 commands: &[RenderCommand::Draw(DrawCommand {
                     pipeline,
@@ -88,7 +88,8 @@ where
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("Gaussian pass");
     }
     let pixels = device.read_texture(target).expect("blur readback");

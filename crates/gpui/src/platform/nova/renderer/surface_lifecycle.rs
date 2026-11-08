@@ -97,6 +97,8 @@ impl NovaRenderer {
             format: self.surface_format,
             present_mode: self.present_mode,
             alpha_mode: self.surface_alpha.swapchain_mode,
+            desired_image_count: 0,
+            desired_maximum_frame_latency: 0,
         };
         let next_path_mask_size =
             planned_path_mask_size(self.path_texture_size, self.current_size, target_size)?;
@@ -656,6 +658,8 @@ impl NovaRenderer {
             format: self.surface_format,
             present_mode: self.present_mode,
             alpha_mode: alpha.swapchain_mode,
+            desired_image_count: 0,
+            desired_maximum_frame_latency: 0,
         };
         let next_path_mask_size = self.path_texture_size;
         let path_mask_target_descriptor = self.path_mask_target_descriptor(next_path_mask_size);

@@ -68,7 +68,7 @@ impl Drop for DisplayEventListener {
         // SAFETY: The window and proxy remain owned until after removal. Drop runs
         // on the owning event-loop thread; an already destroyed HWND has no subclass.
         unsafe {
-            RemoveWindowSubclass(self.hwnd, Some(display_event_proc), SUBCLASS_ID);
+            let _removed = RemoveWindowSubclass(self.hwnd, Some(display_event_proc), SUBCLASS_ID);
         }
     }
 }

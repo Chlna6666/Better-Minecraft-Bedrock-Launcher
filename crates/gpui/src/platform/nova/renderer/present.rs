@@ -133,6 +133,7 @@ where
             } else {
                 LoadOp::Load
             },
+            stencil_load_op: None,
         };
         // An empty continuation with Load/Load changes no pixels. Do not
         // submit a native offscreen render pass (and its layout transitions)
@@ -140,7 +141,7 @@ where
         // clear the source even if it contains no geometry.
         if first_group || !group.source_steps.is_empty() {
             passes.push(gfx_core::RenderPassCommands {
-                texture_view: source_texture_view,
+                color_attachments: std::slice::from_ref(&source_texture_view),
                 render_pass,
                 commands: &group.source_steps,
                 color_load_op: source_load_op,
@@ -151,7 +152,8 @@ where
                 },
                 depth_attachment: Some(source_depth_attachment),
                 viewport: Some(viewport),
-            });
+            resolve_target: None,
+        });
         }
         let filter_load_op = if group.preserve_filtered_pixels {
             LoadOp::Load
@@ -160,14 +162,15 @@ where
         };
         for pass in &group.filter_passes {
             passes.push(gfx_core::RenderPassCommands {
-                texture_view: pass.target_texture_view,
+                color_attachments: std::slice::from_ref(&pass.target_texture_view),
                 render_pass: filter_render_pass,
                 commands: std::slice::from_ref(&pass.step),
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            });
+            resolve_target: None,
+        });
         }
     }
     device.render_to_textures(&passes)?;
@@ -217,6 +220,7 @@ pub(super) fn color_layer_passes(
                 } else {
                     LoadOp::Load
                 },
+                stencil_load_op: None,
             };
             if source_pass_required(
                 group_index == 0,
@@ -224,7 +228,7 @@ pub(super) fn color_layer_passes(
                 !group.source_steps.is_empty(),
             ) {
                 passes.push(gfx_core::RenderPassCommands {
-                    texture_view: layer.source_texture_view,
+                    color_attachments: std::slice::from_ref(&layer.source_texture_view),
                     render_pass,
                     commands: &group.source_steps,
                     color_load_op: if group_index == 0 && !layer.preserve_retained_source {
@@ -248,7 +252,8 @@ pub(super) fn color_layer_passes(
                     },
                     depth_attachment: Some(source_depth_attachment),
                     viewport: Some(viewport),
-                });
+            resolve_target: None,
+        });
             }
             let filter_load_op = if group.preserve_filtered_pixels {
                 LoadOp::Load
@@ -257,14 +262,15 @@ pub(super) fn color_layer_passes(
             };
             for pass in &group.filter_passes {
                 passes.push(gfx_core::RenderPassCommands {
-                    texture_view: pass.target_texture_view,
+                    color_attachments: std::slice::from_ref(&pass.target_texture_view),
                     render_pass: filter_render_pass,
                     commands: std::slice::from_ref(&pass.step),
                     color_load_op: filter_load_op,
                     clear_region: None,
                     depth_attachment: None,
                     viewport: None,
-                });
+            resolve_target: None,
+        });
             }
         }
         let filter_load_op = if layer.preserve_filtered_pixels {
@@ -274,14 +280,15 @@ pub(super) fn color_layer_passes(
         };
         for pass in &layer.filter_passes {
             passes.push(gfx_core::RenderPassCommands {
-                texture_view: pass.target_texture_view,
+                color_attachments: std::slice::from_ref(&pass.target_texture_view),
                 render_pass: filter_render_pass,
                 commands: std::slice::from_ref(&pass.step),
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            });
+            resolve_target: None,
+        });
         }
     }
     passes
@@ -2299,6 +2306,7 @@ mod attachment_clear_tests {
         let depth = DepthAttachment {
             target: TextureViewId::new(2),
             depth_load_op: LoadOp::Clear(1.0),
+            stencil_load_op: None,
         };
         let layers = [layer(false)];
         let passes = color_layer_passes(

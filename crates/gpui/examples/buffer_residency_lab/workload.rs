@@ -206,11 +206,15 @@ fn target<D: Device>(
     let (set, layout) = storage_binding(device, buffer, bytes)?;
     let pass = device.create_render_pass(&RenderPassDescriptor {
         label: None,
-        color_attachment: ColorAttachmentDescriptor {
+        color_attachments: vec![ColorAttachmentDescriptor {
             format: Format::Rgba8Unorm,
-        },
+        }],
         depth_attachment: None,
-    })?;
+
+            sample_count: 1,
+            resolve_target: None,
+
+        })?;
     let pipeline = pipeline(device, bytes, pass, layout)?;
     let steps = vec![
         DrawCommand {
@@ -292,8 +296,10 @@ fn pipeline<D: Device>(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(pipeline_layout),
-            color_format: Format::Rgba8Unorm,
-            blend_mode: BlendMode::Replace,
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::Replace,
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: Default::default(),
             depth_state: None,

@@ -59,6 +59,7 @@ where
         anisotropic: false,
         address_mode_u: AddressMode::ClampToEdge,
         address_mode_v: AddressMode::ClampToEdge,
+        ..Default::default()
     })?;
 
     Ok(ResourceBuffers {

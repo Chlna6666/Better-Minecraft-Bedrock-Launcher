@@ -35,6 +35,14 @@ pub trait ExtensionDevice {
         gfx_core::BufferBindingLimits::default()
     }
 
+    /// Multisampling and stencil capabilities of the active device.
+    ///
+    /// Extensions use this single unified query to decide whether to enable
+    /// MSAA and stencil paths, independent of the concrete backend.
+    fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+        gfx_core::MultisampleCapabilities::default()
+    }
+
     /// Returns the device's optional ordered compute/indirect capabilities.
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         gfx_core::ComputeCapabilities::default()
@@ -103,7 +111,9 @@ pub trait ExtensionDevice {
         _desc: gfx_core::TextureArrayLayerWriteDescriptor,
         _data: &[u8],
     ) -> Result<()> {
-        Err(gfx_core::Error::Unavailable("layered texture uploads are unsupported".into()))
+        Err(gfx_core::Error::Unavailable(
+            "layered texture uploads are unsupported".into(),
+        ))
     }
 
     /// Writes several texture subresources as one backend upload batch.
@@ -270,6 +280,10 @@ where
 
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
         ResourceDevice::buffer_binding_limits(self)
+    }
+
+    fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
+        ResourceDevice::multisample_capabilities(self)
     }
 
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {

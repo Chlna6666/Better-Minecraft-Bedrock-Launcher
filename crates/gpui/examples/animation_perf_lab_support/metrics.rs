@@ -583,7 +583,7 @@ fn renderer_timing_ms(timing: Option<WindowAnimationPresentationTiming>) -> [f64
 
 fn renderer_substage_timing_ms(timing: WindowAnimationPresentationTiming) -> [f64; 4] {
     [
-        timing.draw_step_prepare,
+        timing.command_prepare,
         timing.buffer_upload,
         timing.atlas_upload,
         timing.offscreen_render,

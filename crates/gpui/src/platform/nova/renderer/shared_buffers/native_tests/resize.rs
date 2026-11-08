@@ -219,7 +219,7 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
     device!(renderer, device, {
         device
             .render_to_textures(&[gfx_core::RenderPassCommands {
-                texture_view: output.1,
+                color_attachments: std::slice::from_ref(&output.1),
                 render_pass: renderer.render_pass,
                 commands: renderer.command_scratch.commands(),
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -227,7 +227,8 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: Some(gfx_core::Viewport {
                     origin: gfx_core::SignedOrigin2d::ZERO,
                     extent: Extent2d::new(extent.0, extent.1).expect("client viewport"),
@@ -238,7 +239,8 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
                     .expect("retained target extent"),
                     mapping: gfx_core::ViewportMapping::Scaled,
                 }),
-            }])
+            resolve_target: None,
+        }])
             .expect("live geometry pixel draw");
         let pixels = device.read_texture(output.0).expect("live geometry pixels");
         let target_width = renderer.current_size.width;
@@ -384,7 +386,7 @@ fn verify_pixels(renderer: &NovaRenderer) {
     device!(renderer, device, {
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: output.1,
+                color_attachments: std::slice::from_ref(&output.1),
                 render_pass: renderer.render_pass,
                 commands: renderer.command_scratch.commands(),
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -392,9 +394,11 @@ fn verify_pixels(renderer: &NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("resize pixel reference");
     });
     super::pixels(renderer, output.0, [0, 255, 0, 255]);

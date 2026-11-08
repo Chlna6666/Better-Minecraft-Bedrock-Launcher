@@ -19,6 +19,7 @@ where
             usage: TextureUsage::DEPTH_ATTACHMENT,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .context("creating nova depth texture")
 }

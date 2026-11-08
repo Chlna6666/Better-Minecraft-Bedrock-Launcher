@@ -17,11 +17,13 @@ where
     // Gaussian targets can be downsampled independently of the window-sized depth buffer.
     let filter_render_pass = device.create_render_pass(&RenderPassDescriptor {
         label: Some(format!("{label} filter render pass")),
-        color_attachment: ColorAttachmentDescriptor {
+        color_attachments: vec![ColorAttachmentDescriptor {
             format: surface_config.format,
-        },
+        }],
         depth_attachment: None,
-    })?;
+            sample_count: 1,
+            resolve_target: None,
+        })?;
     let alpha = create_blend_pipelines(
         device,
         BlendPipelineDescriptor {
@@ -107,8 +109,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: filter_render_pass,
                 pipeline_layout: Some(layouts.backdrop_blur_pass_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::Replace,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    surface_config.format,
+                    BlendMode::Replace,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -127,8 +131,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: filter_render_pass,
                 pipeline_layout: Some(layouts.backdrop_blur_pass_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::Replace,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    surface_config.format,
+                    BlendMode::Replace,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -147,8 +153,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass,
                 pipeline_layout: Some(layouts.quad_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::Replace,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    surface_config.format,
+                    BlendMode::Replace,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -167,8 +175,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass,
                 pipeline_layout: Some(layouts.path_rasterization_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::PremultipliedAlpha,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    surface_config.format,
+                    BlendMode::PremultipliedAlpha,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleList,
                 raster: Default::default(),
                 depth_state: None,
@@ -187,8 +197,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass,
                 pipeline_layout: Some(layouts.path_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::AdditiveAlpha,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    surface_config.format,
+                    BlendMode::AdditiveAlpha,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,

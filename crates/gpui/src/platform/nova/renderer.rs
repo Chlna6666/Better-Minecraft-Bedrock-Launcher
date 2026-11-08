@@ -1563,6 +1563,7 @@ impl NovaRenderer {
         DepthAttachment {
             target: self.depth_texture_view,
             depth_load_op: LoadOp::Clear(1.0),
+            stencil_load_op: None,
         }
     }
 

@@ -89,7 +89,7 @@ pub(super) fn verify<D>(
     // Execute the generated descriptor, rather than constructing a replacement draw.
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: resources.render_pass,
             commands: &steps,
             color_load_op: LoadOp::Clear(ClearColor {
@@ -102,8 +102,10 @@ pub(super) fn verify<D>(
             depth_attachment: Some(gfx_core::DepthAttachment {
                 target: resources.depth_texture_view,
                 depth_load_op: LoadOp::Clear(1.),
-            }),
+            stencil_load_op: None,
+        }),
             viewport: None,
+            resolve_target: None,
         }])
         .expect("clipped source render command");
     let drawn = device.read_texture(target).expect("merged source pixels");

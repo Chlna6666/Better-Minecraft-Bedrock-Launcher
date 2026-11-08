@@ -27,13 +27,16 @@ where
     let layouts = create_resource_layouts(device, label)?;
     let render_pass = device.create_render_pass(&RenderPassDescriptor {
         label: Some(format!("{label} render pass")),
-        color_attachment: ColorAttachmentDescriptor {
+        color_attachments: vec![ColorAttachmentDescriptor {
             format: surface_config.format,
-        },
+        }],
         depth_attachment: Some(DepthAttachmentDescriptor {
             format: Format::Depth32Float,
+            stencil_format: None,
         }),
-    })?;
+            sample_count: 1,
+            resolve_target: None,
+        })?;
     let layouts_elapsed = started_at.elapsed();
     let shaders_started_at = std::time::Instant::now();
     let shaders = create_renderer_shaders(device, label, shader_binaries)?;

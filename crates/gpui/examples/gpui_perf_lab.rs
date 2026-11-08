@@ -10,7 +10,7 @@ use std::{
 use gpui::{
     App, Application, AssetSource, Bounds, Context, Entity, PerformanceMetricsSnapshot,
     PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, ScrollHandle,
-    SharedString, StyleRefinement, Window, WindowBounds, WindowOptions, div, hsla, img,
+    SharedString, Window, WindowBounds, WindowOptions, div, hsla, img,
     performance_metrics_snapshot, prelude::*, px, rgb, size,
 };
 use serde::Serialize;

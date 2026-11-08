@@ -82,7 +82,7 @@ fn draw_all(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
     device!(renderer, device, {
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: renderer.render_pass,
                 commands: &steps,
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -90,9 +90,11 @@ fn draw_all(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("segmented draw");
     });
 }
@@ -126,7 +128,8 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 present_region: None,
             })
             .expect("old chunk submission")

@@ -2,6 +2,7 @@
 use super::*;
 use crate::platform::nova::tests::sprite_gpu::native_window;
 use gfx_core::{ResourceDevice, TextureTransferDevice};
+use gfx_core::*;
 
 #[test]
 #[ignore = "requires Windows hardware D3D12"]
@@ -171,6 +172,7 @@ fn target(renderer: &NovaRenderer) -> (TextureId, TextureViewId) {
             usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("scratch texture");
     let view = device
@@ -192,7 +194,7 @@ fn pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> Vec<u8
     };
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: target.1,
+            color_attachments: std::slice::from_ref(&target.1),
             render_pass: renderer.render_pass,
             commands: renderer.command_scratch.commands(),
             color_load_op: LoadOp::Clear(clear_color()),
@@ -200,8 +202,10 @@ fn pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> Vec<u8
             depth_attachment: Some(DepthAttachment {
                 target: renderer.depth_texture_view,
                 depth_load_op: LoadOp::Clear(1.0),
-            }),
+            stencil_load_op: None,
+        }),
             viewport: None,
+            resolve_target: None,
         }])
         .expect("sample cached mask");
     let readback = device.read_texture(target.0).expect("scratch readback");

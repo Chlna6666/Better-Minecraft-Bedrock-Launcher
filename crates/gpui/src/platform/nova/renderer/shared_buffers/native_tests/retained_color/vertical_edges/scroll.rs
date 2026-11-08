@@ -101,7 +101,7 @@ fn read_pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> V
     device!(renderer, device, {
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: target.1,
+                color_attachments: std::slice::from_ref(&target.1),
                 render_pass: renderer.render_pass,
                 commands: renderer.command_scratch.commands(),
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -109,9 +109,11 @@ fn read_pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> V
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("composition readback draw");
         let data = device.read_texture(target.0).expect("native pixels");
         data.bytes

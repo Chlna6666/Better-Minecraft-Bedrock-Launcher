@@ -50,8 +50,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.quad_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -78,8 +80,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.quad_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -101,8 +105,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.shadow_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -124,8 +130,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.mono_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -173,12 +181,14 @@ where
                     vertex_buffers: Vec::new(),
                     render_pass: descriptor.render_pass,
                     pipeline_layout: Some(descriptor.mono_pipeline_layout),
-                    color_format: descriptor.color_format,
-                    blend_mode: if transparent_surface {
-                        descriptor.blend_mode
-                    } else {
-                        BlendMode::SubpixelDualSource
-                    },
+                    color_targets: vec![gfx_core::ColorTargetState::new(
+                        descriptor.color_format,
+                        if transparent_surface {
+                            descriptor.blend_mode
+                        } else {
+                            BlendMode::SubpixelDualSource
+                        },
+                    )],
                     primitive_topology: PrimitiveTopology::TriangleStrip,
                     raster: Default::default(),
                     depth_state: None,
@@ -210,8 +220,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.poly_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -238,8 +250,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.underline_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,
@@ -266,8 +280,10 @@ where
                 vertex_buffers: Vec::new(),
                 render_pass: descriptor.render_pass,
                 pipeline_layout: Some(descriptor.backdrop_blur_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: descriptor.blend_mode,
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
                 primitive_topology: PrimitiveTopology::TriangleStrip,
                 raster: Default::default(),
                 depth_state: None,

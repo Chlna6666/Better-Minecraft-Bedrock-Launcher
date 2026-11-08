@@ -6,6 +6,7 @@
 
 use super::*;
 use gfx_core::TextureTransferDevice;
+use gfx_core::*;
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
@@ -122,7 +123,7 @@ where
             });
             device
                 .render_to_textures(&[RenderPassCommands {
-                    texture_view: view,
+                    color_attachments: std::slice::from_ref(&view),
                     render_pass: resources.render_pass,
                     commands: std::slice::from_ref(&step),
                     color_load_op: LoadOp::Clear(ClearColor {
@@ -135,9 +136,11 @@ where
                     depth_attachment: Some(gfx_core::DepthAttachment {
                         target: resources.depth_texture_view,
                         depth_load_op: LoadOp::Clear(1.0),
-                    }),
+            stencil_load_op: None,
+        }),
                     viewport: None,
-                }])
+            resolve_target: None,
+        }])
                 .expect("production sprite draw");
             let pixels = device.read_texture(target).expect("GPU sprite readback");
             let expected = if matches!(
@@ -178,6 +181,7 @@ fn verify_r8_transfers<D: ResourceDevice + TextureTransferDevice>(device: &mut D
             usage: TextureUsage::COPY_DST | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("R8 texture");
     let source = (0..49).map(|index| (index * 5) as u8).collect::<Vec<_>>();
@@ -241,6 +245,7 @@ fn color_target<D: ResourceDevice>(device: &mut D, size: Extent2d) -> (TextureId
                 | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         })
         .expect("readback target");
     let view = device
@@ -445,7 +450,7 @@ fn verify_mono_tint<D>(
         });
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: resources.render_pass,
                 commands: std::slice::from_ref(&step),
                 color_load_op: LoadOp::Clear(ClearColor {
@@ -458,9 +463,11 @@ fn verify_mono_tint<D>(
                 depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("same R8 atlas with changed text color/alpha");
         let pixels = device.read_texture(target).expect("tint readback");
         let offset = 8 * pixels.bytes_per_row as usize + 8 * 4;

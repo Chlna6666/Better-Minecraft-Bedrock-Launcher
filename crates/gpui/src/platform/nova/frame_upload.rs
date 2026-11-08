@@ -1,6 +1,8 @@
 use super::*;
 
 mod animated;
+#[cfg(test)]
+pub(in crate::platform::nova) use animated::apply_value;
 mod animation;
 #[cfg(test)]
 mod atlas_pixels_tests;
@@ -19,7 +21,7 @@ mod quality;
 mod retained_animation;
 pub(super) mod upload_encoding;
 pub(super) mod upload_queue;
-pub(super) use animated::*;
+use animated::*;
 pub(super) use animation::*;
 pub(super) use batch::*;
 pub(super) use blur::*;

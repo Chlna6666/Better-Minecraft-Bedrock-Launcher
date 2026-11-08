@@ -193,7 +193,7 @@ pub(super) fn verify_atlas_compaction<D>(
         });
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: resources.render_pass,
                 commands: std::slice::from_ref(&step),
                 color_load_op: LoadOp::Clear(ClearColor {
@@ -206,9 +206,11 @@ pub(super) fn verify_atlas_compaction<D>(
                 depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("old Scene draws relocated tile");
         let drawn = device.read_texture(target).expect("relocated Scene output");
         let center = 8 * drawn.bytes_per_row as usize + 8 * 4;
@@ -239,6 +241,7 @@ pub(super) fn verify_texture_copies<D: ResourceDevice + TextureTransferDevice>(d
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         };
         let source = device.create_texture(&desc).expect("source");
         let destination = device.create_texture(&desc).expect("destination");

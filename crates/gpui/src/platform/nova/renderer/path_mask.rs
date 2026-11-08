@@ -98,14 +98,15 @@ pub(super) fn render<D: PresentationDevice>(
 ) -> Result<()> {
     let started = Instant::now();
     let result = device.render_to_textures(&[gfx_core::RenderPassCommands {
-        texture_view: pass.texture_view,
+        color_attachments: std::slice::from_ref(&pass.texture_view),
         render_pass: pass.render_pass,
         commands: pass.steps,
         color_load_op: LoadOp::Clear(clear_color()),
         clear_region: None,
         depth_attachment: Some(pass.depth_attachment),
         viewport: Some(pass.viewport),
-    }]);
+            resolve_target: None,
+        }]);
     *cpu_elapsed = started.elapsed();
     result.map(|_| ()).map_err(Into::into)
 }

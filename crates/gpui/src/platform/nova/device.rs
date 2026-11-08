@@ -89,6 +89,7 @@ pub(super) fn shared_device(
             adapter_name: options.adapter_name.clone(),
             power_preference: nova_power_preference(options),
             pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+            tuning: gfx_core::DeviceTuning::default(),
         };
         create_backend(backend, &descriptor)
     })
@@ -175,6 +176,7 @@ pub(super) fn shared_opengl_device(
             adapter_name: options.adapter_name.clone(),
             power_preference: nova_power_preference(options),
             pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+            tuning: gfx_core::DeviceTuning::default(),
         };
         // SAFETY: the GPU owner is torn down before the native platform connection;
         // initialization holds the window alive and WGL owns its bootstrap HWND.

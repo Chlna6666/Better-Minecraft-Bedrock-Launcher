@@ -31,7 +31,7 @@ pub use snapshot::*;
 pub use upload::*;
 pub use window::*;
 pub(crate) use window::{
-    record_present_attempt, record_present_preflight_deferred,
+    record_present_attempt,
     record_window_active_presentation_retry, record_window_backend_ready_wake,
     record_window_extension_present, record_window_native_vsync_wake, record_window_path_mask,
 };

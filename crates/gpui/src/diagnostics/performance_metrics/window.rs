@@ -14,7 +14,7 @@ pub use backend_ready::WindowBackendReadyMetricsSnapshot;
 pub(crate) use backend_ready::record_window_backend_ready_wake;
 pub use native_vsync::WindowVSyncMetricsSnapshot;
 pub(crate) use native_vsync::{
-    record_present_attempt, record_present_preflight_deferred,
+    record_present_attempt,
     record_window_active_presentation_retry, record_window_native_vsync_wake,
 };
 pub use path_mask::WindowPathMaskMetricsSnapshot;

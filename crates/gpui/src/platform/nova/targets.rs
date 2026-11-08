@@ -230,6 +230,7 @@ where
         usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} path mask texture view")),
@@ -599,6 +600,7 @@ where
         usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} texture view")),

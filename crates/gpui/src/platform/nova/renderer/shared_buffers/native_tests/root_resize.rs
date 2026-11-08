@@ -115,7 +115,7 @@ fn verify_composite(renderer: &NovaRenderer) {
     device!(renderer, device, {
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: output.1,
+                color_attachments: std::slice::from_ref(&output.1),
                 render_pass: renderer.render_pass,
                 commands: renderer.command_scratch.commands(),
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -123,9 +123,11 @@ fn verify_composite(renderer: &NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("root composite reference");
     });
     super::pixels(renderer, output.0, [0, 255, 0, 255]);

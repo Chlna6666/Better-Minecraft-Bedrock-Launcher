@@ -2,6 +2,7 @@
 use super::*;
 use crate::platform::nova::tests::sprite_gpu::native_window;
 use gfx_core::{DiagnosticsDevice, ResourceDevice, SubmissionDevice, TextureTransferDevice};
+use gfx_core::*;
 
 macro_rules! device {
     ($renderer:expr, $device:ident, $body:block) => {{
@@ -150,7 +151,8 @@ fn target(renderer: &NovaRenderer) -> (TextureId, TextureViewId) {
                 usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
-            })
+            sample_count: 1,
+        })
             .expect("target");
         let view = device
             .create_texture_view(&TextureViewDescriptor {
@@ -187,7 +189,7 @@ fn draw(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
     device!(renderer, device, {
         device
             .render_to_textures(&[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: renderer.render_pass,
                 commands: std::slice::from_ref(&step),
                 color_load_op: LoadOp::Clear(clear_color()),
@@ -195,9 +197,11 @@ fn draw(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 viewport: None,
-            }])
+            resolve_target: None,
+        }])
             .expect("slot draw");
     });
 }
@@ -274,7 +278,8 @@ fn verify(backend: RendererBackend) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-                }),
+            stencil_load_op: None,
+        }),
                 present_region: None,
             })
             .expect("old slot submission")

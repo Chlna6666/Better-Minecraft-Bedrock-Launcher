@@ -105,7 +105,7 @@ fn draw<D: PresentationDevice>(
 ) {
     device
         .render_to_textures(&[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: resources.render_pass,
             commands: &[RenderCommand::Draw(DrawCommand {
                 pipeline,
@@ -125,6 +125,7 @@ fn draw<D: PresentationDevice>(
             clear_region: None,
             depth_attachment: None,
             viewport: None,
+            resolve_target: None,
         }])
         .expect("production primitive draw");
 }
