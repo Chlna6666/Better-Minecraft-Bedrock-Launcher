@@ -6,7 +6,9 @@ use std::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct QueryKey(BlockStateQuery);
+/// Canonical full-state cache key shared by GPU template deduplication and
+/// the CPU fallback's neighbor-dependent shape memo.
+pub(super) struct QueryKey(pub(super) BlockStateQuery);
 impl Hash for QueryKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.name.hash(state);
