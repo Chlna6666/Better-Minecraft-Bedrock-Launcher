@@ -77,6 +77,10 @@ impl Target {
     }
 }
 
+fn scissor_overlaps_viewport(clip: ScissorRect, viewport: Extent2d) -> bool {
+    !clip.is_empty() && clip.x < viewport.width() && clip.y < viewport.height()
+}
+
 /// A per-element color/depth attachment covers only the visible pixel
 /// rectangle, unlike the previous full-window allocation for every widget.
 /// Clamp to the swapchain size even when an outer ScrollView clips the item.
@@ -459,9 +463,7 @@ impl SidecarSurface {
     /// An element completely outside the host viewport must not allocate a
     /// synthetic one-pixel color/depth target or schedule any 3D work.
     pub(super) fn visible(host: &RendererExtensionContext) -> bool {
-        let clip = host.scissor();
-        let viewport = host.viewport();
-        !clip.is_empty() && clip.x < viewport.width() && clip.y < viewport.height()
+        scissor_overlaps_viewport(host.scissor(), host.viewport())
     }
 
     /// Exposes only resources which are awaiting a real GPU fence.
@@ -514,6 +516,44 @@ impl SidecarSurface {
         self.host_format = host.color_format();
         self.host_extent = host.viewport();
         device.destroy_render_pipeline(old)?;
+        Ok(())
+    }
+
+    /// Move the composited image without reallocating its color/depth
+    /// textures. The scene's capture revision already includes projection
+    /// changes: an unchanged revision can reuse the last producer pixels
+    /// even if this widget's absolute window position has moved.
+    ///
+    /// The previous immutable uniform/bind-group pair is fence-retired so
+    /// an older in-flight compositor draw cannot observe a new placement.
+    pub(super) fn sync_placement(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        id: SceneViewId,
+        host: &RendererExtensionContext,
+    ) -> gpui::Result<()> {
+        let region = visible_region(host);
+        let extent = region_extent(region);
+        let Some(target) = self.targets.get(&id) else {
+            return Ok(());
+        };
+        if target.extent != extent
+            || (target.region == region && target.host_extent == host.viewport())
+        {
+            // A size change is handled by enqueue's normal attachment swap.
+            return Ok(());
+        }
+        let updated = self.create_placement(
+            device, target.color_view, region, host.viewport(),
+        )?;
+        let target = self.targets.get_mut(&id).expect("checked above");
+        let previous = PlacementResources {
+            binding: std::mem::replace(&mut target.binding, updated.binding),
+            buffer: std::mem::replace(&mut target.placement, updated.buffer),
+        };
+        target.region = region;
+        target.host_extent = host.viewport();
+        self.awaiting_placement_gpu.push(previous);
         Ok(())
     }
 
@@ -604,23 +644,8 @@ impl SidecarSurface {
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
-        } else if self.targets.get(&id).is_some_and(|target| {
-            target.region != region || target.host_extent != host.viewport()
-        }) {
-            // Moving the element (or resizing only the host) does not change
-            // attachment dimensions: preserve the resident color/depth pair.
-            let view = self.targets.get(&id).expect("existing target").color_view;
-            let updated = self.create_placement(device, view, region, host.viewport())?;
-            let target = self.targets.get_mut(&id).expect("existing target");
-            let previous = PlacementResources {
-                binding: std::mem::replace(&mut target.binding, updated.binding),
-                buffer: std::mem::replace(&mut target.placement, updated.buffer),
-            };
-            target.region = region;
-            target.host_extent = host.viewport();
-            // Previous pixels are projected into the old widget region.
-            target.capture = CaptureEpoch::default();
-            self.awaiting_placement_gpu.push(previous);
+        } else {
+            self.sync_placement(device, id, host)?;
         }
         let target = self.targets.get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("missing 3D offscreen target"))?;
@@ -738,10 +763,16 @@ mod tests {
         };
         assert!(surface.has_retired_targets());
         assert_eq!(surface.ready_to_release.len(), 0);
+        surface.awaiting_placement_gpu.push(PlacementResources {
+            binding: BindGroupId::from_parts(7, 1),
+            buffer: BufferId::from_parts(8, 1),
+        });
         surface.gpu_work_completed();
         assert!(!surface.has_retired_targets());
         assert_eq!(surface.awaiting_gpu.len(), 0);
         assert_eq!(surface.ready_to_release.len(), 1);
+        assert_eq!(surface.awaiting_placement_gpu.len(), 0);
+        assert_eq!(surface.ready_placement_release.len(), 1);
     }
 
     #[test]
@@ -811,10 +842,15 @@ mod tests {
             Extent2d::new(1, 1).unwrap(),
         );
         assert!(SidecarSurface::visible(&cropped));
-        // Region visibility is determined from the native scissor's overlap
-        // with the host viewport, not from a forced min-1px allocation.
-        let outside = ScissorRect { x: 1920, y: 1080, width: 10, height: 10 };
-        assert!(outside.x >= viewport.width());
+        assert!(!scissor_overlaps_viewport(
+            ScissorRect { x: 1920, y: 1080, width: 10, height: 10 }, viewport,
+        ));
+        assert!(!scissor_overlaps_viewport(
+            ScissorRect { x: 0, y: 0, width: 0, height: 500 }, viewport,
+        ));
+        assert!(scissor_overlaps_viewport(
+            ScissorRect { x: 1919, y: 1079, width: 10, height: 10 }, viewport,
+        ));
     }
 
     #[test]
