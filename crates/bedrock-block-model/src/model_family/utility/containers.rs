@@ -55,6 +55,9 @@ fn barrel_shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 pub(crate) fn shulker_box_shape() -> ModelShape {
+    // The pack supplies `geometry.shulker.v1.8` with 64x64 skin UVs, so this procedural shape
+    // is only the fallback. Keep it on full-tile UVs: the 16x16 `shulker_top_<color>` art is
+    // the only texture reachable without the entity atlas.
     ModelShape::from_cuboids([
         ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.5, 1.0])
             .with_face_material_slot(BlockFace::Down, "down")
@@ -110,7 +113,9 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
     let (left_face, right_face) = left_right_faces(direction);
     let pair_direction = state_string(state, "pair_direction").and_then(cardinal_from_string);
     let (body_min, body_max) = chest_pair_bounds(pair_direction);
-    let mut cuboids = vec![
+    // Bedrock draws the latch inside `chest_front`, so there is no separate latch element;
+    // adding one only produced a detached slab on the lid.
+    ModelShape::from_cuboids([
         chest_box_uv(ModelCuboid::new(
             body_min,
             [body_max[0], 0.625, body_max[2]],
@@ -131,12 +136,7 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
         .with_face_material_slot(back_face, "side")
         .with_face_material_slot(left_face, "side")
         .with_face_material_slot(right_face, "side"),
-        chest_latch_uv(face_centered_cuboid(
-            direction, 0.1875, 0.0625, 0.3125, 0.5625,
-        ))
-        .with_face_material_slot(front_face, "front"),
-    ];
-    ModelShape::from_cuboids(std::mem::take(&mut cuboids))
+    ])
 }
 
 fn chest_pair_bounds(pair_direction: Option<CardinalDirection>) -> ([f32; 3], [f32; 3]) {
@@ -221,30 +221,39 @@ fn face_centered_cuboid(
 }
 
 fn chest_box_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid)
-        .with_face_uv(BlockFace::Down, uv64(28.0, 19.0, 14.0, 14.0))
-        .with_face_uv(BlockFace::North, uv64(14.0, 33.0, 14.0, 10.0))
-        .with_face_uv(BlockFace::South, uv64(14.0, 33.0, 14.0, 10.0))
-        .with_face_uv(BlockFace::West, uv64(0.0, 33.0, 14.0, 10.0))
-        .with_face_uv(BlockFace::East, uv64(0.0, 33.0, 14.0, 10.0))
+    // Bedrock chest art ships one 16x16 texture per face (`chest_top` / `chest_side` /
+    // `chest_front`), not a Java-style 64x64 unwrapped sheet. Sampling a uv64 sub-rect from a
+    // 16x16 image picked an arbitrary corner, which is why chest faces looked scrambled.
+    detail_cuboid_with_local_uv(cuboid).with_full_texture_uv()
 }
 
 fn chest_lid_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid)
-        .with_face_uv(BlockFace::Up, uv64(14.0, 0.0, 14.0, 14.0))
-        .with_face_uv(BlockFace::Down, uv64(28.0, 0.0, 14.0, 14.0))
-        .with_face_uv(BlockFace::North, uv64(14.0, 14.0, 14.0, 4.0))
-        .with_face_uv(BlockFace::South, uv64(14.0, 14.0, 14.0, 4.0))
-        .with_face_uv(BlockFace::West, uv64(0.0, 14.0, 14.0, 4.0))
-        .with_face_uv(BlockFace::East, uv64(0.0, 14.0, 14.0, 4.0))
+    detail_cuboid_with_local_uv(cuboid).with_full_texture_uv()
 }
 
 fn chest_latch_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid)
-        .with_face_uv(BlockFace::South, uv64(0.0, 1.0, 2.0, 4.0))
-        .with_face_uv(BlockFace::North, uv64(0.0, 1.0, 2.0, 4.0))
-        .with_face_uv(BlockFace::West, uv64(0.0, 1.0, 2.0, 4.0))
-        .with_face_uv(BlockFace::East, uv64(0.0, 1.0, 2.0, 4.0))
+    detail_cuboid_with_local_uv(cuboid).with_full_texture_uv()
+}
+
+trait FullTextureUv {
+    fn with_full_texture_uv(self) -> Self;
+}
+
+impl FullTextureUv for ModelCuboid {
+    fn with_full_texture_uv(mut self) -> Self {
+        let uv = rect_uv(0.0, 0.0, 1.0, 1.0);
+        for face in [
+            BlockFace::Up,
+            BlockFace::Down,
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::East,
+            BlockFace::West,
+        ] {
+            self = self.with_face_uv(face, uv);
+        }
+        self
+    }
 }
 
 const fn px(value: f32) -> f32 {

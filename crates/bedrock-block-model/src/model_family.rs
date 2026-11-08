@@ -1348,7 +1348,8 @@ mod tests {
         )
         .unwrap_or_else(|| panic!("missing cake"));
         assert_eq!(cake.cuboids.len(), 1);
-        assert!(cake.cuboids[0].max[0] < 0.75);
+        // Vanilla cake slices eat from the west side, so min x rises and max x stays at 15.
+        assert!(cake.cuboids[0].min[0] > 0.25);
         assert!((cake.cuboids[0].max[1] - 0.5).abs() < 0.001);
 
         let candle_cake =
@@ -2194,12 +2195,19 @@ mod tests {
             .with_state("minecraft:cardinal_direction", "north");
         let chest_shape =
             model_shape_for_block_state(&chest).unwrap_or_else(|| panic!("missing chest shape"));
-        assert_eq!(chest_shape.cuboids.len(), 3);
+        assert_eq!(chest_shape.cuboids.len(), 2);
         assert!(
             chest_shape
                 .cuboids
                 .iter()
                 .any(|cuboid| cuboid.max[1] == 0.875)
+        );
+        assert!(
+            chest_shape
+                .cuboids
+                .iter()
+                .all(|cuboid| cuboid.face_uvs.len() == 6),
+            "chest faces must sample the per-face 16x16 textures at full size"
         );
 
         let shulker = BlockStateQuery::new("minecraft:blue_shulker_box");
@@ -2353,6 +2361,7 @@ mod tests {
         let shape_d3 = model_shape_for_block_state(&repeater_d3).unwrap();
         assert_ne!(shape_d0.cuboids[2].min[2], shape_d3.cuboids[2].min[2]);
 
+        // Bedrock keeps the base and the head in separate blocks, so both states are one box.
         let piston_normal = BlockStateQuery::new("minecraft:piston");
         let piston_extended =
             BlockStateQuery::new("minecraft:piston").with_state("extended_bit", true);
@@ -2368,8 +2377,14 @@ mod tests {
                 .unwrap()
                 .cuboids
                 .len(),
-            3
+            1
         );
+        // The head is its own block with its own direction.
+        let arm = BlockStateQuery::new("minecraft:piston_arm_collision")
+            .with_state("facing_direction", 3);
+        let arm_shape = model_shape_for_block_state(&arm).unwrap();
+        assert_eq!(arm_shape.cuboids.len(), 1);
+        assert!(arm_shape.cuboids[0].max[2] - arm_shape.cuboids[0].min[2] <= 0.25);
 
         let lectern_empty = BlockStateQuery::new("minecraft:lectern");
         let lectern_book =

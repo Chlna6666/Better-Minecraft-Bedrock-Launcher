@@ -669,11 +669,24 @@ fn preview_3d_detail_shape_from_model_shape(shape: ModelShape) -> Preview3dDetai
 }
 
 fn preview_3d_cuboid_from_model_cuboid(cuboid: ModelCuboid) -> Preview3dCuboid {
-    // Procedural shapes that omit UVs would otherwise map the whole texture onto every face,
-    // squeezing thin models (torches, lanterns, rods, chains) into a 2px strip. Project the
-    // texture by the cuboid's block-space bounds, which is the default vanilla mapping.
+    // Bedrock gives most partial blocks a dedicated 16x16 texture per face, so a cuboid with no
+    // authored UVs must sample the whole tile. Projecting by block bounds instead cropped the
+    // art to the element's slice, which is why thin models (torches, buttons, doors) showed an
+    // arbitrary strip. Shapes with unfolded art set their own per-face UVs explicitly.
     let cuboid = if cuboid.face_uvs.is_empty() {
-        detail_cuboid_with_local_uv(cuboid)
+        let uv = preview_3d_full_texture_uv();
+        let mut cuboid = cuboid;
+        for face in [
+            BlockFace::Up,
+            BlockFace::Down,
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::East,
+            BlockFace::West,
+        ] {
+            cuboid = cuboid.with_face_uv(face, uv);
+        }
+        cuboid
     } else {
         cuboid
     };

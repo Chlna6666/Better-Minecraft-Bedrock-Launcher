@@ -193,17 +193,108 @@ pub(crate) fn bed_shape(state: &BlockStateQuery) -> ModelShape {
             crate::model_family::direction::state_string(state, "bed_part").map(|s| s == "head")
         })
         .unwrap_or(true);
-
-    let mut cuboids = vec![ModelCuboid::new([0.0, 0.1875, 0.0], [1.0, 0.5625, 1.0])];
+    // Bedrock beds are flat slabs with four corner posts, and the head and feet halves use
+    // separate art (`bed_head_*` / `bed_feet_*`). Without material slots every face fell back
+    // to `bed_bottom` (= oak planks), which is why beds rendered as bare wooden planks.
+    let part = if is_head { "head" } else { "feet" };
+    let top = format_slot(part, "top");
+    let side = format_slot(part, "side");
+    let end = format_slot(part, "end");
+    let mut cuboids = vec![
+        ModelCuboid::new([0.0, 0.1875, 0.0], [1.0, 0.5625, 1.0])
+            .with_face_material_slot(BlockFace::Up, top.as_str())
+            .with_face_material_slot(BlockFace::Down, "bottom")
+            .with_face_material_slot(BlockFace::North, end.as_str())
+            .with_face_material_slot(BlockFace::South, end.as_str())
+            .with_face_material_slot(BlockFace::East, side.as_str())
+            .with_face_material_slot(BlockFace::West, side.as_str()),
+    ];
     if is_head {
-        cuboids.push(ModelCuboid::new([0.0, 0.5625, 0.0], [1.0, 0.6875, 0.3125]));
-        cuboids.push(ModelCuboid::new([0.0, 0.0, 0.0], [0.1875, 0.1875, 0.1875]));
-        cuboids.push(ModelCuboid::new([0.8125, 0.0, 0.0], [1.0, 0.1875, 0.1875]));
+        cuboids.push(
+            ModelCuboid::new([0.0, 0.5625, 0.0], [1.0, 0.6875, 0.3125])
+                .with_face_material_slot(BlockFace::Up, top.as_str())
+                .with_face_material_slot(BlockFace::North, end.as_str())
+                .with_face_material_slot(BlockFace::South, side.as_str())
+                .with_face_material_slot(BlockFace::East, side.as_str())
+                .with_face_material_slot(BlockFace::West, side.as_str()),
+        );
+        cuboids.push(post_cuboid(
+            [0.0, 0.0, 0.0],
+            [0.1875, 0.1875, 0.1875],
+            &side,
+        ));
+        cuboids.push(post_cuboid(
+            [0.8125, 0.0, 0.0],
+            [1.0, 0.1875, 0.1875],
+            &side,
+        ));
     } else {
-        cuboids.push(ModelCuboid::new([0.0, 0.0, 0.8125], [0.1875, 0.1875, 1.0]));
-        cuboids.push(ModelCuboid::new([0.8125, 0.0, 0.8125], [1.0, 0.1875, 1.0]));
+        cuboids.push(post_cuboid(
+            [0.0, 0.0, 0.8125],
+            [0.1875, 0.1875, 1.0],
+            &side,
+        ));
+        cuboids.push(post_cuboid(
+            [0.8125, 0.0, 0.8125],
+            [1.0, 0.1875, 1.0],
+            &side,
+        ));
     }
-    ModelShape::from_cuboids(cuboids)
+    let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
+    ModelShape::from_cuboids(
+        cuboids
+            .into_iter()
+            .map(|cuboid| rotate_cuboid_from_south(cuboid, direction))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn format_slot(part: &str, suffix: &str) -> String {
+    format!("{part}_{suffix}")
+}
+
+fn post_cuboid(min: [f32; 3], max: [f32; 3], side_slot: &str) -> ModelCuboid {
+    crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(min, max))
+        .with_face_material_slot(BlockFace::Side, side_slot)
+}
+
+fn rotate_cuboid_from_south(cuboid: ModelCuboid, direction: CardinalDirection) -> ModelCuboid {
+    let turns = match direction {
+        CardinalDirection::South => 0,
+        CardinalDirection::West => 1,
+        CardinalDirection::North => 2,
+        CardinalDirection::East => 3,
+    };
+    (0..turns).fold(cuboid, |cuboid, _| rotate_cuboid_clockwise(cuboid))
+}
+
+fn rotate_cuboid_clockwise(cuboid: ModelCuboid) -> ModelCuboid {
+    let mut rotated = ModelCuboid::new(
+        [1.0 - cuboid.max[2], cuboid.min[1], cuboid.min[0]],
+        [1.0 - cuboid.min[2], cuboid.max[1], cuboid.max[0]],
+    );
+    rotated.material_slot = cuboid.material_slot;
+    for (face, slot) in cuboid.face_material_slots {
+        rotated
+            .face_material_slots
+            .insert(rotate_block_face_clockwise(face), slot);
+    }
+    for (face, uv) in cuboid.face_uvs {
+        rotated
+            .face_uvs
+            .insert(rotate_block_face_clockwise(face), uv);
+    }
+    rotated
+}
+
+fn rotate_block_face_clockwise(face: BlockFace) -> BlockFace {
+    match face {
+        BlockFace::North => BlockFace::East,
+        BlockFace::East => BlockFace::South,
+        BlockFace::South => BlockFace::West,
+        BlockFace::West => BlockFace::North,
+        other => other,
+    }
 }
 
 pub(crate) fn banner_shape(name: &str, state: &BlockStateQuery) -> ModelShape {

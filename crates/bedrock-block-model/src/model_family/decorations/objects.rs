@@ -403,7 +403,35 @@ pub(crate) fn head_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
             )
         }
     };
-    ModelShape::from_cuboids([detail_cuboid_with_local_uv(cuboid)])
+    // Skull blocks sample the 64x32 entity skin layout, not a 16x16 block tile. Mapping the
+    // whole skin onto every face produced the noise-coloured boxes seen in the world view.
+    let cuboid = if name == "dragon_head" || name == "piglin_head" {
+        cuboid
+    } else {
+        apply_skull_skin_uv(cuboid)
+    };
+    ModelShape::from_cuboids([cuboid])
+}
+
+/// Per-face UV rectangles of the vanilla 64x32 skull skin.
+fn apply_skull_skin_uv(cuboid: ModelCuboid) -> ModelCuboid {
+    let rect = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        [
+            [u0 / 64.0, v0 / 32.0],
+            [u1 / 64.0, v0 / 32.0],
+            [u1 / 64.0, v1 / 32.0],
+            [u0 / 64.0, v1 / 32.0],
+        ]
+    };
+    // Head cube at skin coordinates (8x8 px): top [8,0], front [8,8], right [0,8],
+    // left [16,8], back [24,8], bottom [16,0].
+    cuboid
+        .with_face_uv(BlockFace::Up, rect(8.0, 0.0, 16.0, 8.0))
+        .with_face_uv(BlockFace::Down, rect(16.0, 0.0, 24.0, 8.0))
+        .with_face_uv(BlockFace::North, rect(8.0, 8.0, 16.0, 16.0))
+        .with_face_uv(BlockFace::South, rect(24.0, 8.0, 32.0, 16.0))
+        .with_face_uv(BlockFace::East, rect(16.0, 8.0, 24.0, 16.0))
+        .with_face_uv(BlockFace::West, rect(0.0, 8.0, 8.0, 16.0))
 }
 
 fn cake_body_cuboid(bites: i64) -> ModelCuboid {
@@ -416,10 +444,19 @@ fn cake_body_cuboid(bites: i64) -> ModelCuboid {
         5 => 10.0,
         _ => 12.0,
     };
-    face_slot_cuboid(
-        [px(1.0), 0.0, px(1.0)],
-        [px(15.0 - bite_width), px(8.0), px(15.0)],
-    )
+    // Vanilla `cake_sliceN` eats from the west side: the box keeps max x at 15 and raises
+    // min x, so the exposed cut face is the WEST face and uses `cake_inner`.
+    let cuboid = detail_cuboid_with_local_uv(ModelCuboid::new(
+        [px(1.0 + bite_width), 0.0, px(1.0)],
+        [px(15.0), px(8.0), px(15.0)],
+    ))
+    .with_face_material_slot(BlockFace::Up, "up")
+    .with_face_material_slot(BlockFace::Down, "down")
+    .with_face_material_slot(BlockFace::North, "north")
+    .with_face_material_slot(BlockFace::South, "south")
+    .with_face_material_slot(BlockFace::East, "east")
+    .with_face_material_slot(BlockFace::West, if bites > 0 { "inner" } else { "west" });
+    cuboid
 }
 
 fn is_lightning_rod_name(name: &str) -> bool {

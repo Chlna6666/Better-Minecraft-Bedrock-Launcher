@@ -796,6 +796,11 @@ impl ObjTextureResolver {
                 }
             }
         }
+        if let Some(texture_key) = skull_entity_texture_key(block) {
+            if let Some((pack, source_path)) = self.texture_path_for_key(texture_key) {
+                return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+            }
+        }
         None
     }
 
@@ -4455,6 +4460,24 @@ fn is_sign_texture_block(block: &str) -> bool {
 
 fn is_bed_texture_block(block: &str) -> bool {
     block == "bed" || block.ends_with("_bed")
+}
+
+/// Maps a skull block to its real texture key.
+///
+/// Vanilla `blocks.json` maps every skull to the shared `skull` key, which points at
+/// `textures/blocks/soul_sand` as a placeholder. The real art lives in the entity textures, so
+/// heads must be redirected there or they render as soul sand.
+fn skull_entity_texture_key(block: &str) -> Option<&'static str> {
+    match block {
+        "skeleton_skull" => Some("textures/entity/skulls/skeleton"),
+        "wither_skeleton_skull" => Some("textures/entity/skulls/wither_skeleton"),
+        "zombie_head" => Some("textures/entity/skulls/zombie"),
+        "creeper_head" => Some("textures/entity/skulls/creeper"),
+        "player_head" => Some("textures/entity/char"),
+        "dragon_head" => Some("textures/entity/dragon/dragon"),
+        "piglin_head" => Some("textures/entity/piglin/piglin"),
+        _ => None,
+    }
 }
 
 fn sign_texture_aliases(block: &str) -> Vec<String> {

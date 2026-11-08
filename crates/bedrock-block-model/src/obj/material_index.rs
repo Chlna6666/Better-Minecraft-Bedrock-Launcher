@@ -239,7 +239,10 @@ impl ObjTextureResolver {
     #[must_use]
     pub fn material_index_revision(&self) -> Option<u64> {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        "bedrock-block-model/material-index/2".hash(&mut hash);
+        // Bump when resolution rules change, not only when pack contents change: the cache
+        // stores resolved paths, so a rule change with unchanged packs keeps serving old
+        // entries (this is why skull heads stayed on the soul-sand placeholder).
+        "bedrock-block-model/material-index/3".hash(&mut hash);
         self.texture_directory_name.hash(&mut hash);
         self.pack_lookup_order.hash(&mut hash);
         // Custom block definitions and geometry can select material slots before
