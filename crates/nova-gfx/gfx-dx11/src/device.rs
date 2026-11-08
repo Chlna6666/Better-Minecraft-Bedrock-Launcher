@@ -53,11 +53,11 @@ pub struct Dx11Device {
     pending_frame_timestamps: Vec<(u32, Dx11TimestampQueries)>,
     pending_gpu_work_timestamps: Vec<(u32, Option<GpuTimestampTag>, Dx11TimestampQueries)>,
     gpu_work_query_pool: Vec<Dx11TimestampQueries>,
-    gpu_work_samples: Vec<GpuTimestampSample>,
+    pub(crate) gpu_work_samples: Vec<GpuTimestampSample>,
     /// Probes opened by `present_steps` and consumed by the next `signal`.
     next_frame_timestamps: Option<Dx11TimestampQueries>,
     last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
-    timestamp_queries_supported: bool,
+    pub(crate) timestamp_queries_supported: bool,
     submission_generation: u32,
     submitted: u32,
     completed: u32,
@@ -420,7 +420,7 @@ impl Dx11Device {
         }
         Ok(SubmissionId::from_parts(serial, self.submission_generation))
     }
-    fn retire(&mut self) -> Result<()> {
+    pub(crate) fn retire(&mut self) -> Result<()> {
         while let Some((serial, query)) = self.pending.front() {
             let mut done = 0u32;
             // SAFETY: event result is a BOOL (4 bytes); query and writable result are live.
