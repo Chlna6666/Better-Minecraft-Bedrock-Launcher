@@ -588,6 +588,38 @@ mod tests {
         }));
     }
 
+    /// ADR 0002 §3 regression guard: until the global face-template table
+    /// and single bind group land, generated-only scenes must keep the
+    /// canonical {first_instance: index, instance_count: 1} layout. Removing
+    /// the `!has_non_generated_quads` early return without also changing
+    /// `mesher_draws.wgsl` (instance_count = 1), `sync_draw_resources`
+    /// (1 draw : 1 batch) and `voxel.wgsl` (page-local template bases) would
+    /// silently render wrong geometry for pages 2..N.
+    #[test]
+    fn generated_only_scene_keeps_singleton_until_adr3_lands() {
+        let (scene, _) = fixture();
+        let meshes = HashMap::new();
+        let mut draws = prepare(&scene);
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        group_voxel_batches_with_quad_presence(
+            &mut draws,
+            &meshes,
+            &mut workspace,
+            &mut batches,
+            false,
+        );
+        assert!(workspace.singleton_layout());
+        assert_eq!(batches.len(), draws.len());
+        assert!(
+            batches.iter().enumerate().all(|(index, batch)| {
+                batch.first_instance == index && batch.instance_count == 1
+            })
+        );
+        assert!(workspace.buckets.is_empty());
+        assert!(workspace.sorted_keys.is_empty());
+    }
+
     #[test]
     fn generated_singleton_scene_does_not_build_sort_buckets_or_reorder_draws() {
         let (scene, _) = fixture();

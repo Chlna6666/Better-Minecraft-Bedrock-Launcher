@@ -20,7 +20,7 @@ struct FrameParams {
     element_bounds_size: vec2<f32>,
     render_target_size: vec2<f32>,
     blend_edge_feather_px: f32,
-    _padding: f32,
+    light_count: u32,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
     voxel_settings:vec4<f32>,sun_direction:vec4<f32>,sun_color:vec4<f32>,shadow_matrix:mat4x4<f32>,shadow_settings:vec4<f32>,
@@ -282,7 +282,7 @@ fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
     }
     var radiance = draw_params.emissive.rgb * draw_params.emissive.a+base_color.rgb*packed_emission;
     var ambient_radiance = vec3<f32>(0.03);
-    for (var light_index = 0u; light_index < draw_params.light_count; light_index += 1u) {
+    for (var light_index = 0u; light_index < frame.light_count; light_index += 1u) {
         let light = lights[light_index];
         if(hdr && (light.kind==LIGHT_KIND_POINT || light.kind==4u || light.kind==5u || light.kind==LIGHT_KIND_SPOT)){continue;}
         if (light.kind == LIGHT_KIND_AMBIENT) {

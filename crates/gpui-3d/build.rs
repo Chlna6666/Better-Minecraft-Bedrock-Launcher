@@ -16,11 +16,31 @@ fn main() {
                     "\n",
                     include_str!("src/scene_view/effects/frame.wgsl"),
                     "\n",
+                    include_str!("src/scene_view/effects/screen_depth.wgsl"),
+                    "\n",
                     include_str!("src/scene_view/effects/screen.wgsl")
                 ))
                 .entry("vs_effects", ShaderStage::Vertex)
                 .entry("fs_effects", ShaderStage::Fragment)
                 .entry("fs_composite", ShaderStage::Fragment),
+        )
+        // Same body, but the depth inputs are `texture_multisampled_2d`, so the screen
+        // composite can read the multisampled geometry depth directly at sample zero.
+        .shader(
+            Shader::new("screen_effects_ms")
+                .wgsl(concat!(
+                    include_str!("src/pbr.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/frame.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/screen_depth_ms.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/screen.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/screen_ms_entries.wgsl")
+                ))
+                .entry("fs_effects_ms", ShaderStage::Fragment)
+                .entry("fs_composite_ms", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("light_tiles")

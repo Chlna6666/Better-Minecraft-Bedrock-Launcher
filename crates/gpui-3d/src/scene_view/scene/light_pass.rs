@@ -35,7 +35,7 @@ impl SceneResources {
     ) -> gpui::Result<Vec<RenderCommand>> {
         let matrix = camera.projection_matrix(1.)? * camera.view()?;
         let mut bytes =
-            encode_frame_params(matrix, camera, context.bounds(), context.viewport(), 0.);
+            encode_frame_params(matrix, camera, context.bounds(), context.viewport(), 0., 0);
         for (dst, value) in bytes[144..192].chunks_exact_mut(4).zip(
             VoxelShading {
                 illumination: VoxelIllumination::Unlit,
@@ -122,7 +122,12 @@ impl SceneResources {
             let mut key = self.draw_resource_keys[index];
             key.visible_instances = Some(pass.culling.visible_instances);
             key.shadow = None;
-            let key = (key, self.draw_buffer, self.instance_buffer, self.draw_slot_buffer);
+            let key = (
+                key,
+                self.draw_buffer,
+                self.instance_buffer,
+                self.draw_slot_buffer,
+            );
             active.insert(key);
             let group = if let Some(group) = pass.groups.get(&key) {
                 *group

@@ -2,10 +2,9 @@
 
 use super::*;
 use crate::scene_view::{
-    artifacts,
+    INSTANCE_STRIDE, artifacts,
     batching::group_voxel_batches,
     gpu::{self, MeshArena},
-    INSTANCE_STRIDE,
 };
 use crate::{
     Aabb, Camera, Mat4, Material, Mesh, MeshPart, Node, PreparedScene, Scene, ShadingModel,
@@ -175,7 +174,9 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
         let mut identity = Vec::new();
         for index in 0..instance_count {
             identity.extend_from_slice(
-                &u32::try_from(index).expect("native test draw count exceeds u32").to_le_bytes()
+                &u32::try_from(index)
+                    .expect("native test draw count exceeds u32")
+                    .to_le_bytes(),
             );
         }
         let slot_buffer = upload(device, &identity, BufferUsage::STORAGE);
@@ -215,6 +216,7 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
                 usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             },
         )
         .unwrap();
@@ -570,6 +572,7 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
                 usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             },
         )
         .unwrap();
@@ -590,10 +593,14 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
         &mut device,
         &RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         },
     )
     .unwrap();
@@ -608,8 +615,10 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(layout),
-            color_format: Format::Rgba8Unorm,
-            blend_mode: BlendMode::Replace,
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::Replace,
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -690,17 +699,20 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
         // Keep graphics projection unchanged: an empty second frame must come from
         // GPU-generated zero instance count, rather than normal graphics clipping.
         ResourceDevice::write_buffer(&mut device, frame_buffer, 0, &frame(Mat4::IDENTITY)).unwrap();
+        let color_views = [view];
         PresentationDevice::render_to_textures(
             &mut device,
             &[RenderPassCommands {
-                texture_view: view,
+                color_attachments: &color_views,
                 render_pass: pass,
                 commands: &commands,
                 color_load_op: LoadOp::Clear(ClearColor::default()),
                 depth_attachment: None,
                 clear_region: None,
                 viewport: None,
-            }],
+            resolve_target: None,
+
+        }],
         )
         .unwrap();
         expected.push((target, visible));

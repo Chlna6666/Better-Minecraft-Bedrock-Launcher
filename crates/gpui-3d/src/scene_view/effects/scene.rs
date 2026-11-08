@@ -21,6 +21,7 @@ pub(super) struct EffectScene {
     pub(super) queued_shadow: bool,
     pub(super) scene: SceneResources,
     pub(super) targets: Targets,
+    pub(super) msaa_sample_count: u32,
     pub(super) frame: BufferId,
     pub(super) composite_frame: BufferId,
     pub(super) tiles: LightTiles,
@@ -85,24 +86,31 @@ impl EffectScene {
             self.scene.append_steps(resources[1], true, &mut surface)?;
             let mut albedo = Vec::new();
             self.scene.append_steps(resources[2], true, &mut albedo)?;
+            let msaa = self.targets.msaa.as_ref();
+            // When MSAA is enabled the geometry renders into multisampled
+            // color+depth copies and resolves into the single-sample views that
+            // downstream compositing samples. `None` keeps the single-sample path.
             passes.push(pass(
                 local.render_pass(),
-                self.targets.color.view,
-                self.targets.depth.view,
+                msaa.map_or(self.targets.color.view, |m| m.color.view),
+                msaa.map_or(self.targets.depth.view, |m| m.depth.view),
+                msaa.map(|_| self.targets.color.view),
                 opaque,
                 true,
             ));
             passes.push(pass(
                 local.render_pass(),
-                self.targets.surface.view,
-                self.targets.surface_depth.view,
+                msaa.map_or(self.targets.surface.view, |m| m.surface.view),
+                msaa.map_or(self.targets.surface_depth.view, |m| m.surface_depth.view),
+                msaa.map(|_| self.targets.surface.view),
                 surface,
                 true,
             ));
             passes.push(pass(
                 local.render_pass(),
-                self.targets.albedo.view,
-                self.targets.surface_depth.view,
+                msaa.map_or(self.targets.albedo.view, |m| m.albedo.view),
+                msaa.map_or(self.targets.surface_depth.view, |m| m.surface_depth.view),
+                msaa.map(|_| self.targets.albedo.view),
                 albedo,
                 false,
             ));
@@ -116,10 +124,11 @@ impl EffectScene {
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
         extent: Extent2d,
+        msaa_sample_count: u32,
     ) -> gpui::Result<Self> {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
-            let targets = Targets::create(device, extent)?;
+            let targets = Targets::create(device, extent, msaa_sample_count)?;
             for target in [
                 &targets.color,
                 &targets.depth,
@@ -148,6 +157,7 @@ impl EffectScene {
                 Extent2d::new(1024, 1024)?,
                 Format::Depth32Float,
                 true,
+                1,
             )?;
             shadow.record(&mut cleanup);
             let shadow_color = Target::create(
@@ -155,6 +165,7 @@ impl EffectScene {
                 Extent2d::new(1024, 1024)?,
                 Format::Rgba16Float,
                 false,
+                1,
             )?;
             shadow_color.record(&mut cleanup);
             let scene = SceneResources::new(device, backend)?;
@@ -167,6 +178,7 @@ impl EffectScene {
                 queued_shadow: false,
                 scene,
                 targets,
+                msaa_sample_count,
                 frame,
                 composite_frame,
                 tiles,
@@ -198,7 +210,7 @@ impl EffectScene {
             return Ok(());
         }
         self.targets_valid = false;
-        let targets = Targets::create(device, extent)?;
+        let targets = Targets::create(device, extent, self.msaa_sample_count)?;
         let tiles = match LightTiles::new(device, backend, extent) {
             Ok(tiles) => tiles,
             Err(error) => {
@@ -221,6 +233,8 @@ impl EffectScene {
         renderer: &RendererResources,
         view: &SceneView,
         local: &RendererExtensionContext,
+        // The shadow map stays single-sampled even when the scene passes are multisampled.
+        shadow_pass: RenderPassId,
         passes: &mut Vec<RendererExtensionPass>,
     ) -> gpui::Result<()> {
         if view.voxel_shading.shadow_strength <= 0. && self.shadow_valid {
@@ -281,11 +295,8 @@ impl EffectScene {
             384.,
         );
         self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
-        let shadow_context = local.offscreen(
-            local.render_pass(),
-            Format::Rgba16Float,
-            Extent2d::new(1024, 1024)?,
-        );
+        let shadow_context =
+            local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(1024, 1024)?);
         let commands = if view.voxel_shading.shadow_strength > 0. {
             self.scene
                 .shadow_steps(device, renderer, camera, &shadow_context)?
@@ -293,9 +304,10 @@ impl EffectScene {
             Vec::new()
         };
         passes.push(pass(
-            local.render_pass(),
+            shadow_pass,
             self.shadow_color.view,
             self.shadow.view,
+            None,
             commands,
             true,
         ));

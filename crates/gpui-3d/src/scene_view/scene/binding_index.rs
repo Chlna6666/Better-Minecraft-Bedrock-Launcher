@@ -51,7 +51,10 @@ impl BindingIndex {
             key.normal_id,
             key.occlusion_id,
             key.metallic_roughness_id,
-        ].into_iter().flatten() {
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.by_texture.entry(id).or_default().insert(key);
         }
     }
@@ -74,7 +77,10 @@ impl BindingIndex {
             key.normal_id,
             key.occlusion_id,
             key.metallic_roughness_id,
-        ].into_iter().flatten() {
+        ]
+        .into_iter()
+        .flatten()
+        {
             remove_reference(&mut self.by_texture, id, key);
         }
     }
@@ -128,12 +134,20 @@ mod tests {
         let b = key(MeshId(2), None);
         index.insert(a);
         index.insert(b);
-        assert_eq!(index.affected(&[MeshId(1)], &HashSet::new(), &[]),
-                   HashSet::from([a]));
+        assert_eq!(
+            index.affected(&[MeshId(1)], &HashSet::new(), &[]),
+            HashSet::from([a])
+        );
         index.remove(a);
-        assert!(index.affected(&[MeshId(1)], &HashSet::new(), &[]).is_empty());
-        assert_eq!(index.affected(&[MeshId(2)], &HashSet::new(), &[]),
-                   HashSet::from([b]));
+        assert!(
+            index
+                .affected(&[MeshId(1)], &HashSet::new(), &[])
+                .is_empty()
+        );
+        assert_eq!(
+            index.affected(&[MeshId(2)], &HashSet::new(), &[]),
+            HashSet::from([b])
+        );
     }
 
     #[test]
@@ -146,10 +160,16 @@ mod tests {
         };
         let mut index = BindingIndex::default();
         index.insert(page_key);
-        assert_eq!(index.affected(&[], &HashSet::from([faces, templates]), &[]),
-                   HashSet::from([page_key]));
+        assert_eq!(
+            index.affected(&[], &HashSet::from([faces, templates]), &[]),
+            HashSet::from([page_key])
+        );
         index.remove(page_key);
-        assert!(index.affected(&[], &HashSet::from([faces, templates]), &[]).is_empty());
+        assert!(
+            index
+                .affected(&[], &HashSet::from([faces, templates]), &[])
+                .is_empty()
+        );
     }
 
     #[test]
@@ -160,7 +180,9 @@ mod tests {
         let b = key(MeshId(2), Some(texture));
         index.insert(a);
         index.insert(b);
-        assert_eq!(index.affected(&[MeshId(1)], &HashSet::new(), &[texture]),
-                   HashSet::from([a, b]));
+        assert_eq!(
+            index.affected(&[MeshId(1)], &HashSet::new(), &[texture]),
+            HashSet::from([a, b])
+        );
     }
 }

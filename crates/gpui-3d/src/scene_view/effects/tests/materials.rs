@@ -194,6 +194,7 @@ pub(super) fn verify_shadow_retry(
                     &renderer.shadow_resources,
                     &invalid,
                     context,
+                    context.render_pass(),
                     &mut passes
                 )
                 .is_err()

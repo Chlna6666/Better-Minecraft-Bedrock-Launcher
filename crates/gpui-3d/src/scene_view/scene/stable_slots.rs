@@ -65,15 +65,22 @@ impl StableDrawSlots {
 
     /// Construct a transactional next state. No slot may be recycled until
     /// all draws from the previous scene have been accounted for.
-    pub(in crate::scene_view) fn plan(&self, draws: &[PreparedDraw]) -> gpui::Result<(Self, Vec<u32>)> {
+    pub(in crate::scene_view) fn plan(
+        &self,
+        draws: &[PreparedDraw],
+    ) -> gpui::Result<(Self, Vec<u32>)> {
         let mut occurrences = HashMap::<BaseIdentity, u32>::new();
         let mut wanted = Vec::with_capacity(draws.len());
         let mut live_slots = vec![false; self.identities.len()];
         for draw in draws {
             let base = BaseIdentity::of(draw);
             let count = occurrences.entry(base).or_default();
-            let identity = SlotIdentity { base, occurrence: *count };
-            *count = count.checked_add(1)
+            let identity = SlotIdentity {
+                base,
+                occurrence: *count,
+            };
+            *count = count
+                .checked_add(1)
                 .ok_or_else(|| anyhow!("GPUI 3D duplicate draw identity overflow"))?;
             let old_slot = self.occupied.get(&identity).copied();
             if let Some(slot) = old_slot {
@@ -111,12 +118,13 @@ impl StableDrawSlots {
             next.identities[slot] = Some(id);
             let replaced = next.occupied.insert(id, slot);
             debug_assert!(replaced.is_none(), "draw occurrences must be unique");
-            mapping.push(u32::try_from(slot)
-                .map_err(|_| anyhow!("GPUI 3D draw slot index exceeds u32"))?);
+            mapping.push(
+                u32::try_from(slot).map_err(|_| anyhow!("GPUI 3D draw slot index exceeds u32"))?,
+            );
         }
         Ok((next, mapping))
-    }}
-
+    }
+}
 
 /// Transactional structural GPU slot plan. Only changed Sections are hashed
 /// into/out of the resident slot registry; untouched identities retain their
@@ -135,7 +143,9 @@ impl StructuralSlotPlan {
     }
 
     pub(in crate::scene_view) fn updated_slots(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.added.iter().map(|(_, slot, logical)| (*slot, *logical))
+        self.added
+            .iter()
+            .map(|(_, slot, logical)| (*slot, *logical))
     }
 
     /// Called only after the GPU mapping and bounds writes have succeeded.
@@ -177,9 +187,12 @@ impl StableDrawSlots {
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
         for edit in &delta.edits {
-            if edit.old.start < old_cursor || edit.new.start < new_cursor
-                || edit.old.end > old_mapping.len() || edit.new.end > draws.len()
-                || edit.old.start > edit.old.end || edit.new.start > edit.new.end
+            if edit.old.start < old_cursor
+                || edit.new.start < new_cursor
+                || edit.old.end > old_mapping.len()
+                || edit.new.end > draws.len()
+                || edit.old.start > edit.old.end
+                || edit.new.start > edit.new.end
                 || edit.old.start - old_cursor != edit.new.start - new_cursor
             {
                 return Ok(None);
@@ -195,7 +208,10 @@ impl StableDrawSlots {
             for logical in edit.new.clone() {
                 let base = BaseIdentity::of(&draws[logical]);
                 let occurrence = occurrences.entry(base).or_default();
-                let identity = SlotIdentity { base, occurrence: *occurrence };
+                let identity = SlotIdentity {
+                    base,
+                    occurrence: *occurrence,
+                };
                 *occurrence = occurrence.checked_add(1).ok_or_else(|| {
                     anyhow!("GPUI 3D changed Section duplicate draw occurrence overflow")
                 })?;
@@ -248,7 +264,8 @@ impl StableDrawSlots {
                 slot
             } else {
                 let slot = high_water;
-                high_water = high_water.checked_add(1)
+                high_water = high_water
+                    .checked_add(1)
                     .ok_or_else(|| anyhow!("GPU physical Draw Slot overflow"))?;
                 slot
             };
@@ -257,7 +274,11 @@ impl StableDrawSlots {
             added.push((identity, slot, logical));
         }
         Ok(Some(StructuralSlotPlan {
-            mapping: next_mapping, high_water, retired, added, free,
+            mapping: next_mapping,
+            high_water,
+            retired,
+            added,
+            free,
         }))
     }
 }
@@ -273,21 +294,36 @@ impl SceneResources {
         previous: &[instance_cache::InstanceSlotKey],
         previous_bytes: &[u8],
         scratch: &mut Vec<u8>,
-    ) -> gpui::Result<Vec<(usize, instance_cache::InstanceSlotKey, [u8; INSTANCE_STRIDE as usize])>> {
+    ) -> gpui::Result<
+        Vec<(
+            usize,
+            instance_cache::InstanceSlotKey,
+            [u8; INSTANCE_STRIDE as usize],
+        )>,
+    > {
         const STRIDE: usize = INSTANCE_STRIDE as usize;
         if mapping.len() != self.prepared.draws.len()
             || previous_bytes.len() != previous.len() * STRIDE
         {
-            return Err(anyhow!("GPUI 3D dirty Instance requires committed resident layout").into());
+            return Err(
+                anyhow!("GPUI 3D dirty Instance requires committed resident layout").into(),
+            );
         }
         let mut patches = Vec::with_capacity(dirty.len());
         let mut seen = std::collections::HashSet::with_capacity(dirty.len());
         for &logical in dirty {
-            if !seen.insert(logical) { continue; }
-            let draw = self.prepared.draws.get(logical)
+            if !seen.insert(logical) {
+                continue;
+            }
+            let draw = self
+                .prepared
+                .draws
+                .get(logical)
                 .ok_or_else(|| anyhow!("dirty Instance logical index outside scene"))?;
-            let physical = *mapping.get(logical)
-                .ok_or_else(|| anyhow!("missing resident Instance slot"))? as usize;
+            let physical = *mapping
+                .get(logical)
+                .ok_or_else(|| anyhow!("missing resident Instance slot"))?
+                as usize;
             let key = self.instance_key(draw, true)?;
             if previous.get(physical) == Some(&key)
                 && previous_bytes.len() >= (physical + 1) * STRIDE
@@ -299,7 +335,8 @@ impl SceneResources {
             // previous key/byte range exists for that physical slot.
             scratch.clear();
             self.encode_draw_instances(std::slice::from_ref(draw), true, scratch)?;
-            let bytes: [u8; STRIDE] = scratch.get(..STRIDE)
+            let bytes: [u8; STRIDE] = scratch
+                .get(..STRIDE)
                 .ok_or_else(|| anyhow!("incomplete dirty Instance record"))?
                 .try_into()
                 .expect("a validated Instance record has the full stride");
@@ -333,9 +370,7 @@ impl SceneResources {
             let key = self.instance_key(draw, true)?;
             let start = physical * STRIDE;
             let end = start + STRIDE;
-            if previous.get(physical) != Some(&key)
-                || previous_bytes.get(start..end).is_none()
-            {
+            if previous.get(physical) != Some(&key) || previous_bytes.get(start..end).is_none() {
                 dirty.push((logical, physical));
             }
             if physical >= next.len() {
@@ -373,12 +408,17 @@ mod tests {
         let mesh = Arc::new(Mesh::cube());
         let material = Arc::new(Material::new());
         for _ in 0..count {
-            scene.insert(None, Node::new().with_mesh(mesh.clone())
-                .with_materials([material.clone()])).unwrap();
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh.clone())
+                        .with_materials([material.clone()]),
+                )
+                .unwrap();
         }
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 200.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 200.);
         PreparedScene::new(&scene, camera, 1.).unwrap().draws
     }
 
@@ -390,15 +430,20 @@ mod tests {
         // survive even though their compact logical indices have shifted.
         let mut removed = original.clone();
         removed.remove(19);
-        let plan = resident.plan_structural(
-            &removed, &map,
-            &crate::prepare::StructuralDrawDelta {
-                previous_count: original.len(),
-                edits: vec![crate::prepare::StructuralDrawEdit {
-                    old: 19..20, new: 19..19,
-                }],
-            },
-        ).unwrap().unwrap();
+        let plan = resident
+            .plan_structural(
+                &removed,
+                &map,
+                &crate::prepare::StructuralDrawDelta {
+                    previous_count: original.len(),
+                    edits: vec![crate::prepare::StructuralDrawEdit {
+                        old: 19..20,
+                        new: 19..19,
+                    }],
+                },
+            )
+            .unwrap()
+            .unwrap();
         let mapping = plan.mapping.clone();
         assert_eq!(mapping[..19], map[..19]);
         assert_eq!(mapping[19..], map[20..]);
@@ -412,15 +457,20 @@ mod tests {
         assert!(!original.iter().any(|draw| draw.node == extra.node));
         let mut inserted = removed.clone();
         inserted.insert(31, extra);
-        let plan = resident.plan_structural(
-            &inserted, &mapping,
-            &crate::prepare::StructuralDrawDelta {
-                previous_count: removed.len(),
-                edits: vec![crate::prepare::StructuralDrawEdit {
-                    old: 31..31, new: 31..32,
-                }],
-            },
-        ).unwrap().unwrap();
+        let plan = resident
+            .plan_structural(
+                &inserted,
+                &mapping,
+                &crate::prepare::StructuralDrawDelta {
+                    previous_count: removed.len(),
+                    edits: vec![crate::prepare::StructuralDrawEdit {
+                        old: 31..31,
+                        new: 31..32,
+                    }],
+                },
+            )
+            .unwrap()
+            .unwrap();
         let next_mapping = plan.mapping.clone();
         assert_eq!(&next_mapping[..31], &mapping[..31]);
         assert_eq!(&next_mapping[32..], &mapping[31..]);
@@ -444,15 +494,19 @@ mod tests {
             previous_count: original.len(),
             edits: vec![
                 crate::prepare::StructuralDrawEdit {
-                    old: 0..0, new: 0..1,
+                    old: 0..0,
+                    new: 0..1,
                 },
                 crate::prepare::StructuralDrawEdit {
-                    old: 12..13, new: 13..13,
+                    old: 12..13,
+                    new: 13..13,
                 },
             ],
         };
-        let plan = resident.plan_structural(&shifted, &map, &delta)
-            .unwrap().unwrap();
+        let plan = resident
+            .plan_structural(&shifted, &map, &delta)
+            .unwrap()
+            .unwrap();
         assert_eq!(plan.mapping[0], map[12]);
         assert_eq!(&plan.mapping[1..13], &map[..12]);
         assert_eq!(&plan.mapping[13..], &map[13..]);
@@ -471,11 +525,16 @@ mod tests {
         let invalid = crate::prepare::StructuralDrawDelta {
             previous_count: original.len(),
             edits: vec![crate::prepare::StructuralDrawEdit {
-                old: 15..16, new: 14..15,
+                old: 15..16,
+                new: 14..15,
             }],
         };
-        assert!(resident.plan_structural(&original, &map, &invalid)
-            .unwrap().is_none());
+        assert!(
+            resident
+                .plan_structural(&original, &map, &invalid)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(resident.occupied.len(), original.len());
     }
 
@@ -490,8 +549,14 @@ mod tests {
         let (second, remapped) = first.plan(&changed).unwrap();
         assert_eq!(second.high_water(), 80);
         for (draw, &slot) in changed.iter().zip(&remapped) {
-            let old_index = original.iter().position(|old| old.node == draw.node).unwrap();
-            assert_eq!(slot, assigned[old_index], "existing draw must retain its physical slot");
+            let old_index = original
+                .iter()
+                .position(|old| old.node == draw.node)
+                .unwrap();
+            assert_eq!(
+                slot, assigned[old_index],
+                "existing draw must retain its physical slot"
+            );
         }
         assert_eq!(second.free.len(), 1);
         let mut extended = changed.clone();
@@ -520,9 +585,10 @@ mod tests {
             assert_eq!(second.high_water(), first.high_water());
             assert_eq!(second.free.len(), 1);
             for (logical, &slot) in new_map.iter().enumerate() {
-                let original_index = original.iter().position(|draw| {
-                    draw.node == moved[logical].node
-                }).unwrap();
+                let original_index = original
+                    .iter()
+                    .position(|draw| draw.node == moved[logical].node)
+                    .unwrap();
                 assert_eq!(
                     &physical[slot as usize * stride..(slot as usize + 1) * stride],
                     &physical[map[original_index] as usize * stride
@@ -561,10 +627,19 @@ mod tests {
         let mut keys = Vec::new();
         let mut bytes = Vec::new();
         let mut scratch = Vec::new();
-        let encoded = cache.encode_stable(
-            &original, 0, &first_map, slots.high_water(),
-            &[], &[], &mut keys, &mut bytes, &mut scratch
-        ).unwrap();
+        let encoded = cache
+            .encode_stable(
+                &original,
+                0,
+                &first_map,
+                slots.high_water(),
+                &[],
+                &[],
+                &mut keys,
+                &mut bytes,
+                &mut scratch,
+            )
+            .unwrap();
         assert_eq!(encoded, 40);
         let mut baseline = Vec::new();
         let mut baseline_keys = Vec::new();
@@ -585,23 +660,47 @@ mod tests {
         let (next_slots, remap) = slots.plan(&reordered).unwrap();
         let mut next_keys = Vec::new();
         let mut next_bytes = Vec::new();
-        let unchanged = cache.encode_stable(
-            &reordered, 0, &remap, next_slots.high_water(),
-            &keys, &bytes, &mut next_keys, &mut next_bytes, &mut scratch
-        ).unwrap();
+        let unchanged = cache
+            .encode_stable(
+                &reordered,
+                0,
+                &remap,
+                next_slots.high_water(),
+                &keys,
+                &bytes,
+                &mut next_keys,
+                &mut next_bytes,
+                &mut scratch,
+            )
+            .unwrap();
         assert_eq!(unchanged, 0);
-        assert!(next_bytes.is_empty(), "logical reorder must not copy the physical table");
+        assert!(
+            next_bytes.is_empty(),
+            "logical reorder must not copy the physical table"
+        );
         assert_eq!(next_keys, keys);
 
         // One immutable Arc snapshot changes while every other physical
         // DrawParams record and material identity remains resident.
         Arc::make_mut(&mut reordered[3].material).base_color = [0.3, 0.2, 0.7, 1.0];
         let (last_slots, last_map) = next_slots.plan(&reordered).unwrap();
-        let dirty = cache.encode_stable(
-            &reordered, 0, &last_map, last_slots.high_water(),
-            &keys, &bytes, &mut next_keys, &mut next_bytes, &mut scratch
-        ).unwrap();
-        assert_eq!(dirty, 1, "only the modified material's slot should be rebuilt");
+        let dirty = cache
+            .encode_stable(
+                &reordered,
+                0,
+                &last_map,
+                last_slots.high_water(),
+                &keys,
+                &bytes,
+                &mut next_keys,
+                &mut next_bytes,
+                &mut scratch,
+            )
+            .unwrap();
+        assert_eq!(
+            dirty, 1,
+            "only the modified material's slot should be rebuilt"
+        );
         for &slot in &last_map {
             let stride = DRAW_PARAMS_STRIDE as usize;
             let start = slot as usize * stride;
@@ -612,7 +711,10 @@ mod tests {
                     "unchanged physical records are bit-for-bit reused"
                 );
             } else {
-                assert_ne!(&next_bytes[start..start + stride], &bytes[start..start + stride]);
+                assert_ne!(
+                    &next_bytes[start..start + stride],
+                    &bytes[start..start + stride]
+                );
             }
         }
     }
@@ -625,22 +727,31 @@ mod tests {
         let mut keys = Vec::new();
         let mut bytes = Vec::new();
         let mut scratch = Vec::new();
-        cache.encode_stable(
-            &original, 0, &map, slots.high_water(),
-            &[], &[], &mut keys, &mut bytes, &mut scratch,
-        ).unwrap();
+        cache
+            .encode_stable(
+                &original,
+                0,
+                &map,
+                slots.high_water(),
+                &[],
+                &[],
+                &mut keys,
+                &mut bytes,
+                &mut scratch,
+            )
+            .unwrap();
         let mut next = original.clone();
         next.push(draws(33).pop().unwrap());
         let (_next_slots, next_map) = slots.plan(&next).unwrap();
         assert_eq!(next_map[32], 32);
-        let patches = cache.encode_resident_delta(
-            &next, 0, &next_map, &[32], &keys, &bytes, &mut scratch,
-        ).unwrap();
+        let patches = cache
+            .encode_resident_delta(&next, 0, &next_map, &[32], &keys, &bytes, &mut scratch)
+            .unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, 32);
-        let canonical = crate::scene_view::gpu::encode_draw_records(
-            std::slice::from_ref(&next[32]), 0,
-        ).unwrap();
+        let canonical =
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&next[32]), 0)
+                .unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
     }
 
@@ -652,36 +763,59 @@ mod tests {
         let mut keys = Vec::new();
         let mut baseline = Vec::new();
         let mut scratch = Vec::new();
-        cache.encode_stable(
-            &original, 0, &mapping, slots.high_water(),
-            &[], &[], &mut keys, &mut baseline, &mut scratch,
-        ).unwrap();
-        assert!(cache.encode_resident_delta(
-            &original, 0, &mapping, &[], &keys, &baseline, &mut scratch,
-        ).unwrap().is_empty());
+        cache
+            .encode_stable(
+                &original,
+                0,
+                &mapping,
+                slots.high_water(),
+                &[],
+                &[],
+                &mut keys,
+                &mut baseline,
+                &mut scratch,
+            )
+            .unwrap();
+        assert!(
+            cache
+                .encode_resident_delta(&original, 0, &mapping, &[], &keys, &baseline, &mut scratch,)
+                .unwrap()
+                .is_empty()
+        );
         let mut changed = original.clone();
         Arc::make_mut(&mut changed[8].material).base_color = [0.2, 0.4, 0.6, 1.0];
-        let patches = cache.encode_resident_delta(
-            &changed, 0, &mapping, &[8], &keys, &baseline, &mut scratch,
-        ).unwrap();
+        let patches = cache
+            .encode_resident_delta(&changed, 0, &mapping, &[8], &keys, &baseline, &mut scratch)
+            .unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, mapping[8] as usize);
         assert_ne!(patches[0].1, keys[mapping[8] as usize]);
-        let canonical = crate::scene_view::gpu::encode_draw_records(
-            std::slice::from_ref(&changed[8]), 0,
-        ).unwrap();
+        let canonical =
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&changed[8]), 0)
+                .unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
         let mut patched = baseline.clone();
         let start = patches[0].0 * DRAW_PARAMS_STRIDE as usize;
-        patched[start..start + DRAW_PARAMS_STRIDE as usize]
-            .copy_from_slice(&patches[0].2);
+        patched[start..start + DRAW_PARAMS_STRIDE as usize].copy_from_slice(&patches[0].2);
         let mut next_keys = Vec::new();
         let mut full = Vec::new();
-        DrawRecordCache::default().encode_stable(
-            &changed, 0, &mapping, slots.high_water(),
-            &keys, &baseline, &mut next_keys, &mut full, &mut scratch,
-        ).unwrap();
-        assert_eq!(patched, full, "sparse GPU patch must match canonical full encode");
+        DrawRecordCache::default()
+            .encode_stable(
+                &changed,
+                0,
+                &mapping,
+                slots.high_water(),
+                &keys,
+                &baseline,
+                &mut next_keys,
+                &mut full,
+                &mut scratch,
+            )
+            .unwrap();
+        assert_eq!(
+            patched, full,
+            "sparse GPU patch must match canonical full encode"
+        );
     }
 
     #[test]
@@ -710,5 +844,4 @@ mod tests {
             slots = next;
         }
     }
-
 }

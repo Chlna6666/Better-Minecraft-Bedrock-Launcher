@@ -53,20 +53,18 @@ impl PageRefs {
             self.ungenerated_quads -= 1;
         }
         if compact {
-            Self::visit(mesh, |page| {
-                match self.users.entry(page) {
-                    std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        let count = *entry.get();
-                        debug_assert!(count > 0);
-                        if count <= 1 {
-                            entry.remove();
-                        } else {
-                            *entry.get_mut() -= 1;
-                        }
+            Self::visit(mesh, |page| match self.users.entry(page) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let count = *entry.get();
+                    debug_assert!(count > 0);
+                    if count <= 1 {
+                        entry.remove();
+                    } else {
+                        *entry.get_mut() -= 1;
                     }
-                    std::collections::hash_map::Entry::Vacant(_) => {
-                        debug_assert!(false, "untracked voxel page removed");
-                    }
+                }
+                std::collections::hash_map::Entry::Vacant(_) => {
+                    debug_assert!(false, "untracked voxel page removed");
                 }
             });
         }
@@ -113,7 +111,8 @@ impl PageRefs {
                 });
             }
         }
-        removed_uses.into_iter()
+        removed_uses
+            .into_iter()
             .filter_map(|(page, count)| {
                 (self.users.get(&page).copied() == Some(count)).then_some(page)
             })

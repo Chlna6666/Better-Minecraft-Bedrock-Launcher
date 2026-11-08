@@ -60,6 +60,143 @@ pub(super) struct PendingMeshUpload {
 
 const VOXEL_ARENA_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Batch-scoped mesher input storage. One buffer per usage serves a whole
+/// streaming batch through bump allocation, replacing one native buffer
+/// creation per Section for the cells, frame-params and job scratch slots.
+pub(super) struct BatchScratch {
+    buffers: Vec<BufferId>,
+    cells: Option<ScratchPage>,
+    params: Option<ScratchPage>,
+    jobs: Option<ScratchPage>,
+    uniform_alignment: u64,
+}
+
+struct ScratchPage {
+    buffer: BufferId,
+    used: u64,
+    capacity: u64,
+    alignment: u64,
+}
+
+impl ScratchPage {
+    fn allocate(&mut self, bytes: u64) -> Option<u64> {
+        let aligned = self.used.next_multiple_of(self.alignment);
+        let end = aligned.checked_add(bytes)?;
+        if end > self.capacity {
+            return None;
+        }
+        self.used = end;
+        Some(aligned)
+    }
+}
+
+impl BatchScratch {
+    pub(super) fn new(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            buffers: Vec::new(),
+            cells: None,
+            params: None,
+            jobs: None,
+            uniform_alignment: limits.uniform_offset_alignment.max(1),
+        }
+    }
+
+    fn page(
+        device: &mut dyn ExtensionDevice,
+        buffers: &mut Vec<BufferId>,
+        page: &mut Option<ScratchPage>,
+        usage: BufferUsage,
+        bytes: u64,
+        alignment: u64,
+        page_capacity: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        if let Some(existing) = page
+            && let Some(offset) = existing.allocate(bytes)
+        {
+            return Ok((existing.buffer, offset));
+        }
+        // Uniform pages stay at the D3D11 64 KiB constant-buffer limit and roll
+        // over to the next buffer when full; storage pages use the full arena
+        // page size.
+        let capacity = page_capacity.max(bytes.next_power_of_two());
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("gpui-3d mesher batch scratch".into()),
+            size: capacity,
+            usage,
+            memory_location: MemoryLocation::GpuOnly,
+        })?;
+        let mut created = ScratchPage {
+            buffer,
+            used: 0,
+            capacity,
+            alignment,
+        };
+        let offset = created.allocate(bytes).unwrap_or(0);
+        *page = Some(created);
+        buffers.push(buffer);
+        Ok((buffer, offset))
+    }
+
+    pub(super) fn cells(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.cells,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            bytes,
+            16,
+            VOXEL_ARENA_PAGE_BYTES,
+        )
+    }
+
+    pub(super) fn params(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        let alignment = self.uniform_alignment;
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.params,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            bytes,
+            alignment,
+            // D3D11 constant-buffer binding limit: 4096 * 16 bytes.
+            64 * 1024,
+        )
+    }
+
+    pub(super) fn jobs(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.jobs,
+            BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
+            bytes,
+            16,
+            VOXEL_ARENA_PAGE_BYTES,
+        )
+    }
+
+    /// Destroys every batch buffer. Safe once the batch's compute dispatches
+    /// are submitted: backend buffer destruction defers to fence completion.
+    pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if self.buffers.is_empty() {
+            return Ok(());
+        }
+        device.destroy_buffer_batch(&self.buffers).map_err(anyhow::Error::from)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ArenaAllocation {
     page: usize,
@@ -495,6 +632,7 @@ pub(super) fn create_texture(
         usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     if let Err(error) = write_texture_mips(device, texture, asset) {
         device.destroy_texture(texture)?;
@@ -1191,6 +1329,7 @@ pub(super) fn encode_frame_params(
     bounds: Bounds<gpui::ScaledPixels>,
     render_target_size: gfx_core::Extent2d,
     blend_edge_feather_px: f32,
+    light_count: u32,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(FRAME_PARAMS_STRIDE);
     write_matrix(&mut bytes, view_projection.columns());
@@ -1210,7 +1349,7 @@ pub(super) fn encode_frame_params(
             render_target_size.width() as f32,
             render_target_size.height() as f32,
             blend_edge_feather_px,
-            0.0,
+            f32::from_bits(light_count),
         ],
     );
     // Default fog is disabled. The frame owner fills the trailing fog uniforms.
@@ -1239,7 +1378,6 @@ pub(super) struct DrawParamKey {
     material: MaterialId,
     snapshot_generation: u64,
     uv_regions: bool,
-    light_count: u32,
 }
 
 struct MaterialRecord {
@@ -1259,7 +1397,6 @@ fn material_record_cache_limit(draws: usize) -> usize {
 
 #[derive(Default)]
 pub(super) struct DrawRecordCache {
-    light_count: Option<u32>,
     // MaterialId survives Arc::make_mut. Different immutable snapshots with
     // the same logical ID must not evict one another on every draw; retained
     // Arc references keep the snapshot pointer identity stable while cached.
@@ -1283,9 +1420,7 @@ impl DrawRecordCache {
         scratch: &mut Vec<u8>,
     ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
         const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
-        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
-        if self.light_count != Some(light_count)
-            || mapping.len() != draws.len()
+        if mapping.len() != draws.len()
             || previous_bytes.len() != previous_keys.len() * STRIDE
         {
             return Err(anyhow!("GPUI 3D dirty DrawParams require a committed stable layout").into());
@@ -1323,17 +1458,15 @@ impl DrawRecordCache {
                     material,
                     snapshot_generation: record.generation,
                     uv_regions,
-                    light_count,
                 }, record.bytes)
             } else {
                 scratch.clear();
-                encode_draw_record(draw, light_count, scratch, STRIDE)?;
+                encode_draw_record(draw, scratch, STRIDE)?;
                 let bytes: [u8; STRIDE] = scratch[..STRIDE].try_into()
                     .expect("one complete resident DrawParams record");
                 let generation = if let (Some(prev), Some(old_bytes)) = (prev, old_bytes)
                     && prev.material == material
                     && prev.uv_regions == uv_regions
-                    && prev.light_count == light_count
                     && old_bytes == bytes.as_slice()
                 {
                     prev.snapshot_generation
@@ -1347,7 +1480,7 @@ impl DrawRecordCache {
                     });
                 }
                 (DrawParamKey { material, snapshot_generation: generation,
-                    uv_regions, light_count }, bytes)
+                    uv_regions }, bytes)
             };
             if prev != Some(key) || old_bytes != Some(bytes.as_slice()) {
                 patches.push((slot, key, bytes));
@@ -1376,11 +1509,6 @@ impl DrawRecordCache {
         scratch: &mut Vec<u8>,
     ) -> gpui::Result<usize> {
         const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
-        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
-        if self.light_count != Some(light_count) {
-            self.records.clear();
-            self.light_count = Some(light_count);
-        }
         if draws.len() != mapping.len() {
             return Err(anyhow!("GPUI 3D physical draw mapping length mismatch").into());
         }
@@ -1418,13 +1546,12 @@ impl DrawRecordCache {
                         material,
                         snapshot_generation: cached.generation,
                         uv_regions,
-                        light_count,
                     },
                     cached.bytes,
                 )
             } else {
                 scratch.clear();
-                encode_draw_record(draw, light_count, scratch, STRIDE)?;
+                encode_draw_record(draw, scratch, STRIDE)?;
                 let record: [u8; STRIDE] = scratch[..STRIDE]
                     .try_into()
                     .expect("DrawParams encoder must write one complete record");
@@ -1436,8 +1563,7 @@ impl DrawRecordCache {
                     .filter(|prev| {
                         prev.material == material
                             && prev.uv_regions == uv_regions
-                            && prev.light_count == light_count
-                    })
+                            })
                     .filter(|_| {
                         previous_bytes.get(start..start + STRIDE) == Some(record.as_slice())
                     });
@@ -1459,7 +1585,6 @@ impl DrawRecordCache {
                         material,
                         snapshot_generation: generation,
                         uv_regions,
-                        light_count,
                     },
                     record,
                 )
@@ -1500,11 +1625,6 @@ impl DrawRecordCache {
         bytes: &mut Vec<u8>,
         keys: &mut Vec<DrawParamKey>,
     ) -> gpui::Result<()> {
-        let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
-        if self.light_count != Some(light_count) {
-            self.records.clear();
-            self.light_count = Some(light_count);
-        }
         let cache_limit = material_record_cache_limit(draws.len());
         if self.records.len() >= cache_limit {
             self.records.retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
@@ -1530,12 +1650,11 @@ impl DrawRecordCache {
                     material,
                     snapshot_generation: record.generation,
                     uv_regions,
-                    light_count,
                 });
                 continue;
             }
             let start = bytes.len();
-            encode_draw_record(draw, light_count, bytes, stride)?;
+            encode_draw_record(draw, bytes, stride)?;
             self.next_generation = self.next_generation.wrapping_add(1);
             let generation = self.next_generation;
             let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
@@ -1554,7 +1673,6 @@ impl DrawRecordCache {
                 material,
                 snapshot_generation: generation,
                 uv_regions,
-                light_count,
             });
         }
         if draws.is_empty() {
@@ -1586,9 +1704,8 @@ fn encode_draw_records_into(
     let stride = DRAW_PARAMS_STRIDE as usize;
     bytes.clear();
     bytes.reserve(draws.len().max(1).saturating_mul(stride));
-    let light_count = u32::try_from(lights).context("GPUI 3D light count exceeds u32")?;
     for draw in draws {
-        encode_draw_record(draw, light_count, bytes, stride)?;
+        encode_draw_record(draw, bytes, stride)?;
     }
     if draws.is_empty() {
         bytes.resize(stride, 0);
@@ -1602,15 +1719,13 @@ fn encode_draw_records_into(
 /// streaming draw buffer grows with distinct material/mesh combinations rather than node count.
 pub(crate) fn encode_draw_slot(
     draw: &crate::PreparedDraw,
-    light_count: u32,
     bytes: &mut Vec<u8>,
 ) -> gpui::Result<()> {
-    encode_draw_record(draw, light_count, bytes, DRAW_SLOT_STRIDE)
+    encode_draw_record(draw, bytes, DRAW_SLOT_STRIDE)
 }
 
 fn encode_draw_record(
     draw: &crate::PreparedDraw,
-    light_count: u32,
     bytes: &mut Vec<u8>,
     stride: usize,
 ) -> gpui::Result<()> {
@@ -1625,7 +1740,8 @@ fn encode_draw_record(
     write_u32(bytes, u32::from(normal_mapping_enabled));
     write_f32(bytes, draw.material.occlusion_strength);
     write_u32(bytes, alpha_mode_value(draw.material.alpha_mode));
-    write_u32(bytes, light_count);
+    // Light count is a frame uniform; this word stays zero to keep the record layout.
+    write_u32(bytes, 0);
     let shading_model = match draw.material.shading_model {
         ShadingModel::MetallicRoughness => SHADING_MODEL_METALLIC_ROUGHNESS,
         ShadingModel::Unlit => SHADING_MODEL_UNLIT,
@@ -1877,17 +1993,17 @@ mod tests {
             max_uniform_binding_bytes: 64 * 1024,
         };
         let align = super::MeshArena::generated_face_alignment;
-        assert_eq!(align(limits).unwrap(), 16);
+        assert_eq!(align(limits, 16).unwrap(), 16);
         limits.storage_offset_alignment = 64;
-        assert_eq!(align(limits).unwrap(), 64);
+        assert_eq!(align(limits, 16).unwrap(), 64);
         limits.storage_offset_alignment = 256;
-        assert_eq!(align(limits).unwrap(), 256);
+        assert_eq!(align(limits, 16).unwrap(), 256);
         limits.storage_offset_alignment = 384;
-        assert_eq!(align(limits).unwrap(), 384);
+        assert_eq!(align(limits, 16).unwrap(), 384);
         limits.storage_offset_alignment = 0;
-        assert!(align(limits).is_err());
+        assert!(align(limits, 16).is_err());
         limits.storage_offset_alignment = u64::MAX;
-        assert!(align(limits).is_err());
+        assert!(align(limits, 16).is_err());
     }
 
     #[test]
@@ -1978,7 +2094,6 @@ mod tests {
         ).unwrap();
         let draw = prepared.draws[0].clone();
         let mut cache = super::DrawRecordCache::default();
-        cache.light_count = Some(0);
         // Keep all simulated Section material snapshots alive: they must not
         // be evicted as stale, so the active cache remains at its 8192 limit.
         let mut live = Vec::with_capacity(8_192);
@@ -2033,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_cache_keys_track_light_count_even_for_identical_material_snapshots() {
+    fn draw_cache_keys_survive_light_count_changes_for_identical_material_snapshots() {
         let mut scene = Scene::new();
         scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
         let prepared = PreparedScene::new(
@@ -2049,8 +2164,10 @@ mod tests {
         let first = keys[0];
         cache.encode(&draws, 0, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
+        // Light count is a frame uniform; a streaming light delta must not
+        // re-encode or re-upload the whole resident DrawParams table.
         cache.encode(&draws, 2, &mut bytes, &mut keys).unwrap();
-        assert_ne!(keys[0], first);
+        assert_eq!(keys[0], first);
         assert_eq!(bytes, super::encode_draw_records(&draws, 2).unwrap());
     }
 

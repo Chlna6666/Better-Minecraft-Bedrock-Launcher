@@ -37,7 +37,7 @@ struct FrameParams {
     element_bounds_size: vec2<f32>,
     render_target_size: vec2<f32>,
     blend_edge_feather_px: f32,
-    _padding: f32,
+    light_count: u32,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
     voxel_settings:vec4<f32>,

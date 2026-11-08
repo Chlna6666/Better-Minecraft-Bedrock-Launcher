@@ -13,7 +13,7 @@ use std::{
 
 /// CPU and GPU mesh fields contributing to one 144-byte instance record.
 /// Mesh relocation and procedural geometry are reflected in vertex_word.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct InstanceSlotKey {
     node: NodeId,
     world: Mat4,
@@ -30,8 +30,18 @@ pub(super) struct InstanceSlotKey {
 impl PartialEq for InstanceSlotKey {
     fn eq(&self, other: &Self) -> bool {
         self.node == other.node
-            && self.world.columns().into_iter().flatten().map(f32::to_bits)
-                .eq(other.world.columns().into_iter().flatten().map(f32::to_bits))
+            && self
+                .world
+                .columns()
+                .into_iter()
+                .flatten()
+                .map(f32::to_bits)
+                .eq(other
+                    .world
+                    .columns()
+                    .into_iter()
+                    .flatten()
+                    .map(f32::to_bits))
             && self.pixel_offset.x.to_bits() == other.pixel_offset.x.to_bits()
             && self.pixel_offset.y.to_bits() == other.pixel_offset.y.to_bits()
             && self.depth_bias.to_bits() == other.depth_bias.to_bits()
@@ -73,15 +83,16 @@ impl SceneResources {
         voxel_shader: bool,
     ) -> gpui::Result<InstanceSlotKey> {
         let (vertex_word, index_count_override, generated_template_base) = if voxel_shader {
-            let mesh = self.meshes.get(&mesh_key(draw, true))
+            let mesh = self
+                .meshes
+                .get(&mesh_key(draw, true))
                 .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
-            let count = (self.culling.is_some() && mesh.procedural_quads)
-                .then(|| draw.part.index_count());
+            let count =
+                (self.culling.is_some() && mesh.procedural_quads).then(|| draw.part.index_count());
             let vertex = if mesh.procedural_quads {
                 mesh.vertex_base
                     .checked_add(
-                        draw.part.first_index() / 6
-                            * if mesh.generated.is_some() { 1 } else { 4 },
+                        draw.part.first_index() / 6 * if mesh.generated.is_some() { 1 } else { 4 },
                     )
                     .filter(|base| *base < 0x8000_0000)
                     .ok_or_else(|| anyhow!("GPUI 3D voxel quad address exceeds shader range"))?
@@ -89,7 +100,13 @@ impl SceneResources {
             } else {
                 mesh.vertex_base
             };
-            (vertex, count, mesh.generated.as_ref().map(|generated| generated.template_base))
+            (
+                vertex,
+                count,
+                mesh.generated
+                    .as_ref()
+                    .map(|generated| generated.template_base),
+            )
         } else {
             (0, None, None)
         };
@@ -158,19 +175,27 @@ mod tests {
             pixel_offset: crate::Vec2::ZERO,
             ..negative
         };
-        assert!(negative != positive, "GPU byte identity must distinguish signed zero");
+        assert!(
+            negative != positive,
+            "GPU byte identity must distinguish signed zero"
+        );
         assert_ne!(negative.fingerprint(), positive.fingerprint());
         let mut output = Vec::new();
         let mut encoded = 0;
         let count = encode_cached_records(
-            &[positive], &[negative], &[0u8; 4], 4, &mut output,
+            &[positive],
+            &[negative],
+            &[0u8; 4],
+            4,
+            &mut output,
             super::InstanceSlotKey::fingerprint,
             |range, bytes| {
                 encoded += range.len();
                 bytes.extend_from_slice(&[2u8; 4]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 1);
         assert_eq!(encoded, 1);
     }
@@ -183,14 +208,19 @@ mod tests {
         let mut runs = Vec::new();
         let current = [10, 21, 30, 41, 50];
         let count = encode_cached_records(
-            &current, &previous_keys, &previous_bytes, 1, &mut output,
+            &current,
+            &previous_keys,
+            &previous_bytes,
+            1,
+            &mut output,
             |value| *value as u64,
             |range, output| {
                 runs.push(range.clone());
                 output.extend_from_slice(&current[range]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 2);
         assert_eq!(runs, [1..2, 3..4]);
         assert_eq!(output, current);
@@ -198,14 +228,19 @@ mod tests {
         runs.clear();
         let moved = [10, 30, 40, 50];
         let count = encode_cached_records(
-            &moved, &previous_keys, &previous_bytes, 1, &mut output,
+            &moved,
+            &previous_keys,
+            &previous_bytes,
+            1,
+            &mut output,
             |value| *value as u64,
             |range, output| {
                 runs.push(range.clone());
                 output.extend_from_slice(&moved[range]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 0, "shifted unchanged rows should be reused");
         assert!(runs.is_empty());
         assert_eq!(output, moved);
@@ -245,14 +280,19 @@ mod tests {
         let mut encoded = Vec::new();
         let mut invocations = 0;
         let count = encode_cached_records(
-            &keys, &previous, &previous_bytes, stride, &mut encoded,
+            &keys,
+            &previous,
+            &previous_bytes,
+            stride,
+            &mut encoded,
             |key| key.fingerprint(),
             |range, bytes| {
                 invocations += 1;
                 bytes.resize(bytes.len() + range.len() * stride, 9);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 2);
         assert_eq!(invocations, 1);
         assert_eq!(encoded, vec![9; stride * 2]);
@@ -267,14 +307,19 @@ mod tests {
         let mut output = Vec::new();
         let mut encoded_runs = Vec::new();
         let count = encode_cached_records(
-            &current, &previous, &old_bytes, 1, &mut output,
+            &current,
+            &previous,
+            &old_bytes,
+            1,
+            &mut output,
             |_| 0, // Force every distinct key into the same hash bucket.
             |range, output| {
                 encoded_runs.push(range.clone());
                 output.extend_from_slice(&current[range]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 0);
         assert!(encoded_runs.is_empty());
         assert_eq!(output, [101, 103, 104, 105]);
@@ -282,13 +327,18 @@ mod tests {
         // Existing records never match unrelated keys just because hashes do.
         let updated = [11u8, 99, 44, 55];
         let count = encode_cached_records(
-            &updated, &previous, &old_bytes, 1, &mut output,
+            &updated,
+            &previous,
+            &old_bytes,
+            1,
+            &mut output,
             |_| 0,
             |range, output| {
                 output.extend_from_slice(&updated[range]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 1);
         assert_eq!(output, [101, 99, 104, 105]);
     }
@@ -300,13 +350,18 @@ mod tests {
         let current = previous[20..].to_vec();
         let mut output = Vec::new();
         let count = encode_cached_records(
-            &current, &previous, &old_bytes, 1, &mut output,
+            &current,
+            &previous,
+            &old_bytes,
+            1,
+            &mut output,
             |_| 0, // All records collide; equality prevents false hits.
             |range, output| {
                 output.extend(current[range].iter().map(|v| *v as u8));
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 0, "all shifted rows already have GPU-ready bytes");
         assert_eq!(output, old_bytes[20..]);
     }
@@ -317,13 +372,18 @@ mod tests {
         let current = [1u8, 7, 3, 4];
         let mut output = Vec::new();
         let count = encode_cached_records(
-            &current, &previous, &previous, 1, &mut output,
+            &current,
+            &previous,
+            &previous,
+            1,
+            &mut output,
             |_| panic!("single-slot edits must not build a relocation index"),
             |range, output| {
                 output.extend_from_slice(&current[range]);
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 1);
         assert_eq!(output, current);
     }
@@ -333,7 +393,11 @@ mod tests {
         let mut output = Vec::new();
         let keys = [1, 2, 3];
         let count = encode_cached_records(
-            &keys, &[], &[], 2, &mut output,
+            &keys,
+            &[],
+            &[],
+            2,
+            &mut output,
             |value| *value as u64,
             |range, output| {
                 for value in &keys[range] {
@@ -341,15 +405,21 @@ mod tests {
                 }
                 Ok::<_, ()>(())
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 3);
         assert_eq!(output, [1, 1, 2, 2, 3, 3]);
         let mut empty = Vec::new();
         let count = encode_cached_records(
-            &[] as &[u8], &keys, &output, 2, &mut empty,
+            &[] as &[u8],
+            &keys,
+            &output,
+            2,
+            &mut empty,
             |value| *value as u64,
             |_, _| Ok::<_, ()>(()),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(count, 0);
         assert_eq!(empty, [0, 0]);
     }

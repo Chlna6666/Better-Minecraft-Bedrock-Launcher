@@ -1,8 +1,6 @@
 const PI:f32=3.14159265359;
 @group(0) @binding(0) var scene:texture_2d<f32>;
-@group(0) @binding(1) var opaque_depth:texture_2d<f32>;
 @group(0) @binding(2) var surfaces:texture_2d<f32>;
-@group(0) @binding(3) var surface_depth:texture_2d<f32>;
 @group(0) @binding(4) var albedos:texture_2d<f32>;
 @group(0) @binding(5) var linear_sampler:sampler;
 @group(0) @binding(6) var<uniform> frame:EffectFrame;
@@ -154,7 +152,7 @@ fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
     }return vec4<f32>(radiance,transmittance);
 }
 fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec3<f32>(0.0));let mapped=clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));return select(mapped*12.92,1.055*pow(mapped,vec3<f32>(1.0/2.4))-0.055,mapped>vec3<f32>(0.0031308));}
-@fragment fn fs_effects(input:ScreenOutput)->@location(0) vec4<f32>{
+fn effects_shade(input:ScreenOutput)->vec4<f32>{
     let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(uv,min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
     if(depth>=1.0){color=atmosphere(ray);}
     if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=textureLoad(albedos,at,0);let v=-ray;
@@ -189,4 +187,6 @@ fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec
     if(frame.options.w>0.5){let t=exp(-frame.water_absorption.xyz*min(distance_limit,64.0));color=color*t+vec3<f32>(0.015,0.08,0.12)*(1.0-t);}
     return vec4<f32>(display_color(color),1.0);
 }
-@fragment fn fs_composite(input:ScreenOutput)->Resolved {var out:Resolved;out.color=textureSampleLevel(scene,linear_sampler,input.uv,0.0);let at=vec2<i32>(clamp(input.uv,vec2<f32>(0.0),vec2<f32>(0.99999))*vec2<f32>(textureDimensions(opaque_depth)));out.depth=textureLoad(opaque_depth,at,0).r;return out;}
+fn composite_resolve(input:ScreenOutput)->Resolved {var out:Resolved;out.color=textureSampleLevel(scene,linear_sampler,input.uv,0.0);let at=vec2<i32>(clamp(input.uv,vec2<f32>(0.0),vec2<f32>(0.99999))*vec2<f32>(textureDimensions(opaque_depth)));out.depth=textureLoad(opaque_depth,at,0).r;return out;}
+@fragment fn fs_effects(input:ScreenOutput)->@location(0) vec4<f32>{return effects_shade(input);}
+@fragment fn fs_composite(input:ScreenOutput)->Resolved{return composite_resolve(input);}

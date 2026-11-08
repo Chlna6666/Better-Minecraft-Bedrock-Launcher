@@ -59,6 +59,7 @@
 mod animation;
 mod asset;
 mod camera;
+mod fingerprint;
 mod light;
 mod material;
 pub use gfx_core::FrontFace;

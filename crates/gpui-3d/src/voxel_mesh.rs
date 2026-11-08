@@ -724,6 +724,109 @@ impl VoxelMeshSource {
                 .expect("validated voxel templates and bounded material regions")
         })
     }
+
+    /// Stable content fingerprint of the GPU voxel plan.
+    ///
+    /// Two sources with equal fingerprints produce equal fused plans for equal
+    /// placements, which lets callers reuse cached fusion results instead of
+    /// re-running [`Self::fuse_sections`]. Derived CPU geometry (`parts`,
+    /// `bounds`, the lazily built CPU fallback) is excluded; inputs that change
+    /// GPU output — cells, classes, instance jobs, templates, clip band,
+    /// ambient occlusion and the light field — are covered.
+    #[must_use]
+    pub fn content_fingerprint(&self) -> u64 {
+        use crate::fingerprint::FingerprintHasher;
+        let mut hasher = FingerprintHasher::new();
+        for value in self.size {
+            hasher.write_u32(value);
+        }
+        for value in [self.origin.x, self.origin.y, self.origin.z] {
+            hasher.write_u32(value.to_bits());
+        }
+        match &self.cells {
+            cells::Cells::Bytes(values) => {
+                hasher.write_u32(1);
+                hasher.write_bytes(values.as_ref());
+            }
+            cells::Cells::Words(values) => {
+                hasher.write_u32(2);
+                for value in values.iter() {
+                    hasher.write_u32(*value);
+                }
+            }
+        }
+        hasher.write_usize(self.templates.len());
+        for template in &self.templates {
+            hasher.write_u32(template.material_slot);
+            for value in template.neighbour {
+                hasher.write_u32(value as u32);
+            }
+            for vertex in &template.vertices {
+                for value in [vertex.position.x, vertex.position.y, vertex.position.z] {
+                    hasher.write_u32(value.to_bits());
+                }
+                for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z] {
+                    hasher.write_u32(value.to_bits());
+                }
+                for value in [vertex.uv.x, vertex.uv.y] {
+                    hasher.write_u32(value.to_bits());
+                }
+                for value in vertex.color {
+                    hasher.write_u32(value.to_bits());
+                }
+            }
+        }
+        hasher.write_usize(self.model_faces);
+        hasher.write_usize(self.static_start);
+        for value in self.clip_y {
+            hasher.write_u32(value.to_bits());
+        }
+        hasher.write_u32(self.ambient_occlusion);
+        match &self.instances {
+            Some(instances) => {
+                hasher.write_u32(1);
+                hasher.write_usize(instances.jobs.len());
+                for job in &instances.jobs {
+                    for value in job.position {
+                        hasher.write_u32(value);
+                    }
+                    hasher.write_u32(job.height.to_bits());
+                    hasher.write_u32(job.first_face);
+                    hasher.write_u32(job.face_count);
+                    hasher.write_u32(job.material);
+                    hasher.write_u32(job.occlusion_mask);
+                }
+            }
+            None => hasher.write_u32(0),
+        }
+        match &self.lighting {
+            Some(lighting) => {
+                hasher.write_u32(1);
+                hasher.write_u32(lighting.ambient.to_bits());
+                hasher.write_bytes(lighting.levels.as_ref());
+            }
+            None => hasher.write_u32(0),
+        }
+        hasher.finish()
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::tests::source;
+    use super::*;
+
+    #[test]
+    fn equal_content_shares_fingerprint_and_edits_change_it() {
+        let first = source();
+        let second = source();
+        assert_eq!(first.content_fingerprint(), second.content_fingerprint());
+        let mut cells = first.cells.to_vec();
+        cells[17] = 0;
+        let changed = VoxelMeshSource::new(first.size, first.origin, cells, first.templates.to_vec())
+            .unwrap();
+        assert_ne!(first.content_fingerprint(), changed.content_fingerprint());
+    }
 }
 
 #[cfg(test)]

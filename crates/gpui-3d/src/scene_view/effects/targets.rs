@@ -5,6 +5,16 @@ pub(super) struct Target {
     pub texture: TextureId,
     pub view: TextureViewId,
 }
+/// Multisampled render-copies of the single-sample scene targets. When
+/// enabled, the three geometry passes render here (at the scene sample count)
+/// and resolve into the single-sample `color`/`surface`/`albedo` views.
+pub(super) struct MsaaTargets {
+    pub color: Target,
+    pub depth: Target,
+    pub surface: Target,
+    pub surface_depth: Target,
+    pub albedo: Target,
+}
 pub(super) struct Targets {
     pub extent: Extent2d,
     pub color: Target,
@@ -13,6 +23,7 @@ pub(super) struct Targets {
     pub surface_depth: Target,
     pub albedo: Target,
     pub resolved: Target,
+    pub msaa: Option<MsaaTargets>,
 }
 impl Target {
     pub(super) fn record(&self, cleanup: &mut super::construction::Construction) {
@@ -28,6 +39,7 @@ impl Target {
         extent: Extent2d,
         format: Format,
         depth: bool,
+        sample_count: u32,
     ) -> gpui::Result<Self> {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("gpui-3d effect target".into()),
@@ -43,6 +55,7 @@ impl Target {
                 },
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count,
         })?;
         let view = match device.create_texture_view(&TextureViewDescriptor {
             label: None,
@@ -66,7 +79,11 @@ impl Target {
     }
 }
 impl Targets {
-    pub(super) fn create(device: &mut dyn ExtensionDevice, extent: Extent2d) -> gpui::Result<Self> {
+    pub(super) fn create(
+        device: &mut dyn ExtensionDevice,
+        extent: Extent2d,
+        msaa_sample_count: u32,
+    ) -> gpui::Result<Self> {
         let mut targets = Vec::new();
         for format in [
             Format::Rgba16Float,
@@ -76,7 +93,7 @@ impl Targets {
             Format::Rgba16Float,
             Format::Rgba8Unorm,
         ] {
-            match Target::create(device, extent, format, format == Format::Depth32Float) {
+            match Target::create(device, extent, format, format == Format::Depth32Float, 1) {
                 Ok(target) => targets.push(target),
                 Err(error) => {
                     for target in targets {
@@ -92,7 +109,7 @@ impl Targets {
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("missing screen target"))
         };
-        Ok(Self {
+        let base = Self {
             extent,
             color: next()?,
             depth: next()?,
@@ -100,9 +117,46 @@ impl Targets {
             surface_depth: next()?,
             albedo: next()?,
             resolved: next()?,
-        })
+            msaa: None,
+        };
+        let msaa = if msaa_sample_count > 1 {
+            let mut mk = |format: Format, depth: bool| {
+                Target::create(device, extent, format, depth, msaa_sample_count)
+            };
+            if let (color, depth, surface, surface_depth, albedo) = (
+                mk(Format::Rgba16Float, false)?,
+                mk(Format::Depth32Float, true)?,
+                mk(Format::Rgba16Float, false)?,
+                mk(Format::Depth32Float, true)?,
+                mk(Format::Rgba16Float, false)?,
+            ) {
+                Some(MsaaTargets {
+                    color,
+                    depth,
+                    surface,
+                    surface_depth,
+                    albedo,
+                })
+            } else {
+                unreachable!("tuple of five always yields five")
+            }
+        } else {
+            None
+        };
+        Ok(Self { msaa, ..base })
     }
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if let Some(msaa) = self.msaa {
+            for target in [
+                msaa.color,
+                msaa.depth,
+                msaa.surface,
+                msaa.surface_depth,
+                msaa.albedo,
+            ] {
+                target.destroy(device)?;
+            }
+        }
         for target in [
             self.color,
             self.depth,

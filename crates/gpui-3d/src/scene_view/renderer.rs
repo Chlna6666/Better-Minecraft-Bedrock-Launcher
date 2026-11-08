@@ -1,10 +1,9 @@
 use super::{
-    SceneView, SceneViewId, gpu::MeshArena,
-    resources::RendererResources, scene::SceneResources,
+    SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
 };
-use anyhow::{anyhow, bail};
 use crate::prepare::StructuralDrawDelta;
-use gfx_core::{BackendKind, MemoryTrimLevel, RenderCommand, RenderPassId};
+use anyhow::{anyhow, bail};
+use gfx_core::{BackendKind, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
 use std::{
@@ -36,9 +35,21 @@ struct CachedCommands {
     commands: Vec<RenderCommand>,
     /// Only this canonical layout may be remapped through logical Section deltas.
     generated_draw_count: Option<usize>,
+    /// The same draws regrouped so consecutive commands share pipeline and
+    /// bind groups. Backends coalesce each identical-state run into one
+    /// native indirect call, so a 100K-command scene records as a handful of
+    /// native draws. Rebuilt only when the logical list changes.
+    grouped: Option<Vec<RenderCommand>>,
 }
 
 impl CachedCommands {
+    fn publish(&self, steps: &mut Vec<RenderCommand>) {
+        match &self.grouped {
+            Some(grouped) => steps.extend_from_slice(grouped),
+            None => steps.extend_from_slice(&self.commands),
+        }
+    }
+
     fn append(
         &mut self,
         revision: u64,
@@ -46,7 +57,7 @@ impl CachedCommands {
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
     ) -> gpui::Result<()> {
         if self.revision == Some(revision) {
-            steps.extend_from_slice(&self.commands);
+            self.publish(steps);
             return Ok(());
         }
         self.revision = None;
@@ -55,7 +66,13 @@ impl CachedCommands {
         let first = steps.len();
         build(steps)?;
         self.commands.extend_from_slice(&steps[first..]);
+        self.grouped = group_indirect_commands(&self.commands);
         self.revision = Some(revision);
+        // Backends coalesce adjacent identical-state draws into one native
+        // indirect call; emit the regrouped list instead of the raw build
+        // order so that coalescing actually happens.
+        steps.truncate(first);
+        self.publish(steps);
         Ok(())
     }
 
@@ -75,8 +92,7 @@ impl CachedCommands {
             steps.extend_from_slice(&self.commands);
             return Ok(());
         }
-        if let (Some(count), Some(delta), Some(previous)) =
-            (draw_count, delta, self.revision)
+        if let (Some(count), Some(delta), Some(previous)) = (draw_count, delta, self.revision)
             && previous.wrapping_add(1) == revision
             && self.generated_draw_count == Some(delta.previous_count)
             && let Some(next) = self.splice_generated(delta, count, &mut build_range)?
@@ -84,13 +100,17 @@ impl CachedCommands {
             if trace_timings() {
                 eprintln!(
                     "gpui3d native_command_delta previous={} current={} edits={} commands={}",
-                    delta.previous_count, count, delta.edits.len(), next.len(),
+                    delta.previous_count,
+                    count,
+                    delta.edits.len(),
+                    next.len(),
                 );
             }
-            steps.extend_from_slice(&next);
             self.commands = next;
+            self.grouped = group_indirect_commands(&self.commands);
             self.revision = Some(revision);
             self.generated_draw_count = Some(count);
+            self.publish(steps);
             return Ok(());
         }
         self.append(revision, steps, build)?;
@@ -104,7 +124,10 @@ impl CachedCommands {
         &self,
         delta: &StructuralDrawDelta,
         new_count: usize,
-        build_range: &mut impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+        build_range: &mut impl FnMut(
+            std::ops::Range<usize>,
+            &mut Vec<RenderCommand>,
+        ) -> gpui::Result<()>,
     ) -> gpui::Result<Option<Vec<RenderCommand>>> {
         let mut previous_command = None;
         for command in &self.commands {
@@ -138,14 +161,21 @@ impl CachedCommands {
         if delta.previous_count - old != new_count - new {
             return Ok(None);
         }
-        let mut next = Vec::with_capacity(self.commands.len().saturating_add(new_count.saturating_sub(delta.previous_count)));
+        let mut next = Vec::with_capacity(
+            self.commands
+                .len()
+                .saturating_add(new_count.saturating_sub(delta.previous_count)),
+        );
         let mut position = 0usize;
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
         for edit in &delta.edits {
             if !copy_native_survivors(
-                &self.commands, &mut position,
-                old_cursor..edit.old.start, new_cursor, &mut next,
+                &self.commands,
+                &mut position,
+                old_cursor..edit.old.start,
+                new_cursor,
+                &mut next,
             ) {
                 return Ok(None);
             }
@@ -164,9 +194,13 @@ impl CachedCommands {
             new_cursor = edit.new.end;
         }
         if !copy_native_survivors(
-            &self.commands, &mut position,
-            old_cursor..delta.previous_count, new_cursor, &mut next,
-        ) || position != self.commands.len() {
+            &self.commands,
+            &mut position,
+            old_cursor..delta.previous_count,
+            new_cursor,
+            &mut next,
+        ) || position != self.commands.len()
+        {
             return Ok(None);
         }
         Ok(Some(next))
@@ -176,16 +210,111 @@ impl CachedCommands {
 fn generated_range_matches(commands: &[RenderCommand], range: std::ops::Range<usize>) -> bool {
     let mut last = None;
     commands.iter().all(|command| {
-        let RenderCommand::DrawIndirect(draw) = command else { return false };
+        let RenderCommand::DrawIndirect(draw) = command else {
+            return false;
+        };
         let index = draw.offset / 16;
-        if draw.offset % 16 != 0 || index < range.start as u64
-            || index >= range.end as u64 || last.is_some_and(|old| old >= index)
+        if draw.offset % 16 != 0
+            || index < range.start as u64
+            || index >= range.end as u64
+            || last.is_some_and(|old| old >= index)
         {
             return false;
         }
         last = Some(index);
         true
     })
+}
+
+/// Regroups a canonical all-indirect command list so consecutive commands
+/// share pipeline, bind groups and scissor. Backends record each
+/// identical-state run as one native indirect call, so thousands of Section
+/// draws collapse into one native call per distinct binding state.
+///
+/// Opaque draws (the leading pipeline run) are bucketed by bind group;
+/// blended draws keep their relative depth order. Non-indirect lists return
+/// `None` and are published in their original order.
+fn group_indirect_commands(commands: &[RenderCommand]) -> Option<Vec<RenderCommand>> {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    if *DISABLED.get_or_init(|| std::env::var_os("GPUI_3D_NO_GROUP").is_some()) {
+        return None;
+    }
+    if commands.is_empty()
+        || !commands
+            .iter()
+            .all(|command| matches!(command, RenderCommand::DrawIndirect(_)))
+    {
+        return None;
+    }
+    // Sections frequently use several opaque pipeline variants (front-face
+    // culling), so bucket by (pipeline, bind groups) across the whole list
+    // instead of stopping at the first pipeline change. The output keeps each
+    // pipeline's first-appearance order and every bucket's internal order;
+    // back-to-front blended draws stay within their own pipeline bucket, so
+    // their relative depth order is preserved.
+    let mut pipeline_order = Vec::<gfx_core::RenderPipelineId>::new();
+    let mut keys = Vec::<(gfx_core::RenderPipelineId, BindGroupList)>::new();
+    let mut buckets =
+        HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), Vec<RenderCommand>>::default();
+    for command in commands {
+        let RenderCommand::DrawIndirect(draw) = command else {
+            continue;
+        };
+        let pipeline = command.pipeline();
+        if !pipeline_order.contains(&pipeline) {
+            pipeline_order.push(pipeline);
+        }
+        let key = (pipeline, &draw.bind_groups);
+        match buckets.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(command.clone());
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                keys.push((pipeline, draw.bind_groups.clone()));
+                entry.insert(vec![command.clone()]);
+            }
+        }
+    }
+    if keys.len() >= commands.len() {
+        // Every command already has a distinct state; regrouping cannot
+        // merge anything and would only reorder the list.
+        return None;
+    }
+    let mut grouped = Vec::with_capacity(commands.len());
+    for pipeline in &pipeline_order {
+        for key in keys.iter().filter(|(candidate, _)| candidate == pipeline) {
+            let lookup = (key.0, &key.1);
+            grouped.extend(buckets.remove(&lookup).unwrap_or_default());
+        }
+    }
+    debug_assert_eq!(grouped.len(), commands.len());
+    // Regrouping must be a permutation of the original draws: every GPU
+    // indirect argument record is still executed exactly once. Pipeline and
+    // bind-group identity are preserved by construction; offsets are the
+    // stable per-draw address into the shared argument buffer.
+    debug_assert!(
+        {
+            let mut before = commands
+                .iter()
+                .map(|command| match command {
+                    RenderCommand::DrawIndirect(draw) => draw.offset,
+                    _ => u64::MAX,
+                })
+                .collect::<Vec<_>>();
+            let mut after = grouped
+                .iter()
+                .map(|command| match command {
+                    RenderCommand::DrawIndirect(draw) => draw.offset,
+                    _ => u64::MAX,
+                })
+                .collect::<Vec<_>>();
+            before.sort_unstable();
+            after.sort_unstable();
+            before == after
+        },
+        "regrouped indirect commands must be a permutation of the input"
+    );
+    Some(grouped)
 }
 
 fn copy_native_survivors(
@@ -196,13 +325,23 @@ fn copy_native_survivors(
     next: &mut Vec<RenderCommand>,
 ) -> bool {
     while let Some(command) = old.get(*position) {
-        let RenderCommand::DrawIndirect(draw) = command else { return false };
+        let RenderCommand::DrawIndirect(draw) = command else {
+            return false;
+        };
         let logical = (draw.offset / 16) as usize;
-        if logical >= old_range.end { break; }
-        if logical < old_range.start { return false; }
-        let Some(next_logical) = new_start.checked_add(logical - old_range.start)
+        if logical >= old_range.end {
+            break;
+        }
+        if logical < old_range.start {
+            return false;
+        }
+        let Some(next_logical) = new_start
+            .checked_add(logical - old_range.start)
             .and_then(|value| u64::try_from(value).ok())
-            .and_then(|value| value.checked_mul(16)) else { return false };
+            .and_then(|value| value.checked_mul(16))
+        else {
+            return false;
+        };
         let mut copy = draw.clone();
         copy.offset = next_logical;
         next.push(RenderCommand::DrawIndirect(copy));
@@ -322,15 +461,15 @@ impl Renderer {
             color_format: context.color_format(),
             target_extent: context.viewport(),
             resources,
-            generated_arena: Rc::new(RefCell::new(
-                MeshArena::generated_output(device.buffer_binding_limits()),
-            )),
-            template_arena: Rc::new(RefCell::new(
-                MeshArena::generated_templates(device.buffer_binding_limits()),
-            )),
-            argument_arena: Rc::new(RefCell::new(
-                MeshArena::generated_arguments(device.buffer_binding_limits()),
-            )),
+            generated_arena: Rc::new(RefCell::new(MeshArena::generated_output(
+                device.buffer_binding_limits(),
+            ))),
+            template_arena: Rc::new(RefCell::new(MeshArena::generated_templates(
+                device.buffer_binding_limits(),
+            ))),
+            argument_arena: Rc::new(RefCell::new(MeshArena::generated_arguments(
+                device.buffer_binding_limits(),
+            ))),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
             frame_time: None,
@@ -482,7 +621,10 @@ impl RendererExtensionRenderer for Renderer {
         self.generated_arena.borrow().has_retired_ranges()
             || self.template_arena.borrow().has_retired_ranges()
             || self.argument_arena.borrow().has_retired_ranges()
-            || self.scenes.values().any(SceneResources::has_retired_arena_ranges)
+            || self
+                .scenes
+                .values()
+                .any(SceneResources::has_retired_arena_ranges)
     }
 
     fn gpu_work_completed(&mut self) {
@@ -516,7 +658,9 @@ impl RendererExtensionRenderer for Renderer {
             self.scenes.insert(
                 scene_view.id,
                 SceneResources::new_shared(
-                    device, context.backend_kind(), Rc::clone(&self.generated_arena),
+                    device,
+                    context.backend_kind(),
+                    Rc::clone(&self.generated_arena),
                     Rc::clone(&self.template_arena),
                     Rc::clone(&self.argument_arena),
                 )?,

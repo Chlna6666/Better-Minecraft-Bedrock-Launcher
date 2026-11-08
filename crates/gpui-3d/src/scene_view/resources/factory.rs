@@ -57,14 +57,15 @@ impl RendererResources {
                 // This is a performance-only alternative to cs_cull.
                 // If a particular backend driver rejects its module, keep
                 // the established compute path rather than disabling 3D.
-                let singleton = embedded_shader(
-                    context, ShaderStage::Compute, "cs_cull_singletons",
-                ).and_then(|binary| {
-                    Ok(device.create_shader_module(&ShaderModuleDescriptor {
-                        label: Some("gpui-3d GPU singleton batch culling".into()),
-                        binary,
-                    })?)
-                });
+                let singleton =
+                    embedded_shader(context, ShaderStage::Compute, "cs_cull_singletons").and_then(
+                        |binary| {
+                            Ok(device.create_shader_module(&ShaderModuleDescriptor {
+                                label: Some("gpui-3d GPU singleton batch culling".into()),
+                                binary,
+                            })?)
+                        },
+                    );
                 match singleton {
                     Ok(shader) => resources.singleton_cull_shader = Some(shader),
                     Err(error) => {
@@ -204,6 +205,7 @@ impl RendererResources {
                 usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
+                sample_count: 1,
             })?;
             resources.fallback_texture = Some(fallback_texture);
             resources.fallback_texture_view =

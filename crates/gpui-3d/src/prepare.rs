@@ -174,6 +174,12 @@ pub struct PreparedScene {
     /// entirely opaque GPU-culled scene. Transparent ordering and CPU
     /// visibility never use the direct Section->Draw Slot path.
     opaque_resident_order: bool,
+    /// The resident GPU opaque prefix follows candidate order for a fully
+    /// published GPU-culled scene, blended tail included. Structural deltas
+    /// are expressed against this prefix, so a camera move or a blend-heavy
+    /// world never disables them; only CPU-side permutation sources
+    /// (native quads, culling mode) reset the proof.
+    resident_prefix_order: bool,
     /// Dirty logical draws from the most recent fixed-layout Section Delta.
     /// Empty means no changed GPU record; None means a full update is needed.
     resident_delta_draws: Option<Vec<usize>>,
@@ -183,6 +189,13 @@ pub struct PreparedScene {
     structural_delta: Option<StructuralDrawDelta>,
     blend_order: Vec<usize>,
     blend_positions: Vec<usize>,
+    /// Scratch Section-depth keys for the blended tail permutation, kept
+    /// allocated across frames so streaming never re-allocates the workspace.
+    blend_section_keys: Vec<f32>,
+    /// Set when the latest camera update changed the blended-tail render
+    /// permutation. The tail keeps its camera-independent candidate order in
+    /// the draw tables; only native command emission follows this permutation.
+    blend_order_changed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +214,10 @@ pub(crate) struct StructuralDrawDelta {
 struct CandidateGroup {
     start: usize,
     end: usize,
+    /// Blended draws inside `[start, end)`; they render from the depth-sorted
+    /// tail instead of this candidate range. Stable per unchanged Section,
+    /// which lets structural deltas map candidate edits to draw indices.
+    blends: u32,
     bounds: Aabb,
     culling_origin: Option<Vec3>,
 }
@@ -208,6 +225,14 @@ struct CandidateGroup {
 impl PreparedScene {
     pub(crate) fn blended_order(&self) -> &[usize] {
         &self.blend_order
+    }
+
+    /// Whether the latest camera update changed the blended-tail render
+    /// permutation. Native commands must be rebuilt when it is set; the GPU
+    /// tables never are, because the tail keeps its camera-independent
+    /// candidate order.
+    pub(crate) fn blend_order_changed(&self) -> bool {
+        self.blend_order_changed
     }
 
     /// Exact logical indices needing GPU resident record refresh. Available
@@ -220,11 +245,18 @@ impl PreparedScene {
         self.structural_delta.as_ref()
     }
 
+    /// Whether the last full publication proved the camera-independent
+    /// opaque-prefix order that structural deltas require.
+    pub(crate) fn resident_prefix_order_proven(&self) -> bool {
+        self.resident_prefix_order
+    }
+
     /// Native Quad batching can permute opaque draws away from the candidate
     /// order. Such a scene must not issue logical Candidate indices directly
     /// as GPU Draw Slot indices until the next full camera rebuild.
     pub(crate) fn invalidate_resident_candidate_order(&mut self) {
         self.opaque_resident_order = false;
+        self.resident_prefix_order = false;
         self.resident_delta_draws = None;
         self.structural_delta = None;
     }
@@ -375,6 +407,7 @@ impl PreparedScene {
         self.gpu_candidates_dirty |= changed;
         if changed {
             self.opaque_resident_order = false;
+            self.resident_prefix_order = false;
             self.resident_delta_draws = None;
             self.structural_delta = None;
         }
@@ -431,6 +464,8 @@ impl PreparedScene {
         self.blend_positions.clear();
         self.gpu_candidates_dirty = true;
         self.opaque_resident_order = false;
+        self.resident_prefix_order = false;
+        self.blend_order_changed = false;
         self.resident_delta_draws = None;
         self.structural_delta = None;
         self.candidate_groups.clear();
@@ -525,6 +560,10 @@ impl PreparedScene {
                     self.candidate_groups.push(CandidateGroup {
                         start: group_start,
                         end: self.candidates.len(),
+                        blends: self.candidates[group_start..]
+                            .iter()
+                            .filter(|draw| draw.material.alpha_mode == AlphaMode::Blend)
+                            .count() as u32,
                         bounds: bounds.transformed(world),
                         culling_origin: node
                             .cull_by_origin
@@ -548,10 +587,10 @@ impl PreparedScene {
 
     /// Culls the retained draws for one camera and rebuilds the ordered draw list.
     fn apply_camera(&mut self, camera: Camera, aspect: f32) -> Result<(), CameraError> {
+        self.blend_order_changed = false;
         // A structural delta is valid only against the camera used by the
         // previous resident mapping; a camera change can reorder transparency.
-        let structural_camera_stable =
-            self.camera == Some(camera) && self.aspect == Some(aspect);
+        let structural_camera_stable = self.camera == Some(camera) && self.aspect == Some(aspect);
         let view_projection = camera.view_projection(aspect)?;
         let view_direction = (camera.target - camera.eye)
             .normalized()
@@ -561,7 +600,7 @@ impl PreparedScene {
             // accidentally replay an already-committed structural delta.
             // Fixed-layout dirty Draw rows remain available to this frame.
             self.structural_delta = None;
-            self.sort_blended_draws(camera, view_direction);
+            self.refresh_blend_order(camera, view_direction, false);
             self.view_projection = view_projection;
             self.camera = Some(camera);
             self.aspect = Some(aspect);
@@ -585,9 +624,13 @@ impl PreparedScene {
                 }
             }
         }
+        // A GPU-culled fast path may only reuse draws whose tail already
+        // keeps the camera-independent candidate order; a publication from
+        // the CPU path (or a culling-mode switch) depth-sorted it instead.
         if self.next_visible_candidates == self.visible_candidates
             && self.draws.len() == self.visible_candidates.len()
             && self.structural_delta.is_none()
+            && (!self.gpu_culling || self.resident_prefix_order)
         {
             for draw in &mut self.draws {
                 if self.gpu_culling && draw.material.alpha_mode != AlphaMode::Blend {
@@ -596,11 +639,7 @@ impl PreparedScene {
                 let center = (draw.bounds.min + draw.bounds.max) * 0.5;
                 draw.view_depth = (center - camera.eye).dot(view_direction);
             }
-            let blended_start = self
-                .draws
-                .partition_point(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend);
-            self.draws[blended_start..]
-                .sort_by(|left, right| right.view_depth.total_cmp(&left.view_depth));
+            self.refresh_blend_order(camera, view_direction, !self.gpu_culling);
         } else {
             self.draws.clear();
             if self.gpu_culling {
@@ -609,14 +648,16 @@ impl PreparedScene {
                 // preserve the native opaque candidate order without sorting
                 // 100K+ records or computing per-opaque CPU view depths.
                 self.draws.extend(
-                    self.next_visible_candidates.iter()
+                    self.next_visible_candidates
+                        .iter()
                         .map(|&index| &self.candidates[index])
                         .filter(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend)
                         .cloned(),
                 );
                 let blended_start = self.draws.len();
                 self.draws.extend(
-                    self.next_visible_candidates.iter()
+                    self.next_visible_candidates
+                        .iter()
                         .map(|&index| &self.candidates[index])
                         .filter(|draw| draw.material.alpha_mode == crate::AlphaMode::Blend)
                         .map(|draw| {
@@ -627,20 +668,21 @@ impl PreparedScene {
                             }
                         }),
                 );
-                // Only the transparent tail needs a CPU back-to-front order.
-                self.draws[blended_start..].sort_by(|left, right| {
-                    right.view_depth.total_cmp(&left.view_depth)
-                });
+                // Only the transparent tail needs an ordering pass, and it is
+                // Section-clustered (JE semantics): per-draw depth order would
+                // reshuffle committed rows on every camera move.
+                self.refresh_blend_order(camera, view_direction, false);
             } else {
                 // CPU culling keeps the original material/mesh order.
-                self.draws.extend(self.next_visible_candidates.iter().map(|&index| {
-                    let draw = &self.candidates[index];
-                    let center = (draw.bounds.min + draw.bounds.max) * 0.5;
-                    PreparedDraw {
-                        view_depth: (center - camera.eye).dot(view_direction),
-                        ..draw.clone()
-                    }
-                }));
+                self.draws
+                    .extend(self.next_visible_candidates.iter().map(|&index| {
+                        let draw = &self.candidates[index];
+                        let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+                        PreparedDraw {
+                            view_depth: (center - camera.eye).dot(view_direction),
+                            ..draw.clone()
+                        }
+                    }));
                 self.draws.sort_by(|left, right| {
                     let left_blended = left.material.alpha_mode == crate::AlphaMode::Blend;
                     let right_blended = right.material.alpha_mode == crate::AlphaMode::Blend;
@@ -648,7 +690,10 @@ impl PreparedScene {
                         (false, true) => Ordering::Less,
                         (true, false) => Ordering::Greater,
                         (true, true) => right.view_depth.total_cmp(&left.view_depth),
-                        (false, false) => left.material.id().cmp(&right.material.id())
+                        (false, false) => left
+                            .material
+                            .id()
+                            .cmp(&right.material.id())
                             .then_with(|| left.mesh.id().cmp(&right.mesh.id())),
                     }
                 });
@@ -662,20 +707,38 @@ impl PreparedScene {
         self.camera = Some(camera);
         self.aspect = Some(aspect);
         self.gpu_candidates_dirty = false;
-        // Full GPU culling emits every candidate, and an entirely opaque
-        // scene preserves their identity/order. Compute this only on an
-        // already-full publication; sparse deltas keep the proven state.
-        self.opaque_resident_order = self.gpu_culling
-            && self.draws.len() == self.candidates.len()
-            && self.draws.iter().all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
+        // Full GPU culling emits every candidate. The opaque prefix is the
+        // candidates' opaque draws in candidate order even when a blended
+        // tail exists, so a full publication always proves prefix identity;
+        // an entirely opaque scene additionally proves whole-list identity.
+        // Both proofs are computed only on an already-full publication;
+        // sparse deltas keep the previously proven state.
+        let resident_order = self.gpu_culling && self.draws.len() == self.candidates.len();
+        self.resident_prefix_order = resident_order;
+        self.opaque_resident_order = resident_order
+            && self
+                .draws
+                .iter()
+                .all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
         self.resident_delta_draws = None;
-        if !structural_camera_stable || !self.opaque_resident_order {
+        // The draw-space structural delta covers the depth-sorted blend tail
+        // with its whole-tail edit, so a camera move cannot invalidate it
+        // while the opaque prefix keeps candidate order. Only a broken
+        // resident order (CPU culling, native quads) can.
+        if !structural_camera_stable && !resident_order {
             self.structural_delta = None;
         }
         Ok(())
     }
 
-    fn sort_blended_draws(&mut self, camera: Camera, direction: Vec3) {
+    /// Refreshes the blended-tail render permutation without moving draws.
+    ///
+    /// The tail keeps its camera-independent candidate order in the draw
+    /// tables and GPU slots; back-to-front ordering exists only in
+    /// `blend_order`, which native command emission follows. Recomputing the
+    /// permutation never invalidates resident rows, so a translating camera
+    /// stops triggering full cull-table replans.
+    fn refresh_blend_order(&mut self, camera: Camera, direction: Vec3, reorder_draws: bool) {
         let start = self
             .draws
             .partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
@@ -683,24 +746,48 @@ impl PreparedScene {
             let center = (draw.bounds.min + draw.bounds.max) * 0.5;
             draw.view_depth = (center - camera.eye).dot(direction);
         }
-        let draws = &mut self.draws[start..];
-        self.blend_order.clear();
-        self.blend_order.extend(0..draws.len());
-        // Small camera changes often preserve depth order. Keep the identity
-        // mapping without sorting or touching the draw permutation workspace.
-        if draws
-            .windows(2)
-            .all(|pair| pair[0].view_depth.total_cmp(&pair[1].view_depth) != Ordering::Less)
+        // JE-style Section clustering: Sections order by distance and keep
+        // their candidate order internally. Per-draw depth sorting would
+        // reshuffle logical rows on every camera move.
+        let mut keys = std::mem::take(&mut self.blend_section_keys);
+        keys.clear();
         {
-            return;
+            let groups = &self.candidate_groups;
+            let group_of = &self.candidate_group_index;
+            for draw in &self.draws[start..] {
+                keys.push(
+                    group_of
+                        .get(&draw.node)
+                        .and_then(|&index| groups.get(index))
+                        .map(|group| {
+                            let center = (group.bounds.min + group.bounds.max) * 0.5;
+                            (center - camera.eye).dot(direction)
+                        })
+                        .unwrap_or(f32::INFINITY),
+                );
+            }
         }
-        self.blend_order.sort_unstable_by(|&left, &right| {
-            draws[right]
-                .view_depth
-                .total_cmp(&draws[left].view_depth)
-                .then(left.cmp(&right))
-        });
-        apply_order(draws, &self.blend_order, &mut self.blend_positions);
+        let previous = std::mem::take(&mut self.blend_order);
+        let mut next = previous.clone();
+        next.clear();
+        next.extend(0..keys.len());
+        let ordered = keys
+            .windows(2)
+            .all(|pair| pair[0].total_cmp(&pair[1]) != Ordering::Less);
+        if !ordered {
+            next.sort_unstable_by(|&left, &right| {
+                keys[right].total_cmp(&keys[left]).then(left.cmp(&right))
+            });
+        }
+        self.blend_order_changed = next != previous;
+        if reorder_draws {
+            // The CPU-culling path renders native commands in draws order, so
+            // the back-to-front permutation must materialize in the draw list
+            // itself; apply_order normalizes the permutation to identity.
+            apply_order(&mut self.draws[start..], &next, &mut self.blend_positions);
+        }
+        self.blend_order = next;
+        self.blend_section_keys = keys;
     }
 
     /// Releases retained traversal and output capacity after a large scene is no longer needed.
@@ -716,6 +803,7 @@ impl PreparedScene {
         self.next_visible_candidates.shrink_to_fit();
         self.blend_order.shrink_to_fit();
         self.blend_positions.shrink_to_fit();
+        self.blend_section_keys.shrink_to_fit();
     }
 }
 
@@ -895,9 +983,8 @@ mod tests {
 
     #[test]
     fn gpu_streaming_stably_partitions_opaque_and_sorts_only_transparent() {
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let mut scene = Scene::new();
         let opaque = Arc::new(crate::Material::new());
         let mut transparent = crate::Material::new();
@@ -905,17 +992,23 @@ mod tests {
         let transparent = Arc::new(transparent);
         let mesh = mesh();
         for index in 0..48 {
-            let material = if index % 3 == 0 { transparent.clone() } else { opaque.clone() };
-            scene.insert(
-                None,
-                Node::new()
-                    .with_mesh(mesh.clone())
-                    .with_materials([material])
-                    .with_transform(Transform {
-                        translation: Vec3::new((index % 5) as f32, 0., -(index as f32)),
-                        ..Transform::IDENTITY
-                    }),
-            ).unwrap();
+            let material = if index % 3 == 0 {
+                transparent.clone()
+            } else {
+                opaque.clone()
+            };
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh.clone())
+                        .with_materials([material])
+                        .with_transform(Transform {
+                            translation: Vec3::new((index % 5) as f32, 0., -(index as f32)),
+                            ..Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
         }
         let mut prepared = PreparedScene::default();
         prepared.set_gpu_culling(true);
@@ -939,12 +1032,26 @@ mod tests {
             }
         });
         assert_eq!(
-            prepared.draws.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+            prepared
+                .draws
+                .iter()
+                .map(|draw| draw.node)
+                .collect::<Vec<_>>(),
             expected.iter().map(|draw| draw.node).collect::<Vec<_>>(),
         );
-        let start = prepared.draws.partition_point(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend);
-        assert!(prepared.draws[..start].iter().all(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend));
-        assert!(prepared.draws[start..].windows(2).all(|pair| pair[0].view_depth >= pair[1].view_depth));
+        let start = prepared
+            .draws
+            .partition_point(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend);
+        assert!(
+            prepared.draws[..start]
+                .iter()
+                .all(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend)
+        );
+        assert!(
+            prepared.draws[start..]
+                .windows(2)
+                .all(|pair| pair[0].view_depth >= pair[1].view_depth)
+        );
     }
 
     fn mesh() -> Arc<Mesh> {
@@ -1089,6 +1196,49 @@ mod tests {
         let mut prepared = PreparedScene::default();
         prepared.set_gpu_culling(true);
         prepared.update(&scene, front, 1.0).unwrap();
+        // GPU-culled draw rows keep their candidate order on every camera
+        // move; only the blended-tail render permutation follows depth.
+        let draw_nodes = |prepared: &PreparedScene| {
+            prepared
+                .draws
+                .iter()
+                .map(|draw| draw.node)
+                .collect::<Vec<_>>()
+        };
+        let initial = draw_nodes(&prepared);
+        assert_eq!(initial.len(), 5);
+        assert!(
+            prepared.blend_order_changed,
+            "a fresh publication builds commands"
+        );
+        let render_sequence = |prepared: &PreparedScene| {
+            let tail_start = prepared.draws.len() - prepared.blended_order().len();
+            prepared
+                .blended_order()
+                .iter()
+                .map(|&index| prepared.draws[tail_start + index].node)
+                .collect::<Vec<_>>()
+        };
+        let depth_of = |prepared: &PreparedScene, node: crate::NodeId| {
+            prepared
+                .draws
+                .iter()
+                .find(|draw| draw.node == node)
+                .map(|draw| draw.view_depth)
+                .unwrap_or(f32::NEG_INFINITY)
+        };
+        let front_sequence = render_sequence(&prepared);
+        // Back-to-front: farthest Section (z = -6) renders first.
+        assert_eq!(front_sequence.len(), 4);
+        assert!(
+            front_sequence
+                .windows(2)
+                .all(|pair| depth_of(&prepared, pair[0]) >= depth_of(&prepared, pair[1])),
+            "render sequence must be back-to-front by section depth"
+        );
+
+        // A near-identical camera keeps the same Section ranks: rows stay put
+        // and the permutation is unchanged, so commands need no rebuild.
         prepared
             .update_camera(
                 Camera {
@@ -1098,32 +1248,27 @@ mod tests {
                 1.0,
             )
             .unwrap();
-        assert_eq!(prepared.blended_order(), [0, 1, 2, 3]);
-        assert!(prepared.blend_positions.is_empty());
-        let opaque = prepared.draws[0].node;
-        let mut positions = Vec::new();
-        for camera in [back, front, front] {
-            let mut previous = prepared.draws[1..]
-                .iter()
-                .map(|draw| draw.node)
-                .collect::<Vec<_>>();
-            prepared.update_camera(camera, 1.0).unwrap();
-            assert_eq!(prepared.draws[0].node, opaque);
-            apply_order(&mut previous, prepared.blended_order(), &mut positions);
-            assert_eq!(
-                previous,
-                prepared.draws[1..]
-                    .iter()
-                    .map(|draw| draw.node)
-                    .collect::<Vec<_>>()
-            );
-            assert!(
-                prepared.draws[1..]
-                    .windows(2)
-                    .all(|pair| pair[0].view_depth >= pair[1].view_depth)
-            );
-        }
-        assert_eq!(prepared.blended_order(), [0, 1, 2, 3]);
+        assert_eq!(draw_nodes(&prepared), initial);
+        assert!(!prepared.blend_order_changed);
+        assert_eq!(render_sequence(&prepared), front_sequence);
+
+        // The reversed camera flips Section ranks: rows still stay put while
+        // the permutation reverses and flags the command rebuild.
+        prepared.update_camera(back, 1.0).unwrap();
+        assert_eq!(draw_nodes(&prepared), initial);
+        assert!(prepared.blend_order_changed);
+        let back_sequence = render_sequence(&prepared);
+        assert_eq!(back_sequence[0], front_sequence[front_sequence.len() - 1]);
+        assert!(
+            back_sequence
+                .windows(2)
+                .all(|pair| depth_of(&prepared, pair[0]) >= depth_of(&prepared, pair[1]))
+        );
+
+        // Repeating the same camera changes nothing.
+        prepared.update_camera(back, 1.0).unwrap();
+        assert_eq!(draw_nodes(&prepared), initial);
+        assert!(!prepared.blend_order_changed);
     }
 
     #[test]

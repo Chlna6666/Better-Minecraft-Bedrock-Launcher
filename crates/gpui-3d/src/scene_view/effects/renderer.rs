@@ -22,6 +22,8 @@ mod tests;
 pub(in crate::scene_view) struct EffectsRenderer {
     last_frame: Option<Instant>,
     pass: RenderPassId,
+    /// Single-sampled pass for the 1024x1024 shadow map.
+    shadow_pass: RenderPassId,
     hdr: RendererResources,
     surface: RendererResources,
     albedo: RendererResources,
@@ -33,6 +35,7 @@ pub(in crate::scene_view) struct EffectsRenderer {
     textures: Option<super::textures::Textures>,
     completed: bool,
     target_extent: Extent2d,
+    msaa_sample_count: u32,
 }
 impl EffectsRenderer {
     pub(in crate::scene_view) fn new(
@@ -49,15 +52,48 @@ impl EffectsRenderer {
         let mut renderers = Vec::<RendererResources>::new();
         let mut compositor = None;
         let result = (|| {
+            // One unified capability query, plus the shader-side ability to read
+            // multisampled depth. Both decide the geometry sample count; the kernel of
+            // 4x MSAA is that every attachment of the pass shares it.
+            let compositor_resources = Compositor::new(device, &context)?;
+            let msaa_sample_count = if device.multisample_capabilities().max_sample_count >= 4
+                && compositor_resources.supports_multisampled_depth()
+            {
+                4
+            } else {
+                1
+            };
+            compositor = Some(compositor_resources);
             let pass = cleanup.record(
                 device.create_render_pass(&RenderPassDescriptor {
                     label: Some("gpui-3d scene attachments".into()),
-                    color_attachment: ColorAttachmentDescriptor {
+                    color_attachments: vec![ColorAttachmentDescriptor {
                         format: Format::Rgba16Float,
-                    },
+                    }],
                     depth_attachment: Some(DepthAttachmentDescriptor {
                         format: Format::Depth32Float,
+
+                        stencil_format: None,
                     }),
+                    sample_count: msaa_sample_count,
+                    resolve_target: None,
+                })?,
+                |d, id| {
+                    let _ = d.destroy_render_pass(id);
+                },
+            );
+            let shadow_pass = cleanup.record(
+                device.create_render_pass(&RenderPassDescriptor {
+                    label: Some("gpui-3d shadow attachments".into()),
+                    color_attachments: vec![ColorAttachmentDescriptor {
+                        format: Format::Rgba16Float,
+                    }],
+                    depth_attachment: Some(DepthAttachmentDescriptor {
+                        format: Format::Depth32Float,
+                        stencil_format: None,
+                    }),
+                    sample_count: 1,
+                    resolve_target: None,
                 })?,
                 |d, id| {
                     let _ = d.destroy_render_pass(id);
@@ -71,7 +107,7 @@ impl EffectsRenderer {
                 PassKind::Shadow,
             ] {
                 let context = if kind == PassKind::Shadow {
-                    local.offscreen(pass, Format::Rgba16Float, Extent2d::new(1024, 1024)?)
+                    local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(1024, 1024)?)
                 } else {
                     local.clone()
                 };
@@ -79,7 +115,6 @@ impl EffectsRenderer {
                     RendererResources::new_pass(device, &context, renderers.first(), kind)?;
                 renderers.push(resource);
             }
-            compositor = Some(Compositor::new(device, &context)?);
             let textures = super::textures::Textures::new(device)?;
             let [hdr, surface, albedo, shadow_resources]: [RendererResources; 4] =
                 std::mem::take(&mut renderers)
@@ -88,6 +123,7 @@ impl EffectsRenderer {
             Ok(Self {
                 last_frame: None,
                 pass,
+                shadow_pass,
                 hdr,
                 surface,
                 albedo,
@@ -101,6 +137,7 @@ impl EffectsRenderer {
                 textures: Some(textures),
                 completed: false,
                 target_extent,
+                msaa_sample_count,
             })
         })();
         if result.is_err() {
@@ -112,6 +149,11 @@ impl EffectsRenderer {
             }
         }
         cleanup.finish(device, result)
+    }
+    /// Sample count chosen for the geometry passes: 4 when the device reports
+    /// multisample support, otherwise 1. Exposed for capability-gating tests.
+    pub(super) fn msaa_sample_count(&self) -> u32 {
+        self.msaa_sample_count
     }
     fn render_scene(
         &mut self,
@@ -133,7 +175,12 @@ impl EffectsRenderer {
         if !self.scenes.contains_key(&view.id) {
             self.scenes.insert(
                 view.id,
-                EffectScene::new(device, context.backend_kind(), extent)?,
+                EffectScene::new(
+                    device,
+                    context.backend_kind(),
+                    extent,
+                    self.msaa_sample_count,
+                )?,
             );
         }
         let completed = std::mem::take(&mut self.completed);
@@ -181,6 +228,7 @@ impl EffectsRenderer {
                 &self.shadow_resources,
                 view,
                 &local,
+                self.shadow_pass,
                 &mut self.passes,
             )
             .context("material shadow pass")?;
@@ -215,9 +263,22 @@ impl EffectsRenderer {
             state.tile_scene = Some(view.scene.clone());
         }
         let key = (light.0, settings.texture_ids());
+        // The screen shader reads whatever depth the geometry passes wrote: the
+        // multisampled copies when MSAA is on, matching its `_ms` shader variant.
+        let multisampled = self.msaa_sample_count > 1 && state.targets.msaa.is_some();
         if state.groups.is_none() || state.group_key != Some(key) {
             let inputs = |frame, color| Inputs {
                 targets: &state.targets,
+                depth: state
+                    .targets
+                    .msaa
+                    .as_ref()
+                    .map_or(state.targets.depth.view, |m| m.depth.view),
+                surface_depth: state
+                    .targets
+                    .msaa
+                    .as_ref()
+                    .map_or(state.targets.surface_depth.view, |m| m.surface_depth.view),
                 uniform: frame,
                 lights: (light.0, light.1),
                 tiles: (state.tiles.buffer, state.tiles.bytes),
@@ -251,11 +312,15 @@ impl EffectsRenderer {
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
             render_pass: self.compositor.post_pass,
-            commands: vec![quad(self.compositor.post_pipeline, groups[0])],
+            commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])],
             color_load_op: LoadOp::Clear(ClearColor::default()),
             depth_attachment: None,
+            resolve_target: None,
         });
-        steps.push(quad(self.compositor.pipeline(device, context)?, groups[1]));
+        steps.push(quad(
+            self.compositor.pipeline(device, context, multisampled)?,
+            groups[1],
+        ));
         Ok(())
     }
 }
@@ -304,6 +369,7 @@ pub(super) fn pass(
     render_pass: RenderPassId,
     target: TextureViewId,
     depth: TextureViewId,
+    resolve_target: Option<TextureViewId>,
     commands: Vec<RenderCommand>,
     clear: bool,
 ) -> RendererExtensionPass {
@@ -319,7 +385,9 @@ pub(super) fn pass(
             } else {
                 LoadOp::Load
             },
+            stencil_load_op: None,
         }),
+        resolve_target,
     }
 }
 fn quad(pipeline: RenderPipelineId, group: BindGroupId) -> RenderCommand {

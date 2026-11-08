@@ -56,7 +56,9 @@ fn mapping_dispatch_ranges(
         || limits.storage_offset_alignment == 0
         || limits.max_storage_binding_bytes == 0
     {
-        return Err(anyhow!("generated mapping storage limits or record alignment are invalid").into());
+        return Err(
+            anyhow!("generated mapping storage limits or record alignment are invalid").into(),
+        );
     }
     let align = limits.storage_offset_alignment;
     let mut a = align;
@@ -64,14 +66,16 @@ fn mapping_dispatch_ranges(
     while b != 0 {
         (a, b) = (b, a % b);
     }
-    let offset_alignment = align.checked_div(a)
+    let offset_alignment = align
+        .checked_div(a)
         .and_then(|value| value.checked_mul(16))
         .ok_or_else(|| anyhow!("generated mapping offset alignment overflow"))?;
     // A new binding must begin at a device-aligned, 16-byte record boundary.
-    let max_window = limits.max_storage_binding_bytes
-        / offset_alignment * offset_alignment;
+    let max_window = limits.max_storage_binding_bytes / offset_alignment * offset_alignment;
     if max_window == 0 {
-        return Err(anyhow!("generated mapping cannot bind a complete aligned record window").into());
+        return Err(
+            anyhow!("generated mapping cannot bind a complete aligned record window").into(),
+        );
     }
     let total = u64::try_from(mapping_bytes)
         .context("generated mapping byte length exceeds address range")?;
@@ -81,7 +85,10 @@ fn mapping_dispatch_ranges(
         let mut start = 0u64;
         while start < total {
             let end = total.min(start + max_window);
-            windows.push(MappingDispatchRange { offset: start, size: end - start });
+            windows.push(MappingDispatchRange {
+                offset: start,
+                size: end - start,
+            });
             start = end;
         }
         return Ok(windows);
@@ -90,7 +97,9 @@ fn mapping_dispatch_ranges(
     // unchanged prefix records in the same alignment unit may be recomputed,
     // but no read crosses outside the live mapping.
     for patch in patches {
-        let end = patch.offset.checked_add(patch.bytes.len() as u64)
+        let end = patch
+            .offset
+            .checked_add(patch.bytes.len() as u64)
             .ok_or_else(|| anyhow!("generated mapping dirty range overflow"))?;
         if end > total || !patch.offset.is_multiple_of(16) || !end.is_multiple_of(16) {
             return Err(anyhow!("generated mapping dirty range is not record aligned").into());
@@ -98,7 +107,10 @@ fn mapping_dispatch_ranges(
         let mut start = patch.offset / offset_alignment * offset_alignment;
         while start < end {
             let stop = end.min(start + max_window);
-            windows.push(MappingDispatchRange { offset: start, size: stop - start });
+            windows.push(MappingDispatchRange {
+                offset: start,
+                size: stop - start,
+            });
             start = stop;
         }
     }
@@ -108,9 +120,7 @@ fn mapping_dispatch_ranges(
         if let Some(last) = merged.last_mut() {
             let end = last.offset + last.size;
             let other_end = range.offset + range.size;
-            if range.offset <= end
-                && other_end.max(end) - last.offset <= max_window
-            {
+            if range.offset <= end && other_end.max(end) - last.offset <= max_window {
                 last.size = other_end.max(end) - last.offset;
                 continue;
             }
@@ -125,7 +135,10 @@ fn mapping_dispatch_ranges(
         let mut start = 0u64;
         while start < total {
             let end = total.min(start + max_window);
-            merged.push(MappingDispatchRange { offset: start, size: end - start });
+            merged.push(MappingDispatchRange {
+                offset: start,
+                size: end - start,
+            });
             start = end;
         }
     }
@@ -139,15 +152,19 @@ fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
     debug_assert!(current.len().is_multiple_of(4));
     // Directly compare groups of four u32 words, with no temporary comparison
     // tables. A bounded number of 16-byte aligned uploads is produced.
-    super::super::uploads::changed_ranges_for_u32_records(
-        previous, current, 4, 12, 2,
-    ).into_iter().map(|range| {
-        let mut bytes = Vec::with_capacity(range.len());
-        for &word in &current[range.start / 4..range.end / 4] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        MappingPatch { offset: range.start as u64, bytes }
-    }).collect()
+    super::super::uploads::changed_ranges_for_u32_records(previous, current, 4, 12, 2)
+        .into_iter()
+        .map(|range| {
+            let mut bytes = Vec::with_capacity(range.len());
+            for &word in &current[range.start / 4..range.end / 4] {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+            MappingPatch {
+                offset: range.start as u64,
+                bytes,
+            }
+        })
+        .collect()
 }
 
 /// The GPU count output is keyed by a stable physical slot under culling.
@@ -183,7 +200,10 @@ fn generated_output_dirty_patches(
         if !seen.insert(key) {
             return mapping_patches(previous, current);
         }
-        if old.get(&key).is_some_and(|prior| prior.as_slice() == record) {
+        if old
+            .get(&key)
+            .is_some_and(|prior| prior.as_slice() == record)
+        {
             continue;
         }
         let offset = index as u64 * 16;
@@ -223,7 +243,8 @@ impl BatchMappingSource {
         };
         let part = generated_part_index(draw.mesh.parts(), draw.part)
             .ok_or_else(|| anyhow!("missing generated material part"))?;
-        let argument_part = generated.argument_base
+        let argument_part = generated
+            .argument_base
             .checked_add(u32::try_from(part).context("generated material index overflow")?)
             .ok_or_else(|| anyhow!("generated argument page index overflow"))?;
         Ok(Some(Self {
@@ -247,7 +268,9 @@ pub(super) fn generated_mapping_target(
     first_instance: usize,
 ) -> gpui::Result<(u32, u32)> {
     if let Some(slots) = physical_slots {
-        let physical = slots.get(first_instance).copied()
+        let physical = slots
+            .get(first_instance)
+            .copied()
             .ok_or_else(|| anyhow!("generated physical slot index outside culling map"))?;
         Ok((physical, 0))
     } else {
@@ -282,12 +305,7 @@ pub(super) fn push_page_record(
             entry.insert((source.source_size, scratch))
         }
     };
-    mapping.extend([
-        source.argument_part,
-        output_slot,
-        first_instance,
-        0,
-    ]);
+    mapping.extend([source.argument_part, output_slot, first_instance, 0]);
     Ok(())
 }
 
@@ -385,8 +403,9 @@ impl SceneResources {
             for old in edit.old.clone() {
                 if let Some(source) = self.spare_generated_batch_sources[old] {
                     let bytes = &self.uploaded_slot_map[old * 4..old * 4 + 4];
-                    let physical = u32::from_le_bytes(bytes.try_into()
-                        .expect("each logical Draw Slot is one u32"));
+                    let physical = u32::from_le_bytes(
+                        bytes.try_into().expect("each logical Draw Slot is one u32"),
+                    );
                     removed.entry(source.buffer).or_default().insert(physical);
                 }
             }
@@ -394,7 +413,10 @@ impl SceneResources {
                 if let Some(source) = self.generated_batch_sources[logical] {
                     let physical = mapping[logical];
                     added.entry(source.buffer).or_default().push([
-                        source.argument_part, physical, 0, 0,
+                        source.argument_part,
+                        physical,
+                        0,
+                        0,
                     ]);
                     new_sizes.insert(source.buffer, source.source_size);
                 }
@@ -412,7 +434,9 @@ impl SceneResources {
                 // A formerly active Page must have a resident mapping.
                 return Ok(false);
             }
-            let size = new_sizes.get(&page).copied()
+            let size = new_sizes
+                .get(&page)
+                .copied()
                 .or_else(|| previous.map(|mapping| mapping.source_size))
                 .ok_or_else(|| anyhow!("generated Page source span is missing"))?;
             let entries = splice_generated_page_entries(
@@ -446,23 +470,29 @@ impl SceneResources {
             let mut fallback = std::mem::take(&mut self.generated_group_scratch);
             fallback.clear();
             let resident_sources = self.generated_batch_sources.len() == self.batches.len();
-            let physical_slots = self.culling.as_ref()
+            let physical_slots = self
+                .culling
+                .as_ref()
                 .map(|culling| culling.committed_slot_layout().1);
             for (index, batch) in self.batches.iter().enumerate() {
                 let source = if resident_sources {
                     self.generated_batch_sources[index]
                 } else {
                     let draw = &self.prepared.draws[batch.first_instance];
-                    let mesh = self.meshes.get(&mesh_key(draw, voxel_shader))
+                    let mesh = self
+                        .meshes
+                        .get(&mesh_key(draw, voxel_shader))
                         .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
                     BatchMappingSource::for_draw(draw, mesh)?
                 };
-                let (slot, first_instance) = generated_mapping_target(
-                    physical_slots, index, batch.first_instance,
-                )?;
+                let (slot, first_instance) =
+                    generated_mapping_target(physical_slots, index, batch.first_instance)?;
                 push_page_record(
-                    &mut fallback, &mut self.generated_mappings,
-                    source, slot, first_instance,
+                    &mut fallback,
+                    &mut self.generated_mappings,
+                    source,
+                    slot,
+                    first_instance,
                 )?;
             }
             fallback
@@ -487,10 +517,9 @@ impl SceneResources {
         // The generated source table is addressed by resident physical slots
         // during GPU culling. Empty/recycled slots may extend past the active
         // dense batch count, so capacity follows the physical high-water mark.
-        let source_slots = self.culling.as_ref().map_or(
-            self.batches.len(),
-            |culling| culling.committed_slot_layout().0,
-        );
+        let source_slots = self.culling.as_ref().map_or(self.batches.len(), |culling| {
+            culling.committed_slot_layout().0
+        });
         let needed = source_slots.max(1).next_power_of_two();
         if self.generated_arguments.is_none_or(|(_, cap)| cap < needed) {
             let buffer = device.create_buffer(&BufferDescriptor {
@@ -572,10 +601,7 @@ impl SceneResources {
             // `output` can change on capacity growth even when the source
             // mapping is bit-for-bit identical. Re-dispatch the kernel but do
             // not re-upload the already resident input buffer in that case.
-            let patches = mapping_patches(
-                &self.generated_mappings[&source].entries,
-                &entries,
-            );
+            let patches = mapping_patches(&self.generated_mappings[&source].entries, &entries);
             let output_changed = self.generated_mappings[&source].output != Some(output);
             // The input mapping is positional, but the computed geometry
             // count is keyed by physical Draw Slot. A Section insertion can
@@ -591,7 +617,9 @@ impl SceneResources {
             // Removing a suffix leaves every surviving GPU argument intact.
             // Commit the shorter mapping without uploading or dispatching it.
             if patches.is_empty() && !output_changed {
-                let mapping = self.generated_mappings.get_mut(&source)
+                let mapping = self
+                    .generated_mappings
+                    .get_mut(&source)
                     .ok_or_else(|| anyhow!("generated mapping disappeared"))?;
                 let old_entries = std::mem::replace(&mut mapping.entries, entries);
                 mapping.scratch_entries = old_entries;
@@ -599,7 +627,10 @@ impl SceneResources {
             }
             let compute_dirty = output_dirty.as_deref().unwrap_or(&patches);
             let dispatch_ranges = mapping_dispatch_ranges(
-                compute_dirty, entries.len() * 4, output_changed, binding_limits,
+                compute_dirty,
+                entries.len() * 4,
+                output_changed,
+                binding_limits,
             )?;
             updates.push(Update {
                 source,
@@ -617,13 +648,16 @@ impl SceneResources {
         let writes = updates
             .iter()
             .flat_map(|update| {
-                update.patches.iter().map(move |patch| gfx_core::BufferWrite {
-                    descriptor: gfx_core::BufferWriteDescriptor {
-                        buffer: update.input,
-                        offset: patch.offset,
-                    },
-                    data: patch.bytes.as_slice(),
-                })
+                update
+                    .patches
+                    .iter()
+                    .map(move |patch| gfx_core::BufferWrite {
+                        descriptor: gfx_core::BufferWriteDescriptor {
+                            buffer: update.input,
+                            offset: patch.offset,
+                        },
+                        data: patch.bytes.as_slice(),
+                    })
             })
             .collect::<Vec<_>>();
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
@@ -634,7 +668,8 @@ impl SceneResources {
             .mesh_draw_shader
             .ok_or_else(|| anyhow!("missing generated draw shader"))?;
         let compute_caps = device.compute_capabilities();
-        let total_dispatches = updates.iter()
+        let total_dispatches = updates
+            .iter()
             .map(|update| update.dispatch_ranges.len())
             .sum::<usize>();
         let mut bindings = Vec::<Vec<ComputeBufferBinding>>::with_capacity(total_dispatches);
@@ -645,12 +680,24 @@ impl SceneResources {
                 // shader's arrayLength() and index are relative to this view,
                 // while map.y targets the unchanged absolute output draw slot.
                 let resources = [
-                    (update.source, 0u64, update.source_size as u64,
-                     ComputeBufferAccess::ReadOnly),
-                    (update.input, range.offset, range.size,
-                     ComputeBufferAccess::ReadOnly),
-                    (output, 0u64, capacity as u64 * 16,
-                     ComputeBufferAccess::ReadWrite),
+                    (
+                        update.source,
+                        0u64,
+                        update.source_size as u64,
+                        ComputeBufferAccess::ReadOnly,
+                    ),
+                    (
+                        update.input,
+                        range.offset,
+                        range.size,
+                        ComputeBufferAccess::ReadOnly,
+                    ),
+                    (
+                        output,
+                        0u64,
+                        capacity as u64 * 16,
+                        ComputeBufferAccess::ReadWrite,
+                    ),
                 ];
                 let mut group = Vec::with_capacity(resources.len());
                 for (slot, (buffer, offset, size, access)) in resources.into_iter().enumerate() {
@@ -672,7 +719,9 @@ impl SceneResources {
                 bindings.push(group);
             }
         }
-        let dispatches = bindings.iter().zip(&grids)
+        let dispatches = bindings
+            .iter()
+            .zip(&grids)
             .map(|(bindings, &workgroups)| ComputeDispatch {
                 shader,
                 bindings,
@@ -687,8 +736,11 @@ impl SceneResources {
         if partial && super::super::renderer::trace_timings() {
             eprintln!(
                 "gpui3d generated_page_delta touched_pages={} changed_pages={} uploaded_bytes={} compute_dispatches={} output_capacity={}",
-                touched_pages, updates.len(), uploaded_bytes,
-                dispatches.len(), capacity,
+                touched_pages,
+                updates.len(),
+                uploaded_bytes,
+                dispatches.len(),
+                capacity,
             );
         }
         for update in updates {
@@ -852,7 +904,10 @@ mod tests {
         );
         assert_eq!(resources.generated_mappings[&source].buffer, input);
         assert!(
-            resources.generated_mappings[&source].scratch_entries.capacity() > 0,
+            resources.generated_mappings[&source]
+                .scratch_entries
+                .capacity()
+                > 0,
             "unchanged generated mapping must retain its staging allocation",
         );
         device.destroy_buffer(output).unwrap();
@@ -873,7 +928,10 @@ mod tests {
 
 #[cfg(test)]
 mod mapping_patch_tests {
-    use super::{mapping_patches, mapping_dispatch_ranges, generated_output_dirty_patches, MappingDispatchRange};
+    use super::{
+        MappingDispatchRange, generated_output_dirty_patches, mapping_dispatch_ranges,
+        mapping_patches,
+    };
     use gfx_core::BufferBindingLimits;
 
     fn limits(alignment: u64, maximum: u64) -> BufferBindingLimits {
@@ -885,38 +943,66 @@ mod mapping_patch_tests {
     }
 
     fn dirty(offset: u64) -> super::MappingPatch {
-        super::MappingPatch { offset, bytes: vec![0; 16] }
+        super::MappingPatch {
+            offset,
+            bytes: vec![0; 16],
+        }
     }
 
     #[test]
     fn sparse_generated_mapping_only_dispatches_device_aligned_dirty_views() {
         let regions = mapping_dispatch_ranges(
-            &[dirty(32), dirty(64_016)], 524_288, false, limits(256, 1 << 20),
-        ).unwrap();
-        assert_eq!(regions, [
-            MappingDispatchRange { offset: 0, size: 48 },
-            MappingDispatchRange { offset: 64_000, size: 32 },
-        ]);
+            &[dirty(32), dirty(64_016)],
+            524_288,
+            false,
+            limits(256, 1 << 20),
+        )
+        .unwrap();
+        assert_eq!(
+            regions,
+            [
+                MappingDispatchRange {
+                    offset: 0,
+                    size: 48
+                },
+                MappingDispatchRange {
+                    offset: 64_000,
+                    size: 32
+                },
+            ]
+        );
         assert!(regions.iter().map(|r| r.size).sum::<u64>() < 256);
     }
 
     #[test]
     fn output_replacement_dispatches_all_records_even_if_mapping_unchanged() {
-        let regions = mapping_dispatch_ranges(
-            &[], 65_536, true, limits(256, 1 << 20),
-        ).unwrap();
-        assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 65_536 }]);
-        assert!(mapping_dispatch_ranges(&[], 65_536, false, limits(256, 1 << 20))
-            .unwrap().is_empty());
+        let regions = mapping_dispatch_ranges(&[], 65_536, true, limits(256, 1 << 20)).unwrap();
+        assert_eq!(
+            regions,
+            [MappingDispatchRange {
+                offset: 0,
+                size: 65_536
+            }]
+        );
+        assert!(
+            mapping_dispatch_ranges(&[], 65_536, false, limits(256, 1 << 20))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn fragmented_changes_fall_back_to_full_compute() {
         let patches = (0..24u64).map(|x| dirty(x * 4096)).collect::<Vec<_>>();
-        let regions = mapping_dispatch_ranges(
-            &patches, 131_072, false, limits(256, 1 << 20),
-        ).unwrap();
-        assert_eq!(regions, [MappingDispatchRange { offset: 0, size: 131_072 }]);
+        let regions =
+            mapping_dispatch_ranges(&patches, 131_072, false, limits(256, 1 << 20)).unwrap();
+        assert_eq!(
+            regions,
+            [MappingDispatchRange {
+                offset: 0,
+                size: 131_072
+            }]
+        );
     }
 
     #[test]
@@ -944,62 +1030,50 @@ mod mapping_patch_tests {
 
     #[test]
     fn structural_page_splice_preserves_survivors_and_recycles_physical_slots() {
-        let original = vec![
-            10, 5, 0, 0,
-            11, 8, 0, 0,
-            12, 13, 0, 0,
-        ];
+        let original = vec![10, 5, 0, 0, 11, 8, 0, 0, 12, 13, 0, 0];
         let removed = std::collections::HashSet::from([8u32]);
-        let unchanged = super::splice_generated_page_entries(
-            &original, &removed, &[],
-        ).unwrap();
+        let unchanged = super::splice_generated_page_entries(&original, &removed, &[]).unwrap();
         assert_eq!(unchanged, [10, 5, 0, 0, 12, 13, 0, 0]);
         // Reuse retired physical slot 8 for a different generated Part.
-        let updated = super::splice_generated_page_entries(
-            &original, &removed, &[[27, 8, 0, 0]],
-        ).unwrap();
+        let updated =
+            super::splice_generated_page_entries(&original, &removed, &[[27, 8, 0, 0]]).unwrap();
         assert_eq!(updated, [10, 5, 0, 0, 12, 13, 0, 0, 27, 8, 0, 0]);
-        assert_eq!(super::generated_output_dirty_patches(
-            &original, &updated, true,
-        ).len(), 1);
+        assert_eq!(
+            super::generated_output_dirty_patches(&original, &updated, true,).len(),
+            1
+        );
         let replaced = super::splice_generated_page_entries(
-            &original, &std::collections::HashSet::new(), &[[71, 13, 0, 0]],
-        ).unwrap();
+            &original,
+            &std::collections::HashSet::new(),
+            &[[71, 13, 0, 0]],
+        )
+        .unwrap();
         assert_eq!(replaced, [10, 5, 0, 0, 11, 8, 0, 0, 71, 13, 0, 0]);
     }
 
     #[test]
     fn structural_mapping_reorder_uploads_input_without_recomputing_stable_counts() {
-        let previous = vec![
-            17, 5, 0, 0,
-            21, 11, 0, 0,
-            25, 29, 0, 0,
-        ];
-        let reordered = vec![
-            25, 29, 0, 0,
-            17, 5, 0, 0,
-            21, 11, 0, 0,
-        ];
+        let previous = vec![17, 5, 0, 0, 21, 11, 0, 0, 25, 29, 0, 0];
+        let reordered = vec![25, 29, 0, 0, 17, 5, 0, 0, 21, 11, 0, 0];
         assert!(!mapping_patches(&previous, &reordered).is_empty());
         assert!(generated_output_dirty_patches(&previous, &reordered, true).is_empty());
         // A dense Batch-indexed source cannot safely skip this reorder.
         assert!(!generated_output_dirty_patches(&previous, &reordered, false).is_empty());
-        let inserted = vec![
-            25, 29, 0, 0,
-            39, 9, 0, 0,
-            17, 5, 0, 0,
-            21, 11, 0, 0,
-        ];
+        let inserted = vec![25, 29, 0, 0, 39, 9, 0, 0, 17, 5, 0, 0, 21, 11, 0, 0];
         let compute = generated_output_dirty_patches(&previous, &inserted, true);
         assert_eq!(compute.len(), 1);
         assert_eq!(compute[0].offset, 16);
         assert_eq!(compute[0].bytes.len(), 16);
-        let windows = mapping_dispatch_ranges(
-            &compute, inserted.len() * 4, false, limits(256, 1 << 20),
-        ).unwrap();
-        assert_eq!(windows, [
-            MappingDispatchRange { offset: 0, size: 32 },
-        ]);
+        let windows =
+            mapping_dispatch_ranges(&compute, inserted.len() * 4, false, limits(256, 1 << 20))
+                .unwrap();
+        assert_eq!(
+            windows,
+            [MappingDispatchRange {
+                offset: 0,
+                size: 32
+            },]
+        );
     }
 
     #[test]
@@ -1017,10 +1091,7 @@ mod mapping_patch_tests {
         );
         // Standalone/non-culling indirect draws still carry dense offsets
         // and the logical first-instance required by DrawIndirect.
-        assert_eq!(
-            super::generated_mapping_target(None, 2, 2).unwrap(),
-            (2, 2),
-        );
+        assert_eq!(super::generated_mapping_target(None, 2, 2).unwrap(), (2, 2),);
         assert!(super::generated_mapping_target(Some(&slots), 4, 8).is_err());
     }
 
@@ -1052,12 +1123,16 @@ mod mapping_patch_tests {
 
     #[test]
     fn device_storage_binding_limit_splits_full_gpu_mapping() {
-        let regions = mapping_dispatch_ranges(
-            &[], 16_384, true, limits(256, 4096),
-        ).unwrap();
-        assert_eq!(regions, (0..4u64).map(|index|
-            MappingDispatchRange { offset: index * 4096, size: 4096 }
-        ).collect::<Vec<_>>());
+        let regions = mapping_dispatch_ranges(&[], 16_384, true, limits(256, 4096)).unwrap();
+        assert_eq!(
+            regions,
+            (0..4u64)
+                .map(|index| MappingDispatchRange {
+                    offset: index * 4096,
+                    size: 4096
+                })
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1067,21 +1142,24 @@ mod mapping_patch_tests {
         changed[4] ^= 42;
         changed[16_360] ^= 17;
         let patches = mapping_patches(&original, &changed);
-        let regions = mapping_dispatch_ranges(
-            &patches, changed.len() * 4, false, limits(256, 1 << 20),
-        ).unwrap();
-        let covers = |byte: u64| regions.iter().any(|range|
-            byte >= range.offset && byte + 16 <= range.offset + range.size
-        );
+        let regions =
+            mapping_dispatch_ranges(&patches, changed.len() * 4, false, limits(256, 1 << 20))
+                .unwrap();
+        let covers = |byte: u64| {
+            regions
+                .iter()
+                .any(|range| byte >= range.offset && byte + 16 <= range.offset + range.size)
+        };
         assert!(covers(16));
         assert!(covers(65_440));
-        assert!(regions.iter().map(|range| range.size).sum::<u64>()
-            < changed.len() as u64 * 4 / 2);
+        assert!(regions.iter().map(|range| range.size).sum::<u64>() < changed.len() as u64 * 4 / 2);
     }
 
     fn materialize(previous: &[u32], next: &[u32]) -> (Vec<u32>, usize) {
         let patches = mapping_patches(previous, next);
-        let mut bytes = previous.iter().flat_map(|v| v.to_le_bytes())
+        let mut bytes = previous
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<_>>();
         bytes.resize(next.len() * 4, 0);
         for patch in &patches {
@@ -1089,7 +1167,9 @@ mod mapping_patch_tests {
             bytes[from..from + patch.bytes.len()].copy_from_slice(&patch.bytes);
         }
         (
-            bytes.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            bytes
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                 .collect::<Vec<_>>(),
             patches.len(),
         )
@@ -1146,11 +1226,12 @@ mod generated_part_lookup_tests {
                 parts.iter().position(|old| *old == part),
             );
         }
-        let changed_material = MeshPart::new(
-            parts[50].first_index(), parts[50].index_count(), 999,
-        );
+        let changed_material = MeshPart::new(parts[50].first_index(), parts[50].index_count(), 999);
         assert_eq!(generated_part_index(&parts, changed_material), None);
-        assert_eq!(generated_part_index(&parts, MeshPart::new(next_first, 6, 0)), None);
+        assert_eq!(
+            generated_part_index(&parts, MeshPart::new(next_first, 6, 0)),
+            None
+        );
         assert_eq!(generated_part_index(&[], MeshPart::new(0, 6, 0)), None);
     }
 }

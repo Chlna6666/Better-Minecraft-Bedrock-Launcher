@@ -182,6 +182,19 @@ struct PendingGenerated {
     argument_page_bytes: u64,
     vertex_base: u32,
     vertex_binding_bytes: usize,
+    /// Per-Section mesher input writes, deferred so one batch upload covers a
+    /// whole streaming batch instead of one native submit per Section.
+    staging: Vec<StagedBufferWrite>,
+    /// Slots whose buffers belong to the batch scratch pool. The pool owner
+    /// destroys them once after the batch dispatches; per-Section cleanup and
+    /// post-dispatch scratch collection must skip them.
+    shared_scratch: [bool; 6],
+}
+
+/// Owned staging write for one mesher input buffer.
+struct StagedBufferWrite {
+    descriptor: BufferWriteDescriptor,
+    data: Vec<u8>,
 }
 
 impl PendingGenerated {
@@ -251,6 +264,7 @@ fn prepare_generated(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,
     mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
+    mut scratch: Option<&mut crate::scene_view::gpu::BatchScratch>,
 ) -> gpui::Result<PendingGenerated> {
     let source = mesh
         .gpu_voxels()
@@ -372,6 +386,10 @@ fn prepare_generated(
         ),
     ];
     let mut buffers = Vec::new();
+    // Slots served by the batch scratch pool are owned by the batch, not the
+    // Section: cleanup and post-dispatch destruction must skip them.
+    let mut shared_scratch = [false; 6];
+    let mut scratch_offsets = [0u64; 6];
     let mut pooled_allocation = None;
     let mut template_allocation = None;
     let mut template_offset = 0u64;
@@ -429,6 +447,19 @@ fn prepare_generated(
                     argument_page_bytes = capacity;
                 }
                 buffers.push(buffer);
+            } else if slot != 1
+                && slot != 2
+                && slot != 3
+                && let Some(scratch) = scratch.as_deref_mut()
+            {
+                let (buffer, offset) = match slot {
+                    4 => scratch.params(device, size as u64)?,
+                    5 => scratch.jobs(device, size as u64)?,
+                    _ => scratch.cells(device, size as u64)?,
+                };
+                shared_scratch[slot] = true;
+                scratch_offsets[slot] = offset;
+                buffers.push(buffer);
             } else {
                 buffers.push(device.create_buffer(&BufferDescriptor {
                     label: Some("GPU voxel meshing".into()),
@@ -453,16 +484,26 @@ fn prepare_generated(
                 BufferWrite {
                     descriptor: BufferWriteDescriptor {
                         buffer: buffers[slot],
-                        offset: match slot {
-                            1 => template_offset,
-                            3 => argument_offset,
-                            _ => 0,
+                        offset: if shared_scratch[slot] {
+                            scratch_offsets[slot]
+                        } else {
+                            match slot {
+                                1 => template_offset,
+                                3 => argument_offset,
+                                _ => 0,
+                            }
                         },
                     },
                     data: data.as_slice(),
                 }
             });
-        device.write_buffer_batch(&writes)?;
+        let staging = writes
+            .into_iter()
+            .map(|write| StagedBufferWrite {
+                descriptor: write.descriptor,
+                data: write.data.to_vec(),
+            })
+            .collect::<Vec<_>>();
         let bindings = specs
             .iter()
             .enumerate()
@@ -470,11 +511,15 @@ fn prepare_generated(
                 binding: slot as u32,
                 buffer: BufferBinding {
                     buffer: buffers[slot],
-                    offset: match slot {
-                        1 => template_offset,
-                        2 => pooled_offset,
-                        3 => argument_offset,
-                        _ => 0,
+                    offset: if shared_scratch[slot] {
+                        scratch_offsets[slot]
+                    } else {
+                        match slot {
+                            1 => template_offset,
+                            2 => pooled_offset,
+                            3 => argument_offset,
+                            _ => 0,
+                        }
                     },
                     size: *size as u64,
                     stride: None,
@@ -514,13 +559,14 @@ fn prepare_generated(
                 Ok((stage, compute_caps.plan_linear_dispatch_2d(count)?))
             })
             .collect::<gpui::Result<Vec<_>>>()?;
-        Ok::<_, anyhow::Error>((bindings, stage_grids))
+        Ok::<_, anyhow::Error>((bindings, stage_grids, staging))
     })();
-    let (bindings, stages) = match result {
+    let (bindings, stages, staging) = match result {
         Ok(prepared) => prepared,
         Err(error) => {
             for (slot, buffer) in buffers.into_iter().enumerate() {
-                if (slot != 2 || pooled_allocation.is_none())
+                if !shared_scratch[slot]
+                    && (slot != 2 || pooled_allocation.is_none())
                     && (slot != 1 || template_allocation.is_none())
                     && (slot != 3 || argument_allocation.is_none())
                 {
@@ -550,6 +596,8 @@ fn prepare_generated(
         template_bytes: templates.len() as u64,
         vertex_base: (pooled_offset / 16) as u32,
         vertex_binding_bytes: pooled_capacity,
+        staging,
+        shared_scratch,
         allocation: pooled_allocation,
         template_allocation,
         template_offset,
@@ -570,7 +618,7 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, None)
+    create_many_impl(device, meshes, shaders, None, None)
 }
 
 /// Production GPU meshing suballocates output descriptors into shared writable
@@ -584,7 +632,21 @@ pub(super) fn create_many_pooled(
     argument_arena: &mut MeshArena,
     backend: BackendKind,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, Some((arena, template_arena, argument_arena, backend)))
+    // One batch scratch pool serves every Section's cells/params/jobs input
+    // buffers: three native buffer creations per batch instead of per Section.
+    let mut scratch = crate::scene_view::gpu::BatchScratch::new(device.buffer_binding_limits());
+    let result = create_many_impl(
+        device, meshes, shaders,
+        Some((arena, template_arena, argument_arena, backend)),
+        Some(&mut scratch),
+    );
+    match result {
+        Ok(resources) => scratch.destroy(device).map(|_| resources).map_err(anyhow::Error::from),
+        Err(error) => {
+            let _ = scratch.destroy(device);
+            Err(error)
+        }
+    }
 }
 
 fn create_many_impl(
@@ -592,6 +654,7 @@ fn create_many_impl(
     meshes: &[&Mesh],
     shaders: &Shaders,
     mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
+    mut scratch: Option<&mut crate::scene_view::gpu::BatchScratch>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
@@ -604,7 +667,7 @@ fn create_many_impl(
         let pool = arena.as_mut().map(|(faces, templates, arguments, backend)| {
             (&mut **faces, &mut **templates, &mut **arguments, *backend)
         });
-        match prepare_generated(device, mesh, pool) {
+        match prepare_generated(device, mesh, pool, scratch.as_deref_mut()) {
             Ok(mesh) => pending.push(mesh),
             Err(error) => {
                 discard_pending_generated(
@@ -617,6 +680,23 @@ fn create_many_impl(
     let prepare_ms = trace_started
         .map(|start| start.elapsed().as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
+    // One native upload submission covers every Section's mesher inputs;
+    // per-Section write batches would each cost a full command submission.
+    let staging_writes = pending
+        .iter()
+        .flat_map(|mesh| mesh.staging.iter())
+        .map(|write| BufferWrite {
+            descriptor: write.descriptor,
+            data: &write.data,
+        })
+        .collect::<Vec<_>>();
+    if !staging_writes.is_empty() {
+        device.write_buffer_batch(&staging_writes).map_err(anyhow::Error::from)?;
+    }
+    drop(staging_writes);
+    for mesh in &mut pending {
+        mesh.staging = Vec::new();
+    }
     let mut dispatches = Vec::new();
     for mesh in &pending {
         for &(stage, workgroups) in &mesh.stages {
@@ -647,11 +727,15 @@ fn create_many_impl(
     // All compute reads of the source buffers have been ordered ahead of
     // retiring their scratch allocations. Each Section retains only its
     // generated faces, template table and native draw argument buffer.
-    let mut scratch = Vec::with_capacity(pending.len() * 3);
+    let mut owned_scratch = Vec::new();
     for mesh in &pending {
-        scratch.extend([mesh.buffers[0], mesh.buffers[4], mesh.buffers[5]]);
+        for slot in [0usize, 4, 5] {
+            if !mesh.shared_scratch[slot] {
+                owned_scratch.push(mesh.buffers[slot]);
+            }
+        }
     }
-    if let Err(error) = device.destroy_buffer_batch(&scratch) {
+    if let Err(error) = device.destroy_buffer_batch(&owned_scratch) {
         discard_pending_generated(
             device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
         );
@@ -665,7 +749,7 @@ fn create_many_impl(
                 arena.as_ref().map(|(_, _, _, backend)| *backend),
                 meshes.len(),
                 dispatch_count,
-                scratch.len(),
+                owned_scratch.len(),
                 prepare_ms,
                 dispatch_ms,
                 (total_ms - prepare_ms - dispatch_ms).max(0.0),

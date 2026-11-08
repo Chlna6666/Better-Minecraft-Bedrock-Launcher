@@ -184,6 +184,7 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
             usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         },
     )
     .unwrap();
@@ -202,10 +203,14 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
         device,
         &RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         },
     )
     .unwrap();
@@ -222,8 +227,7 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(layout),
-            color_format: Format::Rgba8Unorm,
-            blend_mode: BlendMode::Replace,
+            color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -265,7 +269,7 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
         PresentationDevice::render_to_textures(
             device,
             &[RenderPassCommands {
-                texture_view: view,
+                color_attachments: std::slice::from_ref(&view),
                 render_pass: pass,
                 commands: &[RenderCommand::DrawIndirect(DrawIndirectCommand {
                     pipeline,
@@ -278,7 +282,9 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
                 depth_attachment: None,
                 clear_region: None,
                 viewport: None,
-            }],
+            resolve_target: None,
+
+        }],
         )
         .unwrap();
         let pixels = TextureTransferDevice::read_texture(device, texture)
@@ -348,6 +354,7 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
             usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         },
     )
     .unwrap();
@@ -366,10 +373,14 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
         device,
         &RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         },
     )
     .unwrap();
@@ -423,8 +434,7 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(pipeline_layout),
-            color_format: Format::Rgba8Unorm,
-            blend_mode: BlendMode::Replace,
+            color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -438,7 +448,7 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
     PresentationDevice::render_to_textures(
         device,
         &[RenderPassCommands {
-            texture_view: view,
+            color_attachments: std::slice::from_ref(&view),
             render_pass: pass,
             commands: &[RenderCommand::Draw(DrawCommand {
                 pipeline,
@@ -453,6 +463,8 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
             depth_attachment: None,
             clear_region: None,
             viewport: None,
+            resolve_target: None,
+
         }],
     )
     .unwrap();

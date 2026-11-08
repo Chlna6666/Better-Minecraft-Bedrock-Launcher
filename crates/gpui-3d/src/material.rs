@@ -474,6 +474,42 @@ impl Material {
             && self.occlusion_strength == other.occlusion_strength
     }
 
+    /// Stable content fingerprint with [`Self::render_content_eq`] semantics:
+    /// render-equal materials share a fingerprint, and materials that differ in
+    /// any GPU-visible property almost never collide. Texture identity follows
+    /// the asset key, matching the equality rules above.
+    #[must_use]
+    pub fn content_fingerprint(&self) -> u64 {
+        use crate::fingerprint::FingerprintHasher;
+        use std::hash::Hash;
+        let mut hasher = FingerprintHasher::new();
+        std::mem::discriminant(&self.surface).hash(&mut hasher);
+        for value in self.base_color {
+            hasher.write_u32(value.to_bits());
+        }
+        hasher.write_u32(self.metallic.to_bits());
+        hasher.write_u32(self.roughness.to_bits());
+        for value in self.emissive {
+            hasher.write_u32(value.to_bits());
+        }
+        std::mem::discriminant(&self.alpha_mode).hash(&mut hasher);
+        hasher.write_u32(self.alpha_cutoff.to_bits());
+        std::mem::discriminant(&self.shading_model).hash(&mut hasher);
+        hasher.write_bytes(&[u8::from(self.double_sided)]);
+        std::mem::discriminant(&self.front_face).hash(&mut hasher);
+        for texture in [
+            self.albedo_texture,
+            self.normal_texture,
+            self.occlusion_texture,
+            self.metallic_roughness_texture,
+        ] {
+            hasher.write_u64(texture.map_or(0, |asset| asset.0));
+        }
+        std::mem::discriminant(&self.pbr_texture_layout).hash(&mut hasher);
+        hasher.write_u32(self.occlusion_strength.to_bits());
+        hasher.finish()
+    }
+
     /// Creates a white, non-metallic, medium-roughness material.
     pub fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);

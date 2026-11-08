@@ -55,8 +55,10 @@ impl AssetCounts {
         }
         // A mesh can disappear and be re-added within one atomic scene delta.
         // Only retire IDs absent from the final reference-count snapshot.
-        self.removed_meshes.retain(|id| !self.meshes.contains_key(id));
-        self.removed_textures.retain(|id| !self.textures.contains_key(id));
+        self.removed_meshes
+            .retain(|id| !self.meshes.contains_key(id));
+        self.removed_textures
+            .retain(|id| !self.textures.contains_key(id));
         self.stamp = Some(stamp);
         self.full_rescan || !self.removed_meshes.is_empty() || !self.removed_textures.is_empty()
     }
@@ -117,15 +119,31 @@ mod tests {
         let first = Scene::new();
         let mesh = Arc::new(Mesh::cube());
         let mut counts = AssetCounts::default();
-        assert!(counts.sync(None, &first), "initial residency is conservative");
+        assert!(
+            counts.sync(None, &first),
+            "initial residency is conservative"
+        );
         let mut second = first.fork();
-        second.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
-        assert!(!counts.sync(Some(&first), &second), "adding a section must not retire existing assets");
-        assert!(!counts.sync(Some(&first), &second), "same revision must be a no-op");
+        second
+            .insert(None, Node::new().with_mesh(mesh.clone()))
+            .unwrap();
+        assert!(
+            !counts.sync(Some(&first), &second),
+            "adding a section must not retire existing assets"
+        );
+        assert!(
+            !counts.sync(Some(&first), &second),
+            "same revision must be a no-op"
+        );
         let mut third = second.fork();
         let new_mesh = Arc::new(Mesh::cube());
-        third.insert(None, Node::new().with_mesh(new_mesh.clone())).unwrap();
-        assert!(!counts.sync(Some(&second), &third), "adding another mesh is monotonic");
+        third
+            .insert(None, Node::new().with_mesh(new_mesh.clone()))
+            .unwrap();
+        assert!(
+            !counts.sync(Some(&second), &third),
+            "adding another mesh is monotonic"
+        );
         assert_eq!(counts.meshes.get(&mesh.id()), Some(&1));
         assert_eq!(counts.meshes.get(&new_mesh.id()), Some(&1));
     }
@@ -134,17 +152,27 @@ mod tests {
     fn removing_a_last_reference_requests_retirement() {
         let mesh = Arc::new(Mesh::cube());
         let mut scene = Scene::new();
-        let a = scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
-        let b = scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
+        let a = scene
+            .insert(None, Node::new().with_mesh(mesh.clone()))
+            .unwrap();
+        let b = scene
+            .insert(None, Node::new().with_mesh(mesh.clone()))
+            .unwrap();
         let mut counts = AssetCounts::default();
         assert!(counts.sync(None, &scene));
         let mut next = scene.fork();
         next.remove(a).unwrap();
-        assert!(!counts.sync(Some(&scene), &next), "one shared mesh reference remains");
+        assert!(
+            !counts.sync(Some(&scene), &next),
+            "one shared mesh reference remains"
+        );
         assert_eq!(counts.meshes.get(&mesh.id()), Some(&1));
         let mut last = next.fork();
         last.remove(b).unwrap();
-        assert!(counts.sync(Some(&next), &last), "last reference must trigger cleanup");
+        assert!(
+            counts.sync(Some(&next), &last),
+            "last reference must trigger cleanup"
+        );
         assert!(counts.meshes.is_empty());
     }
 
@@ -152,7 +180,9 @@ mod tests {
     fn atomic_replacement_does_not_retire_readded_shared_mesh() {
         let mesh = Arc::new(Mesh::cube());
         let mut before = Scene::new();
-        let id = before.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
+        let id = before
+            .insert(None, Node::new().with_mesh(mesh.clone()))
+            .unwrap();
         let mut counts = AssetCounts::default();
         assert!(counts.sync(None, &before));
         let mut next = before.fork();
@@ -168,8 +198,12 @@ mod tests {
         let one = Arc::new(Mesh::cube());
         let two = Arc::new(Mesh::cube());
         let mut scene = Scene::new();
-        let old = scene.insert(None, Node::new().with_mesh(one.clone())).unwrap();
-        let stay = scene.insert(None, Node::new().with_mesh(two.clone())).unwrap();
+        let old = scene
+            .insert(None, Node::new().with_mesh(one.clone()))
+            .unwrap();
+        let stay = scene
+            .insert(None, Node::new().with_mesh(two.clone()))
+            .unwrap();
         let mut counts = AssetCounts::default();
         assert!(counts.sync(None, &scene));
         let mut next = scene.fork();
@@ -193,12 +227,21 @@ mod tests {
         assert!(counts.sync(Some(&before), &before));
         let mut next = before.fork();
         next.node_mut(id).unwrap().mesh = Some(b.clone());
-        assert!(counts.sync(Some(&before), &next), "mesh replacement loses one active reference");
-        assert!(!counts.sync(Some(&before), &next), "retry does not invalidate again");
+        assert!(
+            counts.sync(Some(&before), &next),
+            "mesh replacement loses one active reference"
+        );
+        assert!(
+            !counts.sync(Some(&before), &next),
+            "retry does not invalidate again"
+        );
         assert_eq!(counts.meshes.get(&b.id()), Some(&1));
         assert!(!counts.meshes.contains_key(&a.id()));
         let alternative = before.fork();
-        assert!(counts.sync(Some(&before), &alternative), "diverging history forces full validation");
+        assert!(
+            counts.sync(Some(&before), &alternative),
+            "diverging history forces full validation"
+        );
         assert_eq!(counts.meshes.get(&a.id()), Some(&1));
         assert!(!counts.meshes.contains_key(&b.id()));
         let mut empty = alternative.fork();

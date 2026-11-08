@@ -8,6 +8,11 @@ use crate::scene_view::gpu::encode_instance_records;
 mod native_tests;
 
 impl SceneResources {
+    /// Retained for native test coverage of the transparent-reorder helper.
+    /// The production GPU-culling path keeps the blended tail in its
+    /// camera-independent candidate order and renders it through
+    /// `blend_order`, so tables are never permuted for transparency anymore.
+    #[cfg(test)]
     pub(super) fn sync_reordered_blends(&mut self, start: usize) -> gpui::Result<()> {
         let first_batch = self
             .batches

@@ -16,18 +16,23 @@ use materials::{verify_shadow_retry, verify_shadows, verify_sky_transmission};
 
 fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     let extent = Extent2d::new(64, 64).unwrap();
-    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false).unwrap();
-    let depth = Target::create(&mut device, extent, Format::Depth32Float, true).unwrap();
+    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(&mut device, extent, Format::Depth32Float, true, 1).unwrap();
     let pass_id = PipelineDevice::create_render_pass(
         &mut device,
         &RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: Some(DepthAttachmentDescriptor {
                 format: Format::Depth32Float,
+
+                stencil_format: None,
             }),
+
+            sample_count: 1,
+            resolve_target: None,
         },
     )
     .unwrap();
@@ -85,16 +90,18 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         .map(RendererExtensionPass::commands)
         .collect::<Vec<_>>();
     passes.push(RenderPassCommands {
-        texture_view: target.view,
+        color_attachments: std::slice::from_ref(&target.view),
         render_pass: pass_id,
         commands: &steps,
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth.view,
             depth_load_op: LoadOp::Clear(1.),
+            stencil_load_op: None,
         }),
         clear_region: None,
         viewport: None,
+        resolve_target: None,
     });
     PresentationDevice::render_to_textures(&mut device, &passes).unwrap();
     renderer.render_passes_submitted();
@@ -256,16 +263,18 @@ fn queue_draw<D: Device>(
         .map(RendererExtensionPass::commands)
         .collect::<Vec<_>>();
     passes.push(RenderPassCommands {
-        texture_view: target.view,
+        color_attachments: std::slice::from_ref(&target.view),
         render_pass: context.render_pass(),
         commands: &steps,
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth.view,
             depth_load_op: LoadOp::Clear(1.),
+            stencil_load_op: None,
         }),
         clear_region: None,
         viewport: None,
+        resolve_target: None,
     });
     let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
     renderer.render_passes_submitted();

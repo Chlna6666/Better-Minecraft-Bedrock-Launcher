@@ -30,6 +30,7 @@ fn color_target(device: &mut Dx11Device, extent: Extent2d) -> (TextureId, Textur
             usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
+            sample_count: 1,
         },
     )
     .unwrap();
@@ -98,8 +99,10 @@ fn pipelines(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(pipeline_layout),
-            color_format: Format::Rgba8Unorm,
-            blend_mode: BlendMode::PremultipliedAlpha,
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::PremultipliedAlpha,
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -217,13 +220,14 @@ fn render(
     PresentationDevice::render_to_textures(
         device,
         &[RenderPassCommands {
-            texture_view: target.1,
+            color_attachments: std::slice::from_ref(&target.1),
             render_pass: pass,
             commands: &commands,
             color_load_op: LoadOp::Clear(ClearColor::default()),
             depth_attachment: None,
             clear_region: None,
             viewport: None,
+            resolve_target: None,
         }],
     )
     .unwrap();
@@ -242,10 +246,13 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
         &mut device,
         &RenderPassDescriptor {
             label: None,
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: Format::Rgba8Unorm,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
         },
     )
     .unwrap();
@@ -293,7 +300,16 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
         state.sync_reordered_blends(start).unwrap();
         if index == 1 {
             state
-                .sync_draw_resources(&mut device, &renderer, layout, sampler, true, true, false)
+                .sync_draw_resources(
+                    &mut device,
+                    &renderer,
+                    layout,
+                    sampler,
+                    true,
+                    true,
+                    false,
+                    true,
+                )
                 .unwrap();
         }
         let retained = render(&mut device, &mut state, &renderer, cs, pass, target);

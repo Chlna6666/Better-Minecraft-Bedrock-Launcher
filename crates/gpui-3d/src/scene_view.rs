@@ -910,6 +910,7 @@ mod tests {
                 Bounds::default(),
                 gfx_core::Extent2d::new(1, 1).unwrap(),
                 0.0,
+                0,
             )
             .len(),
             FRAME_PARAMS_STRIDE

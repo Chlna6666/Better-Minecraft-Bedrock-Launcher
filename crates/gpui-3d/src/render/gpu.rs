@@ -29,10 +29,10 @@ use gfx_core::{
     AddressMode, BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutId, BindingResource,
     BindingType, BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUsage, ClearColor,
-    ColorAttachmentDescriptor, CompareFunction, DepthAttachment, DepthAttachmentDescriptor,
-    DepthState, Device, DrawCommand, DrawIndexedCommand, Extent2d, FilterMode, Format,
-    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel, Origin2d,
-    PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology, RenderCommand,
+    ColorAttachmentDescriptor, ColorTargetState, CompareFunction, DepthAttachment,
+    DepthAttachmentDescriptor, DepthState, Device, DrawCommand, DrawIndexedCommand, Extent2d,
+    FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel,
+    Origin2d, PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology, RenderCommand,
     RenderPassCommands, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
     RenderPipelineId, SamplerBinding, SamplerDescriptor, SamplerId, ShaderModuleDescriptor,
     ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus, TextureBinding,
@@ -612,7 +612,7 @@ impl GpuState {
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         let pipelines = self.pipelines()?;
         let shadow_pass = RenderPassCommands {
-            texture_view: targets.shadow_color_view,
+            color_attachments: std::slice::from_ref(&targets.shadow_color_view),
             render_pass: pipelines.shadow_pass,
             commands: &shadow_steps,
             color_load_op: LoadOp::Clear(ClearColor {
@@ -625,11 +625,14 @@ impl GpuState {
             depth_attachment: Some(DepthAttachment {
                 target: targets.shadow_depth_view,
                 depth_load_op: LoadOp::Clear(1.0),
+                stencil_load_op: None,
             }),
             viewport: None,
+            resolve_target: None,
+
         };
         let scene_pass = RenderPassCommands {
-            texture_view: targets.scene_color_view,
+            color_attachments: std::slice::from_ref(&targets.scene_color_view),
             render_pass: pipelines.scene_pass,
             commands: &scene_steps,
             color_load_op: LoadOp::Clear(ClearColor {
@@ -642,26 +645,33 @@ impl GpuState {
             depth_attachment: Some(DepthAttachment {
                 target: targets.scene_depth_view,
                 depth_load_op: LoadOp::Clear(1.0),
+                stencil_load_op: None,
             }),
             viewport: None,
+            resolve_target: None,
+
         };
         let bloom_pass = RenderPassCommands {
-            texture_view: targets.bloom_color_view,
+            color_attachments: std::slice::from_ref(&targets.bloom_color_view),
             render_pass: pipelines.bloom_pass,
             commands: &bloom_steps,
             color_load_op: LoadOp::Clear(ClearColor::default()),
             clear_region: None,
             depth_attachment: None,
             viewport: None,
+            resolve_target: None,
+
         };
         let post_pass = RenderPassCommands {
-            texture_view: targets.post_color_view,
+            color_attachments: std::slice::from_ref(&targets.post_color_view),
             render_pass: pipelines.post_pass,
             commands: &post_steps,
             color_load_op: LoadOp::Clear(ClearColor::default()),
             clear_region: None,
             depth_attachment: None,
             viewport: None,
+            resolve_target: None,
+
         };
 
         let mut passes = Vec::with_capacity(4);
@@ -1514,7 +1524,7 @@ fn encode_batch_draws_into(
         let Some(draw) = batch.draws().first() else {
             continue;
         };
-        encode_draw_slot(draw, light_count, bytes).map_err(prepare_error)?;
+        encode_draw_slot(draw, bytes).map_err(prepare_error)?;
     }
     if bytes.len() == start_len {
         bytes.resize(DRAW_SLOT_STRIDE, 0);
@@ -1938,6 +1948,7 @@ fn create_texture<D: Device + ?Sized>(
         usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let mut bytes = 0_u64;
     let mut writes = Vec::with_capacity(asset.mip_level_count() as usize);
@@ -1996,6 +2007,7 @@ fn create_fallback_texture<D: Device + ?Sized>(
         usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     if let Err(error) = device.write_texture(
         TextureWriteDescriptor {
@@ -2102,6 +2114,7 @@ fn create_material_sampler<D: Device + ?Sized>(
         anisotropic: sampling == TextureSampling::Linear,
         address_mode_u: AddressMode::ClampToEdge,
         address_mode_v: AddressMode::ClampToEdge,
+        ..Default::default()
     })?)
 }
 
@@ -2387,38 +2400,56 @@ impl Pipelines {
 
         let shadow_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen shadow pass".into()),
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: SHADOW_COLOR_FORMAT,
-            },
+            }],
             depth_attachment: Some(DepthAttachmentDescriptor {
                 format: DEPTH_FORMAT,
+                stencil_format: None,
             }),
+
+            sample_count: 1,
+            resolve_target: None,
+
         })?;
         scratch.passes.push(shadow_pass);
         let scene_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen scene pass".into()),
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: SCENE_COLOR_FORMAT,
-            },
+            }],
             depth_attachment: Some(DepthAttachmentDescriptor {
                 format: DEPTH_FORMAT,
+                stencil_format: None,
             }),
+
+            sample_count: 1,
+            resolve_target: None,
+
         })?;
         scratch.passes.push(scene_pass);
         let post_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen post pass".into()),
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: POST_COLOR_FORMAT,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         })?;
         scratch.passes.push(post_pass);
         let bloom_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen bloom pass".into()),
-            color_attachment: ColorAttachmentDescriptor {
+            color_attachments: vec![ColorAttachmentDescriptor {
                 format: BLOOM_COLOR_FORMAT,
-            },
+            }],
             depth_attachment: None,
+
+            sample_count: 1,
+            resolve_target: None,
+
         })?;
         scratch.passes.push(bloom_pass);
 
@@ -2445,8 +2476,7 @@ impl Pipelines {
                         vertex_buffers: Vec::new(),
                         render_pass,
                         pipeline_layout: Some(pipeline_layout),
-                        color_format,
-                        blend_mode,
+                        color_targets: vec![ColorTargetState::new(color_format, blend_mode)],
                         primitive_topology: PrimitiveTopology::TriangleList,
                         raster: Default::default(),
                         depth_state,
@@ -2472,6 +2502,8 @@ impl Pipelines {
             Some(DepthState {
                 compare: CompareFunction::Less,
                 write_enabled: true,
+
+                stencil: None,
             }),
         )?;
         scratch.pipelines.push(shadow_pipeline);
@@ -2489,6 +2521,8 @@ impl Pipelines {
             Some(DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: true,
+
+                stencil: None,
             }),
         )?;
         scratch.pipelines.push(opaque_pipeline);
@@ -2506,6 +2540,8 @@ impl Pipelines {
             Some(DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: false,
+
+                stencil: None,
             }),
         )?;
         scratch.pipelines.push(blended_pipeline);
@@ -2551,6 +2587,8 @@ impl Pipelines {
             Some(DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: false,
+
+                stencil: None,
             }),
         )?;
         scratch.pipelines.push(sky_pipeline);
@@ -2565,6 +2603,7 @@ impl Pipelines {
             anisotropic: false,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
+            ..Default::default()
         })?;
         scratch.samplers.push(post_sampler);
         let environment_sampler = device.create_sampler(&SamplerDescriptor {
@@ -2575,6 +2614,7 @@ impl Pipelines {
             anisotropic: false,
             address_mode_u: AddressMode::Repeat,
             address_mode_v: AddressMode::ClampToEdge,
+            ..Default::default()
         })?;
         scratch.samplers.push(environment_sampler);
 
@@ -3044,6 +3084,7 @@ fn create_color_target<D: Device + ?Sized>(
         usage,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} view")),
@@ -3076,6 +3117,7 @@ fn create_depth_target<D: Device + ?Sized>(
         usage: TextureUsage::DEPTH_ATTACHMENT,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} view")),

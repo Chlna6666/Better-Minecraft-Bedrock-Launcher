@@ -65,7 +65,9 @@ impl PreparedScene {
         // bounds), so the result matches a complete scene traversal.
         let fixed_layout = inserted.is_empty()
             && groups.iter().all(|(_, range, id)| {
-                replacements.get(id).is_some_and(|draws| draws.len() == range.len())
+                replacements
+                    .get(id)
+                    .is_some_and(|draws| draws.len() == range.len())
                     && partial.candidate_group_index.contains_key(id)
             });
         if fixed_layout {
@@ -78,19 +80,21 @@ impl PreparedScene {
                 && self.draws.len() == self.candidates.len()
                 && groups.iter().all(|(_, range, id)| {
                     replacements.get(id).is_some_and(|draws| {
-                        self.draws[range.clone()].iter().zip(draws).all(|(old, new)| {
-                            old.node == new.node
-                                && old.mesh.id() == new.mesh.id()
-                                && old.part == new.part
-                                && old.material.id() == new.material.id()
-                                && old.material.alpha_mode != AlphaMode::Blend
-                                && new.material.alpha_mode != AlphaMode::Blend
-                        })
+                        self.draws[range.clone()]
+                            .iter()
+                            .zip(draws)
+                            .all(|(old, new)| {
+                                old.node == new.node
+                                    && old.mesh.id() == new.mesh.id()
+                                    && old.part == new.part
+                                    && old.material.id() == new.material.id()
+                                    && old.material.alpha_mode != AlphaMode::Blend
+                                    && new.material.alpha_mode != AlphaMode::Blend
+                            })
                     })
                 });
-            let mut dirty = stable_gpu_layout.then(|| Vec::with_capacity(
-                groups.iter().map(|(_, range, _)| range.len()).sum(),
-            ));
+            let mut dirty = stable_gpu_layout
+                .then(|| Vec::with_capacity(groups.iter().map(|(_, range, _)| range.len()).sum()));
             self.changed_asset_draws.clear();
             self.changed_asset_draws.extend(partial.candidates);
             for (index, range, id) in groups {
@@ -99,7 +103,8 @@ impl PreparedScene {
                 group.start = range.start;
                 group.end = range.end;
                 self.candidate_groups[index] = group;
-                let replacement = replacements.remove(&id)
+                let replacement = replacements
+                    .remove(&id)
                     .expect("equal-length group must retain its replacement");
                 if let Some(dirty) = &mut dirty {
                     dirty.extend(range.clone());
@@ -118,38 +123,59 @@ impl PreparedScene {
                 self.visible_candidates.clear();
                 self.gpu_candidates_dirty = true;
                 self.opaque_resident_order = false;
+                self.resident_prefix_order = false;
             }
             return Some(changed.len());
         }
-        // New roots are visited first by the full walker. Existing roots without
-        // candidates (e.g. a hidden node becoming visible) can require a full walk.
+        // New roots are visited first by the full walker. Streaming
+        // publications interleave insertions, removals and fused-node
+        // replacements, and removed slots are reused by Scene::insert, so
+        // new roots are not necessarily a contiguous tail of Scene::roots().
+        // Resolve inserted roots by their actual roots order instead of
+        // requiring an uninterrupted reverse prefix.
         let mut prefix = Vec::new();
         let mut next_groups = Vec::with_capacity(self.candidate_groups.len() + inserted.len());
-        for &id in scene.roots().iter().rev() {
-            if !inserted.remove(&id) {
-                break;
-            }
+        let inserted_roots = scene
+            .roots()
+            .iter()
+            .rev()
+            .filter(|id| inserted.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        for id in inserted_roots {
             if let Some(draws) = replacements.remove(&id) {
                 if let Some(group) = candidate_group(&draws, prefix.len()) {
                     next_groups.push(group);
                 }
                 prefix.extend(draws);
+                inserted.remove(&id);
             }
         }
         if !inserted.is_empty() {
             return None;
         }
-        let structural_opaque = self.gpu_culling
-            && self.opaque_resident_order
-            && self.draws.len() == self.candidates.len()
-            && partial.candidates.iter().all(|draw| draw.material.alpha_mode != AlphaMode::Blend);
-        let mut structural_edits = Vec::<StructuralDrawEdit>::with_capacity(groups.len() + 1);
+        // The committed draw list is the previous full publication's
+        // [candidate-opaque prefix, depth-sorted blend tail]. Structural
+        // deltas are therefore expressed in draw space: every candidate
+        // edit maps to its opaque-prefix interval, and one final whole-tail
+        // edit covers blend removals, additions and camera re-sorting.
+        // This keeps deltas valid for blend-heavy worlds and moving cameras.
+        let structural_ready = self.gpu_culling
+            && self.resident_prefix_order
+            && self.draws.len() == self.candidates.len();
+        let is_blended = |draw: &PreparedDraw| draw.material.alpha_mode == AlphaMode::Blend;
+        let prefix_blends = prefix.iter().filter(|draw| is_blended(draw)).count();
+        let prefix_opaques = prefix.len() - prefix_blends;
+        let mut draw_edits = Vec::<StructuralDrawEdit>::with_capacity(groups.len() + 2);
         if !prefix.is_empty() {
-            structural_edits.push(StructuralDrawEdit {
+            draw_edits.push(StructuralDrawEdit {
                 old: 0..0,
-                new: 0..prefix.len(),
+                new: 0..prefix_opaques,
             });
         }
+        // Blends among candidates before the current group on each side.
+        let mut old_blends = 0usize;
+        let mut new_blends = prefix_blends;
         let mut next_start = prefix.len();
         let mut changed_groups = groups.iter().peekable();
         for (index, group) in self.candidate_groups.iter().enumerate() {
@@ -159,22 +185,43 @@ impl PreparedScene {
             {
                 let (_, old_range, id) = changed_groups.next()?;
                 let new_start = next_start;
-                if let Some(draws) = replacements.get(id)
-                    && let Some(next) = candidate_group(draws, next_start)
-                {
-                    next_start = next.end;
-                    next_groups.push(next);
+                let mut replacement_blends = 0usize;
+                if let Some(draws) = replacements.get(id) {
+                    replacement_blends = draws.iter().filter(|draw| is_blended(draw)).count();
+                    if let Some(next) = candidate_group(draws, next_start) {
+                        next_start = next.end;
+                        next_groups.push(next);
+                    }
                 }
-                structural_edits.push(StructuralDrawEdit {
-                    old: old_range.clone(),
-                    new: new_start..next_start,
-                });
+                let old_opaques = old_range.len() - group.blends as usize;
+                let new_opaques = (next_start - new_start) - replacement_blends;
+                if structural_ready && (old_opaques > 0 || new_opaques > 0) {
+                    draw_edits.push(StructuralDrawEdit {
+                        old: (old_range.start - old_blends)
+                            ..(old_range.start - old_blends + old_opaques),
+                        new: (new_start - new_blends)..(new_start - new_blends + new_opaques),
+                    });
+                }
+                old_blends += group.blends as usize;
+                new_blends += replacement_blends;
             } else {
                 let mut next = group.clone();
                 next.end = next_start + group.end - group.start;
                 next.start = next_start;
                 next_start = next.end;
                 next_groups.push(next);
+                old_blends += group.blends as usize;
+                new_blends += group.blends as usize;
+            }
+        }
+        if structural_ready {
+            let old_opaque_len = self.candidates.len() - old_blends;
+            let new_opaque_len = next_start - new_blends;
+            if old_opaque_len < self.draws.len() || new_opaque_len < next_start {
+                draw_edits.push(StructuralDrawEdit {
+                    old: old_opaque_len..self.draws.len(),
+                    new: new_opaque_len..next_start,
+                });
             }
         }
         // Repeated Vec::splice shifts the entire suffix for every changed section.
@@ -219,10 +266,11 @@ impl PreparedScene {
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
         self.opaque_resident_order = false;
-        if structural_opaque && !structural_edits.is_empty() {
+        self.resident_prefix_order = false;
+        if structural_ready && !draw_edits.is_empty() {
             self.structural_delta = Some(StructuralDrawDelta {
                 previous_count: self.draws.len(),
-                edits: structural_edits,
+                edits: draw_edits,
             });
         }
         Some(changed.len())
@@ -232,13 +280,16 @@ impl PreparedScene {
 fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGroup> {
     let first = draws.first()?;
     let mut bounds = first.bounds;
+    let mut blends = u32::from(first.material.alpha_mode == AlphaMode::Blend);
     for draw in &draws[1..] {
         bounds.min = bounds.min.min(draw.bounds.min);
         bounds.max = bounds.max.max(draw.bounds.max);
+        blends += u32::from(draw.material.alpha_mode == AlphaMode::Blend);
     }
     Some(CandidateGroup {
         start,
         end: start + draws.len(),
+        blends,
         bounds,
         culling_origin: first.culling_origin,
     })
@@ -247,18 +298,21 @@ fn candidate_group(draws: &[PreparedDraw], start: usize) -> Option<CandidateGrou
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::Transform;
 
     #[test]
     fn exact_opaque_section_delta_keeps_gpu_logical_slot_indices() {
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let mut scene = Scene::new();
         let mesh = Arc::new(Mesh::cube());
-        let ids = (0..64).map(|_| {
-            scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap()
-        }).collect::<Vec<_>>();
+        let ids = (0..64)
+            .map(|_| {
+                scene
+                    .insert(None, Node::new().with_mesh(mesh.clone()))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
         let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
         assert!(prepared.set_gpu_culling(true));
         prepared.update_camera(camera, 1.).unwrap();
@@ -273,25 +327,39 @@ mod tests {
         );
         let dirty = prepared.resident_delta_draws().unwrap().to_vec();
         assert_eq!(dirty.len(), 2);
-        assert!(dirty.iter().all(|&index| changed.contains(&prepared.draws[index].node)));
+        assert!(
+            dirty
+                .iter()
+                .all(|&index| changed.contains(&prepared.draws[index].node))
+        );
         prepared.update_camera(camera, 1.).unwrap();
         assert_eq!(prepared.resident_delta_draws().unwrap(), dirty.as_slice());
         let full = PreparedScene::new(&next, camera, 1.).unwrap();
         assert_eq!(
-            prepared.draws.iter().map(|draw| (draw.node, draw.bounds, draw.world)).collect::<Vec<_>>(),
-            full.draws.iter().map(|draw| (draw.node, draw.bounds, draw.world)).collect::<Vec<_>>(),
+            prepared
+                .draws
+                .iter()
+                .map(|draw| (draw.node, draw.bounds, draw.world))
+                .collect::<Vec<_>>(),
+            full.draws
+                .iter()
+                .map(|draw| (draw.node, draw.bounds, draw.world))
+                .collect::<Vec<_>>(),
         );
     }
 
     #[test]
     fn unchanged_part_count_updates_only_affected_candidate_storage() {
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let mut scene = Scene::new();
         let mesh = Arc::new(Mesh::cube());
         let ids = (0..256)
-            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .map(|_| {
+                scene
+                    .insert(None, Node::new().with_mesh(mesh.clone()))
+                    .unwrap()
+            })
             .collect::<Vec<_>>();
         let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
         let before = prepared.candidates.as_ptr();
@@ -304,27 +372,37 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            prepared.candidates.as_ptr(), before,
+            prepared.candidates.as_ptr(),
+            before,
             "same-size Section Delta must reuse the existing candidate storage"
         );
         assert_eq!(prepared.candidates[17].node, unaffected.node);
         assert_eq!(prepared.candidates[17].world, unaffected.world);
-        assert_eq!(prepared.candidate_group_index.len(), prepared.candidate_groups.len());
+        assert_eq!(
+            prepared.candidate_group_index.len(),
+            prepared.candidate_groups.len()
+        );
         prepared.update_camera(camera, 1.).unwrap();
         let full = PreparedScene::new(&edited, camera, 1.).unwrap();
         assert_eq!(
-            prepared.candidate_groups.iter()
+            prepared
+                .candidate_groups
+                .iter()
                 .map(|group| (group.start, group.end, group.bounds))
                 .collect::<Vec<_>>(),
-            full.candidate_groups.iter()
+            full.candidate_groups
+                .iter()
                 .map(|group| (group.start, group.end, group.bounds))
                 .collect::<Vec<_>>(),
         );
         assert_eq!(
-            prepared.draws.iter()
+            prepared
+                .draws
+                .iter()
                 .map(|draw| (draw.node, draw.world))
                 .collect::<Vec<_>>(),
-            full.draws.iter()
+            full.draws
+                .iter()
                 .map(|draw| (draw.node, draw.world))
                 .collect::<Vec<_>>(),
         );
@@ -332,13 +410,16 @@ mod tests {
 
     #[test]
     fn many_changed_sections_match_a_full_walk_without_repeated_splicing() {
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 10.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 10.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let mut scene = Scene::new();
         let mesh = Arc::new(Mesh::cube());
         let ids = (0..512)
-            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .map(|_| {
+                scene
+                    .insert(None, Node::new().with_mesh(mesh.clone()))
+                    .unwrap()
+            })
             .collect::<Vec<_>>();
         let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
         let step = 0;
@@ -360,50 +441,75 @@ mod tests {
             prepared.update_camera(camera, 1.).unwrap();
             let full = PreparedScene::new(&next, camera, 1.).unwrap();
             assert_eq!(
-                prepared.candidates.iter().map(|draw| draw.node).collect::<Vec<_>>(),
-                full.candidates.iter().map(|draw| draw.node).collect::<Vec<_>>(),
+                prepared
+                    .candidates
+                    .iter()
+                    .map(|draw| draw.node)
+                    .collect::<Vec<_>>(),
+                full.candidates
+                    .iter()
+                    .map(|draw| draw.node)
+                    .collect::<Vec<_>>(),
             );
             assert_eq!(
-                prepared.candidate_groups.iter()
+                prepared
+                    .candidate_groups
+                    .iter()
                     .map(|group| (group.start, group.end, group.bounds))
                     .collect::<Vec<_>>(),
-                full.candidate_groups.iter()
+                full.candidate_groups
+                    .iter()
                     .map(|group| (group.start, group.end, group.bounds))
                     .collect::<Vec<_>>(),
             );
             assert_eq!(prepared.draws.len(), full.draws.len());
             assert!(prepared.candidate_scratch.capacity() >= full.candidates.len());
-            assert!(prepared.changed_asset_draws.iter().all(|draw| changes.contains(&draw.node)));
+            assert!(
+                prepared
+                    .changed_asset_draws
+                    .iter()
+                    .all(|draw| changes.contains(&draw.node))
+            );
             assert!(prepared.changed_asset_draws.len() < full.candidates.len());
         }
     }
 
     #[test]
     fn candidate_group_index_survives_remove_insert_then_followup_edit() {
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 25.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 25.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let mut scene = Scene::new();
         let mesh = Arc::new(Mesh::cube());
         let ids = (0..128)
-            .map(|_| scene.insert(None, Node::new().with_mesh(mesh.clone())).unwrap())
+            .map(|_| {
+                scene
+                    .insert(None, Node::new().with_mesh(mesh.clone()))
+                    .unwrap()
+            })
             .collect::<Vec<_>>();
         let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
 
         let mut inserted = scene.fork();
         inserted.remove(ids[6]).unwrap();
         inserted.remove(ids[33]).unwrap();
-        inserted.insert(None, Node::new().with_mesh(mesh.clone())).unwrap();
+        inserted
+            .insert(None, Node::new().with_mesh(mesh.clone()))
+            .unwrap();
         let delta = inserted.changed_nodes(&scene).unwrap();
         assert_eq!(
             prepared.update_nodes(&inserted, delta.as_ref(), Mat4::IDENTITY),
             Some(delta.len())
         );
         prepared.update_camera(camera, 1.).unwrap();
-        assert_eq!(prepared.candidate_group_index.len(), prepared.candidate_groups.len());
+        assert_eq!(
+            prepared.candidate_group_index.len(),
+            prepared.candidate_groups.len()
+        );
         for (index, group) in prepared.candidate_groups.iter().enumerate() {
             assert_eq!(
-                prepared.candidate_group_index.get(&prepared.candidates[group.start].node),
+                prepared
+                    .candidate_group_index
+                    .get(&prepared.candidates[group.start].node),
                 Some(&index)
             );
         }
@@ -418,24 +524,31 @@ mod tests {
             Some(delta.len())
         );
         assert_eq!(
-            prepared.candidates.as_ptr(), original_storage,
+            prepared.candidates.as_ptr(),
+            original_storage,
             "non-structural followup must not reconstruct the candidate Vec"
         );
         prepared.update_camera(camera, 1.).unwrap();
         let full = PreparedScene::new(&edited, camera, 1.).unwrap();
         assert_eq!(
-            prepared.candidate_groups.iter()
+            prepared
+                .candidate_groups
+                .iter()
                 .map(|group| (group.start, group.end, group.bounds))
                 .collect::<Vec<_>>(),
-            full.candidate_groups.iter()
+            full.candidate_groups
+                .iter()
                 .map(|group| (group.start, group.end, group.bounds))
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            prepared.draws.iter()
+            prepared
+                .draws
+                .iter()
                 .map(|draw| (draw.node, draw.world))
                 .collect::<Vec<_>>(),
-            full.draws.iter()
+            full.draws
+                .iter()
                 .map(|draw| (draw.node, draw.world))
                 .collect::<Vec<_>>()
         );
@@ -503,5 +616,114 @@ mod tests {
         assert_eq!(scene.node(ids[65]).unwrap().transform.translation.x, 0.);
         assert!(scene.node(ids[3]).is_some());
         assert!(next.fork().changed_nodes(&scene).is_none());
+    }
+
+    #[test]
+    fn blended_section_splice_publishes_draw_space_structural_delta() {
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 30.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
+        let moved_camera =
+            Camera::perspective(Vec3::new(2., 1., 28.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
+        let mut scene = Scene::new();
+        let opaque = Arc::new(crate::Material::new());
+        let mut transparent = crate::Material::new();
+        transparent.alpha_mode = AlphaMode::Blend;
+        let transparent = Arc::new(transparent);
+        let mesh = Arc::new(Mesh::cube());
+        let ids = (0..48)
+            .map(|index| {
+                let material = if index % 4 == 3 {
+                    transparent.clone()
+                } else {
+                    opaque.clone()
+                };
+                scene
+                    .insert(
+                        None,
+                        Node::new()
+                            .with_mesh(mesh.clone())
+                            .with_materials([material])
+                            .with_transform(Transform {
+                                translation: Vec3::new((index % 7) as f32, 0., -(index as f32)),
+                                ..Transform::IDENTITY
+                            }),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut prepared = PreparedScene::new(&scene, camera, 1.).unwrap();
+        assert!(prepared.set_gpu_culling(true));
+        prepared.update_camera(camera, 1.).unwrap();
+        assert!(prepared.resident_prefix_order);
+        assert!(
+            !prepared.opaque_resident_order,
+            "a blended tail must not disable structural deltas"
+        );
+        let previous_draws = prepared.draws.clone();
+        assert!(previous_draws.len() > prepared.candidates.len() / 2);
+
+        let mut next = scene.fork();
+        // A new ocean Section (blended) plus a moved land Section and one
+        // removed Section: insertion, replacement and removal in one splice.
+        next.insert(
+            None,
+            Node::new()
+                .with_mesh(mesh.clone())
+                .with_materials([transparent.clone()]),
+        )
+        .unwrap();
+        next.node_mut(ids[5]).unwrap().transform.translation.x = 5.;
+        next.remove(ids[9]).unwrap();
+        let changed = next.changed_nodes(&scene).unwrap();
+        assert_eq!(
+            prepared.update_nodes(&next, changed.as_ref(), Mat4::IDENTITY),
+            Some(changed.len())
+        );
+        let delta = prepared
+            .structural_draw_delta()
+            .expect("a blended splice must still publish the structural delta");
+        assert_eq!(delta.previous_count, previous_draws.len());
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        for edit in &delta.edits {
+            assert!(edit.old.start >= old_cursor && edit.new.start >= new_cursor);
+            assert_eq!(
+                edit.old.start - old_cursor,
+                edit.new.start - new_cursor,
+                "unchanged opaque gaps must match on both sides"
+            );
+            old_cursor = edit.old.end;
+            new_cursor = edit.new.end;
+        }
+        assert_eq!(old_cursor, previous_draws.len());
+        assert!(
+            delta.edits.last().is_some_and(|edit| {
+                edit.old.end == delta.previous_count
+                    && edit.old.start < edit.old.end
+                    && edit.new.end > edit.new.start
+            }),
+            "the final whole-tail edit covers the depth-sorted blend tail"
+        );
+
+        // A moving camera must not clear the delta: the tail edit already
+        // covers blend re-sorting, and the opaque prefix keeps its order.
+        prepared.update_camera(moved_camera, 1.).unwrap();
+        assert!(prepared.structural_draw_delta().is_some());
+
+        let mut full = PreparedScene::new(&next, moved_camera, 1.).unwrap();
+        full.set_gpu_culling(true);
+        full.update_camera(moved_camera, 1.).unwrap();
+        assert_eq!(prepared.draws.len(), full.draws.len());
+        let spliced = prepared
+            .draws
+            .iter()
+            .map(|draw| (draw.node, draw.world))
+            .collect::<Vec<_>>();
+        let walked = full
+            .draws
+            .iter()
+            .map(|draw| (draw.node, draw.world))
+            .collect::<Vec<_>>();
+        assert_eq!(spliced, walked, "splice must reproduce the full walk order");
     }
 }

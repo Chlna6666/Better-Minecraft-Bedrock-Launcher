@@ -105,6 +105,7 @@ fn descriptor() -> gfx_core::DeviceDescriptor {
         adapter_name: None,
         power_preference: gfx_core::PowerPreference::HighPerformance,
         pipeline_cache_dir: None,
+        tuning: gfx_core::DeviceTuning::default(),
     }
 }
 

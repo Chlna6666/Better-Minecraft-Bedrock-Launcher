@@ -2,9 +2,9 @@ use super::{
     DRAW_PARAMS_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, SceneView,
     culling::{ARGUMENT_STRIDE, CullResources},
     gpu::{
-        DrawBindingResources, MeshArena, MeshResources, PendingMeshUpload, TextureResources,
-        buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set, create_mesh,
-        create_storage_buffer, create_texture, destroy_mesh, destroy_texture, DrawRecordCache,
+        DrawBindingResources, DrawRecordCache, MeshArena, MeshResources, PendingMeshUpload,
+        TextureResources, buffer_memory_location, can_encode_voxel_mesh, create_draw_resource_set,
+        create_mesh, create_storage_buffer, create_texture, destroy_mesh, destroy_texture,
         dx11_streaming_headroom, encode_frame_params, encode_lights_into, grow_capacity,
     },
     projection::FrameProjection,
@@ -25,8 +25,8 @@ use gfx_core::{
 use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 use std::{
-    collections::{HashMap, HashSet},
     cell::RefCell,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -112,6 +112,14 @@ pub(super) struct SceneResources {
     textures: HashMap<TextureAssetId, TextureResources>,
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
+    /// Layout stamp captured by the last full sync_draw_resources pass. The
+    /// O(1) early-out above reuses the resident tables when every stamp input
+    /// is unchanged; None forces the next pass to run.
+    draw_resource_layout: usize,
+    draw_resource_shadow: Option<BufferId>,
+    draw_resource_visible_instances: Option<BufferId>,
+    draw_resource_voxel: bool,
+    draw_resource_sampler: Option<SamplerId>,
     draw_resource_keys: Vec<DrawResourceKey>,
     /// Mesh identity for each binding. Allows positional hits to skip the
     /// resident MeshResources lookup for unchanged streamed sections.
@@ -130,6 +138,9 @@ pub(super) struct SceneResources {
     native_command_sources: Vec<NativeCommandSource>,
     spare_native_command_sources: Vec<NativeCommandSource>,
     draw_addresses: Vec<DrawAddress>,
+    /// Test-only scratch for the retained transparent-reorder helper; the
+    /// GPU-culling path now renders the blended tail through blend_order.
+    #[cfg(test)]
     reorder_positions: Vec<usize>,
     binding_cache: HashMap<DrawResourceKey, BindGroupId>,
     binding_index: binding_index::BindingIndex,
@@ -157,8 +168,8 @@ fn sparse_upload_range_budget(backend: BackendKind, draw_count: usize) -> usize 
 /// invalidate every draw BindGroup at each power-of-two threshold. Bound the
 /// reservation by the active device's reported storage-binding limit.
 fn streaming_light_headroom(required: usize, max_binding_bytes: u64) -> usize {
-    let max_rows = usize::try_from(max_binding_bytes / u64::from(LIGHT_STRIDE))
-        .unwrap_or(usize::MAX);
+    let max_rows =
+        usize::try_from(max_binding_bytes / u64::from(LIGHT_STRIDE)).unwrap_or(usize::MAX);
     if max_rows == 0 {
         return required;
     }
@@ -173,12 +184,12 @@ fn streaming_light_headroom(required: usize, max_binding_bytes: u64) -> usize {
 
 mod assets;
 mod binding_index;
-mod instance_cache;
-mod page_refs;
-pub(in crate::scene_view) mod stable_slots;
 mod generated;
+mod instance_cache;
 mod light_pass;
+mod page_refs;
 mod reorder;
+pub(in crate::scene_view) mod stable_slots;
 
 /// Values that only affect the frame-wide uniform buffer, not the prepared draw list.
 #[derive(Clone, Copy, PartialEq)]
@@ -219,10 +230,25 @@ impl NativeCommandSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DrawMeshKey {
-    Mesh { id: MeshId, generation: u64 },
+    Mesh {
+        id: MeshId,
+        generation: u64,
+    },
     // Each generated draw selects its own header via the Instance table.
     // BindGroups can now be reused by Sections sharing BOTH resident pages.
-    GeneratedPage { faces: BufferId, templates: BufferId },
+    //
+    // ADR 0002 §3 (single bind group + global face-template table) cannot
+    // simply drop these two BufferIds: generated_template/face data is
+    // suballocated into 8 MiB MeshArena pages (185 pages / 1.4 GB in the r64
+    // streaming benchmark), and voxel.wgsl addresses them with *page-local*
+    // base indices. A single bind group would need one buffer covering all
+    // pages (D3D11 storage binding caps ~16 MiB) or a shader-side page-table
+    // lookup. Keep the page identity in the key until cells meshing shrinks
+    // the data enough for a global table.
+    GeneratedPage {
+        faces: BufferId,
+        templates: BufferId,
+    },
     VoxelPage(BufferId),
 }
 
@@ -274,7 +300,7 @@ impl DrawResourceKey {
                     .is_some_and(|mesh| mesh.generation == generation),
                 DrawMeshKey::GeneratedPage { faces, templates } => {
                     voxel_pages.contains(&faces) && voxel_pages.contains(&templates)
-                },
+                }
                 DrawMeshKey::VoxelPage(buffer) => voxel_pages.contains(&buffer),
             }
     }
@@ -439,6 +465,11 @@ impl SceneResources {
             textures: HashMap::new(),
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
+            draw_resource_layout: 0,
+            draw_resource_shadow: None,
+            draw_resource_visible_instances: None,
+            draw_resource_voxel: false,
+            draw_resource_sampler: None,
             draw_resource_keys: Vec::new(),
             draw_resource_sources: Vec::new(),
             generated_batch_sources: Vec::new(),
@@ -449,6 +480,7 @@ impl SceneResources {
             native_command_sources: Vec::new(),
             spare_native_command_sources: Vec::new(),
             draw_addresses: Vec::new(),
+            #[cfg(test)]
             reorder_positions: Vec::new(),
             binding_cache: HashMap::new(),
             binding_index: binding_index::BindingIndex::default(),
@@ -469,6 +501,12 @@ impl SceneResources {
         let trace_started = trace_timings().then(Instant::now);
         let mut camera_ms = 0.0;
         let mut buffer_ms = 0.0;
+        let mut resident_ms = 0.0;
+        let mut structural_ms = 0.0;
+        let mut sbuffers_ms = 0.0;
+        let mut sdres_ms = 0.0;
+        let mut cull_update_ms = 0.0;
+        let mut cull_dispatch_ms = 0.0;
         let mut walk_ms = 0.0;
         let mut assets_ms = 0.0;
         let mut batch_ms = 0.0;
@@ -531,10 +569,11 @@ impl SceneResources {
         self.structural_bindings_spliced = false;
         self.prepared.set_culling_bounds(scene_view.culling_bounds);
         let mut draw_list_changed = draw_state_changed || voxel_shader_changed;
-        let mut reordered_blends = None;
+        let mut blend_order_changed = false;
         let mut reused_resident_slots = false;
         let mut resident_commands_stable = false;
         let mut native_structural_updated = false;
+        let mut nodes_updated = false;
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
             let camera_phase =
@@ -550,19 +589,22 @@ impl SceneResources {
                 })
                 .and_then(|previous| scene_view.scene.changed_nodes(previous));
             let updated = local_changes.and_then(|nodes| {
-                self.prepared
-                    .update_nodes(&scene_view.scene, nodes.as_ref(), scene_view.scene_transform)
+                self.prepared.update_nodes(
+                    &scene_view.scene,
+                    nodes.as_ref(),
+                    scene_view.scene_transform,
+                )
             });
+            nodes_updated = updated.is_some();
             // A successful local update contains the complete new visible leaf set.
             // Unchanged leaves already have resident GPU meshes and textures.
             // Fall back to full scanning if a texture table or shader mode changes.
-            let incremental_asset_sync = updated.is_some()
-                && gpu_culling
-                && !voxel_shader_changed
-                && self
-                    .texture_table
-                    .as_ref()
-                    .is_some_and(|old| Arc::ptr_eq(old, &scene_view.textures));
+            // Streaming deltas add textures almost every frame, so a
+            // table-pointer match would force the O(all draws) validation walk
+            // on every moving frame. The delta draw list validates against the
+            // CURRENT table, and the table prune only drops textures no
+            // resident Section references, so the delta path is safe.
+            let incremental_asset_sync = updated.is_some() && gpu_culling && !voxel_shader_changed;
             if updated.is_some() {
                 self.prepared
                     .update_camera(scene_view.camera, projection.aspect())?;
@@ -624,13 +666,13 @@ impl SceneResources {
                 .prepared
                 .update_camera(scene_view.camera, projection.aspect())?
             {
+                // A GPU-culled camera-only frame never moves draw rows: the
+                // blended tail keeps its candidate order and only the render
+                // permutation (blend_order) changes, which native commands
+                // follow at rebuild time. GPU tables are untouched.
                 draw_list_changed = voxel_shader_changed
                     || if gpu_culling {
-                        self.prepared
-                            .blended_order()
-                            .iter()
-                            .enumerate()
-                            .any(|(index, &previous)| index != previous)
+                        false
                     } else {
                         self.previous_draws.len()
                             != self.prepared.draws.len().saturating_sub(tracked_start)
@@ -641,11 +683,11 @@ impl SceneResources {
                                 .skip(tracked_start)
                                 .map(draw_identity))
                     };
+                if gpu_culling {
+                    blend_order_changed = self.prepared.blend_order_changed();
+                }
                 if draw_list_changed {
-                    if gpu_culling && !voxel_shader_changed && !sampler_changed {
-                        reordered_blends = Some(tracked_start);
-                    }
-                    refresh_culled_assets = reordered_blends.is_none();
+                    refresh_culled_assets = true;
                 }
             }
             drop(camera_phase);
@@ -676,10 +718,7 @@ impl SceneResources {
                 .iter()
                 .all(|&size| size > 0);
         let shadow_created = shadow_enabled && self.shadow.is_none();
-        if shadow_created {
-            reordered_blends = None;
-        }
-        if draw_list_changed && reordered_blends.is_none() {
+        if draw_list_changed {
             let batch_started = trace_timings().then(Instant::now);
             let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
             if gpu_culling {
@@ -699,10 +738,11 @@ impl SceneResources {
                 );
             } else {
                 self.batches.clear();
-                self.batches.extend(self.prepared.draw_batches().map(|batch| DrawBatchRange {
-                    first_instance: batch.first_instance(),
-                    instance_count: batch.draws().len(),
-                }));
+                self.batches
+                    .extend(self.prepared.draw_batches().map(|batch| DrawBatchRange {
+                        first_instance: batch.first_instance(),
+                        instance_count: batch.draws().len(),
+                    }));
             }
             if let Some(started) = batch_started {
                 batch_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -710,15 +750,8 @@ impl SceneResources {
         }
         let resource_phase =
             gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
-        if reordered_blends.is_some() {
-            // The CPU order is already changed. A failed binding remap must rebuild
-            // draw state next frame instead of accepting partially reordered bindings.
-            self.scene = None;
-        }
-        if gpu_culling
-            && reordered_blends.is_none()
-            && (draw_list_changed || self.culling.is_none())
-        {
+        let mut cull_update_started = trace_timings().then(Instant::now);
+        if gpu_culling && (draw_list_changed || self.culling.is_none()) {
             // Both proofs are maintained incrementally: no non-generated
             // resident Mesh and no native Quad permutation. The GPU culling
             // Batch ABI is then [generated=1, count=1, 0, logical_index]
@@ -726,26 +759,49 @@ impl SceneResources {
             let generated_singletons = self.page_refs.only_generated_meshes()
                 && self.batch_workspace.singleton_layout()
                 && self.batches.len() == self.prepared.draws.len();
+            if trace_timings() {
+                eprintln!(
+                    "gpui3d cull_gate draws={} nodes_updated={} delta={} only_generated={} singleton_layout={} batches_eq_draws={} resident_prefix={} structural_committed={}",
+                    self.prepared.draws.len(),
+                    nodes_updated,
+                    self.prepared.structural_draw_delta().is_some(),
+                    self.page_refs.only_generated_meshes(),
+                    self.batch_workspace.singleton_layout(),
+                    self.batches.len() == self.prepared.draws.len(),
+                    self.prepared.resident_prefix_order_proven(),
+                    self.culling
+                        .as_ref()
+                        .is_some_and(CullResources::structural_slots_committed),
+                );
+            }
             if let Some(culling) = &mut self.culling {
                 // Candidate Delta carries exact logical Draw positions when
                 // GPU opaque slot identity is preserved. With only singleton
                 // batches the native Batch and logical->physical tables are
                 // unchanged: patch only the affected resident Bounds rows.
                 // Quad instancing/structural deltas retain the full planner.
-                let delta = self.prepared.resident_delta_draws()
+                let delta = self
+                    .prepared
+                    .resident_delta_draws()
                     .filter(|_| !self.page_refs.has_non_generated_quads());
                 let reused = if let Some(dirty) = delta {
                     culling.update_dirty_opaque(
-                        device, &self.prepared.draws, &self.batches,
-                        Some(&self.meshes), dirty,
+                        device,
+                        &self.prepared.draws,
+                        &self.batches,
+                        Some(&self.meshes),
+                        dirty,
                     )?
                 } else {
                     false
                 };
                 if !reused {
                     culling.update_generated_singletons(
-                        device, &self.prepared.draws, &self.batches,
-                        Some(&self.meshes), generated_singletons,
+                        device,
+                        &self.prepared.draws,
+                        &self.batches,
+                        Some(&self.meshes),
+                        generated_singletons,
                         self.prepared.structural_draw_delta(),
                     )?;
                 }
@@ -765,6 +821,9 @@ impl SceneResources {
             }
         } else if !gpu_culling && let Some(previous) = self.culling.take() {
             previous.destroy(device)?;
+        }
+        if let Some(started) = cull_update_started.take() {
+            cull_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         }
         if !shadow_enabled
             && (draw_state_changed || culling_bounds_changed)
@@ -799,40 +858,67 @@ impl SceneResources {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BufferEncode);
             let bind_group_layout = renderer.bind_group_layout()?;
-            if let Some(start) = reordered_blends {
-                self.sync_reordered_blends(start)?;
-            } else {
+            {
                 // Fixed-layout opaque Candidate Deltas have already updated
                 // only their resident GPU Bounds rows in CullResources. Use
                 // the same physical slots for sparse DrawParams/Instance
                 // uploads, preserving all native and indirect draw addresses.
                 // If the CPU mirrors, capacities or layout cannot be proven
                 // stable, sync_buffers() safely re-plans the entire table.
-                let textures_unchanged = self.texture_table.as_ref().is_some_and(|previous| {
-                    Arc::ptr_eq(previous, &scene_view.textures)
-                });
+                let textures_unchanged = self
+                    .texture_table
+                    .as_ref()
+                    .is_some_and(|previous| Arc::ptr_eq(previous, &scene_view.textures));
+                let stage_started = trace_timings().then(Instant::now);
                 let result = if reused_resident_slots {
                     self.sync_resident_draw_delta(
-                        device, renderer, bind_group_layout, sampler,
-                        sampler_changed, assets_changed, textures_unchanged,
+                        device,
+                        renderer,
+                        bind_group_layout,
+                        sampler,
+                        sampler_changed,
+                        assets_changed,
+                        textures_unchanged,
                     )?
                 } else {
                     None
                 };
+                resident_ms = stage_started
+                    .map(|started| started.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
                 resident_commands_stable = result.unwrap_or(false);
                 if result.is_none() {
-                    let structural_updated = self.culling.as_ref().is_some_and(
-                        CullResources::structural_slots_committed,
-                    ) && self.sync_structural_draw_delta(
-                        device, renderer, bind_group_layout, sampler,
-                        sampler_changed, assets_changed, textures_unchanged,
-                    )?;
+                    let stage_started = trace_timings().then(Instant::now);
+                    let structural_updated = self
+                        .culling
+                        .as_ref()
+                        .is_some_and(CullResources::structural_slots_committed)
+                        && self.sync_structural_draw_delta(
+                            device,
+                            renderer,
+                            bind_group_layout,
+                            sampler,
+                            sampler_changed,
+                            assets_changed,
+                        )?;
+                    structural_ms = stage_started
+                        .map(|started| started.elapsed().as_secs_f64() * 1000.0)
+                        .unwrap_or(0.0);
                     native_structural_updated = structural_updated;
                     if !structural_updated {
+                        let stage_started = trace_timings().then(Instant::now);
                         self.sync_buffers(
-                            device, renderer, bind_group_layout, sampler,
-                            sampler_changed, scene_view.voxel_shader, assets_changed,
+                            device,
+                            renderer,
+                            bind_group_layout,
+                            sampler,
+                            sampler_changed,
+                            scene_view.voxel_shader,
+                            assets_changed,
                         )?;
+                        sbuffers_ms = stage_started
+                            .map(|started| started.elapsed().as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
                     }
                 }
             }
@@ -840,7 +926,8 @@ impl SceneResources {
                 buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
         } else if sampler_changed || shadow_created {
-            self.sync_draw_resources(
+            let stage_started = trace_timings().then(Instant::now);
+            let outcome = self.sync_draw_resources(
                 device,
                 renderer,
                 renderer.bind_group_layout()?,
@@ -848,7 +935,12 @@ impl SceneResources {
                 sampler_changed,
                 scene_view.voxel_shader,
                 false,
-            )?;
+                !assets_changed,
+            );
+            sdres_ms = stage_started
+                .map(|started| started.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
+            outcome?;
         }
         if assets_changed {
             // The common streaming update only adds new section meshes. No
@@ -892,7 +984,14 @@ impl SceneResources {
             }
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
+            destroy_mesh(
+                device,
+                mesh,
+                &mut self.arena,
+                &mut *self.generated_arena.borrow_mut(),
+                &mut *self.template_arena.borrow_mut(),
+                &mut *self.argument_arena.borrow_mut(),
+            )?;
         }
         if gpu_culling {
             if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
@@ -907,6 +1006,7 @@ impl SceneResources {
                 )?;
             }
             if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed {
+                let dispatch_started = trace_timings().then(Instant::now);
                 self.culling
                     .as_mut()
                     .ok_or_else(|| anyhow!("GPU culling resources missing"))?
@@ -920,21 +1020,30 @@ impl SceneResources {
                         scene_view.culling_bounds,
                         self.generated_arguments,
                     )?;
+                if let Some(started) = dispatch_started {
+                    cull_dispatch_ms = started.elapsed().as_secs_f64() * 1000.0;
+                }
             }
         }
         drop(resource_phase);
         // A shading-only frame update changes uniforms but never the CPU
         // command inclusion mask. Avoid checking every resident Draw batch
         // unless the draw layout or visibility volume actually changes.
-        let command_visibility_changed = if reused_resident_slots
-            && !visibility_changed
-            && !culling_bounds_changed
-        {
+        // A canonical all-singleton scene publishes every Section command and
+        // lets the GPU cull own visibility, so the CPU mask is never consumed;
+        // skipping its per-camera refresh also keeps the native command list
+        // stable while the camera moves.
+        let singleton_only = self.generated_singleton_command_count().is_some();
+        let command_visibility_changed = if singleton_only {
+            false
+        } else if reused_resident_slots && !visibility_changed && !culling_bounds_changed {
             // The culling system has validated unchanged physical/layout
             // identities. Recheck CPU-native inclusion only for the handful
             // of dirty singleton draws; avoid a second whole-scene frustum
             // pass for an ordinary fixed-camera Section update.
-            let dirty = self.prepared.resident_delta_draws()
+            let dirty = self
+                .prepared
+                .resident_delta_draws()
                 .map(|indices| indices.to_vec());
             dirty
                 .as_deref()
@@ -947,7 +1056,6 @@ impl SceneResources {
         };
         if native_structural_updated
             && self.structural_bindings_spliced
-            && !camera_changed
             && !culling_bounds_changed
             && !sampler_changed
             && !shadow_created
@@ -962,8 +1070,8 @@ impl SceneResources {
             || shadow_created
             || voxel_shader_changed
             || wire_changed
-            || (shadow_enabled && frame_changed)
             || command_visibility_changed
+            || blend_order_changed
         {
             self.command_revision = self.command_revision.wrapping_add(1);
         }
@@ -981,7 +1089,7 @@ impl SceneResources {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             if total_ms >= 16.0 {
                 eprintln!(
-                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} total_ms={:.2} batches={} merged_instances={}",
+                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} (resident {:.2} structural {:.2} sbuffers {:.2} sdres {:.2}) cull_update={:.2} cull_dispatch={:.2} total_ms={:.2} batches={} merged_instances={}",
                     self.prepared.draws.len(),
                     assets_changed,
                     retirement_scan,
@@ -990,6 +1098,12 @@ impl SceneResources {
                     assets_ms,
                     batch_ms,
                     buffer_ms,
+                    resident_ms,
+                    structural_ms,
+                    sbuffers_ms,
+                    sdres_ms,
+                    cull_update_ms,
+                    cull_dispatch_ms,
                     total_ms,
                     self.batches.len(),
                     self.prepared.draws.len().saturating_sub(self.batches.len()),
@@ -1012,9 +1126,12 @@ impl SceneResources {
             self.batches.iter().map(|batch| {
                 !gpu_culling
                     || batch.instance_count != 1
-                    || prepared.draws.get(batch.first_instance).is_some_and(|draw| {
-                        visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw)
-                    })
+                    || prepared
+                        .draws
+                        .get(batch.first_instance)
+                        .is_some_and(|draw| {
+                            visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw)
+                        })
             }),
         )
     }
@@ -1028,18 +1145,14 @@ impl SceneResources {
         }
         let prepared = &self.prepared;
         let visible = prepared.bounds_visibility();
-        update_dirty_command_visibility(
-            &mut self.command_visibility,
-            dirty,
-            |index| {
-                let batch = self.batches.get(index)?;
-                if batch.instance_count != 1 || batch.first_instance != index {
-                    return None;
-                }
-                let draw = prepared.draws.get(index)?;
-                Some(visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw))
-            },
-        )
+        update_dirty_command_visibility(&mut self.command_visibility, dirty, |index| {
+            let batch = self.batches.get(index)?;
+            if batch.instance_count != 1 || batch.first_instance != index {
+                return None;
+            }
+            let draw = prepared.draws.get(index)?;
+            Some(visible(draw.bounds) && prepared.is_draw_in_culling_bounds(draw))
+        })
     }
 
     /// Uploads the camera, viewport, and extension-bounds values shared by every draw.
@@ -1055,6 +1168,7 @@ impl SceneResources {
             projection.bounds(),
             projection.target_extent(),
             projection.blend_edge_feather(),
+            u32::try_from(self.prepared.lights.len()).unwrap_or(u32::MAX),
         );
         if let Some(fog) = projection.fog() {
             for (destination, value) in bytes[112..].chunks_exact_mut(4).zip(fog.encoded()) {
@@ -1113,7 +1227,8 @@ impl SceneResources {
         sampler_changed: bool,
         textures_unchanged: bool,
     ) -> bool {
-        if sampler_changed || !textures_unchanged
+        if sampler_changed
+            || !textures_unchanged
             || !self.retired_meshes.is_empty()
             || self.generated_pending_groups.is_some()
             || self.draw_resource_sources.len() != self.batches.len()
@@ -1124,7 +1239,10 @@ impl SceneResources {
             return false;
         }
         let shadow = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
-        let visible = self.culling.as_ref().map(|culling| culling.visible_instances);
+        let visible = self
+            .culling
+            .as_ref()
+            .map(|culling| culling.visible_instances);
         dirty.iter().all(|&index| {
             let Some(draw) = self.prepared.draws.get(index) else {
                 return false;
@@ -1142,9 +1260,10 @@ impl SceneResources {
                 && key.normal_id == draw.material.normal_texture
                 && key.occlusion_id == draw.material.occlusion_texture
                 && key.metallic_roughness_id == draw.material.metallic_roughness_texture
-                && self.generated_batch_sources.get(index).is_some_and(|metadata| {
-                    metadata.is_none_or(|source| source.part == draw.part)
-                })
+                && self
+                    .generated_batch_sources
+                    .get(index)
+                    .is_some_and(|metadata| metadata.is_none_or(|source| source.part == draw.part))
         })
     }
 
@@ -1176,7 +1295,11 @@ impl SceneResources {
         defer_binding_cleanup: bool,
         textures_unchanged: bool,
     ) -> gpui::Result<Option<bool>> {
-        let Some(dirty) = self.prepared.resident_delta_draws().map(|indices| indices.to_vec()) else {
+        let Some(dirty) = self
+            .prepared
+            .resident_delta_draws()
+            .map(|indices| indices.to_vec())
+        else {
             return Ok(None);
         };
         let Some(culler) = &self.culling else {
@@ -1199,21 +1322,28 @@ impl SceneResources {
         {
             return Ok(None);
         }
-        let commands_unchanged = self.resident_bindings_unchanged(
-            &dirty, sampler_changed, textures_unchanged,
-        ) && self.resident_command_pipelines_unchanged(&dirty);
+        let commands_unchanged =
+            self.resident_bindings_unchanged(&dirty, sampler_changed, textures_unchanged)
+                && self.resident_command_pipelines_unchanged(&dirty);
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
-            &self.prepared.draws, self.prepared.lights.len(),
-            mapping, &dirty,
-            &self.draw_slot_keys, &self.uploaded_tables[0], &mut scratch,
+            &self.prepared.draws,
+            self.prepared.lights.len(),
+            mapping,
+            &dirty,
+            &self.draw_slot_keys,
+            &self.uploaded_tables[0],
+            &mut scratch,
         );
         self.scratch_packed_draws = scratch;
         let draw_patches = draw_result?;
         let mut scratch = std::mem::take(&mut self.dirty_instance_run);
         let instance_result = self.encode_resident_instance_delta(
-            mapping, &dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
+            mapping,
+            &dirty,
+            &self.instance_slot_keys,
+            &self.uploaded_tables[1],
             &mut scratch,
         );
         self.dirty_instance_run = scratch;
@@ -1248,12 +1378,16 @@ impl SceneResources {
         // A new Mesh generation can change shared Page bindings and GPU Part
         // Counts even when DrawParams bytes remain identical. Keep the same
         // binding/mapping lifecycle as the full sync path.
-        if !self.resident_bindings_unchanged(
-            &dirty, sampler_changed, textures_unchanged,
-        ) {
+        if !self.resident_bindings_unchanged(&dirty, sampler_changed, textures_unchanged) {
             self.sync_draw_resources(
-                device, renderer, bind_group_layout, sampler,
-                sampler_changed, true, defer_binding_cleanup,
+                device,
+                renderer,
+                bind_group_layout,
+                sampler,
+                sampler_changed,
+                true,
+                defer_binding_cleanup,
+                false,
             )?;
             self.sync_generated_draws(device, true)?;
         }
@@ -1276,8 +1410,11 @@ impl SceneResources {
         if let Some(started) = trace_started {
             eprintln!(
                 "gpui3d resident_delta draws={} dirty={} draw_patches={} instance_patches={} uploaded_bytes={} native_commands_stable={} ms={:.2}",
-                self.prepared.draws.len(), dirty.len(),
-                draw_patch_count, instance_patch_count, uploaded_bytes,
+                self.prepared.draws.len(),
+                dirty.len(),
+                draw_patch_count,
+                instance_patch_count,
+                uploaded_bytes,
                 commands_unchanged,
                 started.elapsed().as_secs_f64() * 1000.0,
             );
@@ -1298,7 +1435,6 @@ impl SceneResources {
         sampler: SamplerId,
         sampler_changed: bool,
         defer_binding_cleanup: bool,
-        textures_unchanged: bool,
     ) -> gpui::Result<bool> {
         let Some(delta) = self.prepared.structural_draw_delta() else {
             return Ok(false);
@@ -1310,11 +1446,20 @@ impl SceneResources {
         let count = self.prepared.draws.len();
         let previous_count = delta.previous_count;
         let old_high_water = self.draw_slot_keys.len();
-        let offset = delta.edits.iter().map(|edit| edit.new.start).min().unwrap_or(count);
-        let dirty = delta.edits.iter()
+        let offset = delta
+            .edits
+            .iter()
+            .map(|edit| edit.new.start)
+            .min()
+            .unwrap_or(count);
+        let dirty = delta
+            .edits
+            .iter()
             .flat_map(|edit| edit.new.clone())
             .collect::<Vec<_>>();
-        if high_water == 0 || old_high_water == 0 || mapping.len() != count
+        if high_water == 0
+            || old_high_water == 0
+            || mapping.len() != count
             || high_water < old_high_water
             || self.instance_slot_keys.len() != old_high_water
             || self.uploaded_tables[0].len() != old_high_water * DRAW_PARAMS_STRIDE as usize
@@ -1326,13 +1471,18 @@ impl SceneResources {
             || self.draw_addresses.len() != previous_count
             || self.batches.len() != count
             || offset > count
-            || dirty.len().saturating_mul(4) > count.max(1)
             || !self.page_refs.only_generated_meshes()
             || !self.batch_workspace.singleton_layout()
-            || !textures_unchanged
         {
             return Ok(false);
         }
+        // A streaming publish rebuilds the texture table Arc almost every
+        // frame, but Sections own self-contained bind groups: untouched
+        // groups keep their pinned texture views and new Sections resolve
+        // against the current table by asset id, so a changed table identity
+        // cannot stale them. The draw-ratio guard is likewise gone: the
+        // whole-tail structural edit legitimately dirties every blend row
+        // and patch bytes stay bounded by the table size.
         // Light count and values may affect all material records and bound
         // buffers. A true structural fast path must preserve the exact
         // committed lighting table, otherwise use the full sync.
@@ -1345,15 +1495,22 @@ impl SceneResources {
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
-            &self.prepared.draws, self.prepared.lights.len(),
-            mapping, &dirty,
-            &self.draw_slot_keys, &self.uploaded_tables[0], &mut scratch,
+            &self.prepared.draws,
+            self.prepared.lights.len(),
+            mapping,
+            &dirty,
+            &self.draw_slot_keys,
+            &self.uploaded_tables[0],
+            &mut scratch,
         );
         self.scratch_packed_draws = scratch;
         let draw_patches = draw_result?;
         let mut scratch = std::mem::take(&mut self.dirty_instance_run);
         let instance_result = self.encode_resident_instance_delta(
-            mapping, &dirty, &self.instance_slot_keys, &self.uploaded_tables[1],
+            mapping,
+            &dirty,
+            &self.instance_slot_keys,
+            &self.uploaded_tables[1],
             &mut scratch,
         );
         self.dirty_instance_run = scratch;
@@ -1401,14 +1558,23 @@ impl SceneResources {
         // intervals, resolving Mesh/Material bindings for new Sections only.
         // Generated Page mapping remains a separate GPU compute publication.
         let spliced_bindings = self.sync_structural_draw_resources(
-            device, renderer, bind_group_layout, sampler,
-            textures_unchanged, sampler_changed,
+            device,
+            renderer,
+            bind_group_layout,
+            sampler,
+            sampler_changed,
         )?;
         self.structural_bindings_spliced = spliced_bindings;
         if !spliced_bindings {
             self.sync_draw_resources(
-                device, renderer, bind_group_layout, sampler,
-                sampler_changed, true, defer_binding_cleanup,
+                device,
+                renderer,
+                bind_group_layout,
+                sampler,
+                sampler_changed,
+                true,
+                defer_binding_cleanup,
+                false,
             )?;
         }
         // When the native bindings were copied by structural splice, the
@@ -1421,9 +1587,13 @@ impl SceneResources {
 
         // All dependent GPU operations completed successfully. Extend only
         // the new physical tail; unchanged rows remain byte-identical.
-        let draw_fill = *self.draw_slot_keys.last()
+        let draw_fill = *self
+            .draw_slot_keys
+            .last()
             .ok_or_else(|| anyhow!("missing previous GPU DrawParams snapshot"))?;
-        let instance_fill = *self.instance_slot_keys.last()
+        let instance_fill = *self
+            .instance_slot_keys
+            .last()
             .ok_or_else(|| anyhow!("missing previous GPU Instance snapshot"))?;
         self.draw_slot_keys.resize(high_water, draw_fill);
         self.instance_slot_keys.resize(high_water, instance_fill);
@@ -1460,8 +1630,12 @@ impl SceneResources {
         if let Some(started) = trace_started {
             eprintln!(
                 "gpui3d structural_slot_delta previous={} current={} dirty={} slot_suffix={} uploaded_bytes={} ms={:.2}",
-                previous_count, count, dirty.len(), count - offset,
-                bytes_uploaded, started.elapsed().as_secs_f64() * 1000.0,
+                previous_count,
+                count,
+                dirty.len(),
+                count - offset,
+                bytes_uploaded,
+                started.elapsed().as_secs_f64() * 1000.0,
             );
         }
         Ok(true)
@@ -1489,9 +1663,10 @@ impl SceneResources {
         // A locally planned successor is necessary only when the culler is
         // unavailable, and remains transactional until all GPU writes succeed.
         let culling_layout = if voxel_shader {
-            self.culling.as_ref().filter(|culling| {
-                culling.counts().1 == self.prepared.draws.len()
-            }).map(CullResources::committed_slot_layout)
+            self.culling
+                .as_ref()
+                .filter(|culling| culling.counts().1 == self.prepared.draws.len())
+                .map(CullResources::committed_slot_layout)
         } else {
             None
         };
@@ -1500,9 +1675,11 @@ impl SceneResources {
         } else {
             None
         };
-        let slot_layout = culling_layout.or_else(|| next_slots.as_ref().map(
-            |(slots, mapping)| (slots.high_water(), mapping.as_slice()),
-        ));
+        let slot_layout = culling_layout.or_else(|| {
+            next_slots
+                .as_ref()
+                .map(|(slots, mapping)| (slots.high_water(), mapping.as_slice()))
+        });
         let physical_count = slot_layout
             .map_or(self.prepared.draws.len(), |(high_water, _)| high_water)
             .max(1);
@@ -1579,8 +1756,8 @@ impl SceneResources {
             }
         } else {
             for logical in 0..self.prepared.draws.len() {
-                let index = u32::try_from(logical)
-                    .context("GPUI 3D logical draw index exceeds u32")?;
+                let index =
+                    u32::try_from(logical).context("GPUI 3D logical draw index exceeds u32")?;
                 slot_bytes.extend_from_slice(&index.to_le_bytes());
             }
         }
@@ -1710,7 +1887,11 @@ impl SceneResources {
                 uploads::changed_ranges_for_keys(
                     if replace { &[] } else { &self.draw_slot_keys },
                     &next_draw_keys,
-                    if replace { 0 } else { self.uploaded_tables[i].len() },
+                    if replace {
+                        0
+                    } else {
+                        self.uploaded_tables[i].len()
+                    },
                     stride,
                     upload_range_budget,
                     4,
@@ -1718,16 +1899,28 @@ impl SceneResources {
             } else if i == 1 {
                 // Instance rows already carry bit-exact GPU-visible keys.
                 uploads::changed_ranges_for_keys(
-                    if replace { &[] } else { &self.instance_slot_keys },
+                    if replace {
+                        &[]
+                    } else {
+                        &self.instance_slot_keys
+                    },
                     &next_instance_keys,
-                    if replace { 0 } else { self.uploaded_tables[i].len() },
+                    if replace {
+                        0
+                    } else {
+                        self.uploaded_tables[i].len()
+                    },
                     stride,
                     upload_range_budget,
                     4,
                 )
             } else {
                 uploads::changed_ranges(
-                    if replace { &[] } else { &self.uploaded_tables[i] },
+                    if replace {
+                        &[]
+                    } else {
+                        &self.uploaded_tables[i]
+                    },
                     data,
                     stride,
                     upload_range_budget,
@@ -1748,7 +1941,11 @@ impl SceneResources {
         // Only four bytes per logical draw move when a Section is inserted
         // before another. The 80+144-byte physical records remain resident.
         for range in uploads::changed_ranges(
-            if replace_slot_map { &[] } else { &self.uploaded_slot_map },
+            if replace_slot_map {
+                &[]
+            } else {
+                &self.uploaded_slot_map
+            },
             &slot_bytes,
             4,
             upload_range_budget,
@@ -1764,7 +1961,8 @@ impl SceneResources {
         }
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         let write_count = writes.len();
-        let encoded_bytes = draw_bytes.len() + instance_bytes.len() + light_bytes.len() + slot_bytes.len();
+        let encoded_bytes =
+            draw_bytes.len() + instance_bytes.len() + light_bytes.len() + slot_bytes.len();
         // A failed write or later binding update may leave existing buffers partially changed.
         let mut previous_tables = std::mem::take(&mut self.uploaded_tables);
         let write_result = if writes.is_empty() {
@@ -1810,9 +2008,14 @@ impl SceneResources {
             renderer,
             bind_group_layout,
             sampler,
-            sampler_changed || replace_draw || replace_instances || replace_lights || replace_slot_map,
+            sampler_changed
+                || replace_draw
+                || replace_instances
+                || replace_lights
+                || replace_slot_map,
             voxel_shader,
             defer_binding_cleanup,
+            true,
         ) {
             self.draw_buffer = old_draw;
             self.draw_capacity = old_draw_capacity;
@@ -1904,12 +2107,16 @@ impl SceneResources {
         // physical keys and table extents matched the committed snapshot.
         // Move the proven-good CPU storage after successful GPU updates rather
         // than memcpy'ing every resident row on a logical-only Section reorder.
-        if voxel_shader && !replace_draw && draw_bytes.is_empty()
+        if voxel_shader
+            && !replace_draw
+            && draw_bytes.is_empty()
             && previous_tables[0].len() == physical_count * DRAW_PARAMS_STRIDE as usize
         {
             draw_bytes = std::mem::take(&mut previous_tables[0]);
         }
-        if voxel_shader && !replace_instances && instance_bytes.is_empty()
+        if voxel_shader
+            && !replace_instances
+            && instance_bytes.is_empty()
             && previous_tables[1].len() == physical_count * INSTANCE_STRIDE as usize
         {
             instance_bytes = std::mem::take(&mut previous_tables[1]);
@@ -2011,6 +2218,22 @@ impl SceneResources {
         voxel_shader: bool,
         incremental: bool,
     ) -> gpui::Result<()> {
+        // The face/template/argument pools are shared with the renderer's
+        // completion polling on this thread. A polling borrow alive during
+        // this call used to panic the render-owner thread and tear every
+        // window's renderer down; skip this frame's uploads instead and let
+        // the next prepare retry them.
+        if self.generated_arena.try_borrow().is_err()
+            || self.template_arena.try_borrow().is_err()
+            || self.argument_arena.try_borrow().is_err()
+        {
+            static SKIPPED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let skipped = SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if skipped % 32 == 0 {
+                eprintln!("gpui-3d mesh upload deferred: a shared mesh arena is still borrowed");
+            }
+            return Ok(());
+        }
         let mut pending = Vec::<StagedMesh>::new();
         let mut pending_gpu = Vec::<((MeshId, bool), Arc<Mesh>)>::new();
         let mut pending_ids = HashSet::new();
@@ -2025,34 +2248,50 @@ impl SceneResources {
         for draw in draws {
             let id = mesh_key(draw, voxel_shader);
             let generation = draw.mesh.generation();
-            if self.meshes.get(&id).is_some_and(|mesh| mesh.generation == generation) {
+            if self
+                .meshes
+                .get(&id)
+                .is_some_and(|mesh| mesh.generation == generation)
+            {
                 continue;
             }
             if !pending_ids.insert((id, generation)) {
                 continue;
             }
-            if id.1 && gpu_meshing && let Some(source) = draw.mesh.gpu_voxels() {
+            if id.1
+                && gpu_meshing
+                && let Some(source) = draw.mesh.gpu_voxels()
+            {
                 if self.mesh_shader.is_none() {
                     self.mesh_shader = Some(super::generated::create_shaders(device, backend)?);
                 }
                 // Budget temporary input and worst-case resident output, not
                 // just already-packed CPU geometry upload bytes.
                 pending_bytes = pending_bytes.saturating_add(
-                    source.cells.len().saturating_mul(4)
+                    source
+                        .cells
+                        .len()
+                        .saturating_mul(4)
                         .saturating_add(source.templates.len().saturating_mul(112))
                         .saturating_add(source.capacity().saturating_mul(16)),
                 );
                 pending_gpu.push((id, Arc::clone(&draw.mesh)));
             } else {
-                let (mesh, upload) = match create_mesh(
-                    device, &draw.mesh, backend, id.1, &mut self.arena,
-                ) {
-                    Ok(created) => created,
-                    Err(error) => {
-                        discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
-                        return Err(error);
-                    }
-                };
+                let (mesh, upload) =
+                    match create_mesh(device, &draw.mesh, backend, id.1, &mut self.arena) {
+                        Ok(created) => created,
+                        Err(error) => {
+                            discard_pending_meshes(
+                                device,
+                                &mut pending,
+                                &mut self.arena,
+                                &mut *self.generated_arena.borrow_mut(),
+                                &mut *self.template_arena.borrow_mut(),
+                                &mut *self.argument_arena.borrow_mut(),
+                            )?;
+                            return Err(error);
+                        }
+                    };
                 pending_bytes = pending_bytes
                     .saturating_add(upload.as_ref().map_or(0, |upload| upload.bytes.len()));
                 pending.push((id, mesh, upload));
@@ -2061,24 +2300,63 @@ impl SceneResources {
                 || pending_gpu.len() >= 16
                 || pending.len() + pending_gpu.len() >= 256
             {
-                if let Err(error) = flush_pending_generated_meshes(
-                    device, &mut pending_gpu, self.mesh_shader.as_ref(),
-                    &mut pending, &mut self.meshes, &mut self.generated_mappings, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
-                    &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
-                ) {
-                    discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
+                // The flush call's arena borrow_mut temporaries live until the
+                // end of this if-let statement; bind the result first so the
+                // error path can re-borrow the same arenas to discard.
+                let flushed = flush_pending_generated_meshes(
+                    device,
+                    &mut pending_gpu,
+                    self.mesh_shader.as_ref(),
+                    &mut pending,
+                    &mut self.meshes,
+                    &mut self.generated_mappings,
+                    &mut self.page_refs,
+                    &mut self.retired_meshes,
+                    &mut self.arena,
+                    &mut *self.generated_arena.borrow_mut(),
+                    &mut *self.template_arena.borrow_mut(),
+                    &mut *self.argument_arena.borrow_mut(),
+                    backend,
+                );
+                if let Err(error) = flushed {
+                    discard_pending_meshes(
+                        device,
+                        &mut pending,
+                        &mut self.arena,
+                        &mut *self.generated_arena.borrow_mut(),
+                        &mut *self.template_arena.borrow_mut(),
+                        &mut *self.argument_arena.borrow_mut(),
+                    )?;
                     return Err(error);
                 }
                 pending_ids.clear();
                 pending_bytes = 0;
             }
         }
-        if let Err(error) = flush_pending_generated_meshes(
-            device, &mut pending_gpu, self.mesh_shader.as_ref(),
-            &mut pending, &mut self.meshes, &mut self.generated_mappings, &mut self.page_refs, &mut self.retired_meshes, &mut self.arena,
-            &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut(), backend,
-        ) {
-            discard_pending_meshes(device, &mut pending, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
+        let flushed = flush_pending_generated_meshes(
+            device,
+            &mut pending_gpu,
+            self.mesh_shader.as_ref(),
+            &mut pending,
+            &mut self.meshes,
+            &mut self.generated_mappings,
+            &mut self.page_refs,
+            &mut self.retired_meshes,
+            &mut self.arena,
+            &mut *self.generated_arena.borrow_mut(),
+            &mut *self.template_arena.borrow_mut(),
+            &mut *self.argument_arena.borrow_mut(),
+            backend,
+        );
+        if let Err(error) = flushed {
+            discard_pending_meshes(
+                device,
+                &mut pending,
+                &mut self.arena,
+                &mut *self.generated_arena.borrow_mut(),
+                &mut *self.template_arena.borrow_mut(),
+                &mut *self.argument_arena.borrow_mut(),
+            )?;
             return Err(error);
         }
         Ok(())
@@ -2132,7 +2410,9 @@ impl SceneResources {
         // Only the changed Section IDs and their physical GPU pages need
         // inspection. No full resident MeshResources walk on ordinary unloads.
         let pages = self.page_refs.orphaned(removed_meshes, &self.meshes);
-        let stale = self.binding_index.affected(removed_meshes, &pages, removed_textures);
+        let stale = self
+            .binding_index
+            .affected(removed_meshes, &pages, removed_textures);
         for key in stale {
             self.destroy_cached_binding(device, key)?;
         }
@@ -2193,16 +2473,24 @@ impl SceneResources {
         NativeCommandSource,
         Option<generated::BatchMappingSource>,
     )> {
-        let draw = self.prepared.draws.get(logical)
+        let draw = self
+            .prepared
+            .draws
+            .get(logical)
             .ok_or_else(|| anyhow!("new Section binding has invalid logical Draw index"))?;
         let mesh_key = mesh_key(draw, true);
-        let mesh = self.meshes.get(&mesh_key)
+        let mesh = self
+            .meshes
+            .get(&mesh_key)
             .ok_or_else(|| anyhow!("new Section binding references an unuploaded Mesh"))?;
         let source = (mesh_key, draw.mesh.generation());
         let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
         let key = DrawResourceKey {
             shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
-            visible_instances: self.culling.as_ref().map(|culling| culling.visible_instances),
+            visible_instances: self
+                .culling
+                .as_ref()
+                .map(|culling| culling.visible_instances),
             mesh: if let Some(generated) = &mesh.generated {
                 DrawMeshKey::GeneratedPage {
                     faces: mesh.vertices,
@@ -2222,42 +2510,53 @@ impl SceneResources {
             metallic_roughness_id: draw.material.metallic_roughness_texture,
         };
         let native = NativeCommandSource::for_draw(draw);
-        if let Some(&binding) = created.get(&key)
-            .or_else(|| self.binding_cache.get(&key))
-        {
+        if let Some(&binding) = created.get(&key).or_else(|| self.binding_cache.get(&key)) {
             return Ok((binding, key, source, native, generated_source));
         }
         let texture_view = |id: Option<TextureAssetId>| -> gpui::Result<_> {
             if let Some(id) = id {
-                Ok(self.textures.get(&id)
-                    .ok_or_else(|| anyhow!("new Section binding references an unuploaded texture {}", id.0))?
+                Ok(self
+                    .textures
+                    .get(&id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "new Section binding references an unuploaded texture {}",
+                            id.0
+                        )
+                    })?
                     .view)
             } else {
                 renderer.fallback_texture_view()
             }
         };
-        let binding = create_draw_resource_set(device, DrawBindingResources {
-            shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
-            bind_group_layout,
-            mesh,
-            draw_buffer: self.draw_buffer,
-            draw_capacity: self.draw_capacity,
-            draw_slots: self.draw_slot_buffer,
-            draw_slot_capacity: self.draw_slot_capacity,
-            instance_buffer: self.instance_buffer,
-            instance_count: self.instance_capacity,
-            light_buffer: self.light_buffer,
-            light_capacity: self.light_capacity,
-            albedo_view: texture_view(draw.material.albedo_texture)?,
-            normal_texture_view: texture_view(draw.material.normal_texture)?,
-            occlusion_view: texture_view(draw.material.occlusion_texture)?,
-            metallic_roughness_view: texture_view(draw.material.metallic_roughness_texture)?,
-            material_sampler: sampler,
-            frame_buffer: self.frame_buffer,
-            visible_instances: self.culling.as_ref().map(|culling| {
-                (culling.visible_instances, culling.instance_capacity as u64 * 4)
-            }),
-        })?;
+        let binding = create_draw_resource_set(
+            device,
+            DrawBindingResources {
+                shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
+                bind_group_layout,
+                mesh,
+                draw_buffer: self.draw_buffer,
+                draw_capacity: self.draw_capacity,
+                draw_slots: self.draw_slot_buffer,
+                draw_slot_capacity: self.draw_slot_capacity,
+                instance_buffer: self.instance_buffer,
+                instance_count: self.instance_capacity,
+                light_buffer: self.light_buffer,
+                light_capacity: self.light_capacity,
+                albedo_view: texture_view(draw.material.albedo_texture)?,
+                normal_texture_view: texture_view(draw.material.normal_texture)?,
+                occlusion_view: texture_view(draw.material.occlusion_texture)?,
+                metallic_roughness_view: texture_view(draw.material.metallic_roughness_texture)?,
+                material_sampler: sampler,
+                frame_buffer: self.frame_buffer,
+                visible_instances: self.culling.as_ref().map(|culling| {
+                    (
+                        culling.visible_instances,
+                        culling.instance_capacity as u64 * 4,
+                    )
+                }),
+            },
+        )?;
         created.insert(key, binding);
         Ok((binding, key, source, native, generated_source))
     }
@@ -2273,7 +2572,6 @@ impl SceneResources {
         renderer: &RendererResources,
         bind_group_layout: BindGroupLayoutId,
         sampler: SamplerId,
-        textures_unchanged: bool,
         sampler_changed: bool,
     ) -> gpui::Result<bool> {
         let Some(delta) = self.prepared.structural_draw_delta().cloned() else {
@@ -2283,10 +2581,16 @@ impl SceneResources {
         let old_count = delta.previous_count;
         let shadow = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
         let visible = self.culling.as_ref().map(|culler| culler.visible_instances);
-        if !textures_unchanged || sampler_changed
+        // Sections own self-contained bind groups, so a rebuilt texture
+        // table Arc cannot stale the surviving intervals; only a sampler
+        // swap invalidates every group at once.
+        if sampler_changed
             || !self.page_refs.only_generated_meshes()
             || !self.batch_workspace.singleton_layout()
-            || !self.culling.as_ref().is_some_and(CullResources::structural_slots_committed)
+            || !self
+                .culling
+                .as_ref()
+                .is_some_and(CullResources::structural_slots_committed)
             || self.generated_pending_groups.is_some()
             || !self.retired_meshes.is_empty()
             || self.batches.len() != count
@@ -2295,9 +2599,10 @@ impl SceneResources {
             || self.draw_resource_sources.len() != old_count
             || self.native_command_sources.len() != old_count
             || self.generated_batch_sources.len() != old_count
-            || self.draw_resource_keys.first().is_none_or(|key| {
-                key.shadow != shadow || key.visible_instances != visible
-            })
+            || self
+                .draw_resource_keys
+                .first()
+                .is_none_or(|key| key.shadow != shadow || key.visible_instances != visible)
         {
             return Ok(false);
         }
@@ -2306,9 +2611,12 @@ impl SceneResources {
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
         for edit in &delta.edits {
-            if edit.old.start < old_cursor || edit.new.start < new_cursor
-                || edit.old.end > old_count || edit.new.end > count
-                || edit.old.start > edit.old.end || edit.new.start > edit.new.end
+            if edit.old.start < old_cursor
+                || edit.new.start < new_cursor
+                || edit.old.end > old_count
+                || edit.new.end > count
+                || edit.old.start > edit.old.end
+                || edit.new.start > edit.new.end
                 || edit.old.start - old_cursor != edit.new.start - new_cursor
             {
                 return Ok(false);
@@ -2339,27 +2647,36 @@ impl SceneResources {
         let mut created = HashMap::<DrawResourceKey, BindGroupId>::new();
         let mut old_cursor = 0usize;
         let mut inserted = 0usize;
-        let append_survivors = |range: std::ops::Range<usize>,
-                                    bindings: &mut Vec<BindGroupId>,
-                                    keys: &mut Vec<DrawResourceKey>,
-                                    sources: &mut Vec<((MeshId, bool), u64)>,
-                                    natives: &mut Vec<NativeCommandSource>,
-                                    generated: &mut Vec<Option<generated::BatchMappingSource>>| {
-            bindings.extend_from_slice(&self.draw_resources[range.clone()]);
-            keys.extend_from_slice(&self.draw_resource_keys[range.clone()]);
-            sources.extend_from_slice(&self.draw_resource_sources[range.clone()]);
-            natives.extend_from_slice(&self.native_command_sources[range.clone()]);
-            generated.extend_from_slice(&self.generated_batch_sources[range]);
-        };
+        let append_survivors =
+            |range: std::ops::Range<usize>,
+             bindings: &mut Vec<BindGroupId>,
+             keys: &mut Vec<DrawResourceKey>,
+             sources: &mut Vec<((MeshId, bool), u64)>,
+             natives: &mut Vec<NativeCommandSource>,
+             generated: &mut Vec<Option<generated::BatchMappingSource>>| {
+                bindings.extend_from_slice(&self.draw_resources[range.clone()]);
+                keys.extend_from_slice(&self.draw_resource_keys[range.clone()]);
+                sources.extend_from_slice(&self.draw_resource_sources[range.clone()]);
+                natives.extend_from_slice(&self.native_command_sources[range.clone()]);
+                generated.extend_from_slice(&self.generated_batch_sources[range]);
+            };
         for edit in &delta.edits {
             append_survivors(
                 old_cursor..edit.old.start,
-                &mut bindings, &mut keys, &mut sources,
-                &mut natives, &mut generated,
+                &mut bindings,
+                &mut keys,
+                &mut sources,
+                &mut natives,
+                &mut generated,
             );
             for index in edit.new.clone() {
                 let result = self.resolve_structural_binding(
-                    device, renderer, bind_group_layout, sampler, index, &mut created,
+                    device,
+                    renderer,
+                    bind_group_layout,
+                    sampler,
+                    index,
+                    &mut created,
                 );
                 let (binding, key, source, native, mapping) = match result {
                     Ok(entry) => entry,
@@ -2381,8 +2698,11 @@ impl SceneResources {
         }
         append_survivors(
             old_cursor..old_count,
-            &mut bindings, &mut keys, &mut sources,
-            &mut natives, &mut generated,
+            &mut bindings,
+            &mut keys,
+            &mut sources,
+            &mut natives,
+            &mut generated,
         );
         debug_assert_eq!(bindings.len(), count);
         std::mem::swap(&mut self.draw_resources, &mut bindings);
@@ -2402,7 +2722,9 @@ impl SceneResources {
         if let Some(started) = trace_started {
             eprintln!(
                 "gpui3d structural_bindings batches={} resolved={} reused={} elapsed_ms={:.2}",
-                count, inserted, count.saturating_sub(inserted),
+                count,
+                inserted,
+                count.saturating_sub(inserted),
                 started.elapsed().as_secs_f64() * 1000.0,
             );
         }
@@ -2418,7 +2740,31 @@ impl SceneResources {
         force: bool,
         voxel_shader: bool,
         defer_binding_cleanup: bool,
+        textures_unchanged: bool,
     ) -> gpui::Result<()> {
+        // Texture-table-only or light-only frames rebuild nothing: the batch
+        // stream, its per-batch sources and the frame resource keys are
+        // unchanged, so the rebuilt tables would equal the resident ones.
+        // This must run BEFORE the scratch buffers are taken below — returning
+        // between the take and the commit leaves the spares and the committed
+        // GPU mapping snapshot inconsistent.
+        let shadow_buffer = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
+        let visible_instances = self
+            .culling
+            .as_ref()
+            .map(|culling| culling.visible_instances);
+        if !force
+            && self.retired_meshes.is_empty()
+            && self.batches.len() == self.draw_resources.len()
+            && self.prepared.draws.len() == self.draw_resource_layout
+            && self.draw_resource_shadow == shadow_buffer
+            && self.draw_resource_visible_instances == visible_instances
+            && self.draw_resource_voxel == voxel_shader
+            && self.draw_resource_sampler == Some(sampler)
+            && textures_unchanged
+        {
+            return Ok(());
+        }
         let mut next = std::mem::take(&mut self.spare_draw_resources);
         let mut next_keys = std::mem::take(&mut self.spare_draw_resource_keys);
         let mut next_sources = std::mem::take(&mut self.spare_draw_resource_sources);
@@ -2442,7 +2788,10 @@ impl SceneResources {
         // Bind the allocated range so culling alone does not invalidate every bind group.
         let instance_count = self.instance_capacity;
         let shadow_buffer = self.shadow.as_ref().map(|shadow| shadow.raster.depths);
-        let visible_instances = self.culling.as_ref().map(|culling| culling.visible_instances);
+        let visible_instances = self
+            .culling
+            .as_ref()
+            .map(|culling| culling.visible_instances);
         // A replacement only invalidates the BindGroups referencing its own
         // mesh generation. Unrelated retired meshes must not disable fast
         // positional reuse for the whole 100K+ batch stream.
@@ -2497,12 +2846,18 @@ impl SceneResources {
                 next_sources.push(source);
                 let metadata = self.generated_batch_sources[batch_index];
                 let (slot, first_instance) = generated::generated_mapping_target(
-                    self.culling.as_ref().map(|culling| culling.committed_slot_layout().1),
-                    batch_index, index,
+                    self.culling
+                        .as_ref()
+                        .map(|culling| culling.committed_slot_layout().1),
+                    batch_index,
+                    index,
                 )?;
                 generated::push_page_record(
-                    &mut next_page_groups, &mut self.generated_mappings,
-                    metadata, slot, first_instance,
+                    &mut next_page_groups,
+                    &mut self.generated_mappings,
+                    metadata,
+                    slot,
+                    first_instance,
                 )?;
                 next_generated.push(metadata);
                 continue;
@@ -2515,12 +2870,18 @@ impl SceneResources {
             // the same pass that already resolves the native BindGroup.
             let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
             let (slot, first_instance) = generated::generated_mapping_target(
-                self.culling.as_ref().map(|culling| culling.committed_slot_layout().1),
-                batch_index, index,
+                self.culling
+                    .as_ref()
+                    .map(|culling| culling.committed_slot_layout().1),
+                batch_index,
+                index,
             )?;
             generated::push_page_record(
-                &mut next_page_groups, &mut self.generated_mappings,
-                generated_source, slot, first_instance,
+                &mut next_page_groups,
+                &mut self.generated_mappings,
+                generated_source,
+                slot,
+                first_instance,
             )?;
             next_generated.push(generated_source);
             let key = DrawResourceKey {
@@ -2647,6 +3008,11 @@ impl SceneResources {
         // bindings. A failed BindGroup creation above leaves the previous
         // committed sources intact; the next retry will rebuild the scratch.
         self.generated_pending_groups = Some(next_page_groups);
+        self.draw_resource_layout = self.prepared.draws.len();
+        self.draw_resource_shadow = shadow_buffer;
+        self.draw_resource_visible_instances = visible_instances;
+        self.draw_resource_voxel = voxel_shader;
+        self.draw_resource_sampler = Some(sampler);
         // Keep the previous Vec allocations as reusable scratch storage.
         std::mem::swap(&mut self.draw_resources, &mut next);
         std::mem::swap(&mut self.draw_resource_keys, &mut next_keys);
@@ -2782,132 +3148,130 @@ impl SceneResources {
             && self.draw_resources.len() == self.prepared.draws.len()
             && self.draw_addresses.len() == self.prepared.draws.len();
         if generated_singletons {
-            self.append_generated_singleton_range(
-                renderer, steps, 0..self.prepared.draws.len(),
-            )?;
+            self.append_generated_singleton_range(renderer, steps, 0..self.prepared.draws.len())?;
         } else {
-        let bounds_visible = self.prepared.bounds_visibility();
-        for (batch_index, batch) in self.batches.iter().enumerate() {
-            let index = batch.first_instance;
-            let draw = self
-                .prepared
-                .draws
-                .get(index)
-                .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
-            if renderer.rejects_material(&draw.material)
-                || (shadow.is_some() && draw.material.alpha_mode == AlphaMode::Blend)
-            {
-                continue;
-            }
-            // Reject single-instance batches before recording native commands, including
-            // indirect draws whose GPU instance count would otherwise only become zero.
-            // A multi-instance batch can contain visible instances after its first draw.
-            // Shadow casters use a separate camera and must not use the main frustum.
-            if shadow.is_none()
-                && self.culling.is_some()
-                && batch.instance_count == 1
-            {
-                // prepare() already evaluates the identical CPU native-command
-                // inclusion mask when camera, range or draw layout changes.
-                // Reuse that result instead of repeating 6-plane AABB tests
-                // while encoding potentially 100K+ DrawIndirect commands.
-                // The fallback preserves standalone native test paths that
-                // call append_steps() before the visibility snapshot exists.
-                let included = self.command_visibility.get(batch_index).copied()
-                    .unwrap_or_else(|| {
-                        bounds_visible(draw.bounds)
-                            && self.prepared.is_draw_in_culling_bounds(draw)
-                    });
-                if !included {
+            let bounds_visible = self.prepared.bounds_visibility();
+            for (batch_index, batch) in self.batches.iter().enumerate() {
+                let index = batch.first_instance;
+                let draw = self
+                    .prepared
+                    .draws
+                    .get(index)
+                    .ok_or_else(|| anyhow!("GPUI 3D draw batch has an invalid first draw"))?;
+                if renderer.rejects_material(&draw.material)
+                    || (shadow.is_some() && draw.material.alpha_mode == AlphaMode::Blend)
+                {
                     continue;
                 }
-            }
-            // Generated Section batches are normally singletons. Reject offscreen
-            // instances before probing the resident mesh map or choosing a
-            // pipeline; the native command list is already CPU-frustum-pruned.
-            let mesh = self
-                .meshes
-                .get(&mesh_key(draw, voxel_shader))
-                .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
-            let draw_resources = shadow
-                .map_or(self.draw_resources.as_slice(), |value| value.0)
-                .get(batch_index)
-                .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
-            let voxel = mesh_key(draw, voxel_shader).1;
-            let pipeline = if mesh.generated.is_some() {
-                renderer.generated_pipeline(
-                    draw.material.alpha_mode == AlphaMode::Blend,
-                    draw.raster_front_face(),
-                )?
-            } else {
-                renderer.pipeline(
-                    voxel,
-                    draw.material.alpha_mode == AlphaMode::Blend,
-                    draw.raster_front_face(),
-                )?
-            };
-            let instance_count = u32::try_from(batch.instance_count)
-                .context("GPUI 3D instance count exceeds u32")?;
-            let address = self
-                .draw_addresses
-                .get(batch_index)
-                .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
-            let first_instance = u32::try_from(address.first_instance)
-                .context("GPUI 3D first instance exceeds u32")?;
-            if mesh.generated.is_some() {
-                steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
-                    pipeline,
-                    bind_groups: bind_group_list([*draw_resources]),
-                    arguments: shadow
-                        .map(|value| value.1)
-                        .or_else(|| {
-                            self.culling
-                                .as_ref()
-                                .map(|culling| culling.arguments)
-                                .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer))
-                        })
-                        .ok_or_else(|| anyhow!("missing generated mesh arguments"))?,
-                    offset: address.arguments_offset,
-                    scissor: None,
-                }));
-            } else if mesh.procedural_quads {
-                if let Some(culling) = &self.culling {
+                // Reject single-instance batches before recording native commands, including
+                // indirect draws whose GPU instance count would otherwise only become zero.
+                // A multi-instance batch can contain visible instances after its first draw.
+                // Shadow casters use a separate camera and must not use the main frustum.
+                if shadow.is_none() && self.culling.is_some() && batch.instance_count == 1 {
+                    // prepare() already evaluates the identical CPU native-command
+                    // inclusion mask when camera, range or draw layout changes.
+                    // Reuse that result instead of repeating 6-plane AABB tests
+                    // while encoding potentially 100K+ DrawIndirect commands.
+                    // The fallback preserves standalone native test paths that
+                    // call append_steps() before the visibility snapshot exists.
+                    let included = self
+                        .command_visibility
+                        .get(batch_index)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            bounds_visible(draw.bounds)
+                                && self.prepared.is_draw_in_culling_bounds(draw)
+                        });
+                    if !included {
+                        continue;
+                    }
+                }
+                // Generated Section batches are normally singletons. Reject offscreen
+                // instances before probing the resident mesh map or choosing a
+                // pipeline; the native command list is already CPU-frustum-pruned.
+                let mesh = self
+                    .meshes
+                    .get(&mesh_key(draw, voxel_shader))
+                    .ok_or_else(|| anyhow!("GPUI 3D mesh was not uploaded"))?;
+                let draw_resources = shadow
+                    .map_or(self.draw_resources.as_slice(), |value| value.0)
+                    .get(batch_index)
+                    .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
+                let voxel = mesh_key(draw, voxel_shader).1;
+                let pipeline = if mesh.generated.is_some() {
+                    renderer.generated_pipeline(
+                        draw.material.alpha_mode == AlphaMode::Blend,
+                        draw.raster_front_face(),
+                    )?
+                } else {
+                    renderer.pipeline(
+                        voxel,
+                        draw.material.alpha_mode == AlphaMode::Blend,
+                        draw.raster_front_face(),
+                    )?
+                };
+                let instance_count = u32::try_from(batch.instance_count)
+                    .context("GPUI 3D instance count exceeds u32")?;
+                let address = self
+                    .draw_addresses
+                    .get(batch_index)
+                    .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
+                let first_instance = u32::try_from(address.first_instance)
+                    .context("GPUI 3D first instance exceeds u32")?;
+                if mesh.generated.is_some() {
                     steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                         pipeline,
                         bind_groups: bind_group_list([*draw_resources]),
-                        arguments: shadow.map_or(culling.arguments, |value| value.1),
+                        arguments: shadow
+                            .map(|value| value.1)
+                            .or_else(|| {
+                                self.culling
+                                    .as_ref()
+                                    .map(|culling| culling.arguments)
+                                    .or_else(|| self.generated_arguments.map(|(buffer, _)| buffer))
+                            })
+                            .ok_or_else(|| anyhow!("missing generated mesh arguments"))?,
                         offset: address.arguments_offset,
                         scissor: None,
                     }));
+                } else if mesh.procedural_quads {
+                    if let Some(culling) = &self.culling {
+                        steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                            pipeline,
+                            bind_groups: bind_group_list([*draw_resources]),
+                            arguments: shadow.map_or(culling.arguments, |value| value.1),
+                            offset: address.arguments_offset,
+                            scissor: None,
+                        }));
+                    } else {
+                        steps.push(RenderCommand::Draw(DrawCommand {
+                            pipeline,
+                            bind_groups: bind_group_list([*draw_resources]),
+                            vertex_count: draw.part.index_count(),
+                            first_vertex: 0,
+                            instance_count,
+                            first_instance,
+                            scissor: None,
+                        }));
+                    }
                 } else {
-                    steps.push(RenderCommand::Draw(DrawCommand {
+                    steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
                         pipeline,
                         bind_groups: bind_group_list([*draw_resources]),
-                        vertex_count: draw.part.index_count(),
-                        first_vertex: 0,
+                        index_buffer: IndexBufferBinding {
+                            buffer: mesh.indices,
+                            format: mesh.index_format,
+                            offset: mesh.index_offset,
+                        },
+                        index_count: draw.part.index_count(),
+                        first_index: draw.part.first_index(),
+                        base_vertex: 0,
                         instance_count,
                         first_instance,
                         scissor: None,
                     }));
                 }
-            } else {
-                steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
-                    pipeline,
-                    bind_groups: bind_group_list([*draw_resources]),
-                    index_buffer: IndexBufferBinding {
-                        buffer: mesh.indices,
-                        format: mesh.index_format,
-                        offset: mesh.index_offset,
-                    },
-                    index_count: draw.part.index_count(),
-                    first_index: draw.part.first_index(),
-                    base_vertex: 0,
-                    instance_count,
-                    first_instance,
-                    scissor: None,
-                }));
             }
-        }
         }
         if let Some(started) = command_started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -2941,26 +3305,40 @@ impl SceneResources {
         {
             return Err(anyhow!("native generated Section range is invalid"));
         }
-        let arguments = self.culling.as_ref()
+        let arguments = self
+            .culling
+            .as_ref()
             .ok_or_else(|| anyhow!("GPU culling arguments are unavailable"))?
             .arguments;
-        let bounds_visible = self.prepared.bounds_visibility();
-        for index in range {
+        // No CPU frustum prune: the GPU cull already zeroes the instance count
+        // of every unseen Section. Keeping the list camera-independent lets the
+        // native command cache and bind-group run coalescing work on every
+        // camera-only frame; pruned commands only saved native record time
+        // that grouping now removes.
+        //
+        // The blended tail keeps its camera-independent candidate order in the
+        // draw tables; back-to-front render order comes from `blend_order`,
+        // which whole-tail ranges follow at emission time.
+        let draws_len = self.prepared.draws.len();
+        let blend_order = self.prepared.blended_order();
+        let tail_start = draws_len.checked_sub(blend_order.len()).filter(|_| {
+            blend_order
+                .iter()
+                .enumerate()
+                .all(|(slot, &index)| index < blend_order.len())
+        });
+        let push_command = |index: usize, steps: &mut Vec<RenderCommand>| -> gpui::Result<()> {
             let draw = &self.prepared.draws[index];
             if renderer.rejects_material(&draw.material) {
-                continue;
+                return Ok(());
             }
-            let included = self.command_visibility.get(index).copied()
-                .unwrap_or_else(|| {
-                    bounds_visible(draw.bounds)
-                        && self.prepared.is_draw_in_culling_bounds(draw)
-                });
-            if !included {
-                continue;
-            }
-            let binding = self.draw_resources.get(index)
+            let binding = self
+                .draw_resources
+                .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
-            let address = self.draw_addresses.get(index)
+            let address = self
+                .draw_addresses
+                .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
             let pipeline = renderer.generated_pipeline(
                 draw.material.alpha_mode == AlphaMode::Blend,
@@ -2973,6 +3351,27 @@ impl SceneResources {
                 offset: address.arguments_offset,
                 scissor: None,
             }));
+            Ok(())
+        };
+        let split = range.end.min(tail_start.unwrap_or(draws_len));
+        for index in range.start..split {
+            push_command(index, steps)?;
+        }
+        match tail_start {
+            Some(tail_start) if range.end > tail_start => {
+                let local_start = range.start.max(tail_start) - tail_start;
+                let local_end = range.end - tail_start;
+                for (slot, &tail_index) in blend_order.iter().enumerate() {
+                    if slot >= local_start && slot < local_end {
+                        push_command(tail_start + tail_index, steps)?;
+                    }
+                }
+            }
+            _ => {
+                for index in split..range.end {
+                    push_command(index, steps)?;
+                }
+            }
         }
         Ok(())
     }
@@ -3019,10 +3418,24 @@ impl SceneResources {
         }
         self.page_refs.clear();
         for (_, mesh) in self.meshes.drain() {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
+            destroy_mesh(
+                device,
+                mesh,
+                &mut self.arena,
+                &mut *self.generated_arena.borrow_mut(),
+                &mut *self.template_arena.borrow_mut(),
+                &mut *self.argument_arena.borrow_mut(),
+            )?;
         }
         for mesh in self.retired_meshes.drain(..) {
-            destroy_mesh(device, mesh, &mut self.arena, &mut *self.generated_arena.borrow_mut(), &mut *self.template_arena.borrow_mut(), &mut *self.argument_arena.borrow_mut())?;
+            destroy_mesh(
+                device,
+                mesh,
+                &mut self.arena,
+                &mut *self.generated_arena.borrow_mut(),
+                &mut *self.template_arena.borrow_mut(),
+                &mut *self.argument_arena.borrow_mut(),
+            )?;
         }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
@@ -3057,10 +3470,18 @@ fn flush_pending_generated_meshes(
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
         let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
-        let inputs = staged_gpu.iter().map(|(_, mesh)| mesh.as_ref())
+        let inputs = staged_gpu
+            .iter()
+            .map(|(_, mesh)| mesh.as_ref())
             .collect::<Vec<_>>();
         let created = super::generated::create_many_pooled(
-            device, &inputs, shaders, generated_arena, template_arena, argument_arena, backend,
+            device,
+            &inputs,
+            shaders,
+            generated_arena,
+            template_arena,
+            argument_arena,
+            backend,
         )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             if let Some(generated) = &resource.generated {
@@ -3072,7 +3493,17 @@ fn flush_pending_generated_meshes(
             pending.push((id, resource, None));
         }
     }
-    upload_pending_meshes(device, pending, meshes, page_refs, retired_meshes, arena, generated_arena, template_arena, argument_arena)
+    upload_pending_meshes(
+        device,
+        pending,
+        meshes,
+        page_refs,
+        retired_meshes,
+        arena,
+        generated_arena,
+        template_arena,
+        argument_arena,
+    )
 }
 
 fn discard_pending_meshes(
@@ -3084,7 +3515,14 @@ fn discard_pending_meshes(
     argument_arena: &mut MeshArena,
 ) -> gpui::Result<()> {
     for (_, mesh, _) in pending.drain(..) {
-        destroy_mesh(device, mesh, arena, generated_arena, template_arena, argument_arena)?;
+        destroy_mesh(
+            device,
+            mesh,
+            arena,
+            generated_arena,
+            template_arena,
+            argument_arena,
+        )?;
     }
     Ok(())
 }
@@ -3115,7 +3553,14 @@ fn upload_pending_meshes(
         })
         .collect::<Vec<_>>();
     if let Err(error) = device.write_buffer_batch(&writes) {
-        discard_pending_meshes(device, pending, arena, generated_arena, template_arena, argument_arena)?;
+        discard_pending_meshes(
+            device,
+            pending,
+            arena,
+            generated_arena,
+            template_arena,
+            argument_arena,
+        )?;
         return Err(error.into());
     }
     for (id, mesh, _) in pending.drain(..) {
@@ -3191,36 +3636,50 @@ mod tests {
     fn pooled_generated_buffers_never_alias_mesh_specific_template_bindings() {
         // Two Sections may share one generated-face GPU page while their
         // template buffers, static light data and indirect arguments differ.
-        // Resource keys must retain individual MeshId/generation identity.
+        // Resource keys must retain face-page and template-buffer identity so
+        // shared bindings are never aliased across pooled draws.
+        let faces = gfx_core::BufferId::from_parts(1, 1);
+        let shared_templates = gfx_core::BufferId::from_parts(2, 1);
         let generic = DrawResourceKey {
             shadow: None,
             visible_instances: None,
-            mesh: DrawMeshKey::Generated { id: MeshId(1), generation: 5 },
+            mesh: DrawMeshKey::GeneratedPage {
+                faces,
+                templates: shared_templates,
+            },
             albedo_id: Some(TextureAssetId(9)),
             normal_id: None,
             occlusion_id: None,
             metallic_roughness_id: None,
         };
         let other = DrawResourceKey {
-            mesh: DrawMeshKey::Generated { id: MeshId(2), generation: 5 },
+            mesh: DrawMeshKey::GeneratedPage {
+                faces,
+                templates: gfx_core::BufferId::from_parts(3, 1),
+            },
             ..generic
         };
         let moved = DrawResourceKey {
-            mesh: DrawMeshKey::Generated { id: MeshId(1), generation: 6 },
+            mesh: DrawMeshKey::GeneratedPage {
+                faces: gfx_core::BufferId::from_parts(4, 1),
+                templates: shared_templates,
+            },
             ..generic
         };
-        let page = gfx_core::BufferId::from_parts(1, 1);
         let ordinary = DrawResourceKey {
-            mesh: DrawMeshKey::VoxelPage(page),
+            mesh: DrawMeshKey::VoxelPage(faces),
             ..generic
         };
         assert_ne!(generic, other);
         assert_ne!(generic, moved);
         assert_ne!(generic, ordinary);
-        let active = HashSet::from([MeshId(1)]);
+        let pages = HashSet::from([faces, shared_templates]);
         let textures = HashSet::from([TextureAssetId(9)]);
-        assert!(generic.uses_active_assets(&active, &HashSet::new(), &textures));
-        assert!(!other.uses_active_assets(&active, &HashSet::new(), &textures));
+        assert!(generic.uses_active_assets(&HashSet::new(), &pages, &textures));
+        assert!(
+            !other.uses_active_assets(&HashSet::new(), &pages, &textures),
+            "a missing template page must not count the key as resident"
+        );
     }
 
     #[test]
@@ -3757,7 +4216,6 @@ fn update_prepared(
     Ok(())
 }
 
-
 /// Update a retained native-command inclusion mask without per-frame allocation.
 /// A camera movement that leaves the mask unchanged can reuse the previous commands.
 /// Update a subset of a previously committed visibility mask without
@@ -3811,28 +4269,32 @@ fn update_command_visibility(
 #[cfg(test)]
 mod native_command_snapshot_tests {
     use super::*;
-    use crate::{Material, Node, Transform, Vec3};
+    use crate::{Material, Node, Vec3};
 
     #[test]
     fn translation_keeps_native_pipeline_but_mirror_and_material_changes_do_not() {
         let mut scene = Scene::new();
         let material = Arc::new(Material::new());
-        let id = scene.insert(
-            None,
-            Node::new()
-                .with_mesh(Arc::new(Mesh::cube()))
-                .with_materials([material]),
-        ).unwrap();
-        let camera = Camera::perspective(
-            Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.,
-        );
+        let id = scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(Arc::new(Mesh::cube()))
+                    .with_materials([material]),
+            )
+            .unwrap();
+        let camera =
+            Camera::perspective(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
         let initial = PreparedScene::new(&scene, camera, 1.).unwrap();
         let original = NativeCommandSource::for_draw(&initial.draws[0]);
 
         let mut translated = scene.fork();
         translated.node_mut(id).unwrap().transform.translation.x = 3.;
         let translated_draws = PreparedScene::new(&translated, camera, 1.).unwrap();
-        assert_eq!(original, NativeCommandSource::for_draw(&translated_draws.draws[0]));
+        assert_eq!(
+            original,
+            NativeCommandSource::for_draw(&translated_draws.draws[0])
+        );
 
         translated.node_mut(id).unwrap().transform.scale.x = -1.;
         let mirrored = PreparedScene::new(&translated, camera, 1.).unwrap();
@@ -3840,10 +4302,7 @@ mod native_command_snapshot_tests {
 
         let mut different_material = initial.draws[0].clone();
         different_material.material = Arc::new(Material::new());
-        assert_ne!(
-            original,
-            NativeCommandSource::for_draw(&different_material),
-        );
+        assert_ne!(original, NativeCommandSource::for_draw(&different_material),);
     }
 }
 
@@ -3890,9 +4349,8 @@ mod command_visibility_tests {
     #[test]
     fn dirty_section_visibility_changes_only_the_targeted_batches() {
         let mut mask = vec![true; 65_536];
-        let changed = update_dirty_command_visibility(
-            &mut mask, &[15, 63_992], |index| Some(index != 15),
-        );
+        let changed =
+            update_dirty_command_visibility(&mut mask, &[15, 63_992], |index| Some(index != 15));
         assert_eq!(changed, Some(true));
         assert!(!mask[15]);
         assert!(mask[63_992]);
@@ -3946,10 +4404,16 @@ mod animation_invalidation_tests {
         let first: Arc<[crate::TransformTrack]> = Arc::from([]);
         let second: Arc<[crate::TransformTrack]> = Arc::from([]);
         assert!(!animation_affects_draws(
-            Some(&first), Some(Duration::ZERO), &second, Duration::from_secs(500),
+            Some(&first),
+            Some(Duration::ZERO),
+            &second,
+            Duration::from_secs(500),
         ));
         assert!(!animation_affects_draws(
-            None, None, &first, Duration::from_secs(1),
+            None,
+            None,
+            &first,
+            Duration::from_secs(1),
         ));
     }
 
@@ -3957,25 +4421,33 @@ mod animation_invalidation_tests {
     fn active_tracks_invalidate_on_clip_time_or_snapshot_change() {
         let mut scene = Scene::new();
         let node = scene.insert(None, crate::Node::new()).unwrap();
-        let active: Arc<[crate::TransformTrack]> =
-            Arc::from([crate::TransformTrack::new(node)]);
-        assert!(animation_affects_draws(
-            None, None, &active, Duration::ZERO
-        ));
+        let active: Arc<[crate::TransformTrack]> = Arc::from([crate::TransformTrack::new(node)]);
+        assert!(animation_affects_draws(None, None, &active, Duration::ZERO));
         assert!(!animation_affects_draws(
-            Some(&active), Some(Duration::ZERO), &active, Duration::ZERO,
+            Some(&active),
+            Some(Duration::ZERO),
+            &active,
+            Duration::ZERO,
         ));
         assert!(animation_affects_draws(
-            Some(&active), Some(Duration::ZERO), &active, Duration::from_millis(16),
+            Some(&active),
+            Some(Duration::ZERO),
+            &active,
+            Duration::from_millis(16),
         ));
-        let different: Arc<[crate::TransformTrack]> =
-            Arc::from([crate::TransformTrack::new(node)]);
+        let different: Arc<[crate::TransformTrack]> = Arc::from([crate::TransformTrack::new(node)]);
         assert!(animation_affects_draws(
-            Some(&active), Some(Duration::ZERO), &different, Duration::ZERO,
+            Some(&active),
+            Some(Duration::ZERO),
+            &different,
+            Duration::ZERO,
         ));
         let empty: Arc<[crate::TransformTrack]> = Arc::from([]);
         assert!(animation_affects_draws(
-            Some(&active), Some(Duration::ZERO), &empty, Duration::ZERO,
+            Some(&active),
+            Some(Duration::ZERO),
+            &empty,
+            Duration::ZERO,
         ));
     }
 }

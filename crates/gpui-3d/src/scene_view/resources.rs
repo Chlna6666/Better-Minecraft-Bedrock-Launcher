@@ -99,6 +99,7 @@ impl RendererResources {
             anisotropic: anisotropy_enabled,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
+            ..Default::default()
         })?;
         self.samplers[sampler_index] = Some(sampler);
         Ok(sampler)
@@ -356,12 +357,14 @@ fn create_pipeline(
             vertex_buffers: Vec::new(),
             render_pass: context.render_pass(),
             pipeline_layout: resources.pipeline_layout,
-            color_format: context.color_format(),
-            blend_mode: if blend && !resources.pass.is_attribute() {
-                BlendMode::PremultipliedAlpha
-            } else {
-                BlendMode::Replace
-            },
+            color_targets: vec![gfx_core::ColorTargetState::new(
+                context.color_format(),
+                if blend && !resources.pass.is_attribute() {
+                    BlendMode::PremultipliedAlpha
+                } else {
+                    BlendMode::Replace
+                },
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: gfx_core::RasterState {
                 front_face: front_face.unwrap_or_default(),
@@ -370,6 +373,8 @@ fn create_pipeline(
             depth_state: Some(DepthState {
                 compare: CompareFunction::LessEqual,
                 write_enabled: depth_write || resources.pass.is_attribute(),
+
+                stencil: None,
             }),
         },
         context.viewport(),
