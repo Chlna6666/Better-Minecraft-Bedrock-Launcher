@@ -383,12 +383,21 @@ impl OpenGlDevice {
             };
             // SAFETY: The available end query follows the earlier start query
             // on the same ordered GL context, so both results have completed.
-            let (first, last) = unsafe {
-                (
-                    self.gl.get_query_parameter_u64(start, glow::QUERY_RESULT),
-                    self.gl.get_query_parameter_u64(end, glow::QUERY_RESULT),
-                )
-            };
+            let mut first = 0_u64;
+            let mut last = 0_u64;
+            // SAFETY: glow 0.16 exposes 64-bit query results via the
+            // _with_offset entry point, where the offset is an ordinary
+            // pointer when GL_QUERY_BUFFER is unbound. The end query is
+            // already available and both output addresses are valid u64.
+            unsafe {
+                self.gl.bind_buffer(glow::QUERY_BUFFER, None);
+                self.gl.get_query_parameter_u64_with_offset(
+                    start, glow::QUERY_RESULT, (&raw mut first) as usize,
+                );
+                self.gl.get_query_parameter_u64_with_offset(
+                    end, glow::QUERY_RESULT, (&raw mut last) as usize,
+                );
+            }
             if let Some(tag) = tag {
                 self.gpu_work_samples.push(GpuTimestampSample {
                     tag,
