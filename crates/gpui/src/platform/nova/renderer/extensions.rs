@@ -8,16 +8,26 @@ use std::{any::TypeId, collections::hash_map::Entry};
 pub(super) struct RendererRegistry {
     renderers: FxHashMap<TypeId, Box<dyn crate::RendererExtensionRenderer>>,
     passes: Vec<crate::RendererExtensionPass>,
+    /// Only renderer extensions that actually contributed producer passes
+    /// to this frame may receive a submission acknowledgement. An unrelated
+    /// extension must never mark another renderer's failed/old submission
+    /// as published.
+    submitted_types: Vec<TypeId>,
 }
 
 impl RendererRegistry {
     pub(super) fn render_passes_submitted(&mut self) {
-        for renderer in self.renderers.values_mut() {
-            renderer.render_passes_submitted();
+        for type_id in self.submitted_types.drain(..) {
+            if let Some(renderer) = self.renderers.get_mut(&type_id) {
+                renderer.render_passes_submitted();
+            }
         }
     }
     pub(super) fn begin_frame(&mut self) {
         self.passes.clear();
+        // A previous submit may have failed after draining producer passes.
+        // Do not carry its pending acknowledgements to an unrelated frame.
+        self.submitted_types.clear();
     }
     pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
         &self.passes
@@ -50,12 +60,17 @@ impl RendererRegistry {
         context: crate::RendererExtensionContext,
         steps: &mut Vec<RenderCommand>,
     ) -> Result<()> {
-        let renderer = match self.renderers.entry(input.renderer_type()) {
+        let type_id = input.renderer_type();
+        let before = self.passes.len();
+        let renderer = match self.renderers.entry(type_id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(input.create_renderer(device, context.clone())?),
         };
         renderer.render(input, device, context, steps)?;
         renderer.drain_render_passes(&mut self.passes);
+        if self.passes.len() > before && !self.submitted_types.contains(&type_id) {
+            self.submitted_types.push(type_id);
+        }
         Ok(())
     }
 
@@ -115,6 +130,45 @@ mod tests {
         fn destroy(&mut self, _device: &mut dyn ExtensionDevice) -> crate::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn submission_acknowledgements_are_scoped_to_current_producers() {
+        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+        struct Submitted(Arc<AtomicUsize>);
+        impl crate::RendererExtensionRenderer for Submitted {
+            fn render_passes_submitted(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn render(
+                &mut self, _: &dyn crate::RendererExtension,
+                _: &mut dyn ExtensionDevice,
+                _: crate::RendererExtensionContext,
+                _: &mut Vec<RenderCommand>,
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+            fn destroy(&mut self, _: &mut dyn ExtensionDevice) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+        let mut registry = RendererRegistry::default();
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let first_id = TypeId::of::<PendingRenderer>();
+        let second_id = TypeId::of::<Submitted>();
+        registry.renderers.insert(first_id, Box::new(Submitted(first.clone())));
+        registry.renderers.insert(second_id, Box::new(Submitted(second.clone())));
+        registry.submitted_types.push(first_id);
+        registry.render_passes_submitted();
+        assert_eq!(first.load(Ordering::Relaxed), 1);
+        assert_eq!(second.load(Ordering::Relaxed), 0);
+        registry.render_passes_submitted();
+        assert_eq!(first.load(Ordering::Relaxed), 1);
+        registry.submitted_types.push(second_id);
+        registry.begin_frame();
+        registry.render_passes_submitted();
+        assert_eq!(second.load(Ordering::Relaxed), 0);
     }
 
     #[test]
