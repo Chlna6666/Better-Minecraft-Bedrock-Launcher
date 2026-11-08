@@ -832,7 +832,7 @@ impl SceneResources {
             cull_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         }
         if !shadow_enabled
-            && (draw_state_changed || culling_bounds_changed)
+            && (draw_state_changed || culling_bounds_changed || node_mask_changed)
             && let Some(shadow) = &mut self.shadow
         {
             shadow.invalidate();
@@ -843,10 +843,13 @@ impl SceneResources {
         if shadow_enabled && let Some(shadow) = &mut self.shadow {
             shadow.update(
                 device,
-                self.prepared.occluder_bounds(scene_view.culling_bounds),
+                self.prepared.occluder_bounds_excluding(
+                    scene_view.culling_bounds,
+                    &scene_view.hidden_nodes,
+                ),
                 scene_view.camera.eye,
                 shading.sun_direction,
-                draw_state_changed || culling_bounds_changed,
+                draw_state_changed || culling_bounds_changed || node_mask_changed,
             )?;
         }
         let wire_changed = self
@@ -1020,15 +1023,19 @@ impl SceneResources {
             } else {
                 false
             };
-            if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed)
+            if (draw_state_changed || culling_bounds_changed || visibility_changed || wire_changed
+                || node_mask_changed)
                 && let Some(culling) = &mut self.culling
             {
                 culling.hiz.update(
                     device,
-                    self.prepared.occluder_bounds(scene_view.culling_bounds),
+                    self.prepared.occluder_bounds_excluding(
+                        scene_view.culling_bounds,
+                        &scene_view.hidden_nodes,
+                    ),
                     scene_view.camera.eye,
                     scene_view.camera.target - scene_view.camera.eye,
-                    draw_state_changed || culling_bounds_changed || wire_changed,
+                    draw_state_changed || culling_bounds_changed || wire_changed || node_mask_changed,
                 )?;
             }
             if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed
