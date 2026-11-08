@@ -5,12 +5,23 @@ use crate::{
     registry::Registry,
     resources::Buffer,
 };
-use gfx_core::{BufferUsage, Error, MemoryTrimLevel, RenderCommand, Result};
+use gfx_core::{BufferId, BufferUsage, Error, MemoryTrimLevel, RenderCommand, Result};
 use windows::Win32::Graphics::Direct3D11::*;
 
 const PAGE_BYTES: u32 = 64 * 1024;
 const SLOT_BYTES: u32 = 256;
 const SLOTS_PER_PAGE: usize = (PAGE_BYTES / SLOT_BYTES) as usize;
+
+/// Buffer and byte range for the two Naga b13 base offsets. Native indirect
+/// records end with (first_vertex, first_instance) for non-indexed draws,
+/// and (base_vertex, first_instance) for indexed draws.
+pub(crate) fn constant_source(command: &RenderCommand) -> Option<(BufferId, u64, u64)> {
+    match command {
+        RenderCommand::DrawIndirect(draw) => Some((draw.arguments, draw.offset, 16)),
+        RenderCommand::DrawIndexedIndirect(draw) => Some((draw.arguments, draw.offset, 20)),
+        _ => None,
+    }
+}
 
 pub(crate) struct IndirectConstants {
     pages: Vec<ID3D11Buffer>,
@@ -51,13 +62,12 @@ impl IndirectConstants {
         }
         let mut count = 0usize;
         for command in commands {
-            if let RenderCommand::DrawIndirect(draw) = command {
-                let buffer = buffers.get(draw.arguments)?;
+            if let Some((buffer_id, offset, bytes)) = constant_source(command) {
+                let buffer = buffers.get(buffer_id)?;
                 if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
-                    || draw.offset % 4 != 0
-                    || draw
-                        .offset
-                        .checked_add(16)
+                    || offset % 4 != 0
+                    || offset
+                        .checked_add(bytes)
                         .is_none_or(|end| end > buffer.desc.size)
                 {
                     return Err(Error::InvalidInput(
@@ -90,14 +100,14 @@ impl IndirectConstants {
         }
         let mut index = 0;
         for command in commands {
-            let RenderCommand::DrawIndirect(draw) = command else {
+            let Some((buffer_id, argument_offset, argument_bytes)) = constant_source(command) else {
                 continue;
             };
-            let source = buffers.get(draw.arguments)?;
+            let source = buffers.get(buffer_id)?;
             let (page, offset) = slot(index);
             let region = D3D11_BOX {
-                left: (draw.offset + 8) as u32,
-                right: (draw.offset + 16) as u32,
+                left: (argument_offset + argument_bytes - 8) as u32,
+                right: (argument_offset + argument_bytes) as u32,
                 top: 0,
                 bottom: 1,
                 front: 0,
@@ -162,6 +172,35 @@ fn slot(index: usize) -> (usize, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_and_nonindexed_constants_use_distinct_native_offsets() {
+        use gfx_core::*;
+        let buffer = ResourceId::new(3);
+        let simple = RenderCommand::DrawIndirect(DrawIndirectCommand {
+            pipeline: ResourceId::new(1),
+            bind_groups: bind_group_list_empty(),
+            arguments: buffer,
+            offset: 32,
+            scissor: None,
+        });
+        let indexed = RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
+            pipeline: ResourceId::new(1),
+            bind_groups: bind_group_list_empty(),
+            arguments: buffer,
+            offset: 64,
+            index_buffer: IndexBufferBinding {
+                buffer: ResourceId::new(2),
+                format: IndexFormat::Uint16,
+                offset: 0,
+            },
+            scissor: None,
+        });
+        assert_eq!(constant_source(&simple), Some((buffer, 32, 16)));
+        assert_eq!(constant_source(&indexed), Some((buffer, 64, 20)));
+        assert_eq!(32 + 16 - 8, 40);
+        assert_eq!(64 + 20 - 8, 76);
+    }
+
     #[test]
     fn slots_are_aligned_and_cross_pages_without_overlap() {
         assert_eq!(slot(0), (0, 0));
