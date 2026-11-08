@@ -691,7 +691,22 @@ fn create_many_impl(
         })
         .collect::<Vec<_>>();
     if !staging_writes.is_empty() {
+        let bytes = staging_writes.iter().map(|write| write.data.len()).sum::<usize>();
+        let started = crate::gpu_submission_trace::enabled().then(Instant::now);
         device.write_buffer_batch(&staging_writes).map_err(anyhow::Error::from)?;
+        if let (Some(start), Some((_, _, _, backend))) = (started, arena.as_ref()) {
+            let duration = start.elapsed();
+            crate::gpu_submission_trace::observe(
+                *backend,
+                crate::gpu_submission_trace::Phase::GeneratedInputUpload,
+                staging_writes.len(), bytes, duration,
+            );
+            // Include generated input staging in the budget's existing
+            // GPU-owner buffer-write feedback; no extra driver call.
+            crate::upload_feedback::observe_buffer_upload(
+                *backend, bytes, staging_writes.len(), duration,
+            );
+        }
     }
     drop(staging_writes);
     for mesh in &mut pending {
@@ -708,16 +723,24 @@ fn create_many_impl(
         }
     }
     let dispatch_count = dispatches.len();
-    let dispatch_started = trace_started.map(|_| Instant::now());
+    let dispatch_started = (trace_started.is_some() || crate::gpu_submission_trace::enabled())
+        .then(Instant::now);
     let submitted = if dispatches.is_empty() {
         Ok(())
     } else {
         device.dispatch_compute_batch(&dispatches).map_err(anyhow::Error::from)
     };
-    let dispatch_ms = dispatch_started
-        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
+    let dispatch_elapsed = dispatch_started.map(|start| start.elapsed()).unwrap_or_default();
+    let dispatch_ms = dispatch_elapsed.as_secs_f64() * 1000.0;
     drop(dispatches);
+    if submitted.is_ok() && dispatch_count != 0 {
+        if let Some((_, _, _, backend)) = arena.as_ref() {
+            crate::gpu_submission_trace::observe(
+                *backend, crate::gpu_submission_trace::Phase::GeneratedComputeIssue,
+                dispatch_count, meshes.len(), dispatch_elapsed,
+            );
+        }
+    }
     if let Err(error) = submitted {
         discard_pending_generated(
             device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),

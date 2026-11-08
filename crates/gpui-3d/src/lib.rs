@@ -66,6 +66,7 @@ pub use gfx_core::FrontFace;
 mod math;
 mod mesh;
 mod voxel_mesh;
+mod gpu_submission_trace;
 mod upload_feedback;
 pub use upload_feedback::{GpuUploadCostEstimate, gpu_upload_cost_estimate};
 pub use voxel_mesh::{

@@ -418,6 +418,7 @@ impl RendererTimingTrace {
         commands: Duration,
         draw_calls: usize,
         gpu_culling: (usize, usize),
+        backend: BackendKind,
     ) {
         let now = Instant::now();
         self.samples += 1;
@@ -450,6 +451,7 @@ impl RendererTimingTrace {
             self.gpu_cull_batches_max,
             self.gpu_resident_draws_max,
         );
+        crate::gpu_submission_trace::report(backend);
         *self = Self {
             last_report: Some(now),
             ..Self::default()
@@ -975,7 +977,8 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let render_context = self.offscreen.as_ref()
             .map(|surface| surface.capture_context(&context))
             .unwrap_or_else(|| context.clone());
-        let prepare_started = trace_timings().then(Instant::now);
+        let prepare_started = (trace_timings() || crate::gpu_submission_trace::enabled())
+            .then(Instant::now);
         {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
@@ -1026,19 +1029,33 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             output.len() - first_step
         };
         if let Some(surface) = self.offscreen.as_mut() {
+            let started = crate::gpu_submission_trace::enabled().then(Instant::now);
             surface.enqueue(
                 device, scene_view.id, &context, scene.capture_revision,
                 capture_steps, &mut self.pending_passes, steps,
             )?;
+            if let Some(start) = started {
+                crate::gpu_submission_trace::observe(
+                    context.backend_kind(), crate::gpu_submission_trace::Phase::OffscreenEnqueue,
+                    1, 0, start.elapsed(),
+                );
+            }
             self.pending_capture_epochs.push((scene_view.id, scene.capture_revision));
             self.offscreen_trace.record(OffscreenFrameKind::Captured);
         }
         if let Some((prepare, started)) = commands_started {
+            let elapsed = started.elapsed();
+            crate::gpu_submission_trace::observe(
+                context.backend_kind(),
+                crate::gpu_submission_trace::Phase::DrawIndirectEncode,
+                commands_count, 0, elapsed,
+            );
             self.timing_trace.record(
                 prepare,
-                started.elapsed(),
+                elapsed,
                 commands_count,
                 scene.gpu_culling_counts(),
+                context.backend_kind(),
             );
         }
         Ok(())

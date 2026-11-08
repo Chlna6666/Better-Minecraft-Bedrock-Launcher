@@ -662,7 +662,19 @@ impl SceneResources {
             .collect::<Vec<_>>();
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
+            let start = crate::gpu_submission_trace::enabled().then(Instant::now);
+            let count = writes.len();
             device.write_buffer_batch(&writes)?;
+            if let Some(start) = start {
+                let elapsed = start.elapsed();
+                crate::gpu_submission_trace::observe(
+                    self.backend, crate::gpu_submission_trace::Phase::IndirectMapUpload,
+                    count, uploaded_bytes, elapsed,
+                );
+                crate::upload_feedback::observe_buffer_upload(
+                    self.backend, uploaded_bytes, count, elapsed,
+                );
+            }
         }
         let shader = self
             .mesh_draw_shader
@@ -731,7 +743,14 @@ impl SceneResources {
         // All input records may have moved while no generated count changed.
         // Such a structural Section reorder needs uploads but no compute.
         if !dispatches.is_empty() {
+            let start = crate::gpu_submission_trace::enabled().then(Instant::now);
             device.dispatch_compute_batch(&dispatches)?;
+            if let Some(start) = start {
+                crate::gpu_submission_trace::observe(
+                    self.backend, crate::gpu_submission_trace::Phase::IndirectMapComputeIssue,
+                    dispatches.len(), uploaded_bytes, start.elapsed(),
+                );
+            }
         }
         if partial && super::super::renderer::trace_timings() {
             eprintln!(
