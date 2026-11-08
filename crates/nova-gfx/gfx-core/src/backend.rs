@@ -939,6 +939,26 @@ pub trait PresentationDevice {
         }
         Ok(None)
     }
+
+    /// True only if this device owns an actual second native GRAPHICS queue
+    /// and implements device-side producer/consumer synchronization.
+    /// DX11/OpenGL and unsupported Vulkan adapters report false.
+    fn independent_graphics_queue_available(&self) -> bool {
+        false
+    }
+
+    /// Submit independent offscreen graphics producers without taking over
+    /// GUI presentation. A backend must signal native producer completion
+    /// and queue a GPU-side wait before the host's next graphics submission.
+    /// The returned SubmissionId must cover that consumer-side dependency,
+    /// so normal resource-retirement fences remain valid. Default is the
+    /// ordered same-queue path, not an unsafe second-thread emulation.
+    fn render_to_textures_independent(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        self.render_to_textures(passes)
+    }
 }
 
 /// GPU timestamp range of one submitted frame's render work.
