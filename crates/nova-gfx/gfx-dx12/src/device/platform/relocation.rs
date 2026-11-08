@@ -35,6 +35,7 @@ impl Dx12Device {
             Dx12SubmittedCommandList {
                 commands,
                 _command_list: executable,
+                gpu_work_tag: None,
             },
         );
         for (id, state) in states {
@@ -190,6 +191,7 @@ impl Dx12Device {
             Dx12SubmittedCommandList {
                 commands,
                 _command_list: executable,
+                gpu_work_tag: None,
             },
         );
         for (id, state) in texture_states {
