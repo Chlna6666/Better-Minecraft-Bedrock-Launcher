@@ -407,6 +407,20 @@ fn mesh_target_positions(
     targets
 }
 
+/// Canonical unordered boundary edge. A completed pair is refreshed once rather
+/// than permanently suppressing all future neighbour updates for either column.
+fn record_boundary_pair(
+    pairs: &mut BTreeSet<(ChunkPos, ChunkPos)>,
+    a: ChunkPos,
+    b: ChunkPos,
+) -> bool {
+    pairs.insert(if a <= b { (a, b) } else { (b, a) })
+}
+
+fn forget_boundary_pairs(pairs: &mut BTreeSet<(ChunkPos, ChunkPos)>, pos: ChunkPos) {
+    pairs.retain(|(a, b)| *a != pos && *b != pos);
+}
+
 fn forget_published_sections(
     published: &mut BTreeMap<(ChunkPos, i32), Weak<World3dChunkMesh>>,
     pos: ChunkPos,
@@ -558,6 +572,21 @@ mod view_tests {
     use std::sync::Mutex;
     use std::sync::mpsc::{channel, sync_channel};
     use std::time::Duration;
+
+    #[test]
+    fn boundary_pairs_are_order_independent_and_rearm_after_unload() {
+        let chunk = |x| ChunkPos { x, z: 0, dimension: Dimension::Overworld };
+        let (left, middle, right) = (chunk(0), chunk(1), chunk(2));
+        let mut pairs = BTreeSet::new();
+        assert!(super::record_boundary_pair(&mut pairs, left, middle));
+        assert!(!super::record_boundary_pair(&mut pairs, middle, left));
+        // A different neighbour of the already processed middle column is new.
+        assert!(super::record_boundary_pair(&mut pairs, middle, right));
+        assert_eq!(pairs.len(), 2);
+        super::forget_boundary_pairs(&mut pairs, middle);
+        assert!(pairs.is_empty());
+        assert!(super::record_boundary_pair(&mut pairs, left, middle));
+    }
 
     #[test]
     fn published_sections_reuse_exact_meshes_and_forget_deleted_sections() {
@@ -1989,10 +2018,10 @@ struct Worker {
     /// no re-upload) even after the scene dropped its reference; FIFO-bounded.
     revisit_cache: BTreeMap<(ChunkPos, i32), Arc<World3dChunkMesh>>,
     revisit_order: std::collections::VecDeque<(ChunkPos, i32)>,
-    /// Columns whose boundary faces were already re-meshed once against their
-    /// now-loaded neighbours. Guards the neighbour-completion re-mesh below
-    /// from ping-ponging between adjacent columns forever.
-    boundary_remeshed: BTreeSet<ChunkPos>,
+    /// Completed unordered neighbour pairs, cleared on unload/invalidation.
+    /// Unlike a per-column flag, a newly arrived neighbour still causes
+    /// the previously meshed column to refresh its shared boundary exactly once.
+    boundary_pairs: BTreeSet<(ChunkPos, ChunkPos)>,
     lod_modes: HashMap<ChunkPos, bool>,
     dirty_meshes: BTreeSet<ChunkPos>,
     urgent_chunks: BTreeSet<ChunkPos>,
@@ -2112,7 +2141,7 @@ impl Worker {
             published_sections: BTreeMap::new(),
             revisit_cache: BTreeMap::new(),
             revisit_order: std::collections::VecDeque::new(),
-            boundary_remeshed: BTreeSet::new(),
+            boundary_pairs: BTreeSet::new(),
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
             urgent_chunks: BTreeSet::new(),
@@ -2303,6 +2332,7 @@ impl Worker {
             self.cache.remove(&pos);
             self.light_fields.remove(&pos);
             forget_published_sections(&mut self.published_sections, pos, &[]);
+            forget_boundary_pairs(&mut self.boundary_pairs, pos);
             self.lod_modes.remove(&pos);
             self.dirty_meshes.remove(&pos);
             self.mark_neighbor_meshes(pos);
@@ -2337,6 +2367,7 @@ impl Worker {
         for pos in stale_invalidated {
             self.retained_invalidated.remove(&pos);
             forget_published_sections(&mut self.published_sections, pos, &[]);
+            forget_boundary_pairs(&mut self.boundary_pairs, pos);
             let _ = tx.send(ChunkServiceEvent::Unloaded {
                 generation: self.view.generation,
                 pos,
@@ -3131,6 +3162,10 @@ impl Worker {
                             .as_ref()
                             .filter(|old| same_chunk_render_geometry(old, &mesh))
                         {
+                            // A revisit-cache hit can survive removal of the weak
+                            // published index. Restore it for face accounting,
+                            // partial re-meshes and future neighbour lookups.
+                            self.published_sections.insert(key, Arc::downgrade(old));
                             reused_sections += 1;
                             retained_sections.entry(pos).or_default().push(old.clone());
                         } else {
@@ -3225,66 +3260,39 @@ impl Worker {
                 });
             }
         }
-        // A freshly completed column culls its own interior, but columns
-        // meshed BEFORE this column arrived still carry boundary cross-section
-        // faces against it (the visible water/terrain wall at the loaded
-        // region's edge). Re-mesh those neighbours once; `boundary_remeshed`
-        // keeps this from ping-ponging between adjacent columns.
-        for pos in targets.iter().copied() {
-            if !self.boundary_remeshed.insert(pos) {
-                continue;
-            }
+        // Only successfully completed columns participate in boundary reconciliation.
+        // Track unordered neighbour PAIRS rather than columns: a column can gain a
+        // new neighbour long after it was first meshed, including after an unload.
+        // Each pair is reconciled once until either column is invalidated or unloaded.
+        let completed_now = completions
+            .iter()
+            .map(|completion| completion.pos)
+            .collect::<HashSet<_>>();
+        for pos in completed_now.iter().copied() {
             for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                 let neighbour = ChunkPos {
                     x: pos.x + dx,
                     z: pos.z + dz,
                     ..pos
                 };
-                let neighbour_meshed = self.revisit_cache.keys().any(|(key, _)| *key == neighbour)
-                    || self
-                        .published_sections
-                        .range(
-                            (neighbour, i32::MIN)..=(neighbour, i32::MAX),
-                        )
-                        .next()
-                        .is_some();
-                if neighbour_meshed
-                    && !self.boundary_remeshed.contains(&neighbour)
-                    && self.dirty_meshes.insert(neighbour)
-                {
-                    self.boundary_remeshed.insert(neighbour);
+                // A retained mesh of an UNLOADED column must not count: the
+                // strong revisit cache intentionally outlives active scenes.
+                if !self.cache.contains_key(&neighbour) {
+                    continue;
                 }
-            }
-        }
-        // A freshly completed column culls its own interior, but columns
-        // meshed BEFORE this column arrived treated it as an occluding halo
-        // (no boundary faces). If the neighbour revealed air at the seam, a
-        // one-shot boundary re-mesh restores those faces;
-        // `boundary_remeshed` keeps this from ping-ponging forever.
-        for pos in targets.iter().copied() {
-            if !self.boundary_remeshed.insert(pos) {
-                continue;
-            }
-            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let neighbour = ChunkPos {
-                    x: pos.x + dx,
-                    z: pos.z + dz,
-                    ..pos
-                };
-                let neighbour_meshed = self
-                    .revisit_cache
-                    .keys()
-                    .any(|(key, _)| *key == neighbour)
+                let completed_together = completed_now.contains(&neighbour);
+                let neighbour_meshed = completed_together
                     || self
                         .published_sections
                         .range((neighbour, i32::MIN)..=(neighbour, i32::MAX))
-                        .next()
-                        .is_some();
+                        .any(|(_, mesh)| mesh.strong_count() > 0);
                 if neighbour_meshed
-                    && self.boundary_remeshed.insert(neighbour)
-                    && self.dirty_meshes.insert(neighbour)
+                    && record_boundary_pair(&mut self.boundary_pairs, pos, neighbour)
+                    && !completed_together
                 {
-                    // queued for the next visible dirty re-mesh batch
+                    // The previously meshed neighbour may still have an exposed
+                    // seam built while this column was absent.
+                    self.dirty_meshes.insert(neighbour);
                 }
             }
         }
@@ -4090,6 +4098,7 @@ impl Worker {
 
     fn invalidate(&mut self, chunks: &[ChunkPos]) {
         for pos in chunks {
+            forget_boundary_pairs(&mut self.boundary_pairs, *pos);
             if self.cache.remove(pos).is_some() {
                 self.retained_invalidated.insert(*pos);
             }
@@ -4662,6 +4671,9 @@ fn run_worker(
                     worker.lighting = lighting;
                     worker.light_fields.clear();
                     worker.published_sections.clear();
+                    worker.boundary_pairs.clear();
+                    worker.revisit_cache.clear();
+                    worker.revisit_order.clear();
                     worker.dirty_meshes.extend(worker.cache.keys().copied());
                     while pending.is_none() {
                         match worker.stream(&events, &commands) {
@@ -4696,6 +4708,9 @@ fn run_worker(
                 }
                 if worker.view.dimension != dimension {
                     worker.published_sections.clear();
+                    worker.boundary_pairs.clear();
+                    worker.revisit_cache.clear();
+                    worker.revisit_order.clear();
                     for pos in std::mem::take(&mut worker.cache).into_keys() {
                         let _ = events.send(ChunkServiceEvent::Unloaded { generation, pos });
                     }
