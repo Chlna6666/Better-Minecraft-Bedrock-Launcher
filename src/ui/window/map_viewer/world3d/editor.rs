@@ -27,12 +27,12 @@ use gpui::StatefulInteractiveElement as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_3d::{
-    Aabb, AlphaMode, Material, Mesh, Node, Scene, SceneView, ShadingModel, TextureAsset,
+    Aabb, AlphaMode, Material, Mesh, Node, NodeId, Scene, SceneView, ShadingModel, TextureAsset,
     TextureSampling, Transform, Vec3,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc::{self, Receiver, TryRecvError}};
 use std::time::{Duration, Instant};
 mod rendering;
 pub(in super::super) mod scene_registry;
@@ -409,6 +409,28 @@ impl FrameCounter {
     }
 }
 
+/// Immutable section graph source; cache one snapshot per chunk-stream
+/// revision. Background tasks borrow only Arc-owned decoded terrain, never
+/// the GPUI window, native renderer or mutable Scene registry.
+struct PortalVisibilitySnapshot {
+    probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    bands: BTreeSet<(ChunkPos, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PortalVisibilityKey {
+    revision: u64,
+    dimension: Dimension,
+    voxel: [i32; 3],
+    radius: i32,
+}
+
+struct PortalVisibilityResult {
+    key: PortalVisibilityKey,
+    hidden: BTreeSet<(ChunkPos, i32)>,
+    solve_us: u128,
+}
+
 /// The independent 3D world editor window view.
 pub struct World3dEditorView {
     session_id: u64,
@@ -452,10 +474,13 @@ pub struct World3dEditorView {
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
     /// Monotonic decoded-portal snapshot revision, independent of mesh generation.
     visibility_revision: u64,
-    last_visibility_revision: Option<u64>,
-    last_visibility_voxel: Option<[i32; 3]>,
-    last_visibility_signature: Option<(ChunkPos, i32, u8)>,
-    last_visibility_radius: i32,
+    /// Versioned snapshot is rebuilt only when streamed probes or resident
+    /// Section keys change, not for camera movement within a loaded region.
+    visibility_snapshot: Option<(u64, Arc<PortalVisibilitySnapshot>)>,
+    visibility_job: Option<Receiver<PortalVisibilityResult>>,
+    visibility_job_key: Option<PortalVisibilityKey>,
+    visibility_completed_key: Option<PortalVisibilityKey>,
+    hidden_draw_nodes: Arc<HashSet<NodeId>>,
     /// Mesh render bands unreachable from the camera or any unknown exterior.
     hidden_sections: BTreeSet<(ChunkPos, i32)>,
     /// Edited columns whose old portal data must not suppress geometry.
@@ -584,10 +609,11 @@ impl World3dEditorView {
             dirty_sections: BTreeSet::new(),
             probes: BTreeMap::new(),
             visibility_revision: 0,
-            last_visibility_revision: None,
-            last_visibility_voxel: None,
-            last_visibility_signature: None,
-            last_visibility_radius: 0,
+            visibility_snapshot: None,
+            visibility_job: None,
+            visibility_job_key: None,
+            visibility_completed_key: None,
+            hidden_draw_nodes: Arc::new(HashSet::new()),
             hidden_sections: BTreeSet::new(),
             invalidated_visibility: HashSet::new(),
             textures: HashMap::new(),
@@ -1659,10 +1685,12 @@ impl World3dEditorView {
         self.last_view_forward = None;
         self.last_view_camera = None;
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
-        self.last_visibility_revision = None;
-        self.last_visibility_voxel = None;
-        self.last_visibility_signature = None;
+        self.visibility_snapshot = None;
+        self.visibility_job = None;
+        self.visibility_job_key = None;
+        self.visibility_completed_key = None;
         self.hidden_sections.clear();
+        self.hidden_draw_nodes = Arc::new(HashSet::new());
         self.invalidated_visibility.clear();
         self.textures.clear();
         self.texture_bytes = 0;
