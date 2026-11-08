@@ -91,6 +91,12 @@ pub(super) struct SidecarSurface {
     pipeline_layout: PipelineLayoutId,
     composite_pipeline: RenderPipelineId,
     targets: HashMap<SceneViewId, Target>,
+    /// Previously submitted color/depth attachments cannot be destroyed on
+    /// resize/scene eviction until the host proves GPU queue completion.
+    awaiting_gpu: Vec<Target>,
+    /// Fence-proven resources are destroyed by the next owner-thread device
+    /// access. The completion callback intentionally has no ExtensionDevice.
+    ready_to_release: Vec<Target>,
 }
 
 enum Allocation {
@@ -220,6 +226,8 @@ impl SidecarSurface {
                 pipeline_layout,
                 composite_pipeline,
                 targets: HashMap::new(),
+                awaiting_gpu: Vec::new(),
+                ready_to_release: Vec::new(),
             })
         })();
         if result.is_err() {
@@ -322,11 +330,33 @@ impl SidecarSurface {
         })
     }
 
+    /// Exposes only resources which are awaiting a real GPU fence.
+    /// A submission acknowledgement alone is not enough to release them.
+    pub(super) fn has_retired_targets(&self) -> bool {
+        !self.awaiting_gpu.is_empty()
+    }
+
+    /// Called only after GPUI verifies all earlier graphics submissions
+    /// completed. Destruction still occurs on the native device owner.
+    pub(super) fn gpu_work_completed(&mut self) {
+        self.ready_to_release.append(&mut self.awaiting_gpu);
+    }
+
+    fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        // Do not silently drop handles when destruction fails: leave the
+        // failed target in the queue to be retried on the next safe pass.
+        while let Some(target) = self.ready_to_release.pop() {
+            target.destroy(device)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn sync(
         &mut self,
         device: &mut dyn ExtensionDevice,
         host: &RendererExtensionContext,
     ) -> gpui::Result<()> {
+        self.release_completed(device)?;
         if self.host_pass == host.render_pass()
             && self.host_format == host.color_format()
             && self.host_extent == host.viewport()
@@ -421,7 +451,7 @@ impl SidecarSurface {
         if recreate {
             let new_target = self.create_target(device, host.viewport())?;
             if let Some(previous) = self.targets.insert(id, new_target) {
-                previous.destroy(device)?;
+                self.awaiting_gpu.push(previous);
             }
         }
         let target = self.targets.get_mut(&id)
@@ -467,14 +497,21 @@ impl SidecarSurface {
         device: &mut dyn ExtensionDevice,
         id: SceneViewId,
     ) -> gpui::Result<()> {
+        self.release_completed(device)?;
         if let Some(target) = self.targets.remove(&id) {
-            target.destroy(device)?;
+            self.awaiting_gpu.push(target);
         }
         Ok(())
     }
 
     pub(super) fn destroy(mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        // Final teardown is owned by the host, which drains its native
+        // pending submissions before disposing of the renderer. Destroy all
+        // active/fence-ready resources through that same native device.
         for (_, target) in self.targets.drain() {
+            target.destroy(device)?;
+        }
+        for target in self.awaiting_gpu.drain(..).chain(self.ready_to_release.drain(..)) {
             target.destroy(device)?;
         }
         device.destroy_render_pipeline(self.composite_pipeline)?;
