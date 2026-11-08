@@ -111,6 +111,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib world3d::visibility::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib portal_mask_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux-build:
     name: Linux build
@@ -187,3 +191,8 @@ jobs:
 
       - name: Test editor four-Section fusion and removal recovery
         run: cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
+
+      - name: Test conservative Section visibility and certified blocker masks
+        run: |
+          cargo test -p bmcbl --lib world3d::visibility::tests -- --nocapture
+          cargo test -p bmcbl --lib portal_mask_tests -- --nocapture
