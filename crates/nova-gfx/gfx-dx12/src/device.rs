@@ -289,25 +289,23 @@ mod platform {
             let device_elapsed = device_started_at.elapsed();
             let queue_started_at = Instant::now();
             let graphics_queue = create_command_queue(&device)?;
-            let (sidecar_queue, sidecar_fence) =
-                if std::env::var_os("GPUI_3D_NATIVE_QUEUE").is_some() {
-                    match create_command_queue(&device)
-                        .and_then(|queue| create_fence(&device).map(|fence| (queue, fence)))
-                    {
-                        Ok((queue, fence)) => {
-                            log::info!("nova-gfx DX12 independent offscreen DIRECT queue enabled");
-                            (Some(queue), Some(fence))
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                "DX12 independent offscreen queue unavailable; using graphics queue: {error}"
-                            );
-                            (None, None)
-                        }
-                    }
-                } else {
+            // An independent DIRECT queue is part of the default development
+            // backend. Device/driver failures fall back to the existing
+            // graphics queue without requiring any configuration.
+            let (sidecar_queue, sidecar_fence) = match create_command_queue(&device)
+                .and_then(|queue| create_fence(&device).map(|fence| (queue, fence)))
+            {
+                Ok((queue, fence)) => {
+                    log::info!("nova-gfx DX12 independent offscreen DIRECT queue enabled");
+                    (Some(queue), Some(fence))
+                }
+                Err(error) => {
+                    log::warn!(
+                        "DX12 independent offscreen queue unavailable; using graphics queue: {error}"
+                    );
                     (None, None)
-                };
+                }
+            };
             // SAFETY: The queue is live and returns its timestamp tick frequency by value.
             let timestamp_frequency = unsafe { graphics_queue.GetTimestampFrequency() }
                 .ok()
