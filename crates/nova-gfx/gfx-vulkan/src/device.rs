@@ -1579,6 +1579,7 @@ impl VulkanDevice {
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
             owns_fence: false,
+            cross_queue_semaphores: None,
             gpu_trace_query_pool,
             compute_resources: Vec::new(),
         }))
@@ -2568,6 +2569,98 @@ impl VulkanDevice {
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         Ok(fence)
+    }
+
+    /// True second Graphics queue submission. Both queues share one family,
+    /// so image queue-family ownership never changes. Three native submits:
+    /// graphics release -> offscreen producer -> graphics acquire, joined by
+    /// two binary GPU semaphores. No CPU fence wait occurs on the render path.
+    fn submit_command_encoder_independent(
+        &mut self,
+        encoder: CommandEncoderId,
+    ) -> Result<SubmissionId> {
+        let Some(queue) = self.sidecar_queue else {
+            return self.submit_command_encoder_deferred_tracked(encoder);
+        };
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let first = unsafe {
+            self.device.create_semaphore(&semaphore_info, None)
+        }.map_err(VulkanError::from)?;
+        let second = match unsafe {
+            self.device.create_semaphore(&semaphore_info, None)
+        } {
+            Ok(value) => value,
+            Err(error) => {
+                unsafe { self.device.destroy_semaphore(first, None) };
+                return Err(VulkanError::from(error).into());
+            }
+        };
+        let fence = match create_fence(&self.device, false) {
+            Ok(value) => value,
+            Err(error) => {
+                unsafe {
+                    self.device.destroy_semaphore(second, None);
+                    self.device.destroy_semaphore(first, None);
+                }
+                return Err(error);
+            }
+        };
+        let result = (|| -> Result<()> {
+            // Earlier GPU uploads and main GUI work must precede 3D.
+            let releases = [first];
+            let release = vk::SubmitInfo::default().signal_semaphores(&releases);
+            unsafe {
+                self.device.queue_submit(self.graphics_queue, &[release], vk::Fence::null())
+            }.map_err(VulkanError::from)?;
+
+            // Submit 3D command buffers to queue index 1 in the same family.
+            let waits = [first];
+            let signals = [second];
+            let wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let buffers = &self.command_encoders.get(encoder)?.command_buffers;
+            let producer = vk::SubmitInfo::default()
+                .wait_semaphores(&waits)
+                .wait_dst_stage_mask(&wait_stages)
+                .command_buffers(buffers)
+                .signal_semaphores(&signals);
+            unsafe {
+                self.device.queue_submit(queue, &[producer], vk::Fence::null())
+            }.map_err(VulkanError::from)?;
+
+            // Keep the sampled attachment unavailable to the GUI graphics
+            // queue until all sidecar writes and layout transitions finish.
+            // The fence is on the consumer queue so it protects resource
+            // retirement after both queues' GPU work completes.
+            let wait_producer = [second];
+            let consumer_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let consumer = vk::SubmitInfo::default()
+                .wait_semaphores(&wait_producer)
+                .wait_dst_stage_mask(&consumer_stages);
+            unsafe {
+                self.device.queue_submit(self.graphics_queue, &[consumer], fence)
+            }.map_err(VulkanError::from)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // Rare submission failure: one of the above queues may already
+            // own the semaphore or command buffers. Drain the device before
+            // the caller disposes of the failed encoder.
+            let _ = unsafe { self.device.device_wait_idle() };
+            unsafe {
+                self.device.destroy_fence(fence, None);
+                self.device.destroy_semaphore(second, None);
+                self.device.destroy_semaphore(first, None);
+            }
+            return Err(error);
+        }
+        let mut encoder_resource = self.command_encoders.take(encoder)?;
+        encoder_resource.fence = fence;
+        encoder_resource.owns_fence = true;
+        encoder_resource.cross_queue_semaphores = Some([first, second]);
+        self.deferred_destroys
+            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
+        self.submitted_frames = self.submitted_frames.saturating_add(1);
+        Ok(self.submissions.insert(VulkanSubmission { fence }))
     }
 
     fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
@@ -3988,6 +4081,13 @@ impl VulkanDevice {
             // SAFETY: Framebuffer was created for this command encoder and is destroyed once here.
             unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
         }
+        if let Some(semaphores) = encoder.cross_queue_semaphores {
+            // Consumer-side fence completed (or device-wide idle on
+            // teardown): both the producer signal and GUI wait are finished.
+            for semaphore in semaphores {
+                unsafe { self.device.destroy_semaphore(semaphore, None) };
+            }
+        }
         if encoder.owns_fence && encoder.fence != vk::Fence::null() {
             // SAFETY: Fence was created for this command encoder and is destroyed once here.
             unsafe { self.device.destroy_fence(encoder.fence, None) };
@@ -5040,6 +5140,9 @@ struct VulkanCommandEncoder {
     transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
     owns_fence: bool,
+    /// Both binary semaphores belong to this command encoder's native fence.
+    /// They are never destroyed until the consumer-side graphics wait ends.
+    cross_queue_semaphores: Option<[vk::Semaphore; 2]>,
     /// One timestamp pair per command buffer; retained until its fence completes.
     gpu_trace_query_pool: Option<vk::QueryPool>,
     gpu_trace_passes: Vec<VulkanGpuPass>,
