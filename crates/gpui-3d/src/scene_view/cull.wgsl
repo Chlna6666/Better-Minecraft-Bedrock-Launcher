@@ -55,6 +55,11 @@ fn is_occluded(box: Bounds) -> bool {
 }
 
 fn is_visible(box: Bounds) -> bool {
+    // The CPU patches ONLY bounds_max.w (the resident Bounds visibility
+    // word) when portal reachability changes. Values 0/1 keep the existing
+    // depth-bias/Hi-Z semantics; 2 means temporarily portal-hidden.
+    // No draw/batch/material/instance re-encoding is necessary.
+    if (box.bounds_max.w >= 2.0) { return false; }
     if (box.origin.w != 0.0 &&
         (any(box.origin.xyz < range.minimum.xyz) || any(box.origin.xyz >= range.maximum.xyz))) {
         return false;
