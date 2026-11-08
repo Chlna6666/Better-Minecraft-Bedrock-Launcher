@@ -1,6 +1,6 @@
 use crate::{
     AnimationError, AnimationScratch, Camera, CameraError, Mat4, Ray, RaycastError, RaycastScratch,
-    Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2, Vec3,
+    NodeId, Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2, Vec3,
 };
 use gpui::ExtensionDevice;
 use gpui::{
@@ -12,7 +12,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::{HashMap, HashSet}};
 
 #[cfg(test)]
 pub(crate) const SHADER: &str = concat!(
@@ -91,6 +91,8 @@ pub struct SceneView {
     pub(super) voxel_shading: VoxelShading,
     pub(super) screen_effects: Option<ScreenEffects>,
     pub(super) culling_bounds: Option<crate::Aabb>,
+    /// Per-view GPU visibility overlay; preserves persistent Scene and mesh identity.
+    pub(super) hidden_nodes: Arc<HashSet<NodeId>>,
 }
 
 #[derive(Clone)]
@@ -194,6 +196,7 @@ impl SceneView {
             voxel_shading: VoxelShading::default(),
             screen_effects: None,
             culling_bounds: None,
+            hidden_nodes: Arc::new(HashSet::new()),
         }
     }
 
@@ -224,6 +227,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -252,6 +256,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -299,6 +304,18 @@ impl SceneView {
         })
     }
 
+    /// Overrides GPU-driven draw visibility without changing immutable Scene
+    /// geometry, authoring visibility or stable Draw Slot addresses.
+    ///
+    /// Non-compute backends conservatively retain their normal draw set.
+    #[must_use]
+    pub fn with_hidden_nodes(&self, hidden_nodes: Arc<HashSet<NodeId>>) -> Self {
+        Self {
+            hidden_nodes,
+            ..self.clone()
+        }
+    }
+
     /// Returns a snapshot with a transform applied to the complete scene.
     ///
     /// The transform affects rendering, frustum culling, lighting, and ray queries. It must be a
@@ -336,6 +353,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         })
     }
 
@@ -363,6 +381,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -410,6 +429,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         })
     }
 
@@ -446,6 +466,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         })
     }
 
@@ -477,6 +498,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -508,6 +530,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -575,6 +598,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         })
     }
 
@@ -604,6 +628,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         }
     }
 
@@ -657,6 +682,7 @@ impl SceneView {
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
             culling_bounds: self.culling_bounds,
+            hidden_nodes: self.hidden_nodes.clone(),
         })
     }
 
@@ -1190,6 +1216,24 @@ mod tests {
         });
         assert_eq!(scene_view.id, updated.id);
         assert!(Arc::ptr_eq(scene_view.scene(), updated.scene()));
+    }
+
+    #[test]
+    fn per_view_gpu_visibility_preserves_scene_and_gpu_cache_identity() {
+        let mut scene = Scene::new();
+        let id = scene.insert(None, crate::Node::new()).unwrap();
+        let scene = Arc::new(scene);
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 10.0);
+        let original = SceneView::new(scene.clone(), camera);
+        let hidden = Arc::new(HashSet::from([id]));
+        let masked = original.with_hidden_nodes(hidden.clone());
+        assert_eq!(original.id, masked.id);
+        assert_eq!(original.scene.version(), masked.scene.version());
+        assert!(Arc::ptr_eq(&scene, &masked.scene));
+        assert!(Arc::ptr_eq(&hidden, &masked.hidden_nodes));
+        let moved = masked.with_camera(camera).with_scene(scene);
+        assert!(Arc::ptr_eq(&hidden, &moved.hidden_nodes));
+        assert!(original.hidden_nodes.is_empty());
     }
 
     #[test]
