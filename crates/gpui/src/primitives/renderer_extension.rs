@@ -272,6 +272,14 @@ impl dyn RendererExtension {
 /// Creation, encoding, trimming and destruction all run on the GPU owner. This state does not
 /// need to be `Send`; only the immutable [`RendererExtension`] inputs cross the UI boundary.
 pub trait RendererExtensionRenderer {
+    /// Opts a producer into independent native graphics-queue submission.
+    /// Only offscreen passes with no implicit host-pass dependencies qualify;
+    /// mixed producer groups always take the ordered graphics-queue path.
+    /// This does not imply that a second queue exists on the current device.
+    fn prefers_independent_graphics_queue(&self) -> bool {
+        false
+    }
+
     /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
     /// This is submission ordering, not a resource-reclamation completion signal.
     fn render_passes_submitted(&mut self) {}
