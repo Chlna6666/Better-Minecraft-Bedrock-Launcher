@@ -2461,8 +2461,16 @@ impl VulkanDevice {
     }
 
     fn record_texture_passes(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<()> {
+        self.record_texture_passes_on_queue(passes, false).map(|_| ())
+    }
+
+    fn record_texture_passes_on_queue(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        independent: bool,
+    ) -> Result<Option<SubmissionId>> {
         if passes.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::new();
@@ -2523,15 +2531,23 @@ impl VulkanDevice {
             }
         }
 
-        if let Err(error) = self.submit_command_encoder_deferred(encoder) {
-            self.destroy_temporary_command_encoder_now(encoder)?;
-            for (texture_id, layout) in &target_layouts {
-                self.textures.get_mut(*texture_id)?.layout = *layout;
+        let submission = if independent {
+            self.submit_command_encoder_independent(encoder).map(Some)
+        } else {
+            self.submit_command_encoder_deferred(encoder).map(|_| None)
+        };
+        let submission = match submission {
+            Ok(submission) => submission,
+            Err(error) => {
+                self.destroy_temporary_command_encoder_now(encoder)?;
+                for (texture_id, layout) in &target_layouts {
+                    self.textures.get_mut(*texture_id)?.layout = *layout;
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         self.poll_cleanup();
-        Ok(())
+        Ok(submission)
     }
 
     fn submit_command_encoder_deferred(&mut self, encoder: CommandEncoderId) -> Result<()> {
@@ -4539,6 +4555,17 @@ impl PresentationDevice for VulkanDevice {
     ) -> Result<Option<SubmissionId>> {
         self.record_texture_passes(passes)?;
         Ok(None)
+    }
+
+    fn independent_graphics_queue_available(&self) -> bool {
+        self.sidecar_queue.is_some()
+    }
+
+    fn render_to_textures_independent(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        self.record_texture_passes_on_queue(passes, self.sidecar_queue.is_some())
     }
 }
 
