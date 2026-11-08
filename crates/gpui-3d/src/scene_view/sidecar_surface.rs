@@ -19,7 +19,10 @@ struct Target {
     depth: TextureId,
     depth_view: TextureViewId,
     binding: BindGroupId,
+    placement: BufferId,
     extent: Extent2d,
+    region: ScissorRect,
+    host_extent: Extent2d,
     capture: CaptureEpoch,
 }
 
@@ -50,12 +53,56 @@ impl CaptureEpoch {
 impl Target {
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         device.destroy_bind_group(self.binding)?;
+        device.destroy_buffer(self.placement)?;
         device.destroy_texture_view(self.depth_view)?;
         device.destroy_texture(self.depth)?;
         device.destroy_texture_view(self.color_view)?;
         device.destroy_texture(self.color)?;
         Ok(())
     }
+}
+
+/// A per-element color/depth attachment covers only the visible pixel
+/// rectangle, unlike the previous full-window allocation for every widget.
+/// Clamp to the swapchain size even when an outer ScrollView clips the item.
+fn visible_region(host: &RendererExtensionContext) -> ScissorRect {
+    let viewport = host.viewport();
+    let clip = host.scissor();
+    let x = clip.x.min(viewport.width() - 1);
+    let y = clip.y.min(viewport.height() - 1);
+    let right = clip.x.saturating_add(clip.width).min(viewport.width());
+    let bottom = clip.y.saturating_add(clip.height).min(viewport.height());
+    ScissorRect {
+        x,
+        y,
+        width: right.saturating_sub(x).max(1),
+        height: bottom.saturating_sub(y).max(1),
+    }
+}
+
+fn region_extent(rect: ScissorRect) -> Extent2d {
+    // visible_region always returns positive extents.
+    Extent2d::new(rect.width.max(1), rect.height.max(1))
+        .expect("cropped sidecar region must be nonzero")
+}
+
+/// Four f32 uniforms: NDC top-left followed by NDC delta per unit UV.
+/// Full-screen-triangle vertex coordinates (0, 0), (2, 0), (0, 2)
+/// directly sample the cropped texture with no separate vertex buffer.
+fn placement_bytes(rect: ScissorRect, viewport: Extent2d) -> [u8; 16] {
+    let width = viewport.width() as f32;
+    let height = viewport.height() as f32;
+    let rect_data = [
+        -1.0 + 2.0 * rect.x as f32 / width,
+        1.0 - 2.0 * rect.y as f32 / height,
+        2.0 * rect.width as f32 / width,
+        -2.0 * rect.height as f32 / height,
+    ];
+    let mut bytes = [0u8; 16];
+    for (chunk, value) in bytes.chunks_exact_mut(4).zip(rect_data) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 /// Keep the source 3D pass inside the same widget region as the final GUI
@@ -200,6 +247,11 @@ impl SidecarSurface {
                         binding_type: BindingType::Sampler,
                         stages: ShaderStages::FRAGMENT,
                     },
+                    BindGroupLayoutEntry {
+                        binding: 2,
+                        binding_type: BindingType::UniformBuffer,
+                        stages: ShaderStages::VERTEX,
+                    },
                 ],
             })?;
             allocations.push(Allocation::BindLayout(bind_layout));
@@ -240,14 +292,22 @@ impl SidecarSurface {
         &self,
         host: &RendererExtensionContext,
     ) -> RendererExtensionContext {
-        host.offscreen_preserving_bounds(self.capture_pass, self.capture_format)
+        let region = visible_region(host);
+        host.offscreen_region(
+            self.capture_pass,
+            self.capture_format,
+            (region.x, region.y),
+            region_extent(region),
+        )
     }
 
     fn create_target(
         &self,
         device: &mut dyn ExtensionDevice,
-        extent: Extent2d,
+        region: ScissorRect,
+        host_extent: Extent2d,
     ) -> gpui::Result<Target> {
+        let extent = region_extent(region);
         let color = device.create_texture(&TextureDescriptor {
             label: Some("gpui-3d sidecar color".into()),
             size: extent,
