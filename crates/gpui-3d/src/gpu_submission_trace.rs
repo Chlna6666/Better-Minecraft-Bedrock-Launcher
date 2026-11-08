@@ -22,6 +22,32 @@ pub(crate) enum Phase {
     BindGroupSync,
 }
 
+static NEXT_SECTION_BATCH: AtomicU64 = AtomicU64::new(1);
+
+/// One stable identity per published Section update, shared across Compute,
+/// resident uploads and the native draw consumer for later correlation.
+pub(crate) fn next_section_batch() -> u64 {
+    NEXT_SECTION_BATCH.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Completed GPU execution durations, never host API timings. Values are
+/// emitted with batch_id so an individual Section publication can be traced
+/// through every native submission without synchronizing the graphics owner.
+pub(crate) fn report_gpu_samples(
+    backend: BackendKind,
+    samples: &[gfx_core::GpuTimestampSample],
+) {
+    if !enabled() { return; }
+    for sample in samples {
+        let Some(elapsed) = sample.duration() else { continue; };
+        eprintln!(
+            "gpui3d gpu_hardware_phase backend={:?} batch_id={} stage={:?} gpu_us={} gpu_ticks={} frequency_hz={} timing=completed_gpu_timestamp",
+            backend, sample.tag.batch_id, sample.tag.stage,
+            elapsed.as_micros(), sample.duration_ticks, sample.frequency_hz,
+        );
+    }
+}
+
 const PHASES: usize = 9;
 const BACKENDS: usize = 6;
 struct Accumulator {

@@ -618,7 +618,7 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, None, None)
+    create_many_impl(device, meshes, shaders, None, None, None)
 }
 
 /// Production GPU meshing suballocates output descriptors into shared writable
@@ -631,14 +631,18 @@ pub(super) fn create_many_pooled(
     template_arena: &mut MeshArena,
     argument_arena: &mut MeshArena,
     backend: BackendKind,
+    batch_id: u64,
 ) -> gpui::Result<Vec<MeshResources>> {
     // One batch scratch pool serves every Section's cells/params/jobs input
     // buffers: three native buffer creations per batch instead of per Section.
     let mut scratch = crate::scene_view::gpu::BatchScratch::new(device.buffer_binding_limits());
+    let profile = crate::gpu_submission_trace::enabled()
+        && device.gpu_work_timestamps_supported();
     let result = create_many_impl(
         device, meshes, shaders,
         Some((arena, template_arena, argument_arena, backend)),
         Some(&mut scratch),
+        profile.then_some(batch_id),
     );
     match result {
         Ok(resources) => scratch.destroy(device).map(|_| resources).map_err(anyhow::Error::from),
@@ -655,6 +659,7 @@ fn create_many_impl(
     shaders: &Shaders,
     mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
     mut scratch: Option<&mut crate::scene_view::gpu::BatchScratch>,
+    batch_id: Option<u64>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
@@ -693,7 +698,17 @@ fn create_many_impl(
     if !staging_writes.is_empty() {
         let bytes = staging_writes.iter().map(|write| write.data.len()).sum::<usize>();
         let started = crate::gpu_submission_trace::enabled().then(Instant::now);
-        device.write_buffer_batch(&staging_writes).map_err(anyhow::Error::from)?;
+        if let Some(batch_id) = batch_id {
+            device.write_buffer_batch_profiled(
+                &staging_writes,
+                gfx_core::GpuTimestampTag {
+                    batch_id,
+                    stage: gfx_core::GpuTimestampStage::BufferUpload,
+                },
+            )
+        } else {
+            device.write_buffer_batch(&staging_writes)
+        }.map_err(anyhow::Error::from)?;
         if let (Some(start), Some((_, _, _, backend))) = (started, arena.as_ref()) {
             let duration = start.elapsed();
             crate::gpu_submission_trace::observe(
@@ -728,7 +743,17 @@ fn create_many_impl(
     let submitted = if dispatches.is_empty() {
         Ok(())
     } else {
-        device.dispatch_compute_batch(&dispatches).map_err(anyhow::Error::from)
+        (if let Some(batch_id) = batch_id {
+            device.dispatch_compute_batch_profiled(
+                &dispatches,
+                gfx_core::GpuTimestampTag {
+                    batch_id,
+                    stage: gfx_core::GpuTimestampStage::GeneratedMesh,
+                },
+            )
+        } else {
+            device.dispatch_compute_batch(&dispatches)
+        }).map_err(anyhow::Error::from)
     };
     let dispatch_elapsed = dispatch_started.map(|start| start.elapsed()).unwrap_or_default();
     let dispatch_ms = dispatch_elapsed.as_secs_f64() * 1000.0;

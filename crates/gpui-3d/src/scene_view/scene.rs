@@ -34,6 +34,8 @@ use std::{
 
 pub(super) struct SceneResources {
     backend: BackendKind,
+    /// Per-publication ID shared by hardware compute and upload probes.
+    gpu_batch_id: u64,
     culling: Option<CullResources>,
     mesh_shader: Option<super::generated::Shaders>,
     mesh_draw_shader: Option<gfx_core::ShaderModuleId>,
@@ -253,6 +255,7 @@ impl DrawSyncAudit {
         has_structural_delta: bool,
         stable_culling_slots: bool,
         draws: usize,
+        batch_id: u64,
     ) {
         if !cfg!(debug_assertions) && !trace_timings() {
             return;
@@ -286,8 +289,8 @@ impl DrawSyncAudit {
         if total > 0 {
             let upload = crate::gpu_upload_cost_estimate();
             eprintln!(
-                "gpui3d draw_sync_audit draws={} samples={} resident={} structural={} full={} resident_pct={:.1} structural_pct={:.1} full_pct={:.1} full_no_gpu_cull={} full_no_delta={} full_no_slots={} full_ineligible={} gpu_owner_upload_samples={} gpu_owner_ns_per_mib={} gpu_owner_ns_per_write={}",
-                draws, total, self.resident, self.structural, self.full,
+                "gpui3d draw_sync_audit batch_id={} draws={} samples={} resident={} structural={} full={} resident_pct={:.1} structural_pct={:.1} full_pct={:.1} full_no_gpu_cull={} full_no_delta={} full_no_slots={} full_ineligible={} gpu_owner_upload_samples={} gpu_owner_ns_per_mib={} gpu_owner_ns_per_write={}",
+                batch_id, draws, total, self.resident, self.structural, self.full,
                 self.resident as f64 * 100.0 / total as f64,
                 self.structural as f64 * 100.0 / total as f64,
                 self.full as f64 * 100.0 / total as f64,
@@ -752,6 +755,7 @@ impl SceneResources {
             binding_index: binding_index::BindingIndex::default(),
             last_binding_report: None,
             draw_sync_audit: DrawSyncAudit::default(),
+            gpu_batch_id: 0,
             sampler: None,
             last_used_at: Instant::now(),
             last_used_frame: 0,
@@ -822,6 +826,9 @@ impl SceneResources {
                 &scene_view.animation,
                 scene_view.animation_time,
             );
+        if draw_state_changed {
+            self.gpu_batch_id = crate::gpu_submission_trace::next_section_batch();
+        }
         let frame_changed = camera_changed
             || self.frame_state.is_none_or(|state| {
                 state.camera != scene_view.camera || state.projection != projection
@@ -1236,6 +1243,7 @@ impl SceneResources {
                 self.prepared.structural_draw_delta().is_some(),
                 self.culling.as_ref().is_some_and(CullResources::structural_slots_committed),
                 self.prepared.draws.len(),
+                self.gpu_batch_id,
             );
             if let Some(started) = buffer_started {
                 buffer_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1722,7 +1730,17 @@ impl SceneResources {
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
             let upload_started = Instant::now();
-            device.write_buffer_batch(&writes)?;
+            if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+                device.write_buffer_batch_profiled(
+                    &writes,
+                    gfx_core::GpuTimestampTag {
+                        batch_id: self.gpu_batch_id,
+                        stage: gfx_core::GpuTimestampStage::BufferUpload,
+                    },
+                )?;
+            } else {
+                device.write_buffer_batch(&writes)?;
+            }
             let elapsed = upload_started.elapsed();
             crate::upload_feedback::observe_buffer_upload(
                 self.backend, uploaded_bytes, writes.len(), elapsed,
@@ -1939,7 +1957,17 @@ impl SceneResources {
         let bytes_uploaded = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
             let upload_started = Instant::now();
-            device.write_buffer_batch(&writes)?;
+            if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+                device.write_buffer_batch_profiled(
+                    &writes,
+                    gfx_core::GpuTimestampTag {
+                        batch_id: self.gpu_batch_id,
+                        stage: gfx_core::GpuTimestampStage::BufferUpload,
+                    },
+                )?;
+            } else {
+                device.write_buffer_batch(&writes)?;
+            }
             let elapsed = upload_started.elapsed();
             crate::upload_feedback::observe_buffer_upload(
                 self.backend, bytes_uploaded, writes.len(), elapsed,
@@ -2404,7 +2432,19 @@ impl SceneResources {
             Ok(())
         } else {
             let upload_started = Instant::now();
-            let result = device.write_buffer_batch(&writes).map(|_| ());
+            let result = if crate::gpu_submission_trace::enabled()
+                && device.gpu_work_timestamps_supported()
+            {
+                device.write_buffer_batch_profiled(
+                    &writes,
+                    gfx_core::GpuTimestampTag {
+                        batch_id: self.gpu_batch_id,
+                        stage: gfx_core::GpuTimestampStage::BufferUpload,
+                    },
+                )
+            } else {
+                device.write_buffer_batch(&writes)
+            }.map(|_| ());
             if result.is_ok() {
                 let elapsed = upload_started.elapsed();
                 crate::upload_feedback::observe_buffer_upload(
@@ -2764,6 +2804,7 @@ impl SceneResources {
                     &mut *self.template_arena.borrow_mut(),
                     &mut *self.argument_arena.borrow_mut(),
                     backend,
+                    self.gpu_batch_id,
                 );
                 if let Err(error) = flushed {
                     discard_pending_meshes(
@@ -2794,6 +2835,7 @@ impl SceneResources {
             &mut *self.template_arena.borrow_mut(),
             &mut *self.argument_arena.borrow_mut(),
             backend,
+            self.gpu_batch_id,
         );
         if let Err(error) = flushed {
             discard_pending_meshes(
@@ -3934,6 +3976,7 @@ fn flush_pending_generated_meshes(
     template_arena: &mut MeshArena,
     argument_arena: &mut MeshArena,
     backend: BackendKind,
+    batch_id: u64,
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
         let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
@@ -3949,6 +3992,7 @@ fn flush_pending_generated_meshes(
             template_arena,
             argument_arena,
             backend,
+            batch_id,
         )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             if let Some(generated) = &resource.generated {

@@ -913,6 +913,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let scene_view = extension
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow!("GPUI 3D renderer received an unexpected extension type"))?;
+        if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
+            let mut samples = Vec::new();
+            device.drain_gpu_work_timestamps(&mut samples)?;
+            crate::gpu_submission_trace::report_gpu_samples(context.backend_kind(), &samples);
+        }
         let scene_view = scene_view.sample_camera(context.frame_time());
         {
             let _phase =
