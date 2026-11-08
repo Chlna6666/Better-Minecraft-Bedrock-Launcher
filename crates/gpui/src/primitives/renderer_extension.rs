@@ -130,6 +130,12 @@ impl RendererExtensionContext {
         let mut content_mask = self.content_mask;
         content_mask.bounds.origin.x -= translation.x;
         content_mask.bounds.origin.y -= translation.y;
+        // Rounded scroll clips have a separate corner rectangle; both
+        // coordinate systems must be translated by the same pixel offset.
+        if content_mask.corner_radii != crate::Corners::default() {
+            content_mask.corner_bounds.origin.x -= translation.x;
+            content_mask.corner_bounds.origin.y -= translation.y;
+        }
         Self {
             render_pass,
             color_format,
