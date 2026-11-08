@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 use crate::state::{BlockStateQuery, BlockStateValue};
 
-pub use shape::{ModelCuboid, ModelPlane, ModelShape};
+pub use shape::{ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFamily {

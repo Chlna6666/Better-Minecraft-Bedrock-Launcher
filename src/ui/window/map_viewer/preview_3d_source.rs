@@ -7,7 +7,8 @@ use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
+    block_face_for_normal, canonical_block_name_for_state, detail_cuboid_with_local_uv,
+    detail_material_block_name_for_state,
     is_engine_block_entity_model_block, model_family_for_block_name, model_family_has_detail_shape,
     model_shape_for_block_state, shape_from_geometry,
 };
@@ -668,6 +669,14 @@ fn preview_3d_detail_shape_from_model_shape(shape: ModelShape) -> Preview3dDetai
 }
 
 fn preview_3d_cuboid_from_model_cuboid(cuboid: ModelCuboid) -> Preview3dCuboid {
+    // Procedural shapes that omit UVs would otherwise map the whole texture onto every face,
+    // squeezing thin models (torches, lanterns, rods, chains) into a 2px strip. Project the
+    // texture by the cuboid's block-space bounds, which is the default vanilla mapping.
+    let cuboid = if cuboid.face_uvs.is_empty() {
+        detail_cuboid_with_local_uv(cuboid)
+    } else {
+        cuboid
+    };
     Preview3dCuboid {
         min: cuboid.min,
         max: cuboid.max,

@@ -33,8 +33,8 @@ pub use material::{
 };
 pub use model_family::{
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, canonical_block_name_for_state,
-    detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
-    model_family_has_detail_shape,
+    detail_cuboid_with_local_uv, detail_material_block_name_for_state, is_full_opaque_block,
+    model_family_for_block_name, model_family_has_detail_shape,
 };
 pub use neighbor::{
     DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,

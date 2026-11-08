@@ -188,7 +188,7 @@ pub fn upright_full_texture_uv() -> [[f32; 2]; 4] {
 /// outside, and V starts at the block top (1 - y). That keeps every texture upright and
 /// unmirrored on all six faces, including partially inset elements such as slabs and fences.
 #[must_use]
-pub(crate) fn detail_cuboid_with_local_uv(cuboid: ModelCuboid) -> ModelCuboid {
+pub fn detail_cuboid_with_local_uv(cuboid: ModelCuboid) -> ModelCuboid {
     let [x0, y0, z0] = cuboid.min;
     let [x1, y1, z1] = cuboid.max;
     let v_top = 1.0 - y1;
