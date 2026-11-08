@@ -216,10 +216,25 @@ impl StableDrawSlots {
         old_mapping: &[u32],
         delta: &crate::prepare::StructuralDrawDelta,
     ) -> gpui::Result<Option<StructuralSlotPlan>> {
+        self.plan_structural_reusing(draws, old_mapping, delta, &mut Vec::new())
+    }
+
+    /// Reuse the *previously committed* mapping's allocation as scratch after
+    /// the last successful upload. A dense GPU logical indirection table still
+    /// needs contiguous words, but we no longer allocate another 100K+ entry
+    /// Vec for every Section splice. GPU commit remains transactional.
+    pub(in crate::scene_view) fn plan_structural_reusing(
+        &self,
+        draws: &[PreparedDraw],
+        old_mapping: &[u32],
+        delta: &crate::prepare::StructuralDrawDelta,
+        next_mapping: &mut Vec<u32>,
+    ) -> gpui::Result<Option<StructuralSlotPlan>> {
         if delta.previous_count != old_mapping.len() || delta.edits.is_empty() {
             return Ok(None);
         }
-        let mut next_mapping = Vec::with_capacity(draws.len());
+        next_mapping.clear();
+        next_mapping.reserve(draws.len());
         let mut retired = Vec::<(SlotIdentity, usize)>::new();
         let mut additions = Vec::<(SlotIdentity, usize)>::new();
         let mut occurrences = HashMap::<BaseIdentity, u32>::new();
@@ -313,7 +328,7 @@ impl StableDrawSlots {
             added.push((identity, slot, logical));
         }
         Ok(Some(StructuralSlotPlan {
-            mapping: next_mapping,
+            mapping: std::mem::take(next_mapping),
             high_water,
             retired,
             added,
@@ -636,6 +651,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn structural_planner_reuses_large_mapping_allocation() {
+        let original = draws(512);
+        let (resident, mapping) = StableDrawSlots::default().plan(&original).unwrap();
+        let mut next = original.clone();
+        next.remove(200);
+        let delta = crate::prepare::StructuralDrawDelta {
+            previous_count: original.len(),
+            edits: vec![crate::prepare::StructuralDrawEdit {
+                old: 200..201, new: 200..200,
+            }],
+        };
+        let mut scratch = Vec::with_capacity(4096);
+        let plan = resident
+            .plan_structural_reusing(&next, &mapping, &delta, &mut scratch)
+            .unwrap().unwrap();
+        assert!(plan.mapping.capacity() >= 4096);
+        assert!(scratch.is_empty());
+        assert_eq!(plan.mapping[..200], mapping[..200]);
+        assert_eq!(plan.mapping[200..], mapping[201..]);
     }
 
     #[test]
