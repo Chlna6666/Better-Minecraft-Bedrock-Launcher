@@ -254,8 +254,22 @@ pub(super) fn hidden_render_bands(
     camera: [i32; 3],
     radius: i32,
 ) -> BTreeSet<(ChunkPos, i32)> {
+    let keys = meshes.keys().copied().collect::<BTreeSet<_>>();
+    hidden_render_band_keys(probes, &keys, dimension, camera, radius)
+}
+
+/// Worker-side variant that accepts prospective render bands even before a
+/// Section has a CPU mesh, material table or GPU-resident Draw Slot. Unknown
+/// columns remain open and the same conservative exterior seeding applies.
+pub(super) fn hidden_render_band_keys(
+    probes: &BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    keys: &BTreeSet<(ChunkPos, i32)>,
+    dimension: Dimension,
+    camera: [i32; 3],
+    radius: i32,
+) -> BTreeSet<(ChunkPos, i32)> {
     let empty = BTreeSet::new();
-    if probes.is_empty() || meshes.is_empty() || probes.len() > MAX_COLUMNS {
+    if probes.is_empty() || keys.is_empty() || probes.len() > MAX_COLUMNS {
         return empty;
     }
     let Some((camera_pos, camera_y, camera_exits)) =
@@ -266,7 +280,7 @@ pub(super) fn hidden_render_bands(
     let camera_section = (camera_pos, camera_y);
     let mut min_y = camera_section.1;
     let mut max_y = camera_section.1;
-    for (pos, band) in meshes.keys() {
+    for (pos, band) in keys {
         if pos.dimension != dimension {
             continue;
         }
@@ -349,8 +363,8 @@ pub(super) fn hidden_render_bands(
         .keys()
         .map(|(pos, section_y)| (*pos, section_y.div_euclid(4)))
         .collect::<BTreeSet<_>>();
-    meshes
-        .keys()
+    keys
+        .iter()
         .filter(|(pos, band)| {
             pos.dimension == dimension
                 && inside(*pos)
