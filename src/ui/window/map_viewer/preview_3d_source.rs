@@ -2965,17 +2965,40 @@ impl Default for Preview3dChunkBlocks {
     }
 }
 
+#[cfg(test)]
+mod portal_mask_tests {
+    use super::*;
+
+    #[test]
+    fn visibility_mask_excludes_cutout_cubes_and_handles_negative_sections() {
+        let mut blocks = Preview3dChunkBlocks::test_cubes(&[[-1, -1, -1], [-2, -1, -1]]);
+        blocks.opaque_blocks[1].material = Arc::from("minecraft_oak_leaves");
+        blocks.rebuild_neighbor_indexes();
+        let masks = blocks.visibility_solid_masks();
+        let last_cell = 15 * 256 + 15 * 16 + 15;
+        let leaves_cell = 15 * 256 + 15 * 16 + 14;
+        let section = &masks[&-1];
+        assert_ne!(section[last_cell / 64] & (1 << (last_cell % 64)), 0);
+        assert_eq!(section[leaves_cell / 64] & (1 << (leaves_cell % 64)), 0);
+    }
+}
+
 impl Preview3dChunkBlocks {
     /// Full opaque cube occupancy for 16^3 Section visibility propagation.
     /// Unlike per-Section render records, `occupied` retains internal blocks
     /// removed by meshing, so a solid wall is never mistaken for an air tunnel.
     /// Detail geometry, glass, water and model-dependent opacity are NOT
     /// certified blockers; letting those cells pass is conservative.
+    /// AO exclusions are based on is_full_opaque_block and also exclude
+    /// cutout leaves/alpha-tested cube materials, not merely missing geometry.
     pub(in crate::ui::window::map_viewer) fn visibility_solid_masks(
         &self,
     ) -> BTreeMap<i8, [u64; 64]> {
         let mut masks = BTreeMap::<i8, [u64; 64]>::new();
         for key in &self.occupied {
+            if self.ao_exclusions.contains(key) {
+                continue;
+            }
             let Ok(section_y) = i8::try_from(key.y.div_euclid(16)) else {
                 continue;
             };
