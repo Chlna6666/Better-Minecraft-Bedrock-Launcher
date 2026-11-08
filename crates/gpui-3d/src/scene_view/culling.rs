@@ -138,6 +138,53 @@ fn plan_portal_visibility_words(
     patches.into_iter().collect()
 }
 
+/// Dense Section state transitions can touch hundreds of consecutive
+/// stable slots. Issuing one 4-byte driver write per slot is expensive on DX11,
+/// even though the payload is tiny. For four or more adjacent slots, upload
+/// a single run of existing 48-byte Bounds rows with the desired visibility
+/// word patched in-place. Sparse edits remain exactly four bytes.
+fn encode_portal_visibility_patches(
+    patches: &[(usize, u32)],
+    resident: &[Option<BoundsRecordKey>],
+) -> Vec<(u64, Vec<u8>)> {
+    let mut result = Vec::new();
+    let mut cursor = 0;
+    while cursor < patches.len() {
+        let start = cursor;
+        cursor += 1;
+        while cursor < patches.len()
+            && cursor - start < 64
+            && patches[cursor].0 == patches[cursor - 1].0 + 1
+        {
+            cursor += 1;
+        }
+        let run = &patches[start..cursor];
+        if run.len() < 4 {
+            result.extend(run.iter().map(|&(slot, word)| {
+                (
+                    slot as u64 * BOUNDS_STRIDE as u64 + PORTAL_WORD_OFFSET,
+                    word.to_le_bytes().to_vec(),
+                )
+            }));
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(run.len() * BOUNDS_STRIDE);
+        for &(slot, visibility) in run {
+            let key = resident.get(slot).and_then(Option::as_ref);
+            for index in 0..12 {
+                let bits = if index == 7 {
+                    visibility
+                } else {
+                    key.map_or(0, |key| key.0[index])
+                };
+                bytes.extend_from_slice(&bits.to_le_bytes());
+            }
+        }
+        result.push((run[0].0 as u64 * BOUNDS_STRIDE as u64, bytes));
+    }
+    result
+}
+
 /// Resolve a Scene/Section delta into stable physical GPU storage addresses.
 /// No old 48-byte Bounds row is moved; only a changed identity or a newly
 /// allocated physical slot needs an upload.
@@ -797,12 +844,7 @@ impl CullResources {
             self.mask_reapply,
         );
         if !patches.is_empty() {
-            let encoded = patches
-                .iter()
-                .map(|(slot, word)| {
-                    (*slot as u64 * BOUNDS_STRIDE as u64 + PORTAL_WORD_OFFSET, word.to_le_bytes())
-                })
-                .collect::<Vec<_>>();
+            let encoded = encode_portal_visibility_patches(&patches, &self.bounds_keys);
             let writes = encoded
                 .iter()
                 .map(|(offset, bytes)| gfx_core::BufferWrite {
@@ -810,7 +852,7 @@ impl CullResources {
                         buffer: self.bounds,
                         offset: *offset,
                     },
-                    data: &bytes[..],
+                    data: bytes,
                 })
                 .collect::<Vec<_>>();
             device.write_buffer_batch(&writes)?;
@@ -1026,6 +1068,44 @@ mod portal_visibility_tests {
         assert_eq!(
             plan_portal_visibility_words(&updated, &HashSet::new(), &resident, false),
             [(1, 1.0f32.to_bits())]
+        );
+    }
+
+    #[test]
+    fn adjacent_portal_masks_coalesce_into_one_driver_write() {
+        let resident = (0..6)
+            .map(|slot| Some(BoundsRecordKey([
+                slot, 2, 3, 4, 5, 6, 7, 1.0f32.to_bits(), 9, 10, 11, 12,
+            ])))
+            .collect::<Vec<_>>();
+        let patches = (1..=4)
+            .map(|slot| (slot, PORTAL_HIDDEN_WORD))
+            .collect::<Vec<_>>();
+        let grouped = encode_portal_visibility_patches(&patches, &resident);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0, BOUNDS_STRIDE as u64);
+        assert_eq!(grouped[0].1.len(), BOUNDS_STRIDE * 4);
+        for (i, record) in grouped[0].1.chunks_exact(BOUNDS_STRIDE).enumerate() {
+            assert_eq!(u32::from_le_bytes(record[..4].try_into().unwrap()), i as u32 + 1);
+            assert_eq!(
+                u32::from_le_bytes(record[28..32].try_into().unwrap()),
+                PORTAL_HIDDEN_WORD,
+            );
+            assert_eq!(u32::from_le_bytes(record[32..36].try_into().unwrap()), 9);
+        }
+    }
+
+    #[test]
+    fn isolated_portal_mask_updates_only_four_bytes() {
+        let resident = vec![Some(BoundsRecordKey([0; 12])); 8];
+        let grouped = encode_portal_visibility_patches(
+            &[(1, PORTAL_HIDDEN_WORD), (6, 1.0f32.to_bits())],
+            &resident,
+        );
+        assert_eq!(
+            grouped.iter().map(|(offset, bytes)| (*offset, bytes.len())).collect::<Vec<_>>(),
+            [(BOUNDS_STRIDE as u64 + PORTAL_WORD_OFFSET, 4),
+             (6 * BOUNDS_STRIDE as u64 + PORTAL_WORD_OFFSET, 4)]
         );
     }
 
