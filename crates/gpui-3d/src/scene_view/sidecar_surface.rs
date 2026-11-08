@@ -709,8 +709,8 @@ mod tests {
     fn cropped_region_saves_color_and_depth_memory_and_preserves_placement() {
         let viewport = Extent2d::new(1920, 1080).unwrap();
         let bounds = gpui::Bounds {
-            origin: gpui::point(gpui::ScaledPixels(400.0), gpui::ScaledPixels(200.0)),
-            size: gpui::size(gpui::ScaledPixels(480.0), gpui::ScaledPixels(320.0)),
+            origin: gpui::point(gpui::ScaledPixels::from(400.0), gpui::ScaledPixels::from(200.0)),
+            size: gpui::size(gpui::ScaledPixels::from(480.0), gpui::ScaledPixels::from(320.0)),
         };
         let host = RendererExtensionContext::for_target(
             BackendKind::Vulkan,
@@ -735,7 +735,7 @@ mod tests {
         assert!((values[2] - (960.0 / 1920.0)).abs() < 1.0e-5);
         assert!((values[3] - (-640.0 / 1080.0)).abs() < 1.0e-5);
         assert_eq!(host.viewport(), viewport);
-        assert_eq!(bounds.size.width, gpui::ScaledPixels(480.0));
+        assert_eq!(bounds.size.width, gpui::ScaledPixels::from(480.0));
     }
 
     #[test]
