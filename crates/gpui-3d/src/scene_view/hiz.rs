@@ -172,12 +172,7 @@ impl HiZ {
         // cover far more of the image. Favor conservative projected face area
         // per distance, without a full sort or CPU visibility decisions.
         // Omitting a proxy cannot hide geometry: it only reduces Hi-Z rejection.
-        if bounds.len() > self.max_boxes {
-            bounds.select_nth_unstable_by(self.max_boxes, |a, b| {
-                occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
-            });
-            bounds.truncate(self.max_boxes);
-        }
+        retain_best_occluders(&mut bounds, eye, self.max_boxes);
         let count = bounds.len();
         // Estimate tile cost from occluder footprint, not just box count. Shadow
         // uses a 96-unit orthographic view; perspective Hi-Z uses distance to the
@@ -325,6 +320,35 @@ impl HiZ {
     }
 }
 
+/// Preserve a nearby occluder quota so the projected-area heuristic cannot
+/// starve a close cave wall or narrow tunnel entrance in favor of distant
+/// terrain. Fill the remaining budget with large certified surfaces. Both
+/// selections are linear-time nth partitions; neither sorts the entire set.
+fn retain_best_occluders(bounds: &mut Vec<Occluder>, eye: Vec3, limit: usize) {
+    if bounds.len() <= limit {
+        return;
+    }
+    if limit == 0 {
+        bounds.clear();
+        return;
+    }
+    let near = (limit / 4).max(1);
+    bounds.select_nth_unstable_by(near, |a, b| {
+        let distance = |occluder: &Occluder| {
+            let closest = eye.max(occluder.bounds.min).min(occluder.bounds.max);
+            (closest - eye).length_squared()
+        };
+        distance(a).total_cmp(&distance(b))
+    });
+    let coverage_count = limit - near;
+    if coverage_count > 0 {
+        bounds[near..].select_nth_unstable_by(coverage_count, |a, b| {
+            occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
+        });
+    }
+    bounds.truncate(limit);
+}
+
 /// Estimated projected coverage for the axis-aligned faces that are actually
 /// certified opaque. Uses distance to the nearest point, avoiding center-distance
 /// bias against wide planar walls. The stabilizer prevents tiny nearby patches
@@ -434,11 +458,13 @@ mod occluder_selection_tests {
             .collect::<Vec<_>>();
         let roof = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 3);
         proxies.push(roof);
-        proxies.select_nth_unstable_by(8, |a, b| {
-            occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
-        });
-        proxies.truncate(8);
+        retain_best_occluders(&mut proxies, eye, 8);
+        assert_eq!(proxies.len(), 8);
         assert!(proxies.iter().any(|b| b.bounds == roof.bounds));
+        // Retain at least the closest two proxies while using the other six
+        // slots to cover larger structures.
+        assert!(proxies.iter().any(|b| b.bounds.min.x == 0.0));
+        assert!(proxies.iter().any(|b| b.bounds.min.x == 1.0));
     }
 }
 
