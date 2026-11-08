@@ -2532,7 +2532,11 @@ impl VulkanDevice {
         }
 
         let submission = if independent {
-            self.submit_command_encoder_independent(encoder).map(Some)
+            // The native graphics queue already waits for the producer
+            // semaphore. Retire this encoder by its consumer-queue fence,
+            // as the legacy Vulkan offscreen path does, without returning
+            // a duplicate SubmissionId that could outlive its VkFence.
+            self.submit_command_encoder_independent(encoder).map(|_| None)
         } else {
             self.submit_command_encoder_deferred(encoder).map(|_| None)
         };
@@ -2594,9 +2598,9 @@ impl VulkanDevice {
     fn submit_command_encoder_independent(
         &mut self,
         encoder: CommandEncoderId,
-    ) -> Result<SubmissionId> {
+    ) -> Result<()> {
         let Some(queue) = self.sidecar_queue else {
-            return self.submit_command_encoder_deferred_tracked(encoder);
+            return self.submit_command_encoder_deferred(encoder);
         };
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let first = unsafe {
@@ -2676,7 +2680,7 @@ impl VulkanDevice {
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
-        Ok(self.submissions.insert(VulkanSubmission { fence }))
+        Ok(())
     }
 
     fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
