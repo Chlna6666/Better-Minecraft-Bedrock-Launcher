@@ -1528,7 +1528,10 @@ impl Preview3dMeshBuilder {
                         if block.surface_only && face.normal != [0, 1, 0] {
                             continue;
                         }
-                        if self.is_preview_3d_water_neighbor(block.key, face) {
+                        // A partial-height neighbour exposes only the upper
+                        // strip. Keep ordinary full cube faces in the greedy
+                        // merger, but emit this strip in the exact pass below.
+                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Water) != Some(0.0) {
                             continue;
                         }
                         merger.push(
@@ -1545,23 +1548,27 @@ impl Preview3dMeshBuilder {
         merger.emit_into(faces, budget);
         for blocks in self.block_chunks.values() {
             for block in &blocks.water_blocks {
-                if block.height >= 0.999 {
-                    continue;
-                }
                 for face in FACE_DEFINITIONS {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
                     }
-                    if self.is_preview_3d_water_neighbor(block.key, face) {
+                    let Some(bottom) = self.exposed_fluid_face_bottom(
+                        block, face, Preview3dBlockClass::Water,
+                    ) else { continue; };
+                    // The full-height non-seam faces were already emitted
+                    // by the greedy merger. Only its revealed upper strips
+                    // belong in this exact-height path.
+                    if block.height >= 0.999 && bottom <= 0.0 {
                         continue;
                     }
                     budget.push_or_omit(
                         faces,
-                        preview_3d_fluid_face(
+                        preview_3d_fluid_face_segment(
                             block.key,
                             face,
                             block.color,
                             preview_3d_fluid_material(block, face.normal),
+                            bottom,
                             block.height,
                         ),
                     );
@@ -1585,7 +1592,10 @@ impl Preview3dMeshBuilder {
                         if block.surface_only && face.normal != [0, 1, 0] {
                             continue;
                         }
-                        if self.is_preview_3d_lava_neighbor(block.key, face) {
+                        // A partial-height neighbour exposes only the upper
+                        // strip. Keep ordinary full cube faces in the greedy
+                        // merger, but emit this strip in the exact pass below.
+                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Lava) != Some(0.0) {
                             continue;
                         }
                         merger.push(
@@ -1602,23 +1612,27 @@ impl Preview3dMeshBuilder {
         merger.emit_into(faces, budget);
         for blocks in self.block_chunks.values() {
             for block in &blocks.lava_blocks {
-                if block.height >= 0.999 {
-                    continue;
-                }
                 for face in FACE_DEFINITIONS {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
                     }
-                    if self.is_preview_3d_lava_neighbor(block.key, face) {
+                    let Some(bottom) = self.exposed_fluid_face_bottom(
+                        block, face, Preview3dBlockClass::Lava,
+                    ) else { continue; };
+                    // The full-height non-seam faces were already emitted
+                    // by the greedy merger. Only its revealed upper strips
+                    // belong in this exact-height path.
+                    if block.height >= 0.999 && bottom <= 0.0 {
                         continue;
                     }
                     budget.push_or_omit(
                         faces,
-                        preview_3d_fluid_face(
+                        preview_3d_fluid_face_segment(
                             block.key,
                             face,
                             block.color,
                             preview_3d_fluid_material(block, face.normal),
+                            bottom,
                             block.height,
                         ),
                     );
@@ -1713,20 +1727,33 @@ impl Preview3dMeshBuilder {
         )
     }
 
-    fn is_preview_3d_water_neighbor(&self, block: BlockKey, face: FaceDefinition) -> bool {
-        let neighbor = block.neighbor(face);
-        matches!(
-            self.block_class_at(neighbor),
-            Some(Preview3dBlockClass::Opaque | Preview3dBlockClass::Water)
-        )
-    }
-
-    fn is_preview_3d_lava_neighbor(&self, block: BlockKey, face: FaceDefinition) -> bool {
-        let neighbor = block.neighbor(face);
-        matches!(
-            self.block_class_at(neighbor),
-            Some(Preview3dBlockClass::Opaque | Preview3dBlockClass::Lava)
-        )
+    /// Fraction of a fluid side actually exposed to air or a lower-level
+    /// liquid. A same-fluid neighbour does not hide the whole vertical quad
+    /// when its surface is lower. No full block-state lookup is performed.
+    fn exposed_fluid_face_bottom(
+        &self,
+        block: &Preview3dFluidBlock,
+        face: FaceDefinition,
+        fluid: Preview3dBlockClass,
+    ) -> Option<f32> {
+        let neighbour = block.key.neighbor(face);
+        match self.block_class_at(neighbour) {
+            Some(Preview3dBlockClass::Opaque) => None,
+            Some(kind) if kind == fluid => {
+                if face.normal[1] != 0 {
+                    return None;
+                }
+                let key = ChunkKey::from_block(neighbour);
+                let height = self.block_chunks.get(&key)
+                    .and_then(|chunk| chunk.partial_fluid_heights.get(&neighbour))
+                    .or_else(|| self.boundary_chunks.get(&key)
+                        .and_then(|chunk| chunk.partial_fluid_heights.get(&neighbour)))
+                    .copied()
+                    .unwrap_or(1.0);
+                (block.height > height + 0.0001).then_some(height)
+            }
+            _ => Some(0.0),
+        }
     }
 
     fn block_class_at(&self, block: BlockKey) -> Option<Preview3dBlockClass> {
@@ -2524,6 +2551,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
         glass,
         water,
         lava,
+        partial_fluid_heights: HashMap::default(),
         connection_kinds,
         stair_states: HashMap::default(),
         opaque_blocks,
@@ -3071,6 +3099,9 @@ pub(super) struct Preview3dChunkBlocks {
     glass: HashSet<BlockKey>,
     water: HashSet<BlockKey>,
     lava: HashSet<BlockKey>,
+    // Only non-source fluid levels need storage: a missing entry means a
+    // complete liquid column. Shared between adjacent faces and mesh waves.
+    partial_fluid_heights: HashMap<BlockKey, f32>,
     connection_kinds: HashMap<BlockKey, Preview3dConnectionKind>,
     stair_states: HashMap<BlockKey, Preview3dStairState>,
     opaque_blocks: Vec<Preview3dBlockRecord>,
@@ -3091,6 +3122,9 @@ pub(super) struct Preview3dChunkBlocks {
 /// Neighbor-only data retained after the full column has been released.
 pub(super) struct Preview3dChunkBoundary {
     classes: HashMap<i32, Box<[u8; 2048]>>,
+    // Neighbor-only summaries store partial levels at the 16x16 boundary,
+    // so different-height fluid seams remain correct after block eviction.
+    partial_fluid_heights: HashMap<BlockKey, f32>,
     connection_kinds: HashMap<BlockKey, Preview3dConnectionKind>,
     stair_states: HashMap<BlockKey, Preview3dStairState>,
     coarse_opaque: HashSet<BlockKey>,
@@ -3125,6 +3159,9 @@ impl Preview3dChunkBoundary {
             + self.coarse_lava.len();
         std::mem::size_of::<Self>()
             .saturating_add(self.classes.len().saturating_mul(2048))
+            .saturating_add(self.partial_fluid_heights.len().saturating_mul(
+                std::mem::size_of::<(BlockKey, f32)>() * 2
+            ))
             .saturating_add(keys.saturating_mul(std::mem::size_of::<BlockKey>() * 2))
             .saturating_add(
                 self.connection_kinds
@@ -3156,6 +3193,7 @@ impl Default for Preview3dChunkBlocks {
             glass: HashSet::default(),
             water: HashSet::default(),
             lava: HashSet::default(),
+            partial_fluid_heights: HashMap::default(),
             connection_kinds: HashMap::default(),
             stair_states: HashMap::default(),
             opaque_blocks: Vec::new(),
@@ -3320,6 +3358,16 @@ impl Preview3dChunkBlocks {
         };
         Preview3dChunkBoundary {
             classes,
+            // The builder only asks a different chunk for immediate neighbor
+            // cells, so discard every interior partial height in its halo.
+            partial_fluid_heights: self.partial_fluid_heights.iter()
+                .filter(|(key, _)| {
+                    let x = key.x.rem_euclid(16);
+                    let z = key.z.rem_euclid(16);
+                    x == 0 || x == 15 || z == 0 || z == 15
+                })
+                .map(|(&key, &height)| (key, height))
+                .collect(),
             connection_kinds: self.connection_kinds.clone(),
             stair_states: self.stair_states.clone(),
             coarse_opaque: self
@@ -3348,6 +3396,14 @@ impl Preview3dChunkBlocks {
     fn rebuild_neighbor_indexes(&mut self) {
         self.refresh_ambient_exclusions();
         self.stair_states.clear();
+        self.partial_fluid_heights.clear();
+        // This index is sparse even for an ocean: ordinary source-level
+        // water/lava is represented by the absence of an entry (height=1).
+        for block in self.water_blocks.iter().chain(self.lava_blocks.iter()) {
+            if block.height < 0.999 {
+                self.partial_fluid_heights.insert(block.key, block.height);
+            }
+        }
         for block in self
             .detail_blocks
             .iter()
@@ -8749,6 +8805,9 @@ impl Preview3dChunkBlocks {
             ))
             .saturating_add(fluids(self.water_blocks.capacity()))
             .saturating_add(fluids(self.lava_blocks.capacity()))
+            .saturating_add(self.partial_fluid_heights.capacity().saturating_mul(
+                std::mem::size_of::<(BlockKey, f32)>() * 2
+            ))
     }
 }
 
@@ -9235,20 +9294,21 @@ impl Preview3dMeshBuilder {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
                     }
-                    let hidden = if water {
-                        self.is_preview_3d_water_neighbor(block.key, face)
+                    let kind = if water {
+                        Preview3dBlockClass::Water
                     } else {
-                        self.is_preview_3d_lava_neighbor(block.key, face)
+                        Preview3dBlockClass::Lava
                     };
-                    if hidden {
+                    let Some(bottom) = self.exposed_fluid_face_bottom(block, face, kind) else {
                         continue;
-                    }
-                    faces.push(preview_3d_stream_fluid_face(
+                    };
+                    faces.push(preview_3d_stream_fluid_face_segment(
                         block.key,
                         face,
                         block.color,
                         preview_3d_fluid_material(block, face.normal),
                         pass,
+                        bottom,
                         block.height,
                     ));
                 }
@@ -9273,6 +9333,79 @@ fn section_is_hidden_with_face_halo(
     ]
     .into_iter()
     .all(|y| hidden.contains(&(pos, y.div_euclid(64))))
+}
+
+#[cfg(test)]
+mod streaming_fluid_level_tests {
+    use super::*;
+
+    fn liquid(x: i32, height: f32) -> Preview3dFluidBlock {
+        Preview3dFluidBlock {
+            key: BlockKey { x, y: 64, z: 8 },
+            color: [0.3, 0.5, 0.8, 0.46],
+            material: Arc::from("minecraft_water"),
+            surface_only: false,
+            height,
+        }
+    }
+
+    #[test]
+    fn adjacent_partial_water_keeps_only_the_exposed_upper_strip() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let mut blocks = Preview3dChunkBlocks::default();
+        for fluid in [liquid(7, 1.0), liquid(8, 0.5)] {
+            blocks.water.insert(fluid.key);
+            blocks.water_blocks.push(fluid);
+        }
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, blocks);
+        let face = FACE_DEFINITIONS.into_iter()
+            .find(|face| face.normal == [1, 0, 0]).unwrap();
+        let upper = liquid(7, 1.0);
+        let lower = liquid(8, 0.5);
+        assert_eq!(builder.exposed_fluid_face_bottom(
+            &upper, face, Preview3dBlockClass::Water,
+        ), Some(0.5));
+        let reverse = FACE_DEFINITIONS.into_iter()
+            .find(|face| face.normal == [-1, 0, 0]).unwrap();
+        assert_eq!(builder.exposed_fluid_face_bottom(
+            &lower, reverse, Preview3dBlockClass::Water,
+        ), None);
+        let exposed = preview_3d_fluid_face_segment(
+            upper.key, face, upper.color, upper.material.clone(), 0.5, upper.height,
+        );
+        let heights = exposed.corners.map(|corner| corner[1]);
+        assert!(heights.contains(&64.5));
+        assert!(heights.contains(&65.0));
+        assert!(!heights.contains(&64.0));
+    }
+
+    #[test]
+    fn boundary_halo_retains_partial_fluid_level_without_interior_duplicates() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let mut blocks = Preview3dChunkBlocks::default();
+        for fluid in [liquid(0, 0.4), liquid(7, 0.7)] {
+            blocks.water.insert(fluid.key);
+            blocks.water_blocks.push(fluid);
+        }
+        let halo = blocks.boundary_snapshot();
+        assert_eq!(halo.partial_fluid_heights.len(), 1);
+        assert_eq!(halo.partial_fluid_heights.get(&liquid(0, 0.4).key), Some(&0.4));
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: -1, max_chunk_x: 0,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_boundary(pos, Arc::new(halo));
+        let higher = liquid(-1, 1.0);
+        let face = FACE_DEFINITIONS.into_iter()
+            .find(|face| face.normal == [1, 0, 0]).unwrap();
+        assert_eq!(builder.exposed_fluid_face_bottom(
+            &higher, face, Preview3dBlockClass::Water,
+        ), Some(0.4));
+    }
 }
 
 #[cfg(test)]
@@ -9433,18 +9566,27 @@ fn preview_3d_cube_face_uv(normal: [i32; 3]) -> [[f32; 2]; 4] {
     }
 }
 
-fn preview_3d_fluid_face(
+/// A flowing liquid's horizontal side may be exposed only above the
+/// neighbouring liquid level. Emit that strip without generating invisible
+/// geometry below the adjacent surface.
+fn preview_3d_fluid_face_segment(
     block: BlockKey,
     face: FaceDefinition,
     color: [f32; 4],
     material: Preview3dMaterialName,
+    bottom: f32,
     height: f32,
 ) -> Preview3dFace {
     let height = height.clamp(0.05, 1.0);
+    let bottom = if face.normal[1] == 0 {
+        bottom.clamp(0.0, height)
+    } else {
+        0.0
+    };
     let corners = preview_3d_stream_face_corners(face.normal).map(|corner| {
         [
             f64::from(block.x) + f64::from(corner[0]),
-            f64::from(block.y) + f64::from(if corner[1] > 0.5 { height } else { 0.0 }),
+            f64::from(block.y) + f64::from(if corner[1] > 0.5 { height } else { bottom }),
             f64::from(block.z) + f64::from(corner[2]),
         ]
     });
@@ -9458,6 +9600,31 @@ fn preview_3d_fluid_face(
     }
 }
 
+fn preview_3d_fluid_face(
+    block: BlockKey,
+    face: FaceDefinition,
+    color: [f32; 4],
+    material: Preview3dMaterialName,
+    height: f32,
+) -> Preview3dFace {
+    preview_3d_fluid_face_segment(block, face, color, material, 0.0, height)
+}
+
+fn preview_3d_stream_fluid_face_segment(
+    block: BlockKey,
+    face: FaceDefinition,
+    color: [f32; 4],
+    material: Preview3dMaterialName,
+    pass: Preview3dStreamPass,
+    bottom: f32,
+    height: f32,
+) -> Preview3dStreamFace {
+    preview_3d_stream_face_from_preview(
+        preview_3d_fluid_face_segment(block, face, color, material, bottom, height),
+        pass,
+    )
+}
+
 fn preview_3d_stream_fluid_face(
     block: BlockKey,
     face: FaceDefinition,
@@ -9466,10 +9633,7 @@ fn preview_3d_stream_fluid_face(
     pass: Preview3dStreamPass,
     height: f32,
 ) -> Preview3dStreamFace {
-    preview_3d_stream_face_from_preview(
-        preview_3d_fluid_face(block, face, color, material, height),
-        pass,
-    )
+    preview_3d_stream_fluid_face_segment(block, face, color, material, pass, 0.0, height)
 }
 
 fn preview_3d_stream_face_corners(normal: [i32; 3]) -> [[f32; 3]; 4] {
