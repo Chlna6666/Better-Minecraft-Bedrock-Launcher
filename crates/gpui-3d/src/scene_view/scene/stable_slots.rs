@@ -148,6 +148,21 @@ impl StructuralSlotPlan {
             .map(|(_, slot, logical)| (*slot, *logical))
     }
 
+    /// Small NodeId/physical-slot delta for the GPU portal visibility index.
+    /// A Section insertion/removal changes only its own node mappings, so
+    /// camera masks do not need an O(all Draws) index rebuild per stream event.
+    pub(in crate::scene_view) fn retired_node_slots(
+        &self,
+    ) -> impl Iterator<Item = (NodeId, usize)> + '_ {
+        self.retired.iter().map(|(identity, slot)| (identity.base.node, *slot))
+    }
+
+    pub(in crate::scene_view) fn added_node_slots(
+        &self,
+    ) -> impl Iterator<Item = (NodeId, usize)> + '_ {
+        self.added.iter().map(|(identity, slot, _)| (identity.base.node, *slot))
+    }
+
     /// Called only after the GPU mapping and bounds writes have succeeded.
     pub(in crate::scene_view) fn commit(self, slots: &mut StableDrawSlots) {
         for (identity, slot) in self.retired {
