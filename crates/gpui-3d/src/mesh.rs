@@ -223,7 +223,12 @@ impl Mesh {
             .iter()
             .map(|part| source.part_bounds(part.material_slot()))
             .collect();
-        mesh.bounds = Some(source.bounds);
+        // The padded GPU voxel class grid includes a full halo (and often
+        // a tall mostly empty vertical band). Its conservative allocation
+        // extent is not the rendered geometry extent. Per-material bounds
+        // already account for actual instances and static quads, so union
+        // them for root-level frustum/Hi-Z culling without touching GPU slots.
+        mesh.bounds = mesh.part_bounds.iter().copied().reduce(union_bounds);
         mesh.voxel_quad_count = Some(source.capacity());
         mesh.voxel_vertices = None;
         mesh.uses_uv = source
@@ -1476,6 +1481,45 @@ mod tests {
     use super::*;
     use crate::{Node, Ray, RaycastScratch, Scene};
     use std::sync::Arc;
+
+    #[test]
+    fn gpu_instance_scene_bounds_exclude_empty_halo_and_keep_visible_quads() {
+        let source = crate::VoxelMeshSource::new(
+            [20, 20, 20],
+            Vec3::ZERO,
+            vec![0; 20 * 20 * 20],
+            Vec::new(),
+        )
+        .unwrap()
+        .with_instances(
+            vec![0; 20 * 20 * 20],
+            vec![crate::VoxelFaceTemplate {
+                vertices: [
+                    vertex(Vec3::new(0.0, 1.0, 0.0)),
+                    vertex(Vec3::new(1.0, 1.0, 0.0)),
+                    vertex(Vec3::new(1.0, 1.0, 1.0)),
+                    vertex(Vec3::new(0.0, 1.0, 1.0)),
+                ],
+                material_slot: 0,
+                neighbour: [0, 0, 0],
+            }],
+            vec![crate::VoxelMeshInstance {
+                position: [2, 3, 4],
+                faces: 0..1,
+                height: 1.0,
+                occlusion_mask: 0,
+            }],
+        )
+        .unwrap();
+        let mesh = Mesh::from_gpu_voxels(source);
+        let expected = Aabb::new(
+            Vec3::new(2.0, 4.0, 4.0),
+            Vec3::new(3.0, 4.0, 5.0),
+        )
+        .unwrap();
+        assert_eq!(mesh.bounds(), Some(expected));
+        assert_eq!(mesh.part_bounds(0), Some(expected));
+    }
 
     fn vertex(position: Vec3) -> Vertex {
         Vertex {
