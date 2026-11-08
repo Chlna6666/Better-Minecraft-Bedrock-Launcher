@@ -17,6 +17,7 @@ impl Texture {
         self.desc.byte_size()
     }
 }
+#[derive(Clone, Copy)]
 pub(crate) struct View {
     pub(crate) native: glow::NativeTexture,
     pub(crate) target: u32,
