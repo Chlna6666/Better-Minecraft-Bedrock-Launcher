@@ -77,10 +77,10 @@ impl GpuUploadCostEstimate {
     /// Predicted GPU-owner API submission time, not device completion time.
     /// The per-write term penalizes thousands of tiny, fragmented patches.
     pub fn predicted_submit_us(self, bytes: usize, writes: usize) -> u64 {
-        let nanoseconds = (bytes as u128)
-            .saturating_mul(u128::from(self.ns_per_mib)) / MIB
-            + (writes as u128).saturating_mul(u128::from(self.ns_per_write));
-        ((nanoseconds + 999) / 1000).min(u128::from(u64::MAX)) as u64
+        let nanoseconds = ((bytes as u128)
+            .saturating_mul(u128::from(self.ns_per_mib)) / MIB)
+            .saturating_add((writes as u128).saturating_mul(u128::from(self.ns_per_write)));
+        (nanoseconds.saturating_add(999) / 1000).min(u128::from(u64::MAX)) as u64
     }
 }
 
@@ -103,7 +103,7 @@ pub fn gpu_upload_cost_estimate() -> Option<GpuUploadCostEstimate> {
 
 fn smooth(previous: u64, sample: u64) -> u64 {
     (u128::from(previous).saturating_mul(7) + u128::from(sample))
-        .saturating_div(8)
+        / 8
         .min(u128::from(u64::MAX)) as u64
 }
 

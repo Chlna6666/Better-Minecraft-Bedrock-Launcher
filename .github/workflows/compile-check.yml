@@ -107,6 +107,8 @@ jobs:
       - name: Test GPU-generated Section fusion and editor regression
         shell: pwsh
         run: |
+          cargo test -p gpui-3d --lib upload_feedback::tests -- --nocapture
+          cargo test -p gpui-3d --lib structural_light_delta_tests -- --nocapture
           cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib scene_view::sidecar::tests -- --nocapture
@@ -131,6 +133,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib dirty_mesh_priority_uses_near_first_then_forward_within_radial_band -- --nocapture
           cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib palette_collect_tests -- --nocapture
@@ -224,6 +227,8 @@ jobs:
           # gpui-3d intentionally depends on GPUI without a desktop backend.
           # Unit-test builds must explicitly activate winit's Linux platform.
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::batching::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 upload_feedback::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 structural_light_delta_tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 voxel_mesh::fusion_tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::sidecar::tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 prepare::interruptible_prepare_tests -- --nocapture
@@ -241,6 +246,7 @@ jobs:
           cargo test -p bmcbl --lib world3d::visibility::tests -- --nocapture
           cargo test -p bmcbl --lib portal_mask_tests -- --nocapture
           cargo test -p bmcbl --lib lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn -- --nocapture
+          cargo test -p bmcbl --lib dirty_mesh_priority_uses_near_first_then_forward_within_radial_band -- --nocapture
           cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
           cargo test -p bmcbl --lib palette_collect_tests -- --nocapture
           cargo test -p bmcbl --lib portal_face_pruning_tests -- --nocapture
