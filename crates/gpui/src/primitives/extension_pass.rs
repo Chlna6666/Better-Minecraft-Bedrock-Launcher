@@ -20,6 +20,9 @@ pub struct RendererExtensionPass {
     /// Scissors are local to the target, and the GPU owner retains this Arc
     /// until its native queue accepts the producer submission.
     pub commands: Arc<[RenderCommand]>,
+    /// Optional native GPU hardware timing tag for a pure indirect-draw window.
+    /// Backends without the capability still execute normally.
+    pub gpu_work_tag: Option<GpuTimestampTag>,
     /// Color load/clear operation.
     pub color_load_op: LoadOp<ClearColor>,
     /// Optional depth attachment.
