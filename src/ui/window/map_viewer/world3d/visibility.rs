@@ -56,6 +56,10 @@ pub(super) struct SectionVisibility {
     /// Allocate 4 KiB only when at least two distinct air components exist.
     /// Solid cells are checked via `solid` before indexing this table.
     cell_camera_exits: Option<Box<[u8; CELL_COUNT]>>,
+    /// Exact air-component identity, allocated only for multi-component
+    /// Sections. Equal face masks do NOT imply connected air pockets.
+    /// IDs use first-voxel-index + 1 (1..=4096); zero is reserved.
+    cell_region_ids: Option<Box<[u16; CELL_COUNT]>>,
 }
 
 impl SectionVisibility {
@@ -65,6 +69,7 @@ impl SectionVisibility {
         all_air: true,
         uniform_camera_exits: Some(ALL_SIDES),
         cell_camera_exits: None,
+        cell_region_ids: None,
     };
 
     pub(super) fn from_solid_bits(solid: [u64; SOLID_WORDS]) -> Self {
@@ -78,6 +83,7 @@ impl SectionVisibility {
                 all_air: false,
                 uniform_camera_exits: None,
                 cell_camera_exits: None,
+                cell_region_ids: None,
             };
         }
         if solid
@@ -96,6 +102,7 @@ impl SectionVisibility {
                 // shell: keep the rare camera query on its conservative BFS.
                 uniform_camera_exits: None,
                 cell_camera_exits: None,
+                cell_region_ids: None,
             };
         }
         let mut graph = Self {
@@ -104,6 +111,7 @@ impl SectionVisibility {
             all_air: false,
             uniform_camera_exits: None,
             cell_camera_exits: None,
+            cell_region_ids: None,
         };
         let mut visited = [0u64; SOLID_WORDS];
         let mut queue = Vec::<usize>::new();
@@ -135,19 +143,32 @@ impl SectionVisibility {
                 }
             }
 
-            if let Some(ref mut exits) = graph.cell_camera_exits {
+            if let (Some(exits), Some(regions)) = (
+                graph.cell_camera_exits.as_mut(),
+                graph.cell_region_ids.as_mut(),
+            ) {
+                let id = u16::try_from(first + 1).expect("Section voxel ID fits u16");
                 for &index in &queue {
                     exits[index] = faces;
+                    regions[index] = id;
                 }
             } else if let Some(first_faces) = first_component_faces {
                 let mut exits = Box::new([0u8; CELL_COUNT]);
+                let mut regions = Box::new([0u16; CELL_COUNT]);
+                let first_id = u16::try_from(first_component_cells[0] + 1)
+                    .expect("Section voxel ID fits u16");
+                let current_id = u16::try_from(first + 1)
+                    .expect("Section voxel ID fits u16");
                 for &index in &first_component_cells {
                     exits[index] = first_faces;
+                    regions[index] = first_id;
                 }
                 for &index in &queue {
                     exits[index] = faces;
+                    regions[index] = current_id;
                 }
                 graph.cell_camera_exits = Some(exits);
+                graph.cell_region_ids = Some(regions);
                 first_component_cells.clear();
             } else {
                 first_component_faces = Some(faces);
@@ -163,7 +184,7 @@ impl SectionVisibility {
     #[inline]
     pub(super) fn heap_bytes(&self) -> usize {
         if self.cell_camera_exits.is_some() {
-            CELL_COUNT
+            CELL_COUNT * (std::mem::size_of::<u8>() + std::mem::size_of::<u16>())
         } else {
             0
         }
@@ -182,15 +203,24 @@ impl SectionVisibility {
     /// Camera may be in a sealed pocket, unlike a portal-facing neighbor.
     /// A solid camera voxel disables graph culling (the editor supports noclip).
     pub(super) fn camera_exits(&self, local: [usize; 3]) -> Option<u8> {
+        self.camera_region(local).map(|(_, exits)| exits)
+    }
+
+    /// Returns the exact air-component ID AND the six-face portal mask.
+    /// Different sealed cavities may both have exits=0; their IDs must
+    /// differ to prevent async graph results being reused across caves.
+    pub(super) fn camera_region(&self, local: [usize; 3]) -> Option<(u16, u8)> {
         let start = (local[1] * 16 + local[2]) * 16 + local[0];
         if self.is_solid(start) {
             return None;
         }
         if let Some(exits) = self.uniform_camera_exits {
-            return Some(exits);
+            return Some((0, exits));
         }
-        if let Some(ref exits) = self.cell_camera_exits {
-            return Some(exits[start]);
+        if let (Some(exits), Some(regions)) =
+            (self.cell_camera_exits.as_ref(), self.cell_region_ids.as_ref())
+        {
+            return Some((regions[start], exits[start]));
         }
         // The common open-shell shortcut avoids building a 4 KiB component
         // table, but a sealed internal cave is still possible. Try six
@@ -199,7 +229,7 @@ impl SectionVisibility {
         // Only a completely enclosed camera position falls back to BFS.
         if self.portals == [ALL_SIDES; SIDE_COUNT] {
             if boundary_faces(start) != 0 {
-                return Some(ALL_SIDES);
+                return Some((0, ALL_SIDES));
             }
             for axis in 0..SIDE_COUNT {
                 let mut cursor = start;
@@ -208,7 +238,7 @@ impl SectionVisibility {
                         break;
                     }
                     if boundary_faces(next) != 0 {
-                        return Some(ALL_SIDES);
+                        return Some((0, ALL_SIDES));
                     }
                     cursor = next;
                 }
@@ -223,8 +253,10 @@ impl SectionVisibility {
         set_bit(&mut visited, start);
         let mut head = 0;
         let mut faces = 0;
+        let mut minimum = start;
         while head < queue.len() {
             let index = queue[head];
+            minimum = minimum.min(index);
             head += 1;
             faces |= boundary_faces(index);
             if faces == ALL_SIDES {
@@ -331,7 +363,7 @@ pub(super) fn camera_signature(
     probes: &BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
     dimension: Dimension,
     camera: [i32; 3],
-) -> Option<(ChunkPos, i32, u8)> {
+) -> Option<(ChunkPos, i32, u16, u8)> {
     let section = (
         ChunkPos {
             x: camera[0].div_euclid(16),
@@ -346,7 +378,8 @@ pub(super) fn camera_signature(
         camera[1].rem_euclid(16) as usize,
         camera[2].rem_euclid(16) as usize,
     ];
-    Some((section.0, section.1, graph.camera_exits(local)?))
+    let (component, exits) = graph.camera_region(local)?;
+    Some((section.0, section.1, component, exits))
 }
 
 /// Return only render bands certified unreachable. Missing columns, unknown
@@ -382,7 +415,7 @@ pub(super) fn hidden_render_band_keys(
     if probes.is_empty() || keys.is_empty() || probes.len() > MAX_COLUMNS {
         return empty;
     }
-    let Some((camera_pos, camera_y, camera_exits)) =
+    let Some((camera_pos, camera_y, _component, camera_exits)) =
         camera_signature(probes, dimension, camera)
     else {
         return empty;
