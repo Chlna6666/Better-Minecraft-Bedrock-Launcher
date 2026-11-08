@@ -53,6 +53,47 @@ const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 const SECTION_EPOCH_MAX_TOMBSTONES: usize = 32_768;
 
+/// Streamed Section payloads and their completion typically reuse one
+/// immutable Arc<Probe>. Only a new identity can change the portal graph;
+/// repeated payloads must not cancel asynchronous culling every poll tick.
+fn upsert_shared_probe<K: Ord, V>(
+    cache: &mut BTreeMap<K, Arc<V>>,
+    key: K,
+    probe: Arc<V>,
+) -> bool {
+    match cache.entry(key) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(probe);
+            true
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if Arc::ptr_eq(entry.get(), &probe) {
+                false
+            } else {
+                entry.insert(probe);
+                true
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_probe_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn redundant_section_events_do_not_invalidate_shared_portal_probe() {
+        let mut cache = BTreeMap::<u32, Arc<u32>>::new();
+        let original = Arc::new(7);
+        assert!(upsert_shared_probe(&mut cache, 1, Arc::clone(&original)));
+        assert!(!upsert_shared_probe(&mut cache, 1, Arc::clone(&original)));
+        assert!(!upsert_shared_probe(&mut cache, 1, Arc::clone(&original)));
+        assert!(upsert_shared_probe(&mut cache, 1, Arc::new(7)));
+        assert!(upsert_shared_probe(&mut cache, 2, original));
+        assert_eq!(cache.len(), 2);
+    }
+}
+
 /// Preserve Section upsert/remove ordering across queued background results.
 /// The worker's generation is a view epoch, not a content hash: older results
 /// are still useful until a newer event for the SAME chunk column arrives.
@@ -890,14 +931,18 @@ impl World3dEditorView {
                     submitted_bytes = submitted_bytes
                         .saturating_add(geometry_bytes)
                         .saturating_add(new_texture_bytes);
-                    self.probes.insert(payload.mesh.pos, payload.probe.clone());
-                    // A partial Section upsert may precede an outstanding edit's
-                    // full-column remesh. Re-enable portal culling only after
-                    // the corresponding Completed reconciliation arrives.
-                    probes_changed = true;
+                    probes_changed |= upsert_shared_probe(
+                        &mut self.probes,
+                        payload.mesh.pos,
+                        Arc::clone(&payload.probe),
+                    );
+                    // A new render-band key changes the resident visibility
+                    // domain, even if its decoded Probe Arc is unchanged.
                     let key = (payload.mesh.pos, payload.mesh.section_y);
                     if self.chunk_meshes.insert(key, payload.mesh).is_some() {
                         textures_may_be_unused = true;
+                    } else {
+                        probes_changed = true;
                     }
                     self.dirty_sections.insert(key);
                     meshes_added = meshes_added.saturating_add(1);
@@ -949,9 +994,13 @@ impl World3dEditorView {
                             completion.pos,
                             &completion.sections,
                         );
-                        self.probes.insert(completion.pos, completion.probe);
+                        probes_changed |= upsert_shared_probe(
+                            &mut self.probes, completion.pos, completion.probe,
+                        );
+                        // Retained/removed mesh keys alter the graph query
+                        // target list even if the underlying Probe is shared.
+                        probes_changed |= removed || restored;
                         self.invalidated_visibility.remove(&completion.pos);
-                        probes_changed = true;
                     }
                     textures_may_be_unused |= removed;
                     self.stream_scene_pending |= removed || restored;
@@ -972,9 +1021,8 @@ impl World3dEditorView {
                         &[],
                     );
                     textures_may_be_unused |= removed;
-                    self.probes.remove(&pos);
+                    probes_changed |= self.probes.remove(&pos).is_some() || removed;
                     self.invalidated_visibility.remove(&pos);
-                    probes_changed = true;
                     self.stream_scene_pending |= removed;
                 }
                 ChunkServiceEvent::Status(status) => {
