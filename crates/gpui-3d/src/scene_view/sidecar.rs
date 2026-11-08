@@ -126,14 +126,14 @@ impl Mailbox {
             };
             let prepared_started = std::time::Instant::now();
             let mut prepared = PreparedScene::default();
-            // Aspect ratio is finalized from the actual render target only
-            // after the snapshot is consumed. The later update_camera call
-            // refreshes frustum/alpha ordering for the exact viewport.
+            // CPU RenderJob only builds camera-independent candidates.
+            // GPUI's actual viewport and the GPU backend's capabilities
+            // become a RenderView once the result reaches the owner. This
+            // avoids an entire duplicate frustum/alpha sorting pass.
             let completed = prepared
-                .update_transformed_interruptible(
+                .prepare_candidates_interruptible(
                     &request.scene,
                     request.camera,
-                    1.0,
                     request.transform,
                     || self.generation.load(Ordering::Acquire) != request.revision,
                 )
@@ -238,9 +238,9 @@ pub(super) fn try_take(
     ) else {
         return Ok(None);
     };
-    prepared.set_gpu_culling(gpu_culling);
-    prepared.set_culling_bounds(view.culling_bounds);
-    prepared.update_camera(view.camera, aspect)?;
+    prepared.finalize_candidates(
+        view.camera, aspect, gpu_culling, view.culling_bounds,
+    )?;
     Ok(Some(prepared))
 }
 
