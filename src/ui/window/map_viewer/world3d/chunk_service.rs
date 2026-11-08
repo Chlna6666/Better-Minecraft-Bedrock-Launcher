@@ -2448,6 +2448,10 @@ struct Worker {
     resolved_texture_lookup: HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
     mesh_assets: MeshAssets,
     pbr: pbr::PbrCache,
+    // Batch-local immutable material classification. Reused across height
+    // Sections so each distinct material+face-direction resolves its texture
+    // sources/PBR attributes once, but never pins assets between mesh waves.
+    face_material_cache: HashMap<(Arc<str>, [i32; 3]), FaceMaterialProperties>,
     resolver_time: Duration,
     texture_read_time: Duration,
     texture_decode_time: Duration,
@@ -2570,6 +2574,7 @@ impl Worker {
             resolved_texture_lookup: HashMap::new(),
             mesh_assets: MeshAssets::default(),
             pbr: pbr::PbrCache::default(),
+            face_material_cache: HashMap::new(),
             resolver_time: Duration::ZERO,
             texture_read_time: Duration::ZERO,
             texture_decode_time: Duration::ZERO,
@@ -3172,6 +3177,10 @@ impl Worker {
         loaded: &[ChunkPos],
         include_neighbors: bool,
     ) {
+        // Keep hot material metadata across every Section in this mesh wave,
+        // not beyond it. Texture eviction and lighting mode changes therefore
+        // continue to follow the existing Worker-owned resource lifecycle.
+        self.face_material_cache.clear();
         let trace = trace_timings();
         let mut rehydrate_time = Duration::ZERO;
         let mut send_wait_time = Duration::ZERO;
@@ -3930,6 +3939,7 @@ impl Worker {
                 self.cache.len()
             );
         }
+        self.face_material_cache.clear();
     }
 
     fn batch_load_options(&self, count: usize) -> ChunkLoadOptions {
@@ -4081,6 +4091,14 @@ impl Worker {
             let properties = chunk_texture_lookup
                 .entry((face.material.as_ptr() as usize, face.normal))
                 .or_insert_with(|| {
+                    // Arc-backed string equality (not just a pointer key)
+                    // permits reuse across different chunk face arrays.
+                    if let Some(cached) = self
+                        .face_material_cache
+                        .get(&(Arc::clone(&face.material), face.normal))
+                    {
+                        return cached.clone();
+                    }
                     let resolved = self.resolve_texture(material_name, face.normal);
                     let (mut resolved_texture, mut alpha_content, is_missing) = match resolved {
                         Some((texture, content)) => (Some(texture), content, false),
@@ -4121,7 +4139,7 @@ impl Worker {
                                     .then_some((dirt, overlay))
                             },
                         );
-                    FaceMaterialProperties {
+                    let result = FaceMaterialProperties {
                         texture: resolved_texture,
                         normal: normal.map(|(asset, _)| asset),
                         mer: mer.map(|(asset, _)| asset),
@@ -4130,7 +4148,12 @@ impl Worker {
                         tint_mask,
                         grass_side_sources,
                         opaque_glass: material_name.starts_with("minecraft_glass_"),
-                    }
+                    };
+                    self.face_material_cache.insert(
+                        (Arc::clone(&face.material), face.normal),
+                        result.clone(),
+                    );
+                    result
                 });
             let mut resolved_texture = properties.texture.clone();
             let mut uses_tint = properties.tint_mask;
@@ -5106,6 +5129,7 @@ fn intern_face_materials(faces: &mut [p3d::Preview3dStreamFace]) {
     }
 }
 
+#[derive(Clone)]
 struct FaceMaterialProperties {
     normal: Option<Arc<TextureAsset>>,
     mer: Option<Arc<TextureAsset>>,
