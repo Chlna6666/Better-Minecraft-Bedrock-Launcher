@@ -8,6 +8,9 @@ use glow::HasContext as _;
 struct GlPassState {
     pipeline: Option<u64>,
     scissor: Option<(i32, i32, i32, i32)>,
+    /// Native GL_DRAW_INDIRECT_BUFFER binding is shared by indexed and
+    /// non-indexed indirect draws. Retain it for the current render pass only.
+    indirect_buffer: Option<glow::NativeBuffer>,
 }
 
 impl OpenGlDevice {
@@ -309,6 +312,14 @@ impl OpenGlDevice {
                 Ok(())
             }
         })();
+        // A sidecar can issue thousands of DrawIndirect calls against one
+        // resident argument buffer. Avoid bind/unbind per Draw, but do not
+        // leak this pass's GL_DRAW_INDIRECT_BUFFER into the next pass or an
+        // externally issued GL operation, including on a failed draw.
+        // SAFETY: owner thread holds the active GL context here.
+        unsafe {
+            self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+        }
         // A failed draw must not resolve invalid or partially recorded contents.
         // Still execute the common detach/cleanup path below.
         if let Some(resolve_view) = resolve_view.filter(|_| result.is_ok()) {
@@ -391,14 +402,12 @@ impl OpenGlDevice {
         bindings: &mut crate::bindings::Cache,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
-        let formats_match = pipeline
-            .desc
-            .color_targets
-            .iter()
-            .map(|target| target.format)
-            .collect::<Vec<_>>()
-            .as_slice()
-            == formats;
+        // The old per-Draw Vec allocation was O(attachments) heap work for
+        // every generated mesh indirect record. Compare borrowed slices.
+        let formats_match = pipeline.desc.color_targets.len() == formats.len()
+            && pipeline.desc.color_targets.iter()
+                .zip(formats.iter())
+                .all(|(target, format)| target.format == *format);
         if !formats_match || (pipeline.desc.depth_state.is_some() && !depth) {
             return Err(Error::InvalidInput(
                 "OpenGL pipeline attachments mismatch".into(),
@@ -584,13 +593,12 @@ impl OpenGlDevice {
                             "invalid OpenGL indirect argument range or usage".into(),
                         ));
                     }
-                    self.gl
-                        .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(buffer.native));
-                    self.gl.draw_arrays_indirect_offset(
-                        topology,
-                        i32::try_from(draw.offset).map_err(native)?,
-                    );
-                    self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+                    let offset = i32::try_from(draw.offset).map_err(native)?;
+                    if state.indirect_buffer != Some(buffer.native) {
+                        self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(buffer.native));
+                        state.indirect_buffer = Some(buffer.native);
+                    }
+                    self.gl.draw_arrays_indirect_offset(topology, offset);
                 }
                 RenderCommand::DrawIndexedIndirect(draw) => {
                     if !self.compute.capabilities.indirect_draw {
@@ -628,16 +636,13 @@ impl OpenGlDevice {
                             "OpenGL index range/usage mismatch".into(),
                         ));
                     }
-                    self.gl
-                        .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
-                    self.gl
-                        .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
-                    self.gl.draw_elements_indirect_offset(
-                        topology,
-                        kind,
-                        i32::try_from(draw.offset).map_err(native)?,
-                    );
-                    self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+                    let offset = i32::try_from(draw.offset).map_err(native)?;
+                    self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
+                    if state.indirect_buffer != Some(arguments.native) {
+                        self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
+                        state.indirect_buffer = Some(arguments.native);
+                    }
+                    self.gl.draw_elements_indirect_offset(topology, kind, offset);
                 }
                 RenderCommand::Draw(draw) => {
                     self.gl
