@@ -442,7 +442,53 @@ struct DrawResourceKey {
     metallic_roughness_id: Option<TextureAssetId>,
 }
 
+#[cfg(test)]
+mod resident_binding_key_tests {
+    use super::*;
+
+    fn key() -> DrawResourceKey {
+        DrawResourceKey {
+            shadow: None,
+            mesh: DrawMeshKey::VoxelPage(BufferId::new(1)),
+            visible_instances: None,
+            albedo_id: Some(TextureAssetId(7)),
+            normal_id: None,
+            occlusion_id: None,
+            metallic_roughness_id: None,
+        }
+    }
+
+    #[test]
+    fn republished_texture_table_does_not_invalidate_retained_view() {
+        let previous = Arc::new(HashMap::from([(TextureAssetId(7), ())]));
+        let republished = Arc::new(HashMap::from([(TextureAssetId(7), ())]));
+        assert!(!Arc::ptr_eq(&previous, &republished));
+        assert!(key().has_texture_ids(Some(TextureAssetId(7)), None, None, None));
+    }
+
+    #[test]
+    fn changed_texture_asset_id_invalidates_binding() {
+        assert!(!key().has_texture_ids(Some(TextureAssetId(8)), None, None, None));
+        assert!(!key().has_texture_ids(Some(TextureAssetId(7)), Some(TextureAssetId(2)), None, None));
+    }
+}
+
 impl DrawResourceKey {
+    // Re-publishing a texture table does not replace its retained GPU
+    // texture views. Only the texture asset IDs in the draw binding matter.
+    fn has_texture_ids(
+        &self,
+        albedo: Option<TextureAssetId>,
+        normal: Option<TextureAssetId>,
+        occlusion: Option<TextureAssetId>,
+        metallic_roughness: Option<TextureAssetId>,
+    ) -> bool {
+        self.albedo_id == albedo
+            && self.normal_id == normal
+            && self.occlusion_id == occlusion
+            && self.metallic_roughness_id == metallic_roughness
+    }
+
     fn uses_active_assets(
         self,
         meshes: &HashSet<MeshId>,
@@ -1125,10 +1171,6 @@ impl SceneResources {
                 // uploads, preserving all native and indirect draw addresses.
                 // If the CPU mirrors, capacities or layout cannot be proven
                 // stable, sync_buffers() safely re-plans the entire table.
-                let textures_unchanged = self
-                    .texture_table
-                    .as_ref()
-                    .is_some_and(|previous| Arc::ptr_eq(previous, &scene_view.textures));
                 let stage_started = trace_timings().then(Instant::now);
                 let result = if reused_resident_slots {
                     self.sync_resident_draw_delta(
@@ -1138,7 +1180,6 @@ impl SceneResources {
                         sampler,
                         sampler_changed,
                         assets_changed,
-                        textures_unchanged,
                     )?
                 } else {
                     None
@@ -1531,10 +1572,8 @@ impl SceneResources {
         &self,
         dirty: &[usize],
         sampler_changed: bool,
-        textures_unchanged: bool,
     ) -> bool {
         if sampler_changed
-            || !textures_unchanged
             || !self.retired_meshes.is_empty()
             || self.generated_pending_groups.is_some()
             || self.draw_resource_sources.len() != self.batches.len()
@@ -1562,10 +1601,12 @@ impl SceneResources {
             };
             key.shadow == shadow
                 && key.visible_instances == visible
-                && key.albedo_id == draw.material.albedo_texture
-                && key.normal_id == draw.material.normal_texture
-                && key.occlusion_id == draw.material.occlusion_texture
-                && key.metallic_roughness_id == draw.material.metallic_roughness_texture
+                && key.has_texture_ids(
+                    draw.material.albedo_texture,
+                    draw.material.normal_texture,
+                    draw.material.occlusion_texture,
+                    draw.material.metallic_roughness_texture,
+                )
                 && self
                     .generated_batch_sources
                     .get(index)
@@ -1599,7 +1640,6 @@ impl SceneResources {
         sampler: SamplerId,
         sampler_changed: bool,
         defer_binding_cleanup: bool,
-        textures_unchanged: bool,
     ) -> gpui::Result<Option<bool>> {
         let Some(dirty) = self
             .prepared
@@ -1628,9 +1668,12 @@ impl SceneResources {
         {
             return Ok(None);
         }
+        // GPU views are retained by immutable TextureAssetId, not the
+        // Arc<HashMap> used to publish a newer Section snapshot. Still
+        // reject any changed texture ID or binding resource.
+        let bindings_unchanged = self.resident_bindings_unchanged(&dirty, sampler_changed);
         let commands_unchanged =
-            self.resident_bindings_unchanged(&dirty, sampler_changed, textures_unchanged)
-                && self.resident_command_pipelines_unchanged(&dirty);
+            bindings_unchanged && self.resident_command_pipelines_unchanged(&dirty);
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
@@ -1680,15 +1723,20 @@ impl SceneResources {
         if !writes.is_empty() {
             let upload_started = Instant::now();
             device.write_buffer_batch(&writes)?;
+            let elapsed = upload_started.elapsed();
             crate::upload_feedback::observe_buffer_upload(
-                self.backend, uploaded_bytes, writes.len(), upload_started.elapsed(),
+                self.backend, uploaded_bytes, writes.len(), elapsed,
+            );
+            crate::gpu_submission_trace::observe(
+                self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
+                writes.len(), uploaded_bytes, elapsed,
             );
         }
         drop(writes);
         // A new Mesh generation can change shared Page bindings and GPU Part
         // Counts even when DrawParams bytes remain identical. Keep the same
         // binding/mapping lifecycle as the full sync path.
-        if !self.resident_bindings_unchanged(&dirty, sampler_changed, textures_unchanged) {
+        if !bindings_unchanged {
             self.sync_draw_resources(
                 device,
                 renderer,
@@ -1892,8 +1940,13 @@ impl SceneResources {
         if !writes.is_empty() {
             let upload_started = Instant::now();
             device.write_buffer_batch(&writes)?;
+            let elapsed = upload_started.elapsed();
             crate::upload_feedback::observe_buffer_upload(
-                self.backend, bytes_uploaded, writes.len(), upload_started.elapsed(),
+                self.backend, bytes_uploaded, writes.len(), elapsed,
+            );
+            crate::gpu_submission_trace::observe(
+                self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
+                writes.len(), bytes_uploaded, elapsed,
             );
         }
         drop(writes);
@@ -2353,8 +2406,13 @@ impl SceneResources {
             let upload_started = Instant::now();
             let result = device.write_buffer_batch(&writes).map(|_| ());
             if result.is_ok() {
+                let elapsed = upload_started.elapsed();
                 crate::upload_feedback::observe_buffer_upload(
-                    self.backend, uploaded_bytes, write_count, upload_started.elapsed(),
+                    self.backend, uploaded_bytes, write_count, elapsed,
+                );
+                crate::gpu_submission_trace::observe(
+                    self.backend, crate::gpu_submission_trace::Phase::DrawTableUpload,
+                    write_count, uploaded_bytes, elapsed,
                 );
             }
             result
@@ -3188,7 +3246,8 @@ impl SceneResources {
         // mesh generation. Unrelated retired meshes must not disable fast
         // positional reuse for the whole 100K+ batch stream.
         let resident_meshes_unchanged = self.retired_meshes.is_empty();
-        let trace_started = trace_timings().then(Instant::now);
+        let trace_started = (trace_timings() || crate::gpu_submission_trace::enabled())
+            .then(Instant::now);
         let mut reused = 0usize;
         let mut positional_reused = 0usize;
         let mut created_count = 0usize;
@@ -3456,7 +3515,12 @@ impl SceneResources {
             }
         }
         if let Some(started) = trace_started {
-            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let elapsed = started.elapsed();
+            crate::gpu_submission_trace::observe(
+                self.backend, crate::gpu_submission_trace::Phase::BindGroupSync,
+                self.batches.len(), 0, elapsed,
+            );
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
             let now = Instant::now();
             if elapsed_ms >= 16.0
                 || self

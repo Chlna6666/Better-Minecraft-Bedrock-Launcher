@@ -18,9 +18,11 @@ pub(crate) enum Phase {
     CullComputeIssue,
     DrawIndirectEncode,
     OffscreenEnqueue,
+    DrawTableUpload,
+    BindGroupSync,
 }
 
-const PHASES: usize = 7;
+const PHASES: usize = 9;
 const BACKENDS: usize = 6;
 struct Accumulator {
     samples: AtomicU64,
@@ -61,7 +63,9 @@ const fn phase_name(index: usize) -> &'static str {
         3 => "indirect_map_compute_issue",
         4 => "cull_compute_issue",
         5 => "draw_indirect_encode",
-        _ => "offscreen_enqueue",
+        6 => "offscreen_enqueue",
+        7 => "draw_table_upload",
+        _ => "bind_group_sync",
     }
 }
 
