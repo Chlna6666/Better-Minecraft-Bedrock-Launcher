@@ -842,8 +842,19 @@ fn for_each_region_face(
     face: RegionFace,
     mut emit: impl FnMut(Preview3dRegionKey, RegionFace),
 ) {
-    if face.uv.is_some() {
-        emit(region_key_for_face(&face), face);
+    let key = region_key_for_face(&face);
+    let origin = key.origin();
+    // Most faces are strictly inside their 8x8x4 region. Publish them
+    // unchanged without recomputing a normal, synthesizing four corners,
+    // cloning the material or allocating a region-split container.
+    if face.uv.is_some() || face.corners.iter().all(|corner| {
+        [0, 1, 2].into_iter().all(|axis| {
+            let extent = if axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ };
+            corner[axis] >= origin[axis] as f32 - 1.0e-4
+                && corner[axis] <= (origin[axis] + extent) as f32 + 1.0e-4
+        })
+    }) {
+        emit(key, face);
         return;
     }
     let normal = face_normal(&face);
