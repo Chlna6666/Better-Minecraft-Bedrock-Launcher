@@ -86,6 +86,37 @@ impl ResourceDevice for OpenGlDevice {
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        true // This backend requires an OpenGL 4.5 core context.
+    }
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: GpuTimestampTag,
+    ) -> Result<()> {
+        if dispatches.is_empty() {
+            return Ok(());
+        }
+        self.profile_gpu_work(tag, |device| {
+            for dispatch in dispatches {
+                device.dispatch_buffers(dispatch)?;
+            }
+            Ok(())
+        })
+    }
+    fn write_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        self.profile_gpu_work(tag, |device| ResourceDevice::write_buffer_batch(device, writes))
+    }
+    fn drain_gpu_work_timestamps(
+        &mut self,
+        output: &mut Vec<GpuTimestampSample>,
+    ) -> Result<()> {
+        self.drain_profiled_gpu_work(output)
+    }
     fn dispatch_compute_bind_group(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,

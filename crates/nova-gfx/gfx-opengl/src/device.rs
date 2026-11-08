@@ -69,6 +69,9 @@ pub struct OpenGlDevice {
     pub(crate) surfaces: Registry<RawWindowHandle>,
     pub(crate) swapchains: Registry<Swapchain>,
     pending: VecDeque<(u32, glow::NativeFence)>,
+    pending_gpu_work: VecDeque<(Option<GpuTimestampTag>, glow::NativeQuery, glow::NativeQuery)>,
+    reusable_gpu_queries: Vec<(glow::NativeQuery, glow::NativeQuery)>,
+    gpu_work_samples: Vec<GpuTimestampSample>,
     submitted: u32,
     completed: u32,
     generation: u32,
@@ -263,6 +266,9 @@ impl OpenGlDevice {
             surfaces: Registry::default(),
             swapchains: Registry::default(),
             pending: VecDeque::new(),
+            pending_gpu_work: VecDeque::new(),
+            reusable_gpu_queries: Vec::new(),
+            gpu_work_samples: Vec::new(),
             submitted: 0,
             completed: 0,
             generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
@@ -308,6 +314,92 @@ impl OpenGlDevice {
         self.parking_is_current.set(false);
         Ok(())
     }
+    /// Records native GPU timestamps on the existing GL command stream.
+    /// Completed probes are recycled without requiring a graphics flush.
+    pub(crate) fn profile_gpu_work<T>(
+        &mut self,
+        tag: GpuTimestampTag,
+        work: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        self.park()?;
+        self.poll_gpu_work();
+        if self.pending_gpu_work.len() >= 64 {
+            return work(self);
+        }
+        let queries = match self.reusable_gpu_queries.pop() {
+            Some(pair) => Some(pair),
+            None => {
+                // SAFETY: The GL 4.5 core context is current and supports timestamp queries.
+                match unsafe { self.gl.create_query() } {
+                    Ok(start) => match unsafe { self.gl.create_query() } {
+                        Ok(end) => Some((start, end)),
+                        Err(_) => {
+                            // SAFETY: This unsubmitted query belongs to the current context.
+                            unsafe { self.gl.delete_query(start) };
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                }
+            }
+        };
+        let Some((start, end)) = queries else {
+            return work(self);
+        };
+        // SAFETY: Both query slots are distinct and no in-flight work uses them.
+        unsafe { self.gl.query_counter(start, glow::TIMESTAMP) };
+        let result = work(self);
+        // SAFETY: End timestamp follows the command issue range on the same context.
+        unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
+        self.pending_gpu_work.push_back((result.as_ref().ok().map(|_| tag), start, end));
+        result
+    }
+
+    pub(crate) fn drain_profiled_gpu_work(
+        &mut self,
+        output: &mut Vec<GpuTimestampSample>,
+    ) -> Result<()> {
+        self.park()?;
+        self.poll_gpu_work();
+        output.append(&mut self.gpu_work_samples);
+        Ok(())
+    }
+
+    fn poll_gpu_work(&mut self) {
+        let mut index = 0;
+        while index < self.pending_gpu_work.len() {
+            let (_, _, end) = self.pending_gpu_work[index];
+            // SAFETY: Query availability is non-blocking; only completed
+            // timestamps are read through GL_QUERY_RESULT.
+            let available = unsafe {
+                self.gl.get_query_parameter_u32(end, glow::QUERY_RESULT_AVAILABLE)
+            } != 0;
+            if !available {
+                index += 1;
+                continue;
+            }
+            let Some((tag, start, end)) = self.pending_gpu_work.remove(index) else {
+                continue;
+            };
+            // SAFETY: The available end query follows the earlier start query
+            // on the same ordered GL context, so both results have completed.
+            let (first, last) = unsafe {
+                (
+                    self.gl.get_query_parameter_u64(start, glow::QUERY_RESULT),
+                    self.gl.get_query_parameter_u64(end, glow::QUERY_RESULT),
+                )
+            };
+            if let Some(tag) = tag {
+                self.gpu_work_samples.push(GpuTimestampSample {
+                    tag,
+                    duration_ticks: last.wrapping_sub(first),
+                    frequency_hz: 1_000_000_000, // GL_TIMESTAMP is in nanoseconds.
+                });
+            }
+            self.reusable_gpu_queries.push((start, end));
+        }
+    }
+
     pub(crate) fn signal(&mut self) -> Result<SubmissionId> {
         self.retire()?;
         let serial = self
@@ -520,6 +612,14 @@ impl Drop for OpenGlDevice {
             self.compute.clear(&self.gl);
             for (_, fence) in &self.pending {
                 self.gl.delete_sync(*fence);
+            }
+            for (_, start, end) in &self.pending_gpu_work {
+                self.gl.delete_query(*start);
+                self.gl.delete_query(*end);
+            }
+            for (start, end) in &self.reusable_gpu_queries {
+                self.gl.delete_query(*start);
+                self.gl.delete_query(*end);
             }
             for pipeline in self.pipelines.values() {
                 self.gl.delete_program(pipeline.native);
