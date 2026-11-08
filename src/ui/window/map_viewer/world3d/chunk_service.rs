@@ -328,6 +328,36 @@ fn mesh_target_priority(
     (!loaded.contains(&pos), !ahead, distance_sq)
 }
 
+/// Background columns in the rear hemisphere can defer expensive
+/// block-model expansion, texture resolution and GPU Section allocation.
+/// A generous 4-column near field is always built eagerly. The 120-degree
+/// rear cone is deliberately smaller than a full rear half-space so FOV,
+/// pitch changes and seam visibility cannot cause obvious near-camera holes.
+/// Cached decoded probes remain available for picking and world queries.
+fn lazy_mesh_column(pos: ChunkPos, view: ViewState) -> bool {
+    if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_some() {
+        return false;
+    }
+    if pos.dimension != view.dimension {
+        return false;
+    }
+    let dx = f64::from(pos.x) * 16.0 + 8.0 - view.camera[0];
+    let dz = f64::from(pos.z) * 16.0 + 8.0 - view.camera[2];
+    let distance_sq = dx * dx + dz * dz;
+    if distance_sq < (5.0 * 16.0_f64).powi(2) {
+        return false;
+    }
+    let [fx, fz] = view.forward_xz;
+    let forward_length = f64::from(fx).hypot(f64::from(fz));
+    if forward_length < 0.5 {
+        // Looking nearly vertically: don't skip columns based on yaw.
+        return false;
+    }
+    let dot = (dx * f64::from(fx) + dz * f64::from(fz))
+        / (distance_sq.sqrt() * forward_length);
+    dot < -0.55
+}
+
 fn section_priority(pos: ChunkPos, section_y: i32, view: ViewState) -> (bool, u64) {
     let dx = f64::from(pos.x) * 16.0 + 8.0 - view.camera[0];
     let dy = f64::from(section_y) * MESH_BAND_HEIGHT + MESH_BAND_HEIGHT * 0.5 - view.camera[1];
@@ -740,6 +770,34 @@ mod view_tests {
         let mut targets = [at(1, 0), at(0, -1), at(0, 2)];
         targets.sort_by_key(|pos| mesh_target_priority(*pos, &loaded, (0, 0), [0.0, 1.0]));
         assert_eq!(targets, [at(0, 2), at(0, -1), at(1, 0)]);
+    }
+
+    #[test]
+    fn lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn() {
+        let pos = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let ahead = pos(0, 7);
+        let rear = pos(0, -7);
+        let near = pos(0, -2);
+        let mut view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [0.0, 1.0],
+            forward_y: 0.0,
+            radius: 8,
+            view_distance: 320.0,
+        };
+        assert!(!super::lazy_mesh_column(ahead, view));
+        assert!(!super::lazy_mesh_column(near, view));
+        if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_none() {
+            assert!(super::lazy_mesh_column(rear, view));
+        }
+        view.forward_xz = [0.0, -1.0];
+        assert!(!super::lazy_mesh_column(rear, view));
+        view.forward_xz = [0.0, 0.0];
+        assert!(!super::lazy_mesh_column(rear, view));
+        view.forward_xz = [0.0, 1.0];
+        assert!(!super::lazy_mesh_column(pos(7, 0), view));
     }
 
     #[test]
