@@ -9339,6 +9339,9 @@ fn is_preview_3d_unshaded_detail(name: &str) -> bool {
         || name.contains("sapling")
         || name.contains("wheat")
         || name.contains("crop")
+        // Fire is emissive; directional face shading makes the flame texture look boxed.
+        || name == "fire"
+        || name == "soul_fire"
 }
 
 fn preview_3d_stream_face_from_preview(

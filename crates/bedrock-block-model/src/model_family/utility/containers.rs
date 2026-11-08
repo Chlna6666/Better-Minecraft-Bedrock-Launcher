@@ -93,7 +93,10 @@ pub(crate) fn chiseled_bookshelf_shape(state: &BlockStateQuery) -> ModelShape {
                 [px(x0), px(y0), 0.0],
                 [px(x1), px(y1), px(1.0)],
             ))
-            .with_material_slot("front"),
+            .with_material_slot("front")
+            // The shelf top is wood; book tops must not show through when seen from above.
+            .with_face_material_slot(BlockFace::Up, "up")
+            .with_face_material_slot(BlockFace::Down, "down"),
         );
     }
 

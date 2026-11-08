@@ -173,7 +173,7 @@ fn row_plant_shape(material_slot: Option<&str>) -> ModelShape {
     )
 }
 
-fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
+pub(super) fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
     let inset = thickness.min(0.2);
     // Two full-size planes rotated 45 degrees about the block centre. Their horizontal extent is
     // 0.5 +/- 0.5*sin(45), matching the vanilla/holoprint cross model instead of sticking out of

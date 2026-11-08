@@ -35,14 +35,13 @@ pub(crate) fn farmland_shape() -> ModelShape {
 }
 
 pub(crate) fn fire_shape() -> ModelShape {
-    ModelShape::default().with_planes([
-        vertical_plane_z(px(1.0), "side"),
-        vertical_plane_z(px(15.0), "side"),
-        vertical_plane_x(px(1.0), "side"),
-        vertical_plane_x(px(15.0), "side"),
-        diagonal_plane(true, "side"),
-        diagonal_plane(false, "side"),
-    ])
+    // Vanilla fire is the cross model: two full-size planes at 45 degrees through the block
+    // centre. Four perimeter planes plus corner diagonals render as a fire-textured box.
+    let mut shape = super::cross_plants::cross_plane_shape(0.0, 1.0);
+    for plane in &mut shape.planes {
+        plane.material_slot = Some("side".to_owned());
+    }
+    shape
 }
 
 pub(crate) fn liquid_shape(state: &BlockStateQuery) -> ModelShape {
@@ -242,10 +241,6 @@ fn vertical_plane_x(x: f32, material_slot: &'static str) -> ModelPlane {
     )
     .with_material_slot(material_slot)
     .with_uv(upright_full_texture_uv())
-}
-
-fn diagonal_plane(forward: bool, material_slot: &'static str) -> ModelPlane {
-    diagonal_plane_between(0.0, 1.0, forward, Some(material_slot))
 }
 
 fn diagonal_plane_between(

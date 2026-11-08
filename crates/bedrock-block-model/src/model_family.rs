@@ -1549,7 +1549,19 @@ mod tests {
 
         let fire = model_shape_for_block_state(&BlockStateQuery::new("minecraft:fire"))
             .unwrap_or_else(|| panic!("missing fire"));
-        assert_eq!(fire.planes.len(), 6);
+        assert_eq!(fire.planes.len(), 2);
+        assert!(fire.planes.iter().all(|plane| {
+            plane.normal[0] != 0
+                && plane.normal[2] != 0
+                && plane.material_slot.as_deref() == Some("side")
+        }));
+
+        let end_portal = model_shape_for_block_state(&BlockStateQuery::new("minecraft:end_portal"))
+            .unwrap_or_else(|| panic!("missing end portal"));
+        assert_eq!(end_portal.cuboids.len(), 1);
+        assert!((end_portal.cuboids[0].max[1] - 0.75).abs() < 0.001);
+        assert_eq!(end_portal.cuboids[0].min[0], 0.0);
+        assert_eq!(end_portal.cuboids[0].max[0], 1.0);
 
         let coral_wall_fan = model_shape_for_block_state(
             &BlockStateQuery::new("minecraft:coral_fan_hang").with_state("coral_direction", 0),
@@ -1574,6 +1586,14 @@ mod tests {
         )
         .unwrap_or_else(|| panic!("missing chiseled bookshelf"));
         assert_eq!(bookshelf.cuboids.len(), 7);
+        assert_eq!(
+            bookshelf.cuboids[1]
+                .face_material_slots
+                .get(&crate::material::BlockFace::Up)
+                .map(String::as_str),
+            Some("up"),
+            "book tops must use the wooden shelf top, not the book spine"
+        );
     }
 
     #[test]

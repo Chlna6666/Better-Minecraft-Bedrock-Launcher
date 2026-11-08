@@ -91,6 +91,14 @@ pub(crate) fn candle_shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 pub(crate) fn portal_shape(state: &BlockStateQuery) -> ModelShape {
+    let name = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+    if name == "end_portal" {
+        // The End portal's starfield surface sits at 3/4 block height; it is not the
+        // side-facing Nether portal sheet. A full-footprint 12/16 box is the vanilla shape.
+        return ModelShape::from_cuboids([crate::model_family::shape::detail_cuboid_with_local_uv(
+            ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.75, 1.0]),
+        )]);
+    }
     let axis = crate::model_family::direction::state_string(state, "portal_axis")
         .or_else(|| crate::model_family::direction::state_string(state, "axis"))
         .or_else(|| crate::model_family::direction::state_string(state, "pillar_axis"))
