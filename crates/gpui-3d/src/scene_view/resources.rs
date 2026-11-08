@@ -30,6 +30,10 @@ pub(super) struct RendererResources {
     fragment_shader: Option<ShaderModuleId>,
     voxel_fragment_shader: Option<ShaderModuleId>,
     pipelines: [Option<RenderPipelineId>; 18],
+    /// A previous native scene PSO may still be referenced by an in-flight
+    /// independent producer queue. Defer destruction until GPU fence proof.
+    awaiting_pipeline_gpu: Vec<RenderPipelineId>,
+    ready_pipeline_release: Vec<RenderPipelineId>,
     fallback_texture: Option<TextureId>,
     fallback_texture_view: Option<TextureViewId>,
     samplers: [Option<SamplerId>; 6],
@@ -60,6 +64,8 @@ impl RendererResources {
             fragment_shader: None,
             voxel_fragment_shader: None,
             pipelines: [Some(pipeline); 18],
+            awaiting_pipeline_gpu: Vec::new(),
+            ready_pipeline_release: Vec::new(),
             fallback_texture: None,
             fallback_texture_view: Some(fallback),
             samplers: [None; 6],
@@ -135,10 +141,27 @@ impl RendererResources {
                 }
             }
         }
-        for pipeline in std::mem::replace(&mut self.pipelines, next)
-            .into_iter()
-            .flatten()
-        {
+        // The old PSOs are still valid for previous GPU submissions. Vulkan
+        // destroy_render_pipeline may synchronously wait for the device, so
+        // swap the complete replacement set and fence-retire the old handles.
+        self.awaiting_pipeline_gpu.extend(
+            std::mem::replace(&mut self.pipelines, next).into_iter().flatten()
+        );
+        Ok(())
+    }
+
+    pub(super) fn has_retired_pipelines(&self) -> bool {
+        !self.awaiting_pipeline_gpu.is_empty()
+    }
+
+    pub(super) fn gpu_work_completed(&mut self) {
+        self.ready_pipeline_release.append(&mut self.awaiting_pipeline_gpu);
+    }
+
+    pub(super) fn release_completed(
+        &mut self, device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<()> {
+        while let Some(pipeline) = self.ready_pipeline_release.pop() {
             device.destroy_render_pipeline(pipeline)?;
         }
         Ok(())
@@ -184,6 +207,11 @@ impl RendererResources {
             if let Some(pipeline) = pipeline.take() {
                 device.destroy_render_pipeline(pipeline)?;
             }
+        }
+        for pipeline in self.awaiting_pipeline_gpu.drain(..)
+            .chain(self.ready_pipeline_release.drain(..))
+        {
+            device.destroy_render_pipeline(pipeline)?;
         }
         if let Some(shader) = self.generated_vertex_shader.take() {
             device.destroy_shader_module(shader)?;
@@ -379,4 +407,23 @@ fn create_pipeline(
         },
         context.viewport(),
     )?)
+}
+
+#[cfg(test)]
+mod retired_pipeline_tests {
+    use super::*;
+    #[test]
+    fn replaced_scene_pipeline_generations_wait_for_gpu_completion() {
+        let pipeline = RenderPipelineId::from_parts(3, 1);
+        let layout = BindGroupLayoutId::from_parts(1, 1);
+        let view = TextureViewId::from_parts(1, 1);
+        let mut resources = RendererResources::test_pipeline(layout, pipeline, view);
+        assert!(!resources.has_retired_pipelines());
+        // No device required: handles are never freed in this ownership test.
+        resources.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(4, 1));
+        assert!(resources.has_retired_pipelines());
+        resources.gpu_work_completed();
+        assert!(!resources.has_retired_pipelines());
+        assert_eq!(resources.ready_pipeline_release, vec![RenderPipelineId::from_parts(4, 1)]);
+    }
 }

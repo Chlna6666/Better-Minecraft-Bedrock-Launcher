@@ -691,6 +691,9 @@ impl SidecarGpuBackend {
         if self.backend != context.backend_kind() {
             bail!("GPUI 3D renderer backend changed during a window lifetime")
         }
+        // Fence-ready old scene PSOs are reclaimed on the same GPU owner,
+        // independent of whether the current view actually needs a new PSO.
+        self.resources.release_completed(device)?;
         let next_target_extent = context.viewport();
         // Nova DX11/DX12/Vulkan/OpenGL/Metal pipeline constructors all
         // accept an extent but use dynamic native viewports and scissors.
@@ -1073,6 +1076,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 .scenes
                 .values()
                 .any(SceneResources::has_retired_arena_ranges)
+            || self.resources.has_retired_pipelines()
             || self.offscreen.as_ref().is_some_and(SidecarSurface::has_retired_targets)
     }
 
@@ -1083,6 +1087,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         for scene in self.scenes.values_mut() {
             scene.reclaim_arena_after_gpu_idle();
         }
+        self.resources.gpu_work_completed();
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_work_completed();
         }

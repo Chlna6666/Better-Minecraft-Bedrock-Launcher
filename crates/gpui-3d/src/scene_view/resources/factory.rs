@@ -37,6 +37,8 @@ impl RendererResources {
             fragment_shader: None,
             voxel_fragment_shader: None,
             pipelines: [None; 18],
+            awaiting_pipeline_gpu: Vec::new(),
+            ready_pipeline_release: Vec::new(),
             fallback_texture: None,
             fallback_texture_view: None,
             samplers: [None; 6],
