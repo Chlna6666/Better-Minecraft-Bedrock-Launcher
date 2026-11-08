@@ -316,42 +316,59 @@ impl OpenGlDevice {
     }
     /// Records native GPU timestamps on the existing GL command stream.
     /// Completed probes are recycled without requiring a graphics flush.
+    /// Begin a native GL_TIMESTAMP window at the current command-stream point.
+    /// Query creation and availability polling never wait for GPU completion.
+    pub(crate) fn begin_gpu_work(
+        &mut self,
+        tag: GpuTimestampTag,
+    ) -> Result<Option<(GpuTimestampTag, glow::NativeQuery, glow::NativeQuery)>> {
+        self.park()?;
+        self.poll_gpu_work();
+        if self.pending_gpu_work.len() >= 64 {
+            return Ok(None);
+        }
+        let queries = match self.reusable_gpu_queries.pop() {
+            Some(pair) => Some(pair),
+            None => match unsafe { self.gl.create_query() } {
+                Ok(start) => match unsafe { self.gl.create_query() } {
+                    Ok(end) => Some((start, end)),
+                    Err(_) => {
+                        // SAFETY: The query is unsubmitted and belongs to the current context.
+                        unsafe { self.gl.delete_query(start) };
+                        None
+                    }
+                },
+                Err(_) => None,
+            },
+        };
+        let Some((start, end)) = queries else { return Ok(None); };
+        // SAFETY: These slots have no outstanding GPU users.
+        unsafe { self.gl.query_counter(start, glow::TIMESTAMP) };
+        Ok(Some((tag, start, end)))
+    }
+
+    /// Finish a GPU work window. The result remains pending until nonblocking
+    /// GL_QUERY_RESULT_AVAILABLE polling confirms it has completed.
+    pub(crate) fn finish_gpu_work(
+        &mut self,
+        probe: Option<(GpuTimestampTag, glow::NativeQuery, glow::NativeQuery)>,
+        succeeded: bool,
+    ) {
+        if let Some((tag, start, end)) = probe {
+            // SAFETY: The current context recorded the matching start probe.
+            unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
+            self.pending_gpu_work.push_back((succeeded.then_some(tag), start, end));
+        }
+    }
+
     pub(crate) fn profile_gpu_work<T>(
         &mut self,
         tag: GpuTimestampTag,
         work: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        self.park()?;
-        self.poll_gpu_work();
-        if self.pending_gpu_work.len() >= 64 {
-            return work(self);
-        }
-        let queries = match self.reusable_gpu_queries.pop() {
-            Some(pair) => Some(pair),
-            None => {
-                // SAFETY: The GL 4.5 core context is current and supports timestamp queries.
-                match unsafe { self.gl.create_query() } {
-                    Ok(start) => match unsafe { self.gl.create_query() } {
-                        Ok(end) => Some((start, end)),
-                        Err(_) => {
-                            // SAFETY: This unsubmitted query belongs to the current context.
-                            unsafe { self.gl.delete_query(start) };
-                            None
-                        }
-                    },
-                    Err(_) => None,
-                }
-            }
-        };
-        let Some((start, end)) = queries else {
-            return work(self);
-        };
-        // SAFETY: Both query slots are distinct and no in-flight work uses them.
-        unsafe { self.gl.query_counter(start, glow::TIMESTAMP) };
+        let probe = self.begin_gpu_work(tag)?;
         let result = work(self);
-        // SAFETY: End timestamp follows the command issue range on the same context.
-        unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
-        self.pending_gpu_work.push_back((result.as_ref().ok().map(|_| tag), start, end));
+        self.finish_gpu_work(probe, result.is_ok());
         result
     }
 
