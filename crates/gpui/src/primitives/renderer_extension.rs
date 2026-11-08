@@ -108,6 +108,44 @@ impl RendererExtensionContext {
         }
     }
 
+    /// Create a local coordinate system for a cropped 3D producer texture.
+    /// Preserve the SceneView element's original projection dimensions while
+    /// subtracting the producer's pixel-space origin from all clip-space
+    /// inputs. No window or native queue ownership crosses this boundary.
+    #[must_use]
+    pub fn offscreen_region(
+        &self,
+        render_pass: RenderPassId,
+        color_format: gfx_core::Format,
+        origin: (u32, u32),
+        viewport: gfx_core::Extent2d,
+    ) -> Self {
+        let translation = crate::point(
+            ScaledPixels(origin.0 as f32),
+            ScaledPixels(origin.1 as f32),
+        );
+        let mut bounds = self.bounds;
+        bounds.origin.x -= translation.x;
+        bounds.origin.y -= translation.y;
+        let mut content_mask = self.content_mask;
+        content_mask.bounds.origin.x -= translation.x;
+        content_mask.bounds.origin.y -= translation.y;
+        Self {
+            render_pass,
+            color_format,
+            viewport,
+            bounds,
+            content_mask,
+            scissor: ScissorRect {
+                x: 0,
+                y: 0,
+                width: viewport.width(),
+                height: viewport.height(),
+            },
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn new(
         backend_kind: gfx_core::BackendKind,
         render_pass: RenderPassId,
@@ -356,6 +394,36 @@ mod tests {
     }
     input!(First);
     input!(Second);
+
+    #[test]
+    fn cropped_sidecar_target_remaps_projection_to_local_pixels() {
+        let viewport = gfx_core::Extent2d::new(1920, 1080).unwrap();
+        let bounds = Bounds {
+            origin: crate::point(ScaledPixels(400.0), ScaledPixels(220.0)),
+            size: crate::size(ScaledPixels(500.0), ScaledPixels(300.0)),
+        };
+        let source = RendererExtensionContext::new(
+            gfx_core::BackendKind::Vulkan,
+            RenderPassId::from_parts(10, 1),
+            gfx_core::Format::Rgba8Unorm,
+            viewport,
+            bounds,
+            ContentMask::new(bounds),
+            ScissorRect { x: 400, y: 220, width: 500, height: 300 },
+            Instant::now(),
+        );
+        let local = source.offscreen_region(
+            RenderPassId::from_parts(11, 1),
+            source.color_format(),
+            (400, 220),
+            gfx_core::Extent2d::new(500, 300).unwrap(),
+        );
+        assert_eq!(local.bounds().origin, crate::point(ScaledPixels(0.0), ScaledPixels(0.0)));
+        assert_eq!(local.bounds().size, source.bounds().size);
+        assert_eq!(local.content_mask().bounds.origin, local.bounds().origin);
+        assert_eq!(local.scissor(), ScissorRect { x: 0, y: 0, width: 500, height: 300 });
+        assert_eq!(local.frame_time(), source.frame_time());
+    }
 
     #[test]
     fn sidecar_target_retains_ui_projection_and_clip() {
