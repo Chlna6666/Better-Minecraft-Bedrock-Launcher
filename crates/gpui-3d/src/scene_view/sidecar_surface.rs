@@ -722,6 +722,7 @@ impl SidecarSurface {
         gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
         mut geometry: Arc<[RenderCommand]>,
         authored_scissors: bool,
+        indirect_only: bool,
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
@@ -748,12 +749,10 @@ impl SidecarSurface {
         self.trace.captured = self.trace.captured.saturating_add(1);
         passes.push(RendererExtensionPass {
             target: target.color_view,
-            gpu_work_tag: gpu_work_tag.filter(|_| {
-                !geometry.is_empty() && geometry.iter().all(|step| {
-                    matches!(step, RenderCommand::DrawIndirect(_)
-                        | RenderCommand::DrawIndexedIndirect(_))
-                })
-            }),
+            // Eligibility is cached with this immutable command revision.
+            // Hardware timestamp tagging must never rescan thousands of
+            // native DrawIndirect records on each camera-only capture.
+            gpu_work_tag: gpu_work_tag.filter(|_| indirect_only),
             resolve_target: None,
             render_pass: self.capture_pass,
             commands: geometry,
