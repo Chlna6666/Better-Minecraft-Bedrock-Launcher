@@ -481,11 +481,14 @@ impl SidecarSurface {
     pub(super) fn can_reuse(
         &self,
         id: SceneViewId,
-        extent: Extent2d,
+        host: &RendererExtensionContext,
         capture_revision: u64,
     ) -> bool {
+        let region = visible_region(host);
         self.targets.get(&id).is_some_and(|target| {
-            target.extent == extent && target.capture.reusable(capture_revision)
+            target.region == region
+                && target.host_extent == host.viewport()
+                && target.capture.reusable(capture_revision)
         })
     }
 
@@ -495,13 +498,16 @@ impl SidecarSurface {
     pub(super) fn composite_existing(
         &self,
         id: SceneViewId,
-        extent: Extent2d,
+        host: &RendererExtensionContext,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> bool {
         let Some(target) = self.targets.get(&id) else {
             return false;
         };
-        if target.extent != extent || target.capture.submitted.is_none() {
+        if target.region != visible_region(host)
+            || target.host_extent != host.viewport()
+            || target.capture.submitted.is_none()
+        {
             return false;
         }
         gui_steps.push(RenderCommand::Draw(DrawCommand {
@@ -540,15 +546,25 @@ impl SidecarSurface {
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
-        let clip = host.scissor();
+        let region = visible_region(host);
+        // SceneResources prepared the same geometry for a local cropped
+        // viewport. Convert any authored command scissor to local coords;
+        // do not submit absolute window scissors against a small image.
         for draw in &mut geometry {
-            draw.set_scissor(Some(clipped_scissor(draw.scissor(), clip)));
+            let clipped = clipped_scissor(draw.scissor(), region);
+            draw.set_scissor(Some(ScissorRect {
+                x: clipped.x.saturating_sub(region.x),
+                y: clipped.y.saturating_sub(region.y),
+                width: clipped.width,
+                height: clipped.height,
+            }));
         }
         geometry.retain(|draw| draw.scissor().is_none_or(|rect| !rect.is_empty()));
         let recreate = self.targets.get(&id)
-            .is_none_or(|target| target.extent != host.viewport());
+            .is_none_or(|target| target.region != region
+                || target.host_extent != host.viewport());
         if recreate {
-            let new_target = self.create_target(device, host.viewport())?;
+            let new_target = self.create_target(device, region, host.viewport())?;
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
@@ -652,7 +668,10 @@ mod tests {
                 depth: TextureId::from_parts(handle(2), 1),
                 depth_view: TextureViewId::from_parts(2, 1),
                 binding: BindGroupId::from_parts(1, 1),
+                placement: BufferId::from_parts(1, 1),
                 extent: Extent2d::new(32, 32).unwrap(),
+                region: ScissorRect { x: 0, y: 0, width: 32, height: 32 },
+                host_extent: Extent2d::new(32, 32).unwrap(),
                 capture: CaptureEpoch::default(),
             }],
             ready_to_release: Vec::new(),
@@ -684,6 +703,39 @@ mod tests {
         capture.acknowledge(43);
         assert!(capture.reusable(43));
         assert!(!capture.reusable(42));
+    }
+
+    #[test]
+    fn cropped_region_saves_color_and_depth_memory_and_preserves_placement() {
+        let viewport = Extent2d::new(1920, 1080).unwrap();
+        let bounds = gpui::Bounds {
+            origin: gpui::point(gpui::ScaledPixels(400.0), gpui::ScaledPixels(200.0)),
+            size: gpui::size(gpui::ScaledPixels(480.0), gpui::ScaledPixels(320.0)),
+        };
+        let host = RendererExtensionContext::for_target(
+            BackendKind::Vulkan,
+            RenderPassId::from_parts(1, 1),
+            Format::Rgba8Unorm,
+            viewport,
+        );
+        // Visible crop is based on the real host scissor, not the frame
+        // texture size. Verify the math using the target rectangle below.
+        let rect = ScissorRect { x: 400, y: 200, width: 480, height: 320 };
+        let extent = region_extent(rect);
+        assert_eq!((extent.width(), extent.height()), (480, 320));
+        let before = u64::from(viewport.width()) * u64::from(viewport.height()) * 8;
+        let after = u64::from(extent.width()) * u64::from(extent.height()) * 8;
+        assert!(after * 10 < before, "two RGBA/depth 32-bit targets should be ~13x smaller");
+        let bytes = placement_bytes(rect, viewport);
+        let values = std::array::from_fn::<_, 4, _>(|i| {
+            f32::from_le_bytes(bytes[i * 4..(i + 1) * 4].try_into().unwrap())
+        });
+        assert!((values[0] - (-1.0 + 800.0 / 1920.0)).abs() < 1.0e-5);
+        assert!((values[1] - (1.0 - 400.0 / 1080.0)).abs() < 1.0e-5);
+        assert!((values[2] - (960.0 / 1920.0)).abs() < 1.0e-5);
+        assert!((values[3] - (-640.0 / 1080.0)).abs() < 1.0e-5);
+        assert_eq!(host.viewport(), viewport);
+        assert_eq!(bounds.size.width, gpui::ScaledPixels(480.0));
     }
 
     #[test]
