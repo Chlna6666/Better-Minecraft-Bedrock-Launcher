@@ -66,6 +66,13 @@ impl ExtensionSubmission<'_> {
             .collect::<Vec<_>>();
         let submission = if passes.is_empty() {
             None
+        } else if self.registry.independent_producers_only()
+            && device.independent_graphics_queue_available()
+        {
+            // Backends must GPU-signal the 3D producer and enqueue a native
+            // graphics-queue wait before the compositor can sample its image.
+            // The submitted fence tracks the consumer-side dependency too.
+            device.render_to_textures_independent(&passes)?
         } else {
             device.render_to_textures(&passes)?
         };
