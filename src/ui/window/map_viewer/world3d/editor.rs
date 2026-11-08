@@ -436,6 +436,49 @@ fn same_portal_region(a: PortalVisibilityKey, b: PortalVisibilityKey) -> bool {
         && a.component == b.component
 }
 
+#[cfg(test)]
+mod async_portal_visibility_tests {
+    use super::*;
+
+    fn request(revision: u64, x: i32, exits: u8) -> PortalVisibilityKey {
+        PortalVisibilityKey {
+            revision,
+            dimension: Dimension::Overworld,
+            voxel: [x, 80, 0],
+            radius: 12,
+            component: Some((
+                ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld },
+                5,
+                exits,
+            )),
+        }
+    }
+
+    #[test]
+    fn camera_movement_inside_one_air_pocket_reuses_async_visibility() {
+        let a = request(4, 1, 0b001011);
+        let b = request(4, 6, 0b001011);
+        assert!(same_portal_region(a, b));
+        assert_ne!(a.voxel, b.voxel);
+    }
+
+    #[test]
+    fn changing_portal_revision_exits_dimension_or_radius_invalidates_result() {
+        let key = request(4, 1, 0b001011);
+        assert!(!same_portal_region(key, request(5, 1, 0b001011)));
+        assert!(!same_portal_region(key, request(4, 1, 0b111111)));
+        assert!(!same_portal_region(key, PortalVisibilityKey {
+            dimension: Dimension::Nether, ..key
+        }));
+        assert!(!same_portal_region(key, PortalVisibilityKey {
+            radius: 13, ..key
+        }));
+        assert!(!same_portal_region(key, PortalVisibilityKey {
+            component: None, ..key
+        }));
+    }
+}
+
 struct PortalVisibilityResult {
     key: PortalVisibilityKey,
     hidden: BTreeSet<(ChunkPos, i32)>,
