@@ -471,9 +471,19 @@ fn portal_candidate_bands(
 ) -> BTreeSet<(ChunkPos, i32)> {
     let mut bands = resident.into_iter().collect::<BTreeSet<_>>();
     for (&pos, probe) in probes {
-        bands.extend(probe.subchunks.keys().map(|&y| (pos, i32::from(y).div_euclid(4))));
+        extend_portal_probe_bands(&mut bands, pos, probe.subchunks.keys().copied());
     }
     bands
+}
+
+/// A 64-block render band spans four 16-block decoded SubChunks. This tiny
+/// helper can be verified independently of constructing a full LevelDB probe.
+fn extend_portal_probe_bands(
+    bands: &mut BTreeSet<(ChunkPos, i32)>,
+    pos: ChunkPos,
+    subchunks: impl IntoIterator<Item = i8>,
+) {
+    bands.extend(subchunks.into_iter().map(|y| (pos, i32::from(y).div_euclid(4))));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -526,21 +536,11 @@ mod async_portal_visibility_tests {
     #[test]
     fn prospective_portal_bands_cover_not_yet_uploaded_sections() {
         let pos = ChunkPos { x: 1, z: 2, dimension: Dimension::Overworld };
-        let mut subchunks = BTreeMap::new();
-        subchunks.insert(0, super::super::types::ProbingSubChunk::default());
-        subchunks.insert(7, super::super::types::ProbingSubChunk::default());
-        let probe = Arc::new(super::super::types::World3dChunkProbe {
-            pos,
-            min_y: 0,
-            subchunks,
-            visibility: BTreeMap::new(),
-            state_version: None,
-            storage_bytes: 0,
-        });
-        let probes = BTreeMap::from([(pos, probe)]);
-        let bands = super::portal_candidate_bands(&probes, [(pos, 4)]);
+        let mut bands = BTreeSet::from([(pos, 4)]);
+        super::extend_portal_probe_bands(&mut bands, pos, [0, 7, -1]);
         assert!(bands.contains(&(pos, 0)));
         assert!(bands.contains(&(pos, 1)));
+        assert!(bands.contains(&(pos, -1)));
         assert!(bands.contains(&(pos, 4)));
     }
 
