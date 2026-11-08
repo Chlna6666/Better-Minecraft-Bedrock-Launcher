@@ -28,6 +28,7 @@ gfx-core = { path = "../nova-gfx/gfx-core" }
 gpui = { path = "../gpui", default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0.145"
+rayon = "1.11.0"
 thiserror = "2.0.17"
 gltf = { version = "=1.4.1", default-features = false, features = ["names", "utils", "KHR_lights_punctual", "KHR_materials_unlit", "KHR_texture_transform"] }
 
