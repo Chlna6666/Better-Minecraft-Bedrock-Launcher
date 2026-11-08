@@ -220,6 +220,16 @@ struct ChunkCursor {
 }
 
 impl ChunkCursor {
+    /// Re-rank only the unconsumed part of the current ring. Changing yaw
+    /// must not restart DB reads or revisit already considered columns.
+    fn reprioritize_remaining(&mut self, forward_xz: [f32; 2]) {
+        self.ring_positions[self.offset..].sort_by(|&(ax, az), &(bx, bz)| {
+            let a = ax as f32 * forward_xz[0] + az as f32 * forward_xz[1];
+            let b = bx as f32 * forward_xz[0] + bz as f32 * forward_xz[1];
+            b.total_cmp(&a).then_with(|| (ax, az).cmp(&(bx, bz)))
+        });
+    }
+
     fn next(
         &mut self,
         dimension: Dimension,
@@ -665,12 +675,29 @@ fn take_renderable_dirty_meshes(
     view: ViewState,
     limit: usize,
 ) -> Vec<ChunkPos> {
-    let mut visible = renderable_dirty_meshes(dirty, view);
-    visible.truncate(limit);
-    for pos in &visible {
+    let center = (
+        (view.camera[0] / 16.0).floor() as i32,
+        (view.camera[2] / 16.0).floor() as i32,
+    );
+    // A camera may move again before the entire edit/rehydration backlog is
+    // drained. Select only the K nearest renderable columns (O(N log K)),
+    // instead of sorting all pending sections on every interleaved batch.
+    let ready = nearest_view_positions(
+        dirty.iter().copied().filter(|pos| !lazy_mesh_column(*pos, view)),
+        view.dimension, center.0, center.1, view.radius, limit,
+    );
+    for pos in &ready {
         dirty.remove(pos);
     }
-    visible
+    ready
+}
+
+/// Feedback from the previous mesh/upload wave. A slow GPU owner or complex
+/// transparent model reduces the next CPU wave, without reducing frame rate
+/// or allowing the dirty queue to stall completely.
+fn interleaved_mesh_wave_size(face_ms: u64, convert_ms: u64, send_wait_ms: u64) -> usize {
+    let work = face_ms.saturating_add(convert_ms).saturating_add(send_wait_ms);
+    if work >= 16 { 1 } else if work >= 8 { 2 } else { STREAM_MESH_BATCH_CHUNKS }
 }
 
 fn retain_urgent_chunks(urgent: &mut BTreeSet<ChunkPos>, view: ViewState) {
@@ -777,6 +804,33 @@ mod view_tests {
             super::request_for_stream_batch(full.clone(), &[], Some(view)).data_request,
             full.data_request
         );
+    }
+
+    #[test]
+    fn changing_heading_reorders_only_unconsumed_ring_positions() {
+        let mut cursor = super::ChunkCursor::default();
+        // First chunk is always the origin. The next call begins ring 1.
+        let origin = cursor.next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0]).unwrap();
+        assert_eq!((origin.x, origin.z), (0, 0));
+        let first = cursor.next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0]).unwrap();
+        assert_eq!(first.x, 1);
+        cursor.reprioritize_remaining([-1.0, 0.0]);
+        let second = cursor.next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0]).unwrap();
+        assert_eq!(second.x, -1);
+        assert_ne!(first, second);
+        let mut positions = BTreeSet::from([origin, first, second]);
+        for _ in 0..6 {
+            positions.insert(cursor.next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0]).unwrap());
+        }
+        assert_eq!(positions.len(), 9, "heading change cannot duplicate ring positions");
+    }
+
+    #[test]
+    fn slow_uploads_admit_one_mesh_per_interleaved_wave() {
+        assert_eq!(super::interleaved_mesh_wave_size(0, 0, 0), 4);
+        assert_eq!(super::interleaved_mesh_wave_size(3, 5, 0), 2);
+        assert_eq!(super::interleaved_mesh_wave_size(9, 6, 2), 1);
+        assert_eq!(super::interleaved_mesh_wave_size(0, 0, 30), 1);
     }
 
     #[test]
@@ -2842,6 +2896,28 @@ impl Worker {
                     self.urgent_chunks.extend(pending.positions.iter().copied());
                 }
                 return Some(command);
+            }
+            // A freshly turned camera may already have metadata/blocks in the
+            // cache, yet the old loop kept loading an entire render radius
+            // before it ever processed those now-visible dirty meshes.
+            // Interleave one bounded mesh wave with each DB read batch. Keep
+            // pending prefetched I/O live so the two stages overlap, but never
+            // launch more workers or build an unbounded GPU upload backlog.
+            let ready = take_renderable_dirty_meshes(
+                &mut self.dirty_meshes,
+                self.view,
+                interleaved_mesh_wave_size(
+                    self.last_face_ms, self.last_convert_ms, self.last_send_wait_ms,
+                ),
+            );
+            if !ready.is_empty() {
+                self.mesh_targets(tx, &ready, false);
+                if let Ok(command) = commands.try_recv() {
+                    if let Some(pending) = pending_batch.take() {
+                        self.urgent_chunks.extend(pending.positions.iter().copied());
+                    }
+                    return Some(command);
+                }
             }
             let batch_started = Instant::now();
             let (loaded, load_time, prefetched) = if let Some(pending) = pending_batch.take() {
@@ -5348,6 +5424,11 @@ fn run_worker(
                     || worker.view.radius != radius
                 {
                     worker.cursor = ChunkCursor::default();
+                } else if worker.view.forward_xz != forward_xz {
+                    // Position did not change, but a fast turn can make the
+                    // rest of the current ring's old camera-first ordering
+                    // irrelevant. Reprioritize without repeating DB work.
+                    worker.cursor.reprioritize_remaining(forward_xz);
                 }
                 if worker.view.dimension != dimension {
                     worker.published_sections.clear();
