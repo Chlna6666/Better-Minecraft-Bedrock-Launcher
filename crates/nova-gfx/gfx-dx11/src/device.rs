@@ -51,6 +51,9 @@ pub struct Dx11Device {
     queries: Vec<ID3D11Query>,
     frame_timestamp_queries: Vec<Dx11TimestampQueries>,
     pending_frame_timestamps: Vec<(u32, Dx11TimestampQueries)>,
+    pending_gpu_work_timestamps: Vec<(u32, Option<GpuTimestampTag>, Dx11TimestampQueries)>,
+    gpu_work_query_pool: Vec<Dx11TimestampQueries>,
+    gpu_work_samples: Vec<GpuTimestampSample>,
     /// Probes opened by `present_steps` and consumed by the next `signal`.
     next_frame_timestamps: Option<Dx11TimestampQueries>,
     last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
@@ -229,6 +232,9 @@ impl Dx11Device {
             queries: Vec::new(),
             frame_timestamp_queries,
             pending_frame_timestamps: Vec::new(),
+            pending_gpu_work_timestamps: Vec::new(),
+            gpu_work_query_pool: Vec::new(),
+            gpu_work_samples: Vec::new(),
             next_frame_timestamps: None,
             last_frame_gpu_timestamps: None,
             timestamp_queries_supported,
@@ -293,6 +299,42 @@ impl Dx11Device {
         self.surfaces.trim();
         self.swapchains.trim();
     }
+    /// Measures ordered immediate-context GPU commands without introducing a
+    /// separate flush. The next normal submission event query owns completion.
+    /// D3D11 disjoint scopes must not overlap the presented-frame scope.
+    pub(crate) fn profile_gpu_work<T>(
+        &mut self,
+        tag: GpuTimestampTag,
+        work: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if !self.timestamp_queries_supported
+            || self.pending_gpu_work_timestamps.len() >= 64
+            || self.next_frame_timestamps.is_some()
+        {
+            return work(self);
+        }
+        let queries = match self.gpu_work_query_pool.pop() {
+            Some(queries) => queries,
+            None => Dx11TimestampQueries::new(&self.native)?,
+        };
+        // SAFETY: The exclusive immediate context owns this disjoint scope.
+        unsafe {
+            self.context.Begin(&queries.disjoint);
+            self.context.End(&queries.start);
+        }
+        let result = work(self);
+        // SAFETY: The matching start query was recorded above on this context.
+        unsafe {
+            self.context.End(&queries.end);
+            self.context.End(&queries.disjoint);
+        }
+        let serial = self.submitted.saturating_add(1);
+        self.pending_gpu_work_timestamps.push((
+            serial, result.as_ref().ok().map(|_| tag), queries,
+        ));
+        result
+    }
+
     /// Opens the timestamp-disjoint scope and start timestamp for the frame
     /// about to be recorded by `present_steps`. The matching end timestamps are
     /// closed by [`Self::end_frame_timestamps`] and attached to the next
@@ -400,7 +442,30 @@ impl Dx11Device {
             }
         }
         self.read_completed_frame_timestamps();
+        self.read_completed_gpu_work_timestamps();
         Ok(())
+    }
+
+    fn read_completed_gpu_work_timestamps(&mut self) {
+        let completed = self.completed;
+        let mut index = 0;
+        while index < self.pending_gpu_work_timestamps.len() {
+            if self.pending_gpu_work_timestamps[index].0 > completed {
+                index += 1;
+                continue;
+            }
+            let (_, tag, queries) = self.pending_gpu_work_timestamps.swap_remove(index);
+            if let Some(tag) = tag
+                && let Some(ticks) = read_dx11_frame_timestamps(&self.context, &queries)
+            {
+                self.gpu_work_samples.push(GpuTimestampSample {
+                    tag,
+                    duration_ticks: ticks.duration_ticks,
+                    frequency_hz: ticks.frequency,
+                });
+            }
+            self.gpu_work_query_pool.push(queries);
+        }
     }
 
     fn read_completed_frame_timestamps(&mut self) {

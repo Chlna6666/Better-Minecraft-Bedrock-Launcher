@@ -158,6 +158,39 @@ impl ResourceDevice for Dx11Device {
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }
+    fn gpu_work_timestamps_supported(&self) -> bool {
+        self.timestamp_queries_supported
+    }
+    fn dispatch_compute_batch_profiled(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: GpuTimestampTag,
+    ) -> Result<()> {
+        if dispatches.is_empty() {
+            return Ok(());
+        }
+        self.profile_gpu_work(tag, |device| {
+            for dispatch in dispatches {
+                device.dispatch_buffers(dispatch)?;
+            }
+            Ok(())
+        })
+    }
+    fn write_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: GpuTimestampTag,
+    ) -> Result<BufferUploadStats> {
+        self.profile_gpu_work(tag, |device| device.upload_buffer_batch(writes))
+    }
+    fn drain_gpu_work_timestamps(
+        &mut self,
+        output: &mut Vec<GpuTimestampSample>,
+    ) -> Result<()> {
+        self.retire()?;
+        output.append(&mut self.gpu_work_samples);
+        Ok(())
+    }
     fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
         self.copy_texture_buffer_regions(copies)
     }
