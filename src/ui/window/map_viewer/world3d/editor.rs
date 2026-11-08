@@ -794,7 +794,9 @@ impl World3dEditorView {
                         .saturating_add(geometry_bytes)
                         .saturating_add(new_texture_bytes);
                     self.probes.insert(payload.mesh.pos, payload.probe.clone());
-                    self.invalidated_visibility.remove(&payload.mesh.pos);
+                    // A partial Section upsert may precede an outstanding edit's
+                    // full-column remesh. Re-enable portal culling only after
+                    // the corresponding Completed reconciliation arrives.
                     probes_changed = true;
                     let key = (payload.mesh.pos, payload.mesh.section_y);
                     if self.chunk_meshes.insert(key, payload.mesh).is_some() {
