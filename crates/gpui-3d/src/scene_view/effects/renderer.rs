@@ -315,6 +315,7 @@ impl EffectsRenderer {
             .ok_or_else(|| anyhow::anyhow!("screen bindings missing"))?;
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
+            gpu_work_tag: None,
             render_pass: self.compositor.post_pass,
             commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])].into(),
             color_load_op: LoadOp::Clear(ClearColor::default()),
@@ -379,6 +380,7 @@ pub(super) fn pass(
 ) -> RendererExtensionPass {
     RendererExtensionPass {
         target,
+        gpu_work_tag: None,
         render_pass,
         commands: commands.into(),
         color_load_op: LoadOp::Clear(ClearColor::default()),
