@@ -188,6 +188,10 @@ pub struct PreparedScene {
     /// ranges; alpha sorting and CPU culling require the full slot planner.
     structural_delta: Option<StructuralDrawDelta>,
     blend_order: Vec<usize>,
+    // Reuse both permutation allocations instead of cloning O(blended Draws)
+    // indices whenever the camera moves. The committed order stays readable
+    // until the successor has been computed and compared.
+    blend_order_scratch: Vec<usize>,
     blend_positions: Vec<usize>,
     /// Scratch Section-depth keys for the blended tail permutation, kept
     /// allocated across frames so streaming never re-allocates the workspace.
@@ -767,8 +771,7 @@ impl PreparedScene {
                 );
             }
         }
-        let previous = std::mem::take(&mut self.blend_order);
-        let mut next = previous.clone();
+        let mut next = std::mem::take(&mut self.blend_order_scratch);
         next.clear();
         next.extend(0..keys.len());
         let ordered = keys
@@ -779,14 +782,15 @@ impl PreparedScene {
                 keys[right].total_cmp(&keys[left]).then(left.cmp(&right))
             });
         }
-        self.blend_order_changed = next != previous;
+        self.blend_order_changed = next != self.blend_order;
         if reorder_draws {
             // The CPU-culling path renders native commands in draws order, so
             // the back-to-front permutation must materialize in the draw list
             // itself; apply_order normalizes the permutation to identity.
             apply_order(&mut self.draws[start..], &next, &mut self.blend_positions);
         }
-        self.blend_order = next;
+        std::mem::swap(&mut self.blend_order, &mut next);
+        self.blend_order_scratch = next;
         self.blend_section_keys = keys;
     }
 
@@ -802,6 +806,7 @@ impl PreparedScene {
         self.visible_candidates.shrink_to_fit();
         self.next_visible_candidates.shrink_to_fit();
         self.blend_order.shrink_to_fit();
+        self.blend_order_scratch.shrink_to_fit();
         self.blend_positions.shrink_to_fit();
         self.blend_section_keys.shrink_to_fit();
     }
