@@ -74,12 +74,20 @@ impl Mailbox {
         true
     }
 
-    fn status(&self, scene: &Arc<Scene>, transform: Mat4) -> (bool, bool) {
-        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+    fn status(&self, scene: &Arc<Scene>, transform: Mat4, camera: Camera) -> (bool, bool) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !state.target.as_ref().is_some_and(|target| {
             Arc::ptr_eq(&target.scene, scene) && target.transform == transform
         }) {
             return (false, false);
+        }
+        // An earlier LOD-selected RenderJob cannot be finalized for an
+        // unrelated camera. Drop the stale publication instead of scheduling
+        // a perpetual compositor frame that can never consume it.
+        if state.published.as_ref().is_some_and(|ready| {
+            ready.prepared.uses_lod() && ready.camera != camera
+        }) {
+            state.published = None;
         }
         let waiting = state.pending.is_some() || state.running;
         (waiting && state.published.is_none(),
@@ -238,13 +246,13 @@ pub(super) fn schedule(view: &SceneView) {
 /// True while an immutable CPU job is not ready. Full scene replacement may
 /// retain the last GPU publication instead of blocking the device owner.
 pub(super) fn pending(view: &SceneView) -> bool {
-    view.sidecar.status(&view.scene, view.scene_transform).0
+    view.sidecar.status(&view.scene, view.scene_transform, view.camera).0
 }
 
 /// Keep the GPUI offscreen extension ticking until the sidecar producer has
 /// delivered and the GPU owner has consumed its final completed publication.
 pub(super) fn needs_frame(view: &SceneView) -> bool {
-    view.sidecar.status(&view.scene, view.scene_transform).1
+    view.sidecar.status(&view.scene, view.scene_transform, view.camera).1
 }
 
 /// GPU owner used its exact existing synchronous fast path. Cancel redundant
@@ -312,10 +320,10 @@ mod tests {
         let slot = Arc::new(Mailbox::default());
         let scene = Arc::new(Scene::new());
         assert!(slot.enqueue(scene.clone(), Mat4::IDENTITY, camera()));
-        assert_eq!(slot.status(&scene, Mat4::IDENTITY), (true, true));
+        assert_eq!(slot.status(&scene, Mat4::IDENTITY, camera()), (true, true));
         slot.discard(&scene, Mat4::IDENTITY);
         slot.run();
-        assert_eq!(slot.status(&scene, Mat4::IDENTITY), (false, false));
+        assert_eq!(slot.status(&scene, Mat4::IDENTITY, camera()), (false, false));
         assert!(slot.take(&scene, Mat4::IDENTITY, camera()).is_none());
     }
 
@@ -353,7 +361,7 @@ mod tests {
         assert!(right.enqueue(scene.clone(), Mat4::IDENTITY, camera()));
         left.run();
         assert!(left.take(&scene, Mat4::IDENTITY, camera()).is_some());
-        assert_eq!(right.status(&scene, Mat4::IDENTITY), (true, true));
+        assert_eq!(right.status(&scene, Mat4::IDENTITY, camera()), (true, true));
         right.run();
         assert!(right.take(&scene, Mat4::IDENTITY, camera()).is_some());
         assert_eq!(Arc::strong_count(&left), 1);
