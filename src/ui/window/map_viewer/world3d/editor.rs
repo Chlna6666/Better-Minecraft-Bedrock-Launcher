@@ -50,6 +50,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(16);
 const PICK_INTERVAL: Duration = Duration::from_micros(33_334);
 const MAX_MESH_EVENTS_PER_POLL: usize = 16;
 const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+const MESH_GPU_OWNER_SUBMIT_BUDGET_US: u64 = 2_000;
+
+/// GPU-owner feedback supplements, rather than replaces, the bounded byte
+/// budget. It excludes GPU fence completion and is a capacity estimate, not
+/// a measured per-Section GPU duration. Do not throttle on cold samples.
+fn stream_upload_budget_reached(bytes: usize, sections: usize) -> bool {
+    if bytes >= MESH_SUBMIT_BUDGET_BYTES {
+        return true;
+    }
+    let Some(cost) = gpui_3d::gpu_upload_cost_estimate() else {
+        return false;
+    };
+    cost.samples >= 8
+        && cost.predicted_submit_us(bytes, sections.saturating_mul(3))
+            >= MESH_GPU_OWNER_SUBMIT_BUDGET_US
+}
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 const SECTION_EPOCH_MAX_TOMBSTONES: usize = 32_768;
 /// Recent connected cave/terrain regions; memory is additionally bounded by
@@ -1209,7 +1225,7 @@ impl World3dEditorView {
                 }
             }
             if poll_started.elapsed() >= Duration::from_millis(2)
-                || submitted_bytes >= MESH_SUBMIT_BUDGET_BYTES
+                || stream_upload_budget_reached(submitted_bytes, meshes_added)
             {
                 break;
             }

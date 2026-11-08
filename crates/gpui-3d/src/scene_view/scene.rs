@@ -1490,7 +1490,11 @@ impl SceneResources {
         let instance_patch_count = instance_patches.len();
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
+            let upload_started = Instant::now();
             device.write_buffer_batch(&writes)?;
+            crate::upload_feedback::observe_buffer_upload(
+                self.backend, uploaded_bytes, writes.len(), upload_started.elapsed(),
+            );
         }
         drop(writes);
         // A new Mesh generation can change shared Page bindings and GPU Part
@@ -1678,7 +1682,11 @@ impl SceneResources {
         }
         let bytes_uploaded = writes.iter().map(|write| write.data.len()).sum::<usize>();
         if !writes.is_empty() {
+            let upload_started = Instant::now();
             device.write_buffer_batch(&writes)?;
+            crate::upload_feedback::observe_buffer_upload(
+                self.backend, bytes_uploaded, writes.len(), upload_started.elapsed(),
+            );
         }
         drop(writes);
         // The stable physical Draw Slot table is already committed by the
@@ -2128,7 +2136,14 @@ impl SceneResources {
         let write_result = if writes.is_empty() {
             Ok(())
         } else {
-            device.write_buffer_batch(&writes).map(|_| ())
+            let upload_started = Instant::now();
+            let result = device.write_buffer_batch(&writes).map(|_| ());
+            if result.is_ok() {
+                crate::upload_feedback::observe_buffer_upload(
+                    self.backend, uploaded_bytes, write_count, upload_started.elapsed(),
+                );
+            }
+            result
         };
         if let Err(error) = write_result {
             if let Some(buffer) = new_slot_map {
@@ -3667,6 +3682,7 @@ fn flush_pending_generated_meshes(
     upload_pending_meshes(
         device,
         pending,
+        backend,
         meshes,
         page_refs,
         retired_meshes,
@@ -3701,6 +3717,7 @@ fn discard_pending_meshes(
 fn upload_pending_meshes(
     device: &mut dyn ExtensionDevice,
     pending: &mut Vec<StagedMesh>,
+    backend: BackendKind,
     meshes: &mut HashMap<(MeshId, bool), MeshResources>,
     page_refs: &mut page_refs::PageRefs,
     retired_meshes: &mut Vec<MeshResources>,
@@ -3723,6 +3740,7 @@ fn upload_pending_meshes(
             data: &upload.bytes,
         })
         .collect::<Vec<_>>();
+    let upload_started = Instant::now();
     if let Err(error) = device.write_buffer_batch(&writes) {
         discard_pending_meshes(
             device,
@@ -3733,6 +3751,12 @@ fn upload_pending_meshes(
             argument_arena,
         )?;
         return Err(error.into());
+    }
+    if !writes.is_empty() {
+        crate::upload_feedback::observe_buffer_upload(
+            backend, writes.iter().map(|write| write.data.len()).sum(),
+            writes.len(), upload_started.elapsed(),
+        );
     }
     for (id, mesh, _) in pending.drain(..) {
         // Account for the incoming generation before retiring an older
