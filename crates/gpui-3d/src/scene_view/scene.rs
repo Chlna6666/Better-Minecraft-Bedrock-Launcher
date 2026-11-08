@@ -180,6 +180,39 @@ mod structural_light_delta_tests {
     use super::*;
 
     #[test]
+    fn measured_native_upload_cost_controls_sparse_range_coalescing() {
+        let mut cost = crate::GpuUploadCostEstimate {
+            backend: BackendKind::Vulkan,
+            samples: 32,
+            measured_bytes: 8 * 1024 * 1024,
+            measured_writes: 128,
+            measured_submit_us: 1_000,
+            ns_per_mib: 500_000,
+            ns_per_write: 50_000,
+        };
+        assert_eq!(sparse_upload_range_budget_with_cost(BackendKind::Vulkan, 65_536, None), 64);
+        assert_eq!(sparse_upload_range_budget_with_cost(
+            BackendKind::Vulkan, 65_536, Some(cost),
+        ), 24);
+        cost.ns_per_write = 500;
+        assert_eq!(sparse_upload_range_budget_with_cost(
+            BackendKind::Vulkan, 65_536, Some(cost),
+        ), 96);
+        // A different graphics device cannot use this backend's timings.
+        assert_eq!(sparse_upload_range_budget_with_cost(
+            BackendKind::Dx11, 65_536, Some(cost),
+        ), 16);
+        // Small scenes and cold estimators retain deterministic behavior.
+        assert_eq!(sparse_upload_range_budget_with_cost(
+            BackendKind::Vulkan, 256, Some(cost),
+        ), 16);
+        cost.samples = 2;
+        assert_eq!(sparse_upload_range_budget_with_cost(
+            BackendKind::Vulkan, 65_536, Some(cost),
+        ), 64);
+    }
+
+    #[test]
     fn unchanged_light_count_preserves_independent_light_patch() {
         let previous = vec![0u8; LIGHT_STRIDE as usize * 2];
         let mut changed = previous.clone();
@@ -270,14 +303,43 @@ impl DrawSyncAudit {
 }
 
 
-/// Native Vulkan/DX12 uploads stage all buffer slices in a single command
-/// submission. Large scene deltas benefit from retaining more sparse spans,
-/// while the smaller budget avoids excessive per-write work on DX11/GL.
+/// Native Vulkan/DX12 uploads stage many buffer slices in one command, while
+/// DX11/GL can incur a larger driver cost per write. Once sufficient native
+/// owner measurements exist, tune sparse-range count from the breakeven gap:
+/// bytes worth transferring to avoid one more driver write. Retain the
+/// deterministic backend default during startup or with sparse samples.
 fn sparse_upload_range_budget(backend: BackendKind, draw_count: usize) -> usize {
-    if draw_count >= 32_768 && matches!(backend, BackendKind::Vulkan | BackendKind::Dx12) {
-        64
+    sparse_upload_range_budget_with_cost(
+        backend, draw_count, crate::gpu_upload_cost_estimate(),
+    )
+}
+
+fn sparse_upload_range_budget_with_cost(
+    backend: BackendKind,
+    draw_count: usize,
+    feedback: Option<crate::GpuUploadCostEstimate>,
+) -> usize {
+    let modern = matches!(backend, BackendKind::Vulkan | BackendKind::Dx12);
+    let baseline = if modern && draw_count >= 32_768 { 64 } else { 16 };
+    if draw_count < 4_096 {
+        return baseline;
+    }
+    let Some(cost) = feedback.filter(|cost| {
+        cost.backend == backend && cost.samples >= 24
+            && cost.measured_bytes >= 4 * 1024 * 1024
+    }) else {
+        return baseline;
+    };
+    let gap_bytes = (u128::from(cost.ns_per_write) * 1024 * 1024)
+        / u128::from(cost.ns_per_mib.max(1));
+    if gap_bytes >= 64 * 1024 {
+        // Staging calls dominate: merge nearby records to reduce write count.
+        if modern { 24 } else { 8 }
+    } else if gap_bytes <= 4 * 1024 {
+        // Byte transfer dominates: preserve more truly sparse records.
+        if modern { 96 } else { 32 }
     } else {
-        16
+        baseline
     }
 }
 
