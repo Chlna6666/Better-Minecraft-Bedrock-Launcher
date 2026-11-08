@@ -1173,6 +1173,16 @@ impl TextureDescriptor {
                 self.sample_count
             )));
         }
+        // D3D11/D3D12, Vulkan and OpenGL all require a multisampled
+        // 2D texture to have a single mip level and no array layers in
+        // the currently exposed portable texture-view ABI.
+        if self.sample_count > 1
+            && (self.mip_level_count != 1 || self.dimension != TextureDimension::D2)
+        {
+            return Err(Error::InvalidInput(
+                "multisampled textures require one mip level and a 2D dimension".into(),
+            ));
+        }
         if let TextureDimension::D2Array { layers } = self.dimension {
             if layers == 0 {
                 return Err(Error::InvalidInput(
@@ -3071,6 +3081,18 @@ mod tests {
     }
 
     #[test]
+    fn multisampled_texture_rejects_mip_chain_and_array_layers() {
+        let mut desc = texture_desc(16, 16);
+        desc.sample_count = 4;
+        desc.mip_level_count = 2;
+        assert!(desc.validate().is_err());
+        desc.mip_level_count = 1;
+        assert!(desc.validate().is_ok());
+        desc.dimension = TextureDimension::D2Array { layers: 2 };
+        assert!(desc.validate().is_err());
+    }
+
+    #[test]
     fn multisample_capabilities_defaults_to_single_sample() {
         let caps = MultisampleCapabilities::default();
         assert_eq!(caps.max_sample_count, 1);
@@ -3529,7 +3551,6 @@ mod tests {
         assert!(descriptor.validate().is_err());
     }
 
-    #[test]
     #[test]
     fn storage_textures_are_single_sampled_single_level_and_color() {
         let base = TextureDescriptor {
