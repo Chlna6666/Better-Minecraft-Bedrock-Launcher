@@ -2179,7 +2179,6 @@ struct Worker {
     texture_read_time: Duration,
     texture_decode_time: Duration,
     mesh_generation: u64,
-    meshed_chunks: usize,
     failed_chunks: usize,
     last_error: Option<String>,
     last_chunk_ms: u64,
@@ -2300,7 +2299,6 @@ impl Worker {
             texture_read_time: Duration::ZERO,
             texture_decode_time: Duration::ZERO,
             mesh_generation: 0,
-            meshed_chunks: 0,
             failed_chunks: 0,
             last_error: None,
             last_chunk_ms: 0,
@@ -2383,7 +2381,8 @@ impl Worker {
             loaded_chunks: self.cache.len(),
             coarse_chunks: self.lod_modes.values().filter(|coarse| **coarse).count(),
             pending_chunks: target_columns.saturating_sub(loaded_in_view),
-            meshed_chunks: self.meshed_chunks,
+            // Metadata-only deferred columns must not count as GPU-meshed.
+            meshed_chunks: self.cache.len().saturating_sub(self.deferred_columns.len()),
             face_count: self.cache.values().map(|chunk| chunk.faces).sum(),
             texture_count,
             texture_bytes,
@@ -2660,7 +2659,7 @@ impl Worker {
             let mesh_time = mesh_started.elapsed();
             if trace_timings() {
                 eprintln!(
-                    "world3d batch ts={} gen={} id={} prefetched={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} cache_mib={:.1}",
+                    "world3d batch ts={} gen={} id={} prefetched={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} lazy_pending={} cache_mib={:.1}",
                     trace_timestamp_ms(),
                     self.view.generation,
                     batch_number,
@@ -2688,6 +2687,7 @@ impl Worker {
                     self.last_reused_sections,
                     self.last_boundary_hits,
                     self.cache.len(),
+                    self.deferred_columns.len(),
                     self.cache
                         .values()
                         .map(CachedChunk::estimated_cpu_bytes)
@@ -3485,7 +3485,6 @@ impl Worker {
             );
         }
         self.probe_stash.clear();
-        self.meshed_chunks = self.cache.len();
         let positions = surrounded_chunk_candidates(loaded, |pos| self.cache.contains_key(&pos));
         for pos in positions {
             if let Some(chunk) = self.cache.get_mut(&pos) {
@@ -4939,7 +4938,6 @@ fn run_worker(
                     }
                     worker.missing.clear();
                     worker.failed_positions.clear();
-                    worker.meshed_chunks = 0;
                 }
                 worker.view = ViewState {
                     generation,
