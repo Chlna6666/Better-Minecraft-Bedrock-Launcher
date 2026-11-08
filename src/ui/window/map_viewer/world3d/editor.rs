@@ -2012,7 +2012,7 @@ impl World3dEditorView {
             cx.notify();
             return;
         }
-        let Some(owner) = self.owner.as_ref() else {
+        let Some(owner) = self.owner.clone() else {
             self.status = SharedString::from("没有关联的 2D 地图文档，无法写入世界");
             self.status_kind = StatusKind::Error;
             cx.notify();
