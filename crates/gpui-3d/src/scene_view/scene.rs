@@ -61,6 +61,11 @@ pub(super) struct SceneResources {
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     pub(super) command_revision: u64,
+    /// Increments after a successfully prepared *visible frame change*, not
+    /// merely after rebuilding native draw commands. Camera/uniform changes
+    /// also invalidate a cached offscreen capture even with identical draws.
+    /// Zero means no complete scene frame has yet been published.
+    pub(super) capture_revision: u64,
     /// Exact structural range mapping eligible for a native-command splice.
     /// Set only after stable GPU slots and survivor BindGroups were committed.
     command_delta: Option<crate::prepare::StructuralDrawDelta>,
@@ -465,6 +470,7 @@ impl SceneResources {
             projection: None,
             prepared: PreparedScene::default(),
             command_revision: 0,
+            capture_revision: 0,
             command_delta: None,
             structural_bindings_spliced: false,
             command_visibility: Vec::new(),
@@ -1192,6 +1198,11 @@ impl SceneResources {
         self.projection = Some(projection);
         self.sampler = Some(sampler);
         self.voxel_shader = scene_view.voxel_shader;
+        // Scene/texture, draw, frame uniform, culling, sampling and shader
+        // state has now been committed to the GPU owner. Offscreen producer
+        // textures are reusable until this epoch changes. Failed prepares
+        // never publish a new revision.
+        self.capture_revision = self.capture_revision.wrapping_add(1);
         if let Some(started) = trace_started {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             if total_ms >= 16.0 {
