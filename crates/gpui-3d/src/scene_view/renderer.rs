@@ -465,6 +465,11 @@ struct SidecarGpuBackend {
     /// Device calls remain on this native owner for DX11/GL correctness.
     offscreen: Option<SidecarSurface>,
     pending_passes: Vec<gpui::RendererExtensionPass>,
+    /// Capture epochs enter this list when their producer passes are encoded;
+    /// they are moved to submitted candidates only when GPUI drains those
+    /// passes, and published only after the host accepts the GPU submission.
+    pending_capture_epochs: Vec<(SceneViewId, u64)>,
+    submitted_capture_epochs: Vec<(SceneViewId, u64)>,
     frame_time: Option<Instant>,
     frame_index: u64,
     timing_trace: RendererTimingTrace,
@@ -544,6 +549,8 @@ impl SidecarGpuBackend {
             command_cache: HashMap::new(),
             offscreen,
             pending_passes: Vec::new(),
+            pending_capture_epochs: Vec::new(),
+            submitted_capture_epochs: Vec::new(),
             frame_time: None,
             frame_index: 0,
             timing_trace: RendererTimingTrace::default(),
@@ -577,6 +584,10 @@ impl SidecarGpuBackend {
         if self.frame_time != Some(frame_time) {
             self.frame_time = Some(frame_time);
             self.frame_index = self.frame_index.wrapping_add(1);
+            // A prior submission may have failed. Never acknowledge its
+            // drained passes during a subsequent, unrelated GUI frame.
+            self.pending_capture_epochs.clear();
+            self.submitted_capture_epochs.clear();
         }
     }
 
@@ -796,6 +807,14 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // GPUI's host renders these offscreen passes first, then samples the
         // per-SceneView color target at the original extension painter order.
         passes.append(&mut self.pending_passes);
+        self.submitted_capture_epochs.append(&mut self.pending_capture_epochs);
+    }
+
+    fn render_passes_submitted(&mut self) {
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.render_passes_submitted(&self.submitted_capture_epochs);
+        }
+        self.submitted_capture_epochs.clear();
     }
 
     fn needs_gpu_completion(&self) -> bool {
@@ -855,6 +874,12 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let matching = self.scenes.get(&scene_view.id)
             .is_some_and(|scene| scene.matches_published_scene(&scene_view));
         if defer_unprepared_scene(worker_pending, matching, retained.is_some()) {
+            // Do not force the GUI to blank while a newer, incompatible Scene
+            // is prepared. Reuse the last *submitted* texture when possible;
+            // this branch must not allocate/upload or block the GPU owner.
+            if let Some(surface) = self.offscreen.as_ref() {
+                surface.composite_existing(scene_view.id, context.viewport(), steps);
+            }
             return Ok(());
         }
         if !self.scenes.contains_key(&scene_view.id) {
@@ -889,6 +914,19 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
             scene.prepare(device, &mut self.resources, prepared_view, &render_context)?;
         }
+        // Pure GUI redraw / unchanged 3D state: sample the previously
+        // submitted color image directly. Skip the offscreen producer pass,
+        // command-cache publishing, GPU culling dispatch and unnecessary
+        // descriptor references. The SceneResources revision includes camera
+        // and uniform updates, not merely native draw-command changes.
+        if let Some(surface) = self.offscreen.as_ref()
+            && surface.can_reuse(
+                scene_view.id, context.viewport(), scene.capture_revision,
+            )
+        {
+            surface.composite_existing(scene_view.id, context.viewport(), steps);
+            return Ok(());
+        }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let mut capture_steps = Vec::new();
         let commands_count = {
@@ -921,9 +959,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         };
         if let Some(surface) = self.offscreen.as_mut() {
             surface.enqueue(
-                device, scene_view.id, &context, capture_steps,
-                &mut self.pending_passes, steps,
+                device, scene_view.id, &context, scene.capture_revision,
+                capture_steps, &mut self.pending_passes, steps,
             )?;
+            self.pending_capture_epochs.push((scene_view.id, scene.capture_revision));
         }
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
