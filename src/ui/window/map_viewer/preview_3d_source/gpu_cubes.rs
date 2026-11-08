@@ -129,6 +129,36 @@ mod tests {
         assert_eq!(actual, expected);
     }
     #[test]
+    fn completely_hidden_plain_cube_column_never_expands_model_templates() {
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension,
+            min_chunk_x: 0, max_chunk_x: 0,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(
+            pos,
+            Preview3dChunkBlocks::test_cubes(&[[1, 64, 1], [2, 96, 2]]),
+        );
+        assert!(!builder.gpu_cube_bands(pos, None).unwrap().is_empty());
+        let hidden = std::collections::BTreeSet::from([0, 1, 2]);
+        assert!(builder.gpu_cube_bands_skipping(pos, None, &hidden).unwrap().is_empty());
+        // A hole in the one-block halo forces regular model planning so no
+        // visible boundary face is ever skipped by this shortcut.
+        let visible_halo = std::collections::BTreeSet::from([1]);
+        assert!(
+            !builder
+                .gpu_cube_bands_skipping(pos, None, &visible_halo)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances() {
         let pos = ChunkPos {
             x: -1,
@@ -334,6 +364,30 @@ impl Preview3dMeshBuilder {
         hidden: &std::collections::BTreeSet<i32>,
     ) -> Option<Vec<GpuCubeBand>> {
         let blocks = self.block_chunks.get(&ChunkKey::from_pos(pos))?;
+        // Sodium/vanilla skip compiling known-empty render sections before
+        // block-model expansion. Apply the same fast exit to fully hidden
+        // vanilla cube/fluid columns: every possible face band (including
+        // +/-1 height-boundary halo) is already certified unreachable.
+        // Custom/detail geometry can overhang by arbitrary distances, so it
+        // always uses the full ModelPlan range calculation below.
+        let has_detail_models =
+            !blocks.detail_blocks.is_empty() || !blocks.glass_detail_blocks.is_empty();
+        if !has_detail_models && blocks.min_y <= blocks.max_y {
+            let first = (i32::from(blocks.min_y) - 1).div_euclid(64);
+            let last = (i32::from(blocks.max_y) + 1).div_euclid(64);
+            if (first..=last).all(|band| hidden.contains(&band)) {
+                return Some(Vec::new());
+            }
+        }
+        if blocks.opaque_blocks.is_empty()
+            && blocks.glass_blocks.is_empty()
+            && blocks.detail_blocks.is_empty()
+            && blocks.glass_detail_blocks.is_empty()
+            && blocks.water_blocks.is_empty()
+            && blocks.lava_blocks.is_empty()
+        {
+            return Some(Vec::new());
+        }
         let plan = super::gpu_models::ModelPlan::new(self, blocks);
         let mut bands = std::collections::BTreeMap::<i32, Vec<_>>::new();
         for record in &plan.records {
