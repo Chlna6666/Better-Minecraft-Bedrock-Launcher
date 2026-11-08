@@ -11,6 +11,9 @@ struct GlPassState {
     /// Native GL_DRAW_INDIRECT_BUFFER binding is shared by indexed and
     /// non-indexed indirect draws. Retain it for the current render pass only.
     indirect_buffer: Option<glow::NativeBuffer>,
+    /// GL_ELEMENT_ARRAY_BUFFER is VAO state; one indexed mesh batch often
+    /// shares the same index table for hundreds of successive draws.
+    element_buffer: Option<glow::NativeBuffer>,
 }
 
 impl OpenGlDevice {
@@ -640,7 +643,10 @@ impl OpenGlDevice {
                         ));
                     }
                     let offset = i32::try_from(draw.offset).map_err(native)?;
-                    self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
+                    if state.element_buffer != Some(index.native) {
+                        self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
+                        state.element_buffer = Some(index.native);
+                    }
                     if state.indirect_buffer != Some(arguments.native) {
                         self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
                         state.indirect_buffer = Some(arguments.native);
@@ -693,8 +699,10 @@ impl OpenGlDevice {
                     }
                     self.gl
                         .uniform_1_u32(pipeline.first_instance.as_ref(), draw.first_instance);
-                    self.gl
-                        .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.native));
+                    if state.element_buffer != Some(buffer.native) {
+                        self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(buffer.native));
+                        state.element_buffer = Some(buffer.native);
+                    }
                     if self.compute.capabilities.indirect_draw {
                         self.gl.draw_elements_instanced_base_vertex_base_instance(
                             topology,
