@@ -39,6 +39,9 @@ pub(crate) fn report_gpu_samples(
 ) {
     if !enabled() { return; }
     for sample in samples {
+        // Only a fully-correlated set of completed GPU hardware probes may
+        // update the streaming upload budget. Host API timings stay separate.
+        crate::upload_feedback::observe_completed_gpu_upload(backend, *sample);
         let Some(elapsed) = sample.duration() else { continue; };
         eprintln!(
             "gpui3d gpu_hardware_phase backend={:?} batch_id={} stage={:?} gpu_us={} gpu_ticks={} frequency_hz={} timing=completed_gpu_timestamp",
