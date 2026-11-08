@@ -670,8 +670,34 @@ impl CullResources {
                 mapping_patches.len(),
             );
         }
+        // Capture only touched physical slots before consuming the
+        // transactional planner. Unchanged NodeId indexes remain resident.
+        let node_delta = structural_plan.as_ref().map(|plan| {
+            (
+                plan.retired_node_slots().collect::<Vec<_>>(),
+                plan.added_node_slots().collect::<Vec<_>>(),
+            )
+        });
         self.uploaded_slot_map = logical_to_physical;
-        self.node_slots_dirty = true;
+        if let Some((retired, added)) = node_delta {
+            if !self.node_slots_dirty {
+                for (node, slot) in retired {
+                    if let Some(slots) = self.node_slots.get_mut(&node) {
+                        slots.retain(|&existing| existing != slot);
+                        if slots.is_empty() {
+                            self.node_slots.remove(&node);
+                        }
+                    }
+                }
+                for (node, slot) in added {
+                    self.node_slots.entry(node).or_default().push(slot);
+                }
+            }
+        } else {
+            // Native Quad reordering or a non-structural full planner still
+            // requires a fresh index, but only when a portal mask is present.
+            self.node_slots_dirty = true;
+        }
         self.mask_reapply = true;
         self.structural_slots_committed = structural_plan.is_some();
         if let Some(plan) = structural_plan {
