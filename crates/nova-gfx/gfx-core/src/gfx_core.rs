@@ -1148,6 +1148,7 @@ impl TextureDescriptor {
                 )
             })
             .saturating_mul(u64::from(self.dimension.layers()))
+            .saturating_mul(u64::from(self.sample_count))
     }
     /// Validates the descriptor.
     ///
@@ -3078,6 +3079,13 @@ mod tests {
         assert!(descriptor.validate().is_err());
         descriptor.sample_count = 4;
         assert!(descriptor.validate().is_ok());
+    }
+
+    #[test]
+    fn msaa_texture_size_accounts_for_all_samples() {
+        let mut descriptor = texture_desc(16, 16);
+        descriptor.sample_count = 4;
+        assert_eq!(descriptor.byte_size(), 16 * 16 * 4 * 4);
     }
 
     #[test]
