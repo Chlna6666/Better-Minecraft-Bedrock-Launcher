@@ -1083,83 +1083,139 @@ impl World3dEditorView {
         cx.notify();
     }
 
-    fn update_section_visibility(&mut self) {
-        // The renderer samples camera motion at frame rate without a Scene
-        // rebuild. Recompute this much coarser graph only on voxel transitions,
-        // decoded-column changes or radius updates; publish a new scene only
-        // when the resulting Section visibility actually changes.
-        let voxel = self.camera.position.map(|component| component.floor() as i32);
-        if self.last_visibility_voxel == Some(voxel)
-            && self.last_visibility_revision == Some(self.visibility_revision)
-            && self.last_visibility_radius == self.view_radius
-        {
-            return;
+    /// Publish a camera reachability mask, not an authored Scene fork.
+    /// A pending async result is never allowed to hide a Section after the
+    /// camera leaves its air component or the decoded column epoch changes.
+    fn apply_portal_visibility(&mut self, hidden: BTreeSet<(ChunkPos, i32)>) -> bool {
+        if self.hidden_sections == hidden {
+            return false;
         }
-        let signature = super::visibility::camera_signature(
-            &self.probes, self.dimension, voxel,
-        );
-        if self.last_visibility_revision == Some(self.visibility_revision)
-            && self.last_visibility_radius == self.view_radius
-            && self.last_visibility_signature == signature
-        {
-            // Camera moved inside the same 16^3 connected air component.
-            // No Scene fork, no Section graph traversal and no GPU Draw churn.
-            self.last_visibility_voxel = Some(voxel);
-            return;
-        }
-        self.last_visibility_voxel = Some(voxel);
-        self.last_visibility_signature = signature;
-        self.last_visibility_revision = Some(self.visibility_revision);
-        self.last_visibility_radius = self.view_radius;
-        // Explicit A/B switch for render/camera diagnostics. The absence of
-        // the flag preserves the default optimized path.
-        let trace_started = super::chunk_service::trace_timings().then(Instant::now);
-        let hidden = if self.edit_busy
-            || !self.invalidated_visibility.is_empty()
-            || super::chunk_service::portal_culling_disabled()
-        {
-            BTreeSet::new()
-        } else {
-            super::visibility::hidden_render_bands(
-                &self.probes,
-                &self.chunk_meshes,
-                self.dimension,
-                voxel,
-                self.view_radius,
-            )
-        };
-        if let Some(started) = trace_started
-            && started.elapsed() >= Duration::from_millis(2)
-        {
+        self.hidden_sections = hidden;
+        self.hidden_draw_nodes =
+            Arc::new(self.scene_nodes.hidden_draw_nodes(&self.hidden_sections));
+        if super::chunk_service::trace_timings() {
             eprintln!(
-                "world3d portal_visibility_eval_us={} hidden_bands={} resident_bands={}",
-                started.elapsed().as_micros(),
-                hidden.len(),
+                "world3d portal_visibility hidden_bands={} hidden_nodes={} resident_bands={}",
+                self.hidden_sections.len(),
+                self.hidden_draw_nodes.len(),
                 self.chunk_meshes.len(),
             );
         }
-        if hidden != self.hidden_sections {
-            if super::chunk_service::trace_timings() {
-                eprintln!(
-                    "world3d portal_visibility hidden_bands={} resident_bands={} probes={}",
-                    hidden.len(),
-                    self.chunk_meshes.len(),
-                    self.probes.len(),
-                );
-            }
-            self.hidden_sections = hidden;
-            // Reuse the existing stream-scene 50 ms coalescer while chunks
-            // arrive. A camera-only portal transition still publishes
-            // immediately, but a probe arriving in the same event batch
-            // cannot force a costly extra Scene fork between mesh batches.
-            if !self.stream_scene_pending {
-                self.scene_dirty = true;
-            }
+        true
+    }
+
+    /// Sodium-style frame-independent graph solve. The GPUI thread only
+    /// computes an O(1) cached air-component signature and publishes the
+    /// completed snapshot; a single Rayon job handles all Section traversal.
+    /// Stale results are ignored, and a newer camera request coalesces behind
+    /// the currently running job rather than accumulating background work.
+    fn update_section_visibility(&mut self) -> bool {
+        let voxel = self.camera.position.map(|v| v.floor() as i32);
+        if self.visibility_signature_voxel != Some((self.visibility_revision, voxel)) {
+            self.visibility_signature = super::visibility::camera_signature(
+                &self.probes, self.dimension, voxel,
+            );
+            self.visibility_signature_voxel = Some((self.visibility_revision, voxel));
         }
+        let key = PortalVisibilityKey {
+            revision: self.visibility_revision,
+            dimension: self.dimension,
+            voxel,
+            radius: self.view_radius,
+            component: self.visibility_signature,
+        };
+        let safe = !self.edit_busy
+            && self.invalidated_visibility.is_empty()
+            && !super::chunk_service::portal_culling_disabled();
+
+        let result = self.visibility_job.as_ref().map(Receiver::try_recv);
+        match result {
+            Some(Ok(result)) => {
+                self.visibility_job = None;
+                self.visibility_job_key = None;
+                if safe && same_portal_region(result.key, key) {
+                    if super::chunk_service::trace_timings() && result.solve_us >= 2_000 {
+                        eprintln!(
+                            "world3d portal_visibility_async_us={} hidden_bands={}",
+                            result.solve_us, result.hidden.len(),
+                        );
+                    }
+                    self.visibility_completed_key = Some(key);
+                    return self.apply_portal_visibility(result.hidden);
+                }
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.visibility_job = None;
+                self.visibility_job_key = None;
+            }
+            _ => {}
+        }
+        // During an edit or while the camera's containing Section is
+        // unknown/solid, fail open immediately: rendering extra geometry is
+        // always safer than showing an outdated hole in a mine or cliff.
+        if !safe || key.component.is_none() {
+            self.visibility_completed_key = Some(key);
+            return self.apply_portal_visibility(BTreeSet::new());
+        }
+        if self
+            .visibility_completed_key
+            .is_some_and(|previous| same_portal_region(previous, key))
+        {
+            return false;
+        }
+        if let Some(inflight) = self.visibility_job_key {
+            // When moving inside the same connected air pocket we may reuse
+            // an in-flight result. Otherwise retire the prior mask now and
+            // wait for the single task to finish before submitting the next.
+            return if same_portal_region(inflight, key) {
+                false
+            } else {
+                self.apply_portal_visibility(BTreeSet::new())
+            };
+        }
+        let snapshot = match &self.visibility_snapshot {
+            Some((revision, cached)) if *revision == key.revision => Arc::clone(cached),
+            _ => {
+                let snapshot = Arc::new(PortalVisibilitySnapshot {
+                    probes: self.probes.clone(),
+                    bands: self.chunk_meshes.keys().copied().collect(),
+                });
+                self.visibility_snapshot = Some((key.revision, Arc::clone(&snapshot)));
+                snapshot
+            }
+        };
+        if snapshot.probes.is_empty() || snapshot.bands.is_empty() {
+            self.visibility_completed_key = Some(key);
+            return self.apply_portal_visibility(BTreeSet::new());
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        rayon::spawn(move || {
+            let started = Instant::now();
+            let hidden = super::visibility::hidden_render_band_keys(
+                &snapshot.probes,
+                &snapshot.bands,
+                key.dimension,
+                key.voxel,
+                key.radius,
+            );
+            let _ = tx.send(PortalVisibilityResult {
+                key,
+                hidden,
+                solve_us: started.elapsed().as_micros(),
+            });
+        });
+        self.visibility_job_key = Some(key);
+        self.visibility_job = Some(rx);
+        // A previous camera/component's occlusion mask cannot safely persist
+        // while the new one is computed. Keep the resident Draw slots visible
+        // until the worker publishes a matching snapshot.
+        self.apply_portal_visibility(BTreeSet::new())
     }
 
     fn maybe_update_view(&mut self, cx: &mut Context<Self>) {
-        self.update_section_visibility();
+        if self.update_section_visibility() {
+            cx.notify();
+        }
         // Camera/radius changes update SceneView::culling_bounds and trigger
         // GPU visibility, not a full CPU Scene fork and Section-visible walk.
         if self.stream_scene_pending
