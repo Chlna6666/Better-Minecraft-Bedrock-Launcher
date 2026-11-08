@@ -161,6 +161,37 @@ pub(super) struct SceneResources {
 
 const MESH_UPLOAD_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
+/// Only value changes with the exact same light count and resident storage
+/// allocation are independently patchable. A change in light count must
+/// regenerate DrawParams.light_count for EVERY surviving draw.
+fn structural_light_patchable(
+    previous: &[u8],
+    next: &[u8],
+    resident_light_capacity: usize,
+) -> bool {
+    !previous.is_empty()
+        && previous.len() == next.len()
+        && next.len() <= resident_light_capacity.saturating_mul(LIGHT_STRIDE as usize)
+        && next.len().is_multiple_of(LIGHT_STRIDE as usize)
+}
+
+#[cfg(test)]
+mod structural_light_delta_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_light_count_preserves_independent_light_patch() {
+        let previous = vec![0u8; LIGHT_STRIDE as usize * 2];
+        let mut changed = previous.clone();
+        changed[0] = 1;
+        assert!(structural_light_patchable(&previous, &changed, 2));
+        assert!(!structural_light_patchable(&previous, &changed, 1));
+        changed.extend_from_slice(&[0u8; LIGHT_STRIDE as usize]);
+        assert!(!structural_light_patchable(&previous, &changed, 4));
+    }
+}
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DrawSyncPath {
     Resident,
@@ -1700,14 +1731,25 @@ impl SceneResources {
         // cannot stale them. The draw-ratio guard is likewise gone: the
         // whole-tail structural edit legitimately dirties every blend row
         // and patch bytes stay bounded by the table size.
-        // Light count and values may affect all material records and bound
-        // buffers. A true structural fast path must preserve the exact
-        // committed lighting table, otherwise use the full sync.
+        // A changed light *count* changes every DrawParams.light_count and
+        // must use full sync. When the count and buffer allocation are stable,
+        // changed light values are an independent sparse storage-buffer patch:
+        // survivor DrawParams, instances, BindGroups and logical slot indices
+        // are unchanged. This is common while torches or sky lighting update.
         let mut light_bytes = Vec::new();
         encode_lights_into(&self.prepared.lights, &mut light_bytes);
-        if light_bytes != self.uploaded_tables[2] {
+        if !structural_light_patchable(
+            &self.uploaded_tables[2], &light_bytes, self.light_capacity,
+        ) {
             return Ok(false);
         }
+        let light_ranges = uploads::changed_ranges(
+            &self.uploaded_tables[2],
+            &light_bytes,
+            LIGHT_STRIDE as usize,
+            sparse_upload_range_budget(self.backend, count),
+            4,
+        );
 
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
@@ -1773,6 +1815,15 @@ impl SceneResources {
                     offset: *offset as u64,
                 },
                 data: bytes,
+            });
+        }
+        for range in &light_ranges {
+            writes.push(BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.light_buffer,
+                    offset: range.start as u64,
+                },
+                data: &light_bytes[range.clone()],
             });
         }
         let bytes_uploaded = writes.iter().map(|write| write.data.len()).sum::<usize>();
@@ -1846,6 +1897,11 @@ impl SceneResources {
         for (offset, bytes) in &slot_patches {
             self.uploaded_slot_map[*offset..*offset + bytes.len()].copy_from_slice(bytes);
         }
+        // Commit the new light snapshot only after all native writes,
+        // bindings and generated mappings succeeded.
+        if !light_ranges.is_empty() {
+            self.uploaded_tables[2] = light_bytes;
+        }
         // Canonical singleton DrawIndirect offsets are a function of their
         // current logical index, independent of which Section owns the slot.
         // The structural path must update the effective native command
@@ -1862,12 +1918,13 @@ impl SceneResources {
         }
         if let Some(started) = trace_started {
             eprintln!(
-                "gpui3d structural_slot_delta previous={} current={} dirty={} slot_patch_ranges={} slot_patch_bytes={} uploaded_bytes={} ms={:.2}",
+                "gpui3d structural_slot_delta previous={} current={} dirty={} slot_patch_ranges={} slot_patch_bytes={} light_patch_ranges={} uploaded_bytes={} ms={:.2}",
                 previous_count,
                 count,
                 dirty.len(),
                 slot_patches.len(),
                 slot_patches.iter().map(|(_, data)| data.len()).sum::<usize>(),
+                light_ranges.len(),
                 bytes_uploaded,
                 started.elapsed().as_secs_f64() * 1000.0,
             );
@@ -2861,7 +2918,9 @@ impl SceneResources {
                 .culling
                 .as_ref()
                 .is_some_and(CullResources::structural_slots_committed)
-            || self.generated_pending_groups.is_some()
+            // Pending generated Page groups are published separately after
+            // the binding splice. They do not invalidate survivor BindGroups.
+            // sync_generated_draws() consumes the pending groups on fallback.
             || !self.retired_meshes.is_empty()
             || self.batches.len() != count
             || self.draw_resources.len() != old_count
