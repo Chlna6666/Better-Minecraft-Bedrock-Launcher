@@ -1168,9 +1168,9 @@ impl TextureDescriptor {
                 "texture usage must not be empty".to_string(),
             ));
         }
-        if self.sample_count == 0 || !self.sample_count.is_power_of_two() {
+        if self.sample_count == 0 || !self.sample_count.is_power_of_two() || self.sample_count > 64 {
             return Err(Error::InvalidInput(format!(
-                "texture sample_count {} must be a power of two greater than zero",
+                "texture sample_count {} must be a power of two in 1..=64",
                 self.sample_count
             )));
         }
@@ -2024,9 +2024,9 @@ impl RenderPassDescriptor {
                 self.color_attachments.len()
             )));
         }
-        if self.sample_count == 0 || !self.sample_count.is_power_of_two() {
+        if self.sample_count == 0 || !self.sample_count.is_power_of_two() || self.sample_count > 64 {
             return Err(Error::InvalidInput(format!(
-                "render pass sample_count {} must be a power of two greater than zero",
+                "render pass sample_count {} must be a power of two in 1..=64",
                 self.sample_count
             )));
         }
@@ -3076,6 +3076,8 @@ mod tests {
         descriptor.sample_count = 0;
         assert!(descriptor.validate().is_err());
         descriptor.sample_count = 3;
+        assert!(descriptor.validate().is_err());
+        descriptor.sample_count = 128;
         assert!(descriptor.validate().is_err());
         descriptor.sample_count = 4;
         assert!(descriptor.validate().is_ok());
