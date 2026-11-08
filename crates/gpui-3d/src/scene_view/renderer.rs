@@ -614,10 +614,15 @@ impl SidecarGpuBackend {
             bail!("GPUI 3D renderer backend changed during a window lifetime")
         }
         let next_target_extent = context.viewport();
+        // Nova DX11/DX12/Vulkan/OpenGL/Metal pipeline constructors all
+        // accept an extent but use dynamic native viewports and scissors.
+        // Different cropped SceneView sizes therefore never require
+        // rebuilding eighteen mesh/shader variants or invalidating every
+        // other view's GPU Draw command cache.
         if self.render_pass == context.render_pass()
             && self.color_format == context.color_format()
-            && self.target_extent == next_target_extent
         {
+            self.target_extent = next_target_extent;
             return Ok(());
         }
         self.resources.replace_pipelines(device, context)?;
