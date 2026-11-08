@@ -11,7 +11,7 @@ use crate::{
     BindGroupLayoutId, BufferDescriptor, BufferId, BufferUploadStats, BufferWrite,
     GpuTimestampSample, GpuTimestampTag,
     CommandEncoderDescriptor, CommandEncoderId, CompositeAlphaMode, DeviceMemoryBudget,
-    DrawDescriptor, Error, Extent2d, GpuTimestampTag, MemoryArchitecture, PipelineLayoutDescriptor,
+    DrawDescriptor, Error, Extent2d, MemoryArchitecture, PipelineLayoutDescriptor,
     PipelineLayoutId, PresentFrameDescriptor, RenderPassCommands, RenderPassDescriptor,
     RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceStats, Result,
     SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
