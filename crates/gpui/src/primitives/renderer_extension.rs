@@ -358,6 +358,35 @@ mod tests {
     input!(Second);
 
     #[test]
+    fn sidecar_target_retains_ui_projection_and_clip() {
+        let bounds = Bounds {
+            origin: crate::point(ScaledPixels(19.0), ScaledPixels(37.0)),
+            size: crate::size(ScaledPixels(400.0), ScaledPixels(270.0)),
+        };
+        let mask = ContentMask::new(bounds);
+        let source_pass = RenderPassId::from_parts(5, 1);
+        let capture_pass = RenderPassId::from_parts(6, 1);
+        let format = gfx_core::Format::Rgba8Unorm;
+        let context = RendererExtensionContext::new(
+            gfx_core::BackendKind::Vulkan,
+            source_pass,
+            format,
+            gfx_core::Extent2d::new(1280, 720).unwrap(),
+            bounds,
+            mask,
+            ScissorRect { x: 19, y: 37, width: 400, height: 270 },
+            Instant::now(),
+        );
+        let offscreen = context.offscreen_preserving_bounds(capture_pass, format);
+        assert_eq!(offscreen.render_pass(), capture_pass);
+        assert_eq!(offscreen.viewport(), context.viewport());
+        assert_eq!(offscreen.bounds(), context.bounds());
+        assert_eq!(offscreen.scissor(), context.scissor());
+        assert_eq!(offscreen.content_mask().bounds, context.content_mask().bounds);
+        assert_eq!(offscreen.frame_time(), context.frame_time());
+    }
+
+    #[test]
     fn shared_inputs_use_concrete_renderer_identity() {
         let first: SharedRendererExtension = Arc::new(First);
         let second: SharedRendererExtension = Arc::new(Second);
