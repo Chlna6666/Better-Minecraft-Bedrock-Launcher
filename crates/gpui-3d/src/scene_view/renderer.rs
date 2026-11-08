@@ -346,42 +346,57 @@ fn group_indirect_commands(
     if opaque_len <= 1 {
         return None;
     }
+    // Stable O(n) grouping by first-seen pipeline, then first-seen binding
+    // state. Record indices first: the earlier implementation cloned every
+    // opaque RenderCommand (including BindGroupList) while merely probing
+    // whether grouping would save any native calls, then discarded all
+    // clones if every command used a distinct binding.
     let opaque_commands = &commands[..opaque_len];
-    let mut pipeline_order = Vec::<gfx_core::RenderPipelineId>::new();
-    let mut keys = Vec::<(gfx_core::RenderPipelineId, BindGroupList)>::new();
-    let mut buckets =
-        HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), Vec<RenderCommand>>::default();
-    for command in opaque_commands {
+    let mut pipeline_slots = HashMap::<gfx_core::RenderPipelineId, usize>::new();
+    let mut pipeline_groups = Vec::<Vec<usize>>::new();
+    let mut group_slots =
+        HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), usize>::new();
+    let mut groups = Vec::<Vec<usize>>::new();
+    for (index, command) in opaque_commands.iter().enumerate() {
         let RenderCommand::DrawIndirect(draw) = command else {
             continue;
         };
         let pipeline = command.pipeline();
-        if !pipeline_order.contains(&pipeline) {
-            pipeline_order.push(pipeline);
-        }
-        let key = (pipeline, &draw.bind_groups);
-        match buckets.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                entry.get_mut().push(command.clone());
-            }
+        let pipeline_index = match pipeline_slots.entry(pipeline) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                keys.push((pipeline, draw.bind_groups.clone()));
-                entry.insert(vec![command.clone()]);
+                let index = pipeline_groups.len();
+                pipeline_groups.push(Vec::new());
+                entry.insert(index);
+                index
             }
-        }
+        };
+        let group_index = match group_slots.entry((pipeline, &draw.bind_groups)) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let index = groups.len();
+                groups.push(Vec::new());
+                pipeline_groups[pipeline_index].push(index);
+                entry.insert(index);
+                index
+            }
+        };
+        groups[group_index].push(index);
     }
-    if keys.len() >= opaque_commands.len() {
-        // Opaque grouping cannot improve submission count. Leave all
-        // commands in original order rather than touch blended draws.
+    if groups.len() >= opaque_commands.len() {
+        // No coalescing possible. Do not allocate or clone a second Draw
+        // table solely to rediscover the original order.
         return None;
     }
     let mut grouped = Vec::with_capacity(commands.len());
-    for pipeline in &pipeline_order {
-        for key in keys.iter().filter(|(candidate, _)| candidate == pipeline) {
-            let lookup = (key.0, &key.1);
-            grouped.extend(buckets.remove(&lookup).unwrap_or_default());
+    for pipeline in &pipeline_groups {
+        for &group in pipeline {
+            for &index in &groups[group] {
+                grouped.push(commands[index].clone());
+            }
         }
     }
+    // The transparent suffix MUST remain exactly camera-sorted.
     grouped.extend_from_slice(&commands[opaque_len..]);
     debug_assert_eq!(grouped.len(), commands.len());
     // Regrouping must be a permutation of the original draws: every GPU
@@ -880,6 +895,45 @@ mod tests {
         assert_eq!(offsets(&grouped[3..]), vec![48, 64, 80]);
         // When every command is transparent, no global reorder is legal.
         assert!(super::group_indirect_commands(&input[3..], Some(0)).is_none());
+    }
+
+    #[test]
+    fn all_unique_indirect_bindings_do_not_allocate_a_grouped_table() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        // Distinct pipelines imply distinct grouping states. The hot path
+        // should fall back to the original immutable native command order.
+        let draws: Vec<_> = (1..=64).map(|index| RenderCommand::DrawIndirect(
+            DrawIndirectCommand {
+                pipeline: RenderPipelineId::from_parts(index, 1),
+                bind_groups: bind_group_list([]),
+                arguments: BufferId::from_parts(1, 1),
+                offset: u64::from(index - 1) * 16,
+                scissor: None,
+            }
+        )).collect();
+        assert!(super::group_indirect_commands(&draws, None).is_none());
+    }
+
+    #[test]
+    fn alternating_pipelines_keep_first_seen_pipeline_and_bind_group_order() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        let draws: Vec<_> = [(0, 2), (16, 1), (32, 2), (48, 1), (64, 3), (80, 3)]
+            .into_iter()
+            .map(|(offset, pipeline)| RenderCommand::DrawIndirect(
+                DrawIndirectCommand {
+                    pipeline: RenderPipelineId::from_parts(pipeline, 1),
+                    bind_groups: bind_group_list([]),
+                    arguments: BufferId::from_parts(1, 1),
+                    offset,
+                    scissor: None,
+                }
+            )).collect();
+        let grouped = super::group_indirect_commands(&draws, Some(4)).unwrap();
+        let offsets: Vec<_> = grouped.iter().map(|command| match command {
+            RenderCommand::DrawIndirect(draw) => draw.offset,
+            _ => unreachable!(),
+        }).collect();
+        assert_eq!(offsets, vec![0, 32, 16, 48, 64, 80]);
     }
 
     #[test]
