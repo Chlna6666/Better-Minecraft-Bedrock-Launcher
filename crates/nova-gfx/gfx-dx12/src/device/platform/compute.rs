@@ -390,6 +390,14 @@ impl Dx12Device {
         &mut self,
         dispatches: &[ComputeDispatch<'_>],
     ) -> Result<()> {
+        self.dispatch_buffer_batch_profiled(dispatches, None)
+    }
+
+    pub(super) fn dispatch_buffer_batch_profiled(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<()> {
         let mut prepared: Vec<Resources> = Vec::new();
         let mut indices: Vec<usize> = Vec::new();
         let mut descriptors = HashMap::<ViewKey, DescriptorSlot>::new();
@@ -427,8 +435,31 @@ impl Dx12Device {
         let mut states = HashMap::new();
         let result = (|| {
             self.begin_texture_command_encoder(encoder, None)?;
+            let queries = if tag.is_some() {
+                self.command_encoders.get(encoder)?.timestamps.as_ref().map(|queries| {
+                    (queries.heap.clone(), queries.readback.clone())
+                })
+            } else { None };
+            if let Some((heap, _)) = &queries {
+                let command = self.command_encoders.get(encoder)?.command_list
+                    .as_ref().ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                // SAFETY: The encoder is recording on the graphics queue and query slot zero is valid.
+                unsafe { command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+            }
             for (call_index, &index) in indices.iter().enumerate() {
                 self.record_dispatch(encoder, call_index, &dispatches[index], &mut states)?;
+            }
+            if let Some((heap, readback)) = &queries {
+                let command = self.command_encoders.get(encoder)?.command_list
+                    .as_ref().ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                // SAFETY: Both timestamp queries belong to this encoder and resolve into 16 readback bytes.
+                unsafe {
+                    command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                    command.ResolveQueryData(
+                        heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0,
+                    );
+                }
+                self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag;
             }
             self.finish_texture_command_encoder(encoder)?;
             let fence_value = self.submit_without_wait(encoder)?;

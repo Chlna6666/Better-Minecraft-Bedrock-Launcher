@@ -45,6 +45,14 @@ impl Dx12Device {
         &mut self,
         writes: impl IntoIterator<Item = BufferWrite<'a>>,
     ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch_profiled(writes, None)
+    }
+
+    pub(super) fn upload_buffer_batch_profiled<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<BufferUploadStats> {
         let mut stats = BufferUploadStats::default();
         let mut mapped = None;
         let mut mapped_id = None;
@@ -126,10 +134,11 @@ impl Dx12Device {
                 }
             }
             let staging = self.upload_page_resource(allocation.page_index)?;
-            let (allocator, commands) = if let Some(index) = self
+            let timed = tag.is_some() && self.timestamp_frequency.is_some();
+            let (allocator, commands, timestamps) = if let Some(index) = self
                 .upload_command_pool
                 .iter()
-                .position(|commands| commands.timestamps.is_none())
+                .position(|commands| commands.timestamps.is_some() == timed)
             {
                 let recycled = self.upload_command_pool.swap_remove(index);
                 // SAFETY: upload commands enter the pool only after their fence completes.
@@ -143,12 +152,21 @@ impl Dx12Device {
                         .Reset(&recycled.allocator, None)
                         .map_err(|e| Error::Backend(e.to_string()))?;
                 }
-                (recycled.allocator, recycled.graphics_command_list)
+                (recycled.allocator, recycled.graphics_command_list, recycled.timestamps)
             } else {
                 let allocator = create_command_allocator(&self.device)?;
                 let commands = create_command_list(&self.device, &allocator)?;
-                (allocator, commands)
+                let timestamps = if timed {
+                    Some(create_dx12_timestamp_queries(
+                        &self.device, "nova-gfx DX12 resident buffer upload timestamps",
+                    )?)
+                } else { None };
+                (allocator, commands, timestamps)
             };
+            if let Some(queries) = &timestamps {
+                // SAFETY: This command list is recording and the two query slots are exclusive.
+                unsafe { commands.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+            }
             let mut touched = HashSet::new();
             for (write, destination, initial_state, source_offset) in &copies {
                 let state = if touched.insert(write.descriptor.buffer) {
@@ -183,6 +201,15 @@ impl Dx12Device {
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                 );
             }
+            if let Some(queries) = &timestamps {
+                // SAFETY: GPU transfers precede this query and its readback resolve.
+                unsafe {
+                    commands.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                    commands.ResolveQueryData(
+                        &queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &queries.readback, 0,
+                    );
+                }
+            }
             // SAFETY: The list is recording and all resource dependencies are live.
             unsafe { commands.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             let executable: ID3D12CommandList = commands
@@ -197,9 +224,10 @@ impl Dx12Device {
                     commands: Dx12UploadCommands {
                         allocator,
                         graphics_command_list: commands,
-                        timestamps: None,
+                        timestamps,
                     },
                     _command_list: executable.clone(),
+                    gpu_work_tag: tag.filter(|_| timed),
                 },
             );
             // SAFETY: The closed list and its resources are retained until this fence completes.

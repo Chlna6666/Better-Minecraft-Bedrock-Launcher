@@ -254,6 +254,7 @@ mod platform {
         timestamp_frequency: Option<u64>,
         last_texture_transfer_time: Option<Duration>,
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+        gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
@@ -456,6 +457,7 @@ mod platform {
                 timestamp_frequency,
                 last_texture_transfer_time: None,
                 last_frame_gpu_timestamps: None,
+                gpu_work_samples: Vec::new(),
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
@@ -1873,6 +1875,7 @@ mod platform {
                 command_list: Some(command_list),
                 timestamps,
                 frame_probe: false,
+                gpu_work_tag: None,
                 submitted: false,
                 swapchain: None,
                 compute_resources: Vec::new(),
@@ -2600,6 +2603,7 @@ mod platform {
             let command_encoder_pool_capacity = self.command_encoder_pool_capacity;
             let timestamp_frequency = self.timestamp_frequency;
             let last_frame_gpu_timestamps = &mut self.last_frame_gpu_timestamps;
+            let gpu_work_samples = &mut self.gpu_work_samples;
             self.deferred_command_encoders.retain_mut(|pending| {
                 if pending.fence_value > completed_fence {
                     return true;
@@ -2614,6 +2618,17 @@ mod platform {
                         frequency,
                     });
                 }
+                if let (Some(tag), Some(queries), Some(frequency)) = (
+                    pending._encoder.gpu_work_tag.take(),
+                    pending._encoder.timestamps.as_ref(),
+                    timestamp_frequency,
+                ) && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback) {
+                    gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                        tag,
+                        duration_ticks: end.saturating_sub(start),
+                        frequency_hz: frequency,
+                    });
+                }
                 for resources in pending._encoder.compute_resources.drain(..) {
                     resources.release(resource_heap);
                 }
@@ -2626,6 +2641,7 @@ mod platform {
                         command_list: pending._encoder.command_list.take(),
                         timestamps: pending._encoder.timestamps.take(),
                         frame_probe: false,
+                        gpu_work_tag: None,
                         submitted: false,
                         swapchain: None,
                         compute_resources: Vec::new(),
@@ -3985,9 +4001,18 @@ mod platform {
             if let (Some(timestamps), Some(frequency)) = (
                 commands.commands.timestamps.as_ref(),
                 self.timestamp_frequency,
-            ) && let Ok(elapsed) = read_dx12_timestamps(&timestamps.readback, frequency)
-            {
-                self.last_texture_transfer_time = Some(elapsed);
+            ) {
+                if let Some(tag) = commands.gpu_work_tag {
+                    if let Ok((start, end)) = read_dx12_timestamp_ticks(&timestamps.readback) {
+                        self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
+                            tag,
+                            duration_ticks: end.saturating_sub(start),
+                            frequency_hz: frequency,
+                        });
+                    }
+                } else if let Ok(elapsed) = read_dx12_timestamps(&timestamps.readback, frequency) {
+                    self.last_texture_transfer_time = Some(elapsed);
+                }
             }
             if self.upload_command_pool.len() < self.upload_command_pool_capacity {
                 self.upload_command_pool.push(commands.commands);
@@ -5155,6 +5180,31 @@ mod platform {
         ) -> Result<()> {
             self.dispatch_buffer_batch(dispatches)
         }
+        fn gpu_work_timestamps_supported(&self) -> bool {
+            self.timestamp_frequency.is_some()
+        }
+        fn dispatch_compute_batch_profiled(
+            &mut self,
+            dispatches: &[gfx_core::ComputeDispatch<'_>],
+            tag: gfx_core::GpuTimestampTag,
+        ) -> Result<()> {
+            self.dispatch_buffer_batch_profiled(dispatches, Some(tag))
+        }
+        fn write_buffer_batch_profiled<'a>(
+            &mut self,
+            writes: impl IntoIterator<Item = BufferWrite<'a>>,
+            tag: gfx_core::GpuTimestampTag,
+        ) -> Result<BufferUploadStats> {
+            self.upload_buffer_batch_profiled(writes, Some(tag))
+        }
+        fn drain_gpu_work_timestamps(
+            &mut self,
+            output: &mut Vec<gfx_core::GpuTimestampSample>,
+        ) -> Result<()> {
+            self.poll_cleanup();
+            output.append(&mut self.gpu_work_samples);
+            Ok(())
+        }
         fn texture_copy_limits(&self) -> gfx_core::TextureCopyLimits {
             // D3D12 placed footprints pad rows to 256 bytes and place them on a 512-byte
             // boundary; both are spec constants rather than queryable limits.
@@ -6188,6 +6238,7 @@ mod platform {
         Ok(Some(Dx12SubmittedCommandList {
             commands,
             _command_list: executable,
+            gpu_work_tag: None,
         }))
     }
 
@@ -7036,6 +7087,7 @@ mod platform {
     struct Dx12SubmittedCommandList {
         commands: Dx12UploadCommands,
         _command_list: ID3D12CommandList,
+        gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
     }
 
     /// GPU resources queued for release once their retire fence completes.
@@ -7271,6 +7323,7 @@ mod platform {
         /// Whether the last submission recorded timestamp probes for a
         /// presented frame. Prevents publishing offscreen work.
         frame_probe: bool,
+        gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
         submitted: bool,
         swapchain: Option<(SwapchainId, u64)>,
     }
