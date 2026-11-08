@@ -434,7 +434,7 @@ pub struct World3dEditorView {
     service: Option<ChunkServiceHandle>,
     poll_task: Option<Task<anyhow::Result<()>>>,
     stream_generation: u64,
-    last_view_key: Option<(Dimension, i32, i32, i32)>,
+    last_view_key: Option<(Dimension, i32, i32, i32, i32)>,
     /// Only cross the worker boundary when camera direction has materially
     /// changed; the render thread samples small rotations independently.
     last_view_forward: Option<[f32; 3]>,
@@ -973,10 +973,11 @@ impl World3dEditorView {
         ])
     }
 
-    fn current_view_key(&self) -> (Dimension, i32, i32, i32) {
+    fn current_view_key(&self) -> (Dimension, i32, i32, i32, i32) {
         (
             self.dimension,
             (self.camera.position[0] / 16.0).floor() as i32,
+            (self.camera.position[1] / 16.0).floor() as i32,
             (self.camera.position[2] / 16.0).floor() as i32,
             self.view_radius.max(1),
         )
