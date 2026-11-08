@@ -438,6 +438,7 @@ pub struct World3dEditorView {
     /// Only cross the worker boundary when camera direction has materially
     /// changed; the render thread samples small rotations independently.
     last_view_forward: Option<[f32; 3]>,
+    last_view_camera: Option<[f64; 3]>,
     last_view_sent_at: Option<Instant>,
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
@@ -572,6 +573,7 @@ impl World3dEditorView {
             stream_generation: 0,
             last_view_key: None,
             last_view_forward: None,
+            last_view_camera: None,
             last_view_sent_at: None,
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
@@ -1003,15 +1005,25 @@ impl World3dEditorView {
                 .map(|(&a, b)| a * b)
                 .sum::<f32>() < 0.975
         });
+        // Section portals are sensitive to moving between disconnected
+        // pockets even inside the same 16^3 SubChunk. Report a material
+        // camera displacement to the worker (bounded by the 120 ms throttle)
+        // instead of waiting for an X/Z or Y Section boundary crossing.
+        let moved = self.last_view_camera.is_none_or(|last| {
+            self.camera.position.iter().zip(last)
+                .map(|(now, prior)| (now - prior).powi(2))
+                .sum::<f64>() >= 16.0
+        });
         let now = Instant::now();
         let throttled = self
             .last_view_sent_at
             .is_some_and(|at| now - at < VIEW_UPDATE_INTERVAL);
-        if !force && ((self.last_view_key == Some(key) && !direction_changed) || throttled) {
+        if !force && ((self.last_view_key == Some(key) && !direction_changed && !moved) || throttled) {
             return;
         }
         self.last_view_key = Some(key);
         self.last_view_forward = Some(forward);
+        self.last_view_camera = Some(self.camera.position);
         self.last_view_sent_at = Some(now);
         self.stream_generation = self.stream_generation.saturating_add(1);
         self.last_publish_at = None;
@@ -1645,6 +1657,7 @@ impl World3dEditorView {
         self.dirty_light_chunks.clear();
         self.probes.clear();
         self.last_view_forward = None;
+        self.last_view_camera = None;
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
         self.last_visibility_revision = None;
         self.last_visibility_voxel = None;
