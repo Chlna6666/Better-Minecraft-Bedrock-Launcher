@@ -459,7 +459,21 @@ impl FrameCounter {
 /// the GPUI window, native renderer or mutable Scene registry.
 struct PortalVisibilitySnapshot {
     probes: BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    // Graph topology is independent of the currently uploaded GPU sections.
+    // Include every decoded prospective band so later mesh publications can
+    // reuse the exact visibility result without another whole-world BFS.
     bands: BTreeSet<(ChunkPos, i32)>,
+}
+
+fn portal_candidate_bands(
+    probes: &BTreeMap<ChunkPos, Arc<World3dChunkProbe>>,
+    resident: impl IntoIterator<Item = (ChunkPos, i32)>,
+) -> BTreeSet<(ChunkPos, i32)> {
+    let mut bands = resident.into_iter().collect::<BTreeSet<_>>();
+    for (&pos, probe) in probes {
+        bands.extend(probe.subchunks.keys().map(|&y| (pos, i32::from(y).div_euclid(4))));
+    }
+    bands
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -507,6 +521,27 @@ mod async_portal_visibility_tests {
                 exits,
             )),
         }
+    }
+
+    #[test]
+    fn prospective_portal_bands_cover_not_yet_uploaded_sections() {
+        let pos = ChunkPos { x: 1, z: 2, dimension: Dimension::Overworld };
+        let mut subchunks = BTreeMap::new();
+        subchunks.insert(0, super::super::types::ProbingSubChunk::default());
+        subchunks.insert(7, super::super::types::ProbingSubChunk::default());
+        let probe = Arc::new(super::super::types::World3dChunkProbe {
+            pos,
+            min_y: 0,
+            subchunks,
+            visibility: BTreeMap::new(),
+            state_version: None,
+            storage_bytes: 0,
+        });
+        let probes = BTreeMap::from([(pos, probe)]);
+        let bands = super::portal_candidate_bands(&probes, [(pos, 4)]);
+        assert!(bands.contains(&(pos, 0)));
+        assert!(bands.contains(&(pos, 1)));
+        assert!(bands.contains(&(pos, 4)));
     }
 
     #[test]
@@ -1040,13 +1075,13 @@ impl World3dEditorView {
                         payload.mesh.pos,
                         Arc::clone(&payload.probe),
                     );
-                    // A new render-band key changes the resident visibility
-                    // domain, even if its decoded Probe Arc is unchanged.
+                    // Mesh residency is not a change to the decoded portal
+                    // graph. New bands are already included in the graph's
+                    // prospective candidates, so this must not invalidate
+                    // a good traversal or briefly clear the GPU portal mask.
                     let key = (payload.mesh.pos, payload.mesh.section_y);
                     if self.chunk_meshes.insert(key, payload.mesh).is_some() {
                         textures_may_be_unused = true;
-                    } else {
-                        probes_changed = true;
                     }
                     self.dirty_sections.insert(key);
                     meshes_added = meshes_added.saturating_add(1);
@@ -1101,9 +1136,9 @@ impl World3dEditorView {
                         probes_changed |= upsert_shared_probe(
                             &mut self.probes, completion.pos, completion.probe,
                         );
-                        // Retained/removed mesh keys alter the graph query
-                        // target list even if the underlying Probe is shared.
-                        probes_changed |= removed || restored;
+                        // Completion only changes GPU Section residency.
+                        // Graph revision is advanced above solely if the
+                        // immutable Probe identity actually changed.
                         self.invalidated_visibility.remove(&completion.pos);
                     }
                     textures_may_be_unused |= removed;
@@ -1125,7 +1160,7 @@ impl World3dEditorView {
                         &[],
                     );
                     textures_may_be_unused |= removed;
-                    probes_changed |= self.probes.remove(&pos).is_some() || removed;
+                    probes_changed |= self.probes.remove(&pos).is_some();
                     self.invalidated_visibility.remove(&pos);
                     self.stream_scene_pending |= removed;
                 }
@@ -1434,7 +1469,10 @@ impl World3dEditorView {
             _ => {
                 let snapshot = Arc::new(PortalVisibilitySnapshot {
                     probes: self.probes.clone(),
-                    bands: self.chunk_meshes.keys().copied().collect(),
+                    bands: portal_candidate_bands(
+                        &self.probes,
+                        self.chunk_meshes.keys().copied(),
+                    ),
                 });
                 self.visibility_snapshot = Some((key.revision, Arc::clone(&snapshot)));
                 snapshot
