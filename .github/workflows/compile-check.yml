@@ -115,6 +115,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib portal_mask_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux-build:
     name: Linux build
@@ -196,3 +200,5 @@ jobs:
         run: |
           cargo test -p bmcbl --lib world3d::visibility::tests -- --nocapture
           cargo test -p bmcbl --lib portal_mask_tests -- --nocapture
+          cargo test -p bmcbl --lib lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn -- --nocapture
+          cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
