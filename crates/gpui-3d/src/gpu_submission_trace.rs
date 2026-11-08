@@ -5,9 +5,10 @@
 //! Only completed frame GPU timestamps can establish hardware elapsed time.
 //! Aggregation is lock-free and never waits for a device fence on the hot path.
 
-use gfx_core::BackendKind;
-use std::sync::{OnceLock, atomic::{AtomicU64, Ordering}};
-use std::time::Duration;
+use gfx_core::{BackendKind, GpuTimestampStage};
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Phase {
@@ -43,11 +44,72 @@ pub(crate) fn report_gpu_samples(
         // update the streaming upload budget. Host API timings stay separate.
         crate::upload_feedback::observe_completed_gpu_upload(backend, *sample);
         let Some(elapsed) = sample.duration() else { continue; };
+        record_hardware_quantile(backend, sample.tag.stage, elapsed);
         eprintln!(
             "gpui3d gpu_hardware_phase backend={:?} batch_id={} stage={:?} gpu_us={} gpu_ticks={} frequency_hz={} timing=completed_gpu_timestamp",
             backend, sample.tag.batch_id, sample.tag.stage,
             elapsed.as_micros(), sample.duration_ticks, sample.frequency_hz,
         );
+    }
+}
+
+const GPU_PHASES: usize = 3;
+const HARDWARE_WINDOW_SIZE: usize = 256;
+
+struct HardwareWindow {
+    durations_us: VecDeque<u32>,
+    since: Instant,
+}
+impl HardwareWindow {
+    fn new() -> Self {
+        Self {
+            durations_us: VecDeque::with_capacity(HARDWARE_WINDOW_SIZE),
+            since: Instant::now(),
+        }
+    }
+}
+
+static HARDWARE_WINDOWS: OnceLock<Mutex<Vec<HardwareWindow>>> = OnceLock::new();
+
+fn hardware_percentile_us(sorted: &[u32], percentile: usize) -> u32 {
+    if sorted.is_empty() { return 0; }
+    let rank = sorted.len().saturating_mul(percentile).div_ceil(100).saturating_sub(1);
+    sorted[rank.min(sorted.len()-1)]
+}
+
+fn record_hardware_quantile(
+    backend: BackendKind,
+    stage: GpuTimestampStage,
+    duration: Duration,
+) {
+    let index = backend_index(backend) * GPU_PHASES + match stage {
+        GpuTimestampStage::GeneratedMesh => 0,
+        GpuTimestampStage::BufferUpload => 1,
+        GpuTimestampStage::DrawIndirect => 2,
+    };
+    let windows = HARDWARE_WINDOWS.get_or_init(|| Mutex::new(
+        (0..BACKENDS * GPU_PHASES).map(|_| HardwareWindow::new()).collect()
+    ));
+    let Ok(mut windows) = windows.lock() else { return; };
+    let window = &mut windows[index];
+    if window.durations_us.len() == HARDWARE_WINDOW_SIZE {
+        window.durations_us.pop_front();
+    }
+    window.durations_us.push_back(u32::try_from(duration.as_micros()).unwrap_or(u32::MAX));
+    let now = Instant::now();
+    if window.durations_us.len() >= 32
+        && now.saturating_duration_since(window.since) >= Duration::from_secs(2)
+    {
+        let mut sorted = window.durations_us.iter().copied().collect::<Vec<_>>();
+        sorted.sort_unstable();
+        eprintln!(
+            "gpui3d gpu_hardware_percentiles backend={:?} stage={:?} samples={} p50_us={} p95_us={} p99_us={} timing=native_gpu_ticks",
+            backend, stage, sorted.len(),
+            hardware_percentile_us(&sorted, 50),
+            hardware_percentile_us(&sorted, 95),
+            hardware_percentile_us(&sorted, 99),
+        );
+        window.since = now;
     }
 }
 
@@ -147,6 +209,15 @@ pub(crate) fn report(backend: BackendKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardware_percentiles_use_nearest_rank() {
+        assert_eq!(hardware_percentile_us(&[], 95), 0);
+        let sorted = (1..=100).collect::<Vec<u32>>();
+        assert_eq!(hardware_percentile_us(&sorted, 50), 50);
+        assert_eq!(hardware_percentile_us(&sorted, 95), 95);
+        assert_eq!(hardware_percentile_us(&sorted, 99), 99);
+    }
 
     #[test]
     fn phase_labels_are_distinct_and_complete() {
