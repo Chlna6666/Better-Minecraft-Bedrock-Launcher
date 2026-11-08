@@ -214,6 +214,10 @@ pub(super) struct SidecarSurface {
     /// unchanged-size view must not evict its color/depth GPU textures.
     awaiting_placement_gpu: Vec<PlacementResources>,
     ready_placement_release: Vec<PlacementResources>,
+    /// A presentation pass/format switch must not synchronously destroy the
+    /// previous compositor PSO while an earlier GUI submission still uses it.
+    awaiting_pipeline_gpu: Vec<RenderPipelineId>,
+    ready_pipeline_release: Vec<RenderPipelineId>,
     trace: TargetTrace,
 }
 
@@ -353,6 +357,8 @@ impl SidecarSurface {
                 ready_to_release: Vec::new(),
                 awaiting_placement_gpu: Vec::new(),
                 ready_placement_release: Vec::new(),
+                awaiting_pipeline_gpu: Vec::new(),
+                ready_pipeline_release: Vec::new(),
                 trace: TargetTrace::default(),
             })
         })();
@@ -515,7 +521,9 @@ impl SidecarSurface {
     /// Exposes only resources which are awaiting a real GPU fence.
     /// A submission acknowledgement alone is not enough to release them.
     pub(super) fn has_retired_targets(&self) -> bool {
-        !self.awaiting_gpu.is_empty() || !self.awaiting_placement_gpu.is_empty()
+        !self.awaiting_gpu.is_empty()
+            || !self.awaiting_placement_gpu.is_empty()
+            || !self.awaiting_pipeline_gpu.is_empty()
     }
 
     /// Called only after GPUI verifies all earlier graphics submissions
@@ -523,6 +531,7 @@ impl SidecarSurface {
     pub(super) fn gpu_work_completed(&mut self) {
         self.ready_to_release.append(&mut self.awaiting_gpu);
         self.ready_placement_release.append(&mut self.awaiting_placement_gpu);
+        self.ready_pipeline_release.append(&mut self.awaiting_pipeline_gpu);
     }
 
     fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -535,6 +544,12 @@ impl SidecarSurface {
         // error propagates to GPUI rather than being silently ignored.
         while let Some(target) = self.ready_to_release.pop() {
             target.destroy(device)?;
+        }
+        // PSO destruction on Vulkan can wait for pending work. By reaching
+        // this queue only after the host fence proof, a host format change
+        // cannot force that wait during the new frame's render preparation.
+        while let Some(pipeline) = self.ready_pipeline_release.pop() {
+            device.destroy_render_pipeline(pipeline)?;
         }
         Ok(())
     }
@@ -569,10 +584,11 @@ impl SidecarSurface {
                 sum.saturating_add(sum_pixels(target.extent.width(), target.extent.height()))
             });
         eprintln!(
-            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
+            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
             self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
             self.awaiting_gpu.len() + self.ready_to_release.len(),
             self.awaiting_placement_gpu.len() + self.ready_placement_release.len(),
+            self.awaiting_pipeline_gpu.len() + self.ready_pipeline_release.len(),
             cropped.saturating_mul(bpp),
             full_window.saturating_mul(bpp),
             retired.saturating_mul(bpp),
@@ -607,7 +623,9 @@ impl SidecarSurface {
         self.host_pass = host.render_pass();
         self.host_format = host.color_format();
         self.host_extent = host.viewport();
-        device.destroy_render_pipeline(old)?;
+        // The old pipeline may still be referenced by native GUI command
+        // buffers; the host retains it until a verified queue completion.
+        self.awaiting_pipeline_gpu.push(old);
         Ok(())
     }
 
@@ -813,6 +831,11 @@ impl SidecarSurface {
         {
             placement.destroy(device)?;
         }
+        for pipeline in self.awaiting_pipeline_gpu.drain(..)
+            .chain(self.ready_pipeline_release.drain(..))
+        {
+            device.destroy_render_pipeline(pipeline)?;
+        }
         device.destroy_render_pipeline(self.composite_pipeline)?;
         device.destroy_pipeline_layout(self.pipeline_layout)?;
         device.destroy_bind_group_layout(self.bind_layout)?;
@@ -861,6 +884,8 @@ mod tests {
             ready_to_release: Vec::new(),
             awaiting_placement_gpu: Vec::new(),
             ready_placement_release: Vec::new(),
+            awaiting_pipeline_gpu: Vec::new(),
+            ready_pipeline_release: Vec::new(),
             trace: TargetTrace::default(),
         };
         assert!(surface.has_retired_targets());
@@ -878,12 +903,15 @@ mod tests {
             binding: BindGroupId::from_parts(7, 1),
             buffer: BufferId::from_parts(8, 1),
         });
+        surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(11, 1));
         surface.gpu_work_completed();
         assert!(!surface.has_retired_targets());
         assert_eq!(surface.awaiting_gpu.len(), 0);
         assert_eq!(surface.ready_to_release.len(), 1);
         assert_eq!(surface.awaiting_placement_gpu.len(), 0);
         assert_eq!(surface.ready_placement_release.len(), 1);
+        assert_eq!(surface.awaiting_pipeline_gpu.len(), 0);
+        assert_eq!(surface.ready_pipeline_release.len(), 1);
     }
 
     #[test]
