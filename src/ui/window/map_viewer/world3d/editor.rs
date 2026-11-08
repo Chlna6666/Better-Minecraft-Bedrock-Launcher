@@ -30,7 +30,7 @@ use gpui_3d::{
     Aabb, AlphaMode, Material, Mesh, Node, NodeId, Scene, SceneView, ShadingModel, TextureAsset,
     TextureSampling, Transform, Vec3,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc::{self, Receiver, TryRecvError}};
 use std::time::{Duration, Instant};
@@ -52,6 +52,10 @@ const MAX_MESH_EVENTS_PER_POLL: usize = 16;
 const MESH_SUBMIT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const STREAM_SCENE_INTERVAL: Duration = Duration::from_millis(50);
 const SECTION_EPOCH_MAX_TOMBSTONES: usize = 32_768;
+/// Recent connected cave/terrain regions; memory is additionally bounded by
+/// the sum of retained hidden Section keys, not just the entry count.
+const PORTAL_RESULT_CACHE_ENTRIES: usize = 8;
+const PORTAL_RESULT_CACHE_BANDS: usize = 16_384;
 
 /// Streamed Section payloads and their completion typically reuse one
 /// immutable Arc<Probe>. Only a new identity can change the portal graph;
@@ -525,6 +529,50 @@ mod async_portal_visibility_tests {
     }
 }
 
+/// LRU of successfully solved regions. A return to an explored cave can
+/// republish its mask without another Rayon traversal, provided the decoded
+/// graph revision, radius and exact air-component identity all match.
+#[derive(Default)]
+struct PortalResultCache {
+    entries: VecDeque<(PortalVisibilityKey, Arc<BTreeSet<(ChunkPos, i32)>>)>,
+    total_bands: usize,
+}
+
+impl PortalResultCache {
+    fn find(&mut self, key: PortalVisibilityKey) -> Option<Arc<BTreeSet<(ChunkPos, i32)>>> {
+        let at = self.entries.iter().position(|(old, _)| same_portal_region(*old, key))?;
+        let (_, hidden) = self.entries.remove(at)?;
+        let result = Arc::clone(&hidden);
+        self.entries.push_front((key, hidden));
+        Some(result)
+    }
+
+    fn insert(&mut self, key: PortalVisibilityKey, hidden: Arc<BTreeSet<(ChunkPos, i32)>>) {
+        if let Some(at) = self.entries.iter().position(|(old, _)| same_portal_region(*old, key)) {
+            if let Some((_, removed)) = self.entries.remove(at) {
+                self.total_bands = self.total_bands.saturating_sub(removed.len());
+            }
+        }
+        if hidden.len() > PORTAL_RESULT_CACHE_BANDS {
+            return;
+        }
+        self.total_bands += hidden.len();
+        self.entries.push_front((key, hidden));
+        while self.entries.len() > PORTAL_RESULT_CACHE_ENTRIES
+            || self.total_bands > PORTAL_RESULT_CACHE_BANDS
+        {
+            if let Some((_, retired)) = self.entries.pop_back() {
+                self.total_bands -= retired.len();
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.total_bands = 0;
+    }
+}
+
 struct PortalVisibilityResult {
     key: PortalVisibilityKey,
     hidden: BTreeSet<(ChunkPos, i32)>,
@@ -580,11 +628,12 @@ pub struct World3dEditorView {
     visibility_job: Option<Receiver<PortalVisibilityResult>>,
     visibility_job_key: Option<PortalVisibilityKey>,
     visibility_completed_key: Option<PortalVisibilityKey>,
+    visibility_cache: PortalResultCache,
     visibility_signature_voxel: Option<(u64, [i32; 3])>,
     visibility_signature: Option<(ChunkPos, i32, u16, u8)>,
     hidden_draw_nodes: Arc<HashSet<NodeId>>,
     /// Mesh render bands unreachable from the camera or any unknown exterior.
-    hidden_sections: BTreeSet<(ChunkPos, i32)>,
+    hidden_sections: Arc<BTreeSet<(ChunkPos, i32)>>,
     /// Edited columns whose old portal data must not suppress geometry.
     invalidated_visibility: HashSet<ChunkPos>,
     textures: HashMap<gpui_3d::TextureAssetId, Arc<TextureAsset>>,
@@ -715,10 +764,11 @@ impl World3dEditorView {
             visibility_job: None,
             visibility_job_key: None,
             visibility_completed_key: None,
+            visibility_cache: PortalResultCache::default(),
             visibility_signature_voxel: None,
             visibility_signature: None,
             hidden_draw_nodes: Arc::new(HashSet::new()),
-            hidden_sections: BTreeSet::new(),
+            hidden_sections: Arc::new(BTreeSet::new()),
             invalidated_visibility: HashSet::new(),
             textures: HashMap::new(),
             texture_bytes: 0,
@@ -1093,9 +1143,10 @@ impl World3dEditorView {
             self.visibility_snapshot = None;
             self.visibility_signature_voxel = None;
             self.visibility_completed_key = None;
+            self.visibility_cache.clear();
             // Any in-flight graph may contain already invalidated or unloaded
             // Sections. Do not keep its old GPU occlusion mask while streaming.
-            ui_changed |= self.apply_portal_visibility(BTreeSet::new());
+            ui_changed |= self.clear_portal_visibility();
         }
         if meshes_added > 0 {
             self.last_chunk_update_at = Some(Instant::now());
@@ -1188,8 +1239,10 @@ impl World3dEditorView {
     /// Publish a camera reachability mask, not an authored Scene fork.
     /// A pending async result is never allowed to hide a Section after the
     /// camera leaves its air component or the decoded column epoch changes.
-    fn apply_portal_visibility(&mut self, hidden: BTreeSet<(ChunkPos, i32)>) -> bool {
-        if self.hidden_sections == hidden {
+    fn apply_portal_visibility(&mut self, hidden: Arc<BTreeSet<(ChunkPos, i32)>>) -> bool {
+        if Arc::ptr_eq(&self.hidden_sections, &hidden)
+            || self.hidden_sections.as_ref() == hidden.as_ref()
+        {
             return false;
         }
         self.hidden_sections = hidden;
@@ -1204,6 +1257,16 @@ impl World3dEditorView {
             );
         }
         true
+    }
+
+    /// Reset portal masking without allocating on the common already-empty
+    /// path. Unknown sections and edits must fail open.
+    fn clear_portal_visibility(&mut self) -> bool {
+        if self.hidden_sections.is_empty() {
+            false
+        } else {
+            self.apply_portal_visibility(Arc::new(BTreeSet::new()))
+        }
     }
 
     /// Sodium-style frame-independent graph solve. The GPUI thread only
@@ -1242,8 +1305,10 @@ impl World3dEditorView {
                             result.solve_us, result.hidden.len(),
                         );
                     }
+                    let hidden = Arc::new(result.hidden);
+                    self.visibility_cache.insert(key, Arc::clone(&hidden));
                     self.visibility_completed_key = Some(key);
-                    return self.apply_portal_visibility(result.hidden);
+                    return self.apply_portal_visibility(hidden);
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -1255,15 +1320,25 @@ impl World3dEditorView {
         // During an edit or while the camera's containing Section is
         // unknown/solid, fail open immediately: rendering extra geometry is
         // always safer than showing an outdated hole in a mine or cliff.
-        if !safe || key.component.is_none() {
+        if !safe {
+            // Do not mark an unsafe edit as a completed cull result: if the
+            // edit is cancelled, the same component must be scheduled again.
+            self.visibility_completed_key = None;
+            return self.clear_portal_visibility();
+        }
+        if key.component.is_none() {
             self.visibility_completed_key = Some(key);
-            return self.apply_portal_visibility(BTreeSet::new());
+            return self.clear_portal_visibility();
         }
         if self
             .visibility_completed_key
             .is_some_and(|previous| same_portal_region(previous, key))
         {
             return false;
+        }
+        if let Some(hidden) = self.visibility_cache.find(key) {
+            self.visibility_completed_key = Some(key);
+            return self.apply_portal_visibility(hidden);
         }
         if let Some(inflight) = self.visibility_job_key {
             // When moving inside the same connected air pocket we may reuse
@@ -1272,7 +1347,7 @@ impl World3dEditorView {
             return if same_portal_region(inflight, key) {
                 false
             } else {
-                self.apply_portal_visibility(BTreeSet::new())
+                self.clear_portal_visibility()
             };
         }
         let snapshot = match &self.visibility_snapshot {
@@ -1288,7 +1363,7 @@ impl World3dEditorView {
         };
         if snapshot.probes.is_empty() || snapshot.bands.is_empty() {
             self.visibility_completed_key = Some(key);
-            return self.apply_portal_visibility(BTreeSet::new());
+            return self.clear_portal_visibility();
         }
         let (tx, rx) = mpsc::sync_channel(1);
         rayon::spawn(move || {
@@ -1311,7 +1386,7 @@ impl World3dEditorView {
         // A previous camera/component's occlusion mask cannot safely persist
         // while the new one is computed. Keep the resident Draw slots visible
         // until the worker publishes a matching snapshot.
-        self.apply_portal_visibility(BTreeSet::new())
+        self.clear_portal_visibility()
     }
 
     fn maybe_update_view(&mut self, cx: &mut Context<Self>) {
@@ -1856,9 +1931,10 @@ impl World3dEditorView {
         self.visibility_job = None;
         self.visibility_job_key = None;
         self.visibility_completed_key = None;
+        self.visibility_cache.clear();
         self.visibility_signature_voxel = None;
         self.visibility_signature = None;
-        self.hidden_sections.clear();
+        self.hidden_sections = Arc::new(BTreeSet::new());
         self.hidden_draw_nodes = Arc::new(HashSet::new());
         self.invalidated_visibility.clear();
         self.textures.clear();
