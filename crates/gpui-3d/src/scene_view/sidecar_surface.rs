@@ -33,6 +33,24 @@ impl Target {
     }
 }
 
+/// Keep the source 3D pass inside the same widget region as the final GUI
+/// composite. The offscreen target is full-window so projection coordinates
+/// remain identical; clipping here avoids rasterizing hidden world pixels.
+fn clipped_scissor(previous: Option<ScissorRect>, clip: ScissorRect) -> ScissorRect {
+    let Some(previous) = previous else { return clip };
+    let x = previous.x.max(clip.x);
+    let y = previous.y.max(clip.y);
+    let right = previous.x.saturating_add(previous.width)
+        .min(clip.x.saturating_add(clip.width));
+    let bottom = previous.y.saturating_add(previous.height)
+        .min(clip.y.saturating_add(clip.height));
+    ScissorRect {
+        x, y,
+        width: right.saturating_sub(x),
+        height: bottom.saturating_sub(y),
+    }
+}
+
 /// GPU resources stay on the graphics owner. Only the CPU render preparation
 /// queue runs on other threads; this surface owns no swapchain or window.
 pub(super) struct SidecarSurface {
@@ -304,10 +322,15 @@ impl SidecarSurface {
         device: &mut dyn ExtensionDevice,
         id: SceneViewId,
         host: &RendererExtensionContext,
-        geometry: Vec<RenderCommand>,
+        mut geometry: Vec<RenderCommand>,
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
+        let clip = host.scissor();
+        for draw in &mut geometry {
+            draw.set_scissor(Some(clipped_scissor(draw.scissor(), clip)));
+        }
+        geometry.retain(|draw| draw.scissor().is_none_or(|rect| !rect.is_empty()));
         let recreate = self.targets.get(&id)
             .is_none_or(|target| target.extent != host.viewport());
         if recreate {
@@ -365,5 +388,21 @@ impl SidecarSurface {
         device.destroy_shader_module(self.vertex_shader)?;
         device.destroy_render_pass(self.capture_pass)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offscreen_geometry_obeys_original_gui_clip() {
+        let element = ScissorRect { x: 40, y: 20, width: 200, height: 150 };
+        let source = ScissorRect { x: 100, y: 0, width: 150, height: 100 };
+        assert_eq!(clipped_scissor(Some(source), element),
+            ScissorRect { x: 100, y: 20, width: 140, height: 80 });
+        assert_eq!(clipped_scissor(None, element), element);
+        let outside = ScissorRect { x: 400, y: 300, width: 40, height: 40 };
+        assert!(clipped_scissor(Some(outside), element).is_empty());
     }
 }
