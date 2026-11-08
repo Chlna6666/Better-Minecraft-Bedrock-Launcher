@@ -4033,6 +4033,7 @@ fn flush_pending_generated_meshes(
         generated_arena,
         template_arena,
         argument_arena,
+        batch_id,
     )
 }
 
@@ -4068,6 +4069,7 @@ fn upload_pending_meshes(
     generated_arena: &mut MeshArena,
     template_arena: &mut MeshArena,
     argument_arena: &mut MeshArena,
+    batch_id: u64,
 ) -> gpui::Result<()> {
     if pending.is_empty() {
         return Ok(());
@@ -4090,7 +4092,16 @@ fn upload_pending_meshes(
     // to stage; skip the empty native buffer submission entirely.
     if write_count > 0 {
         let upload_started = Instant::now();
-        if let Err(error) = device.write_buffer_batch(&writes) {
+        let profiled = batch_id != 0 && crate::gpu_submission_trace::enabled()
+            && device.gpu_work_timestamps_supported();
+        let result = if profiled {
+            device.write_buffer_batch_profiled(&writes, gfx_core::GpuTimestampTag {
+                batch_id, stage: gfx_core::GpuTimestampStage::BufferUpload,
+            })
+        } else {
+            device.write_buffer_batch(&writes)
+        };
+        if let Err(error) = result {
             discard_pending_meshes(
                 device,
                 pending,
@@ -4104,6 +4115,11 @@ fn upload_pending_meshes(
         crate::upload_feedback::observe_buffer_upload(
             backend, uploaded_bytes, write_count, upload_started.elapsed(),
         );
+        if profiled {
+            crate::upload_feedback::observe_tagged_upload(
+                backend, batch_id, uploaded_bytes, write_count,
+            );
+        }
     }
     for (id, mesh, _) in pending.drain(..) {
         // Account for the incoming generation before retiring an older
