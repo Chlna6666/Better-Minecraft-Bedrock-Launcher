@@ -1,5 +1,6 @@
 use super::{
     SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
+    sidecar_surface::SidecarSurface,
 };
 use crate::prepare::StructuralDrawDelta;
 use anyhow::{anyhow, bail};
@@ -459,6 +460,11 @@ struct SidecarGpuBackend {
     argument_arena: Rc<RefCell<MeshArena>>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
+    /// True 3D offscreen producer path. Each capture becomes a separate
+    /// native submission ordered before GPUI samples its completed texture.
+    /// Device calls remain on this native owner for DX11/GL correctness.
+    offscreen: Option<SidecarSurface>,
+    pending_passes: Vec<gpui::RendererExtensionPass>,
     frame_time: Option<Instant>,
     frame_index: u64,
     timing_trace: RendererTimingTrace,
@@ -490,12 +496,40 @@ impl SidecarGpuBackend {
                 compute.indirect_draw,
             );
         }
-        let resources = RendererResources::new(device, &context)?;
+        // Probe native offscreen 3D submission only when explicitly enabled.
+        // It is deliberately opt-in until DX11/DX12/Vulkan/OpenGL timing and
+        // output parity tests confirm the extra GPU texture pass is beneficial.
+        let mut offscreen = if std::env::var_os("GPUI_3D_OFFSCREEN_SIDECAR").is_some() {
+            match SidecarSurface::new(device, &context) {
+                Ok(surface) => Some(surface),
+                Err(error) => {
+                    eprintln!("gpui3d offscreen_sidecar_unavailable backend={:?} error={error}", context.backend_kind());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let render_context = offscreen.as_ref()
+            .map(|surface| surface.capture_context(&context))
+            .unwrap_or_else(|| context.clone());
+        let resources = match RendererResources::new(device, &render_context) {
+            Ok(resources) => resources,
+            Err(error) => {
+                if let Some(surface) = offscreen.take() {
+                    let _ = surface.destroy(device);
+                }
+                return Err(error);
+            }
+        };
+        if offscreen.is_some() && trace_timings() {
+            eprintln!("gpui3d offscreen_sidecar_enabled backend={:?}", context.backend_kind());
+        }
         Ok(Self {
             backend: context.backend_kind(),
-            render_pass: context.render_pass(),
-            color_format: context.color_format(),
-            target_extent: context.viewport(),
+            render_pass: render_context.render_pass(),
+            color_format: render_context.color_format(),
+            target_extent: render_context.viewport(),
             resources,
             generated_arena: Rc::new(RefCell::new(MeshArena::generated_output(
                 device.buffer_binding_limits(),
@@ -508,6 +542,8 @@ impl SidecarGpuBackend {
             ))),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
+            offscreen,
+            pending_passes: Vec::new(),
             frame_time: None,
             frame_index: 0,
             timing_trace: RendererTimingTrace::default(),
@@ -589,6 +625,9 @@ impl SidecarGpuBackend {
             self.command_cache.remove(&id);
             if let Some(mut scene) = self.scenes.remove(&id) {
                 scene.destroy(device)?;
+            }
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.retire(device, id)?;
             }
             // CPU-sidecar mailboxes are now SceneView-owned Arcs. They
             // retire independently when the last producer snapshot drops.
@@ -713,6 +752,14 @@ impl Renderer {
 /// The shared native device owner still serializes backend access; arbitrary
 /// cross-thread native contexts are intentionally not exposed here.
 impl RendererExtensionRenderer for Renderer {
+    fn render_passes_submitted(&mut self) {
+        self.backend.render_passes_submitted();
+    }
+
+    fn drain_render_passes(&mut self, passes: &mut Vec<gpui::RendererExtensionPass>) {
+        self.backend.drain_render_passes(passes);
+    }
+
     fn needs_gpu_completion(&self) -> bool {
         self.backend.needs_gpu_completion()
     }
@@ -745,6 +792,12 @@ impl RendererExtensionRenderer for Renderer {
 }
 
 impl RendererExtensionRenderer for SidecarGpuBackend {
+    fn drain_render_passes(&mut self, passes: &mut Vec<gpui::RendererExtensionPass>) {
+        // GPUI's host renders these offscreen passes first, then samples the
+        // per-SceneView color target at the original extension painter order.
+        passes.append(&mut self.pending_passes);
+    }
+
     fn needs_gpu_completion(&self) -> bool {
         self.generated_arena.borrow().has_retired_ranges()
             || self.template_arena.borrow().has_retired_ranges()
@@ -778,7 +831,13 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
-            self.sync_pipeline(device, &context)?;
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.sync(device, &context)?;
+            }
+            let render_context = self.offscreen.as_ref()
+                .map(|surface| surface.capture_context(&context))
+                .unwrap_or_else(|| context.clone());
+            self.sync_pipeline(device, &render_context)?;
             self.begin_frame(context.frame_time());
             self.retire_idle_scenes(device)?;
         }
@@ -821,15 +880,27 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // the last published GPU geometry with the current camera instead
         // of blocking every window's shared GPU submission owner.
         let prepared_view = retained.as_ref().unwrap_or(&scene_view);
+        let render_context = self.offscreen.as_ref()
+            .map(|surface| surface.capture_context(&context))
+            .unwrap_or_else(|| context.clone());
         let prepare_started = trace_timings().then(Instant::now);
         {
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
-            scene.prepare(device, &mut self.resources, prepared_view, &context)?;
+            scene.prepare(device, &mut self.resources, prepared_view, &render_context)?;
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
-        let first_step = steps.len();
-        {
+        let mut capture_steps = Vec::new();
+        let commands_count = {
+            // The same Draw/Instance/Shader layout is used by both paths.
+            // Only the final consumer changes: own offscreen pass vs GPUI
+            // root render pass. No extra scene traversal or mesh copies.
+            let output = if self.offscreen.is_some() {
+                &mut capture_steps
+            } else {
+                &mut *steps
+            };
+            let first_step = output.len();
             let _phase =
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CommandEncode);
             self.command_cache
@@ -840,18 +911,25 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     scene.generated_singleton_command_count(),
                     scene.first_blended_batch_index(),
                     scene.native_command_delta(),
-                    steps,
-                    |steps| scene.append_steps(&self.resources, scene_view.voxel_shader, steps),
-                    |range, steps| {
-                        scene.append_generated_singleton_range(&self.resources, steps, range)
+                    output,
+                    |output| scene.append_steps(&self.resources, scene_view.voxel_shader, output),
+                    |range, output| {
+                        scene.append_generated_singleton_range(&self.resources, output, range)
                     },
                 )?;
+            output.len() - first_step
+        };
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.enqueue(
+                device, scene_view.id, &context, capture_steps,
+                &mut self.pending_passes, steps,
+            )?;
         }
         if let Some((prepare, started)) = commands_started {
             self.timing_trace.record(
                 prepare,
                 started.elapsed(),
-                steps.len() - first_step,
+                commands_count,
                 scene.gpu_culling_counts(),
             );
         }
@@ -869,6 +947,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         let scenes = self.scenes.keys().copied().collect();
         self.destroy_scenes(device, scenes)?;
-        self.resources.destroy(device)
+        self.resources.destroy(device)?;
+        if let Some(surface) = self.offscreen.take() {
+            surface.destroy(device)?;
+        }
+        Ok(())
     }
 }
