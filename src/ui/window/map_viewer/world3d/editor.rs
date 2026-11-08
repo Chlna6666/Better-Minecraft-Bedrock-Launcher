@@ -1189,6 +1189,16 @@ impl World3dEditorView {
                 resident.contains(pos) || *generation >= recent
             });
         }
+        // Consume completed CPU-only fusion jobs on the UI owner. Until the
+        // matching source fingerprint is ready, independent Section meshes
+        // remain visible and no synchronous geometry merge blocks the frame.
+        // The completed tile keys join the next immutable Scene delta even if
+        // no new chunk arrived in this poll.
+        if self.scene_nodes.harvest_finished_fusions() {
+            self.scene_dirty = true;
+            self.stream_scene_pending = true;
+            ui_changed = true;
+        }
         self.texture_prune_pending |= textures_may_be_unused;
         self.texture_table_dirty |= self.textures.len() != previous_texture_count;
         self.target_pick_dirty |= probes_changed;
