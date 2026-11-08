@@ -2918,9 +2918,10 @@ impl SceneResources {
                 .culling
                 .as_ref()
                 .is_some_and(CullResources::structural_slots_committed)
-            // Pending generated Page groups are published separately after
-            // the binding splice. They do not invalidate survivor BindGroups.
-            // sync_generated_draws() consumes the pending groups on fallback.
+            // An unpublished Page mapping from an earlier failed update
+            // cannot be assumed to describe these structural slots. Keep the
+            // full binding revalidation in that exceptional retry case.
+            || self.generated_pending_groups.is_some()
             || !self.retired_meshes.is_empty()
             || self.batches.len() != count
             || self.draw_resources.len() != old_count
