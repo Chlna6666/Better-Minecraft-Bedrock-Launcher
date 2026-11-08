@@ -147,21 +147,29 @@ impl Compositor {
                     let _ = d.destroy_render_pipeline(id);
                 },
             );
-            let ms_post_pipeline = match &ms_shaders {
-                Some(ms) => Some(cleanup.record(
-                    create_pipeline(
-                        device,
-                        pipeline_layout,
-                        ms,
-                        context.offscreen(post_pass, Format::Rgba8Unorm, post_extent),
-                        false,
-                        true,
-                    )?,
-                    |d, id| {
+            // An embedded multisample shader can compile as a module yet fail
+            // native pipeline validation on a particular driver. This feature
+            // is optional: keep the normal screen compositor instead of
+            // disabling all screen effects when only the MSAA variant fails.
+            let ms_post_pipeline = if let Some(ms) = &ms_shaders {
+                match create_pipeline(
+                    device,
+                    pipeline_layout,
+                    ms,
+                    context.offscreen(post_pass, Format::Rgba8Unorm, post_extent),
+                    false,
+                    true,
+                ) {
+                    Ok(pipeline) => Some(cleanup.record(pipeline, |d, id| {
                         let _ = d.destroy_render_pipeline(id);
-                    },
-                )),
-                None => None,
+                    })),
+                    Err(error) => {
+                        eprintln!("gpui-3d: disabling MSAA screen effects: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
             };
             Ok(Self {
                 layout,
@@ -182,7 +190,7 @@ impl Compositor {
     }
     /// Whether the screen shaders can read multisampled geometry depth.
     pub(super) fn supports_multisampled_depth(&self) -> bool {
-        self.ms_shaders.is_some()
+        self.ms_shaders.is_some() && self.ms_post_pipeline.is_some()
     }
     /// Resolve pipeline that writes the single-sampled display target.
     pub(super) fn post_pipeline(&self, multisampled: bool) -> RenderPipelineId {
