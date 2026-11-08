@@ -267,6 +267,17 @@ impl ArenaPage {
                 merged.push((offset, len));
             }
         }
+        // A GPU fence has completed and the sorted trailing ranges are now
+        // genuinely reusable. Return contiguous retired tail space to the
+        // page's bump allocator instead of retaining it as fragmented spans.
+        // No live GPU address is relocated and no buffer is destroyed here.
+        while let Some(&(offset, len)) = merged.last() {
+            if offset.checked_add(len) != Some(self.used) {
+                break;
+            }
+            self.used = offset;
+            merged.pop();
+        }
         self.free_ranges = merged;
     }
 }
@@ -559,12 +570,54 @@ mod sparse_arena_retirement_tests {
         // The other 127 resident pages are intentionally untouched.
         arena.reclaim_after_gpu_idle();
         assert!(!arena.has_retired_ranges());
-        assert_eq!(arena.pages[73].as_ref().unwrap().free_ranges, vec![(128, 128)]);
+        assert!(arena.pages[73].as_ref().unwrap().free_ranges.is_empty());
+        assert_eq!(arena.pages[73].as_ref().unwrap().used, 128);
+        assert_eq!(arena.pages[73].as_ref().unwrap().available_bytes(), 896);
         assert!(arena.pages[72].as_ref().unwrap().free_ranges.is_empty());
         assert!(arena.pages[74].as_ref().unwrap().free_ranges.is_empty());
         assert!(!arena.available_pages.is_empty());
         arena.reclaim_after_gpu_idle();
         assert!(!arena.has_retired_ranges());
+    }
+
+    #[test]
+    fn completed_retired_tail_reuses_bump_space_without_moving_live_slots() {
+        let mut page = ArenaPage {
+            buffer: BufferId::from_parts(999, 1),
+            capacity: 512,
+            used: 384,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: vec![(128, 64)],
+            retired_ranges: vec![(256, 128), (192, 64)],
+        };
+        // Before fence completion, none of the retired allocations can be
+        // returned to the GPU allocator (even if their owners were unloaded).
+        assert_eq!(page.available_bytes(), 128);
+        page.reclaim_retired();
+        assert_eq!(page.used, 128);
+        assert_eq!(page.live_bytes, 128);
+        assert!(page.free_ranges.is_empty());
+        assert_eq!(page.reserve(256), Some(128));
+        assert_eq!(page.used, 384);
+    }
+
+    #[test]
+    fn reclaimed_middle_holes_remain_disjoint_from_live_tail() {
+        let mut page = ArenaPage {
+            buffer: BufferId::from_parts(998, 1),
+            capacity: 512,
+            used: 384,
+            live: 2,
+            live_bytes: 192,
+            free_ranges: vec![(128, 64)],
+            retired_ranges: vec![(192, 64), (320, 64)],
+        };
+        page.reclaim_retired();
+        assert_eq!(page.used, 320);
+        assert_eq!(page.free_ranges, vec![(128, 128)]);
+        assert_eq!(page.reserve(128), Some(128));
+        assert_eq!(page.used, 320);
     }
 
     #[test]
