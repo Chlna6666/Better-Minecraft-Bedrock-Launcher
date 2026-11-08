@@ -1066,7 +1066,13 @@ impl World3dEditorView {
                 );
             }
             self.hidden_sections = hidden;
-            self.scene_dirty = true;
+            // Reuse the existing stream-scene 50 ms coalescer while chunks
+            // arrive. A camera-only portal transition still publishes
+            // immediately, but a probe arriving in the same event batch
+            // cannot force a costly extra Scene fork between mesh batches.
+            if !self.stream_scene_pending {
+                self.scene_dirty = true;
+            }
         }
     }
 
