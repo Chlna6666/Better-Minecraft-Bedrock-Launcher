@@ -108,7 +108,24 @@ impl Dx11Device {
         clear_region: Option<ScissorRect>,
         viewport: Option<Viewport>,
     ) -> Result<()> {
-        let pass = self.passes.get(pass)?;
+        self.render_target_clipped_profiled(
+            targets, resolve_view, pass, commands, load, depth, clear_region, viewport, None,
+        )
+    }
+
+    pub(crate) fn render_target_clipped_profiled(
+        &mut self,
+        targets: &[RenderTarget],
+        resolve_view: Option<TextureViewId>,
+        pass: RenderPassId,
+        commands: &[RenderCommand],
+        load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>,
+        clear_region: Option<ScissorRect>,
+        viewport: Option<Viewport>,
+        gpu_tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        let pass = self.passes.get(pass)?.clone();
         if targets.is_empty() || targets.len() != pass.color_attachments.len() {
             return Err(Error::InvalidInput(
                 "D3D11 target count does not match the render pass attachments".into(),
@@ -209,13 +226,14 @@ impl Dx11Device {
         let depth_view = depth
             .map(|depth| self.views.get(depth.target))
             .transpose()?;
-        let dsv = depth_view
+        let dsv_owned = depth_view
             .map(|view| {
-                view.dsv.as_ref().ok_or_else(|| {
+                view.dsv.as_ref().cloned().ok_or_else(|| {
                     Error::InvalidInput("depth view is not a depth attachment".into())
                 })
             })
             .transpose()?;
+        let dsv = dsv_owned.as_ref();
         if depth_view.is_some_and(|view| view.size != size) {
             return Err(Error::InvalidInput("depth extent mismatch".into()));
         }
@@ -308,6 +326,7 @@ impl Dx11Device {
         }
         self.indirect_constants
             .stage(&self.native, &self.context, &self.buffers, commands)?;
+        let draw_commands = |device: &mut Dx11Device| -> Result<()> {
         let mut state = Dx11PassState::default();
         let mut indirect_count = 0;
         for command in commands {
@@ -327,7 +346,7 @@ impl Dx11Device {
                 .iter()
                 .map(|attachment| attachment.format)
                 .collect::<Vec<_>>();
-            self.draw_step(
+            device.draw_step(
                 command,
                 scissor,
                 viewport_size,
@@ -336,6 +355,15 @@ impl Dx11Device {
                 &mut state,
                 indirect_index,
             )?;
+        }
+        Ok(())
+        };
+        // Time only the immediate-context draw commands after clears and
+        // native argument staging, before output unbinding or MSAA resolve.
+        if let Some(tag) = gpu_tag {
+            self.profile_gpu_work(tag, draw_commands)?;
+        } else {
+            draw_commands(self)?;
         }
         // SAFETY: remove output bindings before these targets are sampled by another pass.
         unsafe {
@@ -713,6 +741,34 @@ impl PresentationDevice for Dx11Device {
     ) -> Result<Option<SubmissionId>> {
         for pass in passes {
             self.render_to_texture(pass)?;
+        }
+        Ok(None)
+    }
+
+    fn render_to_textures_profiled(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+        }
+        for (pass, tag) in passes.iter().zip(tags) {
+            let tag = tag.filter(|tag| {
+                tag.stage == GpuTimestampStage::DrawIndirect
+                    && !pass.commands.is_empty()
+                    && pass.commands.iter().all(|command| matches!(
+                        command, RenderCommand::DrawIndirect(_)
+                        | RenderCommand::DrawIndexedIndirect(_)
+                    ))
+            });
+            let targets = pass.color_attachments.iter().copied()
+                .map(RenderTarget::TextureView).collect::<Vec<_>>();
+            self.render_target_clipped_profiled(
+                &targets, pass.resolve_target, pass.render_pass,
+                pass.commands, pass.color_load_op, pass.depth_attachment,
+                pass.clear_region, pass.viewport, tag,
+            )?;
         }
         Ok(None)
     }
