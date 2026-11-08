@@ -66,6 +66,31 @@ impl Mailbox {
         true
     }
 
+    fn status(&self, scene: &Arc<Scene>, transform: Mat4) -> (bool, bool) {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.target.as_ref().is_some_and(|target| {
+            Arc::ptr_eq(&target.scene, scene) && target.transform == transform
+        }) {
+            return (false, false);
+        }
+        let waiting = state.pending.is_some() || state.running;
+        (waiting && state.published.is_none(),
+         waiting || state.published.is_some())
+    }
+
+    fn discard(&self, scene: &Arc<Scene>, transform: Mat4) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.target.as_ref().is_some_and(|target| {
+            Arc::ptr_eq(&target.scene, scene) && target.transform == transform
+        }) {
+            return;
+        }
+        // Invalidate the running job without waiting for the worker.
+        state.revision = state.revision.wrapping_add(1);
+        state.pending = None;
+        state.published = None;
+    }
+
     fn take(&self, scene: &Arc<Scene>, transform: Mat4, camera: Camera) -> Option<PreparedScene> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let ready = state.published.as_ref()?;
@@ -181,6 +206,35 @@ pub(super) fn schedule(view: &SceneView) {
     }
 }
 
+fn current_mailbox(view: &SceneView) -> Option<Arc<Mailbox>> {
+    let queue = scheduler().lock().unwrap_or_else(|e| e.into_inner());
+    queue.slots.get(&view.id).cloned()
+}
+
+/// True while an immutable CPU job is not ready. Full scene replacement may
+/// retain the last GPU publication instead of blocking the device owner.
+pub(super) fn pending(view: &SceneView) -> bool {
+    current_mailbox(view).is_some_and(|slot| {
+        slot.status(&view.scene, view.scene_transform).0
+    })
+}
+
+/// Keep the GPUI offscreen extension ticking until the sidecar producer has
+/// delivered and the GPU owner has consumed its final completed publication.
+pub(super) fn needs_frame(view: &SceneView) -> bool {
+    current_mailbox(view).is_some_and(|slot| {
+        slot.status(&view.scene, view.scene_transform).1
+    })
+}
+
+/// GPU owner used its exact existing synchronous fast path. Cancel redundant
+/// queued work; an already executing traversal self-discards by revision.
+pub(super) fn discard(view: &SceneView) {
+    if let Some(slot) = current_mailbox(view) {
+        slot.discard(&view.scene, view.scene_transform);
+    }
+}
+
 /// Never waits. GPU owner takes only a matching finished snapshot and then
 /// applies actual device capabilities, projection and current camera.
 /// A cache miss keeps the existing synchronous preparation fallback.
@@ -189,11 +243,7 @@ pub(super) fn try_take(
     aspect: f32,
     gpu_culling: bool,
 ) -> anyhow::Result<Option<PreparedScene>> {
-    let slot = {
-        let queue = scheduler().lock().unwrap_or_else(|e| e.into_inner());
-        queue.slots.get(&view.id).cloned()
-    };
-    let Some(mut prepared) = slot.and_then(|slot| slot.take(
+    let Some(mut prepared) = current_mailbox(view).and_then(|slot| slot.take(
         &view.scene, view.scene_transform, view.camera,
     )) else {
         return Ok(None);
