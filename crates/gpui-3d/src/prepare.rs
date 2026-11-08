@@ -365,34 +365,45 @@ impl PreparedScene {
         })
     }
 
-    /// Prepare a full scene on a CPU render job, periodically abandoning
-    /// superseded snapshots. This is the same geometry traversal as the
-    /// synchronous path, except the caller can cancel before paying for a
-    /// complete obsolete Scene. A cancelled result is never published.
+    /// Qt3D-style camera-independent backend Scene preparation job.
     ///
-    /// The cancellation closure must be cheap (typically an atomic load).
-    pub(crate) fn update_transformed_interruptible(
+    /// Compute world transforms, bounds, material identities, mesh candidates
+    /// and render groups only once, on CPU workers. Do not frustum-cull, sort
+    /// transparent draws or build a temporary 1:1-aspect RenderView here:
+    /// the GPU owner has the authoritative viewport and culling capabilities.
+    /// Workers can abandon superseded scenes at low-cost checkpoints.
+    pub(crate) fn prepare_candidates_interruptible(
         &mut self,
         scene: &Scene,
         camera: Camera,
-        aspect: f32,
         scene_transform: Mat4,
         cancelled: impl Fn() -> bool,
     ) -> Result<bool, CameraError> {
         if cancelled() {
             return Ok(false);
         }
-        if !self.walk(
+        self.walk(
             scene,
             scene_transform,
             |_, node| node.transform,
             camera,
             cancelled,
-        )? {
-            return Ok(false);
-        }
-        self.apply_camera(camera, aspect)?;
-        Ok(true)
+        )
+    }
+
+    /// Complete an already-prepared CPU render job for the *actual* GPU view.
+    /// This executes camera culling/transparent ordering once rather than
+    /// repeating a worker pass made for an arbitrary temporary aspect.
+    pub(crate) fn finalize_candidates(
+        &mut self,
+        camera: Camera,
+        aspect: f32,
+        gpu_culling: bool,
+        culling_bounds: Option<Aabb>,
+    ) -> Result<(), CameraError> {
+        self.set_gpu_culling(gpu_culling);
+        self.set_culling_bounds(culling_bounds);
+        self.apply_camera(camera, aspect)
     }
 
     pub(crate) fn update_transformed_evaluated(
@@ -1992,6 +2003,31 @@ mod interruptible_prepare_tests {
     use std::cell::Cell;
 
     #[test]
+    fn finalized_worker_candidates_match_the_synchronous_render_view() {
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        scene.insert(None, Node::new().with_mesh(mesh)).unwrap();
+        let camera = Camera::orthographic(
+            Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y, 20.0, 0.1, 100.0,
+        );
+        let mut direct = PreparedScene::default();
+        direct.update_transformed(&scene, camera, 1.5, Mat4::IDENTITY).unwrap();
+        let mut worker = PreparedScene::default();
+        assert!(worker.prepare_candidates_interruptible(
+            &scene, camera, Mat4::IDENTITY, || false
+        ).unwrap());
+        assert!(worker.draws.is_empty(), "worker must not duplicate camera sorting");
+        worker.finalize_candidates(camera, 1.5, false, None).unwrap();
+        assert_eq!(worker.draws.len(), direct.draws.len());
+        assert_eq!(worker.lights.len(), direct.lights.len());
+        assert_eq!(worker.view_projection, direct.view_projection);
+        for (left, right) in worker.draws.iter().zip(&direct.draws) {
+            assert_eq!(left.node, right.node);
+            assert_eq!(left.bounds, right.bounds);
+        }
+    }
+
+    #[test]
     fn superseded_scene_walk_stops_without_publishing_partial_draws() {
         let mut scene = Scene::new();
         for _ in 0..512 {
@@ -2003,8 +2039,8 @@ mod interruptible_prepare_tests {
         let polls = Cell::new(0usize);
         let mut prepared = PreparedScene::default();
         let finished = prepared
-            .update_transformed_interruptible(
-                &scene, camera, 1.0, Mat4::IDENTITY,
+            .prepare_candidates_interruptible(
+                &scene, camera, Mat4::IDENTITY,
                 || {
                     let count = polls.get() + 1;
                     polls.set(count);
@@ -2017,9 +2053,11 @@ mod interruptible_prepare_tests {
         assert!(prepared.walk_stack.is_empty());
         assert!(prepared.camera().is_none());
         // A subsequent live request can reuse the cancelled allocation.
-        assert!(prepared.update_transformed_interruptible(
-            &scene, camera, 1.0, Mat4::IDENTITY, || false,
+        assert!(prepared.prepare_candidates_interruptible(
+            &scene, camera, Mat4::IDENTITY, || false,
         ).unwrap());
+        assert_eq!(prepared.camera(), None);
+        prepared.finalize_candidates(camera, 1.0, false, None).unwrap();
         assert_eq!(prepared.camera(), Some(camera));
     }
 }
