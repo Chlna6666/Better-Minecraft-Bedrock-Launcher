@@ -435,6 +435,9 @@ pub struct World3dEditorView {
     poll_task: Option<Task<anyhow::Result<()>>>,
     stream_generation: u64,
     last_view_key: Option<(Dimension, i32, i32, i32)>,
+    /// Only cross the worker boundary when camera direction has materially
+    /// changed; the render thread samples small rotations independently.
+    last_view_forward: Option<[f32; 3]>,
     last_view_sent_at: Option<Instant>,
     worker_status: ChunkServiceStatus,
     worker_info: ChunkServiceInfo,
@@ -568,6 +571,7 @@ impl World3dEditorView {
             poll_task: None,
             stream_generation: 0,
             last_view_key: None,
+            last_view_forward: None,
             last_view_sent_at: None,
             worker_status: ChunkServiceStatus::default(),
             worker_info: ChunkServiceInfo::default(),
@@ -990,21 +994,29 @@ impl World3dEditorView {
 
     fn request_view_update(&mut self, force: bool, cx: &mut Context<Self>) {
         let key = self.current_view_key();
+        let forward = self.camera.forward_f32();
+        let direction_changed = self.last_view_forward.is_none_or(|previous| {
+            previous
+                .iter()
+                .zip(forward)
+                .map(|(&a, b)| a * b)
+                .sum::<f32>() < 0.975
+        });
         let now = Instant::now();
         let throttled = self
             .last_view_sent_at
             .is_some_and(|at| now - at < VIEW_UPDATE_INTERVAL);
-        if !force && (self.last_view_key == Some(key) || throttled) {
+        if !force && ((self.last_view_key == Some(key) && !direction_changed) || throttled) {
             return;
         }
         self.last_view_key = Some(key);
+        self.last_view_forward = Some(forward);
         self.last_view_sent_at = Some(now);
         self.stream_generation = self.stream_generation.saturating_add(1);
         self.last_publish_at = None;
         let Some(service) = self.service.as_ref() else {
             return;
         };
-        let forward = self.camera.forward_f32();
         service.send(super::types::ChunkServiceCommand::SetView {
             generation: self.stream_generation,
             dimension: self.dimension,
@@ -1631,6 +1643,7 @@ impl World3dEditorView {
         self.chunk_lights.clear();
         self.dirty_light_chunks.clear();
         self.probes.clear();
+        self.last_view_forward = None;
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
         self.last_visibility_revision = None;
         self.last_visibility_voxel = None;
