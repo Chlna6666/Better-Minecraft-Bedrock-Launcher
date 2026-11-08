@@ -565,10 +565,8 @@ impl SidecarGpuBackend {
             if let Some(mut scene) = self.scenes.remove(&id) {
                 scene.destroy(device)?;
             }
-            // Independently retire the CPU render-preparation mailbox when
-            // its corresponding GPU scene has aged out. Pending workers
-            // finish into an unreferenced Arc and cannot resurrect it.
-            super::sidecar::forget(id);
+            // CPU-sidecar mailboxes are now SceneView-owned Arcs. They
+            // retire independently when the last producer snapshot drops.
         }
         Ok(())
     }
