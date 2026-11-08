@@ -49,6 +49,10 @@ mod prefetch;
 use prefetch::{BatchWait, PendingChunkBatch};
 
 const LOAD_BATCH_CHUNKS: usize = 16;
+// Keep wide LevelDB read batches, but publish CPU mesh/texture work in small
+// camera-priority waves. Commands are observed between waves, so a rapid view
+// turn never forces finishing all 16 old-camera mesh builds.
+const STREAM_MESH_BATCH_CHUNKS: usize = 4;
 const REMESH_BATCH_CHUNKS: usize = 8;
 const MAX_PENDING_MESH_EVENTS: usize = 16;
 const CACHE_HYSTERESIS_CHUNKS: i32 = 2;
@@ -312,6 +316,17 @@ fn inside_cache_hysteresis(
         center_z,
         radius.saturating_add(margin),
     )
+}
+
+fn prioritize_stream_meshes(
+    loaded: &mut [ChunkPos],
+    center: (i32, i32),
+    forward_xz: [f32; 2],
+) {
+    // The loader may return chunks in DB scheduling order. A sorted meshing
+    // wave should always favor the current view, not the on-disk key order.
+    let selected = loaded.iter().copied().collect::<HashSet<_>>();
+    loaded.sort_by_key(|pos| mesh_target_priority(*pos, &selected, center, forward_xz));
 }
 
 fn mesh_target_priority(
@@ -719,6 +734,26 @@ mod view_tests {
         assert!(!needs(false, false, true));
         assert!(!needs(false, true, false));
         assert!(!needs(true, true, false));
+    }
+
+    #[test]
+    fn staged_stream_meshes_sort_front_before_rear_and_keep_every_chunk() {
+        let dimension = Dimension::Overworld;
+        let mut loaded = vec![
+            ChunkPos { x: -2, z: 0, dimension },
+            ChunkPos { x: 3, z: 0, dimension },
+            ChunkPos { x: -1, z: 0, dimension },
+            ChunkPos { x: 1, z: 0, dimension },
+            ChunkPos { x: 0, z: 1, dimension },
+        ];
+        super::prioritize_stream_meshes(&mut loaded, (0, 0), [1.0, 0.0]);
+        assert_eq!((loaded[0].x, loaded[0].z), (1, 0));
+        assert_eq!((loaded[1].x, loaded[1].z), (3, 0));
+        assert_eq!(loaded.len(), 5);
+        assert_eq!(loaded.iter().collect::<HashSet<_>>().len(), 5);
+        assert!(loaded.chunks(super::STREAM_MESH_BATCH_CHUNKS).all(|chunk| {
+            chunk.len() <= super::STREAM_MESH_BATCH_CHUNKS
+        }));
     }
 
     #[test]
@@ -2791,7 +2826,31 @@ impl Worker {
             let schedule_time = schedule_started.elapsed();
             let mesh_started = Instant::now();
             if !newly_loaded.is_empty() {
-                self.mesh_targets(tx, &newly_loaded, true);
+                prioritize_stream_meshes(
+                    &mut newly_loaded,
+                    (center_x, center_z),
+                    self.view.forward_xz,
+                );
+                // Publish one small immutable Section wave at a time rather
+                // than making the owner absorb an entire 16-column upload
+                // burst. Neighbor masks are supplied from the same cache;
+                // previously meshed seams are queued by boundary_pairs.
+                for (index, wave) in newly_loaded.chunks(STREAM_MESH_BATCH_CHUNKS).enumerate() {
+                    self.mesh_targets(tx, wave, false);
+                    if let Ok(command) = commands.try_recv() {
+                        // Do not lose a decoded column when a newer camera
+                        // view preempts the current scene build. The ordinary
+                        // dirty queue resumes its Section meshing when visible.
+                        let done = (index + 1) * STREAM_MESH_BATCH_CHUNKS;
+                        self.dirty_meshes.extend(
+                            newly_loaded[done.min(newly_loaded.len())..].iter().copied(),
+                        );
+                        if let Some(pending) = pending_batch.take() {
+                            self.urgent_chunks.extend(pending.positions.iter().copied());
+                        }
+                        return Some(command);
+                    }
+                }
             } else {
                 self.last_stage_ms = 0;
                 self.last_rehydrate_ms = 0;
@@ -3102,15 +3161,25 @@ impl Worker {
         // it is itself renderable. Do not promote it to a GPU mesh here: its
         // opaque-block snapshot only supplies neighbor face decisions.
         for pos in local_positions {
-            if !target_set.contains(&pos)
-                && let Some(boundary) = self
-                    .cache
-                    .get(&pos)
-                    .and_then(|chunk| chunk.boundary.clone())
-            {
-                builder.insert_stream_boundary(pos, boundary);
-                boundary_hits += 1;
-                continue;
+            if !target_set.contains(&pos) {
+                // A neighboring full column is needed for occupancy and AO
+                // decisions, not for its complete model/texture expansion.
+                // Build its compact halo once and keep the original blocks
+                // resident for its own later mesh wave. This also prevents
+                // repeated full-column remove/reinsert across wavefronts.
+                let boundary = self.cache.get_mut(&pos).and_then(|chunk| {
+                    if chunk.boundary.is_none()
+                        && let Some(blocks) = chunk.blocks.as_mut()
+                    {
+                        chunk.boundary = Some(Arc::new(blocks.boundary_snapshot()));
+                    }
+                    chunk.boundary.clone()
+                });
+                if let Some(boundary) = boundary {
+                    builder.insert_stream_boundary(pos, boundary);
+                    boundary_hits += 1;
+                    continue;
+                }
             }
             let Some(mut chunk) = self.cache.remove(&pos) else {
                 continue;
