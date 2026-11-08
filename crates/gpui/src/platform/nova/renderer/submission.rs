@@ -278,6 +278,7 @@ impl NovaRenderer {
         let _phase = crate::diagnostics::gpu_owner::phases::enter(
             crate::diagnostics::gpu_owner::phases::Phase::FenceWait,
         );
+        let pending_before = self.pending_submissions.len();
         while let Some(submission) = self
             .pending_submissions
             .first()
@@ -321,6 +322,16 @@ impl NovaRenderer {
                 self.complete_gpu_submission(publication);
             }
             self.on_offscreen_submission_complete(submission);
+        }
+        // A synchronous/resize/trim drain is the same completion proof as
+        // a successful asynchronous poll. Without this notification, retired
+        // SceneView attachments and GPU-resident slots stay queued until a
+        // later polling frame, which may never arrive after a resize.
+        // Never reclaim after a failed or partially drained submission.
+        if extension_ranges_can_be_reclaimed(pending_before, self.pending_submissions.len())
+            && self.renderer_registry.needs_gpu_completion()
+        {
+            self.renderer_registry.gpu_work_completed();
         }
         Ok(())
     }
