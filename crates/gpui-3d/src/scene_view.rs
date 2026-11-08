@@ -1553,6 +1553,34 @@ mod tests {
     }
 
     #[test]
+    fn offscreen_sidecar_composite_shader_compiles_on_supported_backends() {
+        let wgsl = include_str!("scene_view/sidecar_composite.wgsl");
+        for backend in [
+            BackendKind::OpenGl,
+            BackendKind::Vulkan,
+            BackendKind::Dx11,
+            BackendKind::Dx12,
+            BackendKind::Metal,
+        ] {
+            for (stage, entry) in [
+                (ShaderStage::Vertex, "vs_sidecar_composite"),
+                (ShaderStage::Fragment, "fs_sidecar_composite"),
+            ] {
+                let result = if backend == BackendKind::Metal {
+                    gfx_shader::compile_wgsl_to_msl_versioned(
+                        wgsl, stage, entry, gfx_shader::MslVersion::V1_2,
+                    )
+                } else {
+                    gfx_shader::compile_wgsl_to_backend(wgsl, backend, stage, entry)
+                };
+                result.unwrap_or_else(|error| panic!(
+                    "sidecar shader {entry} failed on {backend:?}: {error}"
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn scene_view_shader_compiles_for_supported_native_backends() {
         for backend in [
             BackendKind::OpenGl,
