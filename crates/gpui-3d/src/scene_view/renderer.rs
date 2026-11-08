@@ -992,6 +992,14 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ScenePrepare);
             scene.prepare(device, &mut self.resources, prepared_view, &render_context)?;
         }
+        // Update only the immutable compositor placement on a move. If
+        // SceneResources found no local projection/camera/mesh change, its
+        // capture_revision remains stable and the old producer pixels are
+        // still correct at the new window position. Do this before testing
+        // can_reuse so a move need not schedule any 3D draw.
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.sync_placement(device, scene_view.id, &context)?;
+        }
         // Pure GUI redraw / unchanged 3D state: sample the previously
         // submitted color image directly. Skip the offscreen producer pass,
         // command-cache publishing, GPU culling dispatch and unnecessary
