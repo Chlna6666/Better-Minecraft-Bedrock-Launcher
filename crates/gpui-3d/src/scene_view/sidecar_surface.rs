@@ -10,6 +10,38 @@ use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
 use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
+/// Only the rounded portion of GPUI's ContentMask affects the shader.
+/// The rectangular portion is enforced by the host's native ScissorRect.
+/// For a purely rectangular clip, all masks produce the SAME zero key:
+/// scrolling or changing an ancestor mask must not allocate a new
+/// uniform/bind group for unchanged 3D viewport placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RoundedMask {
+    bounds: [f32; 4],
+    radii: [f32; 4],
+}
+
+fn rounded_mask(mask: &gpui::ContentMask<gpui::ScaledPixels>) -> RoundedMask {
+    let radii = [
+        mask.corner_radii.top_left.0,
+        mask.corner_radii.top_right.0,
+        mask.corner_radii.bottom_right.0,
+        mask.corner_radii.bottom_left.0,
+    ];
+    if radii == [0.0; 4] {
+        return RoundedMask::default();
+    }
+    RoundedMask {
+        bounds: [
+            mask.corner_bounds.origin.x.0,
+            mask.corner_bounds.origin.y.0,
+            mask.corner_bounds.size.width.0,
+            mask.corner_bounds.size.height.0,
+        ],
+        radii,
+    }
+}
+
 /// Each SceneView gets a separate target: sharing one color image across
 /// multiple painter-order elements would make every composite sample the last
 /// view's content, because all producer passes submit before the GUI pass.
@@ -23,10 +55,9 @@ struct Target {
     extent: Extent2d,
     region: ScissorRect,
     host_extent: Extent2d,
-    /// Mask is part of placement identity, not the 3D capture revision.
-    /// Animated or relocated rounded clips must refresh the UI compositor
-    /// without unnecessarily reallocating the producer texture.
-    content_mask: gpui::ContentMask<gpui::ScaledPixels>,
+    /// Only rounded clip data participates in placement identity. A change
+    /// to rectangular clip geometry is already represented by 'region'.
+    rounded_mask: RoundedMask,
     capture: CaptureEpoch,
 }
 
@@ -127,19 +158,20 @@ fn placement_bytes(
 ) -> [u8; 48] {
     let width = viewport.width() as f32;
     let height = viewport.height() as f32;
+    let rounded = rounded_mask(mask);
     let values = [
         -1.0 + 2.0 * rect.x as f32 / width,
         1.0 - 2.0 * rect.y as f32 / height,
         2.0 * rect.width as f32 / width,
         -2.0 * rect.height as f32 / height,
-        mask.corner_bounds.origin.x.0,
-        mask.corner_bounds.origin.y.0,
-        mask.corner_bounds.size.width.0,
-        mask.corner_bounds.size.height.0,
-        mask.corner_radii.top_left.0,
-        mask.corner_radii.top_right.0,
-        mask.corner_radii.bottom_right.0,
-        mask.corner_radii.bottom_left.0,
+        rounded.bounds[0],
+        rounded.bounds[1],
+        rounded.bounds[2],
+        rounded.bounds[3],
+        rounded.radii[0],
+        rounded.radii[1],
+        rounded.radii[2],
+        rounded.radii[3],
     ];
     let mut bytes = [0u8; 48];
     for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
@@ -468,7 +500,7 @@ impl SidecarSurface {
             };
         Ok(Target {
             color, color_view, depth, depth_view, binding, placement, extent,
-            region, host_extent, content_mask: *host.content_mask(),
+            region, host_extent, rounded_mask: rounded_mask(host.content_mask()),
             capture: CaptureEpoch::default(),
         })
     }
@@ -667,7 +699,7 @@ impl SidecarSurface {
         if !target.can_relocate(extent)
             || (target.region == region
                 && target.host_extent == host.viewport()
-                && target.content_mask == *host.content_mask())
+                && target.rounded_mask == rounded_mask(host.content_mask()))
         {
             // Resizes and still-pending painter-order producers require a new
             // attachment; enqueue owns the transactional replacement.
@@ -683,7 +715,7 @@ impl SidecarSurface {
         };
         target.region = region;
         target.host_extent = host.viewport();
-        target.content_mask = *host.content_mask();
+        target.rounded_mask = rounded_mask(host.content_mask());
         self.awaiting_placement_gpu.push(previous);
         self.trace.relocated = self.trace.relocated.saturating_add(1);
         Ok(())
@@ -703,7 +735,7 @@ impl SidecarSurface {
         self.targets.get(&id).is_some_and(|target| {
             target.region == region
                 && target.host_extent == host.viewport()
-                && target.content_mask == *host.content_mask()
+                && target.rounded_mask == rounded_mask(host.content_mask())
                 && target.capture.reusable(capture_revision)
         })
     }
@@ -722,7 +754,7 @@ impl SidecarSurface {
         };
         if target.region != visible_region(host)
             || target.host_extent != host.viewport()
-            || target.content_mask != *host.content_mask()
+            || target.rounded_mask != rounded_mask(host.content_mask())
             || target.capture.submitted.is_none()
         {
             return false;
@@ -901,7 +933,7 @@ mod tests {
                 extent: Extent2d::new(32, 32).unwrap(),
                 region: ScissorRect { x: 0, y: 0, width: 32, height: 32 },
                 host_extent: Extent2d::new(32, 32).unwrap(),
-                content_mask: gpui::ContentMask::default(),
+                rounded_mask: RoundedMask::default(),
                 capture: CaptureEpoch::default(),
             }],
             ready_to_release: Vec::new(),
@@ -1021,6 +1053,22 @@ mod tests {
         let rectangular = placement_bytes(rect, viewport, &gpui::ContentMask::default());
         assert_eq!(&rectangular[32..48], &[0u8; 16],
             "rectangular widgets must take the shader's zero-mask fast path");
+    }
+
+    #[test]
+    fn rectangular_mask_changes_do_not_recreate_composite_bindings() {
+        let plain = gpui::ContentMask::<gpui::ScaledPixels>::default();
+        let shifted = gpui::ContentMask::new(gpui::bounds(
+            gpui::point(gpui::ScaledPixels(72.0), gpui::ScaledPixels(90.0)),
+            gpui::size(gpui::ScaledPixels(160.0), gpui::ScaledPixels(240.0)),
+        ));
+        assert_eq!(rounded_mask(&plain), rounded_mask(&shifted));
+        let rounded = gpui::ContentMask {
+            corner_bounds: shifted.bounds,
+            corner_radii: gpui::Corners::from(gpui::ScaledPixels(14.0)),
+            ..shifted
+        };
+        assert_ne!(rounded_mask(&plain), rounded_mask(&rounded));
     }
 
     #[test]
