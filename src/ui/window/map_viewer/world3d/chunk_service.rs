@@ -1748,6 +1748,35 @@ mod cache_tests {
     use std::sync::mpsc::sync_channel;
 
     #[test]
+    fn discarding_full_blocks_keeps_the_existing_neighbor_halo_arc() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld };
+        let mut blocks = super::p3d::Preview3dChunkBlocks::test_cubes(&[[15, 64, 15]]);
+        let boundary = std::sync::Arc::new(blocks.boundary_snapshot());
+        let mut cached = super::CachedChunk {
+            bytes: blocks.estimated_cpu_bytes(),
+            blocks: Some(blocks),
+            boundary: Some(boundary.clone()),
+            frame_displays: Vec::new(),
+            probe: std::sync::Arc::new(super::World3dChunkProbe {
+                pos,
+                min_y: 0,
+                subchunks: Default::default(),
+                state_version: None,
+                storage_bytes: 0,
+            }),
+            version: bedrock_world::ChunkVersion::New,
+            state_version: None,
+            faces: 1,
+        };
+        let extra_bytes = boundary.estimated_cpu_bytes();
+        assert!(cached.estimated_cpu_bytes() >= cached.bytes + extra_bytes);
+        cached.discard_blocks();
+        assert!(cached.blocks.is_none());
+        assert!(std::sync::Arc::ptr_eq(cached.boundary.as_ref().unwrap(), &boundary));
+        assert_eq!(cached.bytes, extra_bytes);
+    }
+
+    #[test]
     fn discarded_render_blocks_do_not_hide_resident_probe_bytes() {
         let pos = ChunkPos {
             x: 0,
@@ -2064,6 +2093,13 @@ impl CachedChunk {
     fn estimated_cpu_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.bytes)
+            .saturating_add(
+                if self.blocks.is_some() {
+                    self.boundary.as_ref().map_or(0, |halo| halo.estimated_cpu_bytes())
+                } else {
+                    0
+                },
+            )
             .saturating_add(self.probe.storage_bytes)
             .saturating_add(self.frame_displays.capacity() * std::mem::size_of::<FrameDisplay>())
             .saturating_add(
@@ -2076,7 +2112,11 @@ impl CachedChunk {
 
     fn discard_blocks(&mut self) {
         if let Some(mut blocks) = self.blocks.take() {
-            let boundary = Arc::new(blocks.boundary_snapshot());
+            // Neighbor-only meshing may have already extracted the same
+            // immutable occupancy halo. Keep its Arc rather than decoding
+            // all block classes and rebuilding boundary maps a second time.
+            let boundary = self.boundary.take()
+                .unwrap_or_else(|| Arc::new(blocks.boundary_snapshot()));
             self.bytes = boundary.estimated_cpu_bytes();
             self.boundary = Some(boundary);
         }
