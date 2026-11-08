@@ -4056,15 +4056,9 @@ fn preview_3d_resolved_detail_shape_for_block(
     ) {
         return None;
     }
-    let normalized = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
-    if normalized == "shulker_box" || normalized.ends_with("_shulker_box") {
-        if let Some(shape) =
-            preview_3d_shape_from_named_geometry(repository, "geometry.shulker.v1.8")
-                .filter(|shape| !shape.is_empty())
-        {
-            return Some(shape);
-        }
-    }
+    // Shulker boxes resolve through the procedural family, which unwraps the 64x64 entity
+    // skin per face. `geometry.shulker.v1.8` carries per-cube UV origins that this converter
+    // does not unwrap, so using it produced fragmented faces.
     let query = preview_3d_block_state_query(state);
     // Detail-class blocks still need full-cube geometry for oriented UVs and
     // material slots. Dropping it leaves no opaque-cube fallback in collection.
@@ -5852,6 +5846,27 @@ mod tests {
     use super::*;
     use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
     use bedrock_block_model::canonical_block_name_for_state;
+
+
+    #[test]
+    fn procedural_cuboids_without_uvs_get_the_full_texture_tile() {
+        // Bedrock ships one 16x16 tile per face for partial blocks. A cuboid that omits UVs
+        // must sample that tile whole; block-space projection cropped thin elements (torch,
+        // button, door) down to a strip of the texture.
+        let cuboid = ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 0.625, 0.5625]);
+        let preview = preview_3d_cuboid_from_model_cuboid(cuboid);
+        let expected = preview_3d_full_texture_uv();
+        for normal in [
+            [0, 1, 0],
+            [0, -1, 0],
+            [0, 0, -1],
+            [0, 0, 1],
+            [1, 0, 0],
+            [-1, 0, 0],
+        ] {
+            assert_eq!(preview.face_uv_for_normal(normal), Some(expected), "{normal:?}");
+        }
+    }
 
     #[test]
     fn full_cube_detail_states_emit_faces_in_cpu_and_gpu_streams() {

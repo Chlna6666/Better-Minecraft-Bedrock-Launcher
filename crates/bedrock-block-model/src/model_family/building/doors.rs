@@ -24,6 +24,9 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
         .or_else(|| state_bool(state, "hinge"))
         .or_else(|| state_string(state, "hinge").map(|v| v == "right"))
         .unwrap_or(false);
+    let upper = state_bool(state, "upper_block_bit")
+        .or_else(|| state_bool(state, "upper_block"))
+        .unwrap_or(false);
 
     let effective_dir = if open {
         if hinge_right {
@@ -34,7 +37,19 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     } else {
         direction
     };
-    ModelShape::from_cuboids([wall_attached_cuboid(effective_dir, 0.1875, 0.0, 1.0)])
+    // Doors are two blocks tall; each half samples its own `door_<wood>_lower/upper` tile.
+    // Falling back to face-based naming gave both halves `door_upper` (blocks.json maps the
+    // door's side faces to the upper tile), so the lower half showed the top artwork.
+    let name = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+    let wood = name.strip_suffix("_door").unwrap_or("wooden_door");
+    let wood = match wood {
+        "wooden_door" | "wood" | "oak" => "wood",
+        other => other,
+    };
+    let slot = format!("door_{wood}_{}", if upper { "upper" } else { "lower" });
+    ModelShape::from_cuboids([
+        wall_attached_cuboid(effective_dir, 0.1875, 0.0, 1.0).with_material_slot(slot.as_str())
+    ])
 }
 
 fn wall_attached_cuboid(

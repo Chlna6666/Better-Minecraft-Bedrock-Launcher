@@ -55,18 +55,68 @@ fn barrel_shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 pub(crate) fn shulker_box_shape() -> ModelShape {
-    // The pack supplies `geometry.shulker.v1.8` with 64x64 skin UVs, so this procedural shape
-    // is only the fallback. Keep it on full-tile UVs: the 16x16 `shulker_top_<color>` art is
-    // the only texture reachable without the entity atlas.
+    // Vanilla `geometry.shulker.v1.8`: the base starts at uv (0, 28) and the lid at (0, 0) of
+    // the 64x64 entity skin. The top face is the only one that uses the separate 16x16
+    // `shulker_top_<color>` tile, so it samples that tile whole.
     ModelShape::from_cuboids([
-        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.5, 1.0])
-            .with_face_material_slot(BlockFace::Down, "down")
-            .with_face_material_slot(BlockFace::Up, "up")
-            .with_face_material_slot(BlockFace::Side, "side"),
-        ModelCuboid::new([0.0, 0.25, 0.0], [1.0, 1.0, 1.0])
-            .with_face_material_slot(BlockFace::Up, "up")
-            .with_face_material_slot(BlockFace::Side, "side"),
+        box_uv_cuboid(
+            ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.5, 1.0])
+                .with_face_material_slot(BlockFace::Down, "down")
+                .with_face_material_slot(BlockFace::Up, "up")
+                .with_face_material_slot(BlockFace::Side, "side"),
+            0.0,
+            28.0,
+        ),
+        box_uv_cuboid(
+            ModelCuboid::new([0.0, 0.25, 0.0], [1.0, 1.0, 1.0])
+                .with_face_material_slot(BlockFace::Up, "up")
+                .with_face_material_slot(BlockFace::Side, "side"),
+            0.0,
+            0.0,
+        ),
     ])
+}
+
+/// Unwraps an axis-aligned box onto the 64x64 entity skin with the standard box layout.
+fn box_uv_cuboid(cuboid: ModelCuboid, origin_u: f32, origin_v: f32) -> ModelCuboid {
+    let width = (cuboid.max[0] - cuboid.min[0]) * 16.0;
+    let height = (cuboid.max[1] - cuboid.min[1]) * 16.0;
+    let depth = (cuboid.max[2] - cuboid.min[2]) * 16.0;
+    let rect =
+        |u0: f32, v0: f32, u1: f32, v1: f32| rect_uv(u0 / 64.0, v0 / 64.0, u1 / 64.0, v1 / 64.0);
+    let side_top = origin_v + depth;
+    let east = rect(origin_u, side_top, origin_u + depth, side_top + height);
+    let north = rect(
+        origin_u + depth,
+        side_top,
+        origin_u + depth + width,
+        side_top + height,
+    );
+    let west = rect(
+        origin_u + depth + width,
+        side_top,
+        origin_u + depth + width + depth,
+        side_top + height,
+    );
+    let south = rect(
+        origin_u + depth + width + depth,
+        side_top,
+        origin_u + depth + width + depth + width,
+        side_top + height,
+    );
+    let down = rect(
+        origin_u + depth + width,
+        origin_v,
+        origin_u + depth + width + width,
+        origin_v + depth,
+    );
+    cuboid
+        .with_face_uv(BlockFace::Up, rect_uv(0.0, 0.0, 1.0, 1.0))
+        .with_face_uv(BlockFace::Down, down)
+        .with_face_uv(BlockFace::North, north)
+        .with_face_uv(BlockFace::South, south)
+        .with_face_uv(BlockFace::East, east)
+        .with_face_uv(BlockFace::West, west)
 }
 
 pub(crate) fn chiseled_bookshelf_shape(state: &BlockStateQuery) -> ModelShape {

@@ -796,9 +796,36 @@ impl ObjTextureResolver {
                 }
             }
         }
+        if block == "shulker_box" || block.ends_with("_shulker_box") {
+            // Body/lid use the 64x64 entity skin; only the very top face uses the 16x16
+            // `shulker_top_<color>` tile. Using the top tile on every face made the box a
+            // flat coloured cube.
+            let color = block
+                .strip_suffix("_shulker_box")
+                .filter(|color| *color != "undyed")
+                .unwrap_or("undyed");
+            let is_top = slot.is_none_or(|slot| slot == "up");
+            let texture_key = if is_top {
+                format!("textures/blocks/shulker_top_{color}")
+            } else {
+                format!("textures/entity/shulker/shulker_{color}")
+            };
+            if let Some((pack, source_path)) = self.texture_path_for_key(&texture_key) {
+                return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+            }
+        }
         if let Some(texture_key) = skull_entity_texture_key(block) {
             if let Some((pack, source_path)) = self.texture_path_for_key(texture_key) {
                 return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+            }
+        }
+        if block == "standing_banner" || block == "wall_banner" || block.ends_with("_banner") {
+            // `blocks.json` lists banners as `planks`; the cloth art is the entity banner
+            // texture. Resolve it before the placeholder wins.
+            for texture_key in ["entity/banner/banner_base", "entity/banner/banner"] {
+                if let Some((pack, source_path)) = self.texture_path_for_key(texture_key) {
+                    return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                }
             }
         }
         None
@@ -1773,6 +1800,11 @@ pub fn obj_canonical_block_lookup_name(block: &str) -> Cow<'_, str> {
         | "still_water_grey" => Cow::Borrowed("water"),
         "flowing_lava" | "lava_still" | "lava_flow" | "still_lava" => Cow::Borrowed("lava"),
         "short_grass" => Cow::Borrowed("tallgrass"),
+        // Oak keeps the legacy shared block names in `blocks.json`; only the other wood
+        // variants have per-wood entries. Without this remap oak doors and trapdoors resolved
+        // no texture at all. Signs are handled by their own wood-alias path.
+        "oak_door" => Cow::Borrowed("wooden_door"),
+        "oak_trapdoor" => Cow::Borrowed("trapdoor"),
         _ => Cow::Borrowed(block),
     }
 }
@@ -2763,6 +2795,14 @@ fn terrain_texture_path(value: &Value) -> Option<String> {
 }
 
 fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, normal: [i32; 3]) {
+    if block == "standing_banner" || block == "wall_banner" || block.ends_with("_banner") {
+        // `blocks.json` maps banners to `planks` as a placeholder; the cloth art is the
+        // entity banner texture. Without this every banner rendered as oak planks.
+        for key in ["entity/banner/banner_base", "entity/banner/banner"] {
+            push_texture_key_aliases(keys, key);
+        }
+        return;
+    }
     if let Some(color) = block.strip_suffix("_wool") {
         for key in [
             format!("wool_colored_{color}"),
@@ -4497,6 +4537,11 @@ fn sign_texture_aliases(block: &str) -> Vec<String> {
         .strip_suffix("_standing_sign")
         .or_else(|| block.strip_suffix("_wall_sign"))
     {
+        if matches!(wood, "oak" | "wood") {
+            // Oak signs use the unprefixed `entity/sign` art.
+            keys.push("entity/sign".to_owned());
+            keys.push("sign".to_owned());
+        }
         for wood in sign_wood_name_aliases(wood) {
             keys.push(format!("entity/{wood}_sign"));
             keys.push(format!("entity/sign_{wood}"));

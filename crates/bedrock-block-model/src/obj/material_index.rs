@@ -242,7 +242,7 @@ impl ObjTextureResolver {
         // Bump when resolution rules change, not only when pack contents change: the cache
         // stores resolved paths, so a rule change with unchanged packs keeps serving old
         // entries (this is why skull heads stayed on the soul-sand placeholder).
-        "bedrock-block-model/material-index/3".hash(&mut hash);
+        "bedrock-block-model/material-index/5".hash(&mut hash);
         self.texture_directory_name.hash(&mut hash);
         self.pack_lookup_order.hash(&mut hash);
         // Custom block definitions and geometry can select material slots before

@@ -302,9 +302,11 @@ pub(crate) fn banner_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
         let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
         return ModelShape::from_cuboids([wall_attached_banner(direction)]);
     }
+    // Vanilla standing banner: a 2 px pole with the cloth hanging inside the cell. The cloth
+    // previously reached y=1.25 and sat off-centre in z, i.e. outside the block.
     ModelShape::from_cuboids([
-        ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 0.875, 0.5625]),
-        ModelCuboid::new([0.0625, 0.25, 0.4375], [0.9375, 1.25, 0.5625]),
+        ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625]),
+        ModelCuboid::new([0.0625, 0.0, 0.4375], [0.9375, 1.0, 0.5]),
     ])
 }
 
