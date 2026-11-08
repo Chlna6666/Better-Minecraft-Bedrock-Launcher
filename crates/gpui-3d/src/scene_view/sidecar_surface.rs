@@ -155,10 +155,15 @@ fn clipped_scissor(previous: Option<ScissorRect>, extent: Extent2d) -> ScissorRe
 /// Native render-pass bounds already clip commands with no explicit scissor.
 /// Preserve that fast path: rewriting every DrawIndirect to a full-target
 /// scissor prevents some backends from retaining/coalescing its native state.
-fn clip_local_commands(commands: &mut Arc<[RenderCommand]>, extent: Extent2d) {
-    // The common GPU-generated path has no authored scissors. Keep its
-    // immutable Arc allocation shared with CachedCommands across all frames.
-    if !commands.iter().any(|command| command.scissor().is_some()) {
+fn clip_local_commands(
+    commands: &mut Arc<[RenderCommand]>,
+    extent: Extent2d,
+    authored_scissors: bool,
+) {
+    // CachedCommands computed this bit once when it published the revision.
+    // The common GPU-generated path now performs O(1) work here, retaining
+    // the original Arc, instead of a full per-frame O(draws) scissor scan.
+    if !authored_scissors {
         return;
     }
     // A rare explicitly clipped pass gets a private, compacted snapshot:
@@ -715,6 +720,7 @@ impl SidecarSurface {
         host: &RendererExtensionContext,
         capture_revision: u64,
         mut geometry: Arc<[RenderCommand]>,
+        authored_scissors: bool,
         passes: &mut Vec<RendererExtensionPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
@@ -723,7 +729,7 @@ impl SidecarSurface {
         // local viewport. The native target clips unscissored commands for
         // free; only intersect authored local scissors when they are present.
         let extent = region_extent(region);
-        clip_local_commands(&mut geometry, extent);
+        clip_local_commands(&mut geometry, extent, authored_scissors);
         let recreate = self.targets.get(&id)
             .is_none_or(|target| !target.can_relocate(extent));
         if recreate {
@@ -963,10 +969,29 @@ mod tests {
             scissor: None,
         })].into();
         let original = Arc::clone(&commands);
-        clip_local_commands(&mut commands, extent);
+        clip_local_commands(&mut commands, extent, false);
         assert_eq!(commands.len(), 1);
         assert!(commands[0].scissor().is_none());
         assert!(Arc::ptr_eq(&commands, &original), "no clipping must preserve the original GPU command allocation");
+    }
+
+    #[test]
+    fn explicit_scissors_use_a_private_clipped_command_snapshot() {
+        let extent = Extent2d::new(480, 320).unwrap();
+        let mut commands: Arc<[RenderCommand]> = vec![RenderCommand::DrawIndirect(
+            DrawIndirectCommand {
+                pipeline: RenderPipelineId::from_parts(1, 1),
+                bind_groups: bind_group_list([]),
+                arguments: BufferId::from_parts(1, 1),
+                offset: 0,
+                scissor: Some(ScissorRect { x: 450, y: 20, width: 100, height: 40 }),
+            }
+        )].into();
+        let original = Arc::clone(&commands);
+        clip_local_commands(&mut commands, extent, true);
+        assert!(!Arc::ptr_eq(&commands, &original));
+        assert_eq!(original[0].scissor().unwrap().width, 100);
+        assert_eq!(commands[0].scissor().unwrap().width, 30);
     }
 
     #[test]

@@ -89,7 +89,7 @@ struct CachedCommands {
     grouped: Option<Vec<RenderCommand>>,
     /// Immutable producer snapshot. Reuse this allocation while camera,
     /// frame uniforms or GPU culling change without changing Draw commands.
-    shared_offscreen: Option<(u64, Arc<[RenderCommand]>)>,
+    shared_offscreen: Option<(u64, Arc<[RenderCommand]>, bool)>,
 }
 
 impl CachedCommands {
@@ -101,21 +101,23 @@ impl CachedCommands {
         delta: Option<&StructuralDrawDelta>,
         build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
         build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
-    ) -> gpui::Result<Arc<[RenderCommand]>> {
-        if let Some((previous, shared)) = self.shared_offscreen.as_ref()
+    ) -> gpui::Result<(Arc<[RenderCommand]>, bool)> {
+        if let Some((previous, shared, authored_scissors)) = self.shared_offscreen.as_ref()
             && *previous == revision
         {
-            // Arc clone is O(1); previous code cloned every RenderCommand.
-            return Ok(Arc::clone(shared));
+            // Both the immutable commands and their clip metadata are stable.
+            // Never scan the O(draws) list on a camera-only producer frame.
+            return Ok((Arc::clone(shared), *authored_scissors));
         }
         let mut commands = Vec::new();
         self.append_spliced(
             revision, draw_count, blended_batch_start, delta,
             &mut commands, build, build_range,
         )?;
+        let authored_scissors = commands.iter().any(|command| command.scissor().is_some());
         let shared: Arc<[RenderCommand]> = commands.into();
-        self.shared_offscreen = Some((revision, Arc::clone(&shared)));
-        Ok(shared)
+        self.shared_offscreen = Some((revision, Arc::clone(&shared), authored_scissors));
+        Ok((shared, authored_scissors))
     }
 
     fn publish(&self, steps: &mut Vec<RenderCommand>) {
@@ -798,11 +800,13 @@ mod tests {
                 |_, _| Ok(()),
             ).unwrap()
         };
-        let first = make(1, &mut cache, &mut builds);
-        let same = make(1, &mut cache, &mut builds);
+        let (first, first_clips) = make(1, &mut cache, &mut builds);
+        let (same, same_clips) = make(1, &mut cache, &mut builds);
+        assert!(!first_clips && !same_clips);
         assert!(Arc::ptr_eq(&first, &same), "camera-only capture must not duplicate the native command table");
         assert_eq!(builds, 1);
-        let next = make(2, &mut cache, &mut builds);
+        let (next, clips) = make(2, &mut cache, &mut builds);
+        assert!(!clips);
         assert!(!Arc::ptr_eq(&first, &next), "a structural draw change must publish a new snapshot");
         assert_eq!(builds, 2);
         assert_eq!(first[0].pipeline(), RenderPipelineId::from_parts(1, 1));
@@ -1081,7 +1085,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             return Ok(());
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
-        let mut capture_commands: Option<Arc<[RenderCommand]>> = None;
+        let mut capture_commands: Option<(Arc<[RenderCommand]>, bool)> = None;
         let commands_count = {
             // Both paths retain the same canonical native Draw command
             // cache. The offscreen path shares an immutable command snapshot
@@ -1104,7 +1108,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     scene.native_command_delta(),
                     build, build_range,
                 )?;
-                let count = shared.len();
+                let count = shared.0.len();
                 capture_commands = Some(shared);
                 count
             } else {
@@ -1122,10 +1126,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         };
         if let Some(surface) = self.offscreen.as_mut() {
             let started = crate::gpu_submission_trace::enabled().then(Instant::now);
+            let (commands, authored_scissors) =
+                capture_commands.expect("offscreen capture built immutable commands");
             surface.enqueue(
                 device, scene_view.id, &context, scene.capture_revision,
-                capture_commands.expect("offscreen capture built immutable commands"),
-                &mut self.pending_passes, steps,
+                commands, authored_scissors, &mut self.pending_passes, steps,
             )?;
             if let Some(start) = started {
                 crate::gpu_submission_trace::observe(
