@@ -343,8 +343,8 @@ impl SidecarSurface {
     }
 
     fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        // Do not silently drop handles when destruction fails: leave the
-        // failed target in the queue to be retried on the next safe pass.
+        // Destroy only fence-proven targets on the native owner. A backend
+        // error propagates to GPUI rather than being silently ignored.
         while let Some(target) = self.ready_to_release.pop() {
             target.destroy(device)?;
         }
@@ -528,6 +528,43 @@ impl SidecarSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_targets_are_reclaimed_only_after_completion_proof() {
+        // No hardware device is required: the fake handles are never used or
+        // destroyed; this validates the ownership transition only.
+        let handle = |id| id;
+        let mut surface = SidecarSurface {
+            capture_pass: RenderPassId::from_parts(1, 1),
+            capture_format: Format::Rgba8Unorm,
+            host_pass: RenderPassId::from_parts(2, 1),
+            host_format: Format::Rgba8Unorm,
+            host_extent: Extent2d::new(32, 32).unwrap(),
+            vertex_shader: ShaderModuleId::from_parts(1, 1),
+            fragment_shader: ShaderModuleId::from_parts(2, 1),
+            sampler: SamplerId::from_parts(1, 1),
+            bind_layout: BindGroupLayoutId::from_parts(1, 1),
+            pipeline_layout: PipelineLayoutId::from_parts(1, 1),
+            composite_pipeline: RenderPipelineId::from_parts(1, 1),
+            targets: HashMap::new(),
+            awaiting_gpu: vec![Target {
+                color: TextureId::from_parts(handle(1), 1),
+                color_view: TextureViewId::from_parts(1, 1),
+                depth: TextureId::from_parts(handle(2), 1),
+                depth_view: TextureViewId::from_parts(2, 1),
+                binding: BindGroupId::from_parts(1, 1),
+                extent: Extent2d::new(32, 32).unwrap(),
+                capture: CaptureEpoch::default(),
+            }],
+            ready_to_release: Vec::new(),
+        };
+        assert!(surface.has_retired_targets());
+        assert_eq!(surface.ready_to_release.len(), 0);
+        surface.gpu_work_completed();
+        assert!(!surface.has_retired_targets());
+        assert_eq!(surface.awaiting_gpu.len(), 0);
+        assert_eq!(surface.ready_to_release.len(), 1);
+    }
 
     #[test]
     fn capture_is_reused_only_after_matching_gpu_submission_acknowledgement() {
