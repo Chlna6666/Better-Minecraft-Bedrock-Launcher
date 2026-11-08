@@ -108,7 +108,19 @@ impl Preview3dCamera {
     }
 
     pub(super) fn rotate_orbit(&mut self, delta_x: f32, delta_y: f32) {
+        // Orbiting is not free-look: keep the camera on the sphere centered
+        // around the model, otherwise the model drifts across the viewport
+        // while yaw/pitch change at a fixed eye position.
+        //
+        // Preserve the independent free-movement offset (WASD/pan), so
+        // orbiting after navigating does not teleport the user to the origin.
+        let old_default = preview_3d_default_camera_position(self.yaw, self.pitch);
+        let moved = vec3_sub(self.position, old_default);
         self.rotate_view(delta_x, delta_y);
+        self.position = vec3_add(
+            preview_3d_default_camera_position(self.yaw, self.pitch),
+            moved,
+        );
     }
 
     pub(super) fn zoom_by(&mut self, factor: f32) {
@@ -6998,6 +7010,33 @@ mod tests {
             preview_3d_block_class("minecraft:short_grass"),
             Preview3dBlockClass::DetailOpaque
         );
+    }
+
+    #[test]
+    fn preview_orbit_keeps_camera_looking_at_model_center() {
+        let mut camera = Preview3dCamera::default();
+        for (dx, dy) in [(40.0, 10.0), (200.0, -30.0), (-320.0, 75.0)] {
+            camera.rotate_orbit(dx, dy);
+            let forward = camera.forward();
+            let aimed = vec3_add(
+                camera.position, vec3_scale(forward, PREVIEW_3D_DEFAULT_DISTANCE),
+            );
+            assert!(vec3_length_squared(aimed) < 1.0e-4,
+                "orbit camera should keep the model center on its forward ray");
+        }
+    }
+
+    #[test]
+    fn preview_orbit_preserves_free_camera_translation() {
+        let mut camera = Preview3dCamera::default();
+        let displacement = [0.35, -0.22, 0.81];
+        camera.position = vec3_add(camera.position, displacement);
+        camera.rotate_orbit(91.0, -23.0);
+        let expected = vec3_add(
+            preview_3d_default_camera_position(camera.yaw, camera.pitch),
+            displacement,
+        );
+        assert!(vec3_length_squared(vec3_sub(camera.position, expected)) < 1.0e-5);
     }
 
     #[test]
