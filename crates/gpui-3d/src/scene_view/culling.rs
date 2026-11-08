@@ -415,6 +415,10 @@ pub(super) struct CullResources {
     resident_slots: StableDrawSlots,
     slot_map: BufferId,
     uploaded_slot_map: Vec<u32>,
+    /// Spare dense logical map allocation, swapped only after a successful
+    /// GPU publication. Avoids reallocating/copying capacity metadata on
+    /// each structural Section edit; the old mapping remains transactional.
+    scratch_slot_map: Vec<u32>,
     /// NodeId -> stable physical Bounds slots. Rebuilt only after a Scene
     /// structural update, never on camera-only visibility changes.
     node_slots: HashMap<NodeId, Vec<usize>>,
@@ -502,6 +506,7 @@ impl CullResources {
             structural_slots_committed: false,
             resident_slots: StableDrawSlots::default(),
             uploaded_slot_map: Vec::new(),
+            scratch_slot_map: Vec::new(),
             node_slots: HashMap::new(),
             node_slots_dirty: true,
             masked_slots: HashSet::new(),
@@ -637,8 +642,9 @@ impl CullResources {
         // All mutations are staged until GPU writes succeed.
         let mut structural_plan = if generated_singletons && self.generated_singleton_canonical {
             if let Some(delta) = structural {
-                self.resident_slots.plan_structural(
+                self.resident_slots.plan_structural_reusing(
                     draws, &self.uploaded_slot_map, delta,
+                    &mut self.scratch_slot_map,
                 )?
             } else {
                 None
@@ -814,7 +820,13 @@ impl CullResources {
                 plan.added_node_slots().collect::<Vec<_>>(),
             )
         });
-        self.uploaded_slot_map = logical_to_physical;
+        // This is the only point where the next logical mapping becomes
+        // visible. Reuse the previous committed allocation for a future
+        // plan, without modifying the GPU-visible old snapshot on failure.
+        let mut old_mapping =
+            std::mem::replace(&mut self.uploaded_slot_map, logical_to_physical);
+        old_mapping.clear();
+        self.scratch_slot_map = old_mapping;
         if let Some((retired, added)) = node_delta {
             if !self.node_slots_dirty {
                 for (node, slot) in retired {
