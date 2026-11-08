@@ -2002,6 +2002,7 @@ fn load_batch_from_world(
     models: &bedrock_block_model::BlockModelRepository,
     positions: &[ChunkPos],
     options: ChunkLoadOptions,
+    lazy_view: Option<ViewState>,
 ) -> LoadedChunkBatch {
     if positions.is_empty() {
         return LoadedChunkBatch {
@@ -2033,7 +2034,14 @@ fn load_batch_from_world(
     let trace = trace_verbose();
     // Bedrock fades grass/foliage colors over the block and its eight neighbors. Build the
     // blended column tints once per batch so parallel chunk collection only reads them.
-    let biome_blend = p3d::Preview3dBiomeBlendField::from_chunks(&chunks);
+    let need_mesh_data = chunks.iter().any(|data| {
+        data.is_loaded && !lazy_view.is_some_and(|view| lazy_mesh_column(data.pos, view))
+    });
+    // A batch containing only deferred rear columns never touches expensive
+    // biome/model collection. When any foreground column is present, keep
+    // its original neighbor biomes for exact tinting at chunk boundaries.
+    let biome_blend = need_mesh_data
+        .then(|| p3d::Preview3dBiomeBlendField::from_chunks(&chunks));
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
@@ -2044,7 +2052,11 @@ fn load_batch_from_world(
             }
             (
                 pos,
-                collect_cached_chunk(data, models, trace, Some(&biome_blend)),
+                if lazy_view.is_some_and(|view| lazy_mesh_column(pos, view)) {
+                    collect_lazy_probe_chunk(data)
+                } else {
+                    collect_cached_chunk(data, models, trace, biome_blend.as_ref())
+                },
             )
         })
         .collect::<Vec<_>>();
@@ -2506,7 +2518,7 @@ impl Worker {
                     break;
                 }
                 let started = Instant::now();
-                let loaded = self.load_batch(&batch);
+                let loaded = self.load_batch_lazy(&batch);
                 (loaded, started.elapsed(), false)
             };
             if let Ok(command) = commands.try_recv() {
@@ -2711,9 +2723,10 @@ impl Worker {
         options.cancel = Some(cancel.clone());
         let (sender, receiver) = sync_channel(1);
         let requested = positions.clone();
+        let view = self.view;
         rayon::spawn(move || {
             let started = Instant::now();
-            let loaded = load_batch_from_world(&world, &models, &positions, options);
+            let loaded = load_batch_from_world(&world, &models, &positions, options, Some(view));
             let _ = sender.send((loaded, started.elapsed()));
         });
         PendingChunkBatch {
@@ -3465,6 +3478,17 @@ impl Worker {
             &self.models,
             positions,
             self.batch_load_options(positions.len()),
+            None,
+        )
+    }
+
+    fn load_batch_lazy(&mut self, positions: &[ChunkPos]) -> LoadedChunkBatch {
+        load_batch_from_world(
+            &self.world,
+            &self.models,
+            positions,
+            self.batch_load_options(positions.len()),
+            Some(self.view),
         )
     }
 
@@ -4491,6 +4515,29 @@ fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
 }
 fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBuf> {
     vanilla_resource_pack_roots_from_packages(package_roots.iter())
+}
+
+/// Metadata-first decode for far rear columns: no block model expansion,
+/// biome shading, fluid-face analysis, texture resolution or GPU mesh work.
+/// Once the camera points toward this column, the normal mesher rehydrates it
+/// through the batched world query and replaces this provisional probe.
+fn collect_lazy_probe_chunk(data: ChunkData) -> Result<Option<CachedChunk>, String> {
+    if !data.is_loaded {
+        return Ok(None);
+    }
+    let pos = data.pos;
+    let version = data.version;
+    let probe = Arc::new(build_probe(pos, data, None, BTreeMap::new()));
+    Ok(Some(CachedChunk {
+        blocks: None,
+        boundary: None,
+        frame_displays: Vec::new(),
+        probe,
+        bytes: 0,
+        version,
+        state_version: None,
+        faces: 0,
+    }))
 }
 
 fn collect_cached_chunk(
