@@ -95,7 +95,7 @@ pub(super) fn render_game_tab(
                 .border_color(colors.border)
                 .p(px(14.))
                 .text_color(colors.text_primary)
-                .child("查看游戏崩溃报告历史（仅保存在本机）")
+                .child(t!("GameCrash.settings.history"))
                 .on_click(|_, _, cx| {
                     cx.spawn(async move |cx| {
                         let history = crate::tasks::runtime::run_io_blocking(|| {
