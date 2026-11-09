@@ -16,6 +16,8 @@ use std::sync::Arc;
 pub struct RendererExtensionComputePass {
     pub after_graphics_pass: usize,
     pub dispatch: ComputeBindGroupDispatch,
+    /// Optional native GPU timer. No CPU-side substitute is generated.
+    pub gpu_work_tag: Option<GpuTimestampTag>,
 }
 
 /// One ordered offscreen pass. All handles belong to the host's current device.
