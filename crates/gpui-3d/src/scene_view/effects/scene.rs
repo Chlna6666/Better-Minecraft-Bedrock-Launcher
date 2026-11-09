@@ -274,6 +274,49 @@ impl EffectScene {
         Ok(())
     }
 
+    /// Add native full-screen depth-minimum passes *after* opaque geometry
+    /// and *before* the SSR screen resolve. There is no host synchronization:
+    /// the backend executes the ordered render passes in one GPU submission.
+    pub(super) fn record_ssr_hiz(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        context: &RendererExtensionContext,
+        settings: ScreenEffects,
+        passes: &mut Vec<RendererExtensionPass>,
+    ) {
+        if !settings.reflections || self.ssr_hiz_unavailable {
+            return;
+        }
+        if self.ssr_hiz.is_none() {
+            let multisampled = self.msaa_sample_count > 1 && self.targets.msaa.is_some();
+            let source = if multisampled {
+                self.targets.msaa.as_ref().expect("MSAA targets").depth.view
+            } else {
+                self.targets.depth.view
+            };
+            match SsrHiZ::new(device,context,self.targets.extent,source,multisampled) {
+                Ok(hiz) => self.ssr_hiz = Some(hiz),
+                Err(error) => {
+                    // Depth pyramids are a performance feature. If a driver
+                    // rejects R32F attachment mip views or MSAA depth sampling,
+                    // retain the existing precise per-sample SSR path.
+                    eprintln!("gpui-3d: native SSR Hi-Z unavailable: {error:#}; using linear SSR");
+                    self.ssr_hiz_unavailable = true;
+                    return;
+                }
+            }
+        }
+        if self.queued_capture || !self.ssr_hiz_valid {
+            // A queued capture writes the depth buffer before this hierarchy.
+            // On a static camera both depth and its mip chain stay resident.
+            self.ssr_hiz_valid = false;
+            self.ssr_hiz.as_ref().expect("SSR pyramid created").enqueue(passes);
+            self.queued_ssr_hiz = true;
+        }
+    }
+    pub(super) fn ssr_hiz_levels(&self) -> u32 {
+        self.ssr_hiz.as_ref().map_or(0, |hiz| hiz.levels)
+    }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
@@ -483,6 +526,7 @@ impl EffectScene {
         host: &RendererExtensionContext,
         time: f32,
         light_count: u32,
+        ssr_hiz_levels: u32,
     ) -> gpui::Result<()> {
         for (buffer, context) in [(self.frame, local), (self.composite_frame, host)] {
             let matrix = view.camera.projection_matrix(
@@ -519,7 +563,7 @@ impl EffectScene {
                     shading.sun_color[2],
                     shading.sun_intensity,
                 ],
-                [32., 8., 16., time],
+                [32., 8., ssr_hiz_levels as f32, time],
                 [
                     f32::from(settings.reflections),
                     f32::from(settings.water),
