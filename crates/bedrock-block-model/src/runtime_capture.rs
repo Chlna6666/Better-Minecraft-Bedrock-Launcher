@@ -120,14 +120,29 @@ struct CaptureBlock {
     variants: Vec<CaptureVariant>,
 }
 #[derive(Debug, Deserialize)]
+struct CaptureAtlasVariant {
+    variant: u32,
+    frame: u32,
+    atlas_uv: [f32; 4],
+}
+#[derive(Debug, Deserialize)]
 struct CaptureTexture {
     slot: usize,
     #[serde(default)]
     resource_alias: String,
+    #[serde(default)]
+    atlas_variants: Vec<CaptureAtlasVariant>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug)]
+struct CaptureMaterialSlot {
+    alias: String,
+    atlas_variants: HashMap<(u32, u32), [f32; 4]>,
+}
+#[derive(Clone, Debug, Deserialize)]
 struct CaptureVariant {
     neighborhood: String,
+    #[serde(default)]
+    position_variant_candidate: bool,
     #[serde(default)]
     shared_geometry_refs: Vec<u32>,
     #[serde(default)]
@@ -141,7 +156,7 @@ struct CaptureMaterialTable {
 #[derive(Clone, Debug)]
 struct StateRecipe {
     meshes: Vec<(u32, u32)>,
-    texture_aliases: Arc<HashMap<usize, String>>,
+    texture_aliases: Arc<HashMap<usize, CaptureMaterialSlot>>,
 }
 // The packed ZIP is indexed once and entries are decompressed only on cache misses.
 // Serialized access prevents repeated archive-index creation and keeps memory bounded.
@@ -245,12 +260,23 @@ impl RuntimeCaptureCatalog {
         let mut states = HashMap::with_capacity(index.blocks.len());
         let mut canonical_by_network_id: HashMap<u32, (String, StateRecipe)> = HashMap::new();
         let mut geometry_aliases = Vec::new();
-        let mut material_cache: HashMap<u32, Arc<HashMap<usize, String>>> = HashMap::new();
+        let mut material_cache: HashMap<u32, Arc<HashMap<usize, CaptureMaterialSlot>>> =
+            HashMap::new();
         for block in index.blocks {
-            // Neighbor-driven and BlockEntity geometry must come from explicit
-            // connection/NBT rules, never from a single static visual-bounds mesh.
-            if !matches!(block.geometry_context.as_str(), "" | "none")
-                || matches!(block.status.as_str(), "unsupported" | "dynamic")
+            // Only model families whose geometry is fully determined by the
+            // exact BlockState may reuse one native scene sample. Never
+            // promote fluid, piston, connected, random-offset or BlockActor
+            // geometry to a static recipe using one neighborhood observation.
+            let native_state_only = matches!(
+                block.geometry_context.as_str(),
+                "torch_mount_and_native_uv"
+                    | "lantern_hanging_and_native_uv"
+                    | "end_rod_axis_and_native_uv"
+                    | "lightning_rod_axis_and_native_uv"
+            );
+            if !native_state_only
+                && (!matches!(block.geometry_context.as_str(), "" | "none")
+                    || matches!(block.status.as_str(), "unsupported" | "dynamic"))
             {
                 continue;
             }
@@ -279,21 +305,46 @@ impl RuntimeCaptureCatalog {
                 if table.schema != 2 {
                     continue;
                 }
-                let aliases: Arc<HashMap<usize, String>> = Arc::new(table
+                let aliases: Arc<HashMap<usize, CaptureMaterialSlot>> = Arc::new(table
                     .texture_bindings
                     .into_iter()
                     .filter(|t| !t.resource_alias.is_empty())
-                    .map(|t| (t.slot, t.resource_alias))
+                    .map(|t| {
+                        let variants = t.atlas_variants
+                            .into_iter()
+                            .map(|v| ((v.variant, v.frame), v.atlas_uv))
+                            .collect();
+                        (t.slot, CaptureMaterialSlot {
+                            alias: t.resource_alias,
+                            atlas_variants: variants,
+                        })
+                    })
                     .collect());
                 material_cache.insert(material_ref, Arc::clone(&aliases));
                 aliases
             };
-            let Some(variant) = block
-                .variants
-                .into_iter()
-                .find(|v| v.neighborhood == "registry_visual_bounds")
-            else {
-                continue;
+            let variant = if native_state_only {
+                // All observed native samples for one exact state must agree.
+                // A difference means the mesh depends on surroundings or
+                // randomization and cannot safely be used as a static recipe.
+                let samples: Vec<_> = block.variants.iter()
+                    .filter(|v| v.neighborhood == "native_scene"
+                        && !v.position_variant_candidate
+                        && !v.shared_geometry_refs.is_empty())
+                    .collect();
+                let Some(first) = samples.first() else { continue };
+                if samples.iter().any(|sample| {
+                    sample.shared_geometry_refs != first.shared_geometry_refs
+                        || sample.shared_appearance_refs != first.shared_appearance_refs
+                }) {
+                    continue;
+                }
+                (*first).clone()
+            } else {
+                let Some(sample) = block.variants.iter()
+                    .find(|v| v.neighborhood == "registry_visual_bounds")
+                else { continue };
+                sample.clone()
             };
             if variant.shared_geometry_refs.len() != variant.shared_appearance_refs.len() {
                 continue;
@@ -497,15 +548,35 @@ pub fn decode_capture_texture_slot(slot: &str) -> Option<String> {
 // V3 canonical triangles are sorted independently from source quad order.
 // Match two oppositely directed shared edges to recover a *real* quad;
 // never invent a face from unrelated triangles or assume adjacent indices.
+// Transform an original Bedrock terrain-atlas coordinate into a local
+// texture coordinate. Signed spans preserve flipped / mirrored atlas regions.
+// Failure is preferable to placing the wrong tile on a native mesh.
+fn native_atlas_to_local(uv: [f32; 2], rect: [f32; 4]) -> Option<[f32; 2]> {
+    let du = rect[2] - rect[0];
+    let dv = rect[3] - rect[1];
+    if !rect.iter().all(|v| v.is_finite())
+        || !uv.iter().all(|v| v.is_finite())
+        || du.abs() <= 1e-7 || dv.abs() <= 1e-7
+    {
+        return None;
+    }
+    let local = [(uv[0] - rect[0]) / du, (uv[1] - rect[1]) / dv];
+    // Tolerance for float32 atlas edges; no silent clamping or tiling.
+    if local.iter().all(|v| *v >= -0.0001 && *v <= 1.0001) {
+        Some(local)
+    } else {
+        None
+    }
+}
 fn shared_mesh_planes(
     geometry: &CaptureGeometryV3,
     appearance: &CaptureAppearanceV3,
     geometry_id: &u32,
-    aliases: &HashMap<usize, String>,
+    aliases: &HashMap<usize, CaptureMaterialSlot>,
 ) -> Option<Vec<ModelPlane>> {
     if appearance.geometry_id != *geometry_id
         || !appearance.uv_complete
-        || !matches!(appearance.source_kind, 0 | 1)
+        || appearance.source_kind > 2
     {
         return None;
     }
@@ -515,6 +586,7 @@ fn shared_mesh_planes(
         || count % 2 != 0
         || appearance.corners.len() != count * 3
         || appearance.slots.len() != count
+        || appearance.variant_frames.len() != count
     {
         return None;
     }
@@ -583,6 +655,11 @@ fn shared_mesh_planes(
                         &attr[3 * i + ai[2]],
                         &attr[3 * j + bj[2]],
                     ];
+                    if appearance.source_kind == 2
+                        && appearance.variant_frames[i] != appearance.variant_frames[j]
+                    {
+                        continue;
+                    }
                     if rows.iter().any(|row| row.normal != rows[0].normal) {
                         continue;
                     }
@@ -592,7 +669,19 @@ fn shared_mesh_planes(
                         points[a[ai[2]]],
                         points[b[bj[2]]],
                     ];
-                    let uvs = rows.map(|row| row.uv);
+                    let uvs = if appearance.source_kind == 2 {
+                        let Some(slot) = slots[i] else { continue };
+                        let Some(material) = aliases.get(&slot) else { continue };
+                        let Some(variant) = appearance.variant_frames[i] else { continue };
+                        let Some(rect) = material.atlas_variants.get(&variant) else { continue };
+                        let local: Option<Vec<[f32; 2]>> = rows.iter()
+                            .map(|row| native_atlas_to_local(row.uv, *rect))
+                            .collect();
+                        let Some(local) = local else { continue };
+                        [local[0], local[1], local[2], local[3]]
+                    } else {
+                        rows.map(|row| row.uv)
+                    };
                     if !corners
                         .iter()
                         .flatten()
@@ -644,7 +733,7 @@ fn shared_mesh_planes(
         }
         let (j, mut plane) = selected?;
         if let Some(alias) = slots[i].and_then(|id| aliases.get(&id)) {
-            plane = plane.with_material_slot(capture_texture_slot(alias));
+            plane = plane.with_material_slot(capture_texture_slot(&alias.alias));
         }
         used[i] = true;
         used[j] = true;
@@ -887,9 +976,12 @@ mod tests {
             corners:vec![corner(0.,0.),corner(1.,1.),corner(0.,1.),
                          corner(0.,0.),corner(1.,0.),corner(1.,1.)],
             slots:vec![Some(1),Some(1)],
+            variant_frames:vec![None,None],
         };
         let result=shared_mesh_planes(&geometry,&appearance,&0,
-            &HashMap::from([(1,"grass".into())])).expect("diagonal cross");
+            &HashMap::from([(1,CaptureMaterialSlot {
+                alias:"grass".into(),atlas_variants:HashMap::new()
+            })])).expect("diagonal cross");
         assert_eq!(result.len(),1);
         assert_eq!(result[0].normal,[-1,0,1]);
     }

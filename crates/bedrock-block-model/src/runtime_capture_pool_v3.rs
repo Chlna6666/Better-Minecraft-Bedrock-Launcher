@@ -182,6 +182,9 @@ pub(super) struct Appearance {
     pub(super) uv_complete: bool,
     pub(super) corners: Vec<Corner>,
     pub(super) slots: Vec<Option<usize>>,
+    // BSC writes the exact (variant, animation frame) selected per triangle.
+    // A native atlas rectangle cannot be reconstructed from the slot alone.
+    pub(super) variant_frames: Vec<Option<(u32, u32)>>,
 }
 impl Appearance {
     pub(super) fn parse(bytes: &[u8]) -> Option<Self> {
@@ -207,6 +210,7 @@ impl Appearance {
             corners.push(Corner { normal, uv, abgr });
         }
         let mut slots = Vec::with_capacity(t);
+        let mut variant_frames = Vec::with_capacity(t);
         for _ in 0..t {
             let slot = u32_at(bytes, &mut at)?;
             let variant = u32_at(bytes, &mut at)?;
@@ -215,11 +219,12 @@ impl Appearance {
                 return None;
             }
             slots.push((slot != NONE).then_some(slot as usize));
+            variant_frames.push((variant != NONE).then_some((variant, frame)));
         }
         let uv_complete = flags & 1 != 0;
         if !uv_complete && slots.iter().any(Option::is_some) {
             return None;
         }
-        Some(Self { geometry_id, source_kind, uv_complete, corners, slots })
+        Some(Self { geometry_id, source_kind, uv_complete, corners, slots, variant_frames })
     }
 }
