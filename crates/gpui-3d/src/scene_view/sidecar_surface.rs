@@ -6,6 +6,7 @@
 //! these producer passes before their GUI consumer and tracks the returned
 //! SubmissionId/fence. No native graphics context is ever sent to a worker.
 use super::{SceneViewId, resources::embedded_shader};
+use crate::NativeOffscreenPass;
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext};
 use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
@@ -39,35 +40,6 @@ fn rounded_mask(mask: &gpui::ContentMask<gpui::ScaledPixels>) -> RoundedMask {
             f32::from(mask.corner_bounds.size.height),
         ],
         radii,
-    }
-}
-
-/// Native offscreen graphics producer owned by gpui-3d, not a GPUI paint
-/// primitive. Its command list remains an immutable Arc shared with the
-/// SceneView's GPU-resident draw cache. The only GUI-facing object is the
-/// sampled color TextureViewId used by the final composite.
-pub(super) struct NativeOffscreenPass {
-    pub(super) target: TextureViewId,
-    pub(super) render_pass: RenderPassId,
-    pub(super) commands: Arc<[RenderCommand]>,
-    pub(super) gpu_work_tag: Option<GpuTimestampTag>,
-    pub(super) color_load_op: LoadOp<ClearColor>,
-    pub(super) depth_attachment: Option<DepthAttachment>,
-}
-
-impl NativeOffscreenPass {
-    /// Borrow native commands without copying DrawIndirect records.
-    pub(super) fn commands(&self) -> RenderPassCommands<'_> {
-        RenderPassCommands {
-            color_attachments: std::slice::from_ref(&self.target),
-            render_pass: self.render_pass,
-            commands: &self.commands,
-            color_load_op: self.color_load_op,
-            clear_region: None,
-            viewport: None,
-            resolve_target: None,
-            depth_attachment: self.depth_attachment,
-        }
     }
 }
 
