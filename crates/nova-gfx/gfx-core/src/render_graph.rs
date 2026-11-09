@@ -106,7 +106,51 @@ pub struct GpuWorkPlan {
     pub transitions: Vec<GpuTransition>,
 }
 
+/// Native command encoder for an already-compiled, ordered GPU work plan.
+///
+/// An implementation must encode every pass onto the owning GPU device, in
+/// program order. `apply_transitions` must make the listed writes visible to
+/// their consumers using the backend's native state/barrier rules. Returning
+/// success without recording required synchronization is invalid. The methods
+/// enqueue GPU work; neither method may perform a CPU fence wait.
+pub trait GpuWorkExecutor {
+    /// Encode native barriers/state transitions before `pass` starts.
+    /// Called only when the transition slice is nonempty.
+    fn apply_transitions(&mut self, transitions: &[GpuTransition]) -> Result<()>;
+
+    /// Encode a pass. Its index matches the compiled graph's pass index.
+    fn execute_pass(&mut self, index: usize, pass: &GpuWorkPass) -> Result<()>;
+}
+
 impl GpuWorkPlan {
+    /// Encode the compiled plan in dependency order on a native GPU owner.
+    ///
+    /// The executor must provide native Graphics/Compute/Transfer recording
+    /// and the transitions between them. No fallback may reorder a dependent
+    /// Compute pass before its Graphics producer. This only records work; it
+    /// does not submit a queue, wait for a fence, or mark resources retired.
+    ///
+    /// A failure stops encoding immediately. Previously encoded work may
+    /// still be pending, and callers must not publish output from a failed
+    /// plan. The transition cursor preserves the compile-time order and
+    /// avoids per-pass sorting or temporary allocations.
+    pub fn encode_ordered(&self, executor: &mut impl GpuWorkExecutor) -> Result<()> {
+        let mut transition_cursor = 0;
+        for (index, pass) in self.passes.iter().enumerate() {
+            let start = transition_cursor;
+            while transition_cursor < self.transitions.len()
+                && self.transitions[transition_cursor].to_pass == index
+            {
+                transition_cursor += 1;
+            }
+            if start != transition_cursor {
+                executor.apply_transitions(&self.transitions[start..transition_cursor])?;
+            }
+            executor.execute_pass(index, pass)?;
+        }
+        Ok(())
+    }
+
     /// Validate the currently supported extension execution model: independent
     /// compute may precede recorded graphics passes, but graphics -> compute
     /// dependencies need native ordered mixed-pass recording and barriers.
@@ -289,6 +333,63 @@ mod tests {
         assert_eq!(plan.transitions.len(), 1);
         assert_eq!(plan.transitions[0].from_stage, GpuWorkStage::Transfer);
         assert_eq!(plan.transitions[0].to_stage, GpuWorkStage::Compute);
+    }
+
+    #[test]
+    fn ordered_encoder_emits_barriers_before_consumers_without_reordering() {
+        #[derive(Default)]
+        struct Trace(Vec<String>);
+        impl GpuWorkExecutor for Trace {
+            fn apply_transitions(&mut self, edges: &[GpuTransition]) -> Result<()> {
+                assert!(edges.iter().all(|edge| edge.to_pass == edges[0].to_pass));
+                self.0.push(format!("barrier:{}:{}", edges[0].to_pass, edges.len()));
+                Ok(())
+            }
+            fn execute_pass(&mut self, index: usize, _: &GpuWorkPass) -> Result<()> {
+                self.0.push(format!("pass:{index}"));
+                Ok(())
+            }
+        }
+        let mut graph = GpuWorkGraph::new();
+        graph.push("upload", GpuWorkStage::Transfer,
+            [use_(buf(1), GpuAccess::CopyWrite)]).unwrap();
+        graph.push("unrelated", GpuWorkStage::Compute,
+            [use_(buf(2), GpuAccess::StorageWrite)]).unwrap();
+        graph.push("consume", GpuWorkStage::Compute, [
+            use_(buf(1), GpuAccess::ReadBuffer),
+            use_(buf(2), GpuAccess::ReadBuffer),
+        ]).unwrap();
+        let plan = graph.compile().unwrap();
+        let mut trace = Trace::default();
+        plan.encode_ordered(&mut trace).unwrap();
+        assert_eq!(trace.0, [
+            "pass:0", "pass:1", "barrier:2:2", "pass:2",
+        ]);
+    }
+
+    #[test]
+    fn ordered_encoder_stops_before_consumer_if_native_barrier_fails() {
+        struct RejectBarrier { passes: usize }
+        impl GpuWorkExecutor for RejectBarrier {
+            fn apply_transitions(&mut self, _: &[GpuTransition]) -> Result<()> {
+                Err(Error::Unavailable("native barrier unsupported".into()))
+            }
+            fn execute_pass(&mut self, _: usize, _: &GpuWorkPass) -> Result<()> {
+                self.passes += 1;
+                Ok(())
+            }
+        }
+        let mut graph = GpuWorkGraph::new();
+        graph.push("produce", GpuWorkStage::Graphics,
+            [use_(tex(1), GpuAccess::ColorAttachment)]).unwrap();
+        graph.push("consume", GpuWorkStage::Compute,
+            [use_(tex(1), GpuAccess::Sampled)]).unwrap();
+        let mut executor = RejectBarrier { passes: 0 };
+        assert!(matches!(
+            graph.compile().unwrap().encode_ordered(&mut executor),
+            Err(Error::Unavailable(_))
+        ));
+        assert_eq!(executor.passes, 1);
     }
 
     #[test]
