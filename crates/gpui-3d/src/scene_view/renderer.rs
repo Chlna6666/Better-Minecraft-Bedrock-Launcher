@@ -619,7 +619,18 @@ struct SidecarGpuBackend {
     offscreen_trace: OffscreenTrace,
     frame_time: Option<Instant>,
     frame_index: u64,
+    /// Once per host frame, not once per SceneView. Multiple 3D widgets share
+    /// this renderer, so repeating an O(scene_count) eviction scan for every
+    /// widget would make GUI painting quadratic in the number of views.
+    last_idle_retire_frame: Option<u64>,
     timing_trace: RendererTimingTrace,
+}
+
+/// A frame is shared by all GPUI extension draws, regardless of SceneView
+/// count. Scan the idle cache at most once per frame while still retrying
+/// any failed retirement on the next render call.
+fn should_scan_idle_scenes(frame_index: u64, last_scan: Option<u64>) -> bool {
+    last_scan != Some(frame_index)
 }
 
 impl SidecarGpuBackend {
@@ -701,6 +712,7 @@ impl SidecarGpuBackend {
             offscreen_trace: OffscreenTrace::default(),
             frame_time: None,
             frame_index: 0,
+            last_idle_retire_frame: None,
             timing_trace: RendererTimingTrace::default(),
         })
     }
@@ -748,6 +760,9 @@ impl SidecarGpuBackend {
     }
 
     fn retire_idle_scenes(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if !should_scan_idle_scenes(self.frame_index, self.last_idle_retire_frame) {
+            return Ok(());
+        }
         let stale = self
             .scenes
             .iter()
@@ -755,7 +770,11 @@ impl SidecarGpuBackend {
                 (self.frame_index.saturating_sub(scene.last_used_frame) > 120).then_some(*id)
             })
             .collect::<Vec<_>>();
-        self.destroy_scenes(device, stale)
+        self.destroy_scenes(device, stale)?;
+        // Record completion only after cleanup succeeds; otherwise another
+        // view in this same frame can retry failed retirement.
+        self.last_idle_retire_frame = Some(self.frame_index);
+        Ok(())
     }
 
     fn trim_scene_cache(
@@ -1036,6 +1055,17 @@ mod tests {
         assert!(!defer_unprepared_scene(true, true, false));
         assert!(!defer_unprepared_scene(true, false, true));
         assert!(!defer_unprepared_scene(false, false, false));
+    }
+
+    #[test]
+    fn idle_scene_retirement_is_scanned_once_per_frame_for_all_views() {
+        use super::should_scan_idle_scenes;
+        assert!(should_scan_idle_scenes(1, None));
+        assert!(!should_scan_idle_scenes(1, Some(1)));
+        assert!(should_scan_idle_scenes(2, Some(1)));
+        // In particular, a window can wrap its render-frame epoch without
+        // incorrectly suppressing the new epoch's cache sweep.
+        assert!(should_scan_idle_scenes(0, Some(u64::MAX)));
     }
 
     #[test]
