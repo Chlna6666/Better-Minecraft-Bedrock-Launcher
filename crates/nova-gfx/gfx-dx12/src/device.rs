@@ -5752,7 +5752,11 @@ mod platform {
         fn independent_queue(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
             let index = match stage {
                 gfx_core::GpuWorkStage::Graphics if self.sidecar_queue.is_some() => 1,
-                gfx_core::GpuWorkStage::Compute if self.async_compute.is_some() => 2,
+                // The extra DIRECT queue can actually execute the current
+                // portable COMPUTE command encoder today. Do not advertise
+                // the typed COMPUTE-only queue until its allocator/transition
+                // path can execute actual shaders rather than fence-only work.
+                gfx_core::GpuWorkStage::Compute if self.sidecar_queue.is_some() => 1,
                 gfx_core::GpuWorkStage::Transfer if self.async_transfer.is_some() => 3,
                 _ => return None,
             };
