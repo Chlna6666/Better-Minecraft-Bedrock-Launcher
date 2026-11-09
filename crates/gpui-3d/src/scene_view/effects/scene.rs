@@ -484,7 +484,12 @@ impl EffectScene {
             );
         }
         graph.push("deferred effects composite", GpuWorkStage::Graphics, composite_reads)?;
-        let transitions = graph.compile()?.transitions.len();
+        let plan = graph.compile()?;
+        // Current host ordering supports GPU light-tile Compute before
+        // raster passes, but cannot legally inject Froxel Compute after
+        // queued shadow drawing without a mixed native command encoder.
+        plan.validate_pregraphics_compute_only()?;
+        let transitions = plan.transitions.len();
         self.cached_graph = Some((key, transitions));
         Ok(transitions)
     }
