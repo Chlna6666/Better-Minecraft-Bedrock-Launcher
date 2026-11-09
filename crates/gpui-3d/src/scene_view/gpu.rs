@@ -579,13 +579,21 @@ impl MeshArena {
                     access: gfx_core::GpuAccess::ReadBuffer,
                 })
                 .collect();
+            let pending = uses.clone();
             if self.native_work.register(gfx_core::GpuSubmissionRecord::new(
                 submission, gfx_core::GpuQueueId::PRIMARY,
                 gfx_core::GpuWorkStage::Graphics, uses,
             )).is_err() {
-                // The renderer owner must never certify a duplicate/foreign
-                // fence as completion of an untracked native operation.
-                return;
+                // A native DrawIndirect batch has ALREADY been accepted by
+                // the backend. Missing cross-queue wait proof cannot make its
+                // accesses disappear. Quarantine every resident buffer on
+                // the actual primary queue until a same-queue checkpoint;
+                // independent producers retain their own fence obligations.
+                for access in pending {
+                    self.native_work.register_untracked(
+                        gfx_core::GpuQueueId::PRIMARY, access,
+                    );
+                }
             }
         }
         self.gpu_submission_accepted(submission);
@@ -688,7 +696,18 @@ impl MeshArena {
     pub(super) fn register_native_access(
         &mut self, record: gfx_core::GpuSubmissionRecord,
     ) -> gfx_core::Result<()> {
-        self.native_work.register(record)
+        let queue = record.queue;
+        let accesses = record.uses.clone();
+        if let Err(error) = self.native_work.register(record) {
+            // Registration runs AFTER native submission acceptance. A missing
+            // queue wait, duplicate ID or unknown dependency must fail closed:
+            // do not discard already queued GPU uses from retirement tracking.
+            for access in accesses {
+                self.native_work.register_untracked(queue, access);
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Bind a REAL native GPU Copy submission to precisely the source and
