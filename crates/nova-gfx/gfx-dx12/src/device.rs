@@ -2026,9 +2026,52 @@ mod platform {
             };
 
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
+                command_type: D3D12_COMMAND_LIST_TYPE_DIRECT,
                 allocator: Some(allocator),
                 command_list: Some(command_list),
                 timestamps,
+                frame_probe: false,
+                gpu_work_tag: None,
+                gpu_draw_queries: Vec::new(),
+                submitted: false,
+                swapchain: None,
+                compute_resources: Vec::new(),
+                indirect_resources: Vec::new(),
+                buffer_states: Default::default(),
+            }))
+        }
+
+        /// Allocate a one-shot, COMPUTE-typed command allocator/list. The
+        /// Direct3D 12 API forbids executing a DIRECT command list on a
+        /// dedicated COMPUTE queue. These objects retire by the GPU-side
+        /// COMPUTE -> PRIMARY join fence, never by the DIRECT encoder pool.
+        fn create_compute_command_encoder(&mut self) -> Result<CommandEncoderId> {
+            // SAFETY: Device is live and the allocator type matches the native
+            // command queue which will execute this command list.
+            let allocator: ID3D12CommandAllocator = unsafe {
+                self.device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE)
+            }.map_err(|error| Error::Backend(format!(
+                "DX12 typed Compute command allocator: {error}"
+            )))?;
+            // SAFETY: The allocator is COMPUTE-typed; the command list is
+            // COMPUTE-typed and has no graphics-only initial pipeline state.
+            let command_list: ID3D12GraphicsCommandList = unsafe {
+                self.device.CreateCommandList(
+                    0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                    &allocator, Option::<&ID3D12PipelineState>::None,
+                )
+            }.map_err(|error| Error::Backend(format!(
+                "DX12 typed Compute command list: {error}"
+            )))?;
+            // SAFETY: A new command list begins recording; the existing
+            // begin_texture_command_encoder path expects it closed first.
+            unsafe { command_list.Close() }
+                .map_err(|error| Error::Backend(error.to_string()))?;
+            Ok(self.command_encoders.insert(Dx12CommandEncoder {
+                command_type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                allocator: Some(allocator),
+                command_list: Some(command_list),
+                timestamps: None,
                 frame_probe: false,
                 gpu_work_tag: None,
                 gpu_draw_queries: Vec::new(),
@@ -2892,8 +2935,15 @@ mod platform {
                 for resource in pending._encoder.indirect_resources.drain(..) {
                     compute.recycle_indirect(resource, true);
                 }
-                if free_encoders.len() < command_encoder_pool_capacity {
+                // The primary pool is strictly DIRECT typed. A COMPUTE
+                // command allocator/list cannot legally be reset or executed
+                // as a DIRECT list; release typed objects after the primary
+                // GPU join fence rather than contaminating this cache.
+                if pending._encoder.command_type == D3D12_COMMAND_LIST_TYPE_DIRECT
+                    && free_encoders.len() < command_encoder_pool_capacity
+                {
                     free_encoders.push(Dx12CommandEncoder {
+                        command_type: D3D12_COMMAND_LIST_TYPE_DIRECT,
                         allocator: pending._encoder.allocator.take(),
                         command_list: pending._encoder.command_list.take(),
                         timestamps: pending._encoder.timestamps.take(),
@@ -7830,6 +7880,9 @@ mod platform {
     }
 
     struct Dx12CommandEncoder {
+        /// Native queue compatibility is a hard invariant, not a hint.
+        /// DIRECT and COMPUTE allocators must never share a recycle pool.
+        command_type: D3D12_COMMAND_LIST_TYPE,
         buffer_states: std::collections::HashMap<BufferId, D3D12_RESOURCE_STATES>,
         compute_resources: Vec<compute::Resources>,
         indirect_resources: Vec<compute::Indirect>,
