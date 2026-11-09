@@ -56,6 +56,7 @@ struct VoxelOutput {
     @location(6) world_position:vec3<f32>,
     @location(7) surface_normal:vec3<f32>,
     @location(8) quad_uv:vec2<f32>,
+    @location(9) @interpolate(flat) merged_run:u32,
 };
 
 const ALPHA_MODE_MASK: u32 = 1u;
@@ -152,29 +153,50 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     let corners=array<u32,6>(0u,1u,2u,0u,2u,3u);
     let face=generated_templates[template_base+2u+descriptor.model_face];
     var vertex=face.vertices[corners[index%6u]];
+    let merged=descriptor.cell!=0xffffffffu && (descriptor.cell&0x80000000u)!=0u;
+    let cell=descriptor.cell&0x7fffffffu;
+    let height=select(descriptor.height,1.0,merged);
     var position=vec3<f32>(0.0);
     if(descriptor.cell!=0xffffffffu){
-        position=origin.xyz+vec3<f32>(f32(descriptor.cell%size.x),f32(descriptor.cell/size.x%size.y),f32(descriptor.cell/size.x/size.y));
+        position=origin.xyz+vec3<f32>(f32(cell%size.x),f32(cell/size.x%size.y),f32(cell/size.x/size.y));
+    }
+    if(merged){
+        // Run elongation happens only after GPU neighbor culling; unchanged
+        // template normals and UV orientation survive a horizontal stretch.
+        let delta=bitcast<i32>(face.info.y);
+        let along_z=delta==1 || delta==-1;
+        let coordinate=select(vertex.position_x,vertex.position_z,along_z);
+        var uv_stride=vec2<f32>(0.0);
+        for(var i=0u;i<4u;i++){
+            let v=face.vertices[i];
+            let axis=select(v.position_x,v.position_z,along_z);
+            uv_stride+=v.uv*select(-0.5,0.5,axis>=0.5);
+        }
+        let extra=descriptor.height-1.0;
+        vertex.uv+=uv_stride*coordinate*extra;
+        if(along_z){vertex.position_z+=coordinate*extra;}
+        else{vertex.position_x+=coordinate*extra;}
     }
     vertex.position_x+=position.x;
-    vertex.position_y=vertex.position_y*descriptor.height+position.y;
+    vertex.position_y=vertex.position_y*height+position.y;
     vertex.position_z+=position.z;
     var shaded=shade_voxel_value(vertex,instance,physical_slot);
-    let a=template_position(face.vertices[0],descriptor.height);
-    let b=template_position(face.vertices[1],descriptor.height);
-    let c=template_position(face.vertices[2],descriptor.height);
+    shaded.merged_run=select(1u,u32(descriptor.height),merged);
+    let a=template_position(face.vertices[0],height);
+    let b=template_position(face.vertices[1],height);
+    let c=template_position(face.vertices[2],height);
     if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance.model);}
     shaded.quad_uv=quad_coordinates(corners[index%6u]);
     if(frame.voxel_settings.y!=1.0 && size.w!=0u){
         var light=vec2<f32>(0.0);
         if(descriptor.cell==0xffffffffu){
-            let center=(a+b+c+template_position(face.vertices[3],descriptor.height))*0.25;
+            let center=(a+b+c+template_position(face.vertices[3],height))*0.25;
             let normal=cross(b-a,c-a);let n=normal/max(length(normal),0.00001)*0.001;
             light=max(static_levels(center-n,origin,size),static_levels(center+n,origin,size));
         }else{
             let delta=bitcast<i32>(face.info.y);
-            let local=template_position(face.vertices[corners[index%6u]],descriptor.height);
-            light=corner_cell_light(descriptor.cell,delta,local,size);
+            let local=template_position(face.vertices[corners[index%6u]],height);
+            light=corner_cell_light(cell,delta,local,size);
         }
         let sky=select(1.0,frame.voxel_settings.z,frame.voxel_settings.w!=0.0);
         let brightness=max(light.x,light.y*sky);
@@ -298,6 +320,7 @@ fn shade_voxel_value(vertex:VoxelVertex,instance:Instance,instance_index:u32)->V
         output.fog_distance = distance(world_position.xyz, frame.camera_position);
     }
     output.world_position=world_position.xyz;output.surface_normal=vec3<f32>(0.0);output.quad_uv=vec2<f32>(0.0);
+    output.merged_run=1u;
     return output;
 }
 
@@ -317,12 +340,17 @@ fn element_bounds_coverage(screen_position: vec2<f32>) -> f32 {
 // Material parameters are fetched once at each fragment entry point and
 // threaded through alpha, material, lighting and capture helpers. Otherwise
 // nested helpers can each independently load the same 80-byte DrawParams row.
+// Repeat only merged full-cube UVs. Keep pre-fracture derivatives to avoid
+// discontinuous mip selection at individual Minecraft texture cell seams.
+fn voxel_tiled_uv(input:VoxelOutput)->vec2<f32> {
+    return select(input.uv,fract(input.uv),input.merged_run>1u);
+}
 fn voxel_color(input:VoxelOutput,draw:DrawParams)->vec4<f32> {
     var color = draw.base_color * input.vertex_color;
     if (frame.voxel_settings.x==0.0 && (draw.texture_flags & TEXTURE_FLAG_ALBEDO) != 0u) {
         var texel=vec4<f32>(1.0);
         if ((draw.texture_flags & TEXTURE_FLAG_UV) != 0u) {
-            texel = textureSample(albedo_texture, material_sampler, input.uv);
+            texel = textureSampleGrad(albedo_texture,material_sampler,voxel_tiled_uv(input),dpdx(input.uv),dpdy(input.uv));
         } else {
             texel = textureSample(albedo_texture, material_sampler, vec2<f32>(0.5, 0.5));
         }
@@ -380,7 +408,7 @@ fn encode_normal(n:vec3<f32>)->vec2<f32>{
     let draw=draws[input.draw_index];
     let color=test_voxel_alpha(input,draw);
     var roughness=draw.roughness;var metallic=draw.metallic;
-    if((draw.texture_flags&8u)!=0u){let p=textureSample(material_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
+    if((draw.texture_flags&8u)!=0u){let p=textureSampleGrad(material_texture,material_sampler,voxel_tiled_uv(input),dpdx(input.uv),dpdy(input.uv));if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
     // Coverage does not imply transmission: ordinary alpha-blended surfaces stay diffuse.
     let blended=draw.alpha_mode==ALPHA_MODE_BLEND;
     var kind=select(metallic,6.0+metallic,blended);
@@ -403,7 +431,7 @@ struct VoxelAttributeTargets {
     let color=test_voxel_alpha(input,draw);
     var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){
-        let p=textureSample(material_texture,material_sampler,input.uv);
+        let p=textureSampleGrad(material_texture,material_sampler,voxel_tiled_uv(input),dpdx(input.uv),dpdy(input.uv));
         if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}
         else{roughness*=p.g;metallic*=p.b;}
     }
