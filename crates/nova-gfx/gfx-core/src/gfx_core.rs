@@ -795,6 +795,8 @@ bitflags! {
         const VERTEX = 1 << 0;
         /// Fragment stage visibility.
         const FRAGMENT = 1 << 1;
+        /// Compute-stage resource visibility.
+        const COMPUTE = 1 << 2;
     }
 }
 

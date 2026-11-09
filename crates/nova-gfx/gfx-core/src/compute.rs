@@ -1,6 +1,9 @@
 //! Ordered buffer compute and GPU-generated draw arguments.
 
-use crate::{BufferBinding, Error, Result, ShaderModuleId};
+use crate::{
+    BindGroupDescriptor, BindGroupLayoutDescriptor, BindingResource, BindingType, BufferBinding,
+    Error, Result, ShaderModuleId, ShaderStages,
+};
 
 /// Optional buffer-compute capabilities. Defaults advertise no compute support.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -282,6 +285,54 @@ pub struct ComputeBindGroupDispatch {
 }
 
 impl ComputeBindGroupDispatch {
+    /// Maps a validated compute resource set to the existing ordered buffer
+    /// dispatch path. Texture/sampler bindings cannot be silently dropped.
+    ///
+    /// StorageBuffer remains read-only; writable buffers must use ComputeDispatch
+    /// until the resource-set layout models read/write access explicitly.
+    pub fn buffer_bindings(
+        &self,
+        set: &BindGroupDescriptor,
+        layout: &BindGroupLayoutDescriptor,
+    ) -> Result<Vec<ComputeBufferBinding>> {
+        set.validate_against(layout)?;
+        let mut bindings = Vec::with_capacity(layout.entries.len());
+        for entry in &layout.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) {
+                return Err(Error::InvalidInput(format!(
+                    "binding {} is not visible to compute shaders",
+                    entry.binding
+                )));
+            }
+            let access = match entry.binding_type {
+                BindingType::UniformBuffer => ComputeBufferAccess::Uniform,
+                BindingType::StorageBuffer => ComputeBufferAccess::ReadOnly,
+                BindingType::SampledTexture
+                | BindingType::StorageTexture { .. }
+                | BindingType::Sampler => {
+                    return Err(Error::Unavailable(
+                        "compute texture/sampler resource sets require a native implementation"
+                            .into(),
+                    ));
+                }
+            };
+            let resource = set
+                .entries
+                .iter()
+                .find(|binding| binding.binding == entry.binding)
+                .ok_or_else(|| Error::InvalidInput("missing compute binding".into()))?;
+            let BindingResource::Buffer(buffer) = resource.resource else {
+                return Err(Error::InvalidInput("compute binding is not a buffer".into()));
+            };
+            bindings.push(ComputeBufferBinding {
+                binding: entry.binding,
+                buffer,
+                access,
+            });
+        }
+        Ok(bindings)
+    }
+
     /// Validates the workgroup counts against a device's compute capabilities.
     ///
     /// # Errors
@@ -363,7 +414,48 @@ impl ComputeDispatch<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BufferId;
+    use crate::{
+        BindGroupEntry, BindGroupLayoutEntry, BindGroupLayoutId, BufferId, TextureBinding,
+        TextureViewId,
+    };
+
+    #[test]
+    fn compute_bind_group_lowers_buffers_but_rejects_invisible_and_texture_bindings() {
+        let mut layout = BindGroupLayoutDescriptor {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 2,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::COMPUTE,
+            }],
+        };
+        let mut set = BindGroupDescriptor {
+            label: None,
+            layout: BindGroupLayoutId::new(1),
+            entries: vec![BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: BufferId::new(3), offset: 0, size: 64, stride: None,
+                }),
+            }],
+        };
+        let dispatch = ComputeBindGroupDispatch {
+            shader: ShaderModuleId::new(4),
+            bind_group: crate::BindGroupId::new(5),
+            workgroups: [1, 1, 1],
+        };
+        let converted = dispatch.buffer_bindings(&set, &layout).unwrap();
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].access, ComputeBufferAccess::ReadOnly);
+        layout.entries[0].stages = ShaderStages::VERTEX;
+        assert!(matches!(dispatch.buffer_bindings(&set, &layout), Err(Error::InvalidInput(_))));
+        layout.entries[0].stages = ShaderStages::COMPUTE;
+        layout.entries[0].binding_type = BindingType::SampledTexture;
+        set.entries[0].resource = BindingResource::Texture(TextureBinding {
+            texture_view: TextureViewId::new(6),
+        });
+        assert!(matches!(dispatch.buffer_bindings(&set, &layout), Err(Error::Unavailable(_))));
+    }
 
     #[test]
     fn device_binding_limits_validate_offsets_and_aligned_allocations() {
