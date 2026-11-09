@@ -581,11 +581,30 @@ impl SceneResources {
         self.culling.as_ref().map_or((0, 0), CullResources::counts)
     }
     pub(super) fn has_retired_arena_ranges(&self) -> bool {
-        self.arena.has_retired_ranges()
+        self.arena.has_retired_ranges() || self.stable_slots.has_retired_slots()
+    }
+
+    /// A final GPUI consumer on the same ordered native queue proves all
+    /// earlier voxel DrawIndirect reads when its actual fence completes.
+    /// Do not attach a completion proof to a slot until a native submission
+    /// was accepted. This is distinct from the shared generated-mesh arenas.
+    pub(super) fn draw_submission_accepted(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+    ) {
+        self.stable_slots.submission_accepted(submission);
+    }
+
+    pub(super) fn draw_submission_completed(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+    ) {
+        self.stable_slots.submission_completed(submission);
     }
 
     pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
         self.arena.reclaim_after_gpu_idle();
+        self.stable_slots.gpu_work_completed();
     }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
