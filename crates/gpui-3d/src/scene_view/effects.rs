@@ -114,6 +114,7 @@ mod construction;
 mod light_tiles;
 mod renderer;
 mod scene;
+mod ssr_hiz;
 mod targets;
 mod textures;
 pub(super) use renderer::EffectsRenderer;
