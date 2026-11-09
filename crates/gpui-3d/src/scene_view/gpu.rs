@@ -708,7 +708,13 @@ impl MeshArena {
     /// its ordered PRIMARY queue has completed, not an unrelated queue.
     /// Independent submissions remain individually fenced.
     pub(super) fn reclaim_after_gpu_idle(&mut self) {
-        if self.native_work.has_independent_queue_work() {
+        // The owner completed all *tracked* primary submissions, not
+        // necessarily Compute/Transfer commands queued AFTER its last
+        // tracked fence. Such work retains a pending native dependency until
+        // a later accepted queue checkpoint proves its completion.
+        if self.native_work.has_independent_queue_work()
+            || self.native_work.has_untracked_work()
+        {
             self.reclaim_proven_ranges();
             return;
         }
