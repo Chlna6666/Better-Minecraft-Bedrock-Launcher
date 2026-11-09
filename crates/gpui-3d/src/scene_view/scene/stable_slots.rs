@@ -201,14 +201,16 @@ impl StableDrawSlots {
                 .filter(|reader| reader.epoch >= first_use)
                 .map(|reader| reader.submission)
                 .collect::<Vec<_>>();
-            if pending.is_empty() && self.resource_retirement(&[slot]).safe_to_reuse() {
-                self.retired_unbound.push(slot);
-            } else {
-                groups.entry(pending).or_default().push(slot);
-            }
+            groups.entry(pending).or_default().push(slot);
         }
         for (pending, slots) in groups {
+            // One dependency query per retired cohort, NEVER per physical
+            // Draw. Bulk Section unloads can remove 100K+ slots at once.
             let gpu_dependency = self.resource_retirement(&slots);
+            if pending.is_empty() && gpu_dependency.safe_to_reuse() {
+                self.retired_unbound.extend(slots);
+                continue;
+            }
             self.retired_by_submission.push(RetiredSlotCohort {
                 slots: Arc::from(slots),
                 pending,
