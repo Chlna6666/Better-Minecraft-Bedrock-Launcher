@@ -99,6 +99,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-dx12 --lib --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-dx12 --features shader-compiler --test compute_resource_sets --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-opengl --lib --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build BMCBL library
         shell: pwsh
@@ -220,6 +224,7 @@ jobs:
           cargo test -p gfx-core --lib compute::tests -- --nocapture
           cargo test -p gfx-opengl --lib --no-run
           cargo test -p gfx-vulkan --lib --no-run
+          cargo test -p gfx-vulkan --test compute_resource_sets --no-run
 
       - name: Build BMCBL library
         run: cargo build --lib
