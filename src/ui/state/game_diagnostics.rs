@@ -7,6 +7,7 @@ pub struct GameDiagnosticsState {
     pub history: Vec<GameSessionReport>,
     pub options: CrashExportOptions,
     pub awaiting_sensitive_confirmation: bool,
+    pub show_technical: bool,
     pub exporting: bool,
     pub export_status: Option<String>,
     pub export_location: Option<String>,
@@ -18,6 +19,7 @@ impl GameDiagnosticsState {
     pub fn select_report(&mut self, report: GameSessionReport) {
         self.pending = Some(report);
         self.awaiting_sensitive_confirmation = false;
+        self.show_technical = false;
         self.export_status = None;
         self.export_location = None;
     }
