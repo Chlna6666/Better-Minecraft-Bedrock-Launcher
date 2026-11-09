@@ -147,6 +147,14 @@ impl Dx12Device {
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
     ) -> Result<()> {
+        self.dispatch_resource_set_profiled(dispatch, None)
+    }
+
+    pub(super) fn dispatch_resource_set_profiled(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+        tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
         dispatch.validate(self.compute_capabilities())?;
         let set = self.bind_groups.get(dispatch.bind_group)?.clone();
         let layout = self.bind_group_layouts.get(set.layout)?.desc.clone();
@@ -216,6 +224,13 @@ impl Dx12Device {
             let command = self.command_encoders.get(encoder)?.command_list.as_ref()
                 .ok_or_else(|| Error::Backend("DX12 compute command list is missing".into()))?
                 .clone();
+            let queries = if tag.is_some() {
+                self.command_encoders.get(encoder)?.timestamps.as_ref().map(|queries| {
+                    (queries.heap.clone(), queries.readback.clone())
+                })
+            } else {
+                None
+            };
             let has_sampler = layout.entries.iter().any(|e| e.binding_type == BindingType::Sampler);
             let heaps = if has_sampler {
                 vec![Some(self.resource_heap.heap.clone()), Some(self.sampler_heap.heap.clone())]
@@ -296,10 +311,20 @@ impl Dx12Device {
                     record_transition_barrier(&command, resource, texture.state, target);
                 }
             }
+            // Measure the native kernel interval, excluding CPU recording and
+            // the resource state transitions before and after the dispatch.
+            // Timestamp queries are retrieved only after the encoder fence
+            // completes; never wait for them on the GPU owner.
             unsafe {
+                if let Some((heap, _)) = &queries {
+                    command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+                }
                 command.Dispatch(
                     dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
                 );
+                if let Some((heap, _)) = &queries {
+                    command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                }
             }
             // Writable UAV images must leave the UAV state before GPUI
             // samples them. Sampled-only images can remain GENERIC_READ,
@@ -331,6 +356,14 @@ impl Dx12Device {
                         D3D12_RESOURCE_STATE_GENERIC_READ,
                     );
                 }
+            }
+            if let Some((heap, readback)) = &queries {
+                unsafe {
+                    command.ResolveQueryData(
+                        heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0,
+                    );
+                }
+                self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag;
             }
             self.finish_texture_command_encoder(encoder)?;
             let fence_value = self.submit_without_wait(encoder)?;
