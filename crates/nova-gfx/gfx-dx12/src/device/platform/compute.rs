@@ -153,7 +153,7 @@ impl Dx12Device {
     pub(super) fn dispatch_resource_set_profiled(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
-        tag: Option<GpuTimestampTag>,
+        tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
         dispatch.validate(self.compute_capabilities())?;
         let set = self.bind_groups.get(dispatch.bind_group)?.clone();
