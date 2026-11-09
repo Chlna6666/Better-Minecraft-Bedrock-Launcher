@@ -1,6 +1,6 @@
 use super::{
     SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
-    sidecar_surface::SidecarSurface,
+    sidecar_surface::SidecarSurface, projection::FrameProjection,
 };
 use crate::prepare::StructuralDrawDelta;
 use anyhow::{anyhow, bail};
@@ -593,6 +593,38 @@ fn defer_unprepared_scene(
     worker_pending && !committed_matches && !retained_compatible
 }
 
+/// Input that produced a successfully enqueued offscreen capture.
+/// Retain only cheap Arc-backed view fields; never clone mesh data.
+struct CapturedInput {
+    view: SceneView,
+    projection: FrameProjection,
+    revision: u64,
+}
+
+/// Only bypass scene.prepare when every input it could observe is unchanged.
+/// Animated/time-dependent views stay on the original update path.
+fn same_static_capture_input(previous: &SceneView, current: &SceneView) -> bool {
+    !current.continuous_presentation
+        && current.animation.is_empty()
+        && current.screen_effects.is_none()
+        && Arc::ptr_eq(&previous.scene, &current.scene)
+        && Arc::ptr_eq(&previous.textures, &current.textures)
+        && previous.scene_transform == current.scene_transform
+        && previous.camera == current.camera
+        && previous.projection_region == current.projection_region
+        && previous.inset_max_pixels == current.inset_max_pixels
+        && previous.inset_fraction == current.inset_fraction
+        && previous.blend_edge_feather == current.blend_edge_feather
+        && previous.anisotropy_enabled == current.anisotropy_enabled
+        && previous.sampling == current.sampling
+        && previous.voxel_shader == current.voxel_shader
+        && previous.fog == current.fog
+        && previous.voxel_shading == current.voxel_shading
+        && previous.culling_bounds == current.culling_bounds
+        && (Arc::ptr_eq(&previous.hidden_nodes, &current.hidden_nodes)
+            || previous.hidden_nodes == current.hidden_nodes)
+}
+
 struct SidecarGpuBackend {
     backend: BackendKind,
     render_pass: RenderPassId,
@@ -606,6 +638,9 @@ struct SidecarGpuBackend {
     argument_arena: Rc<RefCell<MeshArena>>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
+    /// Exact last successful producer input per view. A GUI-only redraw can
+    /// reuse the confirmed texture without even calling SceneResources::prepare.
+    captured_inputs: HashMap<SceneViewId, CapturedInput>,
     /// True 3D offscreen producer path. Each capture becomes a separate
     /// native submission ordered before GPUI samples its completed texture.
     /// Device calls remain on this native owner for DX11/GL correctness.
@@ -624,6 +659,15 @@ struct SidecarGpuBackend {
     /// widget would make GUI painting quadratic in the number of views.
     last_idle_retire_frame: Option<u64>,
     timing_trace: RendererTimingTrace,
+}
+
+/// A reused view is still live. Keep its scene resident across arbitrary
+/// GUI-only redraws without taking the costly SceneResources::prepare path.
+fn scene_last_used(id: SceneViewId, scenes: &mut HashMap<SceneViewId, SceneResources>, frame: u64) {
+    if let Some(scene) = scenes.get_mut(&id) {
+        scene.last_used_frame = frame;
+        scene.last_used_at = Instant::now();
+    }
 }
 
 /// A frame is shared by all GPUI extension draws, regardless of SceneView
@@ -705,6 +749,7 @@ impl SidecarGpuBackend {
             ))),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
+            captured_inputs: HashMap::new(),
             offscreen,
             pending_passes: Vec::new(),
             pending_capture_epochs: Vec::new(),
@@ -809,6 +854,7 @@ impl SidecarGpuBackend {
     ) -> gpui::Result<()> {
         for id in ids {
             self.command_cache.remove(&id);
+            self.captured_inputs.remove(&id);
             if let Some(mut scene) = self.scenes.remove(&id) {
                 scene.destroy(device)?;
             }
@@ -1058,6 +1104,30 @@ mod tests {
     }
 
     #[test]
+    fn stable_gui_redraw_reuse_checks_every_shader_visible_input() {
+        use super::same_static_capture_input;
+        use crate::{Camera, Scene, Vec3};
+        use std::sync::Arc;
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 100.0);
+        let original = crate::SceneView::new(Arc::new(Scene::new()), camera);
+        assert!(same_static_capture_input(&original, &original));
+        assert!(!same_static_capture_input(
+            &original,
+            &original.with_voxel_shading(crate::VoxelShading {
+                sky_brightness: 0.5,
+                ..original.voxel_shading
+            }).unwrap(),
+        ));
+        assert!(!same_static_capture_input(
+            &original,
+            &original.with_scene(Arc::new(Scene::new())),
+        ));
+        let mut moving = original.clone();
+        moving.continuous_presentation = true;
+        assert!(!same_static_capture_input(&original, &moving));
+    }
+
+    #[test]
     fn idle_scene_retirement_is_scanned_once_per_frame_for_all_views() {
         use super::should_scan_idle_scenes;
         assert!(should_scan_idle_scenes(1, None));
@@ -1228,6 +1298,31 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 surface.sync_placement(device, scene_view.id, &context)?;
             }
         }
+        // A stable 3D scene on an unrelated GUI redraw requires only one
+        // painter-ordered composite draw. Check immutable input identity and
+        // the actual cropped projection *before* scene preparation, so the
+        // GPU owner avoids redundant device queries, cull dispatch planning,
+        // frame-buffer updates and cache probing on every UI animation frame.
+        // Submission acknowledgement, not merely an enqueued pass, gates reuse.
+        if let (Some(surface), Some(captured), Some(scene)) = (
+            self.offscreen.as_ref(),
+            self.captured_inputs.get(&scene_view.id),
+            self.scenes.get(&scene_view.id),
+        ) {
+            if same_static_capture_input(&captured.view, &scene_view)
+                && scene.capture_revision == captured.revision
+                && surface.can_reuse(scene_view.id, &context, captured.revision)
+            {
+                let capture_context = surface.capture_context(&context);
+                if FrameProjection::new(&scene_view, &capture_context)? == captured.projection
+                    && surface.composite_existing(scene_view.id, &context, steps)
+                {
+                    scene_last_used(scene_view.id, &mut self.scenes, self.frame_index);
+                    self.offscreen_trace.record(OffscreenFrameKind::Reused);
+                    return Ok(());
+                }
+            }
+        }
         // A Qt3D-like CPU RenderJob may still be preparing the initial
         // scene or an incompatible full replacement. Do not turn the shared
         // GPU owner into a second synchronous geometry traversal. The host
@@ -1361,6 +1456,14 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     1, 0, start.elapsed(),
                 );
             }
+            // The published input must be the one actually rendered: during
+            // a pending full replacement, the producer may capture a retained
+            // compatible scene instead of the incoming SceneView.
+            self.captured_inputs.insert(scene_view.id, CapturedInput {
+                view: prepared_view.clone(),
+                projection: FrameProjection::new(prepared_view, &render_context)?,
+                revision: scene.capture_revision,
+            });
             self.pending_capture_epochs.push((scene_view.id, scene.capture_revision));
             self.offscreen_trace.record(OffscreenFrameKind::Captured);
         }
