@@ -1,0 +1,3 @@
+[19:03:24 INFO] [LeviLamina] Loaded 10 mods
+[19:03:25 ERROR] [LeviLamina] Failed to load plugin: BadAddon.dll (missing dependency)
+[19:03:25 INFO] [BLoader] cape scan discovered=6 loaded=6 failed=0

@@ -1,0 +1,3 @@
+Proton: launching GDK guest
+DXVK: vkCreateInstance failed VK_ERROR_INCOMPATIBLE_DRIVER
+err:vulkan:load_vulkan Failed to load libvulkan.so.1

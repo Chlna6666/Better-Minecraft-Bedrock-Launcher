@@ -1,0 +1,6 @@
+0024:err:seh:raise_exception Unhandled page fault on read access to 0x0000000000000000 in 64-bit code.
+Unhandled exception: page fault in mod_bad.dll (0xc0000005).
+Backtrace:
+=>0 0x0000000061002f10 in mod_bad.dll (+0x2f10)
+  1 0x000000014013c210 in Minecraft.Windows.exe (+0x3c210)
+Modules:
