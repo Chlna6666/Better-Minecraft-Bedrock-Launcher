@@ -15,7 +15,7 @@ fn rebase_compute_passes(
     let mut previous = 0;
     for stage in stages.iter() {
         let offset = stage.after_graphics_pass;
-        if offset == 0 || offset >= graphics_count || offset < previous
+        if offset >= graphics_count || offset < previous
             || first_graphics.checked_add(offset).is_none()
         {
             return Err(anyhow::anyhow!(
@@ -200,9 +200,13 @@ mod tests {
         rebase_compute_passes(&mut stages, 4, 3).unwrap();
         assert_eq!(stages[0].after_graphics_pass, 5);
         assert_eq!(stages[1].after_graphics_pass, 6);
+        let mut cached_shadow = [make(0), make(0)];
+        rebase_compute_passes(&mut cached_shadow, 4, 1).unwrap();
+        assert_eq!(cached_shadow[0].after_graphics_pass, 4);
+        assert_eq!(cached_shadow[1].after_graphics_pass, 4);
 
         for mut invalid in [
-            [make(0), make(1)],
+            [make(3), make(3)],
             [make(1), make(3)],
             [make(2), make(1)],
         ] {
