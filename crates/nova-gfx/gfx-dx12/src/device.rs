@@ -2095,6 +2095,71 @@ mod platform {
             self.create_typed_queue_command_encoder(D3D12_COMMAND_LIST_TYPE_COPY)
         }
 
+        /// Release graphics/transfer resource states on the PRIMARY DIRECT
+        /// queue before native COMPUTE or COPY. Neither typed queue can
+        /// transition from graphics-only states. GPU-side Wait on the primary
+        /// fence, emitted by the caller, makes these COMMON states visible.
+        ///
+        /// UPLOAD heaps remain permanently GENERIC_READ; they may be read as
+        /// native copy/compute sources, but cannot be promoted to COMMON.
+        fn prepare_native_queue_buffers(
+            &mut self, buffers: impl IntoIterator<Item = BufferId>,
+        ) -> Result<()> {
+            let mut transitions = std::collections::HashMap::<
+                BufferId, (ID3D12Resource, D3D12_RESOURCE_STATES),
+            >::new();
+            for id in buffers {
+                let buffer = self.buffers.get(id)?;
+                if buffer.desc.memory_location == MemoryLocation::CpuToGpu
+                    || buffer.state == D3D12_RESOURCE_STATE_COMMON
+                {
+                    continue;
+                }
+                let native = buffer.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("DX12 asynchronous buffer has no native allocation".into())
+                })?;
+                transitions.entry(id).or_insert_with(|| (native.clone(), buffer.state));
+            }
+            if transitions.is_empty() {
+                return Ok(());
+            }
+            let encoder = self.create_command_encoder(
+                &CommandEncoderDescriptor { label: Some("DX12 native queue release".into()) },
+            )?;
+            let release = (|| -> Result<u64> {
+                self.begin_texture_command_encoder(encoder, None)?;
+                let command = self.command_encoders.get(encoder)?.command_list
+                    .as_ref().ok_or_else(|| Error::Backend(
+                        "DX12 native queue release has no command list".into(),
+                    ))?;
+                for (resource, state) in transitions.values() {
+                    record_transition_barrier(
+                        command, resource, *state, D3D12_RESOURCE_STATE_COMMON,
+                    );
+                }
+                self.finish_texture_command_encoder(encoder)?;
+                self.submit_without_wait(encoder)
+            })();
+            let fence_value = match release {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self.release_temporary_command_encoder_after_failure(encoder);
+                    return Err(error);
+                }
+            };
+            let encoder = self.command_encoders.take(encoder)?;
+            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
+                fence_value, _encoder: encoder,
+            });
+            // Resource state changes are published only after the direct
+            // release command list has been accepted. The typed queue will
+            // GPU-wait on a newer primary timeline value before execution.
+            for (id, _) in transitions {
+                self.buffers.get_mut(id)?.state = D3D12_RESOURCE_STATE_COMMON;
+            }
+            Ok(())
+        }
+
         /// Records a draw call with optional bind groups.
         fn record_draw_desc(
             &mut self,
