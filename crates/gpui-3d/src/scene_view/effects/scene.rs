@@ -91,25 +91,58 @@ fn stable_shadow_camera(
     )))
 }
 
-/// A newly wrapped or empty-fork Scene is not a shadow-caster change.
-///
-/// Filament separates scene-wide caster discovery from cascade updates; use
-/// BMCBL's immutable Scene revision identity / bounded delta lineage here to
-/// avoid redrawing three depth maps when the caller republishes an unchanged
-/// Scene graph. Unknown or structural deltas still conservatively redraw.
-fn shadow_caster_scene_changed(previous: Option<&Arc<Scene>>, current: &Arc<Scene>) -> bool {
+/// Per-cascade shadow-cache invalidation using the existing Scene revision
+/// lineage. Unlike whole-scene invalidation, a changed Section outside this
+/// cascade's sun-extruded caster region cannot affect its depth attachment.
+/// This visits only changed root nodes, never every voxel or every DrawRecord.
+/// Unknown/structural revisions and animated hierarchies still conservatively
+/// invalidate because their derived world bounds cannot be proven local.
+fn shadow_caster_scene_changed(
+    previous: Option<&Arc<Scene>>,
+    current: &Arc<Scene>,
+    transform: Mat4,
+    caster_region: crate::Aabb,
+) -> bool {
     let Some(previous) = previous else { return true };
-    if Arc::ptr_eq(previous, current) {
-        return false;
-    }
-    if previous.instance_id() == current.instance_id()
-        && previous.version() == current.version()
+    if Arc::ptr_eq(previous, current)
+        || (previous.instance_id() == current.instance_id()
+            && previous.version() == current.version())
     {
         return false;
     }
-    current
-        .changed_nodes(previous)
-        .is_none_or(|changed| !changed.is_empty())
+    let Some(changed) = current.changed_nodes(previous) else {
+        return true;
+    };
+    for id in changed.iter().copied() {
+        // Both prior and new bounds are necessary: removing a caster must
+        // invalidate the old cascade even if its new position is elsewhere.
+        for snapshot in [&**previous, &**current] {
+            let Some(node) = snapshot.node(id) else { continue };
+            if !node.visible { continue; }
+            if snapshot.parent(id).is_some()
+                || snapshot.children(id).is_some_and(|children| !children.is_empty())
+                || !node.lod.is_empty()
+            {
+                return true;
+            }
+            let Some(mesh) = node.mesh.as_ref() else { continue };
+            let Some(bounds) = mesh.bounds() else { continue };
+            let bounds = bounds.transformed(transform * node.transform.matrix());
+            if !bounds.min.is_finite() || !bounds.max.is_finite() {
+                return true;
+            }
+            if bounds.min.x <= caster_region.max.x
+                && bounds.max.x >= caster_region.min.x
+                && bounds.min.y <= caster_region.max.y
+                && bounds.max.y >= caster_region.min.y
+                && bounds.min.z <= caster_region.max.z
+                && bounds.max.z >= caster_region.min.z
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub(super) struct EffectScene {
@@ -347,9 +380,8 @@ impl EffectScene {
             self.shadow_valid.fill(false);
             return Err(anyhow::anyhow!("invalid sun"));
         };
-        let scene_dirty =
-            shadow_caster_scene_changed(self.shadow_scene.as_ref(), &view.scene)
-            || self.shadow_transform != view.scene_transform
+        let caster_state_dirty =
+            self.shadow_transform != view.scene_transform
             || self.shadow_input.as_ref().is_none_or(|old| {
                 !Arc::ptr_eq(&old.textures, &view.textures)
                     || old.sampling != view.sampling
@@ -370,9 +402,14 @@ impl EffectScene {
                     return Err(error);
                 }
             };
+            let caster_bounds = shadow_caster_bounds(camera.target, sun, cascade);
             if self.shadow_valid[cascade]
-                && !scene_dirty
                 && self.shadow_key[cascade] == Some(key)
+                && !caster_state_dirty
+                && !shadow_caster_scene_changed(
+                    self.shadow_scene.as_ref(), &view.scene,
+                    view.scene_transform, caster_bounds,
+                )
             {
                 continue;
             }
@@ -385,9 +422,8 @@ impl EffectScene {
                 shadow_pass, Format::R8Unorm,
                 Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
             );
-            let casters = shadow_caster_bounds(camera.target, sun, cascade);
             let commands = self.scene.shadow_steps(
-                device, renderer, camera, cascade, casters, &context,
+                device, renderer, camera, cascade, caster_bounds, &context,
             )?;
             passes.push(pass(
                 shadow_pass,
@@ -566,17 +602,53 @@ mod stable_shadow_tests {
     fn shadow_caster_cache_reuses_empty_fork_without_gpu_redraw() {
         let old = Arc::new(Scene::new());
         let same = Arc::new(old.fork());
-        assert!(!shadow_caster_scene_changed(Some(&old), &old));
-        assert!(!shadow_caster_scene_changed(Some(&old), &same));
+        let bounds = crate::Aabb::new(
+            Vec3::new(-10.0,-10.0,-10.0), Vec3::new(10.0,10.0,10.0),
+        ).unwrap();
+        assert!(!shadow_caster_scene_changed(Some(&old), &old, Mat4::IDENTITY, bounds));
+        assert!(!shadow_caster_scene_changed(Some(&old), &same, Mat4::IDENTITY, bounds));
     }
 
     #[test]
-    fn shadow_caster_cache_invalidates_structural_changes() {
+    fn cascade_only_invalidates_for_changed_caster_within_its_region() {
         let previous = Arc::new(Scene::new());
         let mut changed = previous.fork();
-        changed.insert(None, crate::Node::new()).unwrap();
-        assert!(shadow_caster_scene_changed(Some(&previous), &Arc::new(changed)));
-        assert!(shadow_caster_scene_changed(None, &previous));
+        changed.insert(
+            None,
+            crate::Node::new().with_mesh(Arc::new(crate::Mesh::cube())),
+        ).unwrap();
+        let changed = Arc::new(changed);
+        let near = crate::Aabb::new(
+            Vec3::new(-12.0,-12.0,-12.0), Vec3::new(12.0,12.0,12.0),
+        ).unwrap();
+        let far = crate::Aabb::new(
+            Vec3::new(400.0,400.0,400.0), Vec3::new(500.0,500.0,500.0),
+        ).unwrap();
+        assert!(shadow_caster_scene_changed(
+            Some(&previous), &changed, Mat4::IDENTITY, near,
+        ));
+        assert!(!shadow_caster_scene_changed(
+            Some(&previous), &changed, Mat4::IDENTITY, far,
+        ));
+        assert!(shadow_caster_scene_changed(None, &changed, Mat4::IDENTITY, far));
+    }
+
+    #[test]
+    fn removed_caster_invalidates_its_old_cascade() {
+        let mut baseline = Scene::new();
+        let id = baseline.insert(
+            None, crate::Node::new().with_mesh(Arc::new(crate::Mesh::cube())),
+        ).unwrap();
+        let baseline = Arc::new(baseline);
+        let mut changed = baseline.fork();
+        changed.remove(id).unwrap();
+        let changed = Arc::new(changed);
+        let near = crate::Aabb::new(
+            Vec3::new(-12.0,-12.0,-12.0), Vec3::new(12.0,12.0,12.0),
+        ).unwrap();
+        assert!(shadow_caster_scene_changed(
+            Some(&baseline), &changed, Mat4::IDENTITY, near,
+        ));
     }
 
     #[test]
