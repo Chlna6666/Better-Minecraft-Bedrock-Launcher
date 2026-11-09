@@ -102,9 +102,10 @@ impl EffectScene {
     pub(super) fn capture_geometry(
         &mut self,
         device: &mut dyn ExtensionDevice,
-        resources: [&mut RendererResources; 3],
+        resources: [&mut RendererResources; 2],
         view: &SceneView,
         local: &RendererExtensionContext,
+        attributes_pass: RenderPassId,
         passes: &mut Vec<RendererExtensionPass>,
     ) -> gpui::Result<()> {
         let capture_changed = !self.targets_valid
@@ -124,10 +125,8 @@ impl EffectScene {
         if capture_changed {
             let mut opaque = Vec::new();
             self.scene.append_steps(resources[0], true, &mut opaque)?;
-            let mut surface = Vec::new();
-            self.scene.append_steps(resources[1], true, &mut surface)?;
-            let mut albedo = Vec::new();
-            self.scene.append_steps(resources[2], true, &mut albedo)?;
+            let mut attributes = Vec::new();
+            self.scene.append_steps(resources[1], true, &mut attributes)?;
             let msaa = self.targets.msaa.as_ref();
             // When MSAA is enabled the geometry renders into multisampled
             // color+depth copies and resolves into the single-sample views that
@@ -140,22 +139,18 @@ impl EffectScene {
                 opaque,
                 true,
             ));
-            passes.push(pass(
-                local.render_pass(),
-                msaa.map_or(self.targets.surface.view, |m| m.surface.view),
+            let surface = msaa.map_or(self.targets.surface.view, |m| m.surface.view);
+            let albedo = msaa.map_or(self.targets.albedo.view, |m| m.albedo.view);
+            let mut attributes_plan = pass(
+                attributes_pass,
+                surface,
                 msaa.map_or(self.targets.surface_depth.view, |m| m.surface_depth.view),
                 msaa.map(|_| self.targets.surface.view),
-                surface,
+                attributes,
                 true,
-            ));
-            passes.push(pass(
-                local.render_pass(),
-                msaa.map_or(self.targets.albedo.view, |m| m.albedo.view),
-                msaa.map_or(self.targets.surface_depth.view, |m| m.surface_depth.view),
-                msaa.map(|_| self.targets.albedo.view),
-                albedo,
-                false,
-            ));
+            );
+            attributes_plan.color_attachments = Arc::from([surface, albedo]);
+            passes.push(attributes_plan);
             self.capture = Some(view.clone());
             self.queued_capture = true;
         }
