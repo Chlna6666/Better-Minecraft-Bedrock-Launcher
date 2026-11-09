@@ -78,6 +78,43 @@ impl FroxelGrid {
         }
     }
 
+    /// Device-qualified volume grid: reject unsupported 3D sampled/storage
+    /// formats instead of using a 2DArray fallback that changes shader semantics.
+    pub fn plan_native(
+        extent: Extent2d,
+        caps: ComputeCapabilities,
+        volume: gfx_core::TextureVolumeCapabilities,
+    ) -> Option<Self> {
+        if !volume.sampled || !volume.storage ||
+            volume.max_dimension_3d < FROXEL_DEPTH_SLICES
+        {
+            return None;
+        }
+        let mut grid = Self::plan(extent, caps)?;
+        while grid.extent[0].max(grid.extent[1]) > volume.max_dimension_3d {
+            if grid.tile_pixels >= MAX_TILE_PIXELS {
+                return None;
+            }
+            grid.tile_pixels = grid.tile_pixels.checked_mul(2)?;
+            grid.extent[0] = extent.width().div_ceil(grid.tile_pixels);
+            grid.extent[1] = extent.height().div_ceil(grid.tile_pixels);
+            grid.workgroups[0] = grid.extent[0].div_ceil(FROXEL_KERNEL.workgroup_size[0]);
+            grid.workgroups[1] = grid.extent[1].div_ceil(FROXEL_KERNEL.workgroup_size[1]);
+            grid.texture_bytes = u64::from(grid.extent[0])
+                .checked_mul(u64::from(grid.extent[1]))?
+                .checked_mul(u64::from(grid.extent[2]))?
+                .checked_mul(BYTES_PER_RGBA16F)?
+                .checked_mul(VOLUME_COUNT)?;
+        }
+        if grid.workgroups.iter().zip(caps.max_workgroups)
+            .any(|(&count, maximum)| count > maximum)
+        { return None; }
+        if !caps.supports_kernel(ComputeKernelProfile {
+            workgroup_size: [8, 8, 1], shared_memory_bytes: 0
+        }) { return None; }
+        Some(grid)
+    }
+
     /// Center of a logarithmically distributed depth slice (in world units).
     /// The matching shader must use the same mapping for light injection,
     /// integration and full-resolution composite sampling.
@@ -122,6 +159,24 @@ mod tests {
         assert!(grid.tile_pixels > INITIAL_TILE_PIXELS);
         assert!(grid.texture_bytes <= MAX_FROXEL_BYTES);
         assert_eq!(grid.extent[2], FROXEL_DEPTH_SLICES);
+    }
+
+    #[test]
+    fn volume_device_limits_select_an_appropriate_tile_size() {
+        let caps = gfx_core::TextureVolumeCapabilities {
+            max_dimension_3d: 128,
+            sampled: true,
+            storage: true,
+        };
+        let grid = FroxelGrid::plan_native(
+            Extent2d::new(3840,2160).unwrap(), capable(), caps
+        ).unwrap();
+        assert!(grid.extent[0] <= 128);
+        assert_eq!(grid.extent[2], 64);
+        assert!(FroxelGrid::plan_native(
+            Extent2d::new(1920,1080).unwrap(), capable(),
+            gfx_core::TextureVolumeCapabilities::default()
+        ).is_none());
     }
 
     #[test]
