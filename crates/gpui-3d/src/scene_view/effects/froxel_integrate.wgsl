@@ -19,11 +19,11 @@ fn cs_froxel_integrate(@builtin(global_invocation_id) id:vec3<u32>){
         let z1 = f32(slice+1u)/f32(dimensions.z);
         let segment_length = exp(mix(ln_near,ln_far,z1)) -
                              exp(mix(ln_near,ln_far,z0));
-        let source = textureLoad(injected,vec3<i32>(id.xy,slice),0);
+        let source = textureLoad(injected,vec3<i32>(vec2<i32>(id.xy),i32(slice)),0);
         let extinction = exp(-max(source.a,0.0)*segment_length);
         radiance += transmittance*(1.0-extinction)*source.rgb;
         transmittance *= extinction;
-        textureStore(integrated,vec3<i32>(id.xy,slice),
+        textureStore(integrated,vec3<i32>(vec2<i32>(id.xy),i32(slice)),
                      vec4<f32>(radiance,transmittance));
     }
 }
