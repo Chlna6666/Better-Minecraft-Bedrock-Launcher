@@ -163,6 +163,9 @@ pub struct VulkanDevice {
     command_encoders: ResourceRegistry<VulkanCommandEncoder>,
     free_command_encoders: Vec<VulkanCommandEncoder>,
     submissions: ResourceRegistry<VulkanSubmission>,
+    /// Completed via a native fence on the waiting graphics-family queue.
+    /// Binary semaphores must remain alive until that GPU wait executes.
+    native_queue_waits: Vec<VulkanQueueWait>,
     surfaces: ResourceRegistry<VulkanSurface>,
     swapchains: ResourceRegistry<VulkanSwapchain>,
     descriptor_pools: descriptors::Pools,
@@ -469,6 +472,7 @@ impl VulkanDevice {
             command_encoders: ResourceRegistry::new("command encoder"),
             free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
             submissions: ResourceRegistry::new("submission"),
+            native_queue_waits: Vec::new(),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
             descriptor_pools: descriptors::Pools::default(),
@@ -3276,6 +3280,23 @@ impl VulkanDevice {
     /// Polls and releases deferred resources that have aged past their retirement frame.
     pub fn poll_cleanup(&mut self) {
         let device = self.device.clone();
+        // The secondary queue's native fence is the only proof that the
+        // binary wait semaphore has been consumed. Do not free it when the
+        // producing graphics queue signals, or when a host submit returns.
+        self.native_queue_waits.retain(|bridge| {
+            if fence_is_complete(&device, bridge.wait_fence) {
+                // SAFETY: The wait submission signaled this fence, therefore
+                // both the queued semaphore wait and its source signal are
+                // finished. No other queue references these objects.
+                unsafe {
+                    device.destroy_fence(bridge.wait_fence, None);
+                    device.destroy_semaphore(bridge.semaphore, None);
+                }
+                false
+            } else {
+                true
+            }
+        });
         for resource in self
             .deferred_destroys
             .collect_ready(|_, resource| deferred_resource_ready(&device, resource))
@@ -4738,6 +4759,89 @@ impl CommandDevice for VulkanDevice {
 }
 
 impl SubmissionDevice for VulkanDevice {
+    fn enqueue_gpu_queue_wait(
+        &mut self,
+        target_queue: gfx_core::GpuQueueId,
+        producer: SubmissionId,
+    ) -> Result<gfx_core::GpuNativeWaitProof> {
+        // A second graphics-capable queue in the SAME family is safe for
+        // existing shared resources without queue-family ownership transfer.
+        // Dedicated COMPUTE/TRANSFER families are not exposed until native
+        // ownership-release/acquire barriers are implemented.
+        let secondary = gfx_core::GpuQueueId {
+            family: self.graphics_queue_family_index,
+            index: 1,
+        };
+        let target = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
+            "Vulkan has no second GPU queue in its graphics family".into(),
+        ))?;
+        if target_queue != secondary {
+            return Err(Error::Unavailable(
+                "Vulkan requested queue needs unsupported family ownership transfers".into(),
+            ));
+        }
+        // This SubmissionId must still be owned by the native device. All
+        // tracked Vulkan submissions are fenced on the primary graphics
+        // queue, including secondary sidecar work after the GPU-side join.
+        let _ = self.submissions.get(producer)?;
+
+        let info = vk::SemaphoreCreateInfo::default();
+        // SAFETY: Binary semaphore is allocated on this live logical device.
+        let semaphore = unsafe { self.device.create_semaphore(&info, None) }
+            .map_err(VulkanError::from)?;
+        let fence = match create_fence(&self.device, false) {
+            Ok(fence) => fence,
+            Err(error) => {
+                // SAFETY: The semaphore was never submitted to a queue.
+                unsafe { self.device.destroy_semaphore(semaphore, None) };
+                return Err(error);
+            }
+        };
+        let result = (|| -> Result<()> {
+            let signals = [semaphore];
+            let release = vk::SubmitInfo::default().signal_semaphores(&signals);
+            // SAFETY: Queue 0 owns the already accepted producer and this
+            // signal is ordered AFTER all commands on that native queue.
+            unsafe {
+                self.device.queue_submit(self.graphics_queue, &[release], vk::Fence::null())
+            }.map_err(VulkanError::from)?;
+            let waits = [semaphore];
+            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let acquire = vk::SubmitInfo::default()
+                .wait_semaphores(&waits)
+                .wait_dst_stage_mask(&stages);
+            // SAFETY: Queue 1 was allocated in the SAME native family. Its
+            // future workloads execute only after the semaphore is signaled;
+            // the fence tracks completion of this GPU-side wait operation.
+            unsafe {
+                self.device.queue_submit(target, &[acquire], fence)
+            }.map_err(VulkanError::from)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // A partial queue-submit failure can leave the binary semaphore
+            // in use. This exceptional error path drains the device before
+            // destroying native sync objects; normal frames never host-wait.
+            // SAFETY: Queue ownership remains with this device.
+            let _ = unsafe { self.device.device_wait_idle() };
+            // SAFETY: Queued references are no longer in flight.
+            unsafe {
+                self.device.destroy_fence(fence, None);
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            return Err(error);
+        }
+        self.native_queue_waits.push(VulkanQueueWait {
+            semaphore,
+            wait_fence: fence,
+        });
+        // SAFETY: A Vulkan binary semaphore signal and matching GPU wait
+        // have both been submitted successfully to these physical queues.
+        Ok(unsafe {
+            gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue)
+        })
+    }
+
     fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
         // A fence-only submission on the PRIMARY graphics queue follows all
         // preceding Compute, Copy and Graphics work. No host wait, command
@@ -4935,6 +5039,14 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         // SAFETY: Device may still have in-flight work; waiting before destruction is valid.
         let _ = unsafe { self.device.device_wait_idle() };
+        for bridge in self.native_queue_waits.drain(..) {
+            // SAFETY: device_wait_idle above returned after all GPU-side waits;
+            // neither queue can reference this semaphore or fence again.
+            unsafe {
+                self.device.destroy_fence(bridge.wait_fence, None);
+                self.device.destroy_semaphore(bridge.semaphore, None);
+            }
+        }
         // Checkpoints have no encoder/swapchain owner. Destroy any unpolled
         // native fences before the logical device itself is released.
         for (_, submission) in self.submissions.drain_live() {
@@ -5585,6 +5697,12 @@ impl VulkanTimestampClock {
             0
         }
     }
+}
+
+/// A completed secondary-queue wait owns its binary handshake semaphore.
+struct VulkanQueueWait {
+    semaphore: vk::Semaphore,
+    wait_fence: vk::Fence,
 }
 
 #[derive(Clone, Copy)]
