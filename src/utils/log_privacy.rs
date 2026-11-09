@@ -9,7 +9,7 @@ static URL: Lazy<Regex> = Lazy::new(|| {
 });
 static SECRET: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\b(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|cookie|session[_-]?key|xsts|xuid|uhs|user[_-]?id|username|gamertag|display_name|world_root|target_exe_path)\s*[:=]\s*(?:Some\([^)\r\n]*\)|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)"#,
+        r#"(?i)\b(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|cookie|session[_-]?key|xsts|xuid|uhs|user[_-]?id|username|gamertag|display_name|world_root|target_exe_path)\b["']?\s*[:=]\s*(?:Some\([^)\r\n]*\)|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)"#,
     ).expect("valid secret-field regex")
 });
 static BEARER: Lazy<Regex> = Lazy::new(|| {
@@ -22,6 +22,11 @@ static QUOTED_PATH: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)"(?:[a-z]:\\+|\\\\+|/(?:home|users|root|tmp|mnt|media|private)/)[^"\r\n]*"|'(?:[a-z]:\\+|\\\\+|/(?:home|users|root|tmp|mnt|media|private)/)[^'\r\n]*'"#,
     ).expect("valid quoted-path regex")
+});
+static PATH_FIELD: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\b(?:path|file_path|file_name|filename|directory|dir|source_path|target_path|output_path|input_path|src|dst|home_dir|user_dir)\b["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)"#,
+    ).expect("valid path-field regex")
 });
 static ABSOLUTE_PATH: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -38,11 +43,14 @@ pub(crate) fn redact_log_text(input: &str) -> Cow<'_, str> {
     }
     // Each Cow must outlive the next replacement: rebinding a Cow which may
     // borrow from its previous value fails lifetime checking.
-    let secret = SECRET.replace_all(input, "[敏感字段]");
-    let bearer = BEARER.replace_all(secret.as_ref(), "[认证信息]");
-    let urls = URL.replace_all(bearer.as_ref(), "[URL]");
+    // Bearer credentials must be removed *before* redacting Authorization
+    // itself, otherwise "Authorization: Bearer <token>" can leave the token.
+    let bearer = BEARER.replace_all(input, "[认证信息]");
+    let secret = SECRET.replace_all(bearer.as_ref(), "[敏感字段]");
+    let urls = URL.replace_all(secret.as_ref(), "[URL]");
     let emails = EMAIL.replace_all(urls.as_ref(), "[邮箱]");
-    let quoted_paths = QUOTED_PATH.replace_all(emails.as_ref(), "[本地路径]");
+    let path_fields = PATH_FIELD.replace_all(emails.as_ref(), "[本地路径]");
+    let quoted_paths = QUOTED_PATH.replace_all(path_fields.as_ref(), "[本地路径]");
     let paths = ABSOLUTE_PATH.replace_all(quoted_paths.as_ref(), "[本地路径]");
     Cow::Owned(paths.into_owned())
 }
@@ -63,6 +71,15 @@ mod tests {
         }
         assert!(output.contains("[URL]"));
         assert!(output.contains("[本地路径]"));
+    }
+
+    #[test]
+    fn redacts_json_credentials_and_spaced_bearer_tokens() {
+        let text = r#"Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9 {"password": "private phrase", "access_token":"secret-value"} filename="private user world.mcworld""#;
+        let output = redact_log_text(text);
+        for value in ["eyJ0eXAi", "private phrase", "secret-value", "private user world"] {
+            assert!(!output.contains(value), "{output}");
+        }
     }
 
     #[test]
