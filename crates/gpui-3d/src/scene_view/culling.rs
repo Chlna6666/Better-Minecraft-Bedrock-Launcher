@@ -549,7 +549,9 @@ impl CullResources {
             scratch_batch_keys: Vec::new(),
             generated_singleton_canonical: false,
             structural_slots_committed: false,
-            resident_slots: StableDrawSlots::default(),
+            resident_slots: StableDrawSlots::with_resident_buffers(&[
+                (buffers[0], BOUNDS_STRIDE as u64),
+            ]),
             uploaded_slot_map: Vec::new(),
             scratch_slot_map: Vec::new(),
             node_slots: HashMap::new(),
