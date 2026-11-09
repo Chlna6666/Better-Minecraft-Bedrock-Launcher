@@ -654,6 +654,19 @@ impl Dx12Device {
         dispatches: &[ComputeDispatch<'_>],
         tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
+        self.dispatch_buffer_batch_on_queue(dispatches, tag, None).map(|_| ())
+    }
+
+    /// Optional native tracked dispatch: a second DIRECT queue can execute
+    /// validated Compute command lists. A dedicated COMPUTE queue requires
+    /// type-matched COMPUTE allocators and explicit resource-state handoff,
+    /// so it is not silently substituted for this already verified path.
+    pub(super) fn dispatch_buffer_batch_on_queue(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+        native_queue: Option<gfx_core::GpuQueueId>,
+    ) -> Result<Option<gfx_core::SubmissionId>> {
         let mut prepared: Vec<Resources> = Vec::new();
         let mut indices: Vec<usize> = Vec::new();
         let mut descriptors = HashMap::<ViewKey, DescriptorSlot>::new();
@@ -673,7 +686,11 @@ impl Dx12Device {
             }
         }
         if prepared.is_empty() {
-            return Ok(());
+            return if native_queue.is_some() {
+                Err(Error::InvalidInput(
+                    "tracked Compute batch has no executable dispatches".into(),
+                ))
+            } else { Ok(None) };
         }
         let encoder = match self.create_command_encoder(&CommandEncoderDescriptor { label: None }) {
             Ok(encoder) => encoder,
@@ -718,15 +735,24 @@ impl Dx12Device {
                 self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag;
             }
             self.finish_texture_command_encoder(encoder)?;
-            let fence_value = self.submit_without_wait(encoder)?;
-            let encoder = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders
-                .push(DeferredDx12CommandEncoder {
-                    fence_value,
-                    _encoder: encoder,
-                });
-            self.poll_cleanup();
-            Ok(())
+            match native_queue {
+                None => {
+                    let fence_value = self.submit_without_wait(encoder)?;
+                    let completed = self.command_encoders.take(encoder)?;
+                    self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
+                        fence_value, _encoder: completed,
+                    });
+                    self.poll_cleanup();
+                    Ok(None)
+                }
+                Some(q) if q == gfx_core::GpuQueueId::PRIMARY =>
+                    self.submit_deferred(encoder).map(Some),
+                Some(q) if q == (gfx_core::GpuQueueId { family: 0, index: 1 }) =>
+                    self.submit_sidecar_deferred_native(encoder, true).map(Some),
+                Some(_) => Err(Error::Unavailable(
+                    "DX12 dedicated COMPUTE queue requires typed native command allocators".into(),
+                )),
+            }
         })();
         if result.is_ok()
             || self
