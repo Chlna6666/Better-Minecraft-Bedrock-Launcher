@@ -7,6 +7,7 @@ pub(super) enum DescriptorKey {
     Buffer(BufferId, u64, u64, bool),
     WritableBuffer(BufferId, u64, u64),
     Texture(TextureViewId),
+    StorageTexture(TextureViewId),
     Sampler(SamplerId),
     SamplerIndices(Vec<u32>),
 }

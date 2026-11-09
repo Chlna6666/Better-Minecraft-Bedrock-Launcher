@@ -1537,21 +1537,37 @@ mod platform {
                             let resource = texture.resource.as_ref().ok_or_else(|| {
                                 Error::Backend("DX12 texture has no native resource".to_string())
                             })?;
-                            let (slot, fresh) = self.resource_heap.allocate_shared(
-                                DescriptorKey::Texture(texture_binding.texture_view),
-                            )?;
+                            let is_storage = matches!(entry.binding_type, BindingType::StorageTexture { .. });
+                            let descriptor_key = if is_storage {
+                                DescriptorKey::StorageTexture(texture_binding.texture_view)
+                            } else {
+                                DescriptorKey::Texture(texture_binding.texture_view)
+                            };
+                            let (slot, fresh) = self.resource_heap.allocate_shared(descriptor_key)?;
                             if fresh {
-                                if matches!(entry.binding_type, BindingType::StorageTexture { .. })
+                                if let BindingType::StorageTexture { format, .. } = entry.binding_type
                                 {
-                                    if !texture.desc.usage.contains(TextureUsage::STORAGE) {
+                                    if !texture.desc.usage.contains(TextureUsage::STORAGE)
+                                        || view.format != format
+                                        || texture.desc.dimension != TextureDimension::D2
+                                        || texture.desc.sample_count != 1
+                                        || view.mip_level_count != 1
+                                        || format == Format::Depth32Float
+                                    {
                                         return Err(Error::InvalidInput(
-                                            "DX12 storage texture view lacks STORAGE".into(),
+                                            "DX12 storage UAV requires one matching non-depth D2 mip".into(),
                                         ));
                                     }
                                     let uav =
                                         windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC {
                                             Format: format_to_dxgi(view.format),
                                             ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE2D,
+                                            Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                                Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_UAV {
+                                                    MipSlice: view.base_mip_level,
+                                                    PlaneSlice: 0,
+                                                },
+                                            },
                                             ..Default::default()
                                         };
                                     // SAFETY: UAV descriptor references a live storage texture
