@@ -144,3 +144,16 @@ fn empty_writes_do_not_reach_the_backend_or_inflate_accounting() {
     let stats = execute_buffer_batch([write], |_| panic!("empty write must be skipped")).unwrap();
     assert_eq!(stats, BufferUploadStats::default());
 }
+
+#[test]
+fn native_gpu_copy_rejects_alias_empty_and_overflow_before_queue_submission() {
+    let valid = GpuBufferCopy {
+        source: buffer(1), destination: buffer(2),
+        source_offset: 4, destination_offset: 8, bytes: 16,
+    };
+    assert!(valid.validate().is_ok());
+    assert!(GpuBufferCopy { bytes: 0, ..valid }.validate().is_err());
+    assert!(GpuBufferCopy { destination: buffer(1), ..valid }.validate().is_err());
+    assert!(GpuBufferCopy { source_offset: u64::MAX, ..valid }.validate().is_err());
+    assert!(GpuBufferCopy { destination_offset: u64::MAX, ..valid }.validate().is_err());
+}
