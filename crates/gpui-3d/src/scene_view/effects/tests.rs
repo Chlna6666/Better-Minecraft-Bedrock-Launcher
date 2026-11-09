@@ -84,7 +84,8 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         .unwrap();
     let mut owned = Vec::new();
     renderer.drain_render_passes(&mut owned);
-    assert!(owned.len() >= 4);
+    assert!(owned.len() >= 3);
+    assert!(owned.iter().any(|pass| pass.color_attachments.len() == 2));
     let mut passes = owned
         .iter()
         .map(RendererExtensionPass::commands)
