@@ -306,7 +306,7 @@ impl EffectsRenderer {
                 uniform: frame,
                 lights: (light.0, light.1),
                 tiles: (state.tiles.buffer, state.tiles.bytes),
-                shadow: state.shadow.view,
+                shadows: std::array::from_fn(|cascade| state.shadow[cascade].view),
                 cloud,
                 water,
                 water_flow,
@@ -471,8 +471,12 @@ impl RendererExtensionRenderer for EffectsRenderer {
             if std::mem::take(&mut state.queued_capture) {
                 state.targets_valid = true;
             }
-            if std::mem::take(&mut state.queued_shadow) {
-                state.shadow_valid = true;
+            for (valid, queued) in state.shadow_valid.iter_mut()
+                .zip(&mut state.queued_shadow)
+            {
+                if std::mem::take(queued) {
+                    *valid = true;
+                }
             }
         }
     }
@@ -492,7 +496,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
             self.passes.clear();
             for state in self.scenes.values_mut() {
                 state.queued_capture = false;
-                state.queued_shadow = false;
+                state.queued_shadow.fill(false);
             }
         }
         result
