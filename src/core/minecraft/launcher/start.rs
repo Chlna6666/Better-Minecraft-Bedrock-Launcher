@@ -140,9 +140,9 @@ pub async fn launch_uwp_command_only(
     Ok(Some(process_id))
 }
 
-pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str) -> Option<u32> {
+pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str, pids_before: &[u32]) -> Option<u32> {
+    // Snapshot is captured before activation, so newly launched PIDs remain distinguishable.
     let start = Instant::now();
-    let pids_before = get_pids_by_name(target_exe);
 
     while start.elapsed() < Duration::from_secs(15) {
         let current_pids = get_pids_by_name(target_exe);
@@ -153,13 +153,7 @@ pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str) -> Op
             }
         }
 
-        if start.elapsed() > Duration::from_millis(1500) {
-            for pid in &current_pids {
-                if is_process_in_package(*pid, package_family_name) {
-                    return Some(*pid);
-                }
-            }
-        }
+        // A pre-existing Minecraft PID is not a verified launch target.
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
