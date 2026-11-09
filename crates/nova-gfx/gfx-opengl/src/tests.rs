@@ -416,3 +416,23 @@ fn compute_writes_storage_image_through_bind_group() {
         "compute shader must write through the storage image binding"
     );
 }
+
+#[test]
+#[ignore = "requires desktop OpenGL 4.5 compute-capable driver"]
+fn compute_uav_to_srv_to_storage_image_roundtrip() {
+    let mut device = open_device();
+    let writer = gfx_shader::WgslModule::parse(
+        gfx_core::conformance::COMPUTE_RESOURCE_SET_WRITER_WGSL,
+    )
+    .expect("writer WGSL")
+    .compile_glsl(ShaderStage::Compute, "write_data")
+    .expect("writer GLSL");
+    let reader = gfx_shader::WgslModule::parse(
+        gfx_core::conformance::COMPUTE_RESOURCE_SET_READER_WGSL,
+    )
+    .expect("reader WGSL")
+    .compile_glsl(ShaderStage::Compute, "write_image")
+    .expect("reader GLSL");
+    gfx_core::conformance::compute_resource_set_roundtrip(&mut device, writer, reader)
+        .expect("native GL shader-storage/image visibility and readback");
+}
