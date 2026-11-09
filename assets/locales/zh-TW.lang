@@ -532,6 +532,7 @@ GDKUserSelect.user_n=使用者 {{index}}
 GameCrash.forensics.dump=找到 {{count}} 份有效 Mini Dump，例外碼 {{code}}
 GameCrash.forensics.dumpWarning=傾印例外碼來自候選檔案，只能描述例外類型，不能獨立確認責任模組。
 GameCrash.forensics.mods=載入失敗的模組：{{mods}}
+GameCrash.forensics.module=Mini Dump 故障模組：{{module}}（不代表已確認根因）
 GameCrash.forensics.private=此載入錯誤來自獨立保存的啟動日誌，但未必是導致當機的最後原因。
 GameCrash.forensics.shared=這些錯誤可能來自多個實例共用的日誌，無法確認每一筆記錄都屬於本次遊戲。
 GameCrash.forensics.title=偵測到的具體線索
