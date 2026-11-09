@@ -4374,6 +4374,20 @@ impl ResourceDevice for VulkanDevice {
     fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }
+    fn dispatch_compute_bind_group(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        dispatch.validate(self.compute_capabilities())?;
+        let set = self.bind_groups.get(dispatch.bind_group)?;
+        let layout = &self.bind_group_layouts.get(set.layout)?.desc;
+        let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
+        self.dispatch_buffers(&gfx_core::ComputeDispatch {
+            shader: dispatch.shader,
+            bindings: &bindings,
+            workgroups: dispatch.workgroups,
+        })
+    }
     fn dispatch_compute_batch(
         &mut self,
         dispatches: &[gfx_core::ComputeDispatch<'_>],
@@ -7598,6 +7612,9 @@ fn shader_stages_to_vk(stages: ShaderStages) -> vk::ShaderStageFlags {
     }
     if stages.contains(ShaderStages::FRAGMENT) {
         flags |= vk::ShaderStageFlags::FRAGMENT;
+    }
+    if stages.contains(ShaderStages::COMPUTE) {
+        flags |= vk::ShaderStageFlags::COMPUTE;
     }
     flags
 }

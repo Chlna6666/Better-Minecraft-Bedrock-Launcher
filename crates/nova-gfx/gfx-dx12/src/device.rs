@@ -1632,6 +1632,7 @@ mod platform {
             })();
             let resources = Dx12ResourceSet {
                 layout: desc.layout,
+                desc: desc.clone(),
                 resource_tables,
                 sampler_tables,
                 sampler_index_table,
@@ -5242,6 +5243,20 @@ mod platform {
         fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
             self.dispatch_buffers(dispatch)
         }
+        fn dispatch_compute_bind_group(
+            &mut self,
+            dispatch: &gfx_core::ComputeBindGroupDispatch,
+        ) -> Result<()> {
+            dispatch.validate(self.compute_capabilities())?;
+            let set = self.bind_groups.get(dispatch.bind_group)?;
+            let layout = &self.bind_group_layouts.get(set.layout)?.desc;
+            let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
+            self.dispatch_buffers(&gfx_core::ComputeDispatch {
+                shader: dispatch.shader,
+                bindings: &bindings,
+                workgroups: dispatch.workgroups,
+            })
+        }
         fn dispatch_compute_batch(
             &mut self,
             dispatches: &[gfx_core::ComputeDispatch<'_>],
@@ -7220,6 +7235,7 @@ mod platform {
     #[derive(Clone)]
     struct Dx12ResourceSet {
         layout: BindGroupLayoutId,
+        desc: BindGroupDescriptor,
         resource_tables: Vec<Dx12DescriptorTable>,
         sampler_tables: Vec<Dx12DescriptorTable>,
         sampler_index_table: Option<Dx12DescriptorTable>,
