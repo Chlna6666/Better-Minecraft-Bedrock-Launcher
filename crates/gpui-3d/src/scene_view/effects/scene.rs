@@ -26,13 +26,20 @@ const SHADOW_DEPTH_SCROLL_WORLD: f32 = 16.0;
 
 /// Conservatively include casters upstream along sunlight, even when outside
 /// main-camera frustum. Shadows can only be received in this radial partition.
-fn shadow_caster_bounds(eye: Vec3, sun: Vec3, cascade: usize) -> crate::Aabb {
-    let radius = SHADOW_CASCADE_SPLITS[cascade] + SHADOW_CASCADE_SPLITS[3];
+fn shadow_caster_bounds(center: Vec3, sun: Vec3, cascade: usize) -> crate::Aabb {
+    // The caster volume must be derived from the *snapped* light camera, not
+    // the live eye. Otherwise its contents could change while the cascade key
+    // stays cached. Inflate for any main-eye motion inside the projection tile.
+    let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+    let hysteresis = texel * SHADOW_SCROLL_TEXELS * 0.5
+        + SHADOW_DEPTH_SCROLL_WORLD * 0.5 + 1.0;
+    let radius = SHADOW_CASCADE_SPLITS[cascade]
+        + SHADOW_CASCADE_SPLITS[3] + hysteresis;
     let padding = Vec3::new(radius, radius, radius);
     let upstream = sun * SHADOW_CASCADE_DEPTHS[cascade];
     crate::Aabb {
-        min: eye.min(eye + upstream) - padding,
-        max: eye.max(eye + upstream) + padding,
+        min: center.min(center + upstream) - padding,
+        max: center.max(center + upstream) + padding,
     }
 }
 
@@ -352,7 +359,7 @@ impl EffectScene {
                 shadow_pass, Format::R8Unorm,
                 Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
             );
-            let casters = shadow_caster_bounds(view.camera.eye, sun, cascade);
+            let casters = shadow_caster_bounds(camera.target, sun, cascade);
             let commands = self.scene.shadow_steps(
                 device, renderer, camera, cascade, casters, &context,
             )?;
