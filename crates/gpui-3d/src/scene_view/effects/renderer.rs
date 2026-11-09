@@ -311,11 +311,67 @@ impl EffectsRenderer {
             state.tile_transform = view.scene_transform;
             state.tile_scene = Some(view.scene.clone());
         }
+        // GPU-owner ordered sequence: native shadow/geometry producers have
+        // already been queued as Graphics passes. Insert injection and
+        // integration at the same interior boundary, immediately before the
+        // final screen composite Graphics pass. Never dispatch from the UI
+        // preparation phase (CSM textures are still unrendered there).
+        let multisampled = self.msaa_sample_count > 1 && state.targets.msaa.is_some();
+        let mut froxel_view = None;
+        if settings.volumetric_fog && settings.fog_density > 0.0
+            && !state.froxel_unavailable
+            && self.compositor.supports_froxel(multisampled)
+        {
+            if let Some(program) = &self.froxel_program {
+                if state.froxel.is_none() {
+                    if let Some(grid) = FroxelGrid::plan_native(
+                        extent, device.compute_capabilities(),
+                        device.texture_volume_capabilities(),
+                    ) {
+                        match FroxelVolume::new(device, program, grid) {
+                            Ok(volume) => state.froxel = Some(volume),
+                            Err(error) => {
+                                state.froxel_unavailable = true;
+                                eprintln!("gpui-3d: Froxel allocation unavailable: {error}");
+                            }
+                        }
+                    } else {
+                        state.froxel_unavailable = true;
+                    }
+                }
+                if let Some(volume) = state.froxel.as_mut() {
+                    let shadow_updated = state.queued_shadow.iter().any(|&changed| changed);
+                    let reusable = volume.reusable(
+                        view, settings, (light.0, light.2),
+                        tile_updated, shadow_updated,
+                    );
+                    if !reusable {
+                        let batch_id = crate::gpu_submission_trace::next_section_batch();
+                        let profiled = device.gpu_work_timestamps_supported()
+                            && crate::gpu_submission_trace::enabled();
+                        let result = volume.queue(
+                            device, program, state.frame, light,
+                            (state.tiles.buffer, state.tiles.bytes),
+                            std::array::from_fn(|cascade| state.shadow[cascade].view),
+                            self.passes.len(), &mut self.compute_passes,
+                            batch_id, profiled, view, settings,
+                        );
+                        if let Err(error) = result {
+                            volume.invalidate();
+                            state.froxel_unavailable = true;
+                            eprintln!("gpui-3d: Froxel compute disabled: {error}");
+                        }
+                    }
+                    if reusable || !state.froxel_unavailable {
+                        froxel_view = Some(volume.integrated.view);
+                    }
+                }
+            }
+        }
         let hiz_view = state.ssr_hiz.as_ref().map(|hiz| hiz.sampled_views()[0]);
-        let key = (light.0, settings.texture_ids(), hiz_view);
+        let key = (light.0, settings.texture_ids(), hiz_view, froxel_view);
         // The screen shader reads whatever depth the geometry passes wrote: the
         // multisampled copies when MSAA is on, matching its `_ms` shader variant.
-        let multisampled = self.msaa_sample_count > 1 && state.targets.msaa.is_some();
         if state.groups.is_none() || state.group_key != Some(key) {
             let inputs = |frame, color| Inputs {
                 targets: &state.targets,
@@ -345,6 +401,7 @@ impl EffectsRenderer {
                 water,
                 water_flow,
                 color,
+                froxel: froxel_view,
             };
             let a = self.compositor.bind(device, inputs(state.frame, None))?;
             let b = match self.compositor.bind(
@@ -382,7 +439,9 @@ impl EffectsRenderer {
             color_attachments: Arc::from([]),
             gpu_work_tag: None,
             render_pass: self.compositor.post_pass,
-            commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])].into(),
+            commands: vec![quad(
+                self.compositor.post_pipeline(multisampled, froxel_view.is_some()), groups[0]
+            )].into(),
             color_load_op: LoadOp::Clear(ClearColor::default()),
             depth_attachment: None,
             resolve_target: None,
