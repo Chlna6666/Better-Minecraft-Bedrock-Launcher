@@ -220,6 +220,19 @@ impl OpenGlDevice {
         dispatch: &gfx_core::ComputeBindGroupDispatch,
     ) -> Result<()> {
         dispatch.validate(self.compute.capabilities)?;
+        // Validate the resource-set's compute visibility before mutating GL
+        // state. A vertex/fragment-only set is not a compute descriptor set.
+        let set = self.sets.get(dispatch.bind_group)?;
+        let layout = self.layouts.get(set.desc.layout)?;
+        set.desc.validate_against(layout)?;
+        for entry in &layout.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) {
+                return Err(Error::InvalidInput(format!(
+                    "binding {} is not visible to compute shaders",
+                    entry.binding
+                )));
+            }
+        }
         self.park()?;
         let shader = self.shaders.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {

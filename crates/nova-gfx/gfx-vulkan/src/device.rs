@@ -1256,6 +1256,21 @@ impl VulkanDevice {
                     });
                 }
                 BindingResource::Texture(texture_binding) => {
+                    let kind = layout_desc
+                        .entries
+                        .iter()
+                        .find(|entry| entry.binding == binding.binding)
+                        .map(|entry| entry.binding_type)
+                        .ok_or_else(|| Error::InvalidInput("missing image layout binding".into()))?;
+                    // Vulkan's storage image descriptor requires STORAGE_IMAGE and
+                    // GENERAL layout with an explicit shader-write transition.
+                    // The current sampled-image path cannot safely implement it.
+                    if matches!(kind, BindingType::StorageTexture { .. }) {
+                        return Err(Error::Unavailable(
+                            "Vulkan storage-image bind groups require native image barriers"
+                                .into(),
+                        ));
+                    }
                     let view = self.texture_views.get(texture_binding.texture_view)?;
                     if self.textures.get(view.texture)?.desc.format == Format::Depth32Float {
                         sampled_depth.push(view.texture);
