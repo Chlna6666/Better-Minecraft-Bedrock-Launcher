@@ -157,7 +157,7 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     let cell=descriptor.cell&0x7fffffffu;
     // Only tagged rectangles interpret the third descriptor word as two
     // packed u8 extents. Regular instance height is still a true f32.
-    let packed=bitcast<u32>(descriptor.height);
+    let packed=u32(descriptor.height);
     let span_u=select(1u,packed&255u,merged);
     let span_v=select(1u,(packed>>8u)&255u,merged);
     let model_height=select(descriptor.height,1.0,merged);
