@@ -21,16 +21,50 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
 
 ## 3. 硬性边界
 
-- `nova-gfx`/`gfx-*` 是纯图形库：不得依赖 `gpui`、`egpui`、应用代码，也不得出现 UI 概念
-  （damage/retained/atlas/glyph/blur/scene）。
+- **不可偏离的分层**：`nova-gfx`（`gfx-core`、`gfx-*`）是类似 wgpu 的轻量、通用图形 API；
+  `gpui-3d` 是可用于游戏的专业 3D 渲染库；`gpui` 是**可选的 UI 侧载消费者**，
+  不是 3D 命令编码器、3D 场景调度器或图形驱动。
+- `nova-gfx`/`gfx-*` 只定义通用 Device/Buffer/Texture/3D Texture/Pipeline/BindGroup、
+  Graphics/Compute/Transfer、ResourceBarrier、CommandEncoder、Queue、Submission/Fence、
+  时间戳与设备限制；不得依赖 `gpui`、`gpui-3d`、`egpui`、应用代码，也不得引入
+  地图/方块/材质/光照/场景策略和 UI 的 damage/retained/atlas/glyph/blur 概念。
+  只允许平台 backend 实现通用图形语义，不允许为 BMCBL 特化公开 API。
 - `gfx-core` 不依赖 `winit`/`raw-window-handle`；native surface 由 backend 的
   `SurfaceDevice::SurfaceTarget` 承担。
+- `gpui-3d` **拥有游戏级 Scene、GPU Resident 数据、剔除、构网、材质/光照、RenderGraph、
+  DrawIndirect、原生离屏 Pass 调度及其资源生命周期策略**。纯 3D 引擎模块只依赖
+  `gfx-core` 和无 UI 的库；不得引用 `gpui::`、`RendererExtension*`、UI 布局和 BMCBL
+  业务代码。当前 crate 尚包含 GPUI 适配代码，应持续将其限定在
+  `scene_view` 等 sidecar/adapter 模块；不能以已有历史依赖为由继续增加核心耦合。
+- `gpui` 负责窗口/swapchain、输入/布局、GPU Owner 设备访问协调、纹理 Sidecar 消费、
+  Present 与 Fence 生命周期跟踪。不得接收后重新编码、排序或合并 3D 的 DrawIndirect；
+  只允许在设备所有者线程调用通用 `nova-gfx` 原生提交入口，并跟踪 `SubmissionId`。
+  3D producer 与 GUI consumer 必须保持 GPU 侧同步，不在热路径插入 CPU Fence wait。
 - `gpui` 只依赖 `gfx-core` 能力 trait；不得按 backend 调用固有 resize/present/alpha 方法。
-- `gpui-3d` 依赖 `gpui` + `gfx-core`，不拥有窗口、swapchain 或后端。
+- 各层 API 命名必须通用且基于所有权：`nova-gfx` 使用资源/提交语义；
+  `gpui-3d` 使用场景/渲染语义；GPUI 只使用 Sidecar/Consumer 语义。
+  不得通过重命名私有函数伪造公共库能力，不得把公共 API 限定成 Minecraft 专用功能。
 - `egpui` 不拥有 BMCBL 路由、下载、地图等产品语义。
 - `bedrock-*` 不依赖 UI/GPU 呈现；`bedrock-voxel` 只产出计划，不直接写世界。
 - 不要修改 `crates/easytier`、`crates/raknet`、`vendor/*`（外部/ vendored 代码），除非任务
   明确要求并在 PR 中说明上游版本与补丁原因。
+
+## 3.1 3D 引擎和 UI Sidecar 的验收规则
+
+- 修改 3D 提交链路时，列出两条独立路径：
+  `gpui-3d → nova-gfx → GPU`（场景/Compute/Indirect/原生离屏生产）和
+  `gpui-3d → GPUI → Present`（纹理消费/窗口/UI）。严禁让 GPUI 2D 合成器成为
+  3D Pass 的实际命令编码器；一张最终 3D 结果纹理的 UI 合成不等于“伪 3D”。
+- `GpuWorkPlan` 的依赖验证不等于原生 Barrier/状态转换；只有后端确实编码同步并能保证
+  提交顺序、Fence 退休和资源可见性，才能宣称支持完整 Graphics→Compute→Graphics。
+- 上传、Compute Meshing、DrawIndirect 的**原生 GPU 时间戳**必须与
+  `sidecar_cpu_prepared`、`gpu_owner_phase`、`offscreen_native_submit`、
+  `native_bridge_cpu`、`gpu_owner_submission_wait`、Present 等主机耗时分开记录；
+  不把 CPU API 延迟称作 GPU 执行时间，不臆造 FPS 收益。
+- 不以降低 3D 质量、减少正确的 Shadow Pass、降帧或每帧 CPU 同步换取假加速；
+  多 SceneView、窗口尺寸变化、挂起/恢复、GPU 设备丢失及在途资源复用必须有失败路径。
+- 破坏性开发允许，但公共 API 变更必须处理所有调用方和四后端的能力回退；
+  未实际执行的编译/硬件测试不能标记为通过。
 
 ## 4. 修改流程
 
