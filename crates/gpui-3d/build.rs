@@ -48,6 +48,20 @@ fn main() {
                 .entry("fs_effects_ms", ShaderStage::Fragment)
                 .entry("fs_composite_ms", ShaderStage::Fragment),
         )
+        // Depth hierarchy is built by ordered GPU raster passes after the
+        // opaque geometry pass. It must use real scene depth, NOT the older
+        // approximate 128x128 CPU-box culling Hi-Z used for DrawIndirect.
+        .shader(
+            Shader::new("ssr_hiz")
+                .wgsl_file("src/scene_view/effects/ssr_hiz.wgsl")
+                .entry("vs_ssr_hiz", ShaderStage::Vertex)
+                .entry("fs_ssr_hiz", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("ssr_hiz_ms")
+                .wgsl_file("src/scene_view/effects/ssr_hiz_ms.wgsl")
+                .entry("fs_ssr_hiz_ms", ShaderStage::Fragment),
+        )
         .shader(
             Shader::new("light_tiles")
                 .wgsl(concat!(
