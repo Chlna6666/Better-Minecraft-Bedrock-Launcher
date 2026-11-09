@@ -1136,6 +1136,15 @@ mod tests {
         assert!(surface.ready_to_release.is_empty());
         assert!(surface.ready_placement_release.is_empty());
         assert!(surface.ready_pipeline_release.is_empty());
+        // The later UI consumer may complete first on a different queue;
+        // free only its own descriptor generation.
+        surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(12, 1));
+        surface.gpu_submission_accepted(unrelated);
+        assert_eq!(surface.retired_by_submission.len(), 2);
+        surface.gpu_submission_completed(unrelated);
+        assert_eq!(surface.ready_pipeline_release.len(), 1);
+        assert!(surface.ready_to_release.is_empty());
+        assert!(surface.has_retired_targets());
         surface.gpu_submission_completed(consumer);
         assert!(surface.retired_by_submission.is_empty());
         assert!(!surface.has_retired_targets());
@@ -1144,12 +1153,12 @@ mod tests {
         assert_eq!(surface.awaiting_placement_gpu.len(), 0);
         assert_eq!(surface.ready_placement_release.len(), 1);
         assert_eq!(surface.awaiting_pipeline_gpu.len(), 0);
-        assert_eq!(surface.ready_pipeline_release.len(), 1);
+        assert_eq!(surface.ready_pipeline_release.len(), 2);
         // A different resource retirement after the consumer completed
         // must stay pending until a later fence or a safe global drain.
-        surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(12, 1));
+        surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(13, 1));
         surface.gpu_work_completed();
-        assert_eq!(surface.ready_pipeline_release.len(), 2);
+        assert_eq!(surface.ready_pipeline_release.len(), 3);
         assert!(!surface.has_retired_targets());
     }
 
