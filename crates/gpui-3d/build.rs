@@ -72,6 +72,20 @@ fn main() {
                 .entry("cs_clear_light_tiles", ShaderStage::Compute)
                 .entry("cs_light_tiles", ShaderStage::Compute),
         )
+        .shader(
+            Shader::new("froxel_inject")
+                .wgsl(concat!(
+                    include_str!("src/scene_view/effects/frame.wgsl"),
+                    "\n",
+                    include_str!("src/scene_view/effects/froxel_inject.wgsl")
+                ))
+                .entry("cs_froxel_inject", ShaderStage::Compute),
+        )
+        .shader(
+            Shader::new("froxel_integrate")
+                .wgsl_file("src/scene_view/effects/froxel_integrate.wgsl")
+                .entry("cs_froxel_integrate", ShaderStage::Compute),
+        )
         .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         // The host application decides which backend renders, and this crate's own
         // features only forward to `gpui`, so artifacts are generated for every backend
