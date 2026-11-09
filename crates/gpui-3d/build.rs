@@ -8,6 +8,27 @@ use gfx_shader_build::{
 };
 
 fn main() {
+    // Froxel-enabled screen shaders share all PBR, SSR, MSAA and geometry
+    // code with the legacy shader. Only the fog source is replaced at BUILD
+    // time; there is no extra parser or shader compilation in the render loop.
+    const REPLACE_FOG: &str = "let fog=fog_volume(ray,distance_limit);";
+    const FROXEL_FOG: &str = "let fog=froxel_fog(uv,distance_limit);";
+    let screen_froxel = concat!(
+        include_str!("src/pbr.wgsl"), "\n",
+        include_str!("src/scene_view/effects/frame.wgsl"), "\n",
+        include_str!("src/scene_view/effects/screen_depth.wgsl"), "\n",
+        include_str!("src/scene_view/effects/screen.wgsl")
+    ).replace(REPLACE_FOG,FROXEL_FOG)
+        + "\n" + include_str!("src/scene_view/effects/froxel_composite.wgsl");
+    let screen_froxel_ms = concat!(
+        include_str!("src/pbr.wgsl"), "\n",
+        include_str!("src/scene_view/effects/frame.wgsl"), "\n",
+        include_str!("src/scene_view/effects/screen_depth_ms.wgsl"), "\n",
+        include_str!("src/scene_view/effects/screen.wgsl"), "\n",
+        include_str!("src/scene_view/effects/screen_ms_entries.wgsl")
+    ).replace(REPLACE_FOG,FROXEL_FOG)
+        + "\n" + include_str!("src/scene_view/effects/froxel_composite.wgsl");
+    assert!(screen_froxel.contains(FROXEL_FOG) && screen_froxel_ms.contains(FROXEL_FOG));
     let shaders = ShaderSet::new("scene_view")
         .shader(
             Shader::new("sidecar_composite")
@@ -71,6 +92,16 @@ fn main() {
                 ))
                 .entry("cs_clear_light_tiles", ShaderStage::Compute)
                 .entry("cs_light_tiles", ShaderStage::Compute),
+        )
+        .shader(
+            Shader::new("screen_effects_froxel")
+                .wgsl(screen_froxel)
+                .entry("fs_effects_froxel", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("screen_effects_froxel_ms")
+                .wgsl(screen_froxel_ms)
+                .entry("fs_effects_froxel_ms", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("froxel_inject")
