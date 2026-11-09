@@ -204,7 +204,7 @@ impl ExtensionSubmission<'_> {
         Ok(submission)
     }
 
-    fn submit<D: PresentationDevice + ResourceDevice + PipelineDevice>(
+    fn submit<D: PresentationDevice + ResourceDevice + PipelineDevice + SubmissionDevice>(
         mut self,
         device: &mut D,
     ) -> Result<Option<SubmissionId>> {
@@ -513,7 +513,7 @@ pub(super) fn color_layer_passes(
     passes
 }
 
-fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice + PipelineDevice>(
+fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice + PipelineDevice + SubmissionDevice>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
