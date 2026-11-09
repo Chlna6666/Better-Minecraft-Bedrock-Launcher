@@ -91,6 +91,27 @@ fn stable_shadow_camera(
     )))
 }
 
+/// A newly wrapped or empty-fork Scene is not a shadow-caster change.
+///
+/// Filament separates scene-wide caster discovery from cascade updates; use
+/// BMCBL's immutable Scene revision identity / bounded delta lineage here to
+/// avoid redrawing three depth maps when the caller republishes an unchanged
+/// Scene graph. Unknown or structural deltas still conservatively redraw.
+fn shadow_caster_scene_changed(previous: Option<&Arc<Scene>>, current: &Arc<Scene>) -> bool {
+    let Some(previous) = previous else { return true };
+    if Arc::ptr_eq(previous, current) {
+        return false;
+    }
+    if previous.instance_id() == current.instance_id()
+        && previous.version() == current.version()
+    {
+        return false;
+    }
+    current
+        .changed_nodes(previous)
+        .is_none_or(|changed| !changed.is_empty())
+}
+
 pub(super) struct EffectScene {
     pub(super) last_seen: Instant,
     pub(super) capture: Option<SceneView>,
@@ -326,8 +347,8 @@ impl EffectScene {
             self.shadow_valid.fill(false);
             return Err(anyhow::anyhow!("invalid sun"));
         };
-        let scene_dirty = self.shadow_scene.as_ref()
-            .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
+        let scene_dirty =
+            shadow_caster_scene_changed(self.shadow_scene.as_ref(), &view.scene)
             || self.shadow_transform != view.scene_transform
             || self.shadow_input.as_ref().is_none_or(|old| {
                 !Arc::ptr_eq(&old.textures, &view.textures)
@@ -540,6 +561,23 @@ impl EffectScene {
 #[cfg(test)]
 mod stable_shadow_tests {
     use super::*;
+
+    #[test]
+    fn shadow_caster_cache_reuses_empty_fork_without_gpu_redraw() {
+        let old = Arc::new(Scene::new());
+        let same = Arc::new(old.fork());
+        assert!(!shadow_caster_scene_changed(Some(&old), &old));
+        assert!(!shadow_caster_scene_changed(Some(&old), &same));
+    }
+
+    #[test]
+    fn shadow_caster_cache_invalidates_structural_changes() {
+        let previous = Arc::new(Scene::new());
+        let mut changed = previous.fork();
+        changed.insert(None, crate::Node::new()).unwrap();
+        assert!(shadow_caster_scene_changed(Some(&previous), &Arc::new(changed)));
+        assert!(shadow_caster_scene_changed(None, &previous));
+    }
 
     #[test]
     fn all_cascades_use_texel_snapped_camera_projections() {
