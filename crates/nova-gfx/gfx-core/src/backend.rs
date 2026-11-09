@@ -848,6 +848,46 @@ pub trait SubmissionDevice {
     }
 }
 
+/// Optional explicit per-batch GPU-completion identities for Compute and
+/// Transfer. The native operations themselves execute through ResourceDevice;
+/// the queue checkpoint only signals their completion on the SAME ordered
+/// primary queue. This is an opt-in path: normal high-frequency compute/upload
+/// paths retain their existing batch submission with no extra fence overhead.
+///
+/// Separate asynchronous Compute/Transfer queues require a backend-specific
+/// explicit queue + GPU-side wait API, and must not call these helpers under
+/// a false primary-queue assumption.
+pub trait TrackedGpuWorkDevice: ResourceDevice + SubmissionDevice {
+    /// Dispatch one actual compute batch and return its native GPU completion
+    /// identity, not a host-side acceptance timestamp. No CPU wait.
+    fn dispatch_compute_batch_tracked(
+        &mut self,
+        dispatches: &[crate::ComputeDispatch<'_>],
+    ) -> Result<SubmissionId> {
+        if dispatches.is_empty() {
+            return Err(Error::InvalidInput("tracked compute batch is empty".into()));
+        }
+        self.dispatch_compute_batch(dispatches)?;
+        self.checkpoint_ordered_queue(crate::GpuWorkStage::Compute)
+    }
+
+    /// Upload one native transfer batch and return a completion handle for
+    /// precisely the earlier Copy writes on the device's ordered queue.
+    /// Upload errors must retain their backend-owned in-flight staging.
+    fn write_buffer_batch_tracked(
+        &mut self,
+        writes: &[BufferWrite<'_>],
+    ) -> Result<(BufferUploadStats, SubmissionId)> {
+        if writes.is_empty() {
+            return Err(Error::InvalidInput("tracked transfer batch is empty".into()));
+        }
+        let stats = self.write_buffer_batch(writes.iter().copied())?;
+        let completion = self.checkpoint_ordered_queue(crate::GpuWorkStage::Transfer)?;
+        Ok((stats, completion))
+    }
+}
+impl<T: ResourceDevice + SubmissionDevice> TrackedGpuWorkDevice for T {}
+
 #[cfg(test)]
 mod submission_tests {
     use super::SubmissionDevice;
