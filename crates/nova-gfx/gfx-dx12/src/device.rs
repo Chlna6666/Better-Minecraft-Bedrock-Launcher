@@ -1215,28 +1215,38 @@ mod platform {
             };
             desc.validate_against(&texture_desc)?;
             let usage = texture_desc.usage;
-            if (usage.contains(TextureUsage::COLOR_ATTACHMENT)
-                || usage.contains(TextureUsage::DEPTH_ATTACHMENT))
-                && (desc.base_mip_level != 0 || desc.mip_level_count != 1)
-            {
-                return Err(Error::InvalidInput(
-                    "DX12 attachment views require mip level zero only".to_string(),
-                ));
-            }
+            // A sampled view may cover a complete mip chain even when the
+            // resource also supports COLOR_ATTACHMENT. Attachments themselves
+            // must select one mip; sampled-only views own no RTV/DSV slot.
 
-            let rtv_slot = if usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+            let rtv_slot = if usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                && desc.mip_level_count == 1
+            {
                 let slot = self.rtv_heap.allocate()?;
                 // SAFETY: Texture was created by this device with color attachment usage and RTV handle is valid.
                 unsafe {
-                    self.device
-                        .CreateRenderTargetView(&resource, None, slot.cpu_handle);
+                    // Default RTVs always target mip zero. Explicitly select
+                    // each mip when building a GPU depth/lighting hierarchy.
+                    let rtv = windows::Win32::Graphics::Direct3D12::D3D12_RENDER_TARGET_VIEW_DESC {
+                        Format: format_to_dxgi(desc.format),
+                        ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_RTV_DIMENSION_TEXTURE2D,
+                        Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                            Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_RTV {
+                                MipSlice: desc.base_mip_level,
+                                PlaneSlice: 0,
+                            },
+                        },
+                    };
+                    self.device.CreateRenderTargetView(&resource, Some(&rtv), slot.cpu_handle);
                 }
                 Some(slot)
             } else {
                 None
             };
 
-            let dsv_slot = if usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+            let dsv_slot = if usage.contains(TextureUsage::DEPTH_ATTACHMENT)
+                && desc.base_mip_level == 0 && desc.mip_level_count == 1
+            {
                 let slot = match self.dsv_heap.allocate() {
                     Ok(slot) => slot,
                     Err(error) => {
