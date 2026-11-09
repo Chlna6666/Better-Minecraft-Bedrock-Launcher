@@ -815,6 +815,26 @@ impl VulkanDevice {
             )));
         }
         let layers = desc.dimension.layers();
+        if matches!(desc.dimension, TextureDimension::D3 { .. }) {
+            self.texture_volume_capabilities().validate(desc)?;
+            // Vulkan storage-image support varies per format, even when 3D
+            // image dimensions are supported by the device.
+            let features = unsafe {
+                self.instance.get_physical_device_format_properties(
+                    self.physical_device, format_to_vk(desc.format),
+                )
+            }.optimal_tiling_features;
+            if desc.usage.contains(TextureUsage::STORAGE)
+                && !features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE)
+            {
+                return Err(Error::Unavailable("Vulkan 3D storage image format unsupported".into()));
+            }
+            if desc.usage.contains(TextureUsage::SAMPLED)
+                && !features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+            {
+                return Err(Error::Unavailable("Vulkan 3D sampled image format unsupported".into()));
+            }
+        }
         if let TextureDimension::D2Array { .. } = desc.dimension {
             self.texture_array_capabilities().plan(
                 desc.size.width(),
@@ -825,12 +845,16 @@ impl VulkanDevice {
             )?;
         }
         let create_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
+            .image_type(if matches!(desc.dimension, TextureDimension::D3 { .. }) {
+                vk::ImageType::TYPE_3D
+            } else {
+                vk::ImageType::TYPE_2D
+            })
             .format(format_to_vk(desc.format))
             .extent(vk::Extent3D {
                 width: desc.size.width(),
                 height: desc.size.height(),
-                depth: 1,
+                depth: desc.dimension.mip_depth(0),
             })
             .mip_levels(desc.mip_level_count)
             .array_layers(layers)
@@ -1101,7 +1125,21 @@ impl VulkanDevice {
         // The sampled view may span every level, while a render attachment
         // selects exactly one mip in the ordered render-pass submission.
         // Do not restrict the sampled range based on the texture's usage.
-        let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
+        let view = if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(image_aspect_for_format(desc.format))
+                .base_mip_level(desc.base_mip_level)
+                .level_count(desc.mip_level_count)
+                .base_array_layer(0)
+                .layer_count(1);
+            let info = vk::ImageViewCreateInfo::default()
+                .image(texture.image)
+                .view_type(vk::ImageViewType::TYPE_3D)
+                .format(format_to_vk(desc.format))
+                .subresource_range(range);
+            unsafe { self.device.create_image_view(&info, None) }
+                .map_err(VulkanError::from)?
+        } else if let TextureDimension::D2Array { layers } = texture.desc.dimension {
             create_image_view_range_with_layers(
                 &self.device,
                 texture.image,
@@ -1278,7 +1316,10 @@ impl VulkanDevice {
                         BindingType::StorageTexture { format, .. } => {
                             if !texture.desc.usage.contains(TextureUsage::STORAGE)
                                 || view.desc.format != format
-                                || texture.desc.dimension != TextureDimension::D2
+                                || !matches!(
+                                    texture.desc.dimension,
+                                    TextureDimension::D2 | TextureDimension::D3 { .. }
+                                )
                                 || texture.desc.sample_count != 1
                                 || view.desc.mip_level_count != 1
                                 || format == Format::Depth32Float
@@ -4388,6 +4429,25 @@ impl ResourceDevice for VulkanDevice {
             .max_color_attachment_count
             .unwrap_or(gfx_core::MAX_COLOR_ATTACHMENTS as u32);
         limit.min(gfx_core::MAX_COLOR_ATTACHMENTS as u32)
+    }
+
+    fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+        let properties = unsafe {
+            self.instance.get_physical_device_properties(self.physical_device)
+        };
+        let format_features = unsafe {
+            self.instance.get_physical_device_format_properties(
+                self.physical_device, vk::Format::R16G16B16A16_SFLOAT,
+            )
+        }.optimal_tiling_features;
+        let maximum = properties.limits.max_image_dimension3_d;
+        gfx_core::TextureVolumeCapabilities {
+            max_dimension_3d: maximum,
+            sampled: maximum != 0
+                && format_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE),
+            storage: maximum != 0 && self.compute.capabilities.supports_compute()
+                && format_features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
+        }
     }
 
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
