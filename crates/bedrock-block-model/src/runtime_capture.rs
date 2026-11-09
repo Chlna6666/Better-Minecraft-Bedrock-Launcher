@@ -263,7 +263,7 @@ impl RuntimeCaptureCatalog {
             let Some(material_ref) = block.shared_material_ref else {
                 continue;
             };
-            let aliases = if let Some(cached) = material_cache.get(material_ref) {
+            let aliases = if let Some(cached) = material_cache.get(&material_ref) {
                 cached.clone()
             } else {
                 let Some(table) = pool.read(2, material_ref)
@@ -681,7 +681,7 @@ mod tests {
     }
     fn example_geometry() -> Vec<u8> {
         let mut bytes = u32bytes(&[4,2]);
-        for point in [[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]] {
+        for point in [[0f32,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]] {
             for coord in point {
                 bytes.extend(coord.to_le_bytes());
             }
