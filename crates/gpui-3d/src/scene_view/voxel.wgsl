@@ -394,6 +394,27 @@ fn encode_normal(n:vec3<f32>)->vec2<f32>{
     let base=select(color.rgb,srgb_linear(color.rgb),frame.sun_color.w>0.5);
     return vec4<f32>(base,clamp(color.a,0.0,1.0));
 }
+struct VoxelAttributeTargets {
+    @location(0) surface:vec4<f32>,
+    @location(1) albedo:vec4<f32>,
+};
+@fragment fn fs_voxel_attributes_mrt(input:VoxelOutput)->VoxelAttributeTargets {
+    let draw=draws[input.draw_index];
+    let color=test_voxel_alpha(input,draw);
+    var roughness=draw.roughness;var metallic=draw.metallic;
+    if((draw.texture_flags&8u)!=0u){
+        let p=textureSample(material_texture,material_sampler,input.uv);
+        if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}
+        else{roughness*=p.g;metallic*=p.b;}
+    }
+    let blended=draw.alpha_mode==ALPHA_MODE_BLEND;
+    var kind=select(metallic,6.0+metallic,blended);
+    if(blended && (draw.texture_flags&128u)!=0u){kind=4.0+metallic;}
+    if(blended && (draw.texture_flags&64u)!=0u){kind=2.0+metallic;}
+    let surface=vec4<f32>(encode_normal(surface_normal(input,draw)),clamp(roughness,0.06,1.0),kind);
+    let base=select(color.rgb,srgb_linear(color.rgb),frame.sun_color.w>0.5);
+    return VoxelAttributeTargets(surface,vec4<f32>(base,clamp(color.a,0.0,1.0)));
+}
 @fragment fn fs_voxel_shadow(input:VoxelOutput)->@location(0) vec4<f32>{
     let draw=draws[input.draw_index];
     if(draw.alpha_mode==ALPHA_MODE_BLEND){discard;}
