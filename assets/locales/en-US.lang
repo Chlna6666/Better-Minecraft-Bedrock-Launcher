@@ -532,6 +532,7 @@ GDKUserSelect.user_n=User {{index}}
 GameCrash.forensics.dump=Found {{count}} valid minidump(s); exception code {{code}}
 GameCrash.forensics.dumpWarning=A dump exception code identifies a failure type, not the responsible mod or guaranteed session ownership.
 GameCrash.forensics.mods=Mods that failed to load: {{mods}}
+GameCrash.forensics.module=Minidump faulting module: {{module}} (not proof of root cause)
 GameCrash.forensics.private=The failure was recorded in this launch's own logs, but is not proof of the ultimate crash cause.
 GameCrash.forensics.shared=This log may be shared by multiple game instances; entries cannot be attributed conclusively to this session.
 GameCrash.forensics.title=Specific evidence detected
