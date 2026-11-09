@@ -166,7 +166,9 @@ pub fn parse_minidump<R: Read + Seek>(reader: &mut R, file_len: u64) -> Option<M
     reader.seek(SeekFrom::Start(0)).ok()?;
     let mut header = [0u8; 32];
     reader.read_exact(&mut header).ok()?;
-    if &header[..4] != b"MDMP" { return None; }
+    if &header[..4] != b"MDMP" || le_u32(&header, 4)? & 0xffff != 0xa793 {
+        return None;
+    }
     let count = le_u32(&header, 8)?;
     let offset = u64::from(le_u32(&header, 12)?);
     if count > 128 || offset.checked_add(u64::from(count) * 12)? > file_len {
@@ -180,7 +182,8 @@ pub fn parse_minidump<R: Read + Seek>(reader: &mut R, file_len: u64) -> Option<M
         if le_u32(&directory, 0)? != 6 { continue; }
         let bytes = u64::from(le_u32(&directory, 4)?);
         let rva = u64::from(le_u32(&directory, 8)?);
-        if bytes < 12 || rva.checked_add(bytes)? > file_len { continue; }
+        // MINIDUMP_EXCEPTION_STREAM is 168 bytes; reject partial streams.
+        if bytes < 168 || rva.checked_add(bytes)? > file_len { continue; }
         reader.seek(SeekFrom::Start(rva + 8)).ok()?;
         let mut code = [0u8; 4];
         reader.read_exact(&mut code).ok()?;
@@ -240,21 +243,23 @@ mod tests {
     }
     #[test]
     fn minidump_reads_numeric_code_only() {
-        let mut bytes = vec![0u8; 96];
+        let mut bytes = vec![0u8; 216];
         bytes[..4].copy_from_slice(b"MDMP");
+        bytes[4..8].copy_from_slice(&0x0000a793u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&32u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&6u32.to_le_bytes());
-        bytes[36..40].copy_from_slice(&48u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&168u32.to_le_bytes());
         bytes[40..44].copy_from_slice(&48u32.to_le_bytes());
         bytes[56..60].copy_from_slice(&0xC0000005u32.to_le_bytes());
-        assert_eq!(parse_minidump(&mut Cursor::new(bytes), 96).unwrap().exception_code,
+        assert_eq!(parse_minidump(&mut Cursor::new(bytes), 216).unwrap().exception_code,
             Some(0xC0000005));
     }
     #[test]
     fn malformed_minidump_rejected() {
         let mut bytes = vec![0u8; 32];
         bytes[..4].copy_from_slice(b"MDMP");
+        bytes[4..8].copy_from_slice(&0x0000a793u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(parse_minidump(&mut Cursor::new(bytes), 32).is_none());
     }
