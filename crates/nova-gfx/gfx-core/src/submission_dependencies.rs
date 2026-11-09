@@ -279,8 +279,19 @@ impl GpuSubmissionDependencyGraph {
     /// Mark an actual native buffer/image use without a completion handle.
     /// This cannot be silently converted into a future GUI consumer fence.
     pub fn register_untracked(&mut self, queue: GpuQueueId, access: GpuSubmissionAccess) {
-        self.unknown.push((queue, access));
+        // Streaming dispatches can read the same resident range repeatedly
+        // before the GPU owner publishes a fence. Keep only one identical
+        // outstanding access rather than accumulating O(frames * sections)
+        // duplicate declarations. Do not deduplicate different access modes.
+        if !self.unknown.iter().any(|(existing_queue, existing_access)|
+            *existing_queue == queue && *existing_access == access
+        ) {
+            self.unknown.push((queue, access));
+        }
     }
+
+    #[must_use]
+    pub fn has_untracked_work(&self) -> bool { !self.unknown.is_empty() }
 
     /// Snapshot in-flight RAW/WAR/WAW readers and writers of the requested
     /// physical spans. Already-finished records must be removed by complete().
