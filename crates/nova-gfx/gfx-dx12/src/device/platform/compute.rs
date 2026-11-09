@@ -141,6 +141,210 @@ fn dx_error(error: windows::core::Error) -> Error {
 }
 
 impl Dx12Device {
+    /// Full native compute resource-set submission. Generated Mesh/Hi-Z keep
+    /// their optimized buffer-only dispatch path without an extra bind group.
+    pub(super) fn dispatch_resource_set(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        dispatch.validate(self.compute_capabilities())?;
+        let set = self.bind_groups.get(dispatch.bind_group)?.clone();
+        let layout = self.bind_group_layouts.get(set.layout)?.desc.clone();
+        set.desc.validate_against(&layout)?;
+        let mut buffers = Vec::new();
+        let mut images = Vec::<(TextureId, bool)>::new();
+        for entry in &layout.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) {
+                return Err(Error::InvalidInput("DX12 compute resource is not visible to compute".into()));
+            }
+            let resource = set.desc.entries.iter()
+                .find(|binding| binding.binding == entry.binding)
+                .ok_or_else(|| Error::InvalidInput("missing compute resource binding".into()))?;
+            match (entry.binding_type, resource.resource) {
+                (BindingType::UniformBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBufferReadWrite, BindingResource::Buffer(buffer)) => {
+                    let access = match entry.binding_type {
+                        BindingType::UniformBuffer => ComputeBufferAccess::Uniform,
+                        BindingType::StorageBuffer => ComputeBufferAccess::ReadOnly,
+                        _ => ComputeBufferAccess::ReadWrite,
+                    };
+                    buffers.push(gfx_core::ComputeBufferBinding {
+                        binding: entry.binding, buffer, access,
+                    });
+                }
+                (BindingType::SampledTexture, BindingResource::Texture(view))
+                | (BindingType::StorageTexture { .. }, BindingResource::Texture(view)) => {
+                    let id = self.texture_views.get(view.texture_view)?.texture;
+                    let writable = matches!(entry.binding_type, BindingType::StorageTexture { .. });
+                    if let Some((_, prior_write)) = images.iter().find(|(image, _)| *image == id) {
+                        if writable || *prior_write {
+                            return Err(Error::InvalidInput(
+                                "DX12 compute writable image aliases another binding".into()
+                            ));
+                        }
+                    } else {
+                        images.push((id, writable));
+                    }
+                }
+                (BindingType::Sampler, BindingResource::Sampler(_)) => {}
+                _ => return Err(Error::InvalidInput("DX12 compute resource type mismatch".into())),
+            }
+        }
+        ComputeDispatch {
+            shader: dispatch.shader,
+            bindings: &buffers,
+            workgroups: dispatch.workgroups,
+        }.validate_with_limits(self.compute_capabilities(), self.buffer_binding_limits())?;
+        let key = (dispatch.shader, set.layout);
+        let program = if let Some(cached) = self.compute.resource_set_programs.get(&key) {
+            cached.clone()
+        } else {
+            let shader = self.shader_modules.get(dispatch.shader)?;
+            let program = Arc::new(create_resource_set_program(&self.device, shader, &layout)?);
+            self.compute.resource_set_programs.insert(key, program.clone());
+            program
+        };
+
+        let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
+        self.command_encoders.get_mut(encoder)?.compute_resources.push(Resources {
+            slots: Vec::new(), owned_slots: Vec::new(), program: program.clone(),
+        });
+        let mut final_buffers = Vec::<BufferId>::new();
+        let result = (|| -> Result<()> {
+            self.begin_texture_command_encoder(encoder, None)?;
+            let command = self.command_encoders.get(encoder)?.command_list.as_ref()
+                .ok_or_else(|| Error::Backend("DX12 compute command list is missing".into()))?
+                .clone();
+            let has_sampler = layout.entries.iter().any(|e| e.binding_type == BindingType::Sampler);
+            let heaps = if has_sampler {
+                vec![Some(self.resource_heap.heap.clone()), Some(self.sampler_heap.heap.clone())]
+            } else {
+                vec![Some(self.resource_heap.heap.clone())]
+            };
+            // SAFETY: root signature/PSO and both shader-visible heaps stay owned
+            // by the device; the encoder holds a PSO reference through its fence.
+            unsafe {
+                command.SetDescriptorHeaps(&heaps);
+                command.SetComputeRootSignature(&program.root);
+                command.SetPipelineState(&program.pipeline);
+            }
+            let mut slot = 0u32;
+            let mut sampler_emitted = false;
+            for entry in &layout.entries {
+                if entry.binding_type == BindingType::Sampler {
+                    if sampler_emitted { continue; }
+                    sampler_emitted = true;
+                    let indices = set.sampler_index_table.as_ref().ok_or_else(|| {
+                        Error::InvalidInput("DX12 compute sampler index descriptor is missing".into())
+                    })?;
+                    unsafe {
+                        command.SetComputeRootDescriptorTable(slot, self.sampler_heap.gpu_start());
+                        command.SetComputeRootDescriptorTable(slot + 1, indices.gpu_handle);
+                    }
+                    slot += 2;
+                    continue;
+                }
+                let table = set.resource_tables.iter()
+                    .find(|table| table.binding == entry.binding)
+                    .ok_or_else(|| Error::InvalidInput("missing DX12 compute root table".into()))?;
+                unsafe { command.SetComputeRootDescriptorTable(slot, table.gpu_handle) };
+                slot += 1;
+            }
+            let constants = draw_step_constants_root_index(std::slice::from_ref(&layout))?;
+            if constants != slot {
+                return Err(Error::Backend("DX12 compute root layout ABI mismatch".into()));
+            }
+            unsafe {
+                command.SetComputeRoot32BitConstants(
+                    constants, 3, dispatch.workgroups.as_ptr().cast(), 0,
+                );
+            }
+            for binding in &buffers {
+                let buffer = self.buffers.get(binding.buffer.buffer)?;
+                let resource = buffer.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("missing DX12 compute storage resource".into())
+                })?;
+                let target = if binding.access == ComputeBufferAccess::ReadWrite {
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                } else {
+                    D3D12_RESOURCE_STATE_GENERIC_READ
+                };
+                if buffer.state != target {
+                    record_transition_barrier(&command, resource, buffer.state, target);
+                }
+                final_buffers.push(binding.buffer.buffer);
+            }
+            for &(id, writable) in &images {
+                let texture = self.textures.get(id)?;
+                let resource = texture.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("missing DX12 compute image".into())
+                })?;
+                let target = if writable {
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                } else {
+                    D3D12_RESOURCE_STATE_GENERIC_READ
+                };
+                if texture.state != target {
+                    record_transition_barrier(&command, resource, texture.state, target);
+                }
+            }
+            unsafe {
+                command.Dispatch(
+                    dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
+                );
+            }
+            // Return images to the pixel-readable state before GPUI samples
+            // the sidecar target. Queue ordering carries UAV write visibility.
+            for &(id, writable) in &images {
+                let texture = self.textures.get(id)?;
+                let resource = texture.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("missing DX12 compute image".into())
+                })?;
+                record_transition_barrier(
+                    &command,
+                    resource,
+                    if writable { D3D12_RESOURCE_STATE_UNORDERED_ACCESS }
+                    else { D3D12_RESOURCE_STATE_GENERIC_READ },
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+            }
+            for binding in &buffers {
+                if binding.access == ComputeBufferAccess::ReadWrite {
+                    let resource = self.buffers.get(binding.buffer.buffer)?.resource.as_ref()
+                        .ok_or_else(|| Error::Backend("missing writable compute resource".into()))?;
+                    record_transition_barrier(
+                        &command, resource,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_GENERIC_READ,
+                    );
+                }
+            }
+            self.finish_texture_command_encoder(encoder)?;
+            let fence_value = self.submit_without_wait(encoder)?;
+            let submitted = self.command_encoders.take(encoder)?;
+            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
+                fence_value, _encoder: submitted,
+            });
+            self.poll_cleanup();
+            Ok(())
+        })();
+        let was_submitted = self.command_encoders.get(encoder)
+            .is_ok_and(|pending| pending.submitted);
+        if result.is_ok() || was_submitted {
+            for id in final_buffers {
+                self.buffers.get_mut(id)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
+            }
+            for (id, _) in images {
+                self.textures.get_mut(id)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+        }
+        if result.is_err() {
+            let _ = self.release_temporary_command_encoder_after_failure(encoder);
+        }
+        result
+    }
+
     pub(super) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffer_batch(std::slice::from_ref(dispatch))
     }
