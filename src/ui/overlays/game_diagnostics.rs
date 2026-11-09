@@ -1,5 +1,5 @@
 //! Minecraft game diagnostics UI. Launcher/Sentry crashes have a separate overlay.
-use crate::core::minecraft::diagnostics::{self, CrashExportOptions, ExitKind, GameSessionReport};
+use crate::core::minecraft::diagnostics::{self, CrashExportOptions, ExitKind, GameSessionReport, CrashFinding, CrashReason, Confidence, EvidenceSource};
 use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -43,10 +43,150 @@ impl ExportField {
     }
 }
 
+fn reason_title(reason: CrashReason) -> SharedString {
+    match reason {
+        CrashReason::MissingDependency => t!("GameCrash.reason.MissingDependency.title"),
+        CrashReason::UnsupportedWineApi => t!("GameCrash.reason.UnsupportedWineApi.title"),
+        CrashReason::WineGuestException => t!("GameCrash.reason.WineGuestException.title"),
+        CrashReason::WineRuntime => t!("GameCrash.reason.WineRuntime.title"),
+        CrashReason::VulkanUnavailable => t!("GameCrash.reason.VulkanUnavailable.title"),
+        CrashReason::GraphicsDeviceLost => t!("GameCrash.reason.GraphicsDeviceLost.title"),
+        CrashReason::InsufficientMemory => t!("GameCrash.reason.InsufficientMemory.title"),
+        CrashReason::DiskFull => t!("GameCrash.reason.DiskFull.title"),
+        CrashReason::PermissionDenied => t!("GameCrash.reason.PermissionDenied.title"),
+        CrashReason::ModLoadFailure => t!("GameCrash.reason.ModLoadFailure.title"),
+        CrashReason::LoaderFailure => t!("GameCrash.reason.LoaderFailure.title"),
+        CrashReason::AccessViolation => t!("GameCrash.reason.AccessViolation.title"),
+        CrashReason::IllegalInstruction => t!("GameCrash.reason.IllegalInstruction.title"),
+        CrashReason::StackOverflow => t!("GameCrash.reason.StackOverflow.title"),
+        CrashReason::FastFail => t!("GameCrash.reason.FastFail.title"),
+        CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.title"),
+        CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.title"),
+    }
+}
+
+fn reason_detail(reason: CrashReason) -> SharedString {
+    match reason {
+        CrashReason::MissingDependency => t!("GameCrash.reason.MissingDependency.detail"),
+        CrashReason::UnsupportedWineApi => t!("GameCrash.reason.UnsupportedWineApi.detail"),
+        CrashReason::WineGuestException => t!("GameCrash.reason.WineGuestException.detail"),
+        CrashReason::WineRuntime => t!("GameCrash.reason.WineRuntime.detail"),
+        CrashReason::VulkanUnavailable => t!("GameCrash.reason.VulkanUnavailable.detail"),
+        CrashReason::GraphicsDeviceLost => t!("GameCrash.reason.GraphicsDeviceLost.detail"),
+        CrashReason::InsufficientMemory => t!("GameCrash.reason.InsufficientMemory.detail"),
+        CrashReason::DiskFull => t!("GameCrash.reason.DiskFull.detail"),
+        CrashReason::PermissionDenied => t!("GameCrash.reason.PermissionDenied.detail"),
+        CrashReason::ModLoadFailure => t!("GameCrash.reason.ModLoadFailure.detail"),
+        CrashReason::LoaderFailure => t!("GameCrash.reason.LoaderFailure.detail"),
+        CrashReason::AccessViolation => t!("GameCrash.reason.AccessViolation.detail"),
+        CrashReason::IllegalInstruction => t!("GameCrash.reason.IllegalInstruction.detail"),
+        CrashReason::StackOverflow => t!("GameCrash.reason.StackOverflow.detail"),
+        CrashReason::FastFail => t!("GameCrash.reason.FastFail.detail"),
+        CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.detail"),
+        CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.detail"),
+    }
+}
+
+fn reason_action(reason: CrashReason) -> SharedString {
+    match reason {
+        CrashReason::MissingDependency => t!("GameCrash.reason.MissingDependency.action"),
+        CrashReason::UnsupportedWineApi => t!("GameCrash.reason.UnsupportedWineApi.action"),
+        CrashReason::WineGuestException => t!("GameCrash.reason.WineGuestException.action"),
+        CrashReason::WineRuntime => t!("GameCrash.reason.WineRuntime.action"),
+        CrashReason::VulkanUnavailable => t!("GameCrash.reason.VulkanUnavailable.action"),
+        CrashReason::GraphicsDeviceLost => t!("GameCrash.reason.GraphicsDeviceLost.action"),
+        CrashReason::InsufficientMemory => t!("GameCrash.reason.InsufficientMemory.action"),
+        CrashReason::DiskFull => t!("GameCrash.reason.DiskFull.action"),
+        CrashReason::PermissionDenied => t!("GameCrash.reason.PermissionDenied.action"),
+        CrashReason::ModLoadFailure => t!("GameCrash.reason.ModLoadFailure.action"),
+        CrashReason::LoaderFailure => t!("GameCrash.reason.LoaderFailure.action"),
+        CrashReason::AccessViolation => t!("GameCrash.reason.AccessViolation.action"),
+        CrashReason::IllegalInstruction => t!("GameCrash.reason.IllegalInstruction.action"),
+        CrashReason::StackOverflow => t!("GameCrash.reason.StackOverflow.action"),
+        CrashReason::FastFail => t!("GameCrash.reason.FastFail.action"),
+        CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.action"),
+        CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.action"),
+    }
+}
+
+fn confidence_label(value: Confidence) -> SharedString {
+    match value {
+        Confidence::High => t!("GameCrash.ui.confidence.high"),
+        Confidence::Medium => t!("GameCrash.ui.confidence.medium"),
+        Confidence::Low => t!("GameCrash.ui.confidence.low"),
+    }
+}
+fn evidence_label(value: EvidenceSource) -> SharedString {
+    match value {
+        EvidenceSource::GameLog => t!("GameCrash.ui.source.game"),
+        EvidenceSource::ModLog => t!("GameCrash.ui.source.mod"),
+        EvidenceSource::RunnerLog => t!("GameCrash.ui.source.runner"),
+        EvidenceSource::LauncherLog => t!("GameCrash.ui.source.launcher"),
+        EvidenceSource::WindowsWer => t!("GameCrash.ui.source.wer"),
+        EvidenceSource::ExitStatus => t!("GameCrash.ui.source.exit"),
+    }
+}
+
+/// One actionable diagnosis, never a claim that a particular mod is at fault.
+fn finding_card(finding: CrashFinding, colors: &ThemeColors) -> impl IntoElement {
+    div()
+        .min_w(px(0.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface)
+        .p(px(12.))
+        .flex().flex_col().gap(px(7.))
+        .child(
+            div().min_w(px(0.)).flex().flex_wrap().items_center().gap(px(8.))
+                .child(
+                    div().min_w(px(0.)).text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_primary)
+                        .whitespace_normal()
+                        .child(reason_title(finding.reason))
+                )
+                .child(
+                    div().text_size(px(10.)).text_color(colors.text_secondary)
+                        .rounded(px(6.)).border_1().border_color(colors.border)
+                        .px(px(6.)).py(px(3.))
+                        .child(confidence_label(finding.confidence))
+                )
+        )
+        .child(
+            div().min_w(px(0.)).text_size(px(12.)).line_height(px(18.))
+                .whitespace_normal().text_color(colors.text_secondary)
+                .child(reason_detail(finding.reason))
+        )
+        .child(
+            div().min_w(px(0.)).text_size(px(11.)).whitespace_normal()
+                .text_color(colors.text_secondary)
+                .child(format!(
+                    "{} · {}",
+                    t!("GameCrash.ui.evidence"), evidence_label(finding.source),
+                ))
+        )
+        .child(
+            div().min_w(px(0.)).rounded(px(7.))
+                .bg(colors.settings_field_bg).p(px(10.))
+                .flex().flex_col().gap(px(4.))
+                .child(
+                    div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_primary)
+                        .child(t!("GameCrash.ui.next"))
+                )
+                .child(
+                    div().text_size(px(12.)).line_height(px(18.))
+                        .whitespace_normal().text_color(colors.text_primary)
+                        .child(reason_action(finding.reason))
+                )
+        )
+}
+
 fn option_row(
     id: &'static str,
-    title: &'static str,
-    description: &'static str,
+    title: SharedString,
+    description: SharedString,
     field: ExportField,
     selected: bool,
     width: Pixels,
@@ -120,7 +260,7 @@ fn option_row(
 
 fn action(
     id: &'static str,
-    label: &'static str,
+    label: SharedString,
     primary: bool,
     enabled: bool,
     colors: &ThemeColors,
@@ -228,41 +368,41 @@ fn request_export(cx: &mut App, id: String) {
 
 fn details(report: &GameSessionReport) -> String {
     let compatibility = report.compatibility_prefix.is_some();
-    let pid_label = if compatibility { "Linux 兼容运行器 PID" } else { "Minecraft 原生 PID" };
-    let exit_label = if compatibility { "兼容运行器退出码" } else { "游戏退出码" };
+    let pid_label = if compatibility { t!("GameCrash.ui.runnerPid") } else { t!("GameCrash.ui.nativePid") };
+    let exit_label = if compatibility { t!("GameCrash.ui.runnerExit") } else { t!("GameCrash.ui.nativeExit") };
+    let unknown = t!("GameCrash.ui.statusNone").to_string();
     let mut result = format!(
-        "会话 ID：{}\n版本：{}\n平台：{}\n{}：{}\n开始：{}\n结束：{}\n{}：{}\n{}",
-        report.id, report.version, report.platform, pid_label, report.pid,
-        report.started_at.format("%Y-%m-%d %H:%M:%S UTC"),
-        report.ended_at.map_or_else(
-            || "未知".to_string(),
-            |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}",
+        t!("GameCrash.ui.session"), report.id,
+        t!("GameCrash.ui.version"), report.version,
+        t!("GameCrash.ui.platform"), report.platform,
+        pid_label, report.pid,
+        t!("GameCrash.ui.start"), report.started_at.format("%Y-%m-%d %H:%M:%S UTC"),
+        t!("GameCrash.ui.end"), report.ended_at.map_or_else(
+            || unknown.clone(), |date| date.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         ),
-        exit_label,
-        report.exit_code.map_or_else(
-            || "未知".to_string(), |code| format!("0x{code:08X}")
+        exit_label, report.exit_code.map_or_else(
+            || unknown.clone(), |code| format!("0x{code:08X}"),
         ),
-        report.summary,
+        t!("GameCrash.ui.analysis"),
     );
+    for finding in &report.findings {
+        result.push_str(&format!("\n{}", t!("GameCrash.ui.detectedReason", reason = reason_title(finding.reason))));
+    }
     if compatibility {
-        result.push_str(
-            "\n注意：兼容运行器 PID/退出码不等于 Wine 中的 Minecraft Windows 进程 PID/退出码。"
-        );
+        result.push_str(&format!("\n{}", t!("GameCrash.ui.runnerNote")));
     }
     if report.early_exit {
-        result.push_str("\n在启动检测阶段提前退出");
+        result.push_str(&format!("\n{}", t!("GameCrash.ui.earlyExit")));
     }
     if let Some(signal) = report.exit_signal {
-        result.push_str(&format!("\nLinux 终止信号：{signal}"));
+        result.push_str(&format!("\n{}: {signal}", t!("GameCrash.ui.signal")));
     }
     if let Some(fault) = report.compatibility_fault {
-        result.push_str(&format!("\n兼容层证据：{fault:?}（未自动确认客户端崩溃）"));
+        result.push_str(&format!("\n{}: {fault:?}", t!("GameCrash.ui.fault")));
     }
     if let Some(wer) = &report.wer_fault {
-        result.push_str(&format!(
-            "\nWindows WER：故障模块 {}，异常码 {}",
-            wer.module, wer.exception_code
-        ));
+        result.push_str(&format!("\n{}: {} ({})", t!("GameCrash.ui.wer"), wer.module, wer.exception_code));
     }
     result
 }
