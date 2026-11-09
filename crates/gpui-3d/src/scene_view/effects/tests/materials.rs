@@ -184,7 +184,7 @@ pub(super) fn verify_shadow_retry(
     let mut invalid = view.clone();
     invalid.voxel_shading.sun_direction = Vec3::ZERO;
     invalid.voxel_shading.shadow_strength = 1.;
-    state.shadow_valid = true;
+    state.shadow_valid.fill(true);
     for _ in 0..2 {
         let mut passes = Vec::new();
         assert!(
@@ -200,7 +200,7 @@ pub(super) fn verify_shadow_retry(
                 .is_err()
         );
         assert!(
-            !state.shadow_valid,
+            state.shadow_valid.iter().all(|&valid| !valid),
             "failed shadows must remain eligible for retry"
         );
         assert!(passes.is_empty());
