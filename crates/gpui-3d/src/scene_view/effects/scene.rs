@@ -17,10 +17,29 @@ use std::time::Instant;
 /// has a dedicated GPU depth texture and culling output to avoid overwriting
 /// another cascade's indirect arguments before native submission.
 pub(super) const SHADOW_MAP_SIZE: u32 = 1024;
-pub(super) const SHADOW_CASCADE_WIDTHS: [f32; SHADOW_CASCADE_COUNT] = [128.0, 320.0, 640.0];
-pub(super) const SHADOW_CASCADE_DEPTHS: [f32; SHADOW_CASCADE_COUNT] = [384.0, 768.0, 1280.0];
-/// Near/mid/far receiver radius and crossfade half-width.
-pub(super) const SHADOW_CASCADE_SPLITS: [f32; 4] = [52.0, 140.0, 296.0, 8.0];
+/// No parallel cascade arrays: the projection footprint, depth range and
+/// receiver cutoff are a single typed contract for every GPU shadow cascade.
+/// This prevents changing a split without updating its caster/projection data.
+#[derive(Clone, Copy)]
+struct ShadowCascadeSpec {
+    footprint: f32,
+    caster_depth: f32,
+    receiver_far: f32,
+}
+const SHADOW_CASCADES: [ShadowCascadeSpec; SHADOW_CASCADE_COUNT] = [
+    ShadowCascadeSpec { footprint: 128.0, caster_depth: 384.0, receiver_far: 52.0 },
+    ShadowCascadeSpec { footprint: 320.0, caster_depth: 768.0, receiver_far: 140.0 },
+    ShadowCascadeSpec { footprint: 640.0, caster_depth: 1280.0, receiver_far: 296.0 },
+];
+const SHADOW_CASCADE_BLEND: f32 = 8.0;
+fn shadow_split_uniform() -> [f32; 4] {
+    [
+        SHADOW_CASCADES[0].receiver_far,
+        SHADOW_CASCADES[1].receiver_far,
+        SHADOW_CASCADES[2].receiver_far,
+        SHADOW_CASCADE_BLEND,
+    ]
+}
 const SHADOW_SCROLL_TEXELS: f32 = 32.0;
 const SHADOW_DEPTH_SCROLL_WORLD: f32 = 16.0;
 
@@ -30,13 +49,13 @@ fn shadow_caster_bounds(center: Vec3, sun: Vec3, cascade: usize) -> crate::Aabb 
     // The caster volume must be derived from the *snapped* light camera, not
     // the live eye. Otherwise its contents could change while the cascade key
     // stays cached. Inflate for any main-eye motion inside the projection tile.
-    let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+    let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
     let hysteresis = texel * SHADOW_SCROLL_TEXELS * 0.5
         + SHADOW_DEPTH_SCROLL_WORLD * 0.5 + 1.0;
-    let radius = SHADOW_CASCADE_SPLITS[cascade]
-        + SHADOW_CASCADE_SPLITS[3] + hysteresis;
+    let radius = SHADOW_CASCADES[cascade].receiver_far
+        + SHADOW_CASCADE_BLEND + hysteresis;
     let padding = Vec3::new(radius, radius, radius);
-    let upstream = sun * SHADOW_CASCADE_DEPTHS[cascade];
+    let upstream = sun * SHADOW_CASCADES[cascade].caster_depth;
     crate::Aabb {
         min: center.min(center + upstream) - padding,
         max: center.max(center + upstream) + padding,
@@ -52,7 +71,7 @@ fn stable_shadow_camera(
     cascade: usize,
 ) -> gpui::Result<([i32; 6], Camera)> {
     let sun = sun.normalized().ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
-    let width = SHADOW_CASCADE_WIDTHS[cascade];
+    let width = SHADOW_CASCADES[cascade].footprint;
     let scroll_world = width / SHADOW_MAP_SIZE as f32 * SHADOW_SCROLL_TEXELS;
     let quant = [
         (sun.x * 4096.0).round() as i32,
@@ -80,7 +99,7 @@ fn stable_shadow_camera(
     let center = right * (key[0] as f32 * scroll_world)
         + vertical * (key[1] as f32 * scroll_world)
         + direction * (key[2] as f32 * SHADOW_DEPTH_SCROLL_WORLD);
-    let depth = SHADOW_CASCADE_DEPTHS[cascade];
+    let depth = SHADOW_CASCADES[cascade].caster_depth;
     Ok((key, Camera::orthographic(
         center + direction * depth,
         center,
@@ -562,7 +581,7 @@ impl EffectScene {
                     }
                 }
             }
-            for value in SHADOW_CASCADE_SPLITS {
+            for value in shadow_split_uniform() {
                 bytes.extend(value.to_le_bytes());
             }
             debug_assert_eq!(bytes.len(), super::FRAME_BYTES as usize);
@@ -664,7 +683,7 @@ mod stable_shadow_tests {
             let light = (camera.eye - camera.target).normalized().unwrap();
             let right = camera.up.cross(light).normalized().unwrap();
             let vertical = light.cross(right).normalized().unwrap();
-            let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+            let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
             for axis in [right, vertical] {
                 let coordinate = camera.target.dot(axis) / texel;
                 assert!((coordinate - coordinate.round()).abs() < 0.01);
@@ -695,7 +714,7 @@ mod stable_shadow_tests {
             let (key, camera) = stable_shadow_camera(eye, sun, cascade).unwrap();
             let right = camera.up.cross((camera.eye - camera.target).normalized().unwrap())
                 .normalized().unwrap();
-            let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+            let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
             let (next_key, next) = stable_shadow_camera(
                 eye + right * (texel * SHADOW_SCROLL_TEXELS * 1.5), sun, cascade,
             ).unwrap();
@@ -720,13 +739,13 @@ mod stable_shadow_tests {
     fn cascade_splits_fit_inside_their_projection_widths() {
         for cascade in 0..SHADOW_CASCADE_COUNT {
             assert!(
-                SHADOW_CASCADE_SPLITS[cascade] + SHADOW_CASCADE_SPLITS[3]
-                    < SHADOW_CASCADE_WIDTHS[cascade] * 0.5,
+                SHADOW_CASCADES[cascade].receiver_far + SHADOW_CASCADE_BLEND
+                    < SHADOW_CASCADES[cascade].footprint * 0.5,
                 "cascade {cascade} must fit its receiver radius and fade margin",
             );
         }
-        assert!(SHADOW_CASCADE_WIDTHS[0] / (SHADOW_MAP_SIZE as f32) < 0.22);
-        assert!(SHADOW_CASCADE_WIDTHS[2] > 320.0);
+        assert!(SHADOW_CASCADES[0].footprint / (SHADOW_MAP_SIZE as f32) < 0.22);
+        assert!(SHADOW_CASCADES[2].footprint > 320.0);
     }
 
     #[test]
