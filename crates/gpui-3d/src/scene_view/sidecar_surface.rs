@@ -1122,7 +1122,22 @@ mod tests {
             },
         });
         surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(11, 1));
-        surface.gpu_work_completed();
+        let consumer = SubmissionId::from_parts(40, 1);
+        let unrelated = SubmissionId::from_parts(41, 1);
+        surface.gpu_submission_accepted(consumer);
+        assert!(surface.awaiting_gpu.is_empty());
+        assert!(surface.awaiting_placement_gpu.is_empty());
+        assert!(surface.awaiting_pipeline_gpu.is_empty());
+        assert!(surface.has_retired_targets());
+        assert_eq!(surface.retired_by_submission.len(), 1);
+        // A completed producer or unrelated GUI fence never authorizes
+        // destruction while the real consumer is still sampling.
+        surface.gpu_submission_completed(unrelated);
+        assert!(surface.ready_to_release.is_empty());
+        assert!(surface.ready_placement_release.is_empty());
+        assert!(surface.ready_pipeline_release.is_empty());
+        surface.gpu_submission_completed(consumer);
+        assert!(surface.retired_by_submission.is_empty());
         assert!(!surface.has_retired_targets());
         assert_eq!(surface.awaiting_gpu.len(), 0);
         assert_eq!(surface.ready_to_release.len(), 1);
@@ -1130,6 +1145,12 @@ mod tests {
         assert_eq!(surface.ready_placement_release.len(), 1);
         assert_eq!(surface.awaiting_pipeline_gpu.len(), 0);
         assert_eq!(surface.ready_pipeline_release.len(), 1);
+        // A different resource retirement after the consumer completed
+        // must stay pending until a later fence or a safe global drain.
+        surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(12, 1));
+        surface.gpu_work_completed();
+        assert_eq!(surface.ready_pipeline_release.len(), 2);
+        assert!(!surface.has_retired_targets());
     }
 
     #[test]
