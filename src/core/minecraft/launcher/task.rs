@@ -161,6 +161,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     detected_platform,
                     *pid,
                     None,
+                    None,
                 );
                 let session = crate::core::version::game_info::GameSession::start(
                     PathBuf::from(request.package_folder.as_ref()),
