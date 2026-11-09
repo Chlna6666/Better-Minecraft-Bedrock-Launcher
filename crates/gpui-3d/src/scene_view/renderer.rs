@@ -1532,6 +1532,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     steps,
                     build, build_range,
                 )?;
+                // The compatibility direct-draw fallback is encoded by the
+                // GUI owner, not our native offscreen producer. Clear any
+                // previous native last-reader proof: the newer direct draws
+                // cannot be retired using an older producer's completion ID.
+                scene.draw_producer_submitted(None);
                 steps.len() - first_step
             }
         };
