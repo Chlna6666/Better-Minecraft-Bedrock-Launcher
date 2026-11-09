@@ -282,6 +282,16 @@ struct TargetTrace {
     placement_update_us: u128,
 }
 
+/// Fence-bound retired resources used by an earlier GPUI texture consumer.
+/// A native 3D producer fence alone cannot release its color view: the GUI
+/// composite may still be sampling it on another native graphics queue.
+struct SidecarRetirement {
+    consumer: SubmissionId,
+    targets: Vec<Target>,
+    placements: Vec<RetiredPlacement>,
+    pipelines: Vec<RenderPipelineId>,
+}
+
 /// GPU resources stay on the graphics owner. Only the CPU render preparation
 /// queue runs on other threads; this surface owns no swapchain or window.
 pub(super) struct SidecarSurface {
@@ -311,6 +321,9 @@ pub(super) struct SidecarSurface {
     /// previous compositor PSO while an earlier GUI submission still uses it.
     awaiting_pipeline_gpu: Vec<RenderPipelineId>,
     ready_pipeline_release: Vec<RenderPipelineId>,
+    /// Retired resources bound to the actual UI consumer's native fence.
+    /// These cohorts can complete while unrelated UI/3D work stays in flight.
+    retired_by_submission: Vec<SidecarRetirement>,
     trace: TargetTrace,
 }
 
@@ -452,6 +465,7 @@ impl SidecarSurface {
                 ready_placement_release: Vec::new(),
                 awaiting_pipeline_gpu: Vec::new(),
                 ready_pipeline_release: Vec::new(),
+                retired_by_submission: Vec::new(),
                 trace: TargetTrace::default(),
             })
         })();
@@ -618,11 +632,52 @@ impl SidecarSurface {
         !self.awaiting_gpu.is_empty()
             || !self.awaiting_placement_gpu.is_empty()
             || !self.awaiting_pipeline_gpu.is_empty()
+            || !self.retired_by_submission.is_empty()
     }
 
-    /// Called only after GPUI verifies all earlier graphics submissions
-    /// completed. Destruction still occurs on the native device owner.
+    /// Attach the current retired generations to the last GPU queue consumer
+    /// that could have sampled them. Called *after* a real GUI Present
+    /// submission has been accepted. No fence wait or native device access.
+    pub(super) fn gpu_submission_accepted(&mut self, consumer: SubmissionId) {
+        if self.awaiting_gpu.is_empty()
+            && self.awaiting_placement_gpu.is_empty()
+            && self.awaiting_pipeline_gpu.is_empty()
+        {
+            return;
+        }
+        self.retired_by_submission.push(SidecarRetirement {
+            consumer,
+            targets: std::mem::take(&mut self.awaiting_gpu),
+            placements: std::mem::take(&mut self.awaiting_placement_gpu),
+            pipelines: std::mem::take(&mut self.awaiting_pipeline_gpu),
+        });
+    }
+
+    /// Release only the exact cohort whose native GUI consumer has finished.
+    /// An older 3D producer fence must never free a color attachment still
+    /// referenced by the presentation queue.
+    pub(super) fn gpu_submission_completed(&mut self, consumer: SubmissionId) {
+        let mut index = 0;
+        while index < self.retired_by_submission.len() {
+            if self.retired_by_submission[index].consumer != consumer {
+                index += 1;
+                continue;
+            }
+            let mut cohort = self.retired_by_submission.swap_remove(index);
+            self.ready_to_release.append(&mut cohort.targets);
+            self.ready_placement_release.append(&mut cohort.placements);
+            self.ready_pipeline_release.append(&mut cohort.pipelines);
+        }
+    }
+
+    /// Conservative fallback: the host has proved *all* earlier native GPU
+    /// submissions completed (e.g. resize, trim or a full owner drain).
     pub(super) fn gpu_work_completed(&mut self) {
+        for mut cohort in self.retired_by_submission.drain(..) {
+            self.ready_to_release.append(&mut cohort.targets);
+            self.ready_placement_release.append(&mut cohort.placements);
+            self.ready_pipeline_release.append(&mut cohort.pipelines);
+        }
         self.ready_to_release.append(&mut self.awaiting_gpu);
         self.ready_placement_release.append(&mut self.awaiting_placement_gpu);
         self.ready_pipeline_release.append(&mut self.awaiting_pipeline_gpu);
@@ -684,19 +739,25 @@ impl SidecarSurface {
         });
         let retired = self.awaiting_gpu.iter()
             .chain(self.ready_to_release.iter())
+            .chain(self.retired_by_submission.iter().flat_map(|cohort| cohort.targets.iter()))
             .fold(0u64, |sum, target| {
                 sum.saturating_add(sum_pixels(target.extent.width(), target.extent.height()))
+            });
+        let (fenced_targets, fenced_placements, fenced_pipelines) =
+            self.retired_by_submission.iter().fold((0, 0, 0), |(t, p, l), cohort| {
+                (t + cohort.targets.len(), p + cohort.placements.len(),
+                 l + cohort.pipelines.len())
             });
         let idle_placements: usize = self.targets.values()
             .map(|target| target.recycled_placements.len()).sum();
         eprintln!(
             "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} recycled_bindings={} placement_new={} placement_reused={} placement_update_us={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
             self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
-            self.awaiting_gpu.len() + self.ready_to_release.len(),
-            self.awaiting_placement_gpu.len() + self.ready_placement_release.len(),
+            self.awaiting_gpu.len() + self.ready_to_release.len() + fenced_targets,
+            self.awaiting_placement_gpu.len() + self.ready_placement_release.len() + fenced_placements,
             idle_placements, self.trace.placement_allocated, self.trace.placement_recycled,
             self.trace.placement_update_us,
-            self.awaiting_pipeline_gpu.len() + self.ready_pipeline_release.len(),
+            self.awaiting_pipeline_gpu.len() + self.ready_pipeline_release.len() + fenced_pipelines,
             cropped.saturating_mul(bpp),
             full_window.saturating_mul(bpp),
             retired.saturating_mul(bpp),
@@ -967,6 +1028,9 @@ impl SidecarSurface {
         // Final teardown is owned by the host, which drains its native
         // pending submissions before disposing of the renderer. Destroy all
         // active/fence-ready resources through that same native device.
+        // The host has drained all accepted submissions before destroy.
+        // Consolidate per-fence cohorts on this same owner before release.
+        self.gpu_work_completed();
         for (_, target) in self.targets.drain() {
             target.destroy(device)?;
         }
@@ -1035,6 +1099,7 @@ mod tests {
             ready_placement_release: Vec::new(),
             awaiting_pipeline_gpu: Vec::new(),
             ready_pipeline_release: Vec::new(),
+            retired_by_submission: Vec::new(),
             trace: TargetTrace::default(),
         };
         assert!(surface.has_retired_targets());
