@@ -94,12 +94,128 @@ impl Dx11Device {
         dispatch.validate(self.compute_capabilities())?;
         let set = self.sets.get(dispatch.bind_group)?;
         let layout = self.layouts.get(set.layout)?;
-        let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
-        self.dispatch_buffers(&ComputeDispatch {
+        set.desc.validate_against(layout)?;
+        // Existing Section meshing remains on dispatch_buffers without new work.
+        if layout.entries.iter().all(|entry| matches!(
+            entry.binding_type,
+            BindingType::UniformBuffer
+                | BindingType::StorageBuffer
+                | BindingType::StorageBufferReadWrite
+        )) {
+            let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
+            return self.dispatch_buffers(&ComputeDispatch {
+                shader: dispatch.shader,
+                bindings: &bindings,
+                workgroups: dispatch.workgroups,
+            });
+        }
+
+        let mut native = Vec::with_capacity(layout.entries.len());
+        let mut buffer_bindings = Vec::new();
+        let mut read_images = Vec::<TextureId>::new();
+        let mut write_images = Vec::<TextureId>::new();
+        for entry in &layout.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) {
+                return Err(Error::InvalidInput("compute binding is not visible".into()));
+            }
+            let value = set.desc.entries.iter()
+                .find(|item| item.binding == entry.binding)
+                .ok_or_else(|| Error::InvalidInput("missing compute binding".into()))?;
+            let view = match (entry.binding_type, value.resource) {
+                (BindingType::UniformBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBufferReadWrite, BindingResource::Buffer(buffer)) => {
+                    let access = match entry.binding_type {
+                        BindingType::UniformBuffer => ComputeBufferAccess::Uniform,
+                        BindingType::StorageBuffer => ComputeBufferAccess::ReadOnly,
+                        _ => ComputeBufferAccess::ReadWrite,
+                    };
+                    let binding = ComputeBufferBinding {
+                        binding: entry.binding, buffer, access,
+                    };
+                    let view = self.create_compute_binding(&binding)?;
+                    buffer_bindings.push(binding);
+                    view
+                }
+                (BindingType::SampledTexture, BindingResource::Texture(texture)) => {
+                    if entry.binding >= 128 {
+                        return Err(Error::InvalidInput("D3D11 sampled image slot exceeds t127".into()));
+                    }
+                    let view = self.views.get(texture.texture_view)?;
+                    read_images.push(view.texture);
+                    ComputeBinding::Read(Bound::Srv(view.srv.clone().ok_or_else(|| {
+                        Error::InvalidInput("sampled compute image lacks SRV".into())
+                    })?))
+                }
+                (BindingType::StorageTexture { format, .. }, BindingResource::Texture(texture)) => {
+                    if entry.binding >= 8 {
+                        return Err(Error::InvalidInput("D3D11 storage image slot exceeds u7".into()));
+                    }
+                    let view = self.views.get(texture.texture_view)?;
+                    if view.format != format {
+                        return Err(Error::InvalidInput("D3D11 storage image format mismatch".into()));
+                    }
+                    write_images.push(view.texture);
+                    ComputeBinding::Write(view.uav.clone().ok_or_else(|| {
+                        Error::InvalidInput("storage compute image lacks UAV".into())
+                    })?)
+                }
+                (BindingType::Sampler, BindingResource::Sampler(sampler)) => {
+                    if entry.binding >= 16 {
+                        return Err(Error::InvalidInput("D3D11 sampler slot exceeds s15".into()));
+                    }
+                    ComputeBinding::Read(Bound::Sampler(
+                        self.samplers.get(sampler.sampler)?.clone()
+                    ))
+                }
+                _ => return Err(Error::InvalidInput("compute resource kind mismatch".into())),
+            };
+            native.push((entry.binding, view));
+        }
+        // A writable texture cannot concurrently be read (or written twice)
+        // through a different image view of the same D3D11 texture.
+        if read_images.iter().any(|id| write_images.contains(id))
+            || write_images.iter().enumerate().any(|(i, id)| write_images[..i].contains(id))
+        {
+            return Err(Error::InvalidInput("compute image read/write alias".into()));
+        }
+        ComputeDispatch {
             shader: dispatch.shader,
-            bindings: &bindings,
+            bindings: &buffer_bindings,
             workgroups: dispatch.workgroups,
-        })
+        }.validate_with_limits(self.compute_capabilities(), self.buffer_binding_limits())?;
+        let Shader::Compute(shader) = self.shaders.get(dispatch.shader)? else {
+            return Err(Error::InvalidInput("dispatch requires a compute shader".into()));
+        };
+        self.clear_compute_graphics_srvs();
+        if !write_images.is_empty() {
+            // D3D11 refuses UAV bindings that overlap an active RTV/DSV.
+            // Leave the buffer-only fast path untouched.
+            unsafe { self.context.OMSetRenderTargets(None, None) };
+        }
+        for (slot, view) in &native {
+            self.set_compute_binding(*slot, view);
+        }
+        // SAFETY: resources, shader and native slot limits were checked above.
+        unsafe {
+            let groups = [
+                dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2], 0,
+            ];
+            self.context.UpdateSubresource(
+                &self.draw_constants, 0, None, groups.as_ptr().cast(), 0, 0,
+            );
+            self.context.CSSetConstantBuffers(13, Some(&[Some(self.draw_constants.clone())]));
+            self.context.CSSetShader(shader, None);
+            self.context.Dispatch(
+                dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
+            );
+            self.context.CSSetShader(None, None);
+            self.context.CSSetConstantBuffers(13, Some(&[None]));
+        }
+        for (slot, view) in &native {
+            self.clear_compute_binding(*slot, view);
+        }
+        Ok(())
     }
 
     pub(crate) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
@@ -214,8 +330,8 @@ impl Dx11Device {
                         None,
                     );
                 }
-                ComputeBinding::Read(Bound::Sampler(_)) => {
-                    unreachable!("compute bindings are buffers")
+                ComputeBinding::Read(Bound::Sampler(sampler)) => {
+                    self.context.CSSetSamplers(slot, Some(&[Some(sampler.clone())]));
                 }
             }
         }
@@ -229,7 +345,12 @@ impl Dx11Device {
                 ComputeBinding::Read(Bound::Srv(_)) => {
                     self.context.CSSetShaderResources(slot, Some(&[None]))
                 }
-                ComputeBinding::Read(_) => self.context.CSSetConstantBuffers(slot, Some(&[None])),
+                ComputeBinding::Read(Bound::Uniform { .. }) => {
+                    self.context.CSSetConstantBuffers(slot, Some(&[None]))
+                }
+                ComputeBinding::Read(Bound::Sampler(_)) => {
+                    self.context.CSSetSamplers(slot, Some(&[None]))
+                }
                 ComputeBinding::Write(_) => {
                     self.context
                         .CSSetUnorderedAccessViews(slot, 1, Some([None].as_ptr()), None)
