@@ -351,3 +351,171 @@ where
     })();
     result.and(cleanup)
 }
+
+
+/// Verify native compute buffer writes, subsequent compute buffer reads, and
+/// storage-image writes in order, without any CPU readback between dispatches.
+///
+/// Each backend provides shader binaries compiled from the same two WGSL
+/// entry points. Test both storage-only images (GENERAL on Vulkan) and images
+/// that can also be sampled (read-only layout after a Vulkan dispatch).
+/// Only the final texture readback synchronizes the CPU.
+///
+/// Writer WGSL:
+/// \`@group(0) @binding(0) var<storage, read_write> values: array<vec4<u32>>;\`
+/// \`@compute @workgroup_size(1) fn write_data() { values[0] = vec4<u32>(0u, 255u, 0u, 255u); }\`
+///
+/// Reader WGSL:
+/// \`@group(0) @binding(0) var<storage, read> values: array<vec4<u32>>;\`
+/// \`@group(0) @binding(1) var output_image: texture_storage_2d<rgba8unorm, write>;\`
+/// \`@compute @workgroup_size(1) fn write_image(@builtin(global_invocation_id) id: vec3<u32>) {\`
+/// \`  let color = values[0];\`
+/// \`  textureStore(output_image, vec2<i32>(id.xy), vec4<f32>(f32(color.x) / 255.0, f32(color.y) / 255.0, f32(color.z) / 255.0, f32(color.w) / 255.0));\`
+/// \`}\`
+///
+/// # Errors
+/// Returns the first backend error or a pixel mismatch.
+pub fn compute_resource_set_roundtrip<D>(
+    device: &mut D,
+    writer: crate::ShaderBinary,
+    reader: crate::ShaderBinary,
+) -> Result<()>
+where
+    D: Device,
+{
+    use crate::{
+        BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+        BindingResource, BindingType, BufferBinding, ComputeBindGroupDispatch,
+        ShaderModuleDescriptor, ShaderStages, TextureBinding,
+    };
+
+    let writer_shader = device.create_shader_module(&ShaderModuleDescriptor {
+        label: Some("compute conformance writer".into()),
+        binary: writer,
+    })?;
+    let reader_shader = device.create_shader_module(&ShaderModuleDescriptor {
+        label: Some("compute conformance reader".into()),
+        binary: reader,
+    })?;
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("compute conformance storage".into()),
+        size: 16,
+        usage: BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE,
+        memory_location: MemoryLocation::GpuOnly,
+    })?;
+    let write_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: None,
+        entries: vec![BindGroupLayoutEntry {
+            binding: 0,
+            binding_type: BindingType::StorageBufferReadWrite,
+            stages: ShaderStages::COMPUTE,
+        }],
+    })?;
+    let read_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: None,
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::StorageBuffer,
+                stages: ShaderStages::COMPUTE,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                binding_type: BindingType::StorageTexture {
+                    format: Format::Rgba8Unorm,
+                    read_only: false,
+                },
+                stages: ShaderStages::COMPUTE,
+            },
+        ],
+    })?;
+    let buffer_range = BufferBinding {
+        buffer,
+        offset: 0,
+        size: 16,
+        stride: None,
+    };
+    let write_set = device.create_bind_group(&BindGroupDescriptor {
+        label: None,
+        layout: write_layout,
+        entries: vec![BindGroupEntry {
+            binding: 0,
+            resource: BindingResource::Buffer(buffer_range),
+        }],
+    })?;
+    const SIDE: u32 = 8;
+    for sampled in [false, true] {
+        let image = device.create_texture(&TextureDescriptor {
+            label: Some("compute conformance output".into()),
+            size: Extent2d::new(SIDE, SIDE)?,
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC
+                | if sampled { TextureUsage::SAMPLED } else { TextureUsage::empty() },
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+            sample_count: 1,
+        })?;
+        let image_view = device.create_texture_view(&TextureViewDescriptor {
+            label: None,
+            texture: image,
+            base_mip_level: 0,
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+        })?;
+        let read_set = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: read_layout,
+            entries: vec![
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(buffer_range),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Texture(TextureBinding { texture_view: image_view }),
+                },
+            ],
+        })?;
+        let result = (|| -> Result<()> {
+            device.dispatch_compute_bind_group(&ComputeBindGroupDispatch {
+                shader: writer_shader,
+                bind_group: write_set,
+                workgroups: [1, 1, 1],
+            })?;
+            device.dispatch_compute_bind_group(&ComputeBindGroupDispatch {
+                shader: reader_shader,
+                bind_group: read_set,
+                workgroups: [SIDE, SIDE, 1],
+            })?;
+            let pixels = device.read_texture(image)?;
+            let row = pixels.bytes_per_row as usize;
+            if row < SIDE as usize * 4 || pixels.bytes.len() < row * SIDE as usize {
+                return Err(Error::Backend("compute storage image readback is too short".into()));
+            }
+            for y in 0..SIDE as usize {
+                for x in 0..SIDE as usize {
+                    let offset = y * row + x * 4;
+                    if pixels.bytes[offset..offset + 4] != [0, 255, 0, 255] {
+                        return Err(Error::Backend(format!(
+                            "compute image ({x}, {y}) sampled={sampled}: got {:?}",
+                            &pixels.bytes[offset..offset + 4]
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        device.destroy_bind_group(read_set)?;
+        device.destroy_texture_view(image_view)?;
+        device.destroy_texture(image)?;
+        result?;
+    }
+    device.destroy_bind_group(write_set)?;
+    device.destroy_bind_group_layout(read_layout)?;
+    device.destroy_bind_group_layout(write_layout)?;
+    device.destroy_buffer(buffer)?;
+    device.destroy_shader_module(reader_shader)?;
+    device.destroy_shader_module(writer_shader)?;
+    Ok(())
+}
