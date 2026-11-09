@@ -565,6 +565,7 @@ impl Dx12Device {
         call_index: usize,
         dispatch: &ComputeDispatch<'_>,
         states: &mut HashMap<BufferId, D3D12_RESOURCE_STATES>,
+        compute_only: bool,
     ) -> Result<()> {
         let command = self
             .command_encoders
@@ -599,6 +600,14 @@ impl Dx12Device {
             let buffer = self.buffers.get(binding.buffer.buffer)?;
             let next_state = if binding.access == ComputeBufferAccess::ReadWrite {
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+            } else if compute_only && buffer.desc.memory_location == MemoryLocation::CpuToGpu {
+                // UPLOAD heaps are permanently GENERIC_READ; transitioning
+                // one to COMMON would violate the D3D12 heap contract.
+                D3D12_RESOURCE_STATE_GENERIC_READ
+            } else if compute_only && binding.access == ComputeBufferAccess::Uniform {
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+            } else if compute_only {
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
             } else {
                 D3D12_RESOURCE_STATE_GENERIC_READ
             };
@@ -623,22 +632,40 @@ impl Dx12Device {
                 dispatch.workgroups[2],
             );
         }
-        for binding in dispatch.bindings {
+        for (index, binding) in dispatch.bindings.iter().enumerate() {
+            if dispatch.bindings[..index].iter().any(|previous|
+                previous.buffer.buffer == binding.buffer.buffer
+            ) {
+                continue;
+            }
             let buffer = self.buffers.get(binding.buffer.buffer)?;
-            if binding.access == ComputeBufferAccess::ReadWrite {
+            let upload = buffer.desc.memory_location == MemoryLocation::CpuToGpu;
+            let from = if binding.access == ComputeBufferAccess::ReadWrite {
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+            } else if compute_only && upload {
+                D3D12_RESOURCE_STATE_GENERIC_READ
+            } else if compute_only && binding.access == ComputeBufferAccess::Uniform {
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+            } else if compute_only {
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+            } else {
+                D3D12_RESOURCE_STATE_GENERIC_READ
+            };
+            let to = if compute_only && !upload {
+                D3D12_RESOURCE_STATE_COMMON
+            } else {
+                D3D12_RESOURCE_STATE_GENERIC_READ
+            };
+            if from != to {
                 record_transition_barrier(
                     &command,
-                    buffer
-                        .resource
-                        .as_ref()
-                        .ok_or_else(|| Error::Backend("missing compute resource".into()))?,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    buffer.resource.as_ref().ok_or_else(|| Error::Backend(
+                        "missing compute resource".into(),
+                    ))?,
+                    from, to,
                 );
             }
-        }
-        for binding in dispatch.bindings {
-            states.insert(binding.buffer.buffer, D3D12_RESOURCE_STATE_GENERIC_READ);
+            states.insert(binding.buffer.buffer, to);
         }
         Ok(())
     }
@@ -720,7 +747,10 @@ impl Dx12Device {
                 unsafe { command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
             }
             for (call_index, &index) in indices.iter().enumerate() {
-                self.record_dispatch(encoder, call_index, &dispatches[index], &mut states)?;
+                self.record_dispatch(
+                    encoder, call_index, &dispatches[index], &mut states,
+                    native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 2 }),
+                )?;
             }
             if let Some((heap, readback)) = &queries {
                 let command = self.command_encoders.get(encoder)?.command_list
