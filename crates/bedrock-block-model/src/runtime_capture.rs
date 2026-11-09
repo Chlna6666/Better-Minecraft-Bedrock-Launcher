@@ -90,6 +90,8 @@ fn capture_key(block: &CaptureBlock) -> Option<StateKey> {
 struct CaptureManifest {
     target_game_version: String,
     #[serde(default)]
+    capture_revision: u64,
+    #[serde(default)]
     registry_only: bool,
     #[serde(default)]
     shared_geometry_pool_schema: u32,
@@ -179,6 +181,7 @@ pub struct RuntimeCaptureCatalog {
     root: PathBuf,
     pool: PoolV3,
     version: String,
+    capture_revision: u64,
     states: HashMap<StateKey, StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
     geometries: Mutex<HashMap<u32, Option<Arc<CaptureGeometryV3>>>>,
@@ -187,7 +190,9 @@ pub struct RuntimeCaptureCatalog {
 }
 impl PartialEq for RuntimeCaptureCatalog {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root && self.version == other.version
+        self.root == other.root
+            && self.version == other.version
+            && self.capture_revision == other.capture_revision
     }
 }
 impl Eq for RuntimeCaptureCatalog {}
@@ -320,6 +325,7 @@ impl RuntimeCaptureCatalog {
             root: root.to_owned(),
             pool,
             version: manifest.target_game_version,
+            capture_revision: manifest.capture_revision,
             states,
             geometries: Mutex::new(HashMap::new()),
             appearances: Mutex::new(HashMap::new()),
