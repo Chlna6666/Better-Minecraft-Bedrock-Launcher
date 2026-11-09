@@ -367,6 +367,40 @@ fn request_export(cx: &mut App, id: String) {
     }
 }
 
+/// Show precise, sanitized forensic signals without attaching raw stack traces
+/// or pretending that shared logs establish a culprit or game PID.
+fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
+    let evidence = &report.forensics;
+    let mut lines = Vec::new();
+    if !evidence.failed_mods.is_empty() {
+        let mods = evidence.failed_mods.iter().map(|m| m.identifier.as_str())
+            .collect::<Vec<_>>().join(", ");
+        lines.push(t!("GameCrash.forensics.mods", mods = mods).to_string());
+        if evidence.failed_mods.iter().any(|m| !m.session_private) {
+            lines.push(t!("GameCrash.forensics.shared").to_string());
+        } else {
+            lines.push(t!("GameCrash.forensics.private").to_string());
+        }
+    }
+    if let Some(stack) = &evidence.wine_stack {
+        let module = stack.module.as_deref().map(str::to_owned)
+            .unwrap_or_else(|| t!("GameCrash.forensics.unknown").to_string());
+        lines.push(t!(
+            "GameCrash.forensics.wine", module = module, frames = stack.frames
+        ).to_string());
+    }
+    if !evidence.minidumps.is_empty() {
+        let code = evidence.minidumps.iter().find_map(|dump| dump.exception_code)
+            .map(|value| format!("0x{value:08X}"))
+            .unwrap_or_else(|| t!("GameCrash.forensics.unknown").to_string());
+        lines.push(t!(
+            "GameCrash.forensics.dump", count = evidence.minidumps.len(), code = code
+        ).to_string());
+        lines.push(t!("GameCrash.forensics.dumpWarning").to_string());
+    }
+    lines
+}
+
 fn details(report: &GameSessionReport) -> String {
     let compatibility = report.compatibility_prefix.is_some();
     let pid_label = if compatibility { t!("GameCrash.ui.runnerPid") } else { t!("GameCrash.ui.nativePid") };
@@ -404,6 +438,14 @@ fn details(report: &GameSessionReport) -> String {
     }
     if let Some(wer) = &report.wer_fault {
         result.push_str(&format!("\n{}: {} ({})", t!("GameCrash.ui.wer"), wer.module, wer.exception_code));
+    }
+    let evidence = forensic_lines(report);
+    if !evidence.is_empty() {
+        result.push_str(&format!("\n\n{}", t!("GameCrash.forensics.title")));
+        for line in evidence {
+            result.push_str("\n");
+            result.push_str(&line);
+        }
     }
     result
 }
@@ -503,6 +545,7 @@ pub fn render_game_diagnostics_overlay(
         report.findings.clone()
     };
     let copy_text = shareable_diagnosis(&report, &findings);
+    let forensic_display = forensic_lines(&report);
 
     let export_warning = if !selection.redact_text && selection.include_dumps {
         t!("GameCrash.ui.riskBoth")
@@ -607,6 +650,34 @@ pub fn render_game_diagnostics_overlay(
                                     finding_card(finding, colors)
                                 }))
                         )
+                        .when(!forensic_display.is_empty(), |panel| panel.child(
+                            div()
+                                .min_w(px(0.))
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(colors.border)
+                                .bg(colors.surface)
+                                .p(px(12.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(7.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(t!("GameCrash.forensics.title"))
+                                )
+                                .children(forensic_display.into_iter().map(|line| {
+                                    div()
+                                        .min_w(px(0.))
+                                        .text_size(px(12.))
+                                        .line_height(px(18.))
+                                        .whitespace_normal()
+                                        .text_color(colors.text_secondary)
+                                        .child(line)
+                                }))
+                        ))
                         .child(
                             action(
                                 "game-diagnostics-technical-toggle",
