@@ -292,40 +292,55 @@ impl GpuSubmissionDependencyGraph {
                 covered.extend(older.iter().copied());
             }
         }
-        // Work on distinct native queues is unordered unless its completion
-        // is covered by an actual backend-issued GPU wait. A matching queue
-        // name or CPU submission order is never sufficient for RAW/WAR/WAW.
-        // Ignore read/read overlap; independent immutable readers can run
-        // concurrently without a barrier.
-        for (id, previous) in &self.live {
-            if previous.queue == record.queue || covered.contains(id) {
-                continue;
+        // The hot path is normally a single ordered queue. Build a native
+        // resource index only if another outstanding physical queue may race;
+        // avoid O(new_uses * in_flight_uses) for large Section batches.
+        let possible_conflict = self.live.iter().any(|(id, previous)| {
+            previous.queue != record.queue && !covered.contains(id)
+        }) || self.unknown.iter().any(|(queue, _)| *queue != record.queue);
+        if possible_conflict && !record.uses.is_empty() {
+            let mut by_resource = HashMap::<crate::GpuResource, Vec<&GpuSubmissionAccess>>::new();
+            for access in &record.uses {
+                by_resource.entry(access.span.resource()).or_default().push(access);
             }
-            if record.uses.iter().any(|new_use| {
-                previous.uses.iter().any(|old_use| {
-                    (new_use.access.writes() || old_use.access.writes())
-                        && new_use.span.overlaps(&old_use.span)
-                })
-            }) {
-                return Err(Error::InvalidInput(format!(
-                    "cross-queue GPU resource hazard: {:?} must wait for {:?} before conflicting resource access",
-                    record.queue, previous.queue,
-                )));
+            // Distinct native queues are unordered unless the producer is
+            // covered by an actual GPU-side wait. Concurrent read/read needs
+            // no serialization, while RAW/WAR/WAW must be proven.
+            for (id, previous) in &self.live {
+                if previous.queue == record.queue || covered.contains(id) {
+                    continue;
+                }
+                if previous.uses.iter().any(|old_use| {
+                    by_resource.get(&old_use.span.resource()).is_some_and(|current| {
+                        current.iter().any(|new_use| {
+                            (new_use.access.writes() || old_use.access.writes())
+                                && new_use.span.overlaps(&old_use.span)
+                        })
+                    })
+                }) {
+                    return Err(Error::InvalidInput(format!(
+                        "cross-queue GPU resource hazard: {:?} must wait for {:?} before conflicting resource access",
+                        record.queue, previous.queue,
+                    )));
+                }
             }
-        }
-        // An untracked submission on another queue has no verifiable
-        // completion ID to wait upon. It must first be sealed by a real
-        // same-queue checkpoint; otherwise never treat a new registered
-        // native submission as safe just because the CPU submitted it later.
-        for (queue, previous) in &self.unknown {
-            if *queue != record.queue && record.uses.iter().any(|new_use| {
-                (new_use.access.writes() || previous.access.writes())
-                    && new_use.span.overlaps(&previous.span)
-            }) {
-                return Err(Error::InvalidInput(format!(
-                    "cross-queue GPU resource hazard: untracked work on {:?} requires its own native checkpoint",
-                    queue,
-                )));
+            // An untracked producer on another queue must first be sealed
+            // with a native checkpoint from THAT queue, not a GUI fence.
+            for (queue, previous) in &self.unknown {
+                if *queue == record.queue {
+                    continue;
+                }
+                if by_resource.get(&previous.span.resource()).is_some_and(|current| {
+                    current.iter().any(|new_use| {
+                        (new_use.access.writes() || previous.access.writes())
+                            && new_use.span.overlaps(&previous.span)
+                    })
+                }) {
+                    return Err(Error::InvalidInput(format!(
+                        "cross-queue GPU resource hazard: untracked work on {:?} requires its own native checkpoint",
+                        queue,
+                    )));
+                }
             }
         }
         self.ancestors.insert(record.id, covered);
