@@ -36,6 +36,22 @@ foreach ($relative in $pureEngineFiles) {
     }
 }
 
+# The GUI adapter must be an opt-in Cargo feature for standalone renderers.
+$manifest = Get-Content -LiteralPath (Join-Path $crateRoot "Cargo.toml") -Raw
+$librarySource = Get-Content -LiteralPath (Join-Path $sourceRoot "lib.rs") -Raw
+if ($manifest -notmatch '(?m)^gpui-sidecar\s*=\s*\["dep:gpui"\]') {
+    $failures.Add("gpui-3d must define the optional gpui-sidecar dependency feature")
+}
+if ($manifest -notmatch '(?m)^gpui\s*=\s*\{[^\r\n]*optional\s*=\s*true') {
+    $failures.Add("gpui-3d must mark the gpui dependency optional")
+}
+if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*mod scene_view;') {
+    $failures.Add("gpui-3d must gate the scene_view adapter behind gpui-sidecar")
+}
+if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*pub use scene_view::') {
+    $failures.Add("gpui-3d must gate the public SceneView symbols behind gpui-sidecar")
+}
+
 # A native 3D producer must be supplied from the public engine module, not
 # privately recreated under GPUI's paint/sidecar implementation.
 $library = Join-Path $sourceRoot "lib.rs"
