@@ -138,6 +138,7 @@ cargo clippy -p gpui --no-default-features --features nova-gfx-dx12 -- -D warnin
 
 pwsh -File scripts/check-docs.ps1
 pwsh -File scripts/check-nova-gfx-boundary.ps1
+pwsh -File scripts/check-gpui-3d-boundary.ps1
 pwsh -File scripts/check-naming.ps1
 ```
 
