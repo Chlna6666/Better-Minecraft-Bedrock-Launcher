@@ -676,82 +676,28 @@ impl Dx12Device {
         self.dispatch_buffer_batch_profiled(dispatches, None)
     }
 
-    /// Release existing graphics/transfer resource states on the PRIMARY
-    /// DIRECT queue before a typed COMPUTE list uses the same buffers. D3D12
-    /// COMPUTE command lists cannot transition from graphics-only resource
-    /// states such as PIXEL_SHADER_RESOURCE. Pretransition to COMMON on
-    /// DIRECT, then the GPU-side input queue Wait establishes visibility.
-    ///
-    /// CPUToGpu UPLOAD resources remain permanently GENERIC_READ and may
-    /// only be read on the Compute queue. No host fence waiting occurs.
+    /// Deduplicate touched resource handles; a PRIMARY direct command list
+    /// performs the graphics-state -> COMMON transition only when required.
+    /// Native typed COMPUTE then GPU-waits for that exact release fence.
     fn prepare_dedicated_compute_buffers(
         &mut self, dispatches: &[ComputeDispatch<'_>],
     ) -> Result<()> {
-        let mut transitions = HashMap::<
-            BufferId, (ID3D12Resource, D3D12_RESOURCE_STATES),
-        >::new();
+        let mut buffers = Vec::new();
         for dispatch in dispatches {
-            if dispatch.workgroups.contains(&0) {
-                continue;
-            }
+            if dispatch.workgroups.contains(&0) { continue; }
             for binding in dispatch.bindings {
-                let buffer = self.buffers.get(binding.buffer.buffer)?;
-                if buffer.desc.memory_location == MemoryLocation::CpuToGpu {
-                    if binding.access == ComputeBufferAccess::ReadWrite {
-                        return Err(Error::InvalidInput(
-                            "D3D12 UPLOAD buffers cannot be writable Compute UAVs".into(),
-                        ));
-                    }
-                    continue;
+                let resource = self.buffers.get(binding.buffer.buffer)?;
+                if resource.desc.memory_location == MemoryLocation::CpuToGpu
+                    && binding.access == ComputeBufferAccess::ReadWrite
+                {
+                    return Err(Error::InvalidInput(
+                        "DX12 UPLOAD buffers cannot be writable Compute UAVs".into(),
+                    ));
                 }
-                if buffer.state == D3D12_RESOURCE_STATE_COMMON {
-                    continue;
-                }
-                let native = buffer.resource.as_ref().ok_or_else(|| {
-                    Error::Backend("DX12 dedicated Compute buffer is not allocated".into())
-                })?;
-                transitions.entry(binding.buffer.buffer)
-                    .or_insert_with(|| (native.clone(), buffer.state));
+                buffers.push(binding.buffer.buffer);
             }
         }
-        if transitions.is_empty() {
-            return Ok(());
-        }
-        let encoder = self.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("DX12 async Compute release".into()),
-        })?;
-        let result = (|| -> Result<u64> {
-            self.begin_texture_command_encoder(encoder, None)?;
-            let command = self.command_encoders.get(encoder)?.command_list
-                .as_ref().ok_or_else(|| Error::Backend(
-                    "DX12 resource-state release has no native command list".into(),
-                ))?;
-            for (resource, state) in transitions.values() {
-                record_transition_barrier(
-                    command, resource, *state, D3D12_RESOURCE_STATE_COMMON,
-                );
-            }
-            self.finish_texture_command_encoder(encoder)?;
-            self.submit_without_wait(encoder)
-        })();
-        let fence = match result {
-            Ok(fence) => fence,
-            Err(error) => {
-                let _ = self.release_temporary_command_encoder_after_failure(encoder);
-                return Err(error);
-            }
-        };
-        let completed_encoder = self.command_encoders.take(encoder)?;
-        self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-            fence_value: fence, _encoder: completed_encoder,
-        });
-        // This CPU state update is legal only after the *native primary*
-        // release command list was actually accepted by the GPU. The typed
-        // COMPUTE submit will wait on the newer primary timeline value.
-        for (buffer, _) in transitions {
-            self.buffers.get_mut(buffer)?.state = D3D12_RESOURCE_STATE_COMMON;
-        }
-        Ok(())
+        self.prepare_native_queue_buffers(buffers)
     }
 
     pub(super) fn dispatch_buffer_batch_profiled(
