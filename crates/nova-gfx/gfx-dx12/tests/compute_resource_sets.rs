@@ -49,10 +49,11 @@ fn native_independent_direct_queue_compute_and_gpu_wait() {
         eprintln!("DX12 extra DIRECT queue unavailable; skipping");
         return;
     };
-    // The dedicated COMPUTE-only queue is intentionally not advertised for
-    // this DIRECT command-list API. Queue index 1 is an independent DIRECT
-    // queue which supports real Compute commands and native GPU waits.
-    assert_eq!(queue, GpuQueueId { family: 0, index: 1 });
+    // Prefer a real typed COMPUTE queue (index 2), but drivers rejecting
+    // dedicated Compute still support independently submitted Compute on a
+    // second DIRECT queue (index 1). Both must execute real shader commands.
+    assert!(queue == (GpuQueueId { family: 0, index: 2 })
+        || queue == (GpuQueueId { family: 0, index: 1 }));
     let shader = gfx_shader::WgslModule::parse(
         conformance::COMPUTE_RESOURCE_SET_WRITER_WGSL,
     )
