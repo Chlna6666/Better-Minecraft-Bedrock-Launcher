@@ -742,6 +742,82 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn independent_compute_writer_prevents_primary_fence_mesh_reuse() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
+            GpuSubmissionRecord, GpuWorkStage};
+        let buffer = BufferId::from_parts(901, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 384, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let async_queue = GpuQueueId { family: 4, index: 1 };
+        let writer = gfx_core::SubmissionId::from_parts(902, 1);
+        let primary = gfx_core::SubmissionId::from_parts(903, 1);
+        let span = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        arena.register_native_access(GpuSubmissionRecord::new(
+            writer, async_queue, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
+                span: span.clone(), access: GpuAccess::StorageReadWrite,
+            }],
+        )).unwrap();
+        arena.retirements.push(RetiredMeshRange {
+            page: 0, offset: 128, bytes: 64,
+            dependencies: arena.native_work.retirement(&[span]),
+            fallback: vec![], needs_primary_proof: true,
+        });
+        arena.gpu_submission_accepted(primary);
+        arena.gpu_submission_completed(primary);
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.reclaim_after_gpu_idle();
+        assert!(arena.has_retired_ranges());
+        arena.gpu_submission_completed(writer);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(arena.pages[0].as_ref().unwrap().free_ranges, vec![(128, 64)]);
+    }
+
+    #[test]
+    fn completed_mesh_subrange_does_not_recycle_adjacent_pending_range() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
+            GpuSubmissionRecord, GpuWorkStage};
+        let buffer = BufferId::from_parts(904, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 448, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![(128, 64), (256, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let compute = gfx_core::SubmissionId::from_parts(905, 1);
+        let producer = gfx_core::SubmissionId::from_parts(906, 1);
+        let queue = GpuQueueId { family: 5, index: 1 };
+        let blocked = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        arena.register_native_access(GpuSubmissionRecord::new(
+            compute, queue, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
+                span: blocked.clone(), access: GpuAccess::StorageWrite,
+            }],
+        )).unwrap();
+        let free = GpuResourceSpan::buffer(buffer, 256, 64).unwrap();
+        for (span, offset) in [(blocked, 128_u64), (free, 256_u64)] {
+            arena.retirements.push(RetiredMeshRange {
+                page: 0, offset, bytes: 64,
+                dependencies: arena.native_work.retirement(&[span]),
+                fallback: vec![], needs_primary_proof: true,
+            });
+        }
+        arena.gpu_submission_accepted(producer);
+        arena.gpu_submission_completed(producer);
+        let page = arena.pages[0].as_ref().unwrap();
+        assert_eq!(page.free_ranges, vec![(256, 64)]);
+        assert_eq!(page.retired_ranges, vec![(128, 64)]);
+        arena.gpu_submission_completed(compute);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(arena.pages[0].as_ref().unwrap().free_ranges, vec![(128, 64), (256, 64)]);
+    }
+
+    #[test]
     fn only_retired_pages_are_reclaimed_after_gpu_completion() {
         let mut arena = MeshArena::default();
         for index in 0..128 {
