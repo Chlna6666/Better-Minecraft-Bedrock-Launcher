@@ -11,7 +11,6 @@ fn main() {
     // Standalone games need only the offscreen renderer artifacts. The
     // optional GPUI sidecar generates its extra CSM/Froxel/UI shader set
     // solely when the UI adapter feature is enabled.
-    #[cfg(feature = "gpui-sidecar")]
     // Froxel-enabled screen shaders share all PBR, SSR, MSAA and geometry
     // code with the legacy shader. Only the fog source is replaced at BUILD
     // time; there is no extra parser or shader compilation in the render loop.
@@ -38,6 +37,7 @@ fn main() {
         + "\n" + include_str!("src/scene_view/effects/froxel_composite.wgsl");
     #[cfg(feature = "gpui-sidecar")]
     assert!(screen_froxel.contains(FROXEL_FOG) && screen_froxel_ms.contains(FROXEL_FOG));
+    #[allow(unused_mut)] // The pure-engine build has no GPUI shader extension.
     let mut shaders = ShaderSet::new("scene_view")
         .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         .backend_selection(BackendSelection::Platform);
