@@ -609,10 +609,76 @@ impl MeshArena {
         let span = gfx_core::GpuResourceSpan::buffer(
             page.buffer, allocation.offset, allocation.bytes,
         )?;
+        if allocation.offset.checked_add(allocation.bytes).is_none_or(|end|
+            end > page.capacity
+        ) {
+            return Err(gfx_core::Error::InvalidInput(
+                "mesh arena access exceeds its actual physical GPU page".into(),
+            ));
+        }
         self.native_work.register_untracked(
             gfx_core::GpuQueueId::PRIMARY,
             gfx_core::GpuSubmissionAccess { span, access },
         );
+        Ok(())
+    }
+
+    /// Convert an accepted native Compute producer into byte-accurate GPU
+    /// resident retirement obligations. Records reads and writes independently;
+    /// a GPU fence from an unrelated queue cannot free these allocations.
+    ///
+    /// Calls must originate from the native owner immediately after
+    /// submit_compute_batch_on_queue returns a real SubmissionId. The owner
+    /// must subsequently poll that ID and forward gpu_submission_completed.
+    /// Failure to register falls back to unfenced quarantine.
+    pub(super) fn register_native_compute_allocations(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+        queue: gfx_core::GpuQueueId,
+        allocations: &[(ArenaAllocation, gfx_core::GpuAccess)],
+        native_waits: &[gfx_core::GpuNativeWaitProof],
+    ) -> gfx_core::Result<()> {
+        if allocations.is_empty() {
+            return Err(gfx_core::Error::InvalidInput(
+                "native Compute submission has no declared arena resource use".into(),
+            ));
+        }
+        let mut uses = Vec::with_capacity(allocations.len());
+        for &(allocation, access) in allocations {
+            let page = self.pages.get(allocation.page)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| gfx_core::Error::InvalidInput(
+                    "native Compute references an invalid Mesh Arena page".into(),
+                ))?;
+            let span = gfx_core::GpuResourceSpan::buffer(
+                page.buffer, allocation.offset, allocation.bytes,
+            )?;
+            if allocation.offset.checked_add(allocation.bytes).is_none_or(|end|
+                end > page.capacity
+            ) {
+                return Err(gfx_core::Error::InvalidInput(
+                    "native Compute touches bytes outside its Mesh Arena page".into(),
+                ));
+            }
+            uses.push(gfx_core::GpuSubmissionAccess { span, access });
+        }
+        let mut record = gfx_core::GpuSubmissionRecord::new(
+            submission, queue, gfx_core::GpuWorkStage::Compute, uses.clone(),
+        );
+        for proof in native_waits {
+            if let Err(error) = record.add_native_gpu_wait(*proof) {
+                for access in uses {
+                    self.native_work.register_untracked(queue, access);
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.native_work.register(record) {
+            for access in uses {
+                self.native_work.register_untracked(queue, access);
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
