@@ -265,8 +265,8 @@ impl StableDrawSlots {
             });
         }
         for cohort in &mut self.retired_by_submission {
-            cohort.gpu_dependency.seal_ordered_queue(
-                gfx_core::GpuQueueId::PRIMARY, submission,
+            let _ = cohort.gpu_dependency.seal_ordered_queue(
+                &self.gpu_dependencies, gfx_core::GpuQueueId::PRIMARY, submission,
             );
             if cohort.needs_ordered_fallback {
                 if !cohort.pending.contains(&submission) {
