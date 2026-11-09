@@ -414,12 +414,11 @@ fn shareable_diagnosis(report: &GameSessionReport, findings: &[CrashFinding]) ->
     output.push_str(&format!("\n\n{}", t!("GameCrash.ui.analysis")));
     for finding in findings {
         output.push_str(&format!(
-            "\n\n{}\n{}\n{}: {}\n{}: {}\n{}",
+            "\n\n{}\n{}\n{}: {} ({})\n{}",
             reason_title(finding.reason),
             reason_detail(finding.reason),
             t!("GameCrash.ui.evidence"),
             evidence_label(finding.source),
-            t!("GameCrash.ui.confidence.low"),
             confidence_label(finding.confidence),
             reason_action(finding.reason),
         ));
