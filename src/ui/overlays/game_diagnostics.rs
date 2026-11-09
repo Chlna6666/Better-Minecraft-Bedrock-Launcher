@@ -18,6 +18,30 @@ fn action(text: &'static str, colors: &ThemeColors) -> Div {
         .child(text)
 }
 
+fn start_export(cx: &mut App, id: String, include_dump: bool) {
+    let suffix = if include_dump { "-with-dumps" } else { "" };
+    let output = crate::utils::file_ops::state_subdir("diagnostics/game/exports")
+        .join(format!("BMCBL-Game-Crash-{id}{suffix}.zip"));
+    cx.update_global(|state: &mut GameDiagnosticsState, _| {
+        state.confirm_dump_export = false;
+        state.export_status = Some("正在导出诊断材料…".to_string());
+    });
+    cx.spawn(async move |cx| {
+        let destination = output.clone();
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            diagnostics::export_zip(&id, &destination, include_dump)
+        }).await;
+        let message = match result {
+            Ok(Ok(())) => format!("报告已导出：{}", output.display()),
+            Ok(Err(error)) => format!("导出失败：{error}"),
+            Err(error) => format!("导出任务失败：{error}"),
+        };
+        let _ = cx.update_global(|state: &mut GameDiagnosticsState, _| {
+            state.export_status = Some(message);
+        });
+    }).detach();
+}
+
 fn details(report: &GameSessionReport) -> String {
     format!(
         "会话 ID：{}\n游戏版本：{}\n平台：{}\nPID：{}\n启动：{}\n结束：{}\n退出码：{}\n原因：{}",
@@ -43,6 +67,7 @@ pub fn render_game_diagnostics_overlay(
     let report = state.pending.clone()?;
     let export_state = state.export_status.clone();
     let history = state.history.clone();
+    let confirm_dump_export = state.confirm_dump_export;
     let card_width = (window_width - px(32.)).min(px(720.)).max(px(300.));
     let card_height = (window_height - px(48.)).min(px(610.)).max(px(320.));
     let for_copy = details(&report);
@@ -110,6 +135,25 @@ pub fn render_game_diagnostics_overlay(
                             .text_color(colors.text_primary)
                             .child(details(&report))
                     )
+                    .when(confirm_dump_export, |panel| panel.child(
+                        div().flex().flex_col().gap(px(8.)).rounded(px(8.))
+                            .border_1().border_color(colors.border).p(px(12.))
+                            .child(div().text_color(colors.text_primary).text_size(px(12.))
+                                .child("内存转储 DMP 可能包含账号凭证、聊天内容、世界数据等敏感信息，无法自动安全脱敏。确认仅导出到本机？"))
+                            .child(div().flex().gap(px(8.))
+                                .child(action("确认包含 DMP", colors).id("game-crash-confirm-dump")
+                                    .on_click({
+                                        let id = report.id.clone();
+                                        move |_, _, cx| { start_export(cx, id.clone(), true); }
+                                    }))
+                                .child(action("取消", colors).id("game-crash-cancel-dump")
+                                    .on_click(|_, _, cx| {
+                                        cx.update_global(|state: &mut GameDiagnosticsState, _| {
+                                            state.confirm_dump_export = false;
+                                        });
+                                    }))
+                            )
+                    ))
                     .when_some(export_state, |div, status| div.child(
                         div().text_size(px(12.)).text_color(colors.text_secondary).child(status)
                     ))
@@ -124,26 +168,15 @@ pub fn render_game_diagnostics_overlay(
                             .child(
                                 action("导出 ZIP", colors).id("game-diagnostics-export")
                                     .on_click(move |_, _, cx| {
-                                        let id = for_export.clone();
-                                        let output = crate::utils::file_ops::state_subdir("diagnostics/game/exports")
-                                            .join(format!("BMCBL-Game-Crash-{id}.zip"));
+                                        start_export(cx, for_export.clone(), false);
+                                    })
+                            )
+                            .child(
+                                action("包含 DMP…", colors).id("game-diagnostics-export-dump")
+                                    .on_click(|_, _, cx| {
                                         cx.update_global(|state: &mut GameDiagnosticsState, _| {
-                                            state.export_status = Some("正在导出诊断材料…".to_string());
+                                            state.confirm_dump_export = true;
                                         });
-                                        cx.spawn(async move |cx| {
-                                            let destination = output.clone();
-                                            let result = crate::tasks::runtime::run_io_blocking(move || {
-                                                diagnostics::export_zip(&id, &destination, false)
-                                            }).await;
-                                            let message = match result {
-                                                Ok(Ok(())) => format!("报告已导出：{}", output.display()),
-                                                Ok(Err(error)) => format!("导出失败：{error}"),
-                                                Err(error) => format!("导出任务失败：{error}"),
-                                            };
-                                            let _ = cx.update_global(|state: &mut GameDiagnosticsState, _| {
-                                                state.export_status = Some(message);
-                                            });
-                                        }).detach();
                                     })
                             )
                             .child(
@@ -153,6 +186,7 @@ pub fn render_game_diagnostics_overlay(
                                         cx.update_global(|state: &mut GameDiagnosticsState, _| {
                                             state.pending = None;
                                             state.export_status = None;
+                                            state.confirm_dump_export = false;
                                         });
                                         let _ = crate::tasks::runtime::spawn_io(async move {
                                             let _ = crate::tasks::runtime::run_io_blocking(move || {
