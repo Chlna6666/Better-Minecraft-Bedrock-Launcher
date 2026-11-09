@@ -556,7 +556,7 @@ impl EffectScene {
         if !froxel_enabled {
             plan.validate_pregraphics_compute_only()?;
         }
-        let transitions = plan.transitions.len();
+        let transitions = plan.transitions().len();
         self.cached_graph = Some((key, transitions));
         Ok(transitions)
     }
