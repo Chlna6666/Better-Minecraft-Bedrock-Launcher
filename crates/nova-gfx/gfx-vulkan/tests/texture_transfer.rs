@@ -233,3 +233,49 @@ fn managed_texture_memory_reports_live_and_reserved_bytes() {
             .saturating_sub(released.allocated_bytes)
     );
 }
+
+
+#[test]
+#[ignore = "requires Vulkan hardware with a second graphics-family queue"]
+fn secondary_gpu_buffer_copy_has_native_queue_fence_and_reverse_gpu_wait() {
+    use gfx_core::{
+        GpuBufferCopy, GpuQueueId, GpuWorkStage, SubmissionDevice,
+    };
+    let mut device = match gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(_)) => return,
+        Err(error) => panic!("Vulkan initialization: {error}"),
+    };
+    let Some(secondary) = device.independent_queue(GpuWorkStage::Transfer) else {
+        eprintln!("Vulkan has no second graphics-family queue; skipping");
+        return;
+    };
+    let src = device.create_buffer(&BufferDescriptor {
+        label: Some("native Copy source".into()),
+        size: 64,
+        usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::GpuOnly,
+    }).expect("source");
+    let dst = device.create_buffer(&BufferDescriptor {
+        label: Some("native Copy destination".into()),
+        size: 64,
+        usage: BufferUsage::COPY_DST | BufferUsage::STORAGE,
+        memory_location: MemoryLocation::GpuOnly,
+    }).expect("destination");
+    device.write_buffer(src, 0, &[0x37; 64]).expect("upload");
+    let producer = device.submit_buffer_copies_on_queue(secondary, &[GpuBufferCopy {
+        source: src, source_offset: 0,
+        destination: dst, destination_offset: 0,
+        bytes: 64,
+    }]).expect("vkCmdCopyBuffer executed on secondary graphics-family queue");
+    let proof = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, producer)
+        .expect("native secondary to primary GPU wait");
+    assert_eq!(proof.producer(), producer);
+    let primary = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
+        .expect("native primary join fence");
+    // Host waits only in ignored hardware conformance tests, not in runtime.
+    device.wait_submission(primary).expect("primary GPU queue completion");
+    device.wait_submission(producer).expect("producer physical queue completion");
+    device.destroy_buffer(dst).expect("destroy destination");
+    device.destroy_buffer(src).expect("destroy source");
+}
