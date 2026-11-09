@@ -651,6 +651,7 @@ GameCrash.ui.version=游戏版本
 GameCrash.ui.wer=Windows 故障模块
 GameCrash.ui.werDesc=与本次游戏进程匹配的 WER 记录
 GameCrash.ui.werTitle=Windows 系统故障事件
+GameCrash.ui.zipFilter=ZIP 压缩包
 GameManager.game=游戏
 GameManager.map=地图
 GameManager.mcpack=资源

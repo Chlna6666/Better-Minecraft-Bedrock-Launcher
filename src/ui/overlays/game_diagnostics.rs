@@ -310,7 +310,7 @@ fn start_export(cx: &mut App, id: String, options: CrashExportOptions) {
         let filename = format!("BMCBL-Game-Crash-{id}.zip");
         let outcome = crate::tasks::runtime::run_io_blocking(move || {
             let chosen = crate::utils::file_picker::pick_save_path_with_filter(
-                "ZIP 压缩包", &["zip"], &filename,
+                &t!("GameCrash.ui.zipFilter"), &["zip"], &filename,
             );
             let Some(chosen) = chosen else {
                 return Ok::<Option<String>, String>(None);

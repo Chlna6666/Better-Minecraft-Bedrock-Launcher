@@ -651,6 +651,7 @@ GameCrash.ui.version=게임 버전
 GameCrash.ui.wer=Windows 오류 모듈
 GameCrash.ui.werDesc=해당 게임 프로세스의 WER 기록
 GameCrash.ui.werTitle=Windows 오류 이벤트
+GameCrash.ui.zipFilter=ZIP 압축 파일
 GameManager.game=게임
 GameManager.map=맵
 GameManager.mcpack=리소스

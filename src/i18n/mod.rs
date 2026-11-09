@@ -310,6 +310,41 @@ mod tests {
     }
 
     #[test]
+    fn game_crash_guidance_is_localized_for_every_supported_locale() {
+        catalog::initialize();
+        const REASONS: &[&str] = &[
+            "MissingDependency", "UnsupportedWineApi", "WineGuestException",
+            "WineRuntime", "VulkanUnavailable", "GraphicsDeviceLost",
+            "InsufficientMemory", "DiskFull", "PermissionDenied",
+            "ModLoadFailure", "LoaderFailure", "AccessViolation",
+            "IllegalInstruction", "StackOverflow", "FastFail",
+            "RunnerExited", "Unclassified",
+        ];
+        for locale in Locale::all() {
+            for reason in REASONS {
+                for field in ["title", "detail", "action"] {
+                    let key = format!("GameCrash.reason.{reason}.{field}");
+                    assert!(
+                        catalog::lookup(*locale, &key).is_some(),
+                        "missing localized {key} for {}", locale.code()
+                    );
+                }
+            }
+            for key in [
+                "GameCrash.ui.analysis", "GameCrash.ui.technicalShow",
+                "GameCrash.ui.exportButton", "GameCrash.ui.redactTitle",
+                "GameCrash.ui.riskBoth", "GameCrash.ui.source.runner",
+                "GameCrash.ui.confidence.low", "GameCrash.ui.zipFilter",
+            ] {
+                assert!(
+                    catalog::lookup(*locale, key).is_some(),
+                    "missing localized {key} for {}", locale.code()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn locale_codes_round_trip() {
         for locale in Locale::all() {
             assert_eq!(Locale::from_code(locale.code()), Some(*locale));

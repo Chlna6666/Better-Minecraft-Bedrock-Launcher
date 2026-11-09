@@ -651,6 +651,7 @@ GameCrash.ui.version=Game version
 GameCrash.ui.wer=Windows fault module
 GameCrash.ui.werDesc=WER records associated with this game process
 GameCrash.ui.werTitle=Windows crash events
+GameCrash.ui.zipFilter=ZIP archive
 GameManager.game=Game
 GameManager.map=Maps
 GameManager.mcpack=Resources
