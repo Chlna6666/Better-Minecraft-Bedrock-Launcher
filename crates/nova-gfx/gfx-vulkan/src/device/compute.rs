@@ -150,6 +150,16 @@ impl VulkanDevice {
             workgroups: dispatch.workgroups,
         }.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
 
+        // Read-only compute shaders do not produce incoherent storage writes.
+        // Keep image layout transitions (including read-only storage images),
+        // but do not emit a device-wide post-dispatch memory barrier for them.
+        let writes_storage = buffer_bindings.iter().any(|binding|
+            binding.access == ComputeBufferAccess::ReadWrite)
+            || layout.entries.iter().any(|entry| matches!(
+                entry.binding_type,
+                BindingType::StorageTexture { read_only: false, .. }
+            ));
+
         let key = (dispatch.shader, layout_id);
         let program = if let Some(program) = self.compute.resource_set_programs.get(&key) {
             program.clone()
@@ -241,15 +251,22 @@ impl VulkanDevice {
                     command,
                     dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
                 );
-                let after = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
-                self.device.cmd_pipeline_barrier(
-                    command,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::DependencyFlags::empty(), &[after], &[], &post_images,
-                );
+                if writes_storage || !post_images.is_empty() {
+                    let after = vk::MemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+                    let memory = if writes_storage {
+                        std::slice::from_ref(&after)
+                    } else {
+                        &[]
+                    };
+                    self.device.cmd_pipeline_barrier(
+                        command,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::ALL_COMMANDS,
+                        vk::DependencyFlags::empty(), memory, &[], &post_images,
+                    );
+                }
                 self.device.end_command_buffer(command).map_err(VulkanError::from)?;
             }
             self.submit_command_encoder_deferred(encoder)
@@ -505,15 +522,21 @@ impl VulkanDevice {
                         dispatch.workgroups[1],
                         dispatch.workgroups[2],
                     );
-                    self.device.cmd_pipeline_barrier(
-                        command,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::PipelineStageFlags::ALL_COMMANDS,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &after,
-                        &[],
-                    );
+                    // A dispatch with no writable buffer cannot require a
+                    // post-dispatch availability barrier. Avoid an otherwise
+                    // empty ALL_COMMANDS execution dependency on the hot
+                    // GPU meshing / culling batch path.
+                    if !after.is_empty() {
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::PipelineStageFlags::ALL_COMMANDS,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &after,
+                            &[],
+                        );
+                    }
                 }
                 if let Some(query) = query {
                     self.device.cmd_write_timestamp(
