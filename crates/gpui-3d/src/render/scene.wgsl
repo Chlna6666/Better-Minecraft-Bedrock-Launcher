@@ -234,18 +234,22 @@ fn shadow_visibility(light_clip: vec4<f32>, surface_normal: vec3<f32>) -> f32 {
     // packed depth target can be crisp or soft. Offsets stay within one texel group for stability.
     let softness = clamp(frame.effects.z, 0.2, 4.0);
     let step = frame.shadow.xy * softness;
-    let sum = textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, -1.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, -1.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, -1.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 0.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 0.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 1.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, 1.0) * step)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 1.0) * step);
-    let stored = unpack_depth(sum / 9.0);
-    let visible = select(0.0, 1.0, ndc.z - bias <= stored + 0.00002);
-    return mix(1.0, visible, frame.post.w);
+    // True PCF compares every depth independently and THEN filters visibility.
+    // Averaging packed RGB before decoding corrupts the 24-bit integer depth
+    // (carry across color channels) and averaging depth before comparison also
+    // creates light leaks and unstable shadow silhouettes.
+    let receiver = ndc.z - bias - 0.00002;
+    var visible = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let offset = vec2<f32>(f32(x), f32(y)) * step;
+            let encoded = textureSampleLevel(
+                shadow_map_texture, material_sampler, uv + offset, 0.0,
+            );
+            visible += select(0.0, 1.0, receiver <= unpack_depth(encoded));
+        }
+    }
+    return mix(1.0, visible * (1.0 / 9.0), frame.post.w);
 }
 
 fn tonemap_aces(color: vec3<f32>) -> vec3<f32> {
@@ -336,7 +340,14 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
-            let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
+            // Skip out-of-reach and back-facing light sources before GGX and
+            // Fresnel calculations. Retain the original distance attenuation.
+            if (light_distance >= light_range
+                || dot(surface_normal, surface_to_light) <= 0.0) {
+                continue;
+            }
+            let fade = max(1.0 - light_distance / light_range, 0.0);
+            let attenuation = fade * fade
                 / max(light_distance * light_distance, 0.01);
             radiance += local_brdf(
                 base_color.rgb,
@@ -351,7 +362,14 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
-            let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
+            // Skip out-of-reach and back-facing light sources before GGX and
+            // Fresnel calculations. Retain the original distance attenuation.
+            if (light_distance >= light_range
+                || dot(surface_normal, surface_to_light) <= 0.0) {
+                continue;
+            }
+            let fade = max(1.0 - light_distance / light_range, 0.0);
+            let attenuation = fade * fade
                 / max(light_distance * light_distance, 0.01);
             let light_to_surface = -normalize(surface_to_light);
             let cone_attenuation = smoothstep(
