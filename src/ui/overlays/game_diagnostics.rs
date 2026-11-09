@@ -673,7 +673,7 @@ pub fn render_game_diagnostics_overlay(
                                         .child(details(&report)),
                                 ),
                         ))
-                        .child(
+                        .when(show_technical, |panel| panel.child(
                             div()
                                 .flex()
                                 .flex_col()
@@ -725,8 +725,8 @@ pub fn render_game_diagnostics_overlay(
                                             option_width, !exporting, colors,
                                         )),
                                 ),
-                        )
-                        .child(
+                        ))
+                        .when(show_technical, |panel| panel.child(
                             div()
                                 .flex()
                                 .flex_col()
@@ -753,7 +753,7 @@ pub fn render_game_diagnostics_overlay(
                                         .whitespace_normal()
                                         .child(t!("GameCrash.ui.redactWarning")),
                                 )),
-                        )
+                        ))
                         .when(confirmation, |panel| panel.child(
                             div()
                                 .rounded(px(10.))
