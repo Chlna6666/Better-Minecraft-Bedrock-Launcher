@@ -280,6 +280,14 @@ struct TargetTrace {
     placement_allocated: u64,
     placement_recycled: u64,
     placement_update_us: u128,
+    /// Submission acceptance → observed GPU fence completion is HOST
+    /// latency, not a native GPU timestamp nor an API submission duration.
+    fence_retirement_batches: u64,
+    fence_retirement_total_us: u128,
+    fence_retirement_max_us: u128,
+    /// Number of conservative global-drain retirements, separate from
+    /// exact-fence retirements so users can diagnose hidden GPU stalls.
+    global_retirement_batches: u64,
 }
 
 /// Fence-bound retired resources used by an earlier GPUI texture consumer.
@@ -287,6 +295,7 @@ struct TargetTrace {
 /// composite may still be sampling it on another native graphics queue.
 struct SidecarRetirement {
     consumer: SubmissionId,
+    registered_at: Instant,
     targets: Vec<Target>,
     placements: Vec<RetiredPlacement>,
     pipelines: Vec<RenderPipelineId>,
@@ -647,6 +656,7 @@ impl SidecarSurface {
         }
         self.retired_by_submission.push(SidecarRetirement {
             consumer,
+            registered_at: Instant::now(),
             targets: std::mem::take(&mut self.awaiting_gpu),
             placements: std::mem::take(&mut self.awaiting_placement_gpu),
             pipelines: std::mem::take(&mut self.awaiting_pipeline_gpu),
@@ -664,6 +674,14 @@ impl SidecarSurface {
                 continue;
             }
             let mut cohort = self.retired_by_submission.swap_remove(index);
+            if super::renderer::trace_timings() {
+                let elapsed_us = cohort.registered_at.elapsed().as_micros();
+                self.trace.fence_retirement_batches += 1;
+                self.trace.fence_retirement_total_us = self.trace
+                    .fence_retirement_total_us.saturating_add(elapsed_us);
+                self.trace.fence_retirement_max_us =
+                    self.trace.fence_retirement_max_us.max(elapsed_us);
+            }
             self.ready_to_release.append(&mut cohort.targets);
             self.ready_placement_release.append(&mut cohort.placements);
             self.ready_pipeline_release.append(&mut cohort.pipelines);
@@ -674,9 +692,16 @@ impl SidecarSurface {
     /// submissions completed (e.g. resize, trim or a full owner drain).
     pub(super) fn gpu_work_completed(&mut self) {
         for mut cohort in self.retired_by_submission.drain(..) {
+            self.trace.global_retirement_batches += 1;
             self.ready_to_release.append(&mut cohort.targets);
             self.ready_placement_release.append(&mut cohort.placements);
             self.ready_pipeline_release.append(&mut cohort.pipelines);
+        }
+        if !self.awaiting_gpu.is_empty()
+            || !self.awaiting_placement_gpu.is_empty()
+            || !self.awaiting_pipeline_gpu.is_empty()
+        {
+            self.trace.global_retirement_batches += 1;
         }
         self.ready_to_release.append(&mut self.awaiting_gpu);
         self.ready_placement_release.append(&mut self.awaiting_placement_gpu);
@@ -751,7 +776,7 @@ impl SidecarSurface {
         let idle_placements: usize = self.targets.values()
             .map(|target| target.recycled_placements.len()).sum();
         eprintln!(
-            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} recycled_bindings={} placement_new={} placement_reused={} placement_update_us={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
+            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} recycled_bindings={} placement_new={} placement_reused={} placement_update_us={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1} consumer_fence_completed={} consumer_fence_host_avg_us={} consumer_fence_host_max_us={} conservative_global_retires={} timing=host_fence_observation_not_gpu_execution",
             self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
             self.awaiting_gpu.len() + self.ready_to_release.len() + fenced_targets,
             self.awaiting_placement_gpu.len() + self.ready_placement_release.len() + fenced_placements,
@@ -762,6 +787,10 @@ impl SidecarSurface {
             full_window.saturating_mul(bpp),
             retired.saturating_mul(bpp),
             100.0 * (1.0 - cropped as f64 / full_window.max(1) as f64),
+            self.trace.fence_retirement_batches,
+            self.trace.fence_retirement_total_us / u128::from(self.trace.fence_retirement_batches.max(1)),
+            self.trace.fence_retirement_max_us,
+            self.trace.global_retirement_batches,
         );
         self.trace = TargetTrace {
             window_start: Some(now),
