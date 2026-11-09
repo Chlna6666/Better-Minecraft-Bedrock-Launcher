@@ -263,6 +263,25 @@ impl ArenaPage {
 
     fn reclaim_retired(&mut self) {
         self.free_ranges.append(&mut self.retired_ranges);
+        self.coalesce_reusable();
+    }
+
+    /// Reclaim exactly one retirement whose native read/write dependencies
+    /// have completed. Unrelated bytes in this page remain quarantined.
+    fn reclaim_completed_range(&mut self, offset: u64, bytes: u64) -> bool {
+        let Some(index) = self.retired_ranges.iter()
+            .position(|&(old_offset, old_bytes)|
+                old_offset == offset && old_bytes == bytes
+            )
+        else {
+            return false;
+        };
+        self.free_ranges.push(self.retired_ranges.swap_remove(index));
+        self.coalesce_reusable();
+        true
+    }
+
+    fn coalesce_reusable(&mut self) {
         self.free_ranges.sort_unstable_by_key(|range| range.0);
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.free_ranges.len());
         for (offset, len) in self.free_ranges.drain(..) {
@@ -289,6 +308,17 @@ impl ArenaPage {
     }
 }
 
+/// One suballocation awaiting every native reader/writer and, when
+/// untracked GPU work exists, the next same-queue completion checkpoint.
+struct RetiredMeshRange {
+    page: usize,
+    offset: u64,
+    bytes: u64,
+    dependencies: gfx_core::GpuRetirementDependencies,
+    fallback: Vec<gfx_core::SubmissionId>,
+    needs_primary_proof: bool,
+}
+
 #[derive(Default)]
 pub(super) struct MeshArena {
     // GPU-generated face pages require writable storage. Keep them isolated
@@ -304,6 +334,10 @@ pub(super) struct MeshArena {
     /// Only pages that released a GPU-visible suballocation since the last
     /// completed submission. Prevents an O(all pages) check every frame.
     retired_pages: HashSet<usize>,
+    /// Only changed suballocations have tickets. An unrelated completed GPU
+    /// submission cannot release a page still read by an async queue.
+    retirements: Vec<RetiredMeshRange>,
+    native_work: gfx_core::GpuSubmissionDependencyGraph,
 }
 
 impl MeshArena {
@@ -490,28 +524,169 @@ impl MeshArena {
         if page.live == 0 {
             return Err(anyhow!("voxel arena page has no live allocations").into());
         }
-        if page.live == 1 {
+        if page.live == 1
+            && page.retired_ranges.is_empty()
+            && !self.native_work.has_independent_queue_work()
+        {
             if page.live_bytes != allocation.bytes {
                 return Err(anyhow!("voxel arena final allocation size mismatch").into());
             }
+            // Whole-buffer destruction is still deferred by the backend's
+            // native primary-queue fence. Never destroy when independent
+            // producers or other retired ranges still hold this allocation.
             device.destroy_buffer(page.buffer)?;
             self.available_pages
                 .remove(&(page.available_bytes(), allocation.page));
             self.pages[allocation.page] = None;
             self.free_pages.push(allocation.page);
-            // An old retirement no longer exists after final page destruction.
-            // The same index can be reused by a new GPU buffer.
             self.retired_pages.remove(&allocation.page);
         } else {
+            let span = gfx_core::GpuResourceSpan::buffer(
+                page.buffer, allocation.offset, allocation.bytes,
+            )?;
+            let dependencies = self.native_work.retirement(&[span]);
             page.retire(allocation.offset, allocation.bytes)?;
+            self.retirements.push(RetiredMeshRange {
+                page: allocation.page,
+                offset: allocation.offset,
+                bytes: allocation.bytes,
+                dependencies,
+                fallback: Vec::new(),
+                needs_primary_proof: true,
+            });
             self.retired_pages.insert(allocation.page);
+            // The last live range is quarantined rather than handing the
+            // whole GPU allocation to a backend lacking a second queue fence.
+            if page.live == 0 {
+                self.available_pages.remove(&(page.available_bytes(), allocation.page));
+            }
         }
         Ok(())
     }
 
-    /// Called only after the host has confirmed all prior GPU submissions
-    /// completed. Iterate touched pages, not the entire resident page pool.
+    /// Register the real Graphics producer only after its native queue has
+    /// accepted DrawIndirect. All currently resident page allocations are
+    /// conservative potential readers; this never claims a CPU frame number
+    /// or a later GUI texture sampler is a GPU reader.
+    pub(super) fn native_draw_submitted(
+        &mut self, submission: Option<gfx_core::SubmissionId>,
+    ) {
+        let Some(submission) = submission else { return };
+        if !self.native_work.contains_submission(submission) {
+            let uses = self.pages.iter().flatten().filter(|p| p.live != 0)
+                .map(|page| gfx_core::GpuSubmissionAccess {
+                    span: gfx_core::GpuResourceSpan::WholeBuffer(page.buffer),
+                    access: gfx_core::GpuAccess::ReadBuffer,
+                })
+                .collect();
+            if self.native_work.register(gfx_core::GpuSubmissionRecord::new(
+                submission, gfx_core::GpuQueueId::PRIMARY,
+                gfx_core::GpuWorkStage::Graphics, uses,
+            )).is_err() {
+                // The renderer owner must never certify a duplicate/foreign
+                // fence as completion of an untracked native operation.
+                return;
+            }
+        }
+        self.gpu_submission_accepted(submission);
+    }
+
+    /// Register actual Compute/Transfer/Graphics resource access by its
+    /// native submission and physical queue. Cross-queue waits in `record`
+    /// require a backend-issued GpuNativeWaitProof.
+    pub(super) fn register_native_access(
+        &mut self, record: gfx_core::GpuSubmissionRecord,
+    ) -> gfx_core::Result<()> {
+        self.native_work.register(record)
+    }
+
+    /// Attach unfenced primary-queue writes/reads to a real ordered producer
+    /// or GUI submission. This is GPU ordering, not GPU completion.
+    pub(super) fn gpu_submission_accepted(
+        &mut self, submission: gfx_core::SubmissionId,
+    ) {
+        if self.retirements.is_empty() { return }
+        if !self.native_work.contains_submission(submission) {
+            if self.native_work.register(gfx_core::GpuSubmissionRecord::new(
+                submission, gfx_core::GpuQueueId::PRIMARY,
+                gfx_core::GpuWorkStage::Graphics, Vec::new(),
+            )).is_err() {
+                return;
+            }
+        }
+        let _ = self.native_work.seal_untracked_queue(
+            gfx_core::GpuQueueId::PRIMARY, submission,
+        );
+        for range in &mut self.retirements {
+            range.dependencies.seal_ordered_queue(
+                gfx_core::GpuQueueId::PRIMARY, submission,
+            );
+            if range.needs_primary_proof {
+                range.fallback.push(submission);
+                range.needs_primary_proof = false;
+            }
+        }
+    }
+
+    /// Release only ranges whose *real* GPU read/write fence set is complete.
+    /// Independent queue work stays quarantined after a primary queue fence.
+    pub(super) fn gpu_submission_completed(
+        &mut self, submission: gfx_core::SubmissionId,
+    ) {
+        let proof = if self.native_work.contains_submission(submission) {
+            self.native_work.complete(submission).ok()
+        } else {
+            None
+        };
+        for range in &mut self.retirements {
+            if let Some(proof) = &proof {
+                range.dependencies.complete_with_proof(proof);
+                range.fallback.retain(|id| !proof.finished().contains(id));
+            } else {
+                range.fallback.retain(|id| *id != submission);
+            }
+        }
+        self.reclaim_proven_ranges();
+    }
+
+    fn reclaim_proven_ranges(&mut self) {
+        let mut index = 0;
+        while index < self.retirements.len() {
+            let range = &self.retirements[index];
+            if range.needs_primary_proof
+                || !range.fallback.is_empty()
+                || !range.dependencies.safe_to_reuse()
+            {
+                index += 1;
+                continue;
+            }
+            let range = self.retirements.swap_remove(index);
+            let Some(page) = self.pages.get_mut(range.page).and_then(Option::as_mut) else {
+                continue;
+            };
+            self.available_pages.remove(&(page.available_bytes(), range.page));
+            if page.reclaim_completed_range(range.offset, range.bytes) {
+                if page.retired_ranges.is_empty() {
+                    self.retired_pages.remove(&range.page);
+                }
+                let available = page.available_bytes();
+                if available > 0 {
+                    self.available_pages.insert((available, range.page));
+                }
+            }
+        }
+    }
+
+    /// Called only after the host has confirmed all pending GPU-owner work on
+    /// its ordered PRIMARY queue has completed, not an unrelated queue.
+    /// Independent submissions remain individually fenced.
     pub(super) fn reclaim_after_gpu_idle(&mut self) {
+        if self.native_work.has_independent_queue_work() {
+            self.reclaim_proven_ranges();
+            return;
+        }
+        self.retirements.clear();
+        self.native_work.reset_after_gpu_idle();
         for index in self.retired_pages.drain() {
             let Some(page) = self.pages.get_mut(index).and_then(Option::as_mut) else {
                 continue;
