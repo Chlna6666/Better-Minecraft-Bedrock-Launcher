@@ -63,6 +63,19 @@ pub trait ExtensionDevice {
         ))
     }
 
+    /// Execute GPU->GPU buffer relocation on a real native Transfer queue.
+    /// Returned fence is scoped to that physical queue; the caller must
+    /// preserve read/write retirement dependencies until GPU completion.
+    fn submit_buffer_copies_on_queue(
+        &mut self,
+        _queue: gfx_core::GpuQueueId,
+        _copies: &[gfx_core::GpuBufferCopy],
+    ) -> Result<gfx_core::SubmissionId> {
+        Err(gfx_core::Error::Unavailable(
+            "native typed Transfer queue submission is unsupported".into(),
+        ))
+    }
+
     /// Encode a GPU-side cross-queue wait, returning backend-issued proof.
     fn enqueue_gpu_queue_wait(
         &mut self,
@@ -425,6 +438,14 @@ where
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<gfx_core::SubmissionId> {
         gfx_core::SubmissionDevice::submit_compute_batch_on_queue(self, queue, dispatches)
+    }
+
+    fn submit_buffer_copies_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        copies: &[gfx_core::GpuBufferCopy],
+    ) -> Result<gfx_core::SubmissionId> {
+        gfx_core::SubmissionDevice::submit_buffer_copies_on_queue(self, queue, copies)
     }
 
     fn enqueue_gpu_queue_wait(
