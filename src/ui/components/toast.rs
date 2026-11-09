@@ -495,18 +495,46 @@ pub fn push_kind_duration(
 ) -> ToastId {
     let now = Instant::now();
     let target_window = target_window(cx);
+    let diagnostic_id = if kind == ToastKind::Error {
+        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+        tracing::error!(target: "bmcbl::operation", reason = %safe, "错误通知");
+        Some(cx.update_global(
+            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                state.record_operation_error("notification", message.as_ref())
+            },
+        ))
+    } else {
+        None
+    };
     cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push(target_window, kind, message, duration, now);
+        if let Some(report_id) = diagnostic_id {
+            state.attach_diagnostic(id, report_id);
+        }
         id
     })
 }
 
 pub fn resolve(cx: &mut App, id: ToastId, kind: ToastKind, message: SharedString) {
     let now = Instant::now();
+    let diagnostic_id = if kind == ToastKind::Error {
+        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+        tracing::error!(target: "bmcbl::operation", reason = %safe, "任务错误通知");
+        Some(cx.update_global(
+            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                state.record_operation_error("notification", message.as_ref())
+            },
+        ))
+    } else {
+        None
+    };
     cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         state.resolve(id, kind, message, now);
+        if let Some(report_id) = diagnostic_id {
+            state.attach_diagnostic(id, report_id);
+        }
     });
 }
 
@@ -545,6 +573,17 @@ pub fn push_breadcrumb(cx: &mut App, parts: &[SharedString]) -> ToastId {
 
 pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> ToastId {
     let now = Instant::now();
+    let diagnostic_id = if kind == ToastKind::Error {
+        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+        tracing::error!(target: "bmcbl::operation", reason = %safe, "异步错误通知");
+        cx.update_global(
+            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                state.record_operation_error("notification", message.as_ref())
+            },
+        ).ok()
+    } else {
+        None
+    };
     let target_window = cx
         .read_global::<ToastState, _>(|_, cx| target_window(cx))
         .ok()
@@ -552,6 +591,9 @@ pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> 
     match cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push(target_window, kind, message, DEFAULT_DURATION, now);
+        if let Some(report_id) = diagnostic_id {
+            state.attach_diagnostic(id, report_id);
+        }
         id
     }) {
         Ok(id) => id,
@@ -589,9 +631,23 @@ pub fn pending_async(cx: &mut AsyncApp, message: SharedString) -> ToastId {
 
 pub fn resolve_async(cx: &mut AsyncApp, id: ToastId, kind: ToastKind, message: SharedString) {
     let now = Instant::now();
+    let diagnostic_id = if kind == ToastKind::Error {
+        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+        tracing::error!(target: "bmcbl::operation", reason = %safe, "异步任务错误通知");
+        cx.update_global(
+            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                state.record_operation_error("notification", message.as_ref())
+            },
+        ).ok()
+    } else {
+        None
+    };
     if let Err(err) = cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         state.resolve(id, kind, message, now);
+        if let Some(report_id) = diagnostic_id {
+            state.attach_diagnostic(id, report_id);
+        }
     }) {
         tracing::warn!("toast resolve_async: update_global failed: {err:?}");
     }
