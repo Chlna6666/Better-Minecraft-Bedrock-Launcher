@@ -312,7 +312,13 @@ impl StableDrawSlots {
         // submission finished. Preserve every retirement cohort and its
         // resource dependencies until that queue's own native fence reports
         // completion or a true device-wide idle guarantee is established.
-        if self.gpu_dependencies.has_independent_queue_work() {
+        if self.gpu_dependencies.has_independent_queue_work()
+            || self.gpu_dependencies.has_untracked_work()
+            || self.untracked_draw_use
+        {
+            // A Compute/Transfer submitted after the last tracked Graphics
+            // fence can still be executing even though GPUI has drained its
+            // known submission list. Await the next real native checkpoint.
             return;
         }
         self.free.append(&mut self.retired_unbound);
