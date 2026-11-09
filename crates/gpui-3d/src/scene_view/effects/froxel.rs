@@ -213,6 +213,7 @@ use super::super::SceneView;
 
 /// Shared native compute programs and descriptor layouts, one per GPU owner.
 /// SceneView instances only own their small 3D textures and bind groups.
+#[derive(Clone, Copy)]
 pub(super) struct FroxelProgram {
     inject_layout: BindGroupLayoutId,
     integrate_layout: BindGroupLayoutId,
@@ -280,8 +281,7 @@ impl FroxelProgram {
         device.destroy_shader_module(self.inject_shader)?;
         device.destroy_shader_module(self.integrate_shader)?;
         device.destroy_bind_group_layout(self.inject_layout)?;
-        device.destroy_bind_group_layout(self.integrate_layout)
-            .map_err(Into::into)
+        Ok(device.destroy_bind_group_layout(self.integrate_layout)?)
     }
 }
 
