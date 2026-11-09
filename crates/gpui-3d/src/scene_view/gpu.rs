@@ -591,6 +591,31 @@ impl MeshArena {
         self.gpu_submission_accepted(submission);
     }
 
+    /// A GPU dispatch or transfer can remain in flight after returning from
+    /// the CPU API. Record precisely the allocation it may touch before
+    /// issuing the native operation, including partial-error paths. A later
+    /// same-queue checkpoint seals this access; it is never marked completed
+    /// merely because dispatch_compute_batch returned Ok.
+    pub(super) fn mark_untracked_access(
+        &mut self,
+        allocation: ArenaAllocation,
+        access: gfx_core::GpuAccess,
+    ) -> gfx_core::Result<()> {
+        let page = self.pages.get(allocation.page)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| gfx_core::Error::InvalidInput(
+                "mesh arena GPU access references a missing physical page".into(),
+            ))?;
+        let span = gfx_core::GpuResourceSpan::buffer(
+            page.buffer, allocation.offset, allocation.bytes,
+        )?;
+        self.native_work.register_untracked(
+            gfx_core::GpuQueueId::PRIMARY,
+            gfx_core::GpuSubmissionAccess { span, access },
+        );
+        Ok(())
+    }
+
     /// Register actual Compute/Transfer/Graphics resource access by its
     /// native submission and physical queue. Cross-queue waits in `record`
     /// require a backend-issued GpuNativeWaitProof.
@@ -605,7 +630,9 @@ impl MeshArena {
     pub(super) fn gpu_submission_accepted(
         &mut self, submission: gfx_core::SubmissionId,
     ) {
-        if self.retirements.is_empty() { return }
+        if self.retirements.is_empty() && !self.native_work.has_untracked_work() {
+            return;
+        }
         if !self.native_work.contains_submission(submission) {
             if self.native_work.register(gfx_core::GpuSubmissionRecord::new(
                 submission, gfx_core::GpuQueueId::PRIMARY,
