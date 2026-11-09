@@ -46,6 +46,8 @@ pub struct GameSessionReport {
     pub summary: String,
     #[serde(default)]
     pub acknowledged: bool,
+    #[serde(default)]
+    pub wer_fault: Option<WerFault>,
 }
 
 static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
@@ -95,6 +97,7 @@ impl GameSessionReport {
             kind: ExitKind::Running,
             summary: "游戏运行中".to_string(),
             acknowledged: false,
+            wer_fault: None,
         };
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
@@ -131,6 +134,80 @@ impl GameSessionReport {
         }
         self
     }
+}
+
+/// Windows Error Reporting data accepted only after a PID + timestamp match.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WerFault {
+    pub event_at: DateTime<Utc>,
+    pub module: String,
+    pub exception_code: String,
+}
+
+#[cfg(target_os = "windows")]
+fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerFault> {
+    use regex::Regex;
+    let events = Regex::new(r"(?s)<Event(?:\s|>).*?</Event>").ok()?;
+    let data = |block: &str, key: &str| -> Option<String> {
+        let regex = Regex::new(&format!(r#"<Data Name="{}">([^<]*)</Data>"#, regex::escape(key))).ok()?;
+        regex.captures(block).map(|c| c[1].to_string())
+    };
+    let event_time = Regex::new(r#"TimeCreated[^>]*SystemTime="([^"]+)""#).ok()?;
+    for found in events.find_iter(xml) {
+        let block = found.as_str();
+        if !block.contains("<EventID>1000</EventID>") { continue; }
+        let pid_text = data(block, "ProcessId")?;
+        let actual_pid = u32::from_str_radix(pid_text.trim_start_matches("0x"), 16)
+            .or_else(|_| pid_text.parse::<u32>()).ok()?;
+        if actual_pid != report.pid { continue; }
+        let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
+        if !app_name.contains("minecraft") { continue; }
+        let timestamp = event_time.captures(block)
+            .and_then(|c| DateTime::parse_from_rfc3339(&c[1]).ok())
+            .map(|value| value.with_timezone(&Utc))?;
+        if timestamp < report.started_at - chrono::Duration::seconds(30) { continue; }
+        if report.ended_at.is_some_and(|end| timestamp > end + chrono::Duration::seconds(120)) {
+            continue;
+        }
+        return Some(WerFault {
+            event_at: timestamp,
+            module: data(block, "ModuleName").unwrap_or_else(|| "unknown".to_string()),
+            exception_code: data(block, "ExceptionCode").unwrap_or_else(|| "unknown".to_string()),
+        });
+    }
+    None
+}
+
+/// Query a bounded number of Application Error records without changing Windows
+/// registry settings. A missing/inaccessible event log is not a fatal error.
+#[cfg(target_os = "windows")]
+pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionReport {
+    if report.kind != ExitKind::SuspectedCrash {
+        return report;
+    }
+    let mut command = tokio::process::Command::new("wevtutil.exe");
+    command.args([
+        "qe", "Application",
+        "/q:*[System[(EventID=1000)]]",
+        "/c:32", "/rd:true", "/f:xml",
+    ]).kill_on_drop(true);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await;
+    if let Ok(Ok(output)) = result
+        && output.status.success()
+        && let Some(wer) = match_application_error(&String::from_utf8_lossy(&output.stdout), &report)
+    {
+        report.kind = ExitKind::ConfirmedCrash;
+        report.summary = format!(
+            "Windows 确认 Minecraft 发生崩溃：{}（故障模块 {}）",
+            wer.exception_code, wer.module
+        );
+        report.wer_fault = Some(wer);
+        if let Err(error) = save(&report) {
+            tracing::warn!(%error, session_id = %report.id, "无法保存 Windows WER 证据");
+        }
+        let _ = event_bus().send(report.clone());
+    }
+    report
 }
 
 pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
@@ -237,10 +314,18 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
             "session_id": report.id, "task_id": report.task_id, "version": report.version,
             "platform": report.platform, "pid": report.pid, "started_at": report.started_at,
             "ended_at": report.ended_at, "exit_code": report.exit_code, "kind": report.kind,
+            "wer_fault": report.wer_fault,
         });
         writer.start_file("session.json", options).map_err(|error| error.to_string())?;
         writer.write_all(serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?.as_bytes())
             .map_err(|error| error.to_string())?;
+        if let Some(wer) = &report.wer_fault {
+            writer.start_file("windows/application-error.json", options)
+                .map_err(|error| error.to_string())?;
+            let safe = serde_json::to_string_pretty(wer).map_err(|error| error.to_string())?;
+            writer.write_all(log_privacy::redact_log_text(&safe).as_bytes())
+                .map_err(|error| error.to_string())?;
+        }
         for (entry_name, path) in text_files(&report) {
             if let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) {
                 writer.start_file(entry_name, options).map_err(|error| error.to_string())?;

@@ -186,6 +186,8 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                                     append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
                                 }
                                 let completed = crash_record.finish(result);
+                                #[cfg(target_os = "windows")]
+                                let completed = crate::core::minecraft::diagnostics::enrich_windows_wer(completed).await;
                                 if completed.kind.is_abnormal() {
                                     append_log(&monitor_task_id, completed.summary.clone());
                                     warn!(session_id = %completed.id, %pid, "游戏异常退出");
