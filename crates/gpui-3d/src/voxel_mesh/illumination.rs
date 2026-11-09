@@ -5,6 +5,9 @@ use super::*;
 pub(crate) struct Lighting {
     pub(crate) levels: Box<[u8]>,
     pub(crate) ambient: f32,
+    /// Entire padded grid has identical sky/block light values, so GPU face
+    /// merging cannot erase a per-voxel light gradient.
+    pub(crate) uniform: bool,
 }
 
 #[cfg(test)]
@@ -39,6 +42,12 @@ mod tests {
             )
         };
         assert!(mesh(7).same_voxel_quad_geometry(&mesh(7)));
+        assert!(crate::voxel_mesh::tests::source()
+            .with_lighting(vec![7; 36], 0.2).unwrap().lighting.as_ref().unwrap().uniform);
+        let mut gradient = vec![7; 36];
+        gradient[18] = 6;
+        assert!(!crate::voxel_mesh::tests::source()
+            .with_lighting(gradient, 0.2).unwrap().lighting.as_ref().unwrap().uniform);
         assert!(!mesh(7).same_voxel_quad_geometry(&mesh(0)));
     }
 }
@@ -93,9 +102,11 @@ impl VoxelMeshSource {
         {
             return Err(MeshError::InvalidParts);
         }
+        let uniform = levels.first().is_some_and(|first| levels.iter().all(|value| value == first));
         self.lighting = Some(Lighting {
             levels: levels.into_boxed_slice(),
             ambient,
+            uniform,
         });
         self.fallback = OnceLock::new();
         Ok(self)
