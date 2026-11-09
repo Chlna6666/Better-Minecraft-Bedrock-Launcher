@@ -1232,17 +1232,35 @@ impl VulkanDevice {
                 BindingResource::Buffer(buffer_binding) => {
                     let buffer = self.buffers.get(buffer_binding.buffer)?;
                     buffer_binding.validate_against(buffer.desc.size)?;
-                    let binding_type = layout_desc
+                    let kind = layout_desc
                         .entries
                         .iter()
                         .find(|entry| entry.binding == binding.binding)
-                        .map(|entry| resource_binding_type_to_vk(entry.binding_type))
+                        .map(|entry| entry.binding_type)
                         .ok_or_else(|| {
                             Error::InvalidInput(format!(
                                 "bind group layout is missing binding {}",
                                 binding.binding
                             ))
                         })?;
+                    let uniform = kind == BindingType::UniformBuffer;
+                    self.buffer_binding_limits().validate_range(
+                        buffer_binding.offset,
+                        buffer_binding.size,
+                        uniform,
+                    )?;
+                    if !buffer.desc.usage.contains(if uniform {
+                        BufferUsage::UNIFORM
+                    } else {
+                        BufferUsage::STORAGE
+                    }) || (kind == BindingType::StorageBufferReadWrite
+                        && !buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE))
+                    {
+                        return Err(Error::InvalidInput(
+                            "Vulkan compute buffer binding lacks required usage".into(),
+                        ));
+                    }
+                    let binding_type = resource_binding_type_to_vk(kind);
                     buffer_infos.push(
                         vk::DescriptorBufferInfo::default()
                             .buffer(buffer.buffer)
@@ -7616,7 +7634,9 @@ fn depth_compare_op(compare: CompareFunction) -> vk::CompareOp {
 fn resource_binding_type_to_vk(binding_type: BindingType) -> vk::DescriptorType {
     match binding_type {
         BindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-        BindingType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+        BindingType::StorageBuffer | BindingType::StorageBufferReadWrite => {
+            vk::DescriptorType::STORAGE_BUFFER
+        },
         BindingType::SampledTexture => vk::DescriptorType::SAMPLED_IMAGE,
         BindingType::StorageTexture { .. } => vk::DescriptorType::STORAGE_IMAGE,
         BindingType::Sampler => vk::DescriptorType::SAMPLER,
