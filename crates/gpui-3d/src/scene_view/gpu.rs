@@ -888,6 +888,60 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn native_copy_writer_retains_exact_mesh_range_until_its_own_queue_fence() {
+        use gfx_core::{GpuBufferCopy, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1200, 1);
+        let source = BufferId::from_parts(1201, 1);
+        let transfer = GpuQueueId { family: 0, index: 3 };
+        let producer = gfx_core::SubmissionId::from_parts(1202, 1);
+        let graphics = gfx_core::SubmissionId::from_parts(1203, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 320, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let copy = GpuBufferCopy {
+            source, source_offset: 0,
+            destination: buffer, destination_offset: 128, bytes: 64,
+        };
+        arena.register_native_buffer_copies(producer, transfer, &[copy], &[]).unwrap();
+        let active = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        let unrelated = GpuResourceSpan::buffer(buffer, 256, 64).unwrap();
+        assert_eq!(arena.native_work.retirement(&[active.clone()]).pending().len(), 1);
+        assert!(arena.native_work.retirement(&[unrelated]).safe_to_reuse());
+        arena.retirements.push(RetiredMeshRange {
+            page: 0, offset: 128, bytes: 64,
+            dependencies: arena.native_work.retirement(&[active]),
+            fallback: vec![], needs_primary_proof: true,
+        });
+        arena.gpu_submission_accepted(graphics);
+        arena.gpu_submission_completed(graphics);
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.gpu_submission_completed(producer);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(arena.pages[0].as_ref().unwrap().free_ranges, vec![(128, 64)]);
+    }
+
+    #[test]
+    fn native_copy_registration_checks_physical_page_bounds() {
+        let buffer = BufferId::from_parts(1210, 1);
+        let source = BufferId::from_parts(1211, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(page(1210, false)));
+        let copy = gfx_core::GpuBufferCopy {
+            source, source_offset: 0,
+            destination: buffer, destination_offset: 1000, bytes: 64,
+        };
+        let id = gfx_core::SubmissionId::from_parts(1212, 1);
+        assert!(arena.register_native_buffer_copies(
+            id, gfx_core::GpuQueueId::PRIMARY, &[copy], &[],
+        ).is_err());
+        assert_eq!(arena.native_work.live_count(), 0);
+    }
+
+    #[test]
     fn independent_compute_writer_prevents_primary_fence_mesh_reuse() {
         use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
             GpuSubmissionRecord, GpuWorkStage};
