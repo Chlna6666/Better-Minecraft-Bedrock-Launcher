@@ -34,6 +34,9 @@ Use the narrowest core trait required by the caller:
 - `PipelineDevice` for shaders, render pass layouts, pipeline layouts, and pipelines.
 - `CommandDevice` for explicit command encoder work.
 - `SubmissionDevice` for deferred submissions and completion tracking.
+- `OffscreenSubmissionDevice` for native Graphics producers independent of UI, using
+  `OffscreenQueuePreference` and an optional `SubmissionId`. It does not know scenes,
+  materials, lighting or DrawIndirect batching policy; those belong to 3D engines.
 - `PresentationDevice` for `render_and_present`, `render_to_textures`,
   surface readiness, and presentation capabilities.
 - `DiagnosticsDevice` for live resource statistics.
