@@ -185,10 +185,19 @@ impl GpuRetirementDependencies {
     /// A submission recorded AFTER all untracked work on this same physical
     /// queue may seal it. It must be an actual native queue checkpoint, not a
     /// host frame number or arbitrary consumer from another queue.
-    pub fn seal_ordered_queue(&mut self, queue: GpuQueueId, native_checkpoint: SubmissionId) {
+    pub fn seal_ordered_queue(
+        &mut self, graph: &GpuSubmissionDependencyGraph,
+        queue: GpuQueueId, native_checkpoint: SubmissionId,
+    ) -> Result<()> {
+        if !graph.is_submission_on_queue(native_checkpoint, queue) {
+            return Err(Error::InvalidInput(
+                "retirement checkpoint has no native submission on the named queue".into(),
+            ));
+        }
         if self.untracked_queues.remove(&queue) {
             self.pending.insert(native_checkpoint);
         }
+        Ok(())
     }
 
     /// A verified GPU completion also covers explicitly waited-on submissions
@@ -234,6 +243,15 @@ impl GpuSubmissionDependencyGraph {
     #[must_use]
     pub fn contains_submission(&self, submission: SubmissionId) -> bool {
         self.live.contains_key(&submission)
+    }
+
+    /// A native producer must be registered on precisely this queue before
+    /// its completion marker can seal unfenced resource accesses.
+    #[must_use]
+    pub fn is_submission_on_queue(
+        &self, submission: SubmissionId, queue: GpuQueueId,
+    ) -> bool {
+        self.live.get(&submission).is_some_and(|work| work.queue == queue)
     }
 
     /// Forget all in-flight work ONLY after the native owner has proved the
@@ -466,12 +484,14 @@ mod tests {
         let async_queue = GpuQueueId { family: 8, index: 1 };
         graph.register_untracked(async_queue, use_of(buf(0, 32), GpuAccess::StorageWrite));
         let mut dependency = graph.retirement(&[buf(0, 32)]);
-        dependency.seal_ordered_queue(GpuQueueId::PRIMARY, id(50));
+        graph.register(record(50, GpuQueueId::PRIMARY, vec![], vec![])).unwrap();
+        graph.register(record(51, async_queue, vec![], vec![])).unwrap();
+        dependency.seal_ordered_queue(&graph, GpuQueueId::PRIMARY, id(50)).unwrap();
         assert!(!dependency.safe_to_reuse());
-        dependency.seal_ordered_queue(async_queue, id(51));
+        assert!(dependency.seal_ordered_queue(&graph, async_queue, id(50)).is_err());
+        dependency.seal_ordered_queue(&graph, async_queue, id(51)).unwrap();
         assert!(!dependency.safe_to_reuse());
-        let completion = GpuSubmissionCompletion { finished: HashSet::from([id(51)]) };
-        dependency.complete_with_proof(&completion);
+        dependency.complete_with_proof(&graph.complete(id(51)).unwrap());
         assert!(dependency.safe_to_reuse());
     }
 
