@@ -50,7 +50,7 @@ pub use texture_array::{
 };
 pub use texture_copy::TextureCopy;
 
-pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
+pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite, GpuBufferCopy};
 pub use gpu_timestamps::{GpuTimestampSample, GpuTimestampStage, GpuTimestampTag};
 mod submission_dependencies;
 pub use submission_dependencies::{
