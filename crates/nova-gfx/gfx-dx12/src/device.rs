@@ -2217,6 +2217,72 @@ mod platform {
             })
         }
 
+        /// Execute a COMPUTE-typed native command list on the dedicated
+        /// queue. Both dependency waits are GPU-side, never CPU fence waits.
+        /// Encoder COM resources retire only when the later primary join
+        /// fence confirms COMPUTE completion.
+        fn submit_dedicated_compute_deferred(
+            &mut self, encoder: CommandEncoderId,
+        ) -> Result<SubmissionId> {
+            self.validate_swapchain_submission(encoder)?;
+            self.check_device_removed("DX12 dedicated Compute preflight")?;
+            let recorded = self.command_encoders.get(encoder)?;
+            if recorded.command_type != D3D12_COMMAND_LIST_TYPE_COMPUTE {
+                return Err(Error::InvalidInput(
+                    "DX12 dedicated queue requires a COMPUTE-typed command list".into(),
+                ));
+            }
+            let executable: ID3D12CommandList = recorded.command_list.as_ref()
+                .ok_or_else(|| Error::Backend(
+                    "DX12 dedicated Compute encoder has no command list".into(),
+                ))?
+                .cast().map_err(|error| Error::Backend(error.to_string()))?;
+            let native = self.async_compute.as_ref().ok_or_else(|| Error::Unavailable(
+                "DX12 dedicated Compute queue is unavailable".into(),
+            ))?;
+            let queue = native.queue.clone();
+            let fence = native.fence.clone();
+            let fence_value = native.next_fence_value;
+            let next = fence_value.checked_add(1).ok_or_else(|| {
+                Error::InvalidInput("DX12 dedicated Compute timeline exhausted".into())
+            })?;
+            self.async_compute.as_mut().expect("validated Compute queue").next_fence_value = next;
+            // Native queue waits enforce PRIMARY release -> COMPUTE shader
+            // execution -> PRIMARY graphics acquire, without host blocking.
+            let input = self.signal_frame()?;
+            // SAFETY: Queue and fence belong to this device; GPU-side Wait
+            // precedes all subsequent Compute queue commands.
+            unsafe { queue.Wait(&self.fence, input) }
+                .map_err(|error| Error::Backend(format!(
+                    "DX12 dedicated Compute input GPU Wait: {error}"
+                )))?;
+            self.command_encoders.get_mut(encoder)?.submitted = true;
+            // SAFETY: The command list/allocator are COMPUTE typed.
+            unsafe { queue.ExecuteCommandLists(&[Some(executable)]) };
+            // SAFETY: Signal is ordered after the shader commands.
+            unsafe { queue.Signal(&fence, fence_value) }
+                .map_err(|error| Error::Backend(format!(
+                    "DX12 dedicated Compute producer Signal: {error}"
+                )))?;
+            // SAFETY: The primary queue cannot consume Compute writes
+            // before this native producer fence has actually completed.
+            unsafe { self.graphics_queue.Wait(&fence, fence_value) }
+                .map_err(|error| Error::Backend(format!(
+                    "DX12 dedicated Compute -> Graphics GPU Wait: {error}"
+                )))?;
+            let join = self.signal_frame()?;
+            self.check_device_removed("DX12 dedicated Compute submit")?;
+            let encoder_resource = self.command_encoders.take(encoder)?;
+            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
+                fence_value: join, _encoder: encoder_resource,
+            });
+            self.submitted_frames = self.submitted_frames.saturating_add(1);
+            self.poll_cleanup();
+            Ok(self.submissions.insert(Dx12Submission {
+                fence_value, queue: Dx12SubmissionQueue::Compute,
+            }))
+        }
+
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
             let fence_value = self.submit_without_wait(encoder)?;
             let encoder = self.command_encoders.take(encoder)?;
