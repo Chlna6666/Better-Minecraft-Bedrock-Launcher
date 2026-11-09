@@ -85,6 +85,7 @@ fn main() {
                 .entry("fs_hdr", ShaderStage::Fragment)
                 .entry("fs_scene_surface", ShaderStage::Fragment)
                 .entry("fs_scene_albedo", ShaderStage::Fragment)
+                .entry("fs_scene_attributes_mrt", ShaderStage::Fragment)
                 .entry("fs_scene_shadow", ShaderStage::Fragment),
         )
         .shader(
@@ -154,6 +155,7 @@ fn main() {
                 .entry("fs_voxel_capture", ShaderStage::Fragment)
                 .entry("fs_voxel_surface", ShaderStage::Fragment)
                 .entry("fs_voxel_albedo", ShaderStage::Fragment)
+                .entry("fs_voxel_attributes_mrt", ShaderStage::Fragment)
                 .entry("fs_voxel_shadow", ShaderStage::Fragment),
         )
         .shader(
