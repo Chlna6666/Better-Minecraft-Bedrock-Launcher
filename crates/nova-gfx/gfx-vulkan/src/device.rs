@@ -4688,6 +4688,13 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
+    fn ordered_mixed_graphics_compute_supported(&self) -> bool {
+        // Normal offscreen passes and resource-set compute dispatches both
+        // submit to graphics_queue. The independent sidecar queue is never
+        // selected for mixed work; image layouts are tracked per resource.
+        true
+    }
+
     fn surface_capabilities(
         &self,
         _swapchain: gfx_core::SwapchainId,
