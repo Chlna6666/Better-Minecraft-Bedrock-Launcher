@@ -2041,34 +2041,38 @@ mod platform {
             }))
         }
 
-        /// Allocate a one-shot, COMPUTE-typed command allocator/list. The
-        /// Direct3D 12 API forbids executing a DIRECT command list on a
-        /// dedicated COMPUTE queue. These objects retire by the GPU-side
-        /// COMPUTE -> PRIMARY join fence, never by the DIRECT encoder pool.
-        fn create_compute_command_encoder(&mut self) -> Result<CommandEncoderId> {
-            // SAFETY: Device is live and the allocator type matches the native
-            // command queue which will execute this command list.
+        /// A type-matched one-shot command allocator/list for independent
+        /// COMPUTE or COPY queues. These command lists are not recyclable as
+        /// DIRECT command lists and retire after the primary GPU join fence.
+        fn create_typed_queue_command_encoder(
+            &mut self, kind: D3D12_COMMAND_LIST_TYPE,
+        ) -> Result<CommandEncoderId> {
+            if kind != D3D12_COMMAND_LIST_TYPE_COMPUTE
+                && kind != D3D12_COMMAND_LIST_TYPE_COPY
+            {
+                return Err(Error::InvalidInput(
+                    "typed async queue encoder must be COMPUTE or COPY".into(),
+                ));
+            }
+            // SAFETY: The allocator matches the exact native queue type.
             let allocator: ID3D12CommandAllocator = unsafe {
-                self.device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE)
+                self.device.CreateCommandAllocator(kind)
             }.map_err(|error| Error::Backend(format!(
-                "DX12 typed Compute command allocator: {error}"
+                "DX12 typed queue command allocator: {error}"
             )))?;
-            // SAFETY: The allocator is COMPUTE-typed; the command list is
-            // COMPUTE-typed and has no graphics-only initial pipeline state.
+            // SAFETY: Matching allocator/list types are bound to this device.
             let command_list: ID3D12GraphicsCommandList = unsafe {
                 self.device.CreateCommandList(
-                    0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
-                    &allocator, Option::<&ID3D12PipelineState>::None,
+                    0, kind, &allocator, Option::<&ID3D12PipelineState>::None,
                 )
             }.map_err(|error| Error::Backend(format!(
-                "DX12 typed Compute command list: {error}"
+                "DX12 typed queue command list: {error}"
             )))?;
-            // SAFETY: A new command list begins recording; the existing
-            // begin_texture_command_encoder path expects it closed first.
+            // SAFETY: New list starts open; reset path expects it closed.
             unsafe { command_list.Close() }
                 .map_err(|error| Error::Backend(error.to_string()))?;
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
-                command_type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                command_type: kind,
                 allocator: Some(allocator),
                 command_list: Some(command_list),
                 timestamps: None,
@@ -2081,6 +2085,14 @@ mod platform {
                 indirect_resources: Vec::new(),
                 buffer_states: Default::default(),
             }))
+        }
+
+        fn create_compute_command_encoder(&mut self) -> Result<CommandEncoderId> {
+            self.create_typed_queue_command_encoder(D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        }
+
+        fn create_copy_command_encoder(&mut self) -> Result<CommandEncoderId> {
+            self.create_typed_queue_command_encoder(D3D12_COMMAND_LIST_TYPE_COPY)
         }
 
         /// Records a draw call with optional bind groups.
