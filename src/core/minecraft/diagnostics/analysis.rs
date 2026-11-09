@@ -18,7 +18,7 @@ pub enum Confidence { High, Medium, Low }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceSource {
-    GameLog, ModLog, RunnerLog, LauncherLog, WindowsWer, ExitStatus,
+    GameLog, ModLog, RunnerLog, LauncherLog, WindowsWer, CrashDump, ExitStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -143,8 +143,68 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
         };
         let source = match finding.source {
             EvidenceSource::GameLog | EvidenceSource::ModLog | EvidenceSource::RunnerLog => 0,
-            EvidenceSource::WindowsWer => 1, EvidenceSource::LauncherLog => 2,
+            EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1, EvidenceSource::LauncherLog => 2,
             EvidenceSource::ExitStatus => 3,
+        };
+        (confidence, source)
+    });
+    findings.truncate(3);
+    findings
+}
+
+/// Correlate structured evidence with the existing log classifier. A minidump
+/// proves a numeric exception, not which mod caused the failure.
+pub fn analyze_with_forensics(
+    report: &GameSessionReport,
+    sources: &[(String, String)],
+    evidence: &super::forensics::ForensicSummary,
+) -> Vec<CrashFinding> {
+    let mut findings = analyze(report, sources);
+    if matches!(report.kind, ExitKind::Normal | ExitKind::Running) {
+        return Vec::new();
+    }
+    let mut add_or_promote = |reason: CrashReason, confidence: Confidence, source: EvidenceSource| {
+        if let Some(found) = findings.iter_mut().find(|f| f.reason == reason) {
+            let rank = |c: Confidence| match c {
+                Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
+            };
+            if rank(confidence) < rank(found.confidence) {
+                found.confidence = confidence;
+                found.source = source;
+            }
+        } else {
+            findings.push(CrashFinding { reason, confidence, source });
+        }
+    };
+    if !evidence.failed_mods.is_empty() {
+        add_or_promote(CrashReason::ModLoadFailure, Confidence::Medium, EvidenceSource::ModLog);
+    }
+    if evidence.wine_stack.is_some() {
+        add_or_promote(CrashReason::WineGuestException, Confidence::Medium, EvidenceSource::RunnerLog);
+    }
+    for dump in &evidence.minidumps {
+        let reason = match dump.exception_code {
+            Some(0xC0000005) => Some((CrashReason::AccessViolation, Confidence::Medium)),
+            Some(0xC000001D) => Some((CrashReason::IllegalInstruction, Confidence::High)),
+            Some(0xC00000FD) => Some((CrashReason::StackOverflow, Confidence::High)),
+            Some(0xC0000409) => Some((CrashReason::FastFail, Confidence::Medium)),
+            _ => None,
+        };
+        if let Some((reason, confidence)) = reason {
+            add_or_promote(reason, confidence, EvidenceSource::CrashDump);
+        }
+    }
+    if findings.len() > 1 {
+        findings.retain(|f| f.reason != CrashReason::Unclassified);
+    }
+    findings.sort_by_key(|f| {
+        let confidence = match f.confidence {
+            Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
+        };
+        let source = match f.source {
+            EvidenceSource::GameLog | EvidenceSource::ModLog | EvidenceSource::RunnerLog => 0,
+            EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1,
+            EvidenceSource::LauncherLog => 2, EvidenceSource::ExitStatus => 3,
         };
         (confidence, source)
     });
@@ -172,6 +232,7 @@ mod tests {
             kind: if platform == "wine" { ExitKind::RunnerFailure } else { ExitKind::SuspectedCrash },
             summary: String::new(), acknowledged: false, wer_fault: None,
             findings: Vec::new(),
+            forensics: super::super::forensics::ForensicSummary::default(),
         }
     }
 
