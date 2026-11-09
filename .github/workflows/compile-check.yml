@@ -91,7 +91,11 @@ jobs:
         run: |
           cargo test -p gfx-core --lib texture_array::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-core --lib compute::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-dx11 --lib --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-dx11 --test compute_draw --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-dx12 --lib --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -213,6 +217,7 @@ jobs:
       - name: Test graphics core layered resource ABI
         run: |
           cargo test -p gfx-core --lib texture_array::tests -- --nocapture
+          cargo test -p gfx-core --lib compute::tests -- --nocapture
           cargo test -p gfx-opengl --lib --no-run
           cargo test -p gfx-vulkan --lib --no-run
 
