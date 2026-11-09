@@ -1,13 +1,23 @@
 # gpui-3d
 
-`gpui-3d` provides the reusable 3D scene, geometry, camera, material, animation, query, and GPUI
-scene-view layer. Applications convert their domain data into these types. GPUI owns generic
-renderer-extension scheduling and Nova integration; `gpui-3d` owns 3D scene preparation and its
-scene-view resources; BMCBL-specific world and preview policy stays in `src/ui`.
+`gpui-3d` is a reusable, game-oriented 3D renderer with scene, geometry, camera,
+material, lighting, GPU-resident buffers, compute meshing, visibility and native offscreen output.
+It uses `nova-gfx` through the backend-neutral `gfx-core` API. GPUI is an **optional
+sidecar consumer** for layout, clipping, texture composition and window presentation; it is
+not the owner of 3D command batching or rendering strategy. The current crate still contains
+the GPUI adapter and has not yet split it into an opt-in Cargo feature. Product-specific
+Minecraft/world policies belong to applications, not the reusable engine.
 
 The API is in active development and the crate is not published. Map Viewer and Skin Pack use this
 crate for preview scenes. GPUI owns the generic `RendererExtension` lifecycle; its dedicated mesh
 primitive and Nova upload/cache/draw path have been removed without compatibility wrappers.
+
+The framework-independent `NativeOffscreenPass` and
+`submit_native_graphics` API provide immutable native offscreen submission
+plans to standalone game renderers; `submit_native_offscreen_passes` lets a
+GPUI adapter call the same plan through the host GPU owner without cloning
+the DrawIndirect command data. Native submission acceptance is not fence
+completion; resource retirement requires completed GPU work.
 
 Two rendering paths share one scene/asset model:
 
@@ -17,7 +27,9 @@ transforms reverse front-face winding and are batched separately. The authored w
 to `FrontFace::Ccw`; clockwise meshes must explicitly use `FrontFace::Cw`. This selection currently
 applies to the scene view; the offscreen PBR path retains its previous behavior.
 
-- **GPUI scene view**: renders inside the host compositor pass through `RendererExtension`.
+- **GPUI scene view**: the 3D producer directly submits native offscreen Graphics passes
+  through `gfx-core::OffscreenSubmissionDevice`, then the GPUI adapter samples its color
+  view in the compositor. The UI never converts DrawIndirect into 2D geometry.
 - **Offscreen renderer**: `OffscreenRenderer` renders a directional shadow pass, a linear PBR scene
   pass with optional image-based lighting and sky, and a display-referred post pass into an offscreen
   target with readback, resize, trim, debug views, deferred completion polling, and per-frame
