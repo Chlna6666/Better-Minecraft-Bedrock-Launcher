@@ -5617,6 +5617,13 @@ mod platform {
     }
 
     impl PresentationDevice for Dx12Device {
+        fn ordered_mixed_graphics_compute_supported(&self) -> bool {
+            // Both normal graphics encoders and resource-set compute dispatch
+            // use the owning direct queue and transition native resource states.
+            // Mixed work must not take the independent sidecar graphics queue.
+            true
+        }
+
         fn request_frame_ready(
             &mut self,
             swapchain: SwapchainId,
