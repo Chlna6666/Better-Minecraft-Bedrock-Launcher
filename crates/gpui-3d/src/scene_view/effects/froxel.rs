@@ -311,6 +311,10 @@ pub(super) struct FroxelVolume {
 }
 
 impl FroxelVolume {
+    pub fn injection_texture(&self) -> TextureId {
+        self.injection.texture
+    }
+
     pub fn new(
         device: &mut dyn ExtensionDevice,
         program: &FroxelProgram,
