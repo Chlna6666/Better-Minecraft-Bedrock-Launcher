@@ -16,7 +16,7 @@ use reqwest::header::CONTENT_DISPOSITION;
 use reqwest::header::HeaderMap;
 use std::path::Path;
 use std::path::PathBuf;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
@@ -396,6 +396,10 @@ impl DownloaderManager {
                         }
                         if retry < 3 {
                             retry += 1;
+                            warn!(
+                                target: "bmcbl::operation", attempt = retry,
+                                "下载文件完整性校验失败，正在重试"
+                            );
                             debug!(
                                 "DownloaderManager integrity failed; retrying {} for url={} error={}",
                                 retry, url, error
@@ -434,6 +438,10 @@ impl DownloaderManager {
                     }
                     if retry < 3 {
                         retry += 1;
+                        warn!(
+                            target: "bmcbl::operation", attempt = retry,
+                            "下载发生可重试错误，正在重新请求"
+                        );
                         debug!(
                             "DownloaderManager retrying {} for url={} error={}",
                             retry, url, e
@@ -453,6 +461,10 @@ impl DownloaderManager {
                     }
                     if retry < 3 {
                         retry += 1;
+                        warn!(
+                            target: "bmcbl::operation", attempt = retry,
+                            "下载发生可重试错误，正在重新请求"
+                        );
                         debug!(
                             "DownloaderManager retrying {} for url={} error={}",
                             retry, url, e
@@ -480,6 +492,11 @@ impl DownloaderManager {
         let total = urls.len();
         let mut last_error = None;
         for (index, url) in urls.into_iter().enumerate() {
+            info!(
+                target: "bmcbl::operation",
+                candidate = index + 1, candidate_count = total,
+                "尝试下载候选源"
+            );
             debug!(
                 "DownloaderManager trying download url candidate {}/{}: {}",
                 index + 1,
@@ -501,6 +518,11 @@ impl DownloaderManager {
                         error
                     );
                     let is_checksum_mismatch = matches!(error, CoreError::ChecksumMismatch(_));
+                    warn!(
+                        target: "bmcbl::operation",
+                        candidate = index + 1, candidate_count = total,
+                        "当前下载候选源失败"
+                    );
                     last_error = Some(error);
                     if is_checksum_mismatch {
                         break;
@@ -515,6 +537,11 @@ impl DownloaderManager {
                         error
                     );
                     let is_checksum_mismatch = matches!(error, CoreError::ChecksumMismatch(_));
+                    warn!(
+                        target: "bmcbl::operation",
+                        candidate = index + 1, candidate_count = total,
+                        "当前下载候选源失败"
+                    );
                     last_error = Some(error);
                     if is_checksum_mismatch {
                         break;

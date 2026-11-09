@@ -633,6 +633,16 @@ fn safe_operation_field(input: &str) -> &str {
     }
 }
 
+fn task_chunk_count(detail: Option<&str>) -> Option<u64> {
+    let mut parts = detail?.split_whitespace();
+    let count = parts.next()?.parse::<u64>().ok()?;
+    if parts.next()? == "个" && parts.next()? == "chunk" {
+        Some(count)
+    } else {
+        None
+    }
+}
+
 fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
     if snapshot.visibility == TaskVisibility::Hidden {
         return;
@@ -640,6 +650,10 @@ fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
     let category = operation_category(&snapshot.title, &snapshot.stage);
     let task_id = safe_operation_field(&snapshot.id);
     let stage = safe_operation_field(&snapshot.stage);
+    // The editor's "N 个 chunk · filename" detail is never logged verbatim:
+    // only its numeric chunk count is allowed through this narrow parser.
+    let chunks = task_chunk_count(snapshot.detail.as_deref());
+    let total_units = snapshot.total;
     match event {
         "error" => error!(
             target: "bmcbl::operation",
@@ -669,6 +683,7 @@ fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
         _ => info!(
             target: "bmcbl::operation",
             operation = category, task_id, stage, event,
+            ?chunks, ?total_units,
             "操作已开始"
         ),
     }
@@ -1547,6 +1562,8 @@ mod tests {
         assert_eq!(operation_category("安装 Minecraft", "installing"), "安装");
         assert_eq!(safe_operation_field("task-123"), "task-123");
         assert_eq!(safe_operation_field(r"C:\\Users\\Alice\\secret"), "[已隐藏]");
+        assert_eq!(task_chunk_count(Some("48 个 chunk · private.mcstructure")), Some(48));
+        assert_eq!(task_chunk_count(Some("private world")), None);
     }
 
     fn test_snapshot(task_id: &str, sequence: u64) -> Arc<TaskSnapshot> {
