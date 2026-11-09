@@ -608,6 +608,48 @@ mod tests {
     }
 
     #[test]
+    fn draw_slot_retirement_prefers_actual_last_producer_over_gui_consumer() {
+        let original = draws(32);
+        let (mut slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
+        let producer = gfx_core::SubmissionId::from_parts(20, 1);
+        let consumer = gfx_core::SubmissionId::from_parts(21, 1);
+        slots.draw_producer_submitted(Some(producer));
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        assert!(slots.retired_unbound.is_empty());
+        assert_eq!(slots.retired_by_submission.len(), 1);
+        assert_eq!(slots.retired_by_submission[0].0, producer);
+        assert_eq!(slots.retired_by_submission[0].1.as_ref(), &[mapping[0] as usize]);
+        // Attaching a later GPUI Consumer does not change the actual
+        // native DrawIndirect last-reader fence of this physical address.
+        slots.submission_accepted(consumer);
+        slots.submission_completed(consumer);
+        assert!(slots.free.is_empty());
+        assert!(slots.has_retired_slots());
+        slots.submission_completed(producer);
+        assert_eq!(slots.free, vec![mapping[0] as usize]);
+        assert!(!slots.has_retired_slots());
+    }
+
+    #[test]
+    fn untracked_new_producer_does_not_reuse_stale_completed_reader_fence() {
+        let original = draws(16);
+        let (mut slots, _) = StableDrawSlots::default().plan(&original).unwrap();
+        let old = gfx_core::SubmissionId::from_parts(29, 1);
+        slots.draw_producer_submitted(Some(old));
+        // Some backends do not export individual producer SubmissionIds.
+        slots.draw_producer_submitted(None);
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        assert!(slots.retired_by_submission.is_empty());
+        assert_eq!(slots.retired_unbound, vec![0]);
+        slots.submission_completed(old);
+        assert!(slots.free.is_empty());
+        let future_consumer = gfx_core::SubmissionId::from_parts(30, 1);
+        slots.submission_accepted(future_consumer);
+        slots.submission_completed(future_consumer);
+        assert_eq!(slots.free, vec![0]);
+    }
+
+    #[test]
     fn different_native_fences_retire_only_their_own_physical_slots() {
         let original = draws(24);
         let (slots, _) = StableDrawSlots::default().plan(&original).unwrap();
