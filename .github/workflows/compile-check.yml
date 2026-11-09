@@ -105,6 +105,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-core --lib compute::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gfx-core --lib submission_dependencies::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-dx11 --lib --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gfx-dx11 --test compute_draw --no-run
@@ -148,6 +150,8 @@ jobs:
           cargo test -p gpui-3d --lib sidecar_surface::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib stable_slots::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib sparse_arena_retirement_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib culling::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -249,6 +253,7 @@ jobs:
         run: |
           cargo test -p gfx-core --lib texture_array::tests -- --nocapture
           cargo test -p gfx-core --lib compute::tests -- --nocapture
+          cargo test -p gfx-core --lib submission_dependencies::tests -- --nocapture
           cargo test -p gfx-opengl --lib --no-run
           cargo test -p gfx-vulkan --lib --no-run
           cargo test -p gfx-vulkan --test compute_resource_sets --no-run
@@ -278,6 +283,7 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 sidecar_surface::tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 stable_slots::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 sparse_arena_retirement_tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 culling::tests -- --nocapture
           cargo test -p gpui --lib --features x11 sidecar_target_retains_ui_projection_and_clip -- --nocapture
           cargo test -p gpui --lib --features x11 submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
