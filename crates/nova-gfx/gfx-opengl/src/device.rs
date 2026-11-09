@@ -514,6 +514,11 @@ impl Backend for OpenGlDevice {
     }
 }
 impl SubmissionDevice for OpenGlDevice {
+    fn checkpoint_ordered_queue(&mut self, _stage: GpuWorkStage) -> Result<SubmissionId> {
+        self.park()?;
+        self.signal()
+    }
+
     fn wait_queue_idle(&mut self) -> Result<()> {
         self.park()?;
         // SAFETY: explicit queue completion runs on the owner context; ordinary dispatch
