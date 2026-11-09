@@ -1164,6 +1164,15 @@ impl CullResources {
                 Some((normal_groups as usize, singleton_groups as usize));
         }
         let capabilities = device.compute_capabilities();
+        // The culling kernel READS physical Bounds slots and WRITES indirect
+        // arguments, but dispatch_compute currently exports no SubmissionId.
+        // Reserve an untracked native-use epoch BEFORE dispatch: even a partial
+        // batch that later fails cannot permit premature physical-slot reuse.
+        // The same ordered GPU-owner queue's subsequent completed consumer
+        // fence (or global GPU-idle proof) seals this dependency.
+        if total_groups != 0 {
+            self.resident_slots.untracked_gpu_access_submitted();
+        }
         match (normal_groups, singleton_groups) {
             (0, 0) => {}
             (normal, 0) => {
