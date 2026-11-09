@@ -265,4 +265,51 @@ mod tests {
         let found = analyze(&report("gdk", Some(7)), &logs);
         assert!(!serde_json::to_string(&found).unwrap().contains("private-secret"));
     }
+    #[test]
+    fn regression_wine_proton_umu_and_loader_logs() {
+        const WINE: &str = include_str!("fixtures/wine_unhandled.log");
+        const PROTON: &str = include_str!("fixtures/proton_dxvk.log");
+        const UMU: &str = include_str!("fixtures/umu_startup.log");
+        const MOD: &str = include_str!("fixtures/levilamina_mod_failure.log");
+        let cases = [
+            ("wine", WINE, CrashReason::WineGuestException),
+            ("proton", PROTON, CrashReason::VulkanUnavailable),
+            ("umu", UMU, CrashReason::WineRuntime),
+        ];
+        for (platform, output, expected) in cases {
+            let report = report(platform, Some(1));
+            let source = vec![("logs/compatibility-runner.log".to_string(), output.to_string())];
+            let forensic = super::super::forensics::inspect_text(&source);
+            let findings = analyze_with_forensics(&report, &source, &forensic);
+            assert!(
+                findings.iter().any(|finding| finding.reason == expected),
+                "{platform} must identify {expected:?}: {findings:?}"
+            );
+        }
+        let report = report("gdk", Some(0xC0000005));
+        let mod_logs = vec![("logs/mod-provider-00.log".to_string(), MOD.to_string())];
+        let forensic = super::super::forensics::inspect_text(&mod_logs);
+        let findings = analyze_with_forensics(&report, &mod_logs, &forensic);
+        assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
+        assert_eq!(forensic.failed_mods[0].identifier, "BadAddon.dll");
+    }
+
+    #[test]
+    fn dump_metadata_improves_exception_confidence_without_attributing_a_mod() {
+        let report = report("gdk", Some(0xC0000005));
+        let evidence = super::super::forensics::ForensicSummary {
+            failed_mods: vec![],
+            wine_stack: None,
+            minidumps: vec![super::super::forensics::MiniDump {
+                streams: 1,
+                exception_code: Some(0xC0000005),
+            }],
+        };
+        let findings = analyze_with_forensics(&report, &[], &evidence);
+        assert_eq!(findings[0].reason, CrashReason::AccessViolation);
+        assert_eq!(findings[0].confidence, Confidence::Medium);
+        assert_eq!(findings[0].source, EvidenceSource::CrashDump);
+        assert!(!findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
+    }
+
 }
