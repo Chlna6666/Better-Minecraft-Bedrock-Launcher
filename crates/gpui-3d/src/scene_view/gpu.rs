@@ -775,6 +775,42 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn untracked_compute_after_last_graphics_fence_is_not_global_idle() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan,
+            GpuSubmissionRecord, GpuWorkStage};
+        let buffer = BufferId::from_parts(907, 1);
+        let allocation = ArenaAllocation { page: 0, offset: 128, bytes: 64 };
+        let span = GpuResourceSpan::buffer(buffer, allocation.offset, allocation.bytes).unwrap();
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 384, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let previous = gfx_core::SubmissionId::from_parts(908, 1);
+        let next = gfx_core::SubmissionId::from_parts(909, 1);
+        arena.register_native_access(GpuSubmissionRecord::new(
+            previous, GpuQueueId::PRIMARY, GpuWorkStage::Graphics, vec![],
+        )).unwrap();
+        // This GPU write was queued after previous; completing previous
+        // does not finish the newer operation without a newer queue fence.
+        arena.mark_untracked_access(allocation, GpuAccess::StorageWrite).unwrap();
+        arena.retirements.push(RetiredMeshRange {
+            page: 0, offset: 128, bytes: 64,
+            dependencies: arena.native_work.retirement(&[span]),
+            fallback: vec![], needs_primary_proof: true,
+        });
+        arena.gpu_submission_completed(previous);
+        arena.reclaim_after_gpu_idle();
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.gpu_submission_accepted(next);
+        arena.gpu_submission_completed(next);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(arena.pages[0].as_ref().unwrap().free_ranges, vec![(128, 64)]);
+    }
+
+    #[test]
     fn independent_compute_writer_prevents_primary_fence_mesh_reuse() {
         use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
             GpuSubmissionRecord, GpuWorkStage};
