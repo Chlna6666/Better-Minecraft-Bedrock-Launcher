@@ -253,6 +253,10 @@ mod platform {
         upload_ring: UploadRingAllocator,
         upload_pages: Vec<Option<Dx12UploadPage>>,
         deferred_command_encoders: Vec<DeferredDx12CommandEncoder>,
+        /// Partial COMPUTE/COPY queue submission failures have no verified
+        /// primary GPU join. Never reassign their encoder/native resources
+        /// using an unrelated future graphics fence.
+        orphaned_native_encoders: Vec<Dx12CommandEncoder>,
         free_command_encoders: Vec<Dx12CommandEncoder>,
         pending_texture_uploads: DeferredFreeQueue<Dx12SubmittedCommandList>,
         upload_command_pool: Vec<Dx12UploadCommands>,
@@ -479,6 +483,7 @@ mod platform {
                 upload_ring,
                 upload_pages: Vec::new(),
                 deferred_command_encoders: Vec::new(),
+                orphaned_native_encoders: Vec::new(),
                 free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
                 pending_texture_uploads: DeferredFreeQueue::new(),
                 upload_command_pool: Vec::new(),
@@ -2027,6 +2032,7 @@ mod platform {
 
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 command_type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                native_buffer_owners: Vec::new(),
                 allocator: Some(allocator),
                 command_list: Some(command_list),
                 timestamps,
@@ -2073,6 +2079,7 @@ mod platform {
                 .map_err(|error| Error::Backend(error.to_string()))?;
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 command_type: kind,
+                native_buffer_owners: Vec::new(),
                 allocator: Some(allocator),
                 command_list: Some(command_list),
                 timestamps: None,
@@ -2838,14 +2845,25 @@ mod platform {
                 let encoder = self.command_encoders.take(encoder)?;
                 self.release_encoder_resources(encoder);
             } else {
-                // Execute may succeed before Signal fails. Retain ownership until a later
-                // ordered fence proves completion, or device teardown releases the queue.
                 let encoder = self.command_encoders.take(encoder)?;
-                self.deferred_command_encoders
-                    .push(DeferredDx12CommandEncoder {
+                if encoder.command_type != D3D12_COMMAND_LIST_TYPE_DIRECT {
+                    // The dedicated queue might have accepted Execute but
+                    // failed to signal/join. A later primary DIRECT fence is
+                    // unrelated and CANNOT certify its completion. Hold typed
+                    // allocator, command list and referenced GPU buffers until
+                    // native device teardown rather than recycling memory.
+                    log::error!(
+                        "DX12 typed native queue submit failed after Execute; quarantining encoder until device teardown"
+                    );
+                    self.orphaned_native_encoders.push(encoder);
+                } else {
+                    // Existing DIRECT-queue recovery: the next primary fence
+                    // covers submitted work in that queue's FIFO order.
+                    self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
                         fence_value: self.next_fence_value,
                         _encoder: encoder,
                     });
+                }
             }
             Ok(())
         }
@@ -3216,6 +3234,7 @@ mod platform {
                 {
                     free_encoders.push(Dx12CommandEncoder {
                         command_type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                        native_buffer_owners: Vec::new(),
                         allocator: pending._encoder.allocator.take(),
                         command_list: pending._encoder.command_list.take(),
                         timestamps: pending._encoder.timestamps.take(),
@@ -8162,6 +8181,9 @@ mod platform {
         /// Native queue compatibility is a hard invariant, not a hint.
         /// DIRECT and COMPUTE allocators must never share a recycle pool.
         command_type: D3D12_COMMAND_LIST_TYPE,
+        /// Keep native buffer COM references alive for typed async submits,
+        /// even if logical BufferId records are destroyed after an error.
+        native_buffer_owners: Vec<ID3D12Resource>,
         buffer_states: std::collections::HashMap<BufferId, D3D12_RESOURCE_STATES>,
         compute_resources: Vec<compute::Resources>,
         indirect_resources: Vec<compute::Indirect>,
