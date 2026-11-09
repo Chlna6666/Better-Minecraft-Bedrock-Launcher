@@ -826,6 +826,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     );
 
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
+    let first_fault = Arc::new(Mutex::new(None));
     let publish_startup_output = Arc::new(AtomicBool::new(true));
     let mut stdout_pump = child
         .stdout
@@ -838,6 +839,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 recent_output.clone(),
                 None,
                 Some(publish_startup_output.clone()),
+                Some(first_fault.clone()),
             )
         })
         .transpose()?;
@@ -852,6 +854,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 recent_output.clone(),
                 None,
                 Some(publish_startup_output.clone()),
+                Some(first_fault.clone()),
             )
         })
         .transpose()?;
@@ -869,6 +872,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             use std::os::unix::process::ExitStatusExt as _;
             let mut report = crash_report;
             report.exit_signal = status.signal();
+            report.compatibility_fault = *first_fault.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let code = status.code().map_or(
                 u32::MAX, |exit_code| exit_code as u32
             );
@@ -889,7 +894,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             spawn_process_monitor(
                 task_id.to_string(), crash_report, child,
                 stdout_pump, stderr_pump, recent_output,
-                launch_auth, None,
+                first_fault, launch_auth, None,
             );
             return Err(format!("检查兼容运行器进程状态失败：{error}"));
         }
@@ -913,6 +918,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         stdout_pump,
         stderr_pump,
         recent_output,
+        first_fault,
         launch_auth,
         session,
     );
@@ -1802,6 +1808,7 @@ async fn install_proton_game_input(
                 recent_output.clone(),
                 Some(failure_sender.clone()),
                 None,
+                None,
             )
         })
         .transpose()?;
@@ -1815,6 +1822,7 @@ async fn install_proton_game_input(
                 true,
                 recent_output.clone(),
                 Some(failure_sender),
+                None,
                 None,
             )
         })
@@ -2033,25 +2041,45 @@ fn spawn_output_pump<R>(
     recent_output: Arc<Mutex<VecDeque<String>>>,
     failure_sender: Option<mpsc::UnboundedSender<String>>,
     publish_to_task: Option<Arc<AtomicBool>>,
+    first_fault: Option<Arc<Mutex<Option<crate::core::minecraft::diagnostics::CompatibilityFault>>>>,
 ) -> Result<tokio::task::JoinHandle<()>, String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     crate::tasks::runtime::spawn_io(async move {
-        let mut lines = BufReader::new(reader).lines();
+        let mut reader = BufReader::new(reader);
+        let mut line_bytes = Vec::with_capacity(1024);
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
+            line_bytes.clear();
+            match reader.read_until(b'\n', &mut line_bytes).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    // Wine writes locale-dependent stdout/stderr. Invalid UTF-8
+                    // must not silently stop the crash-evidence stream.
+                    let line = String::from_utf8_lossy(&line_bytes);
                     let prefix = if is_error { "runner stderr" } else { "runner" };
-                    let displayed_line = normalize_runner_output_line(&line);
-                    let log_line = format!("{prefix}: {displayed_line}");
-                    if publish_to_task
-                        .as_ref()
+                    if let Some(kind) =
+                        crate::core::minecraft::diagnostics::classify_compatibility_output(&line)
+                        && let Some(first_fault) = &first_fault
+                    {
+                        let mut found = first_fault
+                            .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if found.is_none()
+                            || kind == crate::core::minecraft::diagnostics::CompatibilityFault::WineUnhandledException
+                        {
+                            *found = Some(kind);
+                        }
+                    }
+                    let normalized = normalize_runner_output_line(&line);
+                    let displayed = normalized.trim_end_matches(['\r', '\n'])
+                        .chars().take(4096).collect::<String>();
+                    let log_line = format!("{prefix}: {displayed}");
+                    if publish_to_task.as_ref()
                         .is_none_or(|publish| publish.load(Ordering::Acquire))
                     {
                         append_task_log(&task_id, log_line.clone());
                     } else if is_error {
-                        debug!(task_id, line = %displayed_line, "compatibility runner stderr");
+                        debug!(task_id, line=%displayed, "compatibility runner stderr");
                     }
                     if let Some(failure) = classify_runner_failure(&line)
                         && let Some(sender) = failure_sender.as_ref()
@@ -2060,14 +2088,12 @@ where
                         debug!(task_id, %error, "runner failure receiver already closed");
                     }
                     let mut output = recent_output
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     if output.len() >= RECENT_RUNNER_OUTPUT_LIMIT {
                         output.pop_front();
                     }
                     output.push_back(log_line);
                 }
-                Ok(None) => break,
                 Err(error) => {
                     warn!(task_id, %error, "failed to read compatibility runner output");
                     break;
@@ -2152,6 +2178,7 @@ fn spawn_process_monitor(
     stdout_pump: Option<tokio::task::JoinHandle<()>>,
     stderr_pump: Option<tokio::task::JoinHandle<()>>,
     recent_output: Arc<Mutex<VecDeque<String>>>,
+    first_fault: Arc<Mutex<Option<crate::core::minecraft::diagnostics::CompatibilityFault>>>,
     _launch_auth: Option<crate::core::bedrock_auth::PreparedLaunchAuth>,
     mut session: Option<crate::core::version::game_info::GameSession>,
 ) {
@@ -2173,14 +2200,13 @@ fn spawn_process_monitor(
                 }
             }
         };
-        // Drain all runner output before taking the immutable crash-log snapshot.
-        // Otherwise the final fatal lines may still be in stdout/stderr pumps.
-        if process_status.is_ok() {
-            finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
-        }
+        // Always drain bounded stdout/stderr, including error exits.
+        finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
         use std::os::unix::process::ExitStatusExt as _;
         let mut crash_report = crash_report;
         crash_report.exit_signal = process_status.as_ref().ok().and_then(|status| status.signal());
+        crash_report.compatibility_fault = *first_fault.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let result_for_report = process_status.as_ref()
             .map(|status| status.code().map_or_else(
                 || status.signal().map_or(u32::MAX, |signal| 128 + signal as u32),
@@ -2189,8 +2215,9 @@ fn spawn_process_monitor(
             .map_err(ToString::to_string);
         // File writes and log redaction must not block the I/O runtime while
         // waiting for the final stdout/stderr pumps and game-time checkpoint.
+        let output = recent_runner_output(&recent_output);
         match crate::tasks::runtime::run_io_blocking(move || {
-            crash_report.finish(result_for_report)
+            crash_report.finish_compatibility(result_for_report, &output, false)
         }).await {
             Ok(completed) if completed.kind.is_abnormal() => {
                 append_task_log(&task_id, completed.summary.clone());
