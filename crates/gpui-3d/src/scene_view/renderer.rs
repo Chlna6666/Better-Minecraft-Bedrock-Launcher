@@ -604,8 +604,11 @@ struct CapturedInput {
 /// Only bypass scene.prepare when every input it could observe is unchanged.
 /// Animated/time-dependent views stay on the original update path.
 fn same_static_capture_input(previous: &SceneView, current: &SceneView) -> bool {
-    !current.continuous_presentation
+    !previous.continuous_presentation
+        && !current.continuous_presentation
+        && previous.animation.is_empty()
         && current.animation.is_empty()
+        && previous.screen_effects.is_none()
         && current.screen_effects.is_none()
         && Arc::ptr_eq(&previous.scene, &current.scene)
         && Arc::ptr_eq(&previous.textures, &current.textures)
@@ -1445,6 +1448,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     batch_id: scene.gpu_batch_id,
                     stage: gfx_core::GpuTimestampStage::DrawIndirect,
                 });
+            // Validate before recording any producer work; a failed
+            // projection must not leave a pending capture without its epoch.
+            let captured_projection = FrameProjection::new(prepared_view, &render_context)?;
             surface.enqueue(
                 device, scene_view.id, &context, scene.capture_revision,
                 gpu_work_tag, commands, traits.authored_scissors, traits.indirect_only,
@@ -1461,7 +1467,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             // compatible scene instead of the incoming SceneView.
             self.captured_inputs.insert(scene_view.id, CapturedInput {
                 view: prepared_view.clone(),
-                projection: FrameProjection::new(prepared_view, &render_context)?,
+                projection: captured_projection,
                 revision: scene.capture_revision,
             });
             self.pending_capture_epochs.push((scene_view.id, scene.capture_revision));
