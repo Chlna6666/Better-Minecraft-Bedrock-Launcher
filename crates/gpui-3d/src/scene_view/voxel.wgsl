@@ -155,47 +155,61 @@ fn vs_generated_voxel(@builtin(vertex_index) index:u32, @builtin(instance_index)
     var vertex=face.vertices[corners[index%6u]];
     let merged=descriptor.cell!=0xffffffffu && (descriptor.cell&0x80000000u)!=0u;
     let cell=descriptor.cell&0x7fffffffu;
-    let height=select(descriptor.height,1.0,merged);
+    // Only tagged rectangles interpret the third descriptor word as two
+    // packed u8 extents. Regular instance height is still a true f32.
+    let packed=bitcast<u32>(descriptor.height);
+    let span_u=select(1u,packed&255u,merged);
+    let span_v=select(1u,(packed>>8u)&255u,merged);
+    let model_height=select(descriptor.height,1.0,merged);
     var position=vec3<f32>(0.0);
     if(descriptor.cell!=0xffffffffu){
         position=origin.xyz+vec3<f32>(f32(cell%size.x),f32(cell/size.x%size.y),f32(cell/size.x/size.y));
     }
     if(merged){
-        // Run elongation happens only after GPU neighbor culling; unchanged
-        // template normals and UV orientation survive a horizontal stretch.
+        // Unit-cube face tangents: X-normal=>Z/Y, Y-normal=>X/Z,
+        // Z-normal=>X/Y. Scale both tangents without stretching texture
+        // texels; existing face UV rotation or mirroring stays intact.
         let delta=bitcast<i32>(face.info.y);
-        let along_z=delta==1 || delta==-1;
-        let coordinate=select(vertex.position_x,vertex.position_z,along_z);
-        var uv_stride=vec2<f32>(0.0);
+        let along_z=abs(delta)==1;
+        let normal_y=abs(delta)==i32(size.x);
+        var uv_u=vec2<f32>(0.0);
+        var uv_v=vec2<f32>(0.0);
         for(var i=0u;i<4u;i++){
-            let v=face.vertices[i];
-            let axis=select(v.position_x,v.position_z,along_z);
-            uv_stride+=v.uv*select(-0.5,0.5,axis>=0.5);
+            let corner=face.vertices[i];
+            let u=select(corner.position_x,corner.position_z,along_z);
+            let v=select(corner.position_y,corner.position_z,normal_y);
+            uv_u+=corner.uv*select(-0.5,0.5,u>=0.5);
+            uv_v+=corner.uv*select(-0.5,0.5,v>=0.5);
         }
-        let extra=descriptor.height-1.0;
-        vertex.uv+=uv_stride*coordinate*extra;
-        if(along_z){vertex.position_z+=coordinate*extra;}
-        else{vertex.position_x+=coordinate*extra;}
+        let u=select(vertex.position_x,vertex.position_z,along_z);
+        let v=select(vertex.position_y,vertex.position_z,normal_y);
+        let extend_u=f32(span_u-1u)*u;
+        let extend_v=f32(span_v-1u)*v;
+        vertex.uv+=uv_u*extend_u+uv_v*extend_v;
+        if(along_z){vertex.position_z+=extend_u;}
+        else{vertex.position_x+=extend_u;}
+        if(normal_y){vertex.position_z+=extend_v;}
+        else{vertex.position_y+=extend_v;}
     }
     vertex.position_x+=position.x;
-    vertex.position_y=vertex.position_y*height+position.y;
+    vertex.position_y=vertex.position_y*model_height+position.y;
     vertex.position_z+=position.z;
     var shaded=shade_voxel_value(vertex,instance,physical_slot);
-    shaded.merged_run=select(1u,u32(descriptor.height),merged);
-    let a=template_position(face.vertices[0],height);
-    let b=template_position(face.vertices[1],height);
-    let c=template_position(face.vertices[2],height);
+    shaded.merged_run=select(1u,2u,merged);
+    let a=template_position(face.vertices[0],model_height);
+    let b=template_position(face.vertices[1],model_height);
+    let c=template_position(face.vertices[2],model_height);
     if(frame.voxel_settings.y==2.0){shaded.surface_normal=quad_normal(a,b,c,instance.model);}
     shaded.quad_uv=quad_coordinates(corners[index%6u]);
     if(frame.voxel_settings.y!=1.0 && size.w!=0u){
         var light=vec2<f32>(0.0);
         if(descriptor.cell==0xffffffffu){
-            let center=(a+b+c+template_position(face.vertices[3],height))*0.25;
+            let center=(a+b+c+template_position(face.vertices[3],model_height))*0.25;
             let normal=cross(b-a,c-a);let n=normal/max(length(normal),0.00001)*0.001;
             light=max(static_levels(center-n,origin,size),static_levels(center+n,origin,size));
         }else{
             let delta=bitcast<i32>(face.info.y);
-            let local=template_position(face.vertices[corners[index%6u]],height);
+            let local=template_position(face.vertices[corners[index%6u]],model_height);
             light=corner_cell_light(cell,delta,local,size);
         }
         let sky=select(1.0,frame.voxel_settings.z,frame.voxel_settings.w!=0.0);
