@@ -327,7 +327,14 @@ fn prepare_generated(
         .chain([source.static_start as u32])
         .flat_map(u32::to_le_bytes)
         .chain(
-            [source.origin.x, source.origin.y, source.origin.z, 0.0]
+            [
+                source.origin.x,
+                source.origin.y,
+                source.origin.z,
+                f32::from(source.greedy_visible_faces
+                    && source.lighting.is_none()
+                    && source.ambient_occlusion == 0),
+            ]
                 .into_iter()
                 .flat_map(f32::to_le_bytes),
         )
