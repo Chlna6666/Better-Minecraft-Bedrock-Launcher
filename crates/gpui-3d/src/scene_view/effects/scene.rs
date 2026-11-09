@@ -183,6 +183,9 @@ struct EffectGraphKey {
     shadows_enabled: bool,
     shadow_queued: [bool; SHADOW_CASCADE_COUNT],
     shadow_valid: [bool; SHADOW_CASCADE_COUNT],
+    froxel_enabled: bool,
+    froxel_queued: bool,
+    froxel_valid: bool,
     multisampled: bool,
 }
 pub(super) struct EffectScene {
@@ -353,14 +356,16 @@ impl EffectScene {
     /// aliases through a TextureView. This is a fail-closed graph validation,
     /// not a claim to issue native barriers or execute shadow-dependent compute.
     ///
-    /// Froxel light injection must only join this graph after the host exposes
-    /// mixed Graphics/Compute ordered submission. A shadow map queued to be
-    /// rendered later is NOT yet safe for dispatch_compute_bind_group().
+    /// Froxel injection/integration are represented here only when the GPU
+    /// owner's mixed Graphics/Compute dispatch stream has queued both stages.
+    /// Validation is not a substitute for the backend's native barriers.
     pub(super) fn validate_gpu_work_graph(
         &mut self,
         reflection_enabled: bool,
         shadows_enabled: bool,
         tile_updated: bool,
+        froxel_enabled: bool,
+        light_buffer: BufferId,
     ) -> gpui::Result<usize> {
         let key = EffectGraphKey {
             resource_epoch: self.resource_epoch,
@@ -374,6 +379,9 @@ impl EffectScene {
             shadows_enabled,
             shadow_queued: self.queued_shadow,
             shadow_valid: self.shadow_valid,
+            froxel_enabled,
+            froxel_queued: self.froxel.as_ref().is_some_and(|volume| volume.queued),
+            froxel_valid: self.froxel.as_ref().is_some_and(|volume| volume.valid),
             multisampled: self.targets.msaa.is_some(),
         };
         if let Some((cached_key, transitions)) = self.cached_graph {
@@ -472,6 +480,43 @@ impl EffectScene {
                 }
             }
         }
+        if froxel_enabled {
+            let volume = self.froxel.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Froxel volume shader selected without a 3D GPU resource")
+            })?;
+            if volume.queued {
+                // CPU frame/light uploads are ordered before the GPU owner
+                // starts the render graph. The native CSM graphics writes are
+                // queued earlier in this same graphics submission stream.
+                graph.import(GpuResource::Buffer(self.frame));
+                graph.import(GpuResource::Buffer(light_buffer));
+                if !shadows_enabled {
+                    for shadow in &self.shadow {
+                        graph.import(GpuResource::Texture(shadow.texture));
+                    }
+                }
+                let mut injection = vec![
+                    buffer(self.frame, GpuAccess::ReadBuffer),
+                    buffer(light_buffer, GpuAccess::ReadBuffer),
+                    buffer(self.tiles.buffer, GpuAccess::ReadBuffer),
+                    texture(volume.injection_texture(), GpuAccess::StorageWrite),
+                ];
+                injection.extend(self.shadow.iter().map(|shadow|
+                    texture(shadow.texture, GpuAccess::Sampled)
+                ));
+                graph.push("Froxel light injection", GpuWorkStage::Compute, injection)?;
+                graph.push("Froxel depth integration", GpuWorkStage::Compute, [
+                    texture(volume.injection_texture(), GpuAccess::Sampled),
+                    texture(volume.integrated.texture, GpuAccess::StorageWrite),
+                ])?;
+            } else if volume.valid {
+                graph.import(GpuResource::Texture(volume.integrated.texture));
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Froxel composite cannot sample a volume without a valid GPU producer"
+                ));
+            }
+        }
         let mut composite_reads = vec![
             texture(hdr_color, GpuAccess::Sampled),
             texture(hdr_depth, GpuAccess::Sampled),
@@ -491,12 +536,20 @@ impl EffectScene {
                 self.shadow.iter().map(|target| texture(target.texture, GpuAccess::Sampled))
             );
         }
+        if froxel_enabled {
+            let volume = self.froxel.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Froxel volume missing from composite graph")
+            })?;
+            composite_reads.push(texture(volume.integrated.texture, GpuAccess::Sampled));
+        }
         graph.push("deferred effects composite", GpuWorkStage::Graphics, composite_reads)?;
         let plan = graph.compile()?;
-        // Current host ordering supports GPU light-tile Compute before
-        // raster passes, but cannot legally inject Froxel Compute after
-        // queued shadow drawing without a mixed native command encoder.
-        plan.validate_pregraphics_compute_only()?;
+        // Only the old pre-graphics Compute path may skip native mixed
+        // command submission. With Froxel active the GPUI owner has queued
+        // Graphics -> Compute -> Compute -> Graphics in program order.
+        if !froxel_enabled {
+            plan.validate_pregraphics_compute_only()?;
+        }
         let transitions = plan.transitions.len();
         self.cached_graph = Some((key, transitions));
         Ok(transitions)
