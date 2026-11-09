@@ -333,7 +333,7 @@ impl MainWindowView {
                 handle.update(cx, |_, cx| {
                     cx.update_global(
                         |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
-                            state.pending = Some(report);
+                            state.select_report(report);
                         },
                     );
                     cx.notify();
@@ -349,8 +349,7 @@ impl MainWindowView {
                     handle.update(cx, |_, cx| {
                         cx.update_global(
                             |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
-                                state.pending = Some(report);
-                                state.export_status = None;
+                                state.select_report(report);
                             },
                         );
                         cx.notify();
