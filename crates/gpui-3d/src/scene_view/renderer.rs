@@ -1300,12 +1300,21 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_submission_accepted(submission);
+            // Only the default ordered GPUI sidecar may use its final UI
+            // consumer submission to retire preceding physical Draw Slots.
+            // Backend-specific independent queues need a separate proof.
+            for scene in self.scenes.values_mut() {
+                scene.draw_submission_accepted(submission);
+            }
         }
     }
 
     fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_submission_completed(submission);
+        }
+        for scene in self.scenes.values_mut() {
+            scene.draw_submission_completed(submission);
         }
     }
 
