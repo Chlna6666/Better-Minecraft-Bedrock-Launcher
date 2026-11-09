@@ -654,7 +654,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             counts(&mut device, output, 48),
             [expected as u8, (expected >> 8) as u8, 1, 11]
         );
-        if expected == 60 || expected == 834 {
+        if expected == 36 || expected == 60 || expected == 834 {
             let before = mesh.geometry_storage_bytes();
             ResourceDevice::write_buffer(&mut device, mapping, 8, &0u32.to_le_bytes()).unwrap();
             ResourceDevice::dispatch_compute(
