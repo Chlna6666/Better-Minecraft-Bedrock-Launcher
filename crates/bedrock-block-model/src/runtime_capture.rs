@@ -11,6 +11,9 @@ use bedrock_world::{NbtReader, NbtTag};
 use serde::Deserialize;
 
 use crate::{BlockFace, BlockStateQuery, BlockStateValue, ModelCuboid, ModelPlane, ModelShape};
+#[path = "runtime_capture_pool_v3.rs"]
+mod pool_v3;
+use pool_v3::{Appearance as CaptureAppearanceV3, Geometry as CaptureGeometryV3, PoolV3};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum StateValueKey {
@@ -110,7 +113,7 @@ struct CaptureBlock {
     #[serde(default)]
     geometry_context: String,
     #[serde(default)]
-    shared_material_ref: Option<String>,
+    shared_material_ref: Option<u32>,
     #[serde(default)]
     variants: Vec<CaptureVariant>,
 }
@@ -124,41 +127,19 @@ struct CaptureTexture {
 struct CaptureVariant {
     neighborhood: String,
     #[serde(default)]
-    shared_geometry_refs: Vec<String>,
+    shared_geometry_refs: Vec<u32>,
     #[serde(default)]
-    shared_appearance_refs: Vec<String>,
+    shared_appearance_refs: Vec<u32>,
 }
 #[derive(Debug, Deserialize)]
 struct CaptureMaterialTable {
     schema: u32,
     texture_bindings: Vec<CaptureTexture>,
 }
-#[derive(Debug, Deserialize)]
-struct CaptureGeometryV2 {
-    schema: u32,
-    topology: String,
-    vertices: Vec<[f32; 3]>,
-    triangles: Vec<[usize; 3]>,
-}
-#[derive(Debug, Deserialize)]
-struct CaptureAppearanceV2 {
-    schema: u32,
-    geometry_ref: String,
-    geometry_source: String,
-    uv_space: String,
-    corner_attributes: Vec<Vec<serde_json::Value>>,
-    triangle_texture_slots: Vec<Option<usize>>,
-}
 #[derive(Clone, Debug)]
 struct StateRecipe {
-    meshes: Vec<(String, String)>,
+    meshes: Vec<(u32, u32)>,
     texture_aliases: HashMap<usize, String>,
-}
-fn valid_ref(hash: &str) -> bool {
-    hash.len() == 64
-        && hash
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 // The packed ZIP is indexed once and entries are decompressed only on cache misses.
 // Serialized access prevents repeated archive-index creation and keeps memory bounded.
@@ -191,30 +172,17 @@ fn read_catalog_entry(
             .and_then(|_| fs::read(path).ok())
     }
 }
-fn read_pool<T: serde::de::DeserializeOwned>(
-    root: &Path,
-    packed: Option<&PackedSource>,
-    kind: &str,
-    hash: &str,
-) -> Option<T> {
-    if !valid_ref(hash) {
-        return None;
-    }
-    let name = format!("geometry_pool/{kind}/{hash}.json");
-    read_catalog_entry(root, packed, &name, 8 * 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-}
 /// The BMCBL model cache is scoped to a game installation, not to a process-global
 /// Minecraft version. No path or material table is compiled into the executable.
 #[derive(Debug)]
 pub struct RuntimeCaptureCatalog {
     root: PathBuf,
-    packed: Option<PackedSource>,
+    pool: PoolV3,
     version: String,
     states: HashMap<StateKey, StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
-    geometries: Mutex<HashMap<String, Option<Arc<CaptureGeometryV2>>>>,
-    appearances: Mutex<HashMap<String, Option<Arc<CaptureAppearanceV2>>>>,
+    geometries: Mutex<HashMap<u32, Option<Arc<CaptureGeometryV3>>>>,
+    appearances: Mutex<HashMap<u32, Option<Arc<CaptureAppearanceV3>>>>,
     shapes: Mutex<HashMap<StateKey, Option<Arc<ModelShape>>>>,
 }
 impl PartialEq for RuntimeCaptureCatalog {
@@ -254,9 +222,16 @@ impl RuntimeCaptureCatalog {
         if !manifest.registry_only {
             return Err("capture is not registry-only".to_owned());
         }
-        if manifest.shared_geometry_pool_schema != 2 || manifest.legacy_meshes_retained {
-            return Err("Geometry Pool v2 exclusive export required".to_owned());
+        if manifest.shared_geometry_pool_schema != 3 || manifest.legacy_meshes_retained {
+            return Err("Geometry Pool v3 binary export required".to_owned());
         }
+        let binary = if packed.is_some() {
+            Some(read_catalog_entry(root, packed.as_ref(), "geometry_pool.bin", 512 * 1024 * 1024)
+                .ok_or_else(|| "geometry_pool.bin missing or too large".to_owned())?)
+        } else {
+            None
+        };
+        let pool = PoolV3::open(root, binary)?;
         let index: CaptureIndex = serde_json::from_slice(
             &read_catalog_entry(root, packed.as_ref(), "blocks.json", 64 * 1024 * 1024)
                 .ok_or_else(|| "blocks.json: missing or too large".to_owned())?,
@@ -265,7 +240,7 @@ impl RuntimeCaptureCatalog {
         let mut states = HashMap::with_capacity(index.blocks.len());
         let mut canonical_by_network_id: HashMap<u32, (String, StateRecipe)> = HashMap::new();
         let mut geometry_aliases = Vec::new();
-        let mut material_cache: HashMap<String, HashMap<usize, String>> = HashMap::new();
+        let mut material_cache: HashMap<u32, HashMap<usize, String>> = HashMap::new();
         for block in index.blocks {
             // Neighbor-driven and BlockEntity geometry must come from explicit
             // connection/NBT rules, never from a single static visual-bounds mesh.
@@ -285,18 +260,15 @@ impl RuntimeCaptureCatalog {
                 continue;
             }
             let network_id = block.network_id;
-            let Some(material_ref) = block.shared_material_ref.as_ref() else {
+            let Some(material_ref) = block.shared_material_ref else {
                 continue;
             };
             let aliases = if let Some(cached) = material_cache.get(material_ref) {
                 cached.clone()
             } else {
-                let Some(table) = read_pool::<CaptureMaterialTable>(
-                    root,
-                    packed.as_ref(),
-                    "materials",
-                    material_ref,
-                ) else {
+                let Some(table) = pool.read(2, material_ref)
+                    .and_then(|bytes| serde_json::from_slice::<CaptureMaterialTable>(&bytes).ok())
+                else {
                     continue;
                 };
                 if table.schema != 2 {
@@ -308,7 +280,7 @@ impl RuntimeCaptureCatalog {
                     .filter(|t| !t.resource_alias.is_empty())
                     .map(|t| (t.slot, t.resource_alias))
                     .collect();
-                material_cache.insert(material_ref.clone(), aliases.clone());
+                material_cache.insert(material_ref, aliases.clone());
                 aliases
             };
             let Some(variant) = block
@@ -325,7 +297,7 @@ impl RuntimeCaptureCatalog {
                 .shared_geometry_refs
                 .into_iter()
                 .zip(variant.shared_appearance_refs)
-                .filter(|(g, a)| valid_ref(g) && valid_ref(a))
+                .filter(|(g, a)| (*g as usize) < pool.count(0) && (*a as usize) < pool.count(1))
                 .collect();
             let recipe = StateRecipe {
                 meshes,
@@ -347,7 +319,7 @@ impl RuntimeCaptureCatalog {
         }
         Ok(Self {
             root: root.to_owned(),
-            packed,
+            pool,
             version: manifest.target_game_version,
             states,
             geometries: Mutex::new(HashMap::new()),
@@ -418,28 +390,26 @@ impl RuntimeCaptureCatalog {
         }
         result
     }
-    fn shared_geometry(&self, hash: &str) -> Option<Arc<CaptureGeometryV2>> {
+    fn shared_geometry(&self, id: &u32) -> Option<Arc<CaptureGeometryV3>> {
         let mut cache = self.geometries.lock().ok()?;
-        if let Some(value) = cache.get(hash) {
+        if let Some(value) = cache.get(id) {
             return value.clone();
         }
-        let result =
-            read_pool::<CaptureGeometryV2>(&self.root, self.packed.as_ref(), "geometry", hash)
-                .filter(|mesh| mesh.schema == 2 && mesh.topology == "triangles")
-                .map(Arc::new);
-        cache.insert(hash.to_owned(), result.clone());
+        let result = self.pool.read(0, *id)
+            .and_then(|bytes| CaptureGeometryV3::parse(&bytes))
+            .map(Arc::new);
+        cache.insert(*id, result.clone());
         result
     }
-    fn shared_appearance(&self, hash: &str) -> Option<Arc<CaptureAppearanceV2>> {
+    fn shared_appearance(&self, id: &u32) -> Option<Arc<CaptureAppearanceV3>> {
         let mut cache = self.appearances.lock().ok()?;
-        if let Some(value) = cache.get(hash) {
+        if let Some(value) = cache.get(id) {
             return value.clone();
         }
-        let result =
-            read_pool::<CaptureAppearanceV2>(&self.root, self.packed.as_ref(), "appearance", hash)
-                .filter(|mesh| mesh.schema == 2)
-                .map(Arc::new);
-        cache.insert(hash.to_owned(), result.clone());
+        let result = self.pool.read(1, *id)
+            .and_then(|bytes| CaptureAppearanceV3::parse(&bytes))
+            .map(Arc::new);
+        cache.insert(*id, result.clone());
         result
     }
 }
@@ -523,18 +493,14 @@ pub fn decode_capture_texture_slot(slot: &str) -> Option<String> {
 // Match two oppositely directed shared edges to recover a *real* quad;
 // never invent a face from unrelated triangles or assume adjacent indices.
 fn shared_mesh_planes(
-    geometry: &CaptureGeometryV2,
-    appearance: &CaptureAppearanceV2,
-    geometry_hash: &str,
+    geometry: &CaptureGeometryV3,
+    appearance: &CaptureAppearanceV3,
+    geometry_id: &u32,
     aliases: &HashMap<usize, String>,
 ) -> Option<Vec<ModelPlane>> {
-    if geometry.topology != "triangles"
-        || appearance.geometry_ref != geometry_hash
-        || appearance.uv_space != "block_face_local"
-        || !matches!(
-            appearance.geometry_source.as_str(),
-            "registry_visual_bounds" | "registry_cross_planes"
-        )
+    if appearance.geometry_id != *geometry_id
+        || !appearance.uv_complete
+        || !matches!(appearance.source_kind, 0 | 1)
     {
         return None;
     }
@@ -548,8 +514,8 @@ fn shared_mesh_planes(
         return None;
     }
     let points = &geometry.vertices;
-    let attr = &appearance.corner_attributes;
-    let slots = &appearance.triangle_texture_slots;
+    let attr = &appearance.corners;
+    let slots = &appearance.slots;
     // Index each directed triangle edge once. Native triangulation and
     // deduplicated Geometry Pool ordering need not put a quad's two halves
     // next to one another. Hashing by vertex pair + texture slot reduces the
@@ -612,10 +578,7 @@ fn shared_mesh_planes(
                         &attr[3 * i + ai[2]],
                         &attr[3 * j + bj[2]],
                     ];
-                    if rows.iter().any(|row| row.len() != 6) {
-                        continue;
-                    }
-                    if rows.iter().any(|row| row[0..3] != rows[0][0..3]) {
+                    if rows.iter().any(|row| row.normal != rows[0].normal) {
                         continue;
                     }
                     let corners = [
@@ -624,13 +587,7 @@ fn shared_mesh_planes(
                         points[a[ai[2]]],
                         points[b[bj[2]]],
                     ];
-                    let uv = rows.map(|row| -> Option<[f32; 2]> {
-                        Some([row[3].as_f64()? as f32, row[4].as_f64()? as f32])
-                    });
-                    let [Some(u0), Some(u1), Some(u2), Some(u3)] = uv else {
-                        continue;
-                    };
-                    let uvs = [u0, u1, u2, u3];
+                    let uvs = rows.map(|row| row.uv);
                     if !corners
                         .iter()
                         .flatten()
@@ -640,9 +597,9 @@ fn shared_mesh_planes(
                         continue;
                     }
                     let normal = [
-                        rows[0][0].as_f64()?.round() as i32,
-                        rows[0][1].as_f64()?.round() as i32,
-                        rows[0][2].as_f64()?.round() as i32,
+                        rows[0].normal[0].round() as i32,
+                        rows[0].normal[1].round() as i32,
+                        rows[0].normal[2].round() as i32,
                     ];
                     // The previous reader also supported diagonal cross
                     // planes (flowers, grasses). Do not restrict normals to
@@ -695,320 +652,188 @@ fn shared_mesh_planes(
 mod tests {
     use super::*;
     use bedrock_world::NbtWriter;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
+    use std::io::Write;
 
-    fn write(root: &Path, name: &str, doc: &Value) {
-        fs::write(root.join(name), serde_json::to_vec(doc).expect("json")).expect(name);
+    fn u32bytes(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
-    fn fixture(root: &Path, aliases: bool) -> (String, String, String) {
-        let geometry = "a".repeat(64);
-        let appearance = "b".repeat(64);
-        let material = "c".repeat(64);
-        for kind in ["geometry", "appearance", "materials"] {
-            fs::create_dir_all(root.join("geometry_pool").join(kind)).expect("pool directory");
+    fn pool_bytes(groups: &[Vec<Vec<u8>>;4]) -> Vec<u8> {
+        let total: usize = groups.iter().map(Vec::len).sum();
+        let mut out = b"BSCPOOL3".to_vec();
+        out.extend(3u32.to_le_bytes());
+        for group in groups {
+            out.extend((group.len() as u32).to_le_bytes());
         }
-        write(
-            &root.join("geometry_pool/geometry"),
-            &format!("{geometry}.json"),
-            &json!({"schema":2,"topology":"triangles",
-                "vertices":[[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]],
-                "triangles":[[0,2,3],[0,1,2]]}),
-        );
-        write(
-            &root.join("geometry_pool/appearance"),
-            &format!("{appearance}.json"),
-            &json!({"schema":2,"geometry_ref":geometry,
-                "geometry_source":"registry_visual_bounds","uv_space":"block_face_local",
-                "corner_attributes":[
-                    [0,0,-1,0,0,4294967295_u32],
-                    [0,0,-1,1,1,4294967295_u32],
-                    [0,0,-1,0,1,4294967295_u32],
-                    [0,0,-1,0,0,4294967295_u32],
-                    [0,0,-1,1,0,4294967295_u32],
-                    [0,0,-1,1,1,4294967295_u32]],
-                "triangle_texture_slots":[2,2]}),
-        );
-        write(
-            &root.join("geometry_pool/materials"),
-            &format!("{material}.json"),
-            &json!({"schema":2,"texture_bindings":[{"slot":2,"resource_alias":"grass_side"}]}),
-        );
-        write(
-            root,
-            "manifest.json",
-            &json!({
-            "registry_only":true,"target_game_version":"1.26.51.1",
-            "shared_geometry_pool_schema":2,"legacy_meshes_retained":false}),
-        );
-        let state_nbt = |note: i32| {
-            let mut obj = BTreeMap::new();
-            obj.insert(
-                "name".to_owned(),
-                NbtTag::String(if aliases {
-                    "minecraft:noteblock".to_owned()
-                } else {
-                    "minecraft:oak_stairs".to_owned()
-                }),
-            );
-            let mut states = BTreeMap::new();
-            states.insert(
-                if aliases { "note" } else { "weirdo_direction" }.to_owned(),
-                NbtTag::Int(note),
-            );
-            obj.insert(
-                "states".to_owned(),
-                NbtTag::Compound(states.into_iter().collect()),
-            );
-            NbtWriter::write_root(&NbtTag::Compound(obj.into_iter().collect()))
-                .expect("nbt")
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        };
-        let name = if aliases {
-            "minecraft:noteblock"
-        } else {
-            "minecraft:oak_stairs"
-        };
-        let mut blocks = vec![json!({
-            "name":name,"network_id":12,"state_nbt_hex":state_nbt(2),
-            "status":"partial","geometry_context":"none","shared_material_ref":material,
-            "variants":[{"neighborhood":"registry_visual_bounds",
-                "shared_geometry_refs":[geometry],
-                "shared_appearance_refs":[appearance]}]})];
-        if aliases {
-            blocks.push(json!({
-                "name":name,"network_id":13,"geometry_alias_network_id":12,
-                "state_nbt_hex":state_nbt(24),"status":"partial",
-                "geometry_context":"none","variants":[]}));
-        }
-        write(root, "blocks.json", &json!({"blocks":blocks}));
-        (geometry, appearance, material)
-    }
-    #[test]
-    fn texture_alias_roundtrip_without_version_index() {
-        for alias in [
-            "stone",
-            "minecraft:grass_side",
-            "textures/blocks/oak_log_top",
-            "红色",
-        ] {
-            assert_eq!(
-                decode_capture_texture_slot(&capture_texture_slot(alias)).as_deref(),
-                Some(alias)
-            );
-        }
-        assert!(decode_capture_texture_slot("bsc_xyz").is_none());
-    }
-    #[test]
-    fn v2_triangle_pairing_keeps_uv_and_shared_material_slot() {
-        let dir = tempfile::tempdir().expect("temporary export");
-        let (geo, app, _) = fixture(dir.path(), false);
-        let mesh =
-            read_pool::<CaptureGeometryV2>(dir.path(), None, "geometry", &geo).expect("geometry");
-        let appearance = read_pool::<CaptureAppearanceV2>(dir.path(), None, "appearance", &app)
-            .expect("appearance");
-        let aliases = HashMap::from([(2, "grass_side".to_owned())]);
-        let planes = shared_mesh_planes(&mesh, &appearance, &geo, &aliases).expect("valid quad");
-        assert_eq!(planes.len(), 1);
-        assert_eq!(planes[0].normal, [0, 0, -1]);
-        assert_eq!(
-            planes[0].material_slot.as_deref(),
-            Some(capture_texture_slot("grass_side").as_str())
-        );
-        assert_eq!(planes[0].corners.len(), 4);
-        assert!(planes[0].uv.is_some());
-        let mut invalid = appearance;
-        invalid.triangle_texture_slots[1] = Some(9);
-        assert!(shared_mesh_planes(&mesh, &invalid, &geo, &aliases).is_none());
-    }
-    #[test]
-    fn many_interleaved_quads_pair_by_edge_without_adjacency() {
-        let mut vertices = Vec::new();
-        let mut first = Vec::new();
-        let mut second = Vec::new();
-        let mut attrs_first = Vec::new();
-        let mut attrs_second = Vec::new();
-        for n in 0..256 {
-            let x = n as f32 * 2.0;
-            let base = vertices.len();
-            vertices.extend([
-                [x, 0.0, 0.0], [x + 1.0, 0.0, 0.0],
-                [x + 1.0, 1.0, 0.0], [x, 1.0, 0.0],
-            ]);
-            first.push([base, base + 2, base + 3]);
-            second.push([base, base + 1, base + 2]);
-            let row = |u: u8, v: u8| {
-                vec![json!(0), json!(0), json!(-1), json!(u), json!(v), json!(4294967295u32)]
-            };
-            attrs_first.extend([row(0, 0), row(1, 1), row(0, 1)]);
-            attrs_second.extend([row(0, 0), row(1, 0), row(1, 1)]);
-        }
-        first.extend(second);
-        attrs_first.extend(attrs_second);
-        let triangles = first;
-        let appearance = CaptureAppearanceV2 {
-            schema: 2,
-            geometry_ref: "a".repeat(64),
-            geometry_source: "registry_visual_bounds".into(),
-            uv_space: "block_face_local".into(),
-            corner_attributes: attrs_first,
-            triangle_texture_slots: vec![Some(2); triangles.len()],
-        };
-        let geometry = CaptureGeometryV2 {
-            schema: 2,
-            topology: "triangles".into(),
-            vertices, triangles,
-        };
-        let planes = shared_mesh_planes(
-            &geometry, &appearance, &"a".repeat(64),
-            &HashMap::from([(2, "test_material".to_owned())]),
-        ).expect("nonadjacent native triangle halves must pair");
-        assert_eq!(planes.len(), 256);
-        assert!(planes.iter().all(|plane| plane.uv.is_some()));
-    }
-
-    #[test]
-    fn missing_capture_pool_member_never_returns_partial_model() {
-        let dir = tempfile::tempdir().expect("temporary export");
-        let (geometry, appearance, _) = fixture(dir.path(), false);
-        let path = dir.path().join("blocks.json");
-        let mut index: Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        index["blocks"][0]["variants"][0]["shared_geometry_refs"] =
-            json!([geometry, "d".repeat(64)]);
-        index["blocks"][0]["variants"][0]["shared_appearance_refs"] =
-            json!([appearance, "e".repeat(64)]);
-        write(dir.path(), "blocks.json", &index);
-        let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
-        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        assert!(catalog.shape_for_state_shared(&state).is_none());
-        assert!(catalog.shape_for_state_shared(&state).is_none(),
-            "invalid geometry remains a negative cached state");
-    }
-
-    #[test]
-    fn embedded_zip_archive_reads_geometry_lazily() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().expect("temporary capture");
-        fixture(dir.path(), false);
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default();
-        for name in ["manifest.json", "blocks.json"] {
-            writer.start_file(name, options).expect("ZIP index");
-            writer
-                .write_all(&fs::read(dir.path().join(name)).expect("index bytes"))
-                .expect("write index");
-        }
-        for kind in ["geometry", "appearance", "materials"] {
-            let root = dir.path().join("geometry_pool").join(kind);
-            for file in fs::read_dir(root).expect("pool files") {
-                let entry = file.expect("pool entry");
-                let file_name = entry.file_name().into_string().expect("UTF-8 hash");
-                writer
-                    .start_file(format!("geometry_pool/{kind}/{file_name}"), options)
-                    .expect("ZIP pool");
-                writer
-                    .write_all(&fs::read(entry.path()).expect("pool bytes"))
-                    .expect("pool write");
+        let mut offset = 28 + 12 * total;
+        for group in groups {
+            for entry in group {
+                out.extend((offset as u64).to_le_bytes());
+                out.extend((entry.len() as u32).to_le_bytes());
+                offset += entry.len();
             }
         }
-        let bytes = writer.finish().expect("ZIP finalize").into_inner();
-        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let catalog = RuntimeCaptureCatalog::open_with_source(Path::new("<embedded>"), Some(bytes))
-            .expect("archive catalog");
-        assert_eq!(catalog.state_count(), 1);
-        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        let first = catalog.shape_for_state_shared(&state).expect("captured model");
-        let next = catalog.shape_for_state_shared(&state).expect("shared model");
-        assert!(Arc::ptr_eq(&first, &next), "cache hit must share model arrays");
-        assert_eq!(catalog.shape_for_state(&state).expect("owned compatibility"), *first);
+        for group in groups {
+            for entry in group {
+                out.extend(entry);
+            }
+        }
+        out
+    }
+    fn example_geometry() -> Vec<u8> {
+        let mut bytes = u32bytes(&[4,2]);
+        for point in [[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]] {
+            for coord in point {
+                bytes.extend(coord.to_le_bytes());
+            }
+        }
+        bytes.extend(u32bytes(&[0,2,3,0,1,2]));
+        bytes
+    }
+    fn example_appearance() -> Vec<u8> {
+        let mut bytes = u32bytes(&[0,0,0,1,2]);
+        let uv = [[0.,0.],[1.,1.],[0.,1.],[0.,0.],[1.,0.],[1.,1.]];
+        for [u,v] in uv {
+            for value in [0f32,0.,-1.,u,v] {
+                bytes.extend(value.to_le_bytes());
+            }
+            bytes.extend(u32::MAX.to_le_bytes());
+        }
+        for _ in 0..2 {
+            bytes.extend(u32bytes(&[2,u32::MAX,u32::MAX]));
+        }
+        bytes
+    }
+    fn write(root: &Path, name: &str, value: &Value) {
+        fs::write(root.join(name), serde_json::to_vec(value).unwrap()).unwrap();
+    }
+    fn state_nbt(note: i32, alias: bool) -> String {
+        let mut root = BTreeMap::new();
+        root.insert("name".to_owned(),
+            NbtTag::String(if alias {"minecraft:noteblock"} else {"minecraft:oak_stairs"}.into()));
+        root.insert("states".to_owned(), NbtTag::Compound(
+            BTreeMap::from([((if alias {"note"} else {"weirdo_direction"}).to_owned(),
+                NbtTag::Int(note))]).into_iter().collect()));
+        NbtWriter::write_root(&NbtTag::Compound(root.into_iter().collect())).unwrap()
+            .iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn fixture(root: &Path, alias: bool) {
+        let groups = [
+            vec![example_geometry()],
+            vec![example_appearance()],
+            vec![serde_json::to_vec(&json!({"schema":2,
+                "texture_bindings":[{"slot":2,"resource_alias":"grass_side"}]})).unwrap()],
+            vec![]
+        ];
+        fs::write(root.join("geometry_pool.bin"), pool_bytes(&groups)).unwrap();
+        write(root, "manifest.json", &json!({"registry_only":true,
+            "target_game_version":"1.26.60.5", "shared_geometry_pool_schema":3,
+            "legacy_meshes_retained":false}));
+        let name = if alias { "minecraft:noteblock" } else { "minecraft:oak_stairs" };
+        let mut blocks = vec![json!({"name":name,"network_id":12,
+            "state_nbt_hex":state_nbt(2,alias),"status":"partial",
+            "geometry_context":"none","shared_material_ref":0,
+            "variants":[{"neighborhood":"registry_visual_bounds",
+                         "shared_geometry_refs":[0],"shared_appearance_refs":[0]}]})];
+        if alias {
+            blocks.push(json!({"name":name,"network_id":13,
+                "state_nbt_hex":state_nbt(24,true),"status":"partial",
+                "geometry_context":"none","geometry_alias_network_id":12,"variants":[]}));
+        }
+        write(root, "blocks.json", &json!({"blocks":blocks}));
     }
     #[test]
-    fn v2_diagonal_cross_planes_remain_supported() {
-        let geometry = CaptureGeometryV2 {
-            schema: 2,
-            topology: "triangles".to_owned(),
-            vertices: vec![[0., 0., 0.], [1., 0., 1.], [1., 1., 1.], [0., 1., 0.]],
-            triangles: vec![[0, 2, 3], [0, 1, 2]],
-        };
-        let make =
-            |u: f32, v: f32| serde_json::json!([-0.70710677, 0., 0.70710677, u, v, 4294967295u32]);
-        let appearance = CaptureAppearanceV2 {
-            schema: 2,
-            geometry_ref: "a".repeat(64),
-            geometry_source: "registry_cross_planes".to_owned(),
-            uv_space: "block_face_local".to_owned(),
-            corner_attributes: vec![
-                make(0., 0.),
-                make(1., 1.),
-                make(0., 1.),
-                make(0., 0.),
-                make(1., 0.),
-                make(1., 1.),
-            ]
-            .into_iter()
-            .map(|v| v.as_array().expect("vertex").clone())
-            .collect(),
-            triangle_texture_slots: vec![Some(1), Some(1)],
-        };
-        let planes = shared_mesh_planes(
-            &geometry,
-            &appearance,
-            &"a".repeat(64),
-            &HashMap::from([(1, "grass".to_owned())]),
-        )
-        .expect("diagonal cross");
-        assert_eq!(planes.len(), 1);
-        assert_eq!(planes[0].normal, [-1, 0, 1]);
-    }
-    #[test]
-    fn v2_catalog_matches_exact_state_and_rejects_v1() {
-        let dir = tempfile::tempdir().expect("temp model library");
+    fn v3_binary_geometry_uv_material_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
-        let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("v2 catalog");
-        assert_eq!(catalog.state_count(), 1);
-        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        let shape = catalog.shape_for_state(&state).expect("shape");
-        assert_eq!(shape.planes.len(), 1);
-        assert_eq!(
-            shape.planes[0].material_slot.as_deref(),
-            Some(capture_texture_slot("grass_side").as_str())
-        );
-        assert!(
-            catalog
-                .shape_for_state(
-                    &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 1)
-                )
-                .is_none()
-        );
-        write(
-            dir.path(),
-            "manifest.json",
-            &json!({
-            "registry_only":true,"target_game_version":"1.26.51.1",
-            "shared_geometry_pool_schema":1,"legacy_meshes_retained":true}),
-        );
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.state_count(),1);
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
+        let first = catalog.shape_for_state_shared(&state).expect("v3 quad");
+        assert_eq!(first.planes.len(),1);
+        assert_eq!(first.planes[0].material_slot.as_deref(),
+            Some(capture_texture_slot("grass_side").as_str()));
+        assert!(first.planes[0].uv.is_some());
+        let second = catalog.shape_for_state_shared(&state).unwrap();
+        assert!(Arc::ptr_eq(&first,&second));
+        assert!(catalog.shape_for_state(&BlockStateQuery::new("oak_stairs")
+            .with_state("weirdo_direction",3)).is_none());
+    }
+    #[test]
+    fn v3_rejects_v2_hashes_and_incomplete_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(),false);
+        let mut manifest: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
+        manifest["shared_geometry_pool_schema"]=json!(2);
+        write(dir.path(),"manifest.json",&manifest);
+        assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
+        manifest["shared_geometry_pool_schema"]=json!(3);
+        write(dir.path(),"manifest.json",&manifest);
+        let mut bytes=fs::read(dir.path().join("geometry_pool.bin")).unwrap();
+        bytes[28]=255;
+        fs::write(dir.path().join("geometry_pool.bin"),bytes).unwrap();
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
     }
     #[test]
-    fn note_pitch_changes_reuse_one_visual_recipe() {
-        let dir = tempfile::tempdir().expect("temp note model");
-        fixture(dir.path(), true);
-        let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
-        assert_eq!(catalog.state_count(), 2);
-        let first = catalog
-            .shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 2))
-            .expect("base shape");
-        let second = catalog
-            .shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 24))
-            .expect("shared shape");
-        assert_eq!(first, second);
-        assert!(
-            catalog
-                .shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 12))
-                .is_none()
+    fn v3_invalid_resource_is_negative_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(),false);
+        let mut index: Value=serde_json::from_slice(
+            &fs::read(dir.path().join("blocks.json")).unwrap()).unwrap();
+        index["blocks"][0]["variants"][0]["shared_geometry_refs"]=json!([0,1]);
+        index["blocks"][0]["variants"][0]["shared_appearance_refs"]=json!([0,1]);
+        write(dir.path(),"blocks.json",&index);
+        let catalog=RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
+        assert!(catalog.shape_for_state_shared(&state).is_none());
+    }
+    #[test]
+    fn v3_note_states_reuse_exact_recipe() {
+        let dir=tempfile::tempdir().unwrap();
+        fixture(dir.path(),true);
+        let catalog=RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.state_count(),2);
+        assert_eq!(
+            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note",2)),
+            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note",24))
         );
+    }
+    #[test]
+    fn v3_embedded_zip_reads_indexed_binary_pool() {
+        let dir=tempfile::tempdir().unwrap();
+        fixture(dir.path(),false);
+        let mut writer=zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts=zip::write::SimpleFileOptions::default();
+        for name in ["manifest.json","blocks.json","geometry_pool.bin"] {
+            writer.start_file(name,opts).unwrap();
+            writer.write_all(&fs::read(dir.path().join(name)).unwrap()).unwrap();
+        }
+        let bytes=writer.finish().unwrap().into_inner();
+        let leaked: &'static [u8]=Box::leak(bytes.into_boxed_slice());
+        let catalog=RuntimeCaptureCatalog::open_with_source(Path::new("<embedded>"),Some(leaked)).unwrap();
+        let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
+        assert_eq!(catalog.shape_for_state_shared(&state).unwrap().planes.len(),1);
+    }
+    #[test]
+    fn v3_diagonal_cross_uv_preserved() {
+        let geometry=CaptureGeometryV3 {
+            vertices:vec![[0.,0.,0.],[1.,0.,1.],[1.,1.,1.],[0.,1.,0.]],
+            triangles:vec![[0,2,3],[0,1,2]],
+        };
+        let corner=|u:f32,v:f32| pool_v3::Corner {
+            normal:[-0.70710677,0.,0.70710677],uv:[u,v],abgr:u32::MAX
+        };
+        let appearance=CaptureAppearanceV3 {
+            geometry_id:0,source_kind:1,uv_complete:true,
+            corners:vec![corner(0.,0.),corner(1.,1.),corner(0.,1.),
+                         corner(0.,0.),corner(1.,0.),corner(1.,1.)],
+            slots:vec![Some(1),Some(1)],
+        };
+        let result=shared_mesh_planes(&geometry,&appearance,&0,
+            &HashMap::from([(1,"grass".into())])).expect("diagonal cross");
+        assert_eq!(result.len(),1);
+        assert_eq!(result[0].normal,[-1,0,1]);
     }
     #[test]
     fn complete_six_face_cube_preserves_slots_and_greedy_merge() {
