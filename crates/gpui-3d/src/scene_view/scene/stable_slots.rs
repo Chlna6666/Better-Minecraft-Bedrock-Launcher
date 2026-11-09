@@ -239,6 +239,11 @@ impl StableDrawSlots {
     pub(in crate::scene_view) fn submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
         if !self.resident_buffers.is_empty()
             && !self.gpu_dependencies.contains_submission(submission)
+            && (self.untracked_draw_use
+                || !self.retired_unbound.is_empty()
+                || self.retired_by_submission.iter().any(|cohort|
+                    !cohort.gpu_dependency.untracked_queues().is_empty()
+                ))
         {
             // An accepted primary-queue consumer is an ordered checkpoint,
             // not a new DrawParams read. The owner alone guarantees this queue.
