@@ -16,6 +16,10 @@ pub enum GpuTimestampStage {
     BufferUpload,
     /// Native indirect draws, excluding CPU command construction.
     DrawIndirect,
+    /// Native Froxel light-injection compute, excluding host-side encoding.
+    FroxelInjection,
+    /// Native Froxel volumetric integration compute.
+    FroxelIntegration,
 }
 
 /// Correlation key for one Section publication, independent of backend API.
