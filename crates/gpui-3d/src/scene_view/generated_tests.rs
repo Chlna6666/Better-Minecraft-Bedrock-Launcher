@@ -582,7 +582,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             }
         }
         crate::VoxelMeshSource::new(
-            size, Vec3::new(-2.0, -2.0, -2.0), cells,
+            size, crate::Vec3::new(-2.0, -2.0, -2.0), cells,
             crate::voxel_mesh::tests::source().templates.to_vec(),
         ).unwrap().with_greedy_visible_faces(true)
     };
