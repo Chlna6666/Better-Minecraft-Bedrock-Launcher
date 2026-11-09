@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum DescriptorKey {
     Buffer(BufferId, u64, u64, bool),
+    WritableBuffer(BufferId, u64, u64),
     Texture(TextureViewId),
     Sampler(SamplerId),
     SamplerIndices(Vec<u32>),

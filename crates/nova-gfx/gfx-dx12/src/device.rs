@@ -1384,8 +1384,17 @@ mod platform {
                                         buffer.desc.size,
                                     )?;
                                 }
-                                BindingType::StorageBuffer => {
+                                BindingType::StorageBuffer
+                                | BindingType::StorageBufferReadWrite => {
                                     validate_storage_buffer_binding(buffer_binding)?;
+                                    if entry.binding_type == BindingType::StorageBufferReadWrite
+                                        && (!buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE)
+                                            || buffer.desc.memory_location != MemoryLocation::GpuOnly)
+                                    {
+                                        return Err(Error::InvalidInput(
+                                            "DX12 writable storage requires a GPU-only STORAGE_WRITE buffer".into(),
+                                        ));
+                                    }
                                 }
                                 BindingType::SampledTexture | BindingType::Sampler => {
                                     return Err(Error::InvalidInput(format!(
@@ -1404,13 +1413,24 @@ mod platform {
                                 u32::try_from(descriptor_size / 4)
                                     .map_err(|error| Error::InvalidInput(error.to_string()))?;
                             }
-                            let (slot, fresh) =
-                                self.resource_heap.allocate_shared(DescriptorKey::Buffer(
+                            let descriptor_key = if entry.binding_type
+                                == BindingType::StorageBufferReadWrite
+                            {
+                                DescriptorKey::WritableBuffer(
+                                    buffer_binding.buffer,
+                                    buffer_binding.offset,
+                                    descriptor_size,
+                                )
+                            } else {
+                                DescriptorKey::Buffer(
                                     buffer_binding.buffer,
                                     buffer_binding.offset,
                                     descriptor_size,
                                     uniform,
-                                ))?;
+                                )
+                            };
+                            let (slot, fresh) =
+                                self.resource_heap.allocate_shared(descriptor_key)?;
                             if fresh {
                                 match entry.binding_type {
                                     BindingType::StorageTexture { .. } => {
@@ -1429,6 +1449,27 @@ mod platform {
                                             self.device.CreateConstantBufferView(
                                                 Some(&raw const desc),
                                                 slot.cpu_handle,
+                                            );
+                                        }
+                                    }
+                                    BindingType::StorageBufferReadWrite => {
+                                        let raw = windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                                            Format: DXGI_FORMAT_R32_TYPELESS,
+                                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_BUFFER,
+                                            Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                                Buffer: windows::Win32::Graphics::Direct3D12::D3D12_BUFFER_UAV {
+                                                    FirstElement: buffer_binding.offset / 4,
+                                                    NumElements: u32::try_from(buffer_binding.size / 4)
+                                                        .map_err(|e| Error::InvalidInput(e.to_string()))?,
+                                                    Flags: windows::Win32::Graphics::Direct3D12::D3D12_BUFFER_UAV_FLAG_RAW,
+                                                    ..Default::default()
+                                                },
+                                            },
+                                        };
+                                        // SAFETY: the validated writable buffer and heap slot are live.
+                                        unsafe {
+                                            self.device.CreateUnorderedAccessView(
+                                                Some(resource), None, Some(&raw const raw), slot.cpu_handle,
                                             );
                                         }
                                     }
@@ -5849,6 +5890,7 @@ mod platform {
                     BindingType::StorageBuffer | BindingType::SampledTexture => {
                         D3D12_DESCRIPTOR_RANGE_TYPE_SRV
                     }
+                    BindingType::StorageBufferReadWrite => D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
                     BindingType::StorageTexture { .. } => D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
                     BindingType::Sampler => unreachable!("sampler handled above"),
                 };
@@ -6895,6 +6937,7 @@ mod platform {
                 match entry.binding_type {
                     BindingType::UniformBuffer
                     | BindingType::StorageBuffer
+                    | BindingType::StorageBufferReadWrite
                     | BindingType::SampledTexture
                     | BindingType::StorageTexture { .. } => {
                         let table = set
