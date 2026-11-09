@@ -941,6 +941,7 @@ impl Mesh {
                             && a.model_faces == b.model_faces
                             && a.static_start == b.static_start
                             && a.ambient_occlusion == b.ambient_occlusion
+                            && a.greedy_visible_faces == b.greedy_visible_faces
                             && a.lighting == b.lighting
                             && a.instances == b.instances
                             && a.cells == b.cells
