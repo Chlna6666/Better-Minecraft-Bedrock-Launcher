@@ -645,8 +645,8 @@ impl MeshArena {
             gfx_core::GpuQueueId::PRIMARY, submission,
         );
         for range in &mut self.retirements {
-            range.dependencies.seal_ordered_queue(
-                gfx_core::GpuQueueId::PRIMARY, submission,
+            let _ = range.dependencies.seal_ordered_queue(
+                &self.native_work, gfx_core::GpuQueueId::PRIMARY, submission,
             );
             if range.needs_primary_proof {
                 range.fallback.push(submission);
