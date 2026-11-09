@@ -1,9 +1,11 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
 use std::cell::RefCell;
+use windows::core::Interface as _;
 use windows::Win32::Graphics::Direct3D::{
     D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2DARRAY,
     D3D_SRV_DIMENSION_TEXTURE2DMS, D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
+    D3D_SRV_DIMENSION_TEXTURE3D,
 };
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
@@ -34,7 +36,9 @@ impl Buffer {
     }
 }
 pub(crate) struct Texture {
-    pub(crate) native: ID3D11Texture2D,
+    /// ID3D11Resource is shared by native Texture2D/Texture3D. Never cast
+    /// a volume back to Texture2D; 2D-only transfer APIs reject it first.
+    pub(crate) native: ID3D11Resource,
     pub(crate) desc: TextureDescriptor,
 }
 impl Texture {
@@ -128,6 +132,16 @@ impl ResourceDevice for Dx11Device {
             array_resources: true,
             layer_uploads: true,
             indexed_sampling: false,
+        }
+    }
+
+    fn texture_volume_capabilities(&self) -> TextureVolumeCapabilities {
+        // Feature level 11.0 guarantees this 3D maximum. Typed RGBA16F
+        // shader views and storage UAVs are implemented below.
+        TextureVolumeCapabilities {
+            max_dimension_3d: D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+            sampled: true,
+            storage: true,
         }
     }
 
@@ -416,6 +430,32 @@ impl ResourceDevice for Dx11Device {
         if desc.usage.contains(TextureUsage::STORAGE) {
             bind |= D3D11_BIND_UNORDERED_ACCESS.0 as u32;
         }
+        if let TextureDimension::D3 { depth } = desc.dimension {
+            self.texture_volume_capabilities().validate(desc)?;
+            let mut native = None;
+            // SAFETY: FL11.0 native 3D resource has one image layer and
+            // all depth slices in the same UAV/SRV; no CPU staging.
+            unsafe {
+                self.native.CreateTexture3D(
+                    &D3D11_TEXTURE3D_DESC {
+                        Width: desc.size.width(),
+                        Height: desc.size.height(),
+                        Depth: depth,
+                        MipLevels: desc.mip_level_count,
+                        Format: format(desc.format),
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: bind,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut native),
+                )
+            }.map_err(backend)?;
+            return Ok(self.textures.insert(Texture {
+                native: required(native)?.cast().map_err(backend)?,
+                desc: desc.clone(),
+            }));
+        }
         let mut native = None;
         // SAFETY: initialized texture descriptor, no borrowed initial data.
         unsafe {
@@ -447,7 +487,7 @@ impl ResourceDevice for Dx11Device {
         }
         .map_err(backend)?;
         Ok(self.textures.insert(Texture {
-            native: required(native)?,
+            native: required(native)?.cast().map_err(backend)?,
             desc: desc.clone(),
         }))
     }
@@ -539,24 +579,40 @@ impl ResourceDevice for Dx11Device {
                 // Typed UAVs cannot alias MSAA, depth or multiple mip levels
                 // in a single D3D11 view. Fail before passing an invalid
                 // descriptor to the driver.
-                if texture.desc.dimension != TextureDimension::D2
-                    || texture.desc.sample_count != 1
+                if !matches!(
+                    texture.desc.dimension,
+                    TextureDimension::D2 | TextureDimension::D3 { .. }
+                ) || texture.desc.sample_count != 1
                     || desc.mip_level_count != 1
                     || desc.format == Format::Depth32Float
                 {
                     return Err(Error::Unavailable(
-                        "D3D11 compute storage textures require one non-depth D2 mip".into(),
+                        "D3D11 compute storage requires one non-depth 2D or 3D mip".into(),
                     ));
                 }
                 self.native.CreateUnorderedAccessView(
                     &texture.native,
                     Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
                         Format: format(desc.format),
-                        ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
-                        Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
-                            Texture2D: D3D11_TEX2D_UAV {
-                                MipSlice: desc.base_mip_level,
-                            },
+                        ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                            D3D11_UAV_DIMENSION_TEXTURE3D
+                        } else {
+                            D3D11_UAV_DIMENSION_TEXTURE2D
+                        },
+                        Anonymous: if let TextureDimension::D3 { depth } = texture.desc.dimension {
+                            D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                Texture3D: D3D11_TEX3D_UAV {
+                                    MipSlice: desc.base_mip_level,
+                                    FirstWSlice: 0,
+                                    WSize: depth,
+                                },
+                            }
+                        } else {
+                            D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                Texture2D: D3D11_TEX2D_UAV {
+                                    MipSlice: desc.base_mip_level,
+                                },
+                            }
                         },
                     }),
                     Some(&mut view.uav),
@@ -574,16 +630,27 @@ impl ResourceDevice for Dx11Device {
                             },
                             // Multisampled textures need the MS view dimension; a plain
                             // TEXTURE2D SRV over MS storage is E_INVALIDARG on D3D11.
-                            ViewDimension: match (
-                                texture.desc.dimension == TextureDimension::D2,
-                                texture.desc.sample_count > 1,
-                            ) {
-                                (true, false) => D3D_SRV_DIMENSION_TEXTURE2D,
-                                (false, false) => D3D_SRV_DIMENSION_TEXTURE2DARRAY,
-                                (true, true) => D3D_SRV_DIMENSION_TEXTURE2DMS,
-                                (false, true) => D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
+                            ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                D3D_SRV_DIMENSION_TEXTURE3D
+                            } else {
+                                match (
+                                    texture.desc.dimension == TextureDimension::D2,
+                                    texture.desc.sample_count > 1,
+                                ) {
+                                    (true, false) => D3D_SRV_DIMENSION_TEXTURE2D,
+                                    (false, false) => D3D_SRV_DIMENSION_TEXTURE2DARRAY,
+                                    (true, true) => D3D_SRV_DIMENSION_TEXTURE2DMS,
+                                    (false, true) => D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
+                                }
                             },
-                            Anonymous: if let TextureDimension::D2Array { layers } =
+                            Anonymous: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                                    Texture3D: D3D11_TEX3D_SRV {
+                                        MostDetailedMip: desc.base_mip_level,
+                                        MipLevels: desc.mip_level_count,
+                                    },
+                                }
+                            } else if let TextureDimension::D2Array { layers } =
                                 texture.desc.dimension
                             {
                                 D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
