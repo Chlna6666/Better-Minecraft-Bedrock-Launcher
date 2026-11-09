@@ -8,11 +8,18 @@ use gfx_shader_build::{
 };
 
 fn main() {
+    // Standalone games need only the offscreen renderer artifacts. The
+    // optional GPUI sidecar generates its extra CSM/Froxel/UI shader set
+    // solely when the UI adapter feature is enabled.
+    #[cfg(feature = "gpui-sidecar")]
     // Froxel-enabled screen shaders share all PBR, SSR, MSAA and geometry
     // code with the legacy shader. Only the fog source is replaced at BUILD
     // time; there is no extra parser or shader compilation in the render loop.
+    #[cfg(feature = "gpui-sidecar")]
     const REPLACE_FOG: &str = "let fog=fog_volume(ray,distance_limit);";
+    #[cfg(feature = "gpui-sidecar")]
     const FROXEL_FOG: &str = "let fog=froxel_fog(uv,distance_limit);";
+    #[cfg(feature = "gpui-sidecar")]
     let screen_froxel = concat!(
         include_str!("src/pbr.wgsl"), "\n",
         include_str!("src/scene_view/effects/frame.wgsl"), "\n",
@@ -20,6 +27,7 @@ fn main() {
         include_str!("src/scene_view/effects/screen.wgsl")
     ).replace(REPLACE_FOG,FROXEL_FOG)
         + "\n" + include_str!("src/scene_view/effects/froxel_composite.wgsl");
+    #[cfg(feature = "gpui-sidecar")]
     let screen_froxel_ms = concat!(
         include_str!("src/pbr.wgsl"), "\n",
         include_str!("src/scene_view/effects/frame.wgsl"), "\n",
@@ -28,8 +36,14 @@ fn main() {
         include_str!("src/scene_view/effects/screen_ms_entries.wgsl")
     ).replace(REPLACE_FOG,FROXEL_FOG)
         + "\n" + include_str!("src/scene_view/effects/froxel_composite.wgsl");
+    #[cfg(feature = "gpui-sidecar")]
     assert!(screen_froxel.contains(FROXEL_FOG) && screen_froxel_ms.contains(FROXEL_FOG));
-    let shaders = ShaderSet::new("scene_view")
+    let mut shaders = ShaderSet::new("scene_view")
+        .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
+        .backend_selection(BackendSelection::Platform);
+    #[cfg(feature = "gpui-sidecar")]
+    {
+        shaders = shaders
         .shader(
             Shader::new("sidecar_composite")
                 .wgsl_file("src/scene_view/sidecar_composite.wgsl")
@@ -117,11 +131,6 @@ fn main() {
                 .wgsl_file("src/scene_view/effects/froxel_integrate.wgsl")
                 .entry("cs_froxel_integrate", ShaderStage::Compute),
         )
-        .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
-        // The host application decides which backend renders, and this crate's own
-        // features only forward to `gpui`, so artifacts are generated for every backend
-        // the platform supports rather than only for requested features.
-        .backend_selection(BackendSelection::Platform)
         .shader(
             Shader::new("scene_view")
                 .wgsl(concat!(
@@ -220,6 +229,10 @@ fn main() {
                 .entry("fs_voxel_attributes_mrt", ShaderStage::Fragment)
                 .entry("fs_voxel_shadow", ShaderStage::Fragment),
         )
+        ;
+    }
+
+    let shaders = shaders
         .shader(
             Shader::new("offscreen_shadow")
                 .wgsl_file("src/render/shadow.wgsl")
