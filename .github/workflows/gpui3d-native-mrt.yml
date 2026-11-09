@@ -57,6 +57,8 @@ jobs:
         run: vulkaninfo --summary
       - name: Compile native backend test suite
         run: cargo test -p gpui-3d --lib --features gpui/x11 --no-run
+      - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
+        run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
       - name: Compare MRT output against legacy Surface and Albedo captures
         run: cargo test -p gpui-3d --lib --features gpui/x11 effects_vulkan -- --ignored --nocapture
       - name: Validate 2D Greedy and uniform-light fallback GPU counts
