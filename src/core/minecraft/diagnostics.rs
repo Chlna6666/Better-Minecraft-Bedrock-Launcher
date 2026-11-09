@@ -938,7 +938,14 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         dirs.push(PathBuf::from(local_app_data).join("CrashDumps"));
     }
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else { continue };
+        // A Wine prefix or mod-controlled directory may contain symlinks.
+        // Never follow a linked directory into unrelated private files.
+        if !fs::symlink_metadata(&dir)
+            .is_ok_and(|meta| meta.file_type().is_dir())
+        {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries.take(128).flatten() {
             let path = entry.path();
             if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext|
