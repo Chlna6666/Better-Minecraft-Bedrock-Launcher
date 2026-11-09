@@ -5,12 +5,20 @@ material, lighting, GPU-resident buffers, compute meshing, visibility and native
 It uses `nova-gfx` through the backend-neutral `gfx-core` API. GPUI is an **optional
 sidecar consumer** for layout, clipping, texture composition and window presentation; it is
 not the owner of 3D command batching or rendering strategy. The current crate still contains
-the GPUI adapter and has not yet split it into an opt-in Cargo feature. Product-specific
+the GPUI adapter behind the default-enabled `gpui-sidecar` Cargo feature; using
+`--no-default-features` removes the GPUI dependency. Product-specific
 Minecraft/world policies belong to applications, not the reusable engine.
 
 The API is in active development and the crate is not published. Map Viewer and Skin Pack use this
 crate for preview scenes. GPUI owns the generic `RendererExtension` lifecycle; its dedicated mesh
 primitive and Nova upload/cache/draw path have been removed without compatibility wrappers.
+
+Standalone rendering without the GPUI UI dependency:
+
+```sh
+cargo check -p gpui-3d --no-default-features --lib
+cargo test -p gpui-3d --no-default-features --lib
+```
 
 The framework-independent `NativeOffscreenPass` and
 `submit_native_graphics` API provide immutable native offscreen submission
