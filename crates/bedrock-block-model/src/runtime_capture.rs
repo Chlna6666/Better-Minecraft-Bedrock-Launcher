@@ -841,6 +841,23 @@ mod tests {
         assert_eq!(result[0].normal,[-1,0,1]);
     }
     #[test]
+    fn v3_same_path_reexport_has_distinct_catalog_identity() {
+        let dir = tempfile::tempdir().expect("temporary v3 capture");
+        fixture(dir.path(), false);
+        let first = RuntimeCaptureCatalog::open(dir.path()).expect("first revision");
+        let identical = RuntimeCaptureCatalog::open(dir.path()).expect("identical revision");
+        assert_eq!(first, identical, "unchanged v3 capture must retain catalog identity");
+        let path = dir.path().join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["capture_revision"] = json!(1_748_945_317_123_456_789u64);
+        write(dir.path(), "manifest.json", &manifest);
+        let second = RuntimeCaptureCatalog::open(dir.path()).expect("second revision");
+        assert_ne!(first, second, "numeric ids must not be reused across F8 exports");
+        assert_eq!(first.game_version(), second.game_version());
+        assert_eq!(first.state_count(), second.state_count());
+    }
+
+    #[test]
     fn complete_six_face_cube_preserves_slots_and_greedy_merge() {
         let make = |normal: [i32; 3], corners: [[f32; 3]; 4], face: &str| {
             ModelPlane::new(corners, normal)

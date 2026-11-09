@@ -122,7 +122,7 @@ impl BlockModelRepository {
     }
 
     /// Load a BedrockSceneCapture export found beside the local game installation.
-    /// Meshes are read lazily by state and cached by their content hash.
+    /// Numeric v3 resources are read lazily and cached by per-export u32 IDs.
     pub fn load_capture_catalog(&mut self, root: &Path) -> std::result::Result<usize, String> {
         let catalog = RuntimeCaptureCatalog::open(root)?;
         let count = catalog.state_count();
@@ -131,8 +131,8 @@ impl BlockModelRepository {
     }
 
     /// Load the compile-time BSC model library when an installation-specific
-    /// capture has not been found. The ZIP stays compressed in the executable;
-    /// individual geometry/appearance entries are inflated on demand.
+    /// capture has not been found. ZIP is embedded in the executable; its
+    /// binary pool is decompressed once, then models are decoded by numeric ID.
     pub fn load_embedded_capture_catalog(&mut self) -> std::result::Result<usize, String> {
         let catalog = RuntimeCaptureCatalog::open_embedded()?;
         let count = catalog.state_count();
