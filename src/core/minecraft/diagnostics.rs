@@ -378,10 +378,11 @@ impl GameSessionReport {
                 tracing::warn!(%error, session_id=%self.id, "无法保存游戏崩溃自动分析");
             }
         }
-        // Proton can write large direct logs. Only bounded evidence snapshots
-        // are retained. Never remove arbitrary directories supplied by a
-        // manually edited report JSON.
-        if let Some(logs) = self.compatibility_logs.as_ref()
+        // Delayed Proton crash reporters can write *after* the runner exits.
+        // Preserve abnormal sessions' private logs/dumps until the user exports
+        // them; only normal sessions may discard transient logging now.
+        if self.kind == ExitKind::Normal && !self.early_exit {
+            if let Some(logs) = self.compatibility_logs.as_ref()
             && logs.parent() == Some(root().join("compat-logs").as_path())
             && logs.file_name().and_then(|name| name.to_str())
                 .is_some_and(|name| Uuid::parse_str(name).is_ok())
@@ -410,6 +411,7 @@ impl GameSessionReport {
                 }
             }
         }
+        }
         tracing::info!(
             session_id = %self.id,
             pid = self.pid,
@@ -421,6 +423,25 @@ impl GameSessionReport {
         // Normal exits are events too, so a launcher hidden for crash monitoring
         // can terminate once its final game session exits.
         let _ = event_bus().send(self.clone());
+        #[cfg(target_os = "linux")]
+        if self.compatibility_logs.is_some()
+            && (self.kind.is_abnormal() || self.early_exit)
+        {
+            let id = self.id.clone();
+            if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+                // One bounded rescan, never polling on the UI/render thread.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                match crate::tasks::runtime::run_io_blocking(move || {
+                    refresh_late_compatibility_dumps(&id)
+                }).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) | Err(error) =>
+                        tracing::warn!(%error, "Proton 延迟崩溃证据复查失败"),
+                }
+            }) {
+                tracing::warn!(%error, "无法安排 Proton 延迟崩溃证据复查");
+            }
+        }
         self
     }
 }
@@ -884,6 +905,30 @@ fn analyze_snapshot(
     evidence.minidumps = forensics::inspect_dumps(&dump_candidates(report));
     let findings = analysis::analyze_with_forensics(report, &sources, &evidence);
     (findings, evidence)
+}
+
+#[cfg(target_os = "linux")]
+fn refresh_late_compatibility_dumps(id: &str) -> Result<(), String> {
+    let mut report = read_report(id)?;
+    if report.compatibility_logs.is_none()
+        || (!report.kind.is_abnormal() && !report.early_exit)
+    {
+        return Ok(());
+    }
+    // Do not reread shared game/mod logs at a later time: a second instance
+    // may have overwritten them. Analyze the immutable snapshot plus late DMPs.
+    let (findings, evidence) = analyze_snapshot(&report);
+    if evidence == report.forensics && findings == report.findings {
+        return Ok(());
+    }
+    report.findings = findings;
+    report.forensics = evidence;
+    save(&report)?;
+    let latest = read_report(id)?;
+    if !latest.acknowledged {
+        let _ = event_bus().send(latest);
+    }
+    Ok(())
 }
 
 fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
