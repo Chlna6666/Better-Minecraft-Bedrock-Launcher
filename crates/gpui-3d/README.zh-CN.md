@@ -6,7 +6,9 @@
 光照、GPU Resident 缓冲、Compute Meshing、可见性和原生离屏输出，通过 `gfx-core`
 调用 `nova-gfx`。GPUI 是**可选的 Sidecar 消费者**，只负责 UI 布局、裁剪、
 颜色纹理合成与窗口 Present，不拥有 3D DrawIndirect 批处理策略。当前 crate
-仍包含 GPUI 适配模块，尚未完成可关闭的 Cargo feature 拆分；Minecraft 世界及
+已将 GPUI 适配模块划入默认开启的 `gpui-sidecar` Cargo feature；
+`--no-default-features` 不再依赖 GPUI。独立应用需要自行提供设备及窗口 Swapchain。
+Minecraft 世界及
 预览业务策略继续留在应用侧 `src/ui`。
 
 纯 3D 模块已公开 `NativeOffscreenPass`、`submit_native_graphics`，
