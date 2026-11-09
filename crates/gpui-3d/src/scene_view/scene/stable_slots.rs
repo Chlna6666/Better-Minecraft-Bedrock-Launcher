@@ -91,8 +91,8 @@ impl StableDrawSlots {
         &mut self,
         submission: Option<gfx_core::SubmissionId>,
     ) {
-        self.submission_epoch = self.submission_epoch.saturating_add(1);
         if let Some(submission) = submission {
+            self.submission_epoch = self.submission_epoch.saturating_add(1);
             if !self.in_flight_draws.iter().any(|reader| reader.submission == submission) {
                 self.in_flight_draws.push(NativeDrawUse {
                     submission,
@@ -100,8 +100,16 @@ impl StableDrawSlots {
                 });
             }
         } else {
-            self.untracked_draw_use = true;
+            self.untracked_gpu_access_submitted();
         }
+    }
+
+    /// Record a native Compute/Transfer operation with no exported fence.
+    /// It may still read or write physical rows after host API return.
+    /// Never infer its completion from an unrelated DrawIndirect fence.
+    pub(in crate::scene_view) fn untracked_gpu_access_submitted(&mut self) {
+        self.submission_epoch = self.submission_epoch.saturating_add(1);
+        self.untracked_draw_use = true;
     }
 
     /// Snapshot the native GPU readers of each physical allocation, not the
