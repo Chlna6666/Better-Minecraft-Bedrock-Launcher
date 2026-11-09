@@ -2304,6 +2304,97 @@ mod platform {
             self.submit_dedicated_typed_deferred(encoder, Dx12SubmissionQueue::Compute)
         }
 
+        /// GPU-to-GPU buffer relocation through the actual COPY-only
+        /// command queue. The PRIMARY queue first releases each participating
+        /// DEFAULT buffer to COMMON. The COPY queue then implicitly promotes
+        /// COMMON to COPY_SOURCE/COPY_DEST and decays back to COMMON when its
+        /// typed command list completes, before Graphics can consume it.
+        ///
+        /// Staging/upload resources remain GENERIC_READ and can only be copy
+        /// sources. Every source/destination byte range is validated before
+        /// the first native command or resource-state mutation.
+        fn submit_copy_buffer_batch_native(
+            &mut self,
+            queue: gfx_core::GpuQueueId,
+            copies: &[gfx_core::GpuBufferCopy],
+        ) -> Result<SubmissionId> {
+            if queue != (gfx_core::GpuQueueId { family: 0, index: 3 })
+                || self.async_transfer.is_none()
+            {
+                return Err(Error::Unavailable(
+                    "DX12 dedicated typed COPY queue is unavailable".into(),
+                ));
+            }
+            if copies.is_empty() {
+                return Err(Error::InvalidInput("native COPY batch is empty".into()));
+            }
+            let mut native = Vec::with_capacity(copies.len());
+            let mut resources = Vec::with_capacity(copies.len() * 2);
+            for copy in copies {
+                copy.validate()?;
+                let source = self.buffers.get(copy.source)?;
+                let dest = self.buffers.get(copy.destination)?;
+                if !source.desc.usage.contains(BufferUsage::COPY_SRC)
+                    || !dest.desc.usage.contains(BufferUsage::COPY_DST)
+                {
+                    return Err(Error::InvalidInput(
+                        "native COPY requires COPY_SRC and COPY_DST buffer usage".into(),
+                    ));
+                }
+                if dest.desc.memory_location != MemoryLocation::GpuOnly {
+                    return Err(Error::InvalidInput(
+                        "native COPY destination must be GPU-only memory".into(),
+                    ));
+                }
+                if copy.source_offset.checked_add(copy.bytes).is_none_or(|end| end > source.desc.size)
+                    || copy.destination_offset.checked_add(copy.bytes)
+                        .is_none_or(|end| end > dest.desc.size)
+                {
+                    return Err(Error::InvalidInput(
+                        "native COPY byte range is out of bounds".into(),
+                    ));
+                }
+                let source_native = source.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("native COPY source allocation is missing".into())
+                })?.clone();
+                let destination_native = dest.resource.as_ref().ok_or_else(|| {
+                    Error::Backend("native COPY destination allocation is missing".into())
+                })?.clone();
+                native.push((
+                    source_native, destination_native,
+                    copy.source_offset, copy.destination_offset, copy.bytes,
+                ));
+                resources.extend([copy.source, copy.destination]);
+            }
+            self.prepare_native_queue_buffers(resources)?;
+            let encoder = self.create_copy_command_encoder()?;
+            let result = (|| -> Result<SubmissionId> {
+                self.begin_texture_command_encoder(encoder, None)?;
+                let command = self.command_encoders.get(encoder)?.command_list
+                    .as_ref().ok_or_else(|| Error::Backend(
+                        "DX12 typed COPY encoder is missing its command list".into(),
+                    ))?;
+                for (source, destination, src_offset, dest_offset, bytes) in &native {
+                    // SAFETY: Both D3D12 resources and byte ranges are live,
+                    // validated and non-aliasing. The COPY queue implicitly
+                    // promotes their COMMON/UPLOAD read states; it does not
+                    // accept a graphics-only resource transition barrier.
+                    unsafe {
+                        command.CopyBufferRegion(
+                            destination, *dest_offset,
+                            source, *src_offset, *bytes,
+                        );
+                    }
+                }
+                self.finish_texture_command_encoder(encoder)?;
+                self.submit_dedicated_copy_deferred(encoder)
+            })();
+            if result.is_err() {
+                let _ = self.release_temporary_command_encoder_after_failure(encoder);
+            }
+            result
+        }
+
         fn submit_dedicated_copy_deferred(
             &mut self, encoder: CommandEncoderId,
         ) -> Result<SubmissionId> {
