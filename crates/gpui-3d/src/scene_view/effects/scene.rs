@@ -5,6 +5,7 @@ use super::{
     ScreenEffects, SHADOW_CASCADE_COUNT,
     light_tiles::LightTiles,
     targets::{Target, Targets, uniform},
+    ssr_hiz::SsrHiZ,
 };
 use crate::{Camera, Mat4, Scene, Vec3};
 use anyhow::Context as _;
@@ -169,6 +170,10 @@ pub(super) struct EffectScene {
     pub(super) capture: Option<SceneView>,
     pub(super) targets_valid: bool,
     pub(super) queued_capture: bool,
+    pub(super) ssr_hiz: Option<SsrHiZ>,
+    pub(super) ssr_hiz_valid: bool,
+    pub(super) queued_ssr_hiz: bool,
+    pub(super) ssr_hiz_unavailable: bool,
     pub(super) shadow_valid: [bool; SHADOW_CASCADE_COUNT],
     pub(super) queued_shadow: [bool; SHADOW_CASCADE_COUNT],
     pub(super) scene: SceneResources,
@@ -178,7 +183,7 @@ pub(super) struct EffectScene {
     pub(super) composite_frame: BufferId,
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
-    pub(super) group_key: Option<(BufferId, [Option<crate::TextureAssetId>; 3])>,
+    pub(super) group_key: Option<(BufferId, [Option<crate::TextureAssetId>; 3], Option<TextureViewId>)>,
     pub(super) shadow: [Target; SHADOW_CASCADE_COUNT],
     pub(super) shadow_color: [Target; SHADOW_CASCADE_COUNT],
     pub(super) shadow_key: [Option<[i32; 6]>; SHADOW_CASCADE_COUNT],
@@ -196,6 +201,7 @@ pub(super) struct RetiredTargets {
     pub(super) targets: Targets,
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
+    pub(super) ssr_hiz: Option<SsrHiZ>,
 }
 impl RetiredTargets {
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -204,6 +210,7 @@ impl RetiredTargets {
                 device.destroy_bind_group(group)?;
             }
         }
+        if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
         self.tiles.destroy(device)?;
         self.targets.destroy(device)
     }
@@ -327,6 +334,10 @@ impl EffectScene {
                 capture: None,
                 targets_valid: false,
                 queued_capture: false,
+                ssr_hiz: None,
+                ssr_hiz_valid: false,
+                queued_ssr_hiz: false,
+                ssr_hiz_unavailable: false,
                 shadow_valid: [false; SHADOW_CASCADE_COUNT],
                 queued_shadow: [false; SHADOW_CASCADE_COUNT],
                 scene,
@@ -375,9 +386,13 @@ impl EffectScene {
             targets: std::mem::replace(&mut self.targets, targets),
             tiles: std::mem::replace(&mut self.tiles, tiles),
             groups: self.groups.take(),
+            ssr_hiz: self.ssr_hiz.take(),
         });
         self.tile_camera = None;
         self.group_key = None;
+        self.ssr_hiz_valid = false;
+        self.queued_ssr_hiz = false;
+        self.ssr_hiz_unavailable = false;
         Ok(())
     }
     pub(super) fn shadow_pass(
@@ -599,6 +614,7 @@ impl EffectScene {
             retired.destroy(device)?;
         }
         self.scene.destroy(device)?;
+        if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
         self.tiles.destroy(device)?;
         self.targets.destroy(device)?;
         for cascade in self.shadow {
