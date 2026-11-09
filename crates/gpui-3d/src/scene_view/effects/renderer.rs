@@ -240,6 +240,7 @@ impl EffectsRenderer {
             self.attributes_pass,
             &mut self.passes,
         )?;
+        state.record_ssr_hiz(device, &local, settings, &mut self.passes);
         let [cloud, water, water_flow] = self
             .textures
             .as_mut()
@@ -267,6 +268,7 @@ impl EffectsRenderer {
                 .saturating_duration_since(self.epoch)
                 .as_secs_f32(),
             light.2,
+            state.ssr_hiz_levels(),
         )?;
         if state.tile_camera != Some(view.camera)
             || state
@@ -285,7 +287,8 @@ impl EffectsRenderer {
             state.tile_transform = view.scene_transform;
             state.tile_scene = Some(view.scene.clone());
         }
-        let key = (light.0, settings.texture_ids());
+        let hiz_view = state.ssr_hiz.as_ref().map(|hiz| hiz.sample_view);
+        let key = (light.0, settings.texture_ids(), hiz_view);
         // The screen shader reads whatever depth the geometry passes wrote: the
         // multisampled copies when MSAA is on, matching its `_ms` shader variant.
         let multisampled = self.msaa_sample_count > 1 && state.targets.msaa.is_some();
@@ -307,6 +310,10 @@ impl EffectsRenderer {
                 lights: (light.0, light.1),
                 tiles: (state.tiles.buffer, state.tiles.bytes),
                 shadows: std::array::from_fn(|cascade| state.shadow[cascade].view),
+                // When SSR is disabled or unsupported, bind the existing
+                // near-cascade depth view; frame.work.z==0 guarantees no
+                // depth-hierarchy sampling on the linear fallback path.
+                ssr_hiz: hiz_view.unwrap_or(state.shadow[0].view),
                 cloud,
                 water,
                 water_flow,
@@ -471,6 +478,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
             if std::mem::take(&mut state.queued_capture) {
                 state.targets_valid = true;
             }
+            if std::mem::take(&mut state.queued_ssr_hiz) {
+                state.ssr_hiz_valid = true;
+            }
             for (valid, queued) in state.shadow_valid.iter_mut()
                 .zip(&mut state.queued_shadow)
             {
@@ -496,6 +506,8 @@ impl RendererExtensionRenderer for EffectsRenderer {
             self.passes.clear();
             for state in self.scenes.values_mut() {
                 state.queued_capture = false;
+                state.queued_ssr_hiz = false;
+                state.ssr_hiz_valid = false;
                 state.queued_shadow.fill(false);
             }
         }
