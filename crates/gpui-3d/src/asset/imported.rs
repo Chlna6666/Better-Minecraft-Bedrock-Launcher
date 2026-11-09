@@ -9,9 +9,11 @@ use super::{
     GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, load_bytes, load_path,
 };
 use crate::{
-    Camera, Mat4, Material, NodeId, Scene, SceneView, SceneViewTextureError, TextureAsset, Vec2,
-    Vec3,
+    Mat4, Material, NodeId, Scene, TextureAsset, Vec2, Vec3,
 };
+
+#[cfg(feature = "gpui-sidecar")]
+use crate::{Camera, SceneView, SceneViewTextureError};
 
 /// Canonical owned asset snapshot, independent of rendering and file handles.
 #[derive(Clone, Debug)]
@@ -88,6 +90,7 @@ impl ImportedScene {
     }
 
     /// Creates a lightweight scene view without duplicating model buffers.
+    #[cfg(feature = "gpui-sidecar")]
     pub fn view(&self, camera: Camera) -> Result<SceneView, SceneViewTextureError> {
         SceneView::new(self.scene.clone(), camera).with_textures(self.textures.iter().cloned())
     }
