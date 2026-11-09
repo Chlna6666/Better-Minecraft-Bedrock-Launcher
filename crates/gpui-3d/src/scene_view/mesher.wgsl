@@ -74,59 +74,114 @@ fn instance_visible(face:Face,job:u32)->bool {
     else{kind=cells[class_base+neighbour];}
     return (kind&cells[job+7u])==0u;
 }
-// Extend the generated ABI without adding a buffer: bit 31 of cell marks
-// a horizontal merged run. The cell grid has at most i32::MAX entries, and
-// the all-ones static-face sentinel remains reserved.
-fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,span:u32){
+// The high cell bit identifies a merged, canonical cube rectangle. The third
+// descriptor word stores two u8 spans as raw f32 bits in that case; ordinary
+// quads and arbitrary-model instance heights retain their original layout.
+// Halo cells, static-face sentinel and instance descriptors are never tagged.
+fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u32>){
     let y=position.y+bitcast<f32>(face.info.w);
     if(y<params.clip.x || y>=params.clip.y){return;}
     let vertex=atomicAdd(&args[face.info.x*4u],6u);
     let slot=face.info.z+vertex/6u;
-    let tagged=select(cell,cell|0x80000000u,span>1u);
-    output[slot]=GeneratedFace(tagged,model_face,f32(span),face_ao(face,cell,false));
+    let merged=extent.x>1u || extent.y>1u;
+    let tagged=select(cell,cell|0x80000000u,merged);
+    let packed=extent.x | (extent.y<<8u);
+    let scale=select(1.0,bitcast<f32>(packed),merged);
+    output[slot]=GeneratedFace(tagged,model_face,scale,face_ao(face,cell,false));
 }
-// A safe horizontal run contains only already-exposed faces of the SAME
-// six-face material/model. No hidden face is materialized before merging.
-// A 16-cell tile cap bounds each GPU invocation's traversal cost.
-fn visible_run(cell:u32,kind:u32,face:Face)->u32 {
-    if(params.origin.w<0.5){return 1u;}
-    var uv_min=vec2<f32>(1.0e20);
-    var uv_max=vec2<f32>(-1.0e20);
-    for(var i=0u;i<4u;i++){
-        let v=face.vertices[i];
+// Only axis-aligned full-tile cubes with one uniform base vertex color can
+// repeat UVs over a larger rectangle. Atlas subrects, corner tint gradients,
+// arbitrary-model quads, and degenerate shapes must retain their original UVs.
+fn repeatable_cube(face:Face)->bool {
+    let delta=bitcast<i32>(face.info.y);
+    let normal_axis=select(2u,select(1u,0u,abs(delta)==1),abs(delta)==i32(params.size.x));
+    if(abs(delta)!=1 && abs(delta)!=i32(params.size.x)
+        && abs(delta)!=i32(params.size.x*params.size.y)){return false;}
+    var low=vec3<f32>(1.0);
+    var high=vec3<f32>(0.0);
+    var uv_low=vec2<f32>(1.0);
+    var uv_high=vec2<f32>(0.0);
+    let tint=face.vertices[0].color;
+    for(var corner=0u;corner<4u;corner++){
+        let v=face.vertices[corner];
         let p=vec3<f32>(v.x,v.y,v.z);
-        if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0)))){return 1u;}
-        uv_min=min(uv_min,vec2<f32>(v.u,v.v));
-        uv_max=max(uv_max,vec2<f32>(v.u,v.v));
+        if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0))) || v.color!=tint){return false;}
+        low=min(low,p);high=max(high,p);
+        uv_low=min(uv_low,vec2<f32>(v.u,v.v));
+        uv_high=max(uv_high,vec2<f32>(v.u,v.v));
     }
-    // Textures with sub-rectangular atlas UVs cannot safely repeat through
-    // fract(), even when neighboring cubes share a material identifier.
+    for(var axis=0u;axis<3u;axis++){
+        if(axis==normal_axis){
+            let boundary=select(0.0,1.0,delta>0);
+            if(low[axis]!=boundary || high[axis]!=boundary){return false;}
+        }else if(low[axis]!=0.0 || high[axis]!=1.0){return false;}
+    }
     for(var axis=0u;axis<2u;axis++){
-        if(uv_max[axis]-uv_min[axis]>0.00001 &&
-            (abs(uv_min[axis])>0.00001 || abs(uv_max[axis]-1.0)>0.00001)){
-            return 1u;
+        // Full-tile UVs can be either normal or mirrored. Degenerate UVs may
+        // repeat only when pinned to the origin (untextured flat sampling).
+        if(uv_low[axis]!=0.0 ||
+            (uv_high[axis]!=0.0 && abs(uv_high[axis]-1.0)>0.00001)){return false;}
+    }
+    return true;
+}
+fn exposed_cube(cell:u32,kind:u32,face:Face)->bool {
+    if(cells[cell]!=kind){return false;}
+    let delta=bitcast<i32>(face.info.y);
+    if(cells[u32(i32(cell)+delta)]!=0u){return false;}
+    let y=params.origin.y+f32(cell/params.size.x%params.size.y)+bitcast<f32>(face.info.w);
+    if(y<params.clip.x || y>=params.clip.y){return false;}
+    // AO is safe only when each constituent face is completely unoccluded.
+    // If not, that face is rendered individually with its exact 4-corner AO.
+    return bitcast<u32>(params.clip.w)==0u || face_ao(face,cell,false)==0xffffffffu;
+}
+fn face_row_width(cell:u32,kind:u32,face:Face,stride:u32,coordinate:u32,dimension:u32)->u32 {
+    let within=(coordinate-1u)%16u;
+    var width=0u;
+    for(var i=0u;i<16u;i++){
+        if(within+i>=16u || coordinate+i+1u>=dimension){break;}
+        if(!exposed_cube(cell+i*stride,kind,face)){break;}
+        width++;
+    }
+    return width;
+}
+// Deterministic width-first 2D rectangle partition within 16x16 face tiles.
+// Each GPU invocation reads visibility directly from the input cell grid;
+// no intermediate faces, shared race-prone mask, host readback or CPU sorting.
+// A row is vertically absorbed only by an exactly matching complete row-run.
+// This prevents T-junction overlaps and preserves every exposed face exactly.
+fn visible_rectangle(cell:u32,kind:u32,face:Face)->vec2<u32> {
+    if(params.origin.w<0.5 || !repeatable_cube(face)){return vec2<u32>(1u);}
+    if(!exposed_cube(cell,kind,face)){return vec2<u32>(1u);}
+    let delta=bitcast<i32>(face.info.y);
+    let along_z=abs(delta)==1;
+    let normal_y=abs(delta)==i32(params.size.x);
+    let u_stride=select(1u,params.size.x*params.size.y,along_z);
+    let v_stride=select(params.size.x,params.size.x*params.size.y,normal_y);
+    let u=select(cell%params.size.x,cell/(params.size.x*params.size.y),along_z);
+    let v=select(cell/params.size.x%params.size.y,cell/(params.size.x*params.size.y),normal_y);
+    let u_size=select(params.size.x,params.size.z,along_z);
+    let v_size=select(params.size.y,params.size.z,normal_y);
+    let local_u=(u-1u)%16u;
+    let local_v=(v-1u)%16u;
+    if(local_u>0u && exposed_cube(cell-u_stride,kind,face)){return vec2<u32>(0u);}
+    let width=face_row_width(cell,kind,face,u_stride,u,u_size);
+    if(width==0u){return vec2<u32>(1u);}
+    if(local_v>0u){
+        let previous=cell-v_stride;
+        let previous_starts=local_u==0u || !exposed_cube(previous-u_stride,kind,face);
+        if(previous_starts && face_row_width(previous,kind,face,u_stride,u,u_size)==width){
+            return vec2<u32>(0u);
         }
     }
-    let delta=bitcast<i32>(face.info.y);
-    // For +/-X faces the horizontal tangent is Z. For Y/Z faces use X.
-    let along_z=delta==1 || delta==-1;
-    let stride=select(1u,params.size.x*params.size.y,along_z);
-    let coordinate=select(cell%params.size.x,cell/(params.size.x*params.size.y),along_z);
-    let dimension=select(params.size.x,params.size.z,along_z);
-    let within_tile=(coordinate-1u)%16u;
-    // Only the first exposed cell of a row run may output its merged quad.
-    if(within_tile>0u && coordinate>1u){
-        let previous=cell-stride;
-        if(cells[previous]==kind && cells[u32(i32(previous)+delta)]==0u){return 0u;}
+    var height=1u;
+    for(var row=1u;row<16u;row++){
+        if(local_v+row>=16u || v+row+1u>=v_size){break;}
+        let next=cell+row*v_stride;
+        if(local_u>0u && exposed_cube(next-u_stride,kind,face)){break;}
+        if(face_row_width(next,kind,face,u_stride,u,u_size)!=width){break;}
+        height++;
     }
-    var span=1u;
-    for(var step=1u;step<16u;step++){
-        if(within_tile+step>=16u || coordinate+step+1u>=dimension){break;}
-        let next=cell+step*stride;
-        if(cells[next]!=kind || cells[u32(i32(next)+delta)]!=0u){break;}
-        span++;
-    }
-    return span;
+    return vec2<u32>(width,height);
 }
 @compute @workgroup_size(64)
 fn cs_mesh(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
@@ -207,8 +262,8 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
         let face=templates.faces[model_face];
         let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
         if(cells[neighbour]!=0u){continue;}
-        let span=visible_run(index,kind,face);
-        if(span==0u){continue;}
-        emit_face(face,model_face,position,index,span);
+        let extent=visible_rectangle(index,kind,face);
+        if(extent.x==0u){continue;}
+        emit_face(face,model_face,position,index,extent);
     }
 }
