@@ -613,6 +613,30 @@ mod tests {
     }
 
     #[test]
+    fn same_mesh_id_new_geometry_generation_must_use_new_physical_draw_slot() {
+        let original = draws(1);
+        let (mut slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
+        let producer = gfx_core::SubmissionId::from_parts(40, 1);
+        slots.draw_producer_submitted(Some(producer));
+        let mut edited = original.clone();
+        let prior_mesh = &original[0].mesh;
+        edited[0].mesh = Arc::new(
+            Mesh::cube().with_identity(
+                prior_mesh.id(),
+                prior_mesh.generation().checked_add(1).unwrap(),
+            )
+        );
+        let (mut next, remapped) = slots.plan(&edited).unwrap();
+        assert_ne!(mapping, remapped);
+        assert_eq!(next.high_water(), 2);
+        assert!(next.free.is_empty());
+        assert_eq!(next.retired_by_submission[0].0, producer);
+        next.submission_completed(producer);
+        assert_eq!(next.free, vec![mapping[0] as usize]);
+        assert_eq!(next.occupied.len(), 1);
+    }
+
+    #[test]
     fn draw_slot_retirement_prefers_actual_last_producer_over_gui_consumer() {
         let original = draws(32);
         let (mut slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
