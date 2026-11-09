@@ -28,3 +28,64 @@ fn compute_uav_to_srv_to_storage_image_roundtrip() {
     conformance::compute_resource_set_roundtrip(&mut device, writer, reader)
         .expect("native Vulkan UAV/SRV image visibility and readback");
 }
+
+
+/// Exercise REAL buffer Compute on queue index 1, then a semaphore-backed
+/// queue-1 -> queue-0 GPU wait. The graphics checkpoint must cover the native
+/// producer without waiting for it on the CPU during the submission path.
+#[test]
+#[ignore = "requires a physical Vulkan device with two same-family graphics/compute queues"]
+fn native_compute_submission_and_reverse_gpu_queue_wait() {
+    use gfx_core::{
+        BufferBinding, BufferDescriptor, BufferUsage, ComputeBufferAccess,
+        ComputeBufferBinding, ComputeDispatch, GpuQueueId, GpuWorkStage,
+        MemoryLocation, PipelineDevice, ShaderModuleDescriptor, SubmissionDevice,
+    };
+    let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(_)) => return,
+        Err(error) => panic!("Vulkan device initialization: {error}"),
+    };
+    let Some(secondary) = device.independent_queue(GpuWorkStage::Compute) else {
+        eprintln!("Vulkan device has no second graphics-family queue; skipping");
+        return;
+    };
+    let shader = gfx_shader::WgslModule::parse(
+        conformance::COMPUTE_RESOURCE_SET_WRITER_WGSL,
+    )
+    .expect("GPU writer shader")
+    .compile_spirv(ShaderStage::Compute, "write_data")
+    .expect("SPIR-V writer");
+    let shader = device.create_shader_module(&ShaderModuleDescriptor {
+        label: Some("independent native compute producer".into()),
+        binary: shader,
+    }).expect("shader module");
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("native queue compute storage".into()),
+        size: 16,
+        usage: BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::GpuOnly,
+    }).expect("native storage buffer");
+    let bindings = [ComputeBufferBinding {
+        binding: 0,
+        buffer: BufferBinding { buffer, offset: 0, size: 16, stride: None },
+        access: ComputeBufferAccess::ReadWrite,
+    }];
+    let passes = [ComputeDispatch {
+        shader, bindings: &bindings, workgroups: [1, 1, 1],
+    }];
+    let producer = device.submit_compute_batch_on_queue(secondary, &passes)
+        .expect("actual secondary-queue shader execution");
+    let proof = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, producer)
+        .expect("native queue-1 -> primary GPU semaphore");
+    assert_eq!(proof.producer(), producer);
+    assert_eq!(proof.target_queue(), GpuQueueId::PRIMARY);
+    let primary = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
+        .expect("primary completion checkpoint after native wait");
+    // A test-only CPU wait proves the native synchronization without
+    // contaminating runtime frame-submission hot paths.
+    device.wait_submission(primary).expect("primary wait finished");
+    device.wait_submission(producer).expect("native compute producer finished");
+    device.destroy_buffer(buffer).expect("destroy storage");
+    device.destroy_shader_module(shader).expect("destroy shader");
+}
