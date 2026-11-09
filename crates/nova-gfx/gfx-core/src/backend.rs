@@ -308,6 +308,18 @@ pub trait ResourceDevice {
         ))
     }
 
+    /// Enqueues a compute resource-set dispatch with a native GPU timestamp
+    /// tag. Backends may return no sample if hardware queries are unsupported,
+    /// but must execute the dispatch exactly once. The default is deliberately
+    /// uninstrumented rather than estimating host time.
+    fn dispatch_compute_bind_group_profiled(
+        &mut self,
+        dispatch: &crate::ComputeBindGroupDispatch,
+        _tag: GpuTimestampTag,
+    ) -> Result<()> {
+        self.dispatch_compute_bind_group(dispatch)
+    }
+
     /// Queues ordered compute stages; each stage observes preceding writes.
     /// Backends may record the stages in one native submission. No CPU wait is implied.
     /// # Errors
