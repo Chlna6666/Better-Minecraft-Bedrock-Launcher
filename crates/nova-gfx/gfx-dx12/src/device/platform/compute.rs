@@ -261,6 +261,13 @@ impl Dx12Device {
                 );
             }
             for binding in &buffers {
+                // Multiple read-only descriptors may reference the same physical
+                // buffer. Emit exactly one transition per native resource:
+                // repeating the original StateBefore after the first barrier
+                // would make the second transition invalid in this command list.
+                if final_buffers.contains(&binding.buffer.buffer) {
+                    continue;
+                }
                 let buffer = self.buffers.get(binding.buffer.buffer)?;
                 let resource = buffer.resource.as_ref().ok_or_else(|| {
                     Error::Backend("missing DX12 compute storage resource".into())
