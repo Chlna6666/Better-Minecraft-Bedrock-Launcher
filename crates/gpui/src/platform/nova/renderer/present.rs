@@ -17,6 +17,8 @@ struct SidecarBridgeCpuTrace {
     producer_us: u128,
     producer_max_us: u128,
     independent_calls: u64,
+    native_producer_calls: u64,
+    native_producer_us: u128,
     consumer_calls: u64,
     consumer_commands: u64,
     consumer_us: u128,
@@ -27,6 +29,7 @@ struct SidecarBridgeCpuTrace {
 
 enum SidecarBridgeCpuPhase {
     Producer { passes: usize, independent: bool },
+    NativeProducer { producers: usize },
     Consumer { commands: usize, has_predecessor: bool },
 }
 
@@ -35,7 +38,8 @@ enum SidecarBridgeCpuPhase {
 /// remain separate; do not present these values as GPU compositor latency.
 fn sidecar_bridge_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
+    *ENABLED.get_or_init(|| cfg!(debug_assertions) ||
+        std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
 }
 
 fn record_sidecar_bridge_cpu(
@@ -62,6 +66,11 @@ fn record_sidecar_bridge_cpu(
                 trace.producer_max_us = trace.producer_max_us.max(micros);
                 trace.independent_calls += u64::from(independent);
             }
+            SidecarBridgeCpuPhase::NativeProducer { producers } => {
+                trace.native_producer_calls += producers as u64;
+                trace.native_producer_us = trace.native_producer_us
+                    .saturating_add(micros);
+            }
             SidecarBridgeCpuPhase::Consumer { commands, has_predecessor } => {
                 trace.consumer_calls += 1;
                 trace.consumer_commands += commands as u64;
@@ -76,12 +85,14 @@ fn record_sidecar_bridge_cpu(
             return;
         }
         eprintln!(
-            "gpui3d native_bridge_cpu producer_calls={} producer_passes={} independent_calls={} producer_avg_us={:.1} producer_max_us={} consumer_calls={} consumer_commands={} linked_consumers={} consumer_avg_us={:.1} consumer_max_us={} pending_peak={} gpu_execution_time=not_measured_by_cpu_trace",
+            "gpui3d native_bridge_cpu producer_calls={} producer_passes={} independent_calls={} producer_avg_us={:.1} producer_max_us={} native_producer_calls={} native_producer_host_avg_us={:.1} consumer_calls={} consumer_commands={} linked_consumers={} consumer_avg_us={:.1} consumer_max_us={} pending_peak={} gpu_execution_time=not_measured_by_cpu_trace",
             trace.producer_calls,
             trace.producer_passes,
             trace.independent_calls,
             trace.producer_us as f64 / trace.producer_calls.max(1) as f64,
             trace.producer_max_us,
+            trace.native_producer_calls,
+            trace.native_producer_us as f64 / trace.native_producer_calls.max(1) as f64,
             trace.consumer_calls,
             trace.consumer_commands,
             trace.linked_consumers,
@@ -193,10 +204,38 @@ impl ExtensionSubmission<'_> {
         Ok(submission)
     }
 
-    fn submit<D: PresentationDevice + ResourceDevice>(
+    fn submit<D: PresentationDevice + ResourceDevice + PipelineDevice>(
         mut self,
         device: &mut D,
     ) -> Result<Option<SubmissionId>> {
+        // Generic 3D producers submit directly through gfx-core on this
+        // device owner, independently of the GPUI 2D frame-graph plan.
+        // Track each returned native fence immediately: a later graphics or
+        // swapchain failure must never orphan an in-flight 3D allocation.
+        let native_started = sidecar_bridge_trace_enabled().then(Instant::now);
+        let mut last_native_submission = None;
+        let frame_resource_index = self.frame_resource_index;
+        let pending = &mut self.pending;
+        let native_producer_count = self.registry.submit_native_offscreen(device, |submission| {
+            pending.push(PendingSubmission {
+                submission,
+                predecessors: SmallVec::new(),
+                frame_resource_index,
+                publication: None,
+            });
+            last_native_submission = Some(submission);
+        })?;
+        if let Some(start) = native_started
+            && native_producer_count != 0
+        {
+            record_sidecar_bridge_cpu(
+                SidecarBridgeCpuPhase::NativeProducer {
+                    producers: native_producer_count,
+                },
+                start.elapsed(),
+                self.pending.len(),
+            );
+        }
         let computes = self.registry.compute_passes().to_vec();
         let mixed = !computes.is_empty();
         if mixed && !device.ordered_mixed_graphics_compute_supported() {
@@ -225,7 +264,7 @@ impl ExtensionSubmission<'_> {
             && device.independent_graphics_queue_available();
         let cpu_started = (count > 0 && sidecar_bridge_trace_enabled()).then(Instant::now);
         let mut cursor = 0usize;
-        let mut last = None;
+        let mut last = last_native_submission;
         for stage in computes {
             if let Some(submission) =
                 self.submit_graphics(device, cursor..stage.after_graphics_pass, false)?
@@ -474,7 +513,7 @@ pub(super) fn color_layer_passes(
     passes
 }
 
-fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice>(
+fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice + PipelineDevice>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
