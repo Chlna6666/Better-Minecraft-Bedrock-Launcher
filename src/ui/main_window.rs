@@ -312,6 +312,19 @@ impl MainWindowView {
         let mut events = crate::core::minecraft::diagnostics::subscribe();
         let main_window = window.window_handle();
         cx.spawn(async move |handle, cx| {
+            let interrupted = crate::tasks::runtime::run_io_blocking(|| {
+                crate::core::minecraft::diagnostics::recover_interrupted_sessions()
+            }).await.unwrap_or_default();
+            #[cfg(target_os = "windows")]
+            for report in interrupted {
+                if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+                    crate::core::minecraft::diagnostics::enrich_windows_wer(report).await;
+                }) {
+                    warn!(%error, "无法调度中断会话的 Windows WER 恢复");
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            let _ = interrupted;
             let pending = crate::tasks::runtime::run_io_blocking(|| {
                 crate::core::minecraft::diagnostics::recent_reports(1, true)
                     .into_iter().next()
