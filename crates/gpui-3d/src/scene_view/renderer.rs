@@ -1,6 +1,6 @@
 use super::{
     SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
-    sidecar_surface::SidecarSurface, projection::FrameProjection,
+    sidecar_surface::{NativeOffscreenPass, SidecarSurface}, projection::FrameProjection,
 };
 use crate::prepare::StructuralDrawDelta;
 use anyhow::{anyhow, bail};
@@ -649,7 +649,7 @@ struct SidecarGpuBackend {
     /// native submission ordered before GPUI samples its completed texture.
     /// Device calls remain on this native owner for DX11/GL correctness.
     offscreen: Option<SidecarSurface>,
-    pending_passes: Vec<gpui::RendererExtensionPass>,
+    pending_passes: Vec<NativeOffscreenPass>,
     /// Capture epochs enter this list when their producer passes are encoded;
     /// they are moved to submitted candidates only when GPUI drains those
     /// passes, and published only after the host accepts the GPU submission.
@@ -805,6 +805,9 @@ impl SidecarGpuBackend {
             // drained passes during a subsequent, unrelated GUI frame.
             self.pending_capture_epochs.clear();
             self.submitted_capture_epochs.clear();
+            // A failed previous native submission is not published. Never
+            // resubmit its stale work when a new SceneView frame begins.
+            self.pending_passes.clear();
         }
     }
 
@@ -1180,8 +1183,15 @@ impl RendererExtensionRenderer for Renderer {
         self.backend.render_passes_submitted();
     }
 
-    fn drain_render_passes(&mut self, passes: &mut Vec<gpui::RendererExtensionPass>) {
-        self.backend.drain_render_passes(passes);
+    fn has_native_offscreen_work(&self) -> bool {
+        self.backend.has_native_offscreen_work()
+    }
+
+    fn submit_native_offscreen(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<Option<gfx_core::SubmissionId>> {
+        self.backend.submit_native_offscreen(device)
     }
 
     fn needs_gpu_completion(&self) -> bool {
@@ -1220,11 +1230,44 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         self.offscreen.is_some()
     }
 
-    fn drain_render_passes(&mut self, passes: &mut Vec<gpui::RendererExtensionPass>) {
-        // GPUI's host renders these offscreen passes first, then samples the
-        // per-SceneView color target at the original extension painter order.
-        passes.append(&mut self.pending_passes);
+    fn has_native_offscreen_work(&self) -> bool {
+        !self.pending_passes.is_empty()
+    }
+
+    fn submit_native_offscreen(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<Option<gfx_core::SubmissionId>> {
+        if self.pending_passes.is_empty() {
+            return Ok(None);
+        }
+        let started = crate::gpu_submission_trace::enabled().then(Instant::now);
+        // The 3D renderer owns the native command ordering. Borrow immutable
+        // Arc-backed RenderCommand spans directly: no GPUI 2D command encoder,
+        // global pass registry or per-DrawIndirect clone on the hot path.
+        let commands = self.pending_passes.iter()
+            .map(NativeOffscreenPass::commands)
+            .collect::<Vec<_>>();
+        let tags = self.pending_passes.iter()
+            .map(|pass| pass.gpu_work_tag)
+            .collect::<Vec<_>>();
+        let count = commands.len();
+        // Independent queue synchronization remains inside the graphics
+        // backend; when unavailable submit on the shared primary owner queue.
+        let submitted = device.submit_offscreen_graphics(&commands, &tags, true)?;
+        drop(commands);
+        self.pending_passes.clear();
+        // The final GUI sampler uses this native producer's queue ordering.
+        // Submission acceptance != fence completion or resource retirement.
         self.submitted_capture_epochs.append(&mut self.pending_capture_epochs);
+        if let Some(started) = started {
+            crate::gpu_submission_trace::observe(
+                self.backend,
+                crate::gpu_submission_trace::Phase::OffscreenSubmit,
+                count, 0, started.elapsed(),
+            );
+        }
+        Ok(submitted)
     }
 
     fn render_passes_submitted(&mut self) {
