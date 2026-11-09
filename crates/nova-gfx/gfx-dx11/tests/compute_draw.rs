@@ -7,12 +7,11 @@ use windows::{
     core::PCSTR,
 };
 
-fn shader(
-    device: &mut Dx11Device,
+fn compile_shader_binary(
     source: &str,
     stage: ShaderStage,
     entry: &str,
-) -> ShaderModuleId {
+) -> ShaderBinary {
     let module = gfx_shader::WgslModule::parse(source).expect("WGSL");
     let ShaderCode::Hlsl(hlsl) = module.compile_hlsl_dx11(stage, entry).expect("HLSL").code else {
         panic!("HLSL");
@@ -56,10 +55,19 @@ fn shader(
     let bytes = unsafe {
         std::slice::from_raw_parts(code.GetBufferPointer().cast(), code.GetBufferSize()).to_vec()
     };
+    ShaderBinary::dx_bytecode(stage, entry, bytes)
+}
+
+fn shader(
+    device: &mut Dx11Device,
+    source: &str,
+    stage: ShaderStage,
+    entry: &str,
+) -> ShaderModuleId {
     device
         .create_shader_module(&ShaderModuleDescriptor {
             label: None,
-            binary: ShaderBinary::dx_bytecode(stage, entry, bytes),
+            binary: compile_shader_binary(source, stage, entry),
         })
         .expect("native shader")
 }
@@ -521,4 +529,22 @@ fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
     let probe = (8 * 16 + 8) * 4;
     assert_eq!(&pixels.bytes[probe..probe + 4], &[0, 255, 0, 255]);
     device.wait_queue_idle().expect("GPU completion");
+}
+
+#[test]
+#[ignore = "requires D3D11 hardware and native GPU readback"]
+fn compute_uav_to_srv_to_storage_image_roundtrip() {
+    let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("D3D11 device");
+    let writer = compile_shader_binary(
+        gfx_core::conformance::COMPUTE_RESOURCE_SET_WRITER_WGSL,
+        ShaderStage::Compute,
+        "write_data",
+    );
+    let reader = compile_shader_binary(
+        gfx_core::conformance::COMPUTE_RESOURCE_SET_READER_WGSL,
+        ShaderStage::Compute,
+        "write_image",
+    );
+    gfx_core::conformance::compute_resource_set_roundtrip(&mut device, writer, reader)
+        .expect("native D3D11 UAV/SRV image visibility and readback");
 }
