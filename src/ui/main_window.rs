@@ -333,7 +333,7 @@ impl MainWindowView {
                 handle.update(cx, |_, cx| {
                     cx.update_global(
                         |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
-                            state.select_report(report);
+                            state.receive_report(report);
                         },
                     );
                     cx.notify();
@@ -349,7 +349,7 @@ impl MainWindowView {
                     handle.update(cx, |_, cx| {
                         cx.update_global(
                             |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
-                                state.select_report(report);
+                                state.receive_report(report);
                             },
                         );
                         cx.notify();
