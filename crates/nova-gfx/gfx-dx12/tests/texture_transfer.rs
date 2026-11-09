@@ -95,3 +95,47 @@ fn texture_write_round_trips_offset_and_row_padding() {
         assert!(device.last_texture_transfer_time().is_some());
     }
 }
+
+
+/// Native COPY hardware acceptance, private timeline and cross-queue waits.
+/// Only the validation path blocks the CPU; production never calls wait here.
+#[test]
+#[ignore = "requires D3D12 dedicated COPY queue and a hardware driver"]
+fn dedicated_copy_queue_buffer_transfer_waits_for_native_gpu_completion() {
+    use gfx_core::{GpuBufferCopy, GpuQueueId, GpuWorkStage, SubmissionDevice};
+    let mut device = match Dx12Device::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(_)) => return,
+        Err(error) => panic!("D3D12 device initialization failed: {error}"),
+    };
+    let Some(copy_queue) = device.independent_queue(GpuWorkStage::Transfer) else {
+        eprintln!("DX12 native COPY queue unavailable; skipping");
+        return;
+    };
+    let upload = device.create_buffer(&BufferDescriptor {
+        label: Some("COPY source".into()),
+        size: 64,
+        usage: BufferUsage::COPY_SRC,
+        memory_location: MemoryLocation::CpuToGpu,
+    }).expect("upload buffer");
+    let destination = device.create_buffer(&BufferDescriptor {
+        label: Some("COPY destination".into()),
+        size: 64,
+        usage: BufferUsage::COPY_DST | BufferUsage::STORAGE,
+        memory_location: MemoryLocation::GpuOnly,
+    }).expect("device buffer");
+    device.write_buffer(upload, 0, &[0x31; 64]).expect("upload contents");
+    let producer = device.submit_buffer_copies_on_queue(copy_queue, &[GpuBufferCopy {
+        source: upload, source_offset: 0,
+        destination, destination_offset: 0, bytes: 64,
+    }]).expect("native typed COPY command execution");
+    let join = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, producer)
+        .expect("GPU-side graphics wait on COPY producer");
+    assert_eq!(join.producer(), producer);
+    let primary = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
+        .expect("primary queue fence after COPY wait");
+    device.wait_submission(primary).expect("native primary GPU join");
+    device.wait_submission(producer).expect("native COPY completion");
+    device.destroy_buffer(destination).expect("destroy copied buffer");
+    device.destroy_buffer(upload).expect("destroy upload staging");
+}
