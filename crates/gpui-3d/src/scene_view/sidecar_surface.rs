@@ -124,6 +124,20 @@ impl Target {
         self.extent == extent && self.capture.queued.is_none()
     }
 
+    fn recycle_placement(
+        &mut self,
+        color_view: TextureViewId,
+        placement: PlacementResources,
+    ) -> Result<(), PlacementResources> {
+        if self.color_view != color_view
+            || self.recycled_placements.len() >= MAX_RECYCLED_PLACEMENTS_PER_VIEW
+        {
+            return Err(placement);
+        }
+        self.recycled_placements.push(placement);
+        Ok(())
+    }
+
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         PlacementResources { binding: self.binding, buffer: self.placement }.destroy(device)?;
         for placement in self.recycled_placements {
@@ -609,15 +623,16 @@ impl SidecarSurface {
         // Retired descriptor generations can reference still-active color
         // targets, so release them separately after verified completion.
         while let Some(retired) = self.ready_placement_release.pop() {
-            if let Some(target) = self.targets.get_mut(&retired.owner)
-                && target.color_view == retired.color_view
-                && target.recycled_placements.len() < MAX_RECYCLED_PLACEMENTS_PER_VIEW
-            {
-                target.recycled_placements.push(retired.resources);
-            } else {
-                // A resized or removed target cannot inherit descriptors
-                // referencing its predecessor's sampled color view.
-                retired.resources.destroy(device)?;
+            let unused = match self.targets.get_mut(&retired.owner) {
+                Some(target) => target
+                    .recycle_placement(retired.color_view, retired.resources)
+                    .err(),
+                None => Some(retired.resources),
+            };
+            if let Some(placement) = unused {
+                // A resized/removed target or a full idle cache cannot
+                // inherit descriptors from another texture generation.
+                placement.destroy(device)?;
             }
         }
         // Destroy only fence-proven targets on the native owner. A backend
@@ -1030,6 +1045,38 @@ mod tests {
         assert_eq!(surface.ready_placement_release.len(), 1);
         assert_eq!(surface.awaiting_pipeline_gpu.len(), 0);
         assert_eq!(surface.ready_pipeline_release.len(), 1);
+    }
+
+    #[test]
+    fn completed_placement_recycle_rejects_old_color_views_and_unbounded_growth() {
+        let view = TextureViewId::from_parts(1, 1);
+        let different_view = TextureViewId::from_parts(2, 1);
+        let mut target = Target {
+            color: TextureId::from_parts(1, 1),
+            color_view: view,
+            depth: TextureId::from_parts(2, 1),
+            depth_view: TextureViewId::from_parts(3, 1),
+            binding: BindGroupId::from_parts(1, 1),
+            placement: BufferId::from_parts(1, 1),
+            extent: Extent2d::new(32, 32).unwrap(),
+            region: ScissorRect { x: 0, y: 0, width: 32, height: 32 },
+            host_extent: Extent2d::new(32, 32).unwrap(),
+            rounded_mask: RoundedMask::default(),
+            capture: CaptureEpoch::default(),
+            recycled_placements: Vec::new(),
+        };
+        let pair = |id| PlacementResources {
+            binding: BindGroupId::from_parts(id, 1),
+            buffer: BufferId::from_parts(id, 1),
+        };
+        assert!(target.recycle_placement(different_view, pair(2)).is_err());
+        assert!(target.recycled_placements.is_empty());
+        for id in 2..(2 + MAX_RECYCLED_PLACEMENTS_PER_VIEW as u32) {
+            assert!(target.recycle_placement(view, pair(id)).is_ok());
+        }
+        assert_eq!(target.recycled_placements.len(), MAX_RECYCLED_PLACEMENTS_PER_VIEW);
+        assert!(target.recycle_placement(view, pair(99)).is_err());
+        assert_eq!(target.recycled_placements.len(), MAX_RECYCLED_PLACEMENTS_PER_VIEW);
     }
 
     #[test]
