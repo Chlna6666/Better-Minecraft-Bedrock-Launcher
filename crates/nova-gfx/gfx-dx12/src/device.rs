@@ -6156,6 +6156,14 @@ mod platform {
                 ))
         }
 
+        fn submit_buffer_copies_on_queue(
+            &mut self,
+            queue: gfx_core::GpuQueueId,
+            copies: &[gfx_core::GpuBufferCopy],
+        ) -> Result<SubmissionId> {
+            self.submit_copy_buffer_batch_native(queue, copies)
+        }
+
         fn enqueue_gpu_queue_wait(
             &mut self,
             target_queue: gfx_core::GpuQueueId,
