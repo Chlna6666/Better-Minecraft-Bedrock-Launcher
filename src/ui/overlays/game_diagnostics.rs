@@ -28,7 +28,9 @@ fn details(report: &GameSessionReport) -> String {
         report.started_at,
         report.ended_at.map_or_else(|| "未知".to_string(), |t| t.to_string()),
         report.exit_code.map_or_else(|| "未知".to_string(), |code| format!("0x{code:08X}")),
-        report.summary
+        if let Some(wer) = &report.wer_fault {
+            format!("{}；Windows WER 故障模块：{}，异常码：{}", report.summary, wer.module, wer.exception_code)
+        } else { report.summary.clone() }
     )
 }
 
@@ -40,6 +42,7 @@ pub fn render_game_diagnostics_overlay(
 ) -> Option<AnyElement> {
     let report = state.pending.clone()?;
     let export_state = state.export_status.clone();
+    let history = state.history.clone();
     let card_width = (window_width - px(32.)).min(px(720.)).max(px(300.));
     let card_height = (window_height - px(48.)).min(px(610.)).max(px(320.));
     let for_copy = details(&report);
@@ -82,6 +85,24 @@ pub fn render_game_diagnostics_overlay(
                                 div().text_size(px(12.)).text_color(colors.text_secondary)
                                     .child(format!("版本：{}   进程 PID：{}", report.version, report.pid))
                             )
+                    )
+                    .child(
+                        div().flex().flex_wrap().gap(px(6.))
+                            .children(history.into_iter().take(12).enumerate().map(|(index, prior)| {
+                                let summary = format!("{} · {}", prior.version, prior.started_at.format("%m-%d %H:%M"));
+                                div().id(("game-crash-history-item", index))
+                                    .cursor_pointer().rounded(px(6.))
+                                    .border_1().border_color(colors.border)
+                                    .px(px(9.)).py(px(6.)).text_size(px(11.))
+                                    .text_color(colors.text_secondary)
+                                    .child(summary)
+                                    .on_click(move |_, _, cx| {
+                                        cx.update_global(|state: &mut GameDiagnosticsState, _| {
+                                            state.pending = Some(prior.clone());
+                                            state.export_status = None;
+                                        });
+                                    })
+                            }))
                     )
                     .child(
                         div().flex_1().min_h(px(0.)).overflow_y_scrollbar()

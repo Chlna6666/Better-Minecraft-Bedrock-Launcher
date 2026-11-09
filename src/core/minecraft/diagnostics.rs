@@ -156,9 +156,10 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
     for found in events.find_iter(xml) {
         let block = found.as_str();
         if !block.contains("<EventID>1000</EventID>") { continue; }
-        let pid_text = data(block, "ProcessId")?;
+        let Some(pid_text) = data(block, "ProcessId") else { continue };
         let actual_pid = u32::from_str_radix(pid_text.trim_start_matches("0x"), 16)
-            .or_else(|_| pid_text.parse::<u32>()).ok()?;
+            .or_else(|_| pid_text.parse::<u32>()).ok();
+        let Some(actual_pid) = actual_pid else { continue };
         if actual_pid != report.pid { continue; }
         let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
         if !app_name.contains("minecraft") { continue; }

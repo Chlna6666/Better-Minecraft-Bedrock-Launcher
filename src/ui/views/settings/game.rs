@@ -2,6 +2,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::*;
+use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 
 use super::common::{snapshot_from_state, spawn_persist_settings};
 use super::rows::{setting_dropdown_row, setting_toggle_row, tab_title};
@@ -85,4 +86,27 @@ pub(super) fn render_game_tab(
             "settings-modify-manifest",
             |settings| settings.modify_appx_manifest = !settings.modify_appx_manifest,
         ))
+        .child(
+            div()
+                .id("game-crash-history-settings")
+                .cursor_pointer()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(colors.border)
+                .p(px(14.))
+                .text_color(colors.text_primary)
+                .child("查看游戏崩溃报告历史（仅保存在本机）")
+                .on_click(|_, _, cx| {
+                    cx.spawn(async move |cx| {
+                        let history = crate::tasks::runtime::run_io_blocking(|| {
+                            crate::core::minecraft::diagnostics::recent_reports(20, false)
+                        }).await.unwrap_or_default();
+                        let _ = cx.update_global(|state: &mut GameDiagnosticsState, _| {
+                            state.pending = history.first().cloned();
+                            state.history = history;
+                            state.export_status = None;
+                        });
+                    }).detach();
+                })
+        )
 }
