@@ -759,6 +759,27 @@ pub trait CommandDevice {
 
 /// Tracks deferred GPU submissions.
 pub trait SubmissionDevice {
+    /// Enqueue a nonblocking native completion checkpoint AFTER work in the
+    /// specified domain has already entered the ordered primary GPU queue.
+    ///
+    /// The returned SubmissionId proves completion of *all preceding work on
+    /// that queue*, not merely command acceptance. It does NOT make any
+    /// independent Compute/Transfer queues wait: cross-queue dependencies
+    /// require an explicit native semaphore/fence wait and must not use this
+    /// method as a substitute. A backend without a real fence returns
+    /// Unavailable instead of fabricating a completed submission.
+    ///
+    /// A caller should checkpoint once per useful batch/retirement epoch,
+    /// not per resource or dispatch; no CPU waiting is permitted here.
+    fn checkpoint_ordered_queue(
+        &mut self,
+        _stage: crate::GpuWorkStage,
+    ) -> Result<SubmissionId> {
+        Err(Error::Unavailable(
+            "native ordered queue checkpoint is unsupported".into(),
+        ))
+    }
+
     /// Blocks until all earlier work on this device's graphics queue has completed on the GPU.
     ///
     /// This is a coarse synchronization point for rare operations such as memory reclamation;
