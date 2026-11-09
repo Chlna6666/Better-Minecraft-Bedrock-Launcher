@@ -48,12 +48,27 @@ pub fn render_diagnostics_overlay(
     let log_tail_label = t!("Diagnostics.modal.log_tail");
     let copy_label = t!("Diagnostics.modal.copy");
     let github_label = t!("Diagnostics.modal.github");
-    let sentry_label = if auto_sentry_enabled {
+    let sentry_label = if state.submitting_sentry {
         t!("Diagnostics.modal.sentry_auto")
-    } else if share_payload.sentry_dsn.is_some() {
-        t!("Diagnostics.modal.sentry")
-    } else {
+    } else if report.sentry_submitted_at.is_some() {
+        t!("Diagnostics.modal.sentry_submitted")
+    } else if share_payload.sentry_dsn.is_none() {
         t!("Diagnostics.modal.sentry_unconfigured")
+    } else if state.sentry_submission_failed {
+        t!("Diagnostics.modal.sentry_retry")
+    } else if auto_sentry_enabled && !state.auto_report_attempted {
+        t!("Diagnostics.modal.sentry_auto")
+    } else {
+        t!("Diagnostics.modal.sentry")
+    };
+    let sentry_status = if let Some(sent_at) = report.sentry_submitted_at.as_deref() {
+        format!("{}: {sent_at}", t!("Diagnostics.modal.sentry_status_submitted"))
+    } else if state.submitting_sentry {
+        t!("Diagnostics.modal.sentry_status_sending").to_string()
+    } else if state.sentry_submission_failed {
+        t!("Diagnostics.modal.sentry_status_failed").to_string()
+    } else {
+        t!("Diagnostics.modal.sentry_status_unsent").to_string()
     };
     let dismiss_label = t!("Diagnostics.modal.dismiss");
 
@@ -174,7 +189,22 @@ pub fn render_diagnostics_overlay(
                         .line_height(px(20.))
                         .text_color(colors.text_primary)
                         .child(detail_summary),
-                ),
+                )
+                .child(if crash_report {
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .whitespace_normal()
+                        .text_color(if state.sentry_submission_failed {
+                            colors.danger
+                        } else {
+                            colors.text_secondary
+                        })
+                        .child(sentry_status)
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }),
         )
         .child(
             div()
@@ -335,8 +365,8 @@ pub fn render_diagnostics_overlay(
                                 sentry_label,
                                 colors,
                                 true,
-                                !auto_sentry_enabled
-                                    && share_payload.sentry_dsn.is_some()
+                                share_payload.sentry_dsn.is_some()
+                                    && report.sentry_submitted_at.is_none()
                                     && !state.submitting_sentry,
                             )
                             .on_click({
@@ -344,69 +374,10 @@ pub fn render_diagnostics_overlay(
                                 let dsn = share_payload.sentry_dsn.clone();
                                 move |_event, _window, cx| {
                                     let Some(dsn) = dsn.clone() else {
-                                        toast::error(
-                                            cx,
-                                            t!("Diagnostics.toast.sentry_unconfigured"),
-                                        );
+                                        toast::error(cx, t!("Diagnostics.toast.sentry_unconfigured"));
                                         return;
                                     };
-
-                                    cx.update_global(
-                                        |diagnostics_state: &mut DiagnosticsState, _cx| {
-                                            diagnostics_state.submitting_sentry = true;
-                                        },
-                                    );
-                                    let report = report.clone();
-                                    cx.spawn(async move |cx| {
-                                        let result = cx
-                                            .background_spawn(async move {
-                                                submit_report_to_sentry(&report, &dsn)
-                                            })
-                                            .await;
-
-                                        let _ = cx.update(move |cx| match result {
-                                            Ok(()) => {
-                                                if let Err(error) =
-                                                    crate::utils::diagnostics::acknowledge_pending_report()
-                                                {
-                                                    toast::error(
-                                                        cx,
-                                                        SharedString::from(format!(
-                                                            "{}: {error:#}",
-                                                            t!("common.save_failed")
-                                                        )),
-                                                    );
-                                                }
-                                                clear_diagnostics_marker_files();
-                                                cx.update_global(
-                                                    |diagnostics_state: &mut DiagnosticsState, _cx| {
-                                                        diagnostics_state.clear();
-                                                    },
-                                                );
-                                                toast::success(
-                                                    cx,
-                                                    t!("Diagnostics.toast.sentry_success"),
-                                                );
-                                            }
-                                            Err(error) => {
-                                                cx.update_global(
-                                                    |diagnostics_state: &mut DiagnosticsState, _cx| {
-                                                        diagnostics_state.submitting_sentry = false;
-                                                    },
-                                                );
-                                                toast::error(
-                                                    cx,
-                                                    SharedString::from(format!(
-                                                        "{}: {error:#}",
-                                                        t!("Diagnostics.toast.sentry_failed")
-                                                    )),
-                                                );
-                                            }
-                                        });
-
-                                        Ok::<(), anyhow::Error>(())
-                                    })
-                                    .detach();
+                                    spawn_sentry_submission(cx, report.clone(), dsn, false);
                                 }
                             }).into_any_element()
                             } else {
@@ -423,24 +394,35 @@ pub fn render_diagnostics_overlay(
                             )
                             .on_click(move |_event, _window, cx| {
                                 if persisted_report {
-                                    if let Err(error) =
-                                        crate::utils::diagnostics::acknowledge_pending_report()
-                                    {
-                                        toast::error(
-                                            cx,
-                                            SharedString::from(format!(
-                                                "{}: {error:#}",
-                                                t!("common.save_failed")
-                                            )),
-                                        );
-                                        return;
+                                    match crate::utils::diagnostics::acknowledge_pending_report_if_matches(&report.id) {
+                                        Ok(true) => {
+                                            clear_diagnostics_marker_files();
+                                            cx.update_global(
+                                                |state: &mut DiagnosticsState, _cx| {
+                                                    if state.pending_report.as_ref().is_some_and(
+                                                        |pending| pending.id == report.id
+                                                    ) {
+                                                        state.clear();
+                                                    }
+                                                },
+                                            );
+                                        }
+                                        Ok(false) => {
+                                            tracing::warn!(
+                                                target: "bmcbl::diagnostics",
+                                                "dismiss ignored because pending report changed"
+                                            );
+                                        }
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!(
+                                                    "{}: {error:#}",
+                                                    t!("common.save_failed")
+                                                )),
+                                            );
+                                        }
                                     }
-                                    clear_diagnostics_marker_files();
-                                    cx.update_global(
-                                        |state: &mut DiagnosticsState, _cx| {
-                                            state.clear();
-                                        },
-                                    );
                                 } else {
                                     cx.update_global(
                                         |state: &mut DiagnosticsState, _cx| {
@@ -457,70 +439,103 @@ pub fn render_diagnostics_overlay(
 }
 
 pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
-    let auto_sentry_enabled = cx
+    let auto_enabled = cx
         .global::<crate::ui::views::settings::state::SettingsPageState>()
         .error_report_sentry_auto;
+    if !auto_enabled {
+        return;
+    }
     let report = {
         let state = cx.global::<DiagnosticsState>();
-        if state.auto_report_attempted || state.submitting_sentry || !auto_sentry_enabled {
+        if state.auto_report_attempted || state.submitting_sentry {
             None
         } else {
             state.pending_report
                 .as_ref()
-                .filter(|report| report.is_fatal_incident())
+                .filter(|report| report.is_fatal_incident() && report.sentry_submitted_at.is_none())
                 .cloned()
         }
     };
-
     let Some(report) = report else {
         return;
     };
-    let share_payload = diagnostics_share_payload(&report);
-    let Some(dsn) = share_payload.sentry_dsn else {
+    let Some(dsn) = diagnostics_share_payload(&report).sentry_dsn else {
         return;
     };
+    spawn_sentry_submission(cx, report, dsn, true);
+}
 
-    cx.update_global(|diagnostics_state: &mut DiagnosticsState, _cx| {
-        diagnostics_state.auto_report_attempted = true;
-        diagnostics_state.submitting_sentry = true;
-    });
+/// Uploading a crash report never acknowledges or dismisses it. Both manual
+/// and automatic flows share the same race guard and persisted receipt.
+fn spawn_sentry_submission(cx: &mut App, report: DiagnosticsReport, dsn: String, automatic: bool) {
+    let report_id = report.id.clone();
+    if !cx.update_global(|state: &mut DiagnosticsState, _cx| {
+        state.begin_sentry_submission(&report_id, automatic)
+    }) {
+        return;
+    }
 
     cx.spawn(async move |cx| {
-        let result = cx
-            .background_spawn(async move { submit_report_to_sentry(&report, &dsn) })
-            .await;
+        let result = cx.background_spawn(async move {
+            submit_report_to_sentry(&report, &dsn)?;
+            let sent_at = chrono::Utc::now().to_rfc3339();
+            let receipt_saved = match crate::utils::diagnostics::record_sentry_submission_receipt(
+                &report.id, &sent_at
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "bmcbl::diagnostics",
+                        reason = %crate::utils::log_privacy::redact_log_text(&error.to_string()),
+                        "Sentry upload succeeded, but receipt persistence failed"
+                    );
+                    false
+                }
+            };
+            Ok::<(String, bool), anyhow::Error>((sent_at, receipt_saved))
+        }).await;
 
-        let _ = cx.update(move |cx| match result {
-            Ok(()) => {
-                if let Err(error) = crate::utils::diagnostics::acknowledge_pending_report() {
+        let _ = cx.update(move |cx| {
+            let updated = cx.update_global(|state: &mut DiagnosticsState, _cx| {
+                match &result {
+                    Ok((sent_at, _)) => {
+                        state.finish_sentry_submission(&report_id, Some(sent_at.clone()))
+                    }
+                    Err(_) => state.finish_sentry_submission(&report_id, None),
+                }
+            });
+            // Ignore callbacks from reports that were dismissed or replaced.
+            if !updated {
+                return;
+            }
+            match result {
+                Ok((_, receipt_saved)) => {
+                    toast::success(cx, t!("Diagnostics.toast.sentry_success"));
+                    if !receipt_saved {
+                        toast::error(cx, t!("Diagnostics.toast.sentry_receipt_failed"));
+                    }
+                }
+                Err(error) => {
+                    let safe = crate::utils::log_privacy::redact_log_text(
+                        &error.to_string()
+                    ).into_owned();
+                    tracing::warn!(
+                        target: "bmcbl::diagnostics",
+                        reason = %safe,
+                        "Sentry submission failed; report remains available"
+                    );
                     toast::error(
                         cx,
-                        SharedString::from(format!("{}: {error:#}", t!("common.save_failed"))),
+                        SharedString::from(format!(
+                            "{}: {safe}",
+                            t!("Diagnostics.toast.sentry_failed"),
+                        )),
                     );
                 }
-                clear_diagnostics_marker_files();
-                cx.update_global(|diagnostics_state: &mut DiagnosticsState, _cx| {
-                    diagnostics_state.clear();
-                });
-                toast::success(cx, t!("Diagnostics.toast.sentry_success"));
-            }
-            Err(error) => {
-                cx.update_global(|diagnostics_state: &mut DiagnosticsState, _cx| {
-                    diagnostics_state.submitting_sentry = false;
-                });
-                toast::error(
-                    cx,
-                    SharedString::from(format!(
-                        "{}: {error:#}",
-                        t!("Diagnostics.toast.sentry_failed")
-                    )),
-                );
             }
         });
-
         Ok::<(), anyhow::Error>(())
-    })
-    .detach();
+    }).detach();
 }
 
 fn clear_diagnostics_marker_files() {
