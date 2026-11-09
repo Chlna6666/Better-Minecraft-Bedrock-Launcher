@@ -178,6 +178,7 @@ impl Compositor {
                     context.offscreen(post_pass, Format::Rgba8Unorm, post_extent),
                     false,
                     false,
+                    false,
                 )?,
                 |d, id| {
                     let _ = d.destroy_render_pipeline(id);
@@ -195,6 +196,7 @@ impl Compositor {
                     context.offscreen(post_pass, Format::Rgba8Unorm, post_extent),
                     false,
                     true,
+                    false,
                 ) {
                     Ok(pipeline) => Some(cleanup.record(pipeline, |d, id| {
                         let _ = d.destroy_render_pipeline(id);
@@ -297,10 +299,11 @@ impl Compositor {
             target.clone(),
             false,
             false,
+            false,
         )?;
         device.destroy_render_pipeline(std::mem::replace(&mut self.post_pipeline, pipeline))?;
         if let (Some(ms), Some(ms_pipeline)) = (&self.ms_shaders, self.ms_post_pipeline) {
-            match create_pipeline(device, self.pipeline_layout, ms, target, false, true) {
+            match create_pipeline(device, self.pipeline_layout, ms, target.clone(), false, true, false) {
                 Ok(pipeline) => {
                     self.ms_post_pipeline = Some(pipeline);
                     device.destroy_render_pipeline(ms_pipeline)?;
@@ -312,6 +315,28 @@ impl Compositor {
                     return Err(error);
                 }
             }
+        }
+        if let (Some(shader), Some(old)) =
+            (self.froxel_shaders[0], self.froxel_post_pipeline)
+        {
+            let set = [self.shaders[0], shader, self.shaders[2]];
+            let pipeline = create_pipeline(
+                device, self.pipeline_layout, &set, target.clone(),
+                false, false, true,
+            )?;
+            self.froxel_post_pipeline = Some(pipeline);
+            device.destroy_render_pipeline(old)?;
+        }
+        if let (Some(shader), Some(old)) =
+            (self.froxel_shaders[1], self.froxel_ms_post_pipeline)
+        {
+            let set = [self.shaders[0], shader, self.shaders[2]];
+            let pipeline = create_pipeline(
+                device, self.pipeline_layout, &set, target.clone(),
+                false, true, true,
+            )?;
+            self.froxel_ms_post_pipeline = Some(pipeline);
+            device.destroy_render_pipeline(old)?;
         }
         self.post_extent = context.viewport();
         Ok(())
@@ -345,6 +370,7 @@ impl Compositor {
             context.clone(),
             true,
             multisampled,
+            false,
         )?;
         let slot = if multisampled {
             &mut self.ms_pipeline
@@ -495,6 +521,7 @@ fn create_pipeline(
     context: RendererExtensionContext,
     composite: bool,
     multisampled: bool,
+    froxel: bool,
 ) -> gpui::Result<RenderPipelineId> {
     Ok(device.create_render_pipeline(
         &RenderPipelineDescriptor {
@@ -503,11 +530,13 @@ fn create_pipeline(
             vertex_entry_point: "vs_effects".into(),
             fragment_shader: shaders[if composite { 2 } else { 1 }],
             // The multisampled set mirrors this layout with its `_ms` entry points.
-            fragment_entry_point: match (composite, multisampled) {
-                (false, false) => "fs_effects",
-                (true, false) => "fs_composite",
-                (false, true) => "fs_effects_ms",
-                (true, true) => "fs_composite_ms",
+            fragment_entry_point: match (composite, multisampled, froxel) {
+                (false, false, true) => "fs_effects_froxel",
+                (false, true, true) => "fs_effects_froxel_ms",
+                (false, false, false) => "fs_effects",
+                (true, false, _) => "fs_composite",
+                (false, true, false) => "fs_effects_ms",
+                (true, true, _) => "fs_composite_ms",
             }
             .into(),
             vertex_buffers: vec![],
