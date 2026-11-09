@@ -331,9 +331,11 @@ fn prepare_generated(
                 source.origin.x,
                 source.origin.y,
                 source.origin.z,
+                // Uniform sky/block lighting is safe for rectangle merging;
+                // non-uniform per-corner light remains unmerged. AO is tested
+                // per exposed face on the GPU, not dropped globally.
                 f32::from(source.greedy_visible_faces
-                    && source.lighting.is_none()
-                    && source.ambient_occlusion == 0),
+                    && source.lighting.as_ref().is_none_or(|light| light.uniform)),
             ]
                 .into_iter()
                 .flat_map(f32::to_le_bytes),
