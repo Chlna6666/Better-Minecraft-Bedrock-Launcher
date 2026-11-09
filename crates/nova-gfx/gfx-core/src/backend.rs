@@ -1125,7 +1125,7 @@ pub trait OffscreenSubmissionDevice {
     ) -> Result<Option<SubmissionId>>;
 
     /// Hardware-supported independent native graphics-queue availability.
-    fn independent_graphics_queue_available(&self) -> bool;
+    fn supports_independent_offscreen_graphics(&self) -> bool;
 }
 
 impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
@@ -1155,7 +1155,7 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         }
     }
 
-    fn independent_graphics_queue_available(&self) -> bool {
+    fn supports_independent_offscreen_graphics(&self) -> bool {
         PresentationDevice::independent_graphics_queue_available(self)
     }
 }
