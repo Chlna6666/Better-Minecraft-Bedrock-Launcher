@@ -2382,6 +2382,14 @@ mod platform {
             }
             self.prepare_native_queue_buffers(resources)?;
             let encoder = self.create_copy_command_encoder()?;
+            // D3D12 command allocators do not by themselves own all
+            // referenced GPU allocations. Keep every native Copy source and
+            // destination alive until the actual cross-queue join fence (or
+            // through device teardown on a partial native Signal failure).
+            let retained = native.iter().flat_map(|(source, destination, ..)| {
+                [source.clone(), destination.clone()]
+            }).collect::<Vec<_>>();
+            self.command_encoders.get_mut(encoder)?.native_buffer_owners = retained;
             let result = (|| -> Result<SubmissionId> {
                 self.begin_texture_command_encoder(encoder, None)?;
                 let command = self.command_encoders.get(encoder)?.command_list
