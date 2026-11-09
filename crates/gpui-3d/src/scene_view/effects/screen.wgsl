@@ -221,7 +221,7 @@ fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec
 fn effects_shade(input:ScreenOutput)->vec4<f32>{
     let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(uv,min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
     if(depth>=1.0){color=atmosphere(ray);}
-    if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=textureLoad(albedos,at,0);let v=-ray;
+    if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=load_material_albedo(at);let v=-ray;
         if(material.w<0.0){color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;}else{
         let water=material.w>=2.0 && material.w<4.0;let glass=material.w>=4.0 && material.w<6.0;let blended=material.w>=6.0;let metallic=select(select(clamp(material.w,0.0,1.0),clamp(material.w-6.0,0.0,1.0),blended),0.0,water||glass);let coverage=select(1.0,albedo.a,blended);var roughness=material.z;
         let geometric=n;
