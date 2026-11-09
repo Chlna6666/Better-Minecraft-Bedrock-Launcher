@@ -332,6 +332,7 @@ impl EffectsRenderer {
             .ok_or_else(|| anyhow::anyhow!("screen bindings missing"))?;
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
+            color_attachments: Arc::from([]),
             gpu_work_tag: None,
             render_pass: self.compositor.post_pass,
             commands: vec![quad(self.compositor.post_pipeline(multisampled), groups[0])].into(),
