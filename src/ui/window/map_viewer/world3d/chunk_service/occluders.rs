@@ -402,7 +402,70 @@ pub(super) fn gpu_boxes(
     templates: &[gpui_3d::VoxelFaceTemplate],
     materials: &[Arc<Material>],
 ) -> Arc<[gpui_3d::Occluder]> {
-    let cells = band.instances.iter().filter_map(|instance| {
+    // The full-cube fast path stores one indexed cell instead of a six-face
+    // instance. Derive conservative Hi-Z proxies from those same visible cells;
+    // otherwise moving ordinary terrain to cs_mesh would silently drop occluders.
+    let cube_cells = band.cells.iter().enumerate().filter_map(|(index, &kind)| {
+        if kind == 0 || kind == u32::MAX {
+            return None;
+        }
+        let x = index as u32 % band.size[0];
+        let y = index as u32 / band.size[0] % band.size[1];
+        let z = index as u32 / band.size[0] / band.size[1];
+        if band.classes[index] & 16 == 0 {
+            return None;
+        }
+        let start = (kind as usize - 1).checked_mul(6)?;
+        let faces = templates.get(start..start + 6)?;
+        let mut sides = 0;
+        let mut rendered = 0;
+        for face in faces {
+            let material = materials.get(face.material_slot as usize)?;
+            if material.alpha_mode != AlphaMode::Opaque {
+                return None;
+            }
+            let (cell, side) = full_face(
+                face.vertices.map(|v| {
+                    [v.position.x as f64, v.position.y as f64, v.position.z as f64]
+                }),
+                face.neighbour,
+                material.front_face,
+            )?;
+            if cell != [0; 3] {
+                return None;
+            }
+            sides |= side;
+            let [nx, ny, nz] = std::array::from_fn::<_, 3, _>(|axis| {
+                [x, y, z][axis].checked_add_signed(face.neighbour[axis])
+            });
+            let [Some(nx), Some(ny), Some(nz)] = [nx, ny, nz] else {
+                return None;
+            };
+            if nx >= band.size[0] || ny >= band.size[1] || nz >= band.size[2] {
+                return None;
+            }
+            let neighbor = ((nz * band.size[1] + ny) * band.size[0] + nx) as usize;
+            let height = band.origin.y
+                + y as f32
+                + face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
+            if band.cells[neighbor] == 0
+                && height >= (band.section_y * 64) as f32
+                && height < ((band.section_y + 1) * 64) as f32
+            {
+                rendered |= side;
+            }
+        }
+        if sides != 63 || rendered == 0 {
+            return None;
+        }
+        let p = [
+            band.origin.x as i32 + x as i32,
+            band.origin.y as i32 + y as i32,
+            band.origin.z as i32 + z as i32,
+        ];
+        ((0..16).contains(&p[0]) && (0..16).contains(&p[2])).then_some((p, rendered))
+    });
+    let instance_cells = band.instances.iter().filter_map(|instance| {
         let [x, y, z] = instance.position;
         let index = ((z * band.size[1] + y) * band.size[0] + x) as usize;
         if band.classes[index] & 16 == 0 || instance.height != 1.0 {
@@ -462,5 +525,5 @@ pub(super) fn gpu_boxes(
         ];
         ((0..16).contains(&p[0]) && (0..16).contains(&p[2])).then_some((p, rendered))
     });
-    boxes(cells, [0; 3])
+    boxes(cube_cells.chain(instance_cells), [0; 3])
 }

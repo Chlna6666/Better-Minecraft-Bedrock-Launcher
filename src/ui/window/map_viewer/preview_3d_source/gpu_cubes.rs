@@ -99,9 +99,11 @@ mod tests {
                     neighbour: band.neighbours[index],
                 })
                 .collect();
-            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, vec![])
+            let mut templates: Vec<gpui_3d::VoxelFaceTemplate> = templates;
+            let instance_templates = templates.split_off(band.model_faces);
+            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
                 .unwrap()
-                .with_instances(band.classes, templates, band.instances)
+                .with_instances(band.classes, instance_templates, band.instances)
                 .unwrap()
                 .with_y_range(
                     (band.section_y * 64) as f32,
@@ -221,6 +223,11 @@ mod tests {
             Preview3dChunkBlocks::test_cubes(&[[0, 63, 5], [0, 64, 5]]),
         );
         for band in builder.gpu_cube_bands(pos, None).unwrap() {
+            assert!(band.model_faces > 0, "opaque cubes must use native GPU cells");
+            assert!(
+                band.cells.iter().any(|&cell| cell != 0 && cell != u32::MAX),
+                "cube geometry must not be sent through six-face instance jobs"
+            );
             for z in 0..band.size[2] {
                 for y in 0..band.size[1] {
                     for x in 0..band.size[0] {
@@ -294,9 +301,11 @@ mod tests {
                     neighbour: band.neighbours[index],
                 })
                 .collect();
-            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, vec![])
+            let mut templates: Vec<gpui_3d::VoxelFaceTemplate> = templates;
+            let instance_templates = templates.split_off(band.model_faces);
+            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
                 .unwrap()
-                .with_instances(band.classes, templates, band.instances)
+                .with_instances(band.classes, instance_templates, band.instances)
                 .unwrap()
                 .with_y_range(
                     (band.section_y * 64) as f32,
@@ -473,35 +482,73 @@ impl Preview3dMeshBuilder {
                     }
                 }
             }
-            let mut faces = Vec::new();
-            let mut neighbours = Vec::new();
-            let mut ranges = HashMap::default();
-            let instances = records
-                .into_iter()
-                .map(|record| gpui_3d::VoxelMeshInstance {
-                    position: [
-                        (record.key.x - min[0]) as u32,
-                        (record.key.y - min[1]) as u32,
-                        (record.key.z - min[2]) as u32,
-                    ],
-                    faces: ranges
+            // Full opaque cubes are *cells*, not six-face model instances.
+            // The padded halo is computed above before selecting any face.
+            // Unknown/opaque neighbours suppress a face through the non-emitting
+            // sentinel; transparent and detailed blocks never falsely occlude
+            // the opaque cell mesh. GPU cs_mesh checks these cells before it
+            // writes a GeneratedFace, skipping the instance count/scan/emit
+            // stages entirely for ordinary terrain.
+            let mut cells = classes
+                .iter()
+                .map(|&class| if class & 1 != 0 { u32::MAX } else { 0 })
+                .collect::<Vec<u32>>();
+            let mut cube_faces = Vec::new();
+            let mut cube_neighbours = Vec::new();
+            let mut instance_faces = Vec::new();
+            let mut instance_neighbours = Vec::new();
+            let mut cube_models = HashMap::<(u32, u32), u32>::default();
+            let mut instance_ranges = HashMap::<(u32, u32), std::ops::Range<u32>>::default();
+            let mut instances = Vec::new();
+            for record in records {
+                let position = [
+                    (record.key.x - min[0]) as u32,
+                    (record.key.y - min[1]) as u32,
+                    (record.key.z - min[2]) as u32,
+                ];
+                if record.opaque_cube {
+                    let kind = *cube_models
                         .entry((record.faces.start, record.faces.end))
                         .or_insert_with(|| {
-                            let start = faces.len() as u32;
-                            faces.extend_from_slice(
+                            let kind = (cube_faces.len() / 6 + 1) as u32;
+                            cube_faces.extend_from_slice(
                                 &plan.faces[record.faces.start as usize..record.faces.end as usize],
                             );
-                            neighbours.extend_from_slice(
+                            cube_neighbours.extend_from_slice(
                                 &plan.neighbours
                                     [record.faces.start as usize..record.faces.end as usize],
                             );
-                            start..faces.len() as u32
+                            kind
+                        });
+                    let index =
+                        ((position[2] * size[1] + position[1]) * size[0] + position[0]) as usize;
+                    cells[index] = kind;
+                } else {
+                    let range = instance_ranges
+                        .entry((record.faces.start, record.faces.end))
+                        .or_insert_with(|| {
+                            let start = instance_faces.len() as u32;
+                            instance_faces.extend_from_slice(
+                                &plan.faces[record.faces.start as usize..record.faces.end as usize],
+                            );
+                            instance_neighbours.extend_from_slice(
+                                &plan.neighbours
+                                    [record.faces.start as usize..record.faces.end as usize],
+                            );
+                            start..instance_faces.len() as u32
                         })
-                        .clone(),
-                    height: record.height,
-                    occlusion_mask: record.mask,
-                })
-                .collect();
+                        .clone();
+                    instances.push(gpui_3d::VoxelMeshInstance {
+                        position,
+                        faces: range,
+                        height: record.height,
+                        occlusion_mask: record.mask,
+                    });
+                }
+            }
+            let model_faces = cube_faces.len();
+            cube_faces.extend(instance_faces);
+            cube_neighbours.extend(instance_neighbours);
             output.push(GpuCubeBand {
                 size,
                 origin: gpui_3d::Vec3::new(
@@ -509,12 +556,12 @@ impl Preview3dMeshBuilder {
                     min[1] as f32,
                     (min[2] - pos.z * 16) as f32,
                 ),
-                cells: vec![0; count],
+                cells,
                 classes,
-                template_faces: faces.len(),
-                faces,
-                neighbours,
-                model_faces: 0,
+                template_faces: cube_faces.len(),
+                faces: cube_faces,
+                neighbours: cube_neighbours,
+                model_faces,
                 instances,
                 section_y: band,
             });

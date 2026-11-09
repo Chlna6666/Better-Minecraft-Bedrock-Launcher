@@ -50,6 +50,9 @@ pub(super) struct ModelRecord {
     pub faces: Range<u32>,
     pub height: f32,
     pub mask: u32,
+    /// Canonical opaque full cube, eligible for the native GPU cell mesher.
+    /// Transparent, fluid and detail models remain neighbor-aware instances.
+    pub opaque_cube: bool,
 }
 pub(super) struct ModelPlan {
     pub faces: Vec<Preview3dStreamFace>,
@@ -109,6 +112,7 @@ impl ModelPlan {
                     faces: range,
                     height: 1.0,
                     mask: if glass { 3 } else { 1 },
+                    opaque_cube: !glass,
                 });
             }
         }
@@ -181,6 +185,7 @@ impl ModelPlan {
                         faces: range,
                         height: 1.0,
                         mask: 1,
+                        opaque_cube: false,
                     });
                 }
             }
@@ -225,6 +230,7 @@ impl ModelPlan {
                     faces: range,
                     height: block.height.clamp(0.05, 1.0),
                     mask: if water { 5 } else { 9 },
+                    opaque_cube: false,
                 });
             }
         }
