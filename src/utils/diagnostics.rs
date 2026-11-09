@@ -15,6 +15,7 @@ const SESSION_FILE: &str = "session.json";
 const PENDING_REPORT_FILE: &str = "pending-report.json";
 const CRASH_SIGNAL_FILE: &str = "crash-signal.json";
 const REPORT_ARCHIVE_DIR: &str = "archive";
+const SENTRY_RECEIPTS_DIR: &str = "sentry-submissions";
 const LATEST_LOG_FILE: &str = "latest.log";
 const PREVIOUS_LOG_FILE: &str = "previous.log";
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
@@ -89,6 +90,9 @@ pub struct DiagnosticsReport {
     pub summary: String,
     pub detail: DiagnosticsDetail,
     pub log_tail: String,
+    /// Local submission receipt, separate from report acknowledgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentry_submitted_at: Option<String>,
 }
 
 impl DiagnosticsReport {
@@ -117,6 +121,12 @@ struct CrashSignal {
     kind: DiagnosticsKind,
     created_at: String,
     detail: DiagnosticsDetail,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct SentrySubmissionReceipt {
+    report_id: String,
+    submitted_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -275,7 +285,78 @@ pub fn load_pending_report() -> Result<Option<DiagnosticsReport>> {
         return Ok(None);
     }
 
-    read_json(&path).map(Some)
+    let mut report: DiagnosticsReport = read_json(&path)?;
+    // A submission receipt survives launcher restarts. A missing/corrupt
+    // receipt must never prevent the user from opening the original report.
+    match load_sentry_submission_receipt(&report.id) {
+        Ok(Some(sent_at)) => report.sentry_submitted_at = Some(sent_at),
+        Ok(None) => {}
+        Err(error) => {
+            warn!(?error, "failed to read optional Sentry submission receipt");
+        }
+    }
+    Ok(Some(report))
+}
+
+/// Persist only a UUID and submission time; never overwrite or acknowledge the
+/// diagnostic report when an upload succeeds. The caller runs on an IO worker.
+pub fn record_sentry_submission_receipt(report_id: &str, submitted_at: &str) -> Result<()> {
+    let path = sentry_submission_receipt_path(report_id)?;
+    if path.exists() {
+        return Ok(());
+    }
+    let receipt = SentrySubmissionReceipt {
+        report_id: report_id.to_string(),
+        submitted_at: submitted_at.to_string(),
+    };
+    let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    write_json(&temp_path, &receipt)?;
+    if let Err(error) = fs::rename(&temp_path, &path) {
+        let _ = fs::remove_file(&temp_path);
+        if !path.exists() {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+fn load_sentry_submission_receipt(report_id: &str) -> Result<Option<String>> {
+    let path = sentry_submission_receipt_path(report_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let receipt: SentrySubmissionReceipt = read_json(&path)?;
+    if receipt.report_id != report_id {
+        anyhow::bail!("Sentry receipt does not match report ID");
+    }
+    Ok(Some(receipt.submitted_at))
+}
+
+fn sentry_submission_receipt_path(report_id: &str) -> Result<PathBuf> {
+    // Only canonical UUID-derived filenames: report contents must never
+    // become arbitrary file paths.
+    let id = uuid::Uuid::parse_str(report_id).context("invalid diagnostic report ID")?;
+    Ok(diagnostics_dir()
+        .join(SENTRY_RECEIPTS_DIR)
+        .join(format!("{id}.json")))
+}
+
+/// Acknowledge only the report the user actually closed. An in-flight Sentry
+/// task may finish after another report has replaced it.
+pub fn acknowledge_pending_report_if_matches(report_id: &str) -> Result<bool> {
+    let path = pending_report_path();
+    if !path.exists() {
+        return Ok(false);
+    }
+    let report: DiagnosticsReport = read_json(&path)?;
+    if report.id != report_id {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    if let Ok(receipt_path) = sentry_submission_receipt_path(report_id) {
+        let _ = fs::remove_file(receipt_path);
+    }
+    Ok(true)
 }
 
 pub fn acknowledge_pending_report() -> Result<()> {
@@ -584,6 +665,7 @@ fn build_report_with_log_tail(
         summary,
         detail,
         log_tail,
+        sentry_submitted_at: None,
     }
 }
 
@@ -835,6 +917,21 @@ mod tests {
     fn ordinary_errors_are_not_fatal_incidents() {
         assert!(!create_operation_error_report("install", "disk full").is_fatal_incident());
         assert!(create_startup_failure_report("bootstrap", "failed").is_fatal_incident());
+    }
+
+    #[test]
+    fn receipt_roundtrip_is_report_specific() {
+        let report = create_startup_failure_report("bootstrap", "failed");
+        assert!(report.sentry_submitted_at.is_none());
+        let old_report_json = serde_json::to_string(&report).unwrap();
+        let parsed: DiagnosticsReport = serde_json::from_str(&old_report_json).unwrap();
+        assert!(parsed.sentry_submitted_at.is_none());
+        let mut sent = parsed.clone();
+        sent.sentry_submitted_at = Some("2026-11-09T08:00:00Z".to_string());
+        let reloaded: DiagnosticsReport =
+            serde_json::from_str(&serde_json::to_string(&sent).unwrap()).unwrap();
+        assert_eq!(reloaded.id, report.id);
+        assert_eq!(reloaded.sentry_submitted_at, sent.sentry_submitted_at);
     }
 
     #[test]
