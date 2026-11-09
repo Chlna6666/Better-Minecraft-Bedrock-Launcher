@@ -123,6 +123,46 @@ pub trait GpuWorkExecutor {
 }
 
 impl GpuWorkPlan {
+    /// Check that all resource transitions can be consumed in submission
+    /// order before touching a native command encoder.
+    ///
+    /// These checks are deliberately backend-neutral. They cannot replace
+    /// actual Vulkan/DX12 barriers, GL memory barriers or D3D11 alias unbinds;
+    /// the GpuWorkExecutor must still implement these operations. A malformed
+    /// public plan must never silently skip its final barriers or index an
+    /// invalid pass after a GPU command was already recorded.
+    pub fn validate_ordered_transitions(&self) -> Result<()> {
+        let mut last_consumer = 0;
+        for edge in &self.transitions {
+            if edge.from_pass >= edge.to_pass
+                || edge.to_pass >= self.passes.len()
+                || edge.to_pass < last_consumer
+            {
+                return Err(Error::InvalidInput(
+                    "GPU work transition is out of submission order".into(),
+                ));
+            }
+            let producer = &self.passes[edge.from_pass];
+            let consumer = &self.passes[edge.to_pass];
+            if producer.stage != edge.from_stage
+                || consumer.stage != edge.to_stage
+                || !producer.resources.iter().any(|access|
+                    access.resource == edge.resource && access.access == edge.before
+                )
+                || !consumer.resources.iter().any(|access|
+                    access.resource == edge.resource && access.access == edge.after
+                )
+                || !(edge.before.writes() || edge.after.writes())
+            {
+                return Err(Error::InvalidInput(
+                    "GPU work transition does not match declared resource accesses".into(),
+                ));
+            }
+            last_consumer = edge.to_pass;
+        }
+        Ok(())
+    }
+
     /// Encode the compiled plan in dependency order on a native GPU owner.
     ///
     /// The executor must provide native Graphics/Compute/Transfer recording
@@ -135,6 +175,7 @@ impl GpuWorkPlan {
     /// plan. The transition cursor preserves the compile-time order and
     /// avoids per-pass sorting or temporary allocations.
     pub fn encode_ordered(&self, executor: &mut impl GpuWorkExecutor) -> Result<()> {
+        self.validate_ordered_transitions()?;
         let mut transition_cursor = 0;
         for (index, pass) in self.passes.iter().enumerate() {
             let start = transition_cursor;
@@ -382,6 +423,54 @@ mod tests {
         assert_eq!(trace.0, [
             "pass:0", "pass:1", "barrier:2:2", "pass:2",
         ]);
+    }
+
+    #[test]
+    fn forged_work_plan_cannot_encode_invalid_or_missing_stage_transitions() {
+        struct Trace { encoded: usize }
+        impl GpuWorkExecutor for Trace {
+            fn apply_transitions(&mut self, _: &[GpuTransition]) -> Result<()> {
+                self.encoded += 1;
+                Ok(())
+            }
+            fn execute_pass(&mut self, _: usize, _: &GpuWorkPass) -> Result<()> {
+                self.encoded += 1;
+                Ok(())
+            }
+        }
+
+        let mut graph = GpuWorkGraph::new();
+        graph.push("upload", GpuWorkStage::Transfer, [
+            use_(buf(1), GpuAccess::CopyWrite),
+        ]).unwrap();
+        graph.push("consume", GpuWorkStage::Compute, [
+            use_(buf(1), GpuAccess::ReadBuffer),
+        ]).unwrap();
+        let original = graph.compile().unwrap();
+        assert_eq!(original.transitions.len(), 1);
+
+        let mut stage_mismatch = GpuWorkPlan {
+            passes: original.passes.clone(),
+            transitions: original.transitions.clone(),
+        };
+        stage_mismatch.transitions[0].from_stage = GpuWorkStage::Graphics;
+        let mut trace = Trace { encoded: 0 };
+        assert!(matches!(
+            stage_mismatch.encode_ordered(&mut trace),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(trace.encoded, 0, "reject before recording native commands");
+
+        let mut wrong_order = GpuWorkPlan {
+            passes: original.passes,
+            transitions: original.transitions,
+        };
+        wrong_order.transitions[0].from_pass = 1;
+        assert!(matches!(
+            wrong_order.encode_ordered(&mut trace),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(trace.encoded, 0);
     }
 
     #[test]
