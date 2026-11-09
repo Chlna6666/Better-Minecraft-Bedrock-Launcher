@@ -299,7 +299,7 @@ fn start_export(cx: &mut App, id: String, options: CrashExportOptions) {
         state.exporting = true;
         state.export_generation = state.export_generation.wrapping_add(1);
         state.awaiting_sensitive_confirmation = false;
-        state.export_status = Some("选择 ZIP 保存位置…".to_string());
+        state.export_status = Some(t!("GameCrash.ui.pickPath").to_string());
         state.export_location = None;
         Some(state.export_generation)
     });
@@ -331,14 +331,14 @@ fn start_export(cx: &mut App, id: String, options: CrashExportOptions) {
             }
             match outcome {
                 Ok(Ok(Some(path))) => {
-                    state.export_status = Some("导出成功，报告已保存到所选位置".to_string());
+                    state.export_status = Some(t!("GameCrash.ui.exportDone").to_string());
                     state.export_location = Some(path);
                 }
                 Ok(Ok(None)) => {
-                    state.export_status = Some("已取消导出".to_string());
+                    state.export_status = Some(t!("GameCrash.ui.exportCancel").to_string());
                 }
                 Ok(Err(error)) | Err(error) => {
-                    state.export_status = Some(format!("导出失败：{error}"));
+                    state.export_status = Some(t!("GameCrash.ui.exportFail", error = error).to_string());
                 }
             }
         });
@@ -351,7 +351,7 @@ fn request_export(cx: &mut App, id: String) {
             return None;
         }
         if !state.options.includes_any() {
-            state.export_status = Some("请选择至少一类诊断材料".to_string());
+            state.export_status = Some(t!("GameCrash.ui.selectEvidence").to_string());
             return None;
         }
         if state.options.needs_confirmation() {
@@ -471,18 +471,24 @@ pub fn render_game_diagnostics_overlay(
     let id_for_confirm = report.id.clone();
     let id_for_acknowledge = report.id.clone();
     let title = match report.kind {
-        ExitKind::RunnerFailure => "兼容运行器异常退出",
-        ExitKind::Unknown => "游戏会话状态未知",
-        ExitKind::ConfirmedCrash => "Minecraft 崩溃已确认",
-        _ => "Minecraft 意外退出",
+        ExitKind::RunnerFailure => t!("GameCrash.ui.title.runner"),
+        ExitKind::Unknown => t!("GameCrash.ui.title.unknown"),
+        ExitKind::ConfirmedCrash => t!("GameCrash.ui.title.confirmed"),
+        _ => t!("GameCrash.ui.title.unexpected"),
+    };
+    let show_technical = state.show_technical;
+    let findings = if report.findings.is_empty() {
+        diagnostics::analysis::analyze(&report, &[])
+    } else {
+        report.findings.clone()
     };
 
     let export_warning = if !selection.redact_text && selection.include_dumps {
-        "将导出未脱敏文本及原始 DMP。它们可能包含用户目录、账号令牌、世界数据或其他私密信息。"
+        t!("GameCrash.ui.riskBoth")
     } else if !selection.redact_text {
-        "将导出未脱敏文本，可能包含账号令牌、文件路径及其他敏感信息。"
+        t!("GameCrash.ui.riskRaw")
     } else {
-        "DMP 无法通过文本脱敏保护，可能包含账号凭证、聊天及世界数据。"
+        t!("GameCrash.ui.riskDump")
     };
 
     let body = div()
@@ -558,14 +564,42 @@ pub fn render_game_diagnostics_overlay(
                                         .line_height(px(19.))
                                         .whitespace_normal()
                                         .text_color(colors.text_primary)
-                                        .child(report.summary.clone()),
+                                        .child(t!("GameCrash.ui.analysisNote")),
                                 )
                                 .child(
                                     div().text_size(px(11.))
                                         .text_color(colors.text_secondary)
                                         .whitespace_normal()
-                                        .child("此诊断仅在本地保存，退出码和故障模块不能单独证明根因。"),
+                                        .child(t!("GameCrash.ui.intro")),
                                 ),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.)).flex().flex_col().gap(px(9.))
+                                .child(
+                                    div().text_size(px(15.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(t!("GameCrash.ui.analysis"))
+                                )
+                                .children(findings.into_iter().map(|finding| {
+                                    finding_card(finding, colors)
+                                }))
+                        )
+                        .child(
+                            action(
+                                "game-diagnostics-technical-toggle",
+                                if show_technical {
+                                    t!("GameCrash.ui.technicalHide")
+                                } else {
+                                    t!("GameCrash.ui.technicalShow")
+                                },
+                                false, true, colors,
+                            ).on_click(|_, _, cx| {
+                                cx.update_global(|state: &mut GameDiagnosticsState, _| {
+                                    state.show_technical = !state.show_technical;
+                                });
+                            })
                         )
                         .when(!history.is_empty(), |panel| panel.child(
                             div()
@@ -577,7 +611,7 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(12.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
-                                        .child("历史报告"),
+                                        .child(t!("GameCrash.ui.history")),
                                 )
                                 .child(
                                     div().flex().flex_wrap().gap(px(6.))
@@ -612,7 +646,7 @@ pub fn render_game_diagnostics_overlay(
                                         )),
                                 ),
                         ))
-                        .child(
+                        .when(show_technical, |panel| panel.child(
                             div()
                                 .flex()
                                 .flex_col()
@@ -621,7 +655,7 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(12.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
-                                        .child("诊断详情"),
+                                        .child(t!("GameCrash.ui.technical")),
                                 )
                                 .child(
                                     div().min_w(px(0.))
@@ -638,7 +672,7 @@ pub fn render_game_diagnostics_overlay(
                                         .text_color(colors.text_primary)
                                         .child(details(&report)),
                                 ),
-                        )
+                        ))
                         .child(
                             div()
                                 .flex()
@@ -648,45 +682,45 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
-                                        .child("导出内容"),
+                                        .child(t!("GameCrash.ui.exportTitle")),
                                 )
                                 .child(
                                     div().min_w(px(0.))
                                         .text_size(px(11.))
                                         .text_color(colors.text_secondary)
                                         .whitespace_normal()
-                                        .child("选择需要打包的证据类型。仅导出当前会话的快照；不存在的文件会自动跳过。"),
+                                        .child(t!("GameCrash.ui.exportDesc")),
                                 )
                                 .child(
                                     div().min_w(px(0.))
                                         .flex().flex_wrap().gap(px(10.))
                                         .child(option_row(
-                                            "game-export-launcher", "启动任务日志",
-                                            "当前启动任务的会话日志",
+                                            "game-export-launcher", t!("GameCrash.ui.launcherTitle"),
+                                            t!("GameCrash.ui.launcherDesc"),
                                             ExportField::Launcher, selection.include_launcher,
                                             option_width, !exporting, colors,
                                         ))
                                         .child(option_row(
-                                            "game-export-game", "Minecraft 日志",
-                                            "游戏会话对应的日志快照",
+                                            "game-export-game", t!("GameCrash.ui.gameTitle"),
+                                            t!("GameCrash.ui.gameDesc"),
                                             ExportField::Game, selection.include_game,
                                             option_width, !exporting, colors,
                                         ))
                                         .child(option_row(
-                                            "game-export-extensions", "模组与运行器日志",
-                                            "BLoader、LeviLamina、Proton 等",
+                                            "game-export-extensions", t!("GameCrash.ui.modsTitle"),
+                                            t!("GameCrash.ui.modsDesc"),
                                             ExportField::Extensions, selection.include_extensions,
                                             option_width, !exporting, colors,
                                         ))
                                         .when(cfg!(target_os = "windows"), |panel| panel.child(option_row(
-                                            "game-export-windows", "Windows 系统故障事件",
-                                            "按进程身份关联的 Windows WER 证据",
+                                            "game-export-windows", t!("GameCrash.ui.werTitle"),
+                                            t!("GameCrash.ui.werDesc"),
                                             ExportField::Windows, selection.include_windows,
                                             option_width, !exporting, colors,
                                         )))
                                         .child(option_row(
-                                            "game-export-dumps", "内存转储 DMP",
-                                            "仅主动选择时导出，无法自动脱敏",
+                                            "game-export-dumps", t!("GameCrash.ui.dumpTitle"),
+                                            t!("GameCrash.ui.dumpDesc"),
                                             ExportField::Dumps, selection.include_dumps,
                                             option_width, !exporting, colors,
                                         )),
@@ -701,12 +735,12 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
-                                        .child("隐私保护"),
+                                        .child(t!("GameCrash.ui.privacy")),
                                 )
                                 .child(option_row(
                                     "game-export-redact",
-                                    "文本脱敏（默认开启）",
-                                    "导出时过滤敏感字段；对原始 DMP 不生效",
+                                    t!("GameCrash.ui.redactTitle"),
+                                    t!("GameCrash.ui.redactDesc"),
                                     ExportField::Redact,
                                     selection.redact_text,
                                     available_width,
@@ -717,7 +751,7 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(11.))
                                         .text_color(colors.danger)
                                         .whitespace_normal()
-                                        .child("已关闭文本脱敏。导出前将再次要求确认。"),
+                                        .child(t!("GameCrash.ui.redactWarning")),
                                 )),
                         )
                         .when(confirmation, |panel| panel.child(
@@ -733,7 +767,7 @@ pub fn render_game_diagnostics_overlay(
                                     div().text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.danger)
-                                        .child("确认敏感材料导出"),
+                                        .child(t!("GameCrash.ui.riskTitle")),
                                 )
                                 .child(
                                     div().text_size(px(12.))
@@ -745,7 +779,7 @@ pub fn render_game_diagnostics_overlay(
                                 .child(
                                     div().flex().flex_wrap().gap(px(8.))
                                         .child(
-                                            action("game-export-confirm", "确认并选择保存位置", true, !exporting, colors)
+                                            action(""game-export-confirm", t!("GameCrash.ui.confirmExport"), true, !exporting, colors)
                                                 .on_click(move |_, _, cx| {
                                                     let options = cx.global::<GameDiagnosticsState>().options;
                                                     if options.needs_confirmation() {
@@ -754,7 +788,7 @@ pub fn render_game_diagnostics_overlay(
                                                 }),
                                         )
                                         .child(
-                                            action("game-export-back", "返回修改", false, true, colors)
+                                            action(""game-export-back", t!("GameCrash.ui.back"), false, true, colors)
                                                 .on_click(|_, _, cx| {
                                                     cx.update_global(
                                                         |state: &mut GameDiagnosticsState, _| {
@@ -791,7 +825,7 @@ pub fn render_game_diagnostics_overlay(
                                         .child(path.clone()),
                                 )
                                 .child(
-                                    action("game-export-copy-path", "复制保存路径", false, true, colors)
+                                    action(""game-export-copy-path", t!("GameCrash.ui.copyPath"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
                                         }),
@@ -806,7 +840,7 @@ pub fn render_game_diagnostics_overlay(
                                 .items_center()
                                 .gap(px(8.))
                                 .child(
-                                    action("game-diagnostics-copy", "复制诊断详情", false, true, colors)
+                                    action(""game-diagnostics-copy", t!("GameCrash.ui.copy"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(
                                                 ClipboardItem::new_string(copy_text.clone()),
@@ -814,14 +848,14 @@ pub fn render_game_diagnostics_overlay(
                                         }),
                                 )
                                 .child(
-                                    action("game-diagnostics-export", "选择位置并导出 ZIP",
+                                    action(""game-diagnostics-export", t!("GameCrash.ui.exportButton"),
                                         true, !exporting && selection.includes_any(), colors,
                                     ).on_click(move |_, _, cx| {
                                         request_export(cx, id_for_export.clone());
                                     }),
                                 )
                                 .child(
-                                    action("game-diagnostics-dismiss", "关闭", false, true, colors)
+                                    action(""game-diagnostics-dismiss", t!("GameCrash.ui.close"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             let id = id_for_acknowledge.clone();
                                             cx.update_global(|state: &mut GameDiagnosticsState, _| {
