@@ -32,7 +32,7 @@ impl Compositor {
             let layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d screen inputs".into()),
-                    entries: (0..14)
+                    entries: (0..16)
                         .map(|binding| BindGroupLayoutEntry {
                             binding,
                             binding_type: match binding {
@@ -293,7 +293,9 @@ impl Compositor {
             } else {
                 t.albedo.view
             }),
-            (7, inputs.shadow),
+            (7, inputs.shadows[0]),
+            (14, inputs.shadows[1]),
+            (15, inputs.shadows[2]),
             (8, inputs.cloud),
             (12, inputs.water),
             (13, inputs.water_flow),
@@ -375,7 +377,7 @@ pub(super) struct Inputs<'a> {
     pub uniform: BufferId,
     pub lights: (BufferId, u64),
     pub tiles: (BufferId, u64),
-    pub shadow: TextureViewId,
+    pub shadows: [TextureViewId; super::SHADOW_CASCADE_COUNT],
     pub cloud: TextureViewId,
     pub water: TextureViewId,
     pub water_flow: TextureViewId,
