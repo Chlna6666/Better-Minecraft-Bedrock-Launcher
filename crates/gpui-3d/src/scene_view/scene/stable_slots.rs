@@ -7,7 +7,7 @@
 //! are quarantined until a real submission-completion proof is received.
 
 use super::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 struct BaseIdentity {
@@ -48,7 +48,10 @@ pub(in crate::scene_view) struct StableDrawSlots {
     retired_unbound: Vec<usize>,
     /// The final GUI consumer fence is a conservative upper bound on all
     /// preceding ordered Graphics/DrawIndirect reads in this GPU owner.
-    retired_by_submission: Vec<(gfx_core::SubmissionId, Vec<usize>)>,
+    // Large Section unloads can quarantine thousands of addresses. Keep
+    // completed-cohort snapshots refcounted so a transactional full re-plan
+    // does not copy every retired slot on each subsequent camera update.
+    retired_by_submission: Vec<(gfx_core::SubmissionId, Arc<[usize]>)>,
 }
 
 impl StableDrawSlots {
@@ -63,7 +66,7 @@ impl StableDrawSlots {
         if !self.retired_unbound.is_empty() {
             self.retired_by_submission.push((
                 submission,
-                std::mem::take(&mut self.retired_unbound),
+                Arc::from(std::mem::take(&mut self.retired_unbound)),
             ));
         }
     }
@@ -79,7 +82,7 @@ impl StableDrawSlots {
                 continue;
             }
             let (_, slots) = self.retired_by_submission.swap_remove(index);
-            self.free.extend(slots);
+            self.free.extend(slots.iter().copied());
         }
     }
 
@@ -88,8 +91,8 @@ impl StableDrawSlots {
     /// failed/skipped Present paths.
     pub(in crate::scene_view) fn gpu_work_completed(&mut self) {
         self.free.append(&mut self.retired_unbound);
-        for (_, mut slots) in self.retired_by_submission.drain(..) {
-            self.free.append(&mut slots);
+        for (_, slots) in self.retired_by_submission.drain(..) {
+            self.free.extend(slots.iter().copied());
         }
     }
 }
