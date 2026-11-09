@@ -433,6 +433,25 @@ pub(super) struct CullResources {
 }
 
 impl CullResources {
+    /// Bounds and indirect arguments reference this separate stable physical
+    /// slot pool. It must retire with the same native fence as DrawParams and
+    /// Instance rows, otherwise culling can reuse a quarantined draw address.
+    pub(super) fn has_retired_slots(&self) -> bool {
+        self.resident_slots.has_retired_slots()
+    }
+
+    pub(super) fn draw_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.resident_slots.submission_accepted(submission);
+    }
+
+    pub(super) fn draw_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.resident_slots.submission_completed(submission);
+    }
+
+    pub(super) fn gpu_work_completed(&mut self) {
+        self.resident_slots.gpu_work_completed();
+    }
+
     /// The culler has already planned and uploaded the stable Section address
     /// table. Reuse that same physical layout for DrawParams/Instances instead
     /// of hashing every Draw identity a second time in SceneResources.
