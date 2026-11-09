@@ -313,6 +313,14 @@ impl StableDrawSlots {
     /// This callback MUST mean that the owner has verified all GPU work is
     /// idle, not merely that a frame was accepted or a GUI surface vanished.
     pub(in crate::scene_view) fn gpu_work_completed(&mut self) {
+        // A GUI owner may only have drained its primary Graphics queue.
+        // That does NOT prove an independently scheduled Compute/Transfer
+        // submission finished. Preserve every retirement cohort and its
+        // resource dependencies until that queue's own native fence reports
+        // completion or a true device-wide idle guarantee is established.
+        if self.gpu_dependencies.has_independent_queue_work() {
+            return;
+        }
         self.free.append(&mut self.retired_unbound);
         for cohort in self.retired_by_submission.drain(..) {
             self.free.extend(cohort.slots.iter().copied());
@@ -916,6 +924,32 @@ mod tests {
         slots.submission_completed(reader);
         assert!(slots.free.is_empty(), "the unknown native reader is not completed");
         slots.submission_completed(consumer);
+        assert_eq!(slots.free, vec![0]);
+    }
+
+    #[test]
+    fn graphics_owner_global_callback_cannot_clear_independent_reader_fence() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord, GpuWorkStage};
+        let buffer = gfx_core::BufferId::from_parts(500, 1);
+        let original = draws(3);
+        let (mut slots, _) = StableDrawSlots::with_resident_buffers(&[(buffer, 80)])
+            .plan(&original).unwrap();
+        let foreign = gfx_core::SubmissionId::from_parts(501, 1);
+        slots.register_native_access(GpuSubmissionRecord {
+            id: foreign,
+            queue: GpuQueueId {family:4,index:1},
+            stage: GpuWorkStage::Compute,
+            uses: vec![GpuSubmissionAccess {
+                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                access: GpuAccess::StorageReadWrite,
+            }],
+            gpu_waits: vec![],
+        }).unwrap();
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        slots.gpu_work_completed(); // Simulate UI queue-only completion.
+        assert!(slots.free.is_empty());
+        assert!(slots.has_retired_slots());
+        slots.submission_completed(foreign);
         assert_eq!(slots.free, vec![0]);
     }
 
