@@ -747,7 +747,12 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             if report.ended_at.is_some_and(|end| modified > end + chrono::Duration::minutes(10)) {
                 continue;
             }
-            files.push((format!("logs/provider-{number:02}.{ext}"), path));
+            let compatibility_source = report.compatibility_logs.as_ref()
+                .is_some_and(|root| dir.starts_with(root))
+                || report.compatibility_prefix.as_ref()
+                    .is_some_and(|prefix| dir.starts_with(prefix));
+            let category = if compatibility_source { "runner" } else { "mod" };
+            files.push((format!("logs/{category}-provider-{number:02}.{ext}"), path));
             number += 1;
         }
     }
