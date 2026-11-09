@@ -3,7 +3,7 @@
 use crate::utils::{file_ops, log_privacy};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use zip::write::SimpleFileOptions;
 pub mod analysis;
 pub mod forensics;
 pub use analysis::{CrashFinding, CrashReason, Confidence, EvidenceSource};
-const GAME_DIAGNOSTICS_SCHEMA: u32 = 5;
+const GAME_DIAGNOSTICS_SCHEMA: u32 = 6;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -111,6 +111,7 @@ pub struct GameSessionReport {
     pub wer_fault: Option<WerFault>,
     pub findings: Vec<CrashFinding>,
     pub forensics: forensics::ForensicSummary,
+    pub log_offsets: HashMap<String, u64>,
 }
 
 /// Wine and Proton diagnostics do not establish which Windows guest process
@@ -270,6 +271,7 @@ impl GameSessionReport {
             wer_fault: None,
             findings: Vec::new(),
             forensics: forensics::ForensicSummary::default(),
+            log_offsets: initial_log_offsets(game_directory),
         };
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
@@ -669,6 +671,43 @@ pub fn acknowledge(id: &str) -> Result<(), String> {
     save_locked(&report)
 }
 
+/// Capture only known hot log file lengths at launch. These are cheap metadata
+/// checks, not a recursive prefix scan. The baseline prevents stale entries
+/// from earlier sessions being classified as a fresh crash.
+fn initial_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
+    let mut offsets = HashMap::new();
+    for (name, path) in [
+        ("logs/game.log", game_dir.join("logs/latest.log")),
+        ("logs/levilamina.log", game_dir.join("logs/LeviLamina.log")),
+        ("logs/bloader.log", game_dir.join("logs/BLoader.log")),
+    ] {
+        if let Ok(meta) = fs::symlink_metadata(path)
+            && meta.file_type().is_file()
+        {
+            offsets.insert(name.to_string(), meta.len());
+        }
+    }
+    offsets
+}
+
+/// Reads only appended text for a preexisting log. If the file was rotated
+/// and became shorter, treat it as a new file; a same-length rewrite cannot
+/// be attributed safely and is conservatively ignored.
+fn tail_after_baseline(path: &Path, baseline: u64, max: u64) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    if !fs::symlink_metadata(path).ok()?.file_type().is_file() { return None; }
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    if size == baseline { return None; }
+    let start = if size < baseline { size.saturating_sub(max) }
+        else { baseline.max(size.saturating_sub(max)) };
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(max).read_to_end(&mut bytes).ok()?;
+    if bytes.is_empty() { return None; }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn tail_bytes(path: &Path, max: u64) -> Option<String> {
     // Never follow symlinks from a mod-controlled log directory into private files.
     if !fs::symlink_metadata(path).ok()?.file_type().is_file() {
@@ -799,7 +838,11 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
                 continue;
             }
         }
-        let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) else { continue };
+        let contents = match report.log_offsets.get(&name) {
+            Some(baseline) => tail_after_baseline(&path, *baseline, MAX_TEXT_BYTES),
+            None => tail_bytes(&path, MAX_TEXT_BYTES),
+        };
+        let Some(contents) = contents else { continue };
         let target = directory.join(&name);
         if let Some(parent) = target.parent()
             && fs::create_dir_all(parent).is_err()
@@ -1095,6 +1138,7 @@ mod tests {
             wer_fault: None,
             findings: Vec::new(),
             forensics: forensics::ForensicSummary::default(),
+            log_offsets: HashMap::new(),
         };
         let event = |process_id: &str, app_start: &str| format!(
             r#"<Event><System><EventID>1000</EventID><TimeCreated SystemTime="{}"/></System><EventData><Data Name="ProcessId">{process_id}</Data><Data Name="AppStartTime">{app_start}</Data><Data Name="AppName">Minecraft.Windows.exe</Data><Data Name="ModuleName">example.dll</Data><Data Name="ExceptionCode">c0000005</Data></EventData></Event>"#,
@@ -1181,6 +1225,7 @@ mod tests {
             wer_fault: None,
             findings: Vec::new(),
             forensics: forensics::ForensicSummary::default(),
+            log_offsets: HashMap::new(),
         };
         let bytes = serde_json::to_vec(&report).unwrap();
         assert!(decode_report(&bytes).is_ok());
@@ -1188,6 +1233,21 @@ mod tests {
         obsolete["schema_version"] = serde_json::json!(GAME_DIAGNOSTICS_SCHEMA - 1);
         let obsolete = serde_json::to_vec(&obsolete).unwrap();
         assert!(decode_report(&obsolete).is_err());
+    }
+
+    #[test]
+    fn old_log_failure_is_not_attributed_to_a_new_session() {
+        use std::io::Write as _;
+        let file = std::env::temp_dir().join(format!("bmcbl-game-log-{}.log", Uuid::new_v4()));
+        fs::write(&file, b"Failed to load plugin: OldAddon.dll\n").unwrap();
+        let offset = fs::metadata(&file).unwrap().len();
+        assert!(tail_after_baseline(&file, offset, MAX_TEXT_BYTES).is_none());
+        let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        output.write_all(b"Failed to load plugin: NewAddon.dll\n").unwrap();
+        let tail = tail_after_baseline(&file, offset, MAX_TEXT_BYTES).unwrap();
+        assert!(tail.contains("NewAddon.dll"));
+        assert!(!tail.contains("OldAddon.dll"));
+        let _ = fs::remove_file(file);
     }
 
     #[test]
