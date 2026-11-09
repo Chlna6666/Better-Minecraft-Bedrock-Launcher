@@ -187,7 +187,16 @@ impl Dx11Device {
         let Shader::Compute(shader) = self.shaders.get(dispatch.shader)? else {
             return Err(Error::InvalidInput("dispatch requires a compute shader".into()));
         };
-        self.clear_compute_graphics_srvs();
+        // A read-only compute dispatch may safely share SRVs with vertex/pixel
+        // shader stages. Clear tracked graphics SRVs only before a UAV write:
+        // unconditionally clearing 128 slots invalidates host graphics state
+        // on every light-tile/meshing dispatch.
+        if !write_images.is_empty()
+            || buffer_bindings.iter().any(|binding|
+                binding.access == ComputeBufferAccess::ReadWrite)
+        {
+            self.clear_compute_graphics_srvs();
+        }
         if !write_images.is_empty() || !read_images.is_empty() {
             // D3D11 silently nulls both SRVs and UAVs when the underlying
             // texture is still attached to OM. Unbind only for image compute:
@@ -237,12 +246,17 @@ impl Dx11Device {
         if dispatch.workgroups.contains(&0) {
             return Ok(());
         }
-        self.clear_compute_graphics_srvs();
+        if dispatch.bindings.iter().any(|binding|
+            binding.access == ComputeBufferAccess::ReadWrite)
+        {
+            self.clear_compute_graphics_srvs();
+        }
         for (slot, view) in &bindings {
             self.set_compute_binding(*slot, view);
         }
         // SAFETY: All shader/resource handles, ranges and native slots were validated above.
-        // Clear graphics SRVs before UAV writes to prevent read/write binding conflicts.
+        // Graphics SRVs are cleared only when the dispatch has UAV writes;
+        // overlapping read-only SRVs across shader stages are legal.
         // Immediate-context ordering plus UAV unbinding makes these writes visible to later
         // dispatches and render/indirect consumers without a CPU wait or a readback.
         unsafe {
