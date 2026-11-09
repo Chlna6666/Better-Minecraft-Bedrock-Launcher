@@ -2553,6 +2553,7 @@ impl VulkanDevice {
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         let submission = self.submissions.insert(VulkanSubmission {
             fence: present_frame.fence,
+            owned_by_submission: false,
         });
         self.poll_cleanup();
         timings.post_present_cleanup = post_present_cleanup_started.elapsed();
@@ -2686,7 +2687,7 @@ impl VulkanDevice {
         encoder: CommandEncoderId,
     ) -> Result<SubmissionId> {
         let fence = self.submit_command_encoder_deferred_to_fence(encoder)?;
-        Ok(self.submissions.insert(VulkanSubmission { fence }))
+        Ok(self.submissions.insert(VulkanSubmission { fence, owned_by_submission: false }))
     }
 
     fn submit_command_encoder_deferred_to_fence(
@@ -2813,7 +2814,12 @@ impl VulkanDevice {
         self.poll_cleanup();
         let submission_resource = self.submissions.get(submission)?;
         if fence_is_complete(&self.device, submission_resource.fence) {
-            let _completed = self.submissions.take(submission)?;
+            let completed = self.submissions.take(submission)?;
+            if completed.owned_by_submission {
+                // SAFETY: A checkpoint owns its own fence and the GPU has
+                // signaled it; no command encoder or WSI image references it.
+                unsafe { self.device.destroy_fence(completed.fence, None) };
+            }
             Ok(SubmissionStatus::Complete)
         } else {
             Ok(SubmissionStatus::Pending)
@@ -2827,7 +2833,11 @@ impl VulkanDevice {
             unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
                 .map_err(VulkanError::from)?;
         }
-        let _completed = self.submissions.take(submission)?;
+        let completed = self.submissions.take(submission)?;
+        if completed.owned_by_submission {
+            // SAFETY: wait_for_fences returned success for this owned fence.
+            unsafe { self.device.destroy_fence(completed.fence, None) };
+        }
         self.poll_cleanup();
         Ok(())
     }
@@ -4728,6 +4738,25 @@ impl CommandDevice for VulkanDevice {
 }
 
 impl SubmissionDevice for VulkanDevice {
+    fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
+        // A fence-only submission on the PRIMARY graphics queue follows all
+        // preceding Compute, Copy and Graphics work. No host wait, command
+        // encoder, second queue, semaphore or frame-slot allocation is needed.
+        let fence = create_fence(&self.device, false)?;
+        let submits = [vk::SubmitInfo::default()];
+        if let Err(error) = unsafe {
+            self.device.queue_submit(self.graphics_queue, &submits, fence)
+        } {
+            // SAFETY: A failed queue_submit did not enqueue this fence.
+            unsafe { self.device.destroy_fence(fence, None) };
+            return Err(VulkanError::from(error).into());
+        }
+        Ok(self.submissions.insert(VulkanSubmission {
+            fence,
+            owned_by_submission: true,
+        }))
+    }
+
     fn wait_queue_idle(&mut self) -> Result<()> {
         self.drain_unpresented_graphics_work()
     }
@@ -4903,6 +4932,13 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         // SAFETY: Device may still have in-flight work; waiting before destruction is valid.
         let _ = unsafe { self.device.device_wait_idle() };
+        // Checkpoints have no encoder/swapchain owner. Destroy any unpolled
+        // native fences before the logical device itself is released.
+        for (_, submission) in self.submissions.drain_live() {
+            if submission.owned_by_submission {
+                unsafe { self.device.destroy_fence(submission.fence, None) };
+            }
+        }
         persist_pipeline_cache(
             &self.device,
             self.pipeline_cache,
@@ -5549,6 +5585,9 @@ impl VulkanTimestampClock {
 #[derive(Clone, Copy)]
 struct VulkanSubmission {
     fence: vk::Fence,
+    /// A pure queue checkpoint owns its fence directly; command encoders and
+    /// swapchains retire their own fences through existing GPU owners.
+    owned_by_submission: bool,
 }
 
 #[derive(Clone, Copy)]
