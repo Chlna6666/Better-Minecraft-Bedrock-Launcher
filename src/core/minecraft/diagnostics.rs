@@ -253,6 +253,14 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
             };
             if parsed.is_some_and(|created| created != expected) { continue; }
         }
+        // Interrupted sessions lack an observed exit code. For them, matching
+        // PID alone is insufficient: the OS may already have reused the PID.
+        if report.kind == ExitKind::Unknown
+            && report.process_created_at.is_some()
+            && data(block, "AppStartTime").is_none()
+        {
+            continue;
+        }
         let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
         if !app_name.contains("minecraft") { continue; }
         let Some(timestamp) = event_time.captures(block)
@@ -277,7 +285,7 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
 /// registry settings. A missing/inaccessible event log is not a fatal error.
 #[cfg(target_os = "windows")]
 pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionReport {
-    if report.kind != ExitKind::SuspectedCrash {
+    if report.kind != ExitKind::SuspectedCrash && report.kind != ExitKind::Unknown {
         return report;
     }
     // WER often writes Event 1000 after the crashed process has exited.
@@ -360,13 +368,64 @@ pub fn read_report(id: &str) -> Result<GameSessionReport, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
+/// Reconcile sessions left as Running when a previous launcher instance ended
+/// unexpectedly. This never calls a missing process a "game crash": only WER
+/// evidence can later promote it from Unknown to ConfirmedCrash.
+pub fn recover_interrupted_sessions() -> Vec<GameSessionReport> {
+    let Ok(entries) = fs::read_dir(root()) else { return Vec::new() };
+    let mut pending = Vec::new();
+    for entry in entries.flatten().take(256) {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let Ok(mut report) = serde_json::from_slice::<GameSessionReport>(&bytes) else { continue };
+        if report.kind != ExitKind::Running { continue }
+        if sessions().lock().is_ok_and(|active| active.contains(&report.id)) {
+            continue;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let running = match (report.process_created_at, process_creation_filetime(report.pid)) {
+                (Some(expected), Some(actual)) => expected == actual,
+                // Without original creation time, do not claim a live process
+                // is another one just because its PID has been recycled.
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if running { continue; }
+        }
+        #[cfg(target_os = "linux")]
+        if Path::new("/proc").join(report.pid.to_string()).exists() {
+            continue;
+        }
+        report.ended_at = Some(Utc::now()); // Reconciliation time, NOT observed exit time.
+        report.kind = ExitKind::Unknown;
+        report.summary =
+            "上次启动器在游戏会话结束前关闭，无法确认游戏是正常退出还是崩溃；需要系统事件证据".to_string();
+        if let Err(error) = save(&report) {
+            tracing::warn!(%error, session_id=%report.id, "无法恢复中断的游戏会话");
+        }
+        pending.push(report);
+    }
+    pending
+}
+
 pub fn recent_reports(limit: usize, unacknowledged_only: bool) -> Vec<GameSessionReport> {
     let Ok(entries) = fs::read_dir(root()) else { return Vec::new() };
     let mut reports = entries.flatten().filter_map(|entry| {
         if entry.path().extension().is_none_or(|ext| ext != "json") { return None; }
         let bytes = fs::read(entry.path()).ok()?;
         let report: GameSessionReport = serde_json::from_slice(&bytes).ok()?;
-        if !report.kind.is_abnormal() || (unacknowledged_only && report.acknowledged) {
+        // Unknown sessions remain inspectable in history but must not
+        // trigger an automatic game-crash popup without supporting evidence.
+        if !(report.kind.is_abnormal() || (!unacknowledged_only && report.kind == ExitKind::Unknown))
+            || (unacknowledged_only && report.acknowledged)
+        {
             return None;
         }
         Some(report)
