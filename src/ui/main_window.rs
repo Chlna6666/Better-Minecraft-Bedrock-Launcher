@@ -297,6 +297,11 @@ impl MainWindowView {
                 }
             });
         self._reactor_subscriptions.push(subscription);
+        self._reactor_subscriptions.push(
+            cx.observe_global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(|_, cx| {
+                cx.notify();
+            }),
+        );
 
         // Subscribe to game lifecycle events independently of the launch-task modal.
         // The native window handle can be restored even while frame rendering is occluded.
@@ -706,20 +711,6 @@ impl MainWindowView {
         }
 
         if !model.agreement_render_state.visible
-            && !model.diagnostics_visible
-            && let Some(game_diagnostics) =
-                crate::ui::overlays::game_diagnostics::render_game_diagnostics_overlay(
-                    &model.theme_colors,
-                    model.window_width,
-                    model.window_height,
-                    cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(),
-                )
-        {
-            auth_blocked = true;
-            root = root.child(game_diagnostics);
-        }
-
-        if !model.agreement_render_state.visible
             && model.diagnostics_visible
             && let Some(diagnostics_overlay) =
                 crate::ui::overlays::diagnostics::render_diagnostics_overlay(
@@ -907,6 +898,20 @@ impl MainWindowView {
                 window,
                 cx,
             ));
+        }
+
+        if !model.agreement_render_state.visible
+            && !model.diagnostics_visible
+            && let Some(game_diagnostics) =
+                crate::ui::overlays::game_diagnostics::render_game_diagnostics_overlay(
+                    &model.theme_colors,
+                    model.window_width,
+                    model.window_height,
+                    cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(),
+                )
+        {
+            auth_blocked = true;
+            root = root.child(game_diagnostics);
         }
 
         #[cfg(target_os = "linux")]
