@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod game_diagnostics;
 #[cfg(target_os = "windows")]
 #[path = "overlays/launch_prereq_router.rs"]
 pub mod launch_prereq;

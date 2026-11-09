@@ -2,6 +2,7 @@ pub mod agreement;
 pub(crate) mod bedrock_auth;
 pub mod debug;
 pub mod diagnostics;
+pub mod game_diagnostics;
 pub mod i18n;
 pub mod import;
 #[cfg(target_os = "windows")]

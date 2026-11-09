@@ -443,6 +443,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::agreement::AgreementState>();
     cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
+    cx.default_global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>();
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     cx.default_global::<crate::ui::state::bedrock_auth::BedrockAuthState>();
     cx.default_global::<crate::ui::main_window::AppChromeState>();

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
@@ -44,6 +46,16 @@ pub struct GameSessionReport {
     pub summary: String,
     #[serde(default)]
     pub acknowledged: bool,
+}
+
+static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
+
+fn event_bus() -> &'static broadcast::Sender<GameSessionReport> {
+    REPORT_EVENTS.get_or_init(|| broadcast::channel(64).0)
+}
+
+pub fn subscribe() -> broadcast::Receiver<GameSessionReport> {
+    event_bus().subscribe()
 }
 
 fn root() -> PathBuf {
@@ -114,6 +126,9 @@ impl GameSessionReport {
             kind = ?self.kind,
             "游戏会话结束"
         );
+        if self.kind.is_abnormal() {
+            let _ = event_bus().send(self.clone());
+        }
         self
     }
 }

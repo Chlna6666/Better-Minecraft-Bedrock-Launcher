@@ -279,7 +279,7 @@ pub struct MainWindowView {
 }
 
 impl MainWindowView {
-    fn ensure_global_reactor_subscriptions(&mut self, cx: &mut Context<Self>) {
+    fn ensure_global_reactor_subscriptions(&mut self, window: &Window, cx: &mut Context<Self>) {
         if !self._reactor_subscriptions.is_empty() {
             return;
         }
@@ -296,6 +296,48 @@ impl MainWindowView {
                 }
             });
         self._reactor_subscriptions.push(subscription);
+
+        // Subscribe to game lifecycle events independently of the launch-task modal.
+        // The native window handle can be restored even while frame rendering is occluded.
+        let mut events = crate::core::minecraft::diagnostics::subscribe();
+        let main_window = window.window_handle();
+        cx.spawn(async move |handle, cx| {
+            let pending = crate::tasks::runtime::run_io_blocking(|| {
+                crate::core::minecraft::diagnostics::recent_reports(1, true)
+                    .into_iter().next()
+            }).await.ok().flatten();
+            if let Some(report) = pending {
+                handle.update(cx, |_, cx| {
+                    cx.update_global(
+                        |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
+                            state.pending = Some(report);
+                        },
+                    );
+                    cx.notify();
+                })?;
+            }
+            loop {
+                let report = match events.recv().await {
+                    Ok(report) => report,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                handle.update(cx, |_, cx| {
+                    cx.update_global(
+                        |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
+                            state.pending = Some(report);
+                            state.export_status = None;
+                        },
+                    );
+                    cx.notify();
+                })?;
+                let _ = main_window.update(cx, |_, window, _| {
+                    window.restore_window();
+                    window.activate_window();
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        }).detach();
     }
 
     fn ensure_chrome_view_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -606,6 +648,20 @@ impl MainWindowView {
 
         if !model.agreement_render_state.visible && model.diagnostics_visible {
             crate::ui::overlays::diagnostics::trigger_auto_sentry_submit_if_needed(cx);
+        }
+
+        if !model.agreement_render_state.visible
+            && !model.diagnostics_visible
+            && let Some(game_diagnostics) =
+                crate::ui::overlays::game_diagnostics::render_game_diagnostics_overlay(
+                    &model.theme_colors,
+                    model.window_width,
+                    model.window_height,
+                    cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(),
+                )
+        {
+            auth_blocked = true;
+            root = root.child(game_diagnostics);
         }
 
         if !model.agreement_render_state.visible
@@ -1706,7 +1762,7 @@ impl Render for MainWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = Instant::now();
         let frame_now = window.animation_time();
-        self.ensure_global_reactor_subscriptions(cx);
+        self.ensure_global_reactor_subscriptions(window, cx);
         if !self.runtime_font_logged {
             self.runtime_font_logged = true;
             info!(
