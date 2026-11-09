@@ -440,6 +440,13 @@ impl CullResources {
         self.resident_slots.has_retired_slots()
     }
 
+    pub(super) fn draw_producer_submitted(
+        &mut self,
+        submission: Option<gfx_core::SubmissionId>,
+    ) {
+        self.resident_slots.draw_producer_submitted(submission);
+    }
+
     pub(super) fn draw_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
         self.resident_slots.submission_accepted(submission);
     }
