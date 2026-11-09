@@ -43,7 +43,9 @@ impl Texture {
     }
 }
 pub(crate) struct View {
+    pub(crate) texture: TextureId,
     pub(crate) srv: Option<ID3D11ShaderResourceView>,
+    pub(crate) uav: Option<ID3D11UnorderedAccessView>,
     pub(crate) rtv: Option<ID3D11RenderTargetView>,
     pub(crate) dsv: Option<ID3D11DepthStencilView>,
     pub(crate) size: Extent2d,
@@ -508,7 +510,9 @@ impl ResourceDevice for Dx11Device {
             ));
         }
         let mut view = View {
+            texture: desc.texture,
             srv: None,
+            uav: None,
             rtv: None,
             dsv: None,
             size: texture.desc.mip_extent(desc.base_mip_level)?,
@@ -517,6 +521,33 @@ impl ResourceDevice for Dx11Device {
         };
         // SAFETY: the texture is live; each view descriptor selects a validated mip range.
         unsafe {
+            if texture.desc.usage.contains(TextureUsage::STORAGE) {
+                // Typed UAVs cannot alias MSAA, depth or multiple mip levels
+                // in a single D3D11 view. Fail before passing an invalid
+                // descriptor to the driver.
+                if texture.desc.dimension != TextureDimension::D2
+                    || texture.desc.sample_count != 1
+                    || desc.mip_level_count != 1
+                    || desc.format == Format::Depth32Float
+                {
+                    return Err(Error::Unavailable(
+                        "D3D11 compute storage textures require one non-depth D2 mip".into(),
+                    ));
+                }
+                self.native.CreateUnorderedAccessView(
+                    &texture.native,
+                    Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                        Format: format(desc.format),
+                        ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
+                        Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                            Texture2D: D3D11_TEX2D_UAV {
+                                MipSlice: desc.base_mip_level,
+                            },
+                        },
+                    }),
+                    Some(&mut view.uav),
+                ).map_err(backend)?;
+            }
             if texture.desc.usage.contains(TextureUsage::SAMPLED) {
                 self.native
                     .CreateShaderResourceView(
@@ -699,12 +730,8 @@ impl ResourceDevice for Dx11Device {
                 BindingType::UniformBuffer => 13,
                 BindingType::Sampler => 16,
                 BindingType::StorageBuffer | BindingType::SampledTexture => 128,
-                BindingType::StorageBufferReadWrite => 8,
-                BindingType::StorageTexture { .. } => {
-                    return Err(Error::Unavailable(
-                        "D3D11 storage textures need an unordered-access-view binding path".into(),
-                    ));
-                }
+                BindingType::StorageBufferReadWrite
+                | BindingType::StorageTexture { .. } => 8,
             };
             if entry.binding >= limit {
                 return Err(Error::InvalidInput(
@@ -726,11 +753,19 @@ impl ResourceDevice for Dx11Device {
                 .iter()
                 .find(|entry| entry.binding == binding.binding)
                 .ok_or_else(|| Error::InvalidInput("missing bind group layout entry".into()))?;
-            if entry.binding_type == BindingType::StorageBufferReadWrite {
-                let BindingResource::Buffer(range) = binding.resource else {
-                    return Err(Error::InvalidInput("writable storage must bind a buffer".into()));
-                };
-                let _ = self.create_compute_uav(range)?;
+            match (entry.binding_type, binding.resource) {
+                (BindingType::StorageBufferReadWrite, BindingResource::Buffer(range)) => {
+                    let _ = self.create_compute_uav(range)?;
+                }
+                (BindingType::StorageTexture { format, .. }, BindingResource::Texture(texture)) => {
+                    let view = self.views.get(texture.texture_view)?;
+                    if view.format != format || view.uav.is_none() {
+                        return Err(Error::InvalidInput(
+                            "D3D11 storage texture requires a matching UAV view".into(),
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
         let bindings = desc
@@ -739,7 +774,10 @@ impl ResourceDevice for Dx11Device {
             .filter(|binding| {
                 !layout.entries.iter().any(|entry| {
                     entry.binding == binding.binding
-                        && entry.binding_type == BindingType::StorageBufferReadWrite
+                        && matches!(
+                            entry.binding_type,
+                            BindingType::StorageBufferReadWrite | BindingType::StorageTexture { .. }
+                        )
                 })
             })
             .map(|binding| {
