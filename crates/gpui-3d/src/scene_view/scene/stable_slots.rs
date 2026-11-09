@@ -52,9 +52,41 @@ pub(in crate::scene_view) struct StableDrawSlots {
     // completed-cohort snapshots refcounted so a transactional full re-plan
     // does not copy every retired slot on each subsequent camera update.
     retired_by_submission: Vec<(gfx_core::SubmissionId, Arc<[usize]>)>,
+    /// Most recent native DrawIndirect producer known to reference this
+    /// SceneView's physical records. A producer with no SubmissionId clears
+    /// this proof and forces the conservative owner-fence fallback.
+    last_draw_producer: Option<gfx_core::SubmissionId>,
 }
 
 impl StableDrawSlots {
+    /// Record a GPU submission only after the native producer accepted the
+    /// actual DrawIndirect commands. Do not confuse producer acceptance with
+    /// completion. Each new producer supersedes earlier readers on the same
+    /// ordered GPU-owner queue; independently submitted work requires a
+    /// separate dependency proof before using this fast path.
+    pub(in crate::scene_view) fn draw_producer_submitted(
+        &mut self,
+        submission: Option<gfx_core::SubmissionId>,
+    ) {
+        self.last_draw_producer = submission;
+    }
+
+    /// Retire physical rows against their actual latest known DrawIndirect
+    /// reader, rather than blindly assigning every removal to the GUI fence.
+    /// Without a tracked producer ID, keep the rows in the conservative
+    /// unbound cohort until a valid downstream queue or global GPU proof.
+    fn quarantine(&mut self, slots: Vec<usize>) {
+        if slots.is_empty() {
+            return;
+        }
+        if let Some(producer) = self.last_draw_producer {
+            self.retired_by_submission.push((producer, Arc::from(slots)));
+        } else {
+            self.retired_unbound.extend(slots);
+        }
+    }
+
+
     /// Retired physical addresses are still potentially read by the GPU.
     pub(in crate::scene_view) fn has_retired_slots(&self) -> bool {
         !self.retired_unbound.is_empty() || !self.retired_by_submission.is_empty()
@@ -84,6 +116,9 @@ impl StableDrawSlots {
             let (_, slots) = self.retired_by_submission.swap_remove(index);
             self.free.extend(slots.iter().copied());
         }
+        if self.last_draw_producer == Some(submission) {
+            self.last_draw_producer = None;
+        }
     }
 
     /// Safe fallback when the GPU Owner has verified ALL in-flight consumers
@@ -94,6 +129,7 @@ impl StableDrawSlots {
         for (_, slots) in self.retired_by_submission.drain(..) {
             self.free.extend(slots.iter().copied());
         }
+        self.last_draw_producer = None;
     }
 }
 
@@ -183,16 +219,19 @@ impl StableDrawSlots {
             free: self.free.clone(),
             retired_unbound: self.retired_unbound.clone(),
             retired_by_submission: self.retired_by_submission.clone(),
+            last_draw_producer: self.last_draw_producer,
         };
-        // Removed DrawIndirect rows are not reusable until their last reader
-        // has completed. Only old, already fence-released free rows may be
-        // allocated to newly inserted Sections.
+        // Gather genuinely removed physical rows while rebuilding only the
+        // compact metadata. Newly added draws may use only already completed
+        // free slots; they cannot borrow these retiring GPU addresses.
+        let mut retired = Vec::new();
         for (index, identity) in next.identities.iter_mut().enumerate() {
             if identity.is_some() && !live_slots[index] {
                 *identity = None;
-                next.retired_unbound.push(index);
+                retired.push(index);
             }
         }
+        next.quarantine(retired);
 
         let mut mapping = Vec::with_capacity(wanted.len());
         for (id, old_slot) in wanted {
@@ -266,11 +305,10 @@ impl StructuralSlotPlan {
             slots.identities[slot] = Some(identity);
             debug_assert!(slots.occupied.insert(identity, slot).is_none());
         }
-        for slot in retired {
-            if slots.identities[slot].is_none() {
-                slots.retired_unbound.push(slot);
-            }
-        }
+        let genuinely_removed = retired.into_iter().filter(|&slot| {
+            slots.identities[slot].is_none()
+        }).collect::<Vec<_>>();
+        slots.quarantine(genuinely_removed);
         slots.free = self.free;
     }
 }
