@@ -95,6 +95,7 @@ cargo check -p bmcbl
 $env:RUST_MIN_STACK = '67108864'
 cargo test -p gpui --no-default-features --features nova-gfx-dx12 --lib platform::nova::
 pwsh -File scripts/check-nova-gfx-boundary.ps1
+pwsh -File scripts/check-gpui-3d-boundary.ps1
 pwsh -File scripts/check-naming.ps1
 ```
 
