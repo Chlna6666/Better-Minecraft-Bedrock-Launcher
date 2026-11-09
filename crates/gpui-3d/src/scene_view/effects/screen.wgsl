@@ -75,32 +75,42 @@ fn refraction_uv(uv:vec2<f32>,p:vec3<f32>,ray:vec3<f32>,n:vec3<f32>,depth:f32,wa
 // The native cloud texture is a grid of occupied 16-block cells, not a
 // smoothly interpolated volume. Point-load cells so the underside, side and
 // upper outlines remain cuboidal at oblique viewing angles.
-fn cloud_cell(cell:vec2<i32>)->vec4<f32>{
-    let dimensions=vec2<i32>(textureDimensions(cloud_texture));
-    let wrapped=((cell%dimensions)+dimensions)%dimensions;
+// Cloud texture dimensions and drift are invariant for the entire fragment.
+// Pass them into the inner ray traversal rather than querying GPU texture
+// metadata again for each of up to 96 sample cells (and 6 sun-ray samples).
+fn cloud_cell_cached(cell:vec2<i32>,dimensions:vec2<i32>)->vec4<f32>{
+    // WGSL % uses signed remainder. One remainder plus sign correction is
+    // equivalent to ((cell % dimensions) + dimensions) % dimensions for
+    // positive dimensions, saving a second pair of integer divisions.
+    let remainder=cell%dimensions;
+    let wrapped=select(remainder,remainder+dimensions,remainder<vec2<i32>(0));
     let material=textureLoad(cloud_texture,wrapped,0);
     return vec4<f32>(material.rgb,select(0.0,1.0,material.a>=0.5));
 }
-fn cloud_drift()->vec2<f32>{
-    let dimensions=vec2<f32>(textureDimensions(cloud_texture));
+fn cloud_drift_cached(dimensions:vec2<f32>)->vec2<f32>{
     return frame.work.w*frame.cloud.y*vec2<f32>(dimensions.x,dimensions.y*0.3)*frame.cloud.z;
 }
-fn cloud_material(p:vec3<f32>)->vec4<f32>{
-    if(frame.flags.w<0.5){return vec4<f32>(0.0);}
+fn cloud_material_cached(p:vec3<f32>,dimensions:vec2<i32>,drift:vec2<f32>)->vec4<f32>{
     let absolute=p+frame.origin.xyz;
     if(absolute.y<=frame.options.z || absolute.y>=frame.options.z+frame.cloud.x){
         return vec4<f32>(0.0);
     }
-    let cell=vec2<i32>(floor((absolute.xz+cloud_drift())/frame.cloud.z));
-    let material=cloud_cell(cell);
+    let cell=vec2<i32>(floor((absolute.xz+drift)/frame.cloud.z));
+    let material=cloud_cell_cached(cell,dimensions);
     return vec4<f32>(material.rgb,material.a*frame.cloud.w);
 }
-fn cloud_density(p:vec3<f32>)->f32{return cloud_material(p).a;}
 fn cloud_visibility(p:vec3<f32>)->f32{
     if(frame.flags.w<0.5 || frame.sun.y<0.02 || frame.display_target.z<=0.0){return 1.0;}
     let start=max((frame.options.z-frame.origin.y-p.y)/frame.sun.y,0.0);let end=(frame.options.z+frame.cloud.x-frame.origin.y-p.y)/frame.sun.y;if(end<=start){return 1.0;}
-    var optical=0.0;let step=(end-start)/6.0;
-    for(var i=0u;i<6u;i++){optical+=cloud_density(p+frame.sun.xyz*(start+(f32(i)+0.5)*step))*step;}
+    let dimensions=vec2<i32>(textureDimensions(cloud_texture));
+    let drift=cloud_drift_cached(vec2<f32>(dimensions));
+    var optical=0.0;
+    let step=(end-start)/6.0;
+    for(var i=0u;i<6u;i++){
+        optical+=cloud_material_cached(
+            p+frame.sun.xyz*(start+(f32(i)+0.5)*step),dimensions,drift
+        ).a*step;
+    }
     return exp(-optical*0.09);
 }
 fn shadow_sample_depth(cascade:u32,at:vec2<i32>)->f32 {
@@ -205,7 +215,9 @@ fn cloud_volume(origin:vec3<f32>,direction:vec3<f32>,distance_limit:f32)->vec4<f
     let start=max(min(bottom,top),0.0);
     let end=min(max(bottom,top),distance_limit);
     if(end<=start){return vec4<f32>(0.0,0.0,0.0,1.0);}
-    let absolute_origin=(origin+frame.origin.xyz).xz+cloud_drift();
+    let dimensions=vec2<i32>(textureDimensions(cloud_texture));
+    let absolute_origin=(origin+frame.origin.xyz).xz
+        +cloud_drift_cached(vec2<f32>(dimensions));
     let cell_width=frame.cloud.z;
     var t=start;
     var transmittance=1.0;
@@ -231,7 +243,7 @@ fn cloud_volume(origin:vec3<f32>,direction:vec3<f32>,distance_limit:f32)->vec4<f
             t+=min(0.0002,end-t);
             continue;
         }
-        let material=cloud_cell(vec2<i32>(cell));
+        let material=cloud_cell_cached(vec2<i32>(cell),dimensions);
         let occupancy=material.a*frame.cloud.w;
         if(occupancy>0.0){
             let extinction=exp(-occupancy*distance*0.22);
