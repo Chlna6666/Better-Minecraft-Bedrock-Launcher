@@ -132,6 +132,13 @@ impl ResourceDevice for OpenGlDevice {
     ) -> Result<()> {
         self.dispatch_bind_group(dispatch)
     }
+    fn dispatch_compute_bind_group_profiled(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+        tag: GpuTimestampTag,
+    ) -> Result<()> {
+        self.profile_gpu_work(tag, |device| device.dispatch_bind_group(dispatch))
+    }
     fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
         self.copy_texture_buffer_regions(copies)
     }
