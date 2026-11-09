@@ -85,7 +85,7 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u3
     let y=position.y+bitcast<f32>(face.info.w);
     if(y<params.clip.x || y>=params.clip.y){return;}
     let vertex=atomicAdd(&args[face.info.x*4u],6u);
-    let slot=face.info.z+vertex/6u;
+    let slot=(face.info.z&0x7fffffffu)+vertex/6u;
     let merged=extent.x>1u || extent.y>1u;
     let tagged=select(cell,cell|0x80000000u,merged);
     let packed=extent.x | (extent.y<<8u);
@@ -98,65 +98,44 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u3
     else{ao=face_ao(face,cell,false);}
     output[slot]=GeneratedFace(tagged,model_face,scale,ao);
 }
-// Only axis-aligned full-tile cubes with one uniform base vertex color can
-// repeat UVs over a larger rectangle. Atlas subrects, corner tint gradients,
-// arbitrary-model quads, and degenerate shapes must retain their original UVs.
-fn repeatable_cube(face:Face)->bool {
-    let delta=bitcast<i32>(face.info.y);
-    let normal_axis=select(2u,select(1u,0u,abs(delta)==1),abs(delta)==i32(params.size.x));
-    if(abs(delta)!=1 && abs(delta)!=i32(params.size.x)
-        && abs(delta)!=i32(params.size.x*params.size.y)){return false;}
-    var low=vec3<f32>(1.0);
-    var high=vec3<f32>(0.0);
-    var uv_low=vec2<f32>(1.0);
-    var uv_high=vec2<f32>(0.0);
-    let tint=face.vertices[0].color;
-    for(var corner=0u;corner<4u;corner++){
-        let v=face.vertices[corner];
-        let p=vec3<f32>(v.x,v.y,v.z);
-        if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0))) || v.color!=tint){return false;}
-        low=min(low,p);high=max(high,p);
-        uv_low=min(uv_low,vec2<f32>(v.u,v.v));
-        uv_high=max(uv_high,vec2<f32>(v.u,v.v));
-    }
-    for(var axis=0u;axis<3u;axis++){
-        if(axis==normal_axis){
-            let boundary=select(0.0,1.0,delta>0);
-            if(low[axis]!=boundary || high[axis]!=boundary){return false;}
-        }else if(low[axis]!=0.0 || high[axis]!=1.0){return false;}
-    }
-    for(var axis=0u;axis<2u;axis++){
-        // Full-tile UVs can be either normal or mirrored. Degenerate UVs may
-        // repeat only when pinned to the origin (untextured flat sampling).
-        if(uv_low[axis]!=0.0 ||
-            (uv_high[axis]!=0.0 && abs(uv_high[axis]-1.0)>0.00001)){return false;}
-    }
-    return true;
-}
-
- // One writer per cell. Compute each cell's six exposure bits and up to six
- // fully-unoccluded merge bits once, before rectangle scanning.
+// Face repeatability is certified once while encoding immutable templates.
+// face.info.z stores its bit 31, with the 31 low bits still the part base.
+// Shader no longer checks four vertices for every potentially visible face.
+// One writer per cell fills the mask only in mode 2 (large/complex sections).
 fn build_greedy_mask(index:u32){
     let kind=cells[index];
+    // No query ever reads a mask for empty/halo cells: exposed_cube checks the
+    // source kind first. Sparse sections avoid thousands of zero writes.
+    if(kind==0u || kind==0xffffffffu){return;}
     var mask=0u;
-    if(kind!=0u && kind!=0xffffffffu){
-        let y=params.origin.y+f32(index/params.size.x%params.size.y);
-        for(var direction=0u;direction<6u;direction++){
-            let face=templates.faces[(kind-1u)*6u+direction];
-            let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
-            if(cells[neighbour]!=0u){continue;}
-            mask|=1u<<direction;
-            let face_y=y+bitcast<f32>(face.info.w);
-            if(face_y<params.clip.x || face_y>=params.clip.y){continue;}
-            if(bitcast<u32>(params.clip.w)!=0u && face_ao(face,index,false)!=0xffffffffu){continue;}
-            mask|=1u<<(direction+6u);
-        }
+    let y=params.origin.y+f32(index/params.size.x%params.size.y);
+    for(var direction=0u;direction<6u;direction++){
+        let face=templates.faces[(kind-1u)*6u+direction];
+        let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
+        if(cells[neighbour]!=0u){continue;}
+        mask|=1u<<direction;
+        // Only canonical repeatable faces enter the greedy AO path.
+        if((face.info.z&0x80000000u)==0u){continue;}
+        let face_y=y+bitcast<f32>(face.info.w);
+        if(face_y<params.clip.x || face_y>=params.clip.y){continue;}
+        if(bitcast<u32>(params.clip.w)!=0u && face_ao(face,index,false)!=0xffffffffu){continue;}
+        mask|=1u<<(direction+6u);
     }
     scratch[max(params.extra.x,1u)+index]=mask;
 }
 fn exposed_cube(cell:u32,kind:u32,direction:u32)->bool {
-    return cells[cell]==kind &&
-        (scratch[max(params.extra.x,1u)+cell]&(1u<<(direction+6u)))!=0u;
+    if(cells[cell]!=kind){return false;}
+    if(params.origin.w>=1.5){
+        return (scratch[max(params.extra.x,1u)+cell]&(1u<<(direction+6u)))!=0u;
+    }
+    // Direct mode avoids a full-grid mask pass on cheap/dense sections. AO
+    // requires the same exact per-corner rule as the cached mask builder.
+    let face=templates.faces[(kind-1u)*6u+direction];
+    let neighbour=u32(i32(cell)+bitcast<i32>(face.info.y));
+    if(cells[neighbour]!=0u){return false;}
+    let y=params.origin.y+f32(cell/params.size.x%params.size.y)+bitcast<f32>(face.info.w);
+    if(y<params.clip.x || y>=params.clip.y){return false;}
+    return bitcast<u32>(params.clip.w)==0u || face_ao(face,cell,false)==0xffffffffu;
 }
 fn face_row_width(cell:u32,kind:u32,direction:u32,stride:u32,coordinate:u32,dimension:u32)->u32 {
     let within=(coordinate-1u)%16u;
@@ -180,7 +159,7 @@ fn row_has_exact_width(cell:u32,kind:u32,direction:u32,stride:u32,
     return width==available || !exposed_cube(cell+width*stride,kind,direction);
 }
 fn visible_rectangle(cell:u32,kind:u32,face:Face,direction:u32)->vec2<u32> {
-    if(params.origin.w<0.5 || !repeatable_cube(face)){return vec2<u32>(1u);}
+    if(params.origin.w<0.5 || (face.info.z&0x80000000u)==0u){return vec2<u32>(1u);}
     if(!exposed_cube(cell,kind,direction)){return vec2<u32>(1u);}
     let delta=bitcast<i32>(face.info.y);
     let along_z=abs(delta)==1;
@@ -264,7 +243,7 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
                 let cell=(cells[job+2u]*params.size.y+cells[job+1u])*params.size.x+cells[job];
                 let height=bitcast<f32>(cells[job+3u]);
                 var ao=0u;if(height==1.0){ao=face_ao(face,cell,true);}
-                output[face.info.z+scratch[index]+emitted]=GeneratedFace(cell,model_face,height,ao);
+                output[(face.info.z&0x7fffffffu)+scratch[index]+emitted]=GeneratedFace(cell,model_face,height,ao);
             }
             emitted++;
         }
@@ -284,7 +263,7 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
         let face=templates.faces[model_face];
         if(face.info.y==0xffffffffu){return;}
         let base=atomicLoad(&args[face.info.x*4u+2u])/6u;
-        output[face.info.z+base+face.info.y]=GeneratedFace(0xffffffffu,model_face,1.0,0u);
+        output[(face.info.z&0x7fffffffu)+base+face.info.y]=GeneratedFace(0xffffffffu,model_face,1.0,0u);
         return;
     }
     if(index>=params.size.x*params.size.y*params.size.z){return;}
@@ -293,12 +272,12 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
     if(kind==0u || kind==0xffffffffu){return;}
     let position=params.origin.xyz+vec3<f32>(f32(index%params.size.x),f32(index/params.size.x%params.size.y),f32(index/params.size.x/params.size.y));
     var exposed=0u;
-    if(params.origin.w>=0.5){exposed=scratch[max(params.extra.x,1u)+index];}
+    if(params.origin.w>=1.5){exposed=scratch[max(params.extra.x,1u)+index];}
     for(var direction=0u;direction<6u;direction++){
-        if(params.origin.w>=0.5 && (exposed&(1u<<direction))==0u){continue;}
+        if(params.origin.w>=1.5 && (exposed&(1u<<direction))==0u){continue;}
         let model_face=(kind-1u)*6u+direction;
         let face=templates.faces[model_face];
-        if(params.origin.w<0.5){
+        if(params.origin.w<1.5){
             let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
             if(cells[neighbour]!=0u){continue;}
         }

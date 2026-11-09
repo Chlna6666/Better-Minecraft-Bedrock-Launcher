@@ -182,6 +182,10 @@ pub struct VoxelMeshSource {
     pub(crate) cells: cells::Cells,
     pub(crate) templates: Box<[VoxelFaceTemplate]>,
     pub(crate) model_faces: usize,
+    /// Cached when the source is validated; excludes halo and static faces.
+    /// Used to choose the cheapest GPU meshing strategy without another CPU scan.
+    pub(crate) occupied_cube_cells: usize,
+    pub(crate) exposed_cube_faces: usize,
     pub(crate) static_start: usize,
     pub(crate) instances: Option<instances::InstanceData>,
     pub(crate) parts: Box<[MeshPart]>,
@@ -499,6 +503,7 @@ impl VoxelMeshSource {
             validate_voxel_templates(&templates)?;
         }
         let mut capacities = BTreeMap::<u32, usize>::new();
+        let mut occupied_cube_cells = 0usize;
         let sx = size[0] as usize;
         let sy = size[1] as usize;
         let xy = sx.checked_mul(sy).ok_or(MeshError::TooLarge)?;
@@ -506,6 +511,7 @@ impl VoxelMeshSource {
             if kind == 0 || kind == VOXEL_OCCLUDER {
                 continue;
             }
+            occupied_cube_cells += 1;
             let x = index % sx;
             let y = index / sx % sy;
             let z = index / xy;
@@ -590,6 +596,8 @@ impl VoxelMeshSource {
             cells: cells::Cells::new(if model_faces == 0 { Vec::new() } else { cells }),
             templates: templates.into_boxed_slice(),
             model_faces,
+            occupied_cube_cells,
+            exposed_cube_faces: first as usize / 6,
             static_start: model_faces,
             instances: None,
             parts: parts.into_boxed_slice(),

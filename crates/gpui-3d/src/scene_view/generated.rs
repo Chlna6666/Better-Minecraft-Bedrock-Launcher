@@ -1,6 +1,6 @@
 //! Compute-generated face descriptors, retained templates and native draw arguments.
 use super::{artifacts, gpu::{ArenaAllocation, MeshArena, MeshResources}};
-use crate::{Mesh, VoxelMeshSource};
+use crate::{Mesh, VoxelFaceTemplate, VoxelMeshSource};
 use anyhow::{Context as _, anyhow};
 use gfx_core::*;
 use gpui::ExtensionDevice;
@@ -95,7 +95,58 @@ fn material_part_lookup(source: &VoxelMeshSource) -> HashMap<u32, usize> {
     lookup
 }
 
-fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
+// This decision is immutable for every instance of a model template. Doing
+// it per rendered cell in WGSL repeatedly unpacked four 24-byte vertices.
+// The high bit of face.info.z is free: the source's index capacity is bounded
+// below 2^31. The low 31 bits retain the existing per-material output offset.
+const GREEDY_FACE_BIT: u32 = 0x8000_0000;
+
+fn canonical_greedy_face(face: &VoxelFaceTemplate) -> bool {
+    let axis = match face.neighbour {
+        [1 | -1, 0, 0] => 0usize,
+        [0, 1 | -1, 0] => 1usize,
+        [0, 0, 1 | -1] => 2usize,
+        _ => return false,
+    };
+    let boundary = if face.neighbour[axis] > 0 { 1.0 } else { 0.0 };
+    let mut low = [1.0f32; 3];
+    let mut high = [0.0f32; 3];
+    let mut uv_low = [1.0f32; 2];
+    let mut uv_high = [0.0f32; 2];
+    let packed_color = |v: &crate::Vertex| -> u32 {
+        v.color.iter().enumerate().fold(0u32, |word, (index, value)| {
+            word | (((value * 255.0).round() as u32) << (index * 8))
+        })
+    };
+    let tint = packed_color(&face.vertices[0]);
+    for v in &face.vertices {
+        let pos = [v.position.x, v.position.y, v.position.z];
+        let uv = [v.uv.x, v.uv.y];
+        if packed_color(v) != tint {
+            return false;
+        }
+        for i in 0..3 {
+            if pos[i] != 0.0 && pos[i] != 1.0 { return false; }
+            low[i] = low[i].min(pos[i]);
+            high[i] = high[i].max(pos[i]);
+        }
+        for i in 0..2 {
+            uv_low[i] = uv_low[i].min(uv[i]);
+            uv_high[i] = uv_high[i].max(uv[i]);
+        }
+    }
+    for i in 0..3 {
+        if i == axis {
+            if low[i] != boundary || high[i] != boundary { return false; }
+        } else if low[i] != 0.0 || high[i] != 1.0 {
+            return false;
+        }
+    }
+    (0..2).all(|i| uv_low[i] == 0.0 &&
+        (uv_high[i] == 0.0 || (uv_high[i] - 1.0).abs() <= 0.00001))
+}
+
+fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool) {
     // Two 112-byte header records allow every generated Section to be
     // addressed by one GPU template-record index, without per-Mesh BindGroups.
     // Header 0 stores the original float origin as raw u32 words; header 1
@@ -118,6 +169,7 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
     // The previous per-template .position() scanned all material parts for
     // every face. Resolve each material slot once, independent of face count.
     let material_parts = material_part_lookup(source);
+    let mut has_greedy_faces = false;
     for (index, face) in source.templates.iter().enumerate() {
         let part = material_parts.get(&face.material_slot).copied().unwrap_or(0);
         let center = face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
@@ -130,10 +182,14 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
             static_counts[part] += 1;
             slot
         };
+        let greedy_face = index < source.model_faces && canonical_greedy_face(face);
+        has_greedy_faces |= greedy_face;
+        let output_offset = source.parts[part].first_index() / 6;
+        debug_assert_eq!(output_offset & GREEDY_FACE_BIT, 0);
         for value in [
             part as u32,
             address,
-            source.parts[part].first_index() / 6,
+            output_offset | if greedy_face { GREEDY_FACE_BIT } else { 0 },
             center.to_bits(),
         ] {
             bytes.extend(value.to_le_bytes());
@@ -156,7 +212,7 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>) {
         bytes.extend_from_slice(&light.levels);
         bytes.resize(bytes.len().div_ceil(4) * 4, 0);
     }
-    (bytes, static_counts)
+    (bytes, static_counts, has_greedy_faces)
 }
 
 /// Section-scoped GPU resources prepared for one shared native compute batch.
@@ -273,7 +329,7 @@ fn prepare_generated(
     let source = mesh
         .gpu_voxels()
         .ok_or_else(|| anyhow!("missing voxel source"))?;
-    let (mut templates, static_counts) = encode(source);
+    let (mut templates, static_counts, has_greedy_faces) = encode(source);
     let mut words = if source.model_faces == 0 {
         Vec::new()
     } else {
@@ -324,7 +380,18 @@ fn prepare_generated(
         .collect::<Vec<_>>();
     let greedy = source.greedy_visible_faces
         && source.lighting.as_ref().is_none_or(|light| light.uniform)
-        && source.model_faces > 0;
+        && has_greedy_faces;
+    // The masked algorithm pays an extra full-grid dispatch and scratch writes.
+    // Only enable it for sufficiently large work with repeated AO queries or
+    // sufficiently exposed/detailed input. Fully occluded dense grids should
+    // use direct neighbor checks when AO is disabled. Inputs already have these
+    // counters from their one-time conservative capacity validation.
+    let cached_greedy = greedy && source.exposed_cube_faces >= 128
+        && (source.ambient_occlusion != 0
+            || source.exposed_cube_faces.saturating_mul(4)
+                >= source.occupied_cube_cells.saturating_mul(7));
+    // 0: no greedy, 1: direct neighbor/AO, 2: precomputed GPU face mask.
+    let greedy_mode = if !greedy { 0.0 } else if cached_greedy { 2.0 } else { 1.0 };
     let params = source
         .size
         .into_iter()
@@ -338,7 +405,7 @@ fn prepare_generated(
                 // Uniform sky/block lighting is safe for rectangle merging;
                 // non-uniform per-corner light remains unmerged. AO is tested
                 // per exposed face on the GPU, not dropped globally.
-                f32::from(greedy),
+                greedy_mode,
             ]
                 .into_iter()
                 .flat_map(f32::to_le_bytes),
@@ -380,7 +447,7 @@ fn prepare_generated(
     // Keep instance prefix sums and per-cell greedy masks in disjoint ranges
     // of the same batch-scoped scratch buffer. Do not add a new bind group.
     let scratch_bytes = jobs.len().max(1)
-        .checked_add(if greedy { source.cells.len() } else { 0 })
+        .checked_add(if cached_greedy { source.cells.len() } else { 0 })
         .and_then(|words| words.checked_mul(4))
         .ok_or_else(|| anyhow!("GPU greedy mask scratch capacity overflow"))?;
     let specs = [
@@ -556,7 +623,7 @@ fn prepare_generated(
         if source.model_faces > 0 {
             // Ordered Compute dispatches publish the transient face masks
             // before the main mesh pass, without CPU readback or sync.
-            if greedy {
+            if cached_greedy {
                 stages.push((6, source.cells.len().div_ceil(64)));
             }
             stages.push((0, source.cells.len().div_ceil(64)));

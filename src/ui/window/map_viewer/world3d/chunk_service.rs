@@ -333,10 +333,26 @@ fn prioritize_stream_meshes(
     center: (i32, i32),
     forward_xz: [f32; 2],
 ) {
-    // The loader may return chunks in DB scheduling order. A sorted meshing
-    // wave should always favor the current view, not the on-disk key order.
-    let selected = loaded.iter().copied().collect::<HashSet<_>>();
-    loaded.sort_by_key(|pos| mesh_target_priority(*pos, &selected, center, forward_xz));
+    // Every item already belongs to loaded. The old code rebuilt a HashSet
+    // from this same slice and tested membership for each sort key, a
+    // condition that was always true. Distance/direction is sufficient.
+    loaded.sort_by_key(|&pos| mesh_direction_distance_priority(pos, center, forward_xz));
+}
+
+#[inline]
+fn mesh_direction_distance_priority(
+    pos: ChunkPos,
+    center: (i32, i32),
+    forward_xz: [f32; 2],
+) -> (bool, i64) {
+    let dx = i64::from(pos.x) - i64::from(center.0);
+    let dz = i64::from(pos.z) - i64::from(center.1);
+    let distance_sq = dx * dx + dz * dz;
+    let dot = dx as f32 * forward_xz[0] + dz as f32 * forward_xz[1];
+    // Equivalent to dot >= 0.25 * sqrt(distance_sq), without a sqrt
+    // for every dirty column/sort key.
+    let ahead = dot >= 0.0 && dot * dot >= distance_sq as f32 * 0.0625;
+    (!ahead, distance_sq)
 }
 
 fn mesh_target_priority(
@@ -345,12 +361,8 @@ fn mesh_target_priority(
     center: (i32, i32),
     forward_xz: [f32; 2],
 ) -> (bool, bool, i64) {
-    let dx = i64::from(pos.x) - i64::from(center.0);
-    let dz = i64::from(pos.z) - i64::from(center.1);
-    let distance_sq = dx * dx + dz * dz;
-    let ahead =
-        dx as f32 * forward_xz[0] + dz as f32 * forward_xz[1] >= 0.25 * (distance_sq as f32).sqrt();
-    (!loaded.contains(&pos), !ahead, distance_sq)
+    let (behind, distance_sq) = mesh_direction_distance_priority(pos, center, forward_xz);
+    (!loaded.contains(&pos), behind, distance_sq)
 }
 
 #[inline]
@@ -387,14 +399,16 @@ fn lazy_mesh_column(pos: ChunkPos, view: ViewState) -> bool {
         return false;
     }
     let [fx, fz] = view.forward_xz;
-    let forward_length = f64::from(fx).hypot(f64::from(fz));
-    if forward_length < 0.5 {
+    let forward_length_sq = f64::from(fx) * f64::from(fx)
+        + f64::from(fz) * f64::from(fz);
+    if forward_length_sq < 0.25 {
         // Looking nearly vertically: don't skip columns based on yaw.
         return false;
     }
-    let dot = (dx * f64::from(fx) + dz * f64::from(fz))
-        / (distance_sq.sqrt() * forward_length);
-    dot < -0.55
+    let dot = dx * f64::from(fx) + dz * f64::from(fz);
+    // Compare the squared cosine only on the rear side of the camera.
+    // Avoid two square roots and a division on every candidate.
+    dot < 0.0 && dot * dot > distance_sq * forward_length_sq * 0.3025
 }
 
 fn section_priority(pos: ChunkPos, section_y: i32, view: ViewState) -> (bool, u64) {
@@ -669,13 +683,15 @@ fn renderable_dirty_priority(
     if ring <= 4 {
         return (0, 0, 0, distance_sq, pos);
     }
-    let forward = dx as f32 * view.forward_xz[0] + dz as f32 * view.forward_xz[1];
-    let radius = (distance_sq as f32).sqrt();
-    let direction = if view.forward_xz[0].hypot(view.forward_xz[1]) < 0.5 {
+    let fx = view.forward_xz[0];
+    let fz = view.forward_xz[1];
+    let dot = dx as f32 * fx + dz as f32 * fz;
+    let radius_sq = distance_sq as f32;
+    let direction = if fx * fx + fz * fz < 0.25 {
         1
-    } else if forward >= radius * 0.25 {
+    } else if dot >= 0.0 && dot * dot >= radius_sq * 0.0625 {
         0
-    } else if forward < -radius * 0.55 {
+    } else if dot < 0.0 && dot * dot > radius_sq * 0.3025 {
         2
     } else {
         1
