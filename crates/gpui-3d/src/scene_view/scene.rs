@@ -2608,6 +2608,13 @@ impl SceneResources {
             // culler owns voxel layouts when GPU culling is enabled.
             self.stable_slots = stable_slots::StableDrawSlots::default();
         }
+        // GPU reallocations change allocation identity even if physical slot
+        // ordinals stay stable. Update the byte-accurate retirement namespace
+        // only AFTER resource/bind-group preparation has committed.
+        self.stable_slots.set_resident_buffers(&[
+            (self.draw_buffer, DRAW_PARAMS_STRIDE as u64),
+            (self.instance_buffer, INSTANCE_STRIDE as u64),
+        ]);
         let mut previous_slot_bytes = std::mem::replace(&mut self.uploaded_slot_map, slot_bytes);
         previous_slot_bytes.clear();
         self.scratch_slot_map = previous_slot_bytes;
