@@ -86,6 +86,180 @@ impl State {
 }
 
 impl VulkanDevice {
+    /// Dispatch a complete native compute resource set. Buffer-only
+    /// Generated Mesh / culling continues to use dispatch_buffer_batch.
+    pub(super) fn dispatch_resource_set(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        dispatch.validate(self.compute.capabilities)?;
+        let (layout_id, set_handle, desc) = {
+            let set = self.bind_groups.get(dispatch.bind_group)?;
+            (set.layout, set.descriptor_set, set.desc.clone())
+        };
+        let (set_layout, layout) = {
+            let layout = self.bind_group_layouts.get(layout_id)?;
+            (layout.layout, layout.desc.clone())
+        };
+        desc.validate_against(&layout)?;
+
+        let mut buffer_bindings = Vec::new();
+        // Track whole texture identities, not just view IDs. Storage images
+        // must not alias any simultaneous sampled or writable view.
+        let mut images = Vec::<(TextureId, bool)>::new();
+        for entry in &layout.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) {
+                return Err(Error::InvalidInput("Vulkan compute resource lacks stage visibility".into()));
+            }
+            let binding = desc.entries.iter().find(|b| b.binding == entry.binding)
+                .ok_or_else(|| Error::InvalidInput("missing compute binding".into()))?;
+            match (entry.binding_type, binding.resource) {
+                (BindingType::UniformBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBuffer, BindingResource::Buffer(buffer))
+                | (BindingType::StorageBufferReadWrite, BindingResource::Buffer(buffer)) => {
+                    let access = match entry.binding_type {
+                        BindingType::UniformBuffer => ComputeBufferAccess::Uniform,
+                        BindingType::StorageBuffer => ComputeBufferAccess::ReadOnly,
+                        _ => ComputeBufferAccess::ReadWrite,
+                    };
+                    buffer_bindings.push(gfx_core::ComputeBufferBinding {
+                        binding: entry.binding, buffer, access,
+                    });
+                }
+                (BindingType::SampledTexture, BindingResource::Texture(texture))
+                | (BindingType::StorageTexture { .. }, BindingResource::Texture(texture)) => {
+                    let id = self.texture_views.get(texture.texture_view)?.texture;
+                    let writable = matches!(entry.binding_type, BindingType::StorageTexture { .. });
+                    if let Some((_, earlier_writable)) = images.iter().find(|(image, _)| *image == id) {
+                        if writable || *earlier_writable {
+                            return Err(Error::InvalidInput(
+                                "Vulkan compute storage image aliases another image binding".into()
+                            ));
+                        }
+                    } else {
+                        images.push((id, writable));
+                    }
+                }
+                (BindingType::Sampler, BindingResource::Sampler(_)) => {}
+                _ => return Err(Error::InvalidInput("Vulkan compute binding type mismatch".into())),
+            }
+        }
+        ComputeDispatch {
+            shader: dispatch.shader,
+            bindings: &buffer_bindings,
+            workgroups: dispatch.workgroups,
+        }.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
+
+        let key = (dispatch.shader, layout_id);
+        let program = if let Some(program) = self.compute.resource_set_programs.get(&key) {
+            program.clone()
+        } else {
+            let shader = self.shader_modules.get(dispatch.shader)?;
+            let program = Arc::new(create_resource_set_program(
+                self.device.clone(), self.pipeline_cache, shader, set_layout
+            )?);
+            self.compute.resource_set_programs.insert(key, program.clone());
+            program
+        };
+
+        let encoder = self.create_command_encoder_with_buffer_count(1)?;
+        let command = self.command_encoders.get(encoder)?.command_buffers[0];
+        let result = (|| -> Result<()> {
+            unsafe {
+                self.device.begin_command_buffer(
+                    command,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                ).map_err(VulkanError::from)?;
+            }
+            let mut pre_images = Vec::with_capacity(images.len());
+            let mut post_images = Vec::new();
+            for &(id, writable) in &images {
+                let texture = self.textures.get(id)?;
+                let desired = if writable {
+                    vk::ImageLayout::GENERAL
+                } else {
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                };
+                let range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(image_aspect_for_format(texture.desc.format))
+                    .base_mip_level(0)
+                    .level_count(texture.desc.mip_level_count)
+                    .base_array_layer(0)
+                    .layer_count(texture.desc.dimension.layers());
+                pre_images.push(vk::ImageMemoryBarrier::default()
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .old_layout(texture.layout)
+                    .new_layout(desired)
+                    .image(texture.image)
+                    .subresource_range(range)
+                    .src_access_mask(if texture.layout == vk::ImageLayout::UNDEFINED {
+                        vk::AccessFlags::empty()
+                    } else {
+                        vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
+                    })
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ |
+                        if writable { vk::AccessFlags::SHADER_WRITE } else { vk::AccessFlags::empty() }));
+                if writable {
+                    post_images.push(vk::ImageMemoryBarrier::default()
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .old_layout(vk::ImageLayout::GENERAL)
+                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .image(texture.image)
+                        .subresource_range(range)
+                        .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE));
+                }
+            }
+            let before = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+            // All dependencies remain GPU-side. Do not wait for the CPU to
+            // observe completion between Compute and subsequent DrawIndirect.
+            unsafe {
+                self.device.cmd_pipeline_barrier(
+                    command,
+                    vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(), &[before], &[], &pre_images,
+                );
+                self.device.cmd_bind_pipeline(
+                    command, vk::PipelineBindPoint::COMPUTE, program.pipeline,
+                );
+                self.device.cmd_bind_descriptor_sets(
+                    command, vk::PipelineBindPoint::COMPUTE, program.layout, 0,
+                    &[set_handle], &[],
+                );
+                self.device.cmd_dispatch(
+                    command,
+                    dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
+                );
+                let after = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+                self.device.cmd_pipeline_barrier(
+                    command,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::DependencyFlags::empty(), &[after], &[], &post_images,
+                );
+                self.device.end_command_buffer(command).map_err(VulkanError::from)?;
+            }
+            self.submit_command_encoder_deferred(encoder)
+        })();
+        if let Err(error) = result {
+            let _ = self.destroy_temporary_command_encoder_now(encoder);
+            return Err(error);
+        }
+        for &(id, _) in &images {
+            self.textures.get_mut(id)?.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        }
+        self.poll_cleanup();
+        Ok(())
+    }
+
     pub(super) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffer_batch(std::slice::from_ref(dispatch))
     }
