@@ -53,7 +53,7 @@ pub(crate) fn report_gpu_samples(
     }
 }
 
-const GPU_PHASES: usize = 3;
+const GPU_PHASES: usize = 5;
 const HARDWARE_WINDOW_SIZE: usize = 256;
 
 struct HardwareWindow {
@@ -86,6 +86,8 @@ fn record_hardware_quantile(
         GpuTimestampStage::GeneratedMesh => 0,
         GpuTimestampStage::BufferUpload => 1,
         GpuTimestampStage::DrawIndirect => 2,
+        GpuTimestampStage::FroxelInjection => 3,
+        GpuTimestampStage::FroxelIntegration => 4,
     };
     let windows = HARDWARE_WINDOWS.get_or_init(|| Mutex::new(
         (0..BACKENDS * GPU_PHASES).map(|_| HardwareWindow::new()).collect()
