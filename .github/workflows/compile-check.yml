@@ -82,6 +82,18 @@ jobs:
             Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR
           }
 
+      - name: Guard BMCBL native 3D editor and GPUI sidecar integration
+        shell: pwsh
+        run: |
+          pwsh -File scripts/check-bmcbl-gpui3d-integration.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -File scripts/check-gpui-3d-boundary.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check standalone gpui-3d core without GPUI
+        shell: pwsh
+        run: cargo check -p gpui-3d --no-default-features --lib
+
       - name: Check Bedrock storage crates
         shell: pwsh
         run: cargo check -p bedrock-leveldb -p bedrock-world --all-features
@@ -111,6 +123,14 @@ jobs:
       - name: Build BMCBL executable
         shell: pwsh
         run: cargo build --bin BMCBL
+
+      - name: Test native GPU work graph and pure 3D submission ABI
+        shell: pwsh
+        run: |
+          cargo test -p gfx-core --lib render_graph::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib native_offscreen::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test GPU-generated Section fusion and editor regression
         shell: pwsh
@@ -215,6 +235,9 @@ jobs:
       - name: Remove stale compiler outputs
         run: rm -rf "$CARGO_TARGET_DIR"
 
+      - name: Check standalone gpui-3d core without GPUI
+        run: cargo check -p gpui-3d --no-default-features --lib
+
       - name: Check Bedrock storage crates
         run: cargo check -p bedrock-leveldb -p bedrock-world --all-features
 
@@ -232,9 +255,15 @@ jobs:
       - name: Build BMCBL executable
         run: cargo build --bin BMCBL
 
+      - name: Test native GPU work graph and standalone 3D submit ABI
+        run: |
+          cargo test -p gfx-core --lib render_graph::tests
+          cargo test -p gpui-3d --no-default-features --lib native_offscreen::tests
+
       - name: Test GPUI 3D cross-material batching and generated Section fusion
         run: |
-          # gpui-3d intentionally depends on GPUI without a desktop backend.
+          # The BMCBL sidecar build uses GPUI, while the pure engine
+          # was already checked above without any GPUI dependency.
           # Unit-test builds must explicitly activate winit's Linux platform.
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::batching::tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 upload_feedback::tests -- --nocapture
