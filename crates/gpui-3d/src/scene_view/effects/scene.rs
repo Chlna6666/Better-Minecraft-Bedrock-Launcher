@@ -214,32 +214,36 @@ impl EffectScene {
                 }
                 let _ = d.destroy_buffer(buffer);
             });
-            let shadow = Target::create(
-                device,
-                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
-                Format::Depth32Float,
-                true,
-                1,
-            )?;
-            shadow.record(&mut cleanup);
-            // Unused color output for depth shadow atlas: 1/8 bandwidth
-            // of RGBA16F while preserving identical depth precision.
-            let shadow_color = Target::create(
-                device,
-                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
-                Format::R8Unorm,
-                false,
-                1,
-            )?;
-            shadow_color.record(&mut cleanup);
+            let mut shadows = Vec::with_capacity(SHADOW_CASCADE_COUNT);
+            let mut shadow_colors = Vec::with_capacity(SHADOW_CASCADE_COUNT);
+            for _ in 0..SHADOW_CASCADE_COUNT {
+                let shadow = Target::create(
+                    device, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                    Format::Depth32Float, true, 1,
+                )?;
+                shadow.record(&mut cleanup);
+                shadows.push(shadow);
+                // This unused color attachment exists for native backends that
+                // do not support a depth-only material RenderPass.
+                let color = Target::create(
+                    device, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                    Format::R8Unorm, false, 1,
+                )?;
+                color.record(&mut cleanup);
+                shadow_colors.push(color);
+            }
+            let shadow: [Target; SHADOW_CASCADE_COUNT] = shadows
+                .try_into().map_err(|_| anyhow::anyhow!("missing shadow cascades"))?;
+            let shadow_color: [Target; SHADOW_CASCADE_COUNT] = shadow_colors
+                .try_into().map_err(|_| anyhow::anyhow!("missing shadow colors"))?;
             let scene = SceneResources::new(device, backend)?;
             Ok(Self {
                 last_seen: Instant::now(),
                 capture: None,
                 targets_valid: false,
                 queued_capture: false,
-                shadow_valid: false,
-                queued_shadow: false,
+                shadow_valid: [false; SHADOW_CASCADE_COUNT],
+                queued_shadow: [false; SHADOW_CASCADE_COUNT],
                 scene,
                 targets,
                 msaa_sample_count,
@@ -250,11 +254,11 @@ impl EffectScene {
                 group_key: None,
                 shadow,
                 shadow_color,
-                shadow_key: None,
+                shadow_key: [None; SHADOW_CASCADE_COUNT],
                 shadow_input: None,
                 shadow_scene: None,
                 shadow_transform: Mat4::IDENTITY,
-                shadow_matrix: Mat4::IDENTITY,
+                shadow_matrix: [Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
                 tile_transform: Mat4::IDENTITY,
                 tile_camera: None,
                 tile_scene: None,
@@ -491,8 +495,12 @@ impl EffectScene {
         self.scene.destroy(device)?;
         self.tiles.destroy(device)?;
         self.targets.destroy(device)?;
-        self.shadow.destroy(device)?;
-        self.shadow_color.destroy(device)?;
+        for cascade in self.shadow {
+            cascade.destroy(device)?;
+        }
+        for color in self.shadow_color {
+            color.destroy(device)?;
+        }
         device.destroy_buffer(self.frame)?;
         device.destroy_buffer(self.composite_frame)?;
         Ok(())
