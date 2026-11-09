@@ -273,6 +273,7 @@ pub struct MainWindowView {
     diagnostics_visible: bool,
     agreement_render_state: Arc<AgreementRenderState>,
     last_auth_blocked: Option<bool>,
+    last_handled_game_launch: Option<String>,
     last_minecraft_termination_dialog:
         crate::ui::views::tools::state::MinecraftTerminationDialogState,
     easter_egg: easter_egg::EasterEggState,
@@ -322,21 +323,75 @@ impl MainWindowView {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
-                handle.update(cx, |_, cx| {
-                    cx.update_global(
-                        |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
-                            state.pending = Some(report);
-                            state.export_status = None;
-                        },
-                    );
-                    cx.notify();
-                })?;
-                let _ = main_window.update(cx, |_, window, _| {
-                    window.restore_window();
-                    window.activate_window();
-                });
+                if report.kind.is_abnormal() {
+                    handle.update(cx, |_, cx| {
+                        cx.update_global(
+                            |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
+                                state.pending = Some(report);
+                                state.export_status = None;
+                            },
+                        );
+                        cx.notify();
+                    })?;
+                    let _ = main_window.update(cx, |_, window, _| {
+                        window.show_window();
+                        window.restore_window();
+                        window.activate_window();
+                    });
+                } else if crate::core::minecraft::diagnostics::active_sessions() == 0
+                    && crate::config::config::read_config()
+                        .is_ok_and(|cfg| cfg.game.launcher_visibility == "close")
+                {
+                    // The user requested a closed window. Once the last game
+                    // quits normally there is no reason to keep BMCBL hidden.
+                    let _ = main_window.update(cx, |_, window, _| {
+                        window.remove_window();
+                    });
+                }
             }
             Ok::<(), anyhow::Error>(())
+        }).detach();
+    }
+
+    fn maybe_apply_launcher_visibility(
+        &mut self,
+        snapshot: &crate::ui::hooks::use_launcher::LauncherSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task_id) = snapshot.task_id.as_deref() else { return };
+        let Some(task) = snapshot.last_snapshot.as_ref() else { return };
+        if task.status.as_ref() != "completed"
+            || !matches!(task.stage.as_ref(), "launching" | "running_game")
+            || self.last_handled_game_launch.as_deref() == Some(task_id)
+        {
+            return;
+        }
+        self.last_handled_game_launch = Some(task_id.to_string());
+        let mode = crate::config::config::read_config()
+            .map(|config| config.game.launcher_visibility)
+            .unwrap_or_else(|_| "keep".to_string());
+        if mode == "keep" { return; }
+        let main_window = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            Timer::after(Duration::from_millis(950)).await;
+            let _ = main_window.update(cx, |_, window, cx| {
+                if cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>()
+                    .pending.is_some()
+                {
+                    return;
+                }
+                if mode == "minimize" {
+                    window.minimize_window();
+                } else if mode == "close" {
+                    if crate::core::minecraft::diagnostics::active_sessions() == 0 {
+                        window.remove_window();
+                    } else {
+                        // Preserve the process monitor without showing a launcher window.
+                        window.hide_window();
+                    }
+                }
+            });
         }).detach();
     }
 
@@ -1772,6 +1827,7 @@ impl Render for MainWindowView {
         }
         let update_state_changed = self.sync_update_state(frame_now, cx);
         let model = self.build_render_model(frame_now, window, cx);
+        self.maybe_apply_launcher_visibility(&model.launcher_snapshot, window, cx);
         let _ = self.sync_background_animation_policy_for_route(
             &model.route,
             &model.update_render_state,

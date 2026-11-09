@@ -30,7 +30,7 @@ fn bring_main_window_to_foreground() {
     use std::os::windows::ffi::OsStrExt;
     use tracing::warn;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+        FindWindowW, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
     };
     use windows::core::PCWSTR;
 
@@ -53,6 +53,9 @@ fn bring_main_window_to_foreground() {
     if unsafe { IsIconic(hwnd).as_bool() } {
         // SAFETY: hwnd came from FindWindowW; restoring it is best-effort.
         let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+    } else if !unsafe { IsWindowVisible(hwnd).as_bool() } {
+        // The game-monitor window policy may have hidden the main window.
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
     }
 
     // SAFETY: hwnd came from FindWindowW; foreground activation is best-effort.
