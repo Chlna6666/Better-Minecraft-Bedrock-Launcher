@@ -10,11 +10,11 @@ struct HiZVertexMs { @builtin(position) clip_position:vec4<f32> };
         min(p.x+1,size.x-1),min(p.y+1,size.y-1)
     );
     var nearest=1.0;
-    for(var sample=0;sample<textureNumSamples(source_depth_ms);sample++){
-        nearest=min(nearest,textureLoad(source_depth_ms,taps.xy,sample).r);
-        nearest=min(nearest,textureLoad(source_depth_ms,taps.zy,sample).r);
-        nearest=min(nearest,textureLoad(source_depth_ms,taps.xw,sample).r);
-        nearest=min(nearest,textureLoad(source_depth_ms,taps.zw,sample).r);
+    for(var sample=0u;sample<textureNumSamples(source_depth_ms);sample++){
+        nearest=min(nearest,textureLoad(source_depth_ms,taps.xy,i32(sample)).r);
+        nearest=min(nearest,textureLoad(source_depth_ms,taps.zy,i32(sample)).r);
+        nearest=min(nearest,textureLoad(source_depth_ms,taps.xw,i32(sample)).r);
+        nearest=min(nearest,textureLoad(source_depth_ms,taps.zw,i32(sample)).r);
     }
     return nearest;
 }
