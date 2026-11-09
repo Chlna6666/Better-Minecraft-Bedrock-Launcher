@@ -69,8 +69,7 @@ impl EffectsRenderer {
                 1
             };
             let froxel_program =
-                if settings.volumetric_fog && settings.fog_density > 0.0
-                    && compositor_resources.supports_froxel(msaa_sample_count > 1)
+                if compositor_resources.supports_froxel(msaa_sample_count > 1)
                     && device.texture_volume_capabilities().sampled
                     && device.texture_volume_capabilities().storage
                     && device.compute_bind_group_capabilities().storage_textures
