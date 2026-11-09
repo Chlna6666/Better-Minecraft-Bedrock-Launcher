@@ -40,6 +40,8 @@ pub struct GameSessionReport {
     pub game_directory: PathBuf,
     pub platform: String,
     pub pid: u32,
+    #[serde(default)]
+    pub process_created_at: Option<u64>,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub exit_code: Option<u32>,
@@ -70,6 +72,27 @@ fn event_bus() -> &'static broadcast::Sender<GameSessionReport> {
 
 pub fn subscribe() -> broadcast::Receiver<GameSessionReport> {
     event_bus().subscribe()
+}
+
+#[cfg(target_os = "windows")]
+fn process_creation_filetime(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: The handle belongs to the current process and is closed on all paths.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let result = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user)
+            .ok()
+            .map(|_| ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64);
+        let _ = CloseHandle(handle);
+        result
+    }
 }
 
 fn root() -> PathBuf {
@@ -103,6 +126,12 @@ impl GameSessionReport {
             game_directory: game_directory.to_path_buf(),
             platform: platform.to_string(),
             pid,
+            process_created_at: {
+                #[cfg(target_os = "windows")]
+                { process_creation_filetime(pid) }
+                #[cfg(not(target_os = "windows"))]
+                { None }
+            },
             started_at: Utc::now(),
             ended_at: None,
             exit_code: None,
@@ -185,6 +214,12 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
             .or_else(|_| pid_text.parse::<u32>()).ok();
         let Some(actual_pid) = actual_pid else { continue };
         if actual_pid != report.pid { continue; }
+        if let (Some(expected), Some(app_start)) =
+            (report.process_created_at, data(block, "AppStartTime"))
+        {
+            let parsed = u64::from_str_radix(app_start.trim_start_matches("0x"), 16).ok();
+            if parsed.is_some_and(|created| created != expected) { continue; }
+        }
         let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
         if !app_name.contains("minecraft") { continue; }
         let timestamp = event_time.captures(block)
@@ -324,6 +359,7 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
         report.game_directory.join("Minecraft Bedrock/logs"),
         report.game_directory.join("Minecraft Bedrock/CrashLogs"),
         report.game_directory.join("BLoader/logs"),
+        file_ops::logs_dir().join("proton"),
     ];
     let mut number = 0usize;
     for dir in directories {
@@ -335,7 +371,7 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             if !matches!(ext.to_ascii_lowercase().as_str(), "log" | "txt" | "json") { continue }
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             let name = name.to_ascii_lowercase();
-            if !name.contains("crash") && !name.contains("levilamina") && !name.contains("bloader") {
+            if !name.contains("crash") && !name.contains("levilamina") && !name.contains("bloader") && !name.contains("proton") {
                 continue;
             }
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
@@ -368,7 +404,7 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(dir) else { continue };
         for entry in entries.take(128).flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("dmp")) { continue }
+            if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("dmp")) { continue }
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
             if !meta.file_type().is_file() || meta.len() > MAX_DUMP_BYTES { continue }
             let Some(modified) = meta.modified().ok().map(DateTime::<Utc>::from) else { continue };
@@ -378,7 +414,8 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
             }
             // Global CrashDumps can contain other Minecraft instances.
             if path.parent().is_some_and(|parent| parent.ends_with("CrashDumps")) {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+                let Some(file_name) = path.file_name() else { continue };
+                let name = file_name.to_string_lossy().to_ascii_lowercase();
                 if !name.contains("minecraft") || !name.contains(&report.pid.to_string()) {
                     continue;
                 }
@@ -412,7 +449,7 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
         // Never export the raw private game_directory from the on-disk session JSON.
         let metadata = serde_json::json!({
             "session_id": report.id, "task_id": report.task_id, "version": report.version,
-            "platform": report.platform, "pid": report.pid, "started_at": report.started_at,
+            "platform": report.platform, "pid": report.pid, "process_created_at": report.process_created_at, "started_at": report.started_at,
             "ended_at": report.ended_at, "exit_code": report.exit_code, "kind": report.kind,
             "wer_fault": report.wer_fault,
         });
