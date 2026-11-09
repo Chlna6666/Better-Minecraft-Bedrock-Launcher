@@ -43,6 +43,9 @@ impl Worker {
                 source.with_instances(band.classes, instance_templates, band.instances)
             })
             .and_then(|source| source.with_static_faces(extra))
+            // Merge only unlit full-cube faces. Ambient light, per-corner AO
+            // and alpha-cutout models retain their exact independent quads.
+            .map(|source| source.with_greedy_visible_faces(lighting.is_none()))
             .map(|source| source.with_ambient_occlusion(if lighting.is_some() { 16 } else { 0 }))
             .and_then(|source| match (levels, lighting) {
                 (Some(levels), Some(light)) => source.with_lighting(levels, light.ambient),
