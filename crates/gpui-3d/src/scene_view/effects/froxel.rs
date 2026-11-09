@@ -336,28 +336,10 @@ impl FroxelVolume {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
             let create = |device: &mut dyn ExtensionDevice| -> gpui::Result<Target> {
-                let desc = TextureDescriptor {
-                    label: Some("gpui-3d froxel 3D RGBA16F".into()),
-                    size: Extent2d::new(grid.extent[0], grid.extent[1])?,
-                    mip_level_count: 1,
-                    format: Format::Rgba16Float,
-                    usage: TextureUsage::SAMPLED | TextureUsage::STORAGE,
-                    memory_location: MemoryLocation::GpuOnly,
-                    dimension: TextureDimension::D3 { depth: grid.extent[2] },
-                    sample_count: 1,
-                };
-                device.texture_volume_capabilities().validate(&desc)?;
-                let texture = device.create_texture(&desc)?;
-                let view = match device.create_texture_view(&TextureViewDescriptor {
-                    label: None, texture, base_mip_level: 0,
-                    mip_level_count: 1, format: desc.format,
-                }) {
-                    Ok(view) => view,
-                    Err(err) => {
-                        let _ = device.destroy_texture(texture);
-                        return Err(err.into());
-                    }
-                };
+                let (texture, view) = super::super::volume_texture::create_gpu_volume(
+                    device, "gpui-3d froxel RGBA16F volume", grid.extent,
+                    Format::Rgba16Float, TextureUsage::SAMPLED | TextureUsage::STORAGE, 1,
+                )?;
                 Ok(Target { texture, view })
             };
             let injection = create(device)?;
