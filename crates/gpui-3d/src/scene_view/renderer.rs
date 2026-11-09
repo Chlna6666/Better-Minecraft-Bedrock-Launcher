@@ -1275,6 +1275,13 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 return Err(error.into());
             }
         };
+        // All three renderer-global GPU mesh pools share the native producer
+        // and can be read/written by Compute before this DrawIndirect batch.
+        // The backing allocations are conservatively stamped only once per
+        // *accepted* graphics batch; no CPU frame index becomes a GPU fence.
+        self.generated_arena.borrow_mut().native_draw_submitted(submitted);
+        self.template_arena.borrow_mut().native_draw_submitted(submitted);
+        self.argument_arena.borrow_mut().native_draw_submitted(submitted);
         // Track the real last DrawIndirect producer per SceneView. The
         // submitted native batch references exactly these captured scenes;
         // unchanged cached scenes are not falsely stamped as new readers.
@@ -1319,6 +1326,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     }
 
     fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.generated_arena.borrow_mut().gpu_submission_accepted(submission);
+        self.template_arena.borrow_mut().gpu_submission_accepted(submission);
+        self.argument_arena.borrow_mut().gpu_submission_accepted(submission);
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_submission_accepted(submission);
             // Draw Slot retirements prefer the exact last DrawIndirect
@@ -1333,6 +1343,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     }
 
     fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.generated_arena.borrow_mut().gpu_submission_completed(submission);
+        self.template_arena.borrow_mut().gpu_submission_completed(submission);
+        self.argument_arena.borrow_mut().gpu_submission_completed(submission);
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_submission_completed(submission);
         }
