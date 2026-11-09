@@ -7,7 +7,7 @@
 //! SubmissionId/fence. No native graphics context is ever sent to a worker.
 use super::{SceneViewId, resources::embedded_shader};
 use gfx_core::*;
-use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
+use gpui::{ExtensionDevice, RendererExtensionContext};
 use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 /// Only the rounded portion of GPUI's ContentMask affects the shader.
@@ -39,6 +39,35 @@ fn rounded_mask(mask: &gpui::ContentMask<gpui::ScaledPixels>) -> RoundedMask {
             f32::from(mask.corner_bounds.size.height),
         ],
         radii,
+    }
+}
+
+/// Native offscreen graphics producer owned by gpui-3d, not a GPUI paint
+/// primitive. Its command list remains an immutable Arc shared with the
+/// SceneView's GPU-resident draw cache. The only GUI-facing object is the
+/// sampled color TextureViewId used by the final composite.
+pub(super) struct NativeOffscreenPass {
+    pub(super) target: TextureViewId,
+    pub(super) render_pass: RenderPassId,
+    pub(super) commands: Arc<[RenderCommand]>,
+    pub(super) gpu_work_tag: Option<GpuTimestampTag>,
+    pub(super) color_load_op: LoadOp<ClearColor>,
+    pub(super) depth_attachment: Option<DepthAttachment>,
+}
+
+impl NativeOffscreenPass {
+    /// Borrow native commands without copying DrawIndirect records.
+    pub(super) fn commands(&self) -> RenderPassCommands<'_> {
+        RenderPassCommands {
+            color_attachments: std::slice::from_ref(&self.target),
+            render_pass: self.render_pass,
+            commands: &self.commands,
+            color_load_op: self.color_load_op,
+            clear_region: None,
+            viewport: None,
+            resolve_target: None,
+            depth_attachment: self.depth_attachment,
+        }
     }
 }
 
@@ -866,7 +895,7 @@ impl SidecarSurface {
         mut geometry: Arc<[RenderCommand]>,
         authored_scissors: bool,
         indirect_only: bool,
-        passes: &mut Vec<RendererExtensionPass>,
+        passes: &mut Vec<NativeOffscreenPass>,
         gui_steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
         let region = visible_region(host);
@@ -891,14 +920,11 @@ impl SidecarSurface {
             .ok_or_else(|| anyhow::anyhow!("missing 3D offscreen target"))?;
         target.capture.enqueue(capture_revision);
         self.trace.captured = self.trace.captured.saturating_add(1);
-        passes.push(RendererExtensionPass {
+        passes.push(NativeOffscreenPass {
             target: target.color_view,
-            color_attachments: Arc::from([]),
-            // Eligibility is cached with this immutable command revision.
-            // Hardware timestamp tagging must never rescan thousands of
-            // native DrawIndirect records on each camera-only capture.
+            // Hardware timestamp tagging must not rescan native DrawIndirect
+            // descriptors on each camera-only capture.
             gpu_work_tag: gpu_work_tag.filter(|_| indirect_only),
-            resolve_target: None,
             render_pass: self.capture_pass,
             commands: geometry,
             // Unlike the ordinary swapchain clear (alpha=1), this is a
