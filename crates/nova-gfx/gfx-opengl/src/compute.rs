@@ -464,7 +464,7 @@ impl OpenGlDevice {
                     slot.unit,
                     Some(view.native),
                     0,
-                    false,
+                    view.target == glow::TEXTURE_3D || view.target == glow::TEXTURE_2D_ARRAY,
                     0,
                     if slot.read_only {
                         glow::READ_ONLY
