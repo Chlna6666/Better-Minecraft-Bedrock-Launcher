@@ -5298,7 +5298,12 @@ mod platform {
             compute::capabilities()
         }
         fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
-            gfx_core::ComputeBindGroupCapabilities::buffer_only()
+            gfx_core::ComputeBindGroupCapabilities {
+                buffers: true,
+                sampled_textures: true,
+                samplers: true,
+                storage_textures: true,
+            }
         }
         fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
             self.dispatch_buffers(dispatch)
@@ -5307,15 +5312,7 @@ mod platform {
             &mut self,
             dispatch: &gfx_core::ComputeBindGroupDispatch,
         ) -> Result<()> {
-            dispatch.validate(self.compute_capabilities())?;
-            let set = self.bind_groups.get(dispatch.bind_group)?;
-            let layout = &self.bind_group_layouts.get(set.layout)?.desc;
-            let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
-            self.dispatch_buffers(&gfx_core::ComputeDispatch {
-                shader: dispatch.shader,
-                bindings: &bindings,
-                workgroups: dispatch.workgroups,
-            })
+            self.dispatch_resource_set(dispatch)
         }
         fn dispatch_compute_batch(
             &mut self,
