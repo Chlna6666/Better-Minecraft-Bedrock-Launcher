@@ -214,7 +214,7 @@ impl ExtensionSubmission<'_> {
         for stage in computes {
             // Every Compute insertion point was checked when the renderer
             // drained work. Keep the native boundary check fail-closed too.
-            if stage.after_graphics_pass <= cursor
+            if stage.after_graphics_pass < cursor
                 || stage.after_graphics_pass >= count
             {
                 return Err(gfx_core::Error::InvalidInput(
