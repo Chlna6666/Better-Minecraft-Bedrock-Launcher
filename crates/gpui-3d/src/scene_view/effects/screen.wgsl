@@ -361,16 +361,20 @@ fn effects_shade(input:ScreenOutput)->vec4<f32>{
         let geometric=n;
         if(water && frame.flags.y>0.5){n=water_normal(p,n,footprint);roughness=0.08;
             if(frame.water_animation.x>0.0){albedo=vec4<f32>(albedo.rgb*water_albedo(p,geometric,n).rgb,albedo.a);}}
-        // A disabled directional light contributes no BRDF energy. This
-        // uniform branch prevents the entire Cook-Torrance evaluation.
+        // Never evaluate shadow PCF, cloud sun-occlusion or Cook-Torrance
+        // when the sun contributes no direct radiance to this receiver.
+        // In particular, an unlit/back-facing face used to do 9+6 extra
+        // texture lookups per active cascade before multiplying by zero.
         var direct=vec3<f32>(0.0);
-        if(frame.sun_color.w>0.0){
+        var visibility=1.0;
+        if(frame.sun_color.w>0.0 && dot(n,frame.sun.xyz)>0.0){
             direct=cook_torrance_lighting(
                 albedo.rgb,metallic,roughness,n,v,frame.sun.xyz,
                 frame.sun_color.rgb*frame.sun_color.w*3.0
             );
+            visibility=shadow_visibility(p,receiver_normal)*cloud_visibility(p);
         }
-        let visibility=shadow_visibility(p,receiver_normal)*cloud_visibility(p);color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
+        color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
         if(water||glass){
             let refracted=refraction_uv(uv,p,ray,n,depth,water);let behind_depth=textureLoad(opaque_depth,pixel(refracted),0).r;var behind=textureSampleLevel(scene,linear_sampler,refracted,0.0).rgb;
             let miss=behind_depth>=1.0;
