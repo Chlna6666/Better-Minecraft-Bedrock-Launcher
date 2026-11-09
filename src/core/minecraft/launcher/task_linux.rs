@@ -195,12 +195,20 @@ async fn configure_proton_command(
             .env("UMU_FOLDERS_PATH", bundle_root)
             .env("UMU_RUNTIME_UPDATE", "0")
             .env("GAMEID", "umu-default")
-            .env("WINEDEBUG", "-all,+seh");
+            .env("WINEDEBUG", "-all,err+seh,warn+seh,err+module");
     } else {
         command
             .env("STEAM_COMPAT_DATA_PATH", prefix_path);
     }
     command.env("PROTON_LOG", "1").env("PROTON_LOG_DIR", &proton_log_directory);
+    if game_log_directory.is_some() {
+        // Official Proton crash reports also need a per-launch destination.
+        // Do not enable global crash-report directories for installation steps.
+        let crash_reports = proton_log_directory.join("crash-reports");
+        tokio::fs::create_dir_all(&crash_reports).await
+            .map_err(|error| format!("无法创建 Proton 崩溃日志目录：{error}"))?;
+        command.env("PROTON_CRASH_REPORT_DIR", &crash_reports);
+    }
     set_runner_ld_library_path(command, runner);
     append_task_log(
         task_id,
@@ -766,7 +774,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 .env("WINEPREFIX", &prefix_path)
                 .env("WINEARCH", "win64")
                 .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9=b")
-                .env("WINEDEBUG", "-all,+seh")
+                .env("WINEDEBUG", "-all,err+seh,warn+seh,err+module")
                 .arg(&game_executable);
             if let Some(working_directory) = game_executable.parent() {
                 command.current_dir(working_directory);
