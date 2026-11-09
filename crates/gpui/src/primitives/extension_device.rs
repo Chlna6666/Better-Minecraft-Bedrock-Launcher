@@ -43,6 +43,47 @@ pub trait ExtensionDevice {
         ))
     }
 
+    /// Generic native queue lookup, with no GPUI-specific scheduling policy.
+    /// A physical queue handle alone does not guarantee that the backend can
+    /// submit the requested command type or transition its resources safely.
+    fn native_queue_for(&self, _stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
+        None
+    }
+
+    /// Submit actual Compute commands on the exact native queue and return a
+    /// producer fence. Never replace this with a checkpoint on an idle queue.
+    /// Unlike the legacy batch API this is explicitly opt-in.
+    fn submit_compute_batch_on_queue(
+        &mut self,
+        _queue: gfx_core::GpuQueueId,
+        _dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<gfx_core::SubmissionId> {
+        Err(gfx_core::Error::Unavailable(
+            "native queue compute dispatch is unsupported".into(),
+        ))
+    }
+
+    /// Encode a GPU-side cross-queue wait, returning backend-issued proof.
+    fn enqueue_gpu_queue_wait(
+        &mut self,
+        _target: gfx_core::GpuQueueId,
+        _producer: gfx_core::SubmissionId,
+    ) -> Result<gfx_core::GpuNativeWaitProof> {
+        Err(gfx_core::Error::Unavailable(
+            "native GPU queue wait is unsupported".into(),
+        ))
+    }
+
+    /// Queue an asynchronous native completion checkpoint for the exact queue.
+    fn checkpoint_gpu_queue(
+        &mut self,
+        _queue: gfx_core::GpuQueueId,
+    ) -> Result<gfx_core::SubmissionId> {
+        Err(gfx_core::Error::Unavailable(
+            "native GPU queue checkpoint is unsupported".into(),
+        ))
+    }
+
     /// Whether the device actually supports independent, GPU-synchronized
     /// native graphics queue submission. False still permits the ordered
     /// primary graphics queue and never forces a CPU wait.
@@ -350,7 +391,7 @@ pub trait ExtensionDevice {
 
 impl<T> ExtensionDevice for T
 where
-    T: ResourceDevice + PipelineDevice + OffscreenSubmissionDevice,
+    T: ResourceDevice + PipelineDevice + OffscreenSubmissionDevice + gfx_core::SubmissionDevice,
 {
     fn submit_offscreen_graphics(
         &mut self,
@@ -372,6 +413,31 @@ where
 
     fn independent_graphics_queue_available(&self) -> bool {
         OffscreenSubmissionDevice::supports_independent_offscreen_graphics(self)
+    }
+
+    fn native_queue_for(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
+        gfx_core::SubmissionDevice::independent_queue(self, stage)
+    }
+
+    fn submit_compute_batch_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<gfx_core::SubmissionId> {
+        gfx_core::SubmissionDevice::submit_compute_batch_on_queue(self, queue, dispatches)
+    }
+
+    fn enqueue_gpu_queue_wait(
+        &mut self, target: gfx_core::GpuQueueId,
+        producer: gfx_core::SubmissionId,
+    ) -> Result<gfx_core::GpuNativeWaitProof> {
+        gfx_core::SubmissionDevice::enqueue_gpu_queue_wait(self, target, producer)
+    }
+
+    fn checkpoint_gpu_queue(
+        &mut self, queue: gfx_core::GpuQueueId,
+    ) -> Result<gfx_core::SubmissionId> {
+        gfx_core::SubmissionDevice::checkpoint_gpu_queue(self, queue)
     }
 
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
