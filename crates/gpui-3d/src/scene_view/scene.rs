@@ -585,6 +585,19 @@ impl SceneResources {
             || self.culling.as_ref().is_some_and(CullResources::has_retired_slots)
     }
 
+    /// This scene's latest native DrawIndirect read, stamped after the GPU
+    /// owner actually accepted the producer batch. Bounds, DrawParams and
+    /// Instance slot allocators must share this same reader generation.
+    pub(super) fn draw_producer_submitted(
+        &mut self,
+        submission: Option<gfx_core::SubmissionId>,
+    ) {
+        self.stable_slots.draw_producer_submitted(submission);
+        if let Some(culling) = self.culling.as_mut() {
+            culling.draw_producer_submitted(submission);
+        }
+    }
+
     /// A final GPUI consumer on the same ordered native queue proves all
     /// earlier voxel DrawIndirect reads when its actual fence completes.
     /// Do not attach a completion proof to a slot until a native submission
