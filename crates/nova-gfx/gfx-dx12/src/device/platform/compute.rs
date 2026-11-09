@@ -770,6 +770,33 @@ impl Dx12Device {
             .get_mut(encoder)?
             .compute_resources
             .extend(prepared);
+        if dedicated_compute {
+            // A partial typed-queue Signal failure may outlive the logical
+            // buffer registry. Preserve every D3D12 resource referenced by
+            // the actual native COMPUTE command list until the join fence,
+            // or until device teardown if no valid join could be encoded.
+            let owned = (|| -> Result<Vec<ID3D12Resource>> {
+                let mut owned = Vec::new();
+                for dispatch in dispatches {
+                    if dispatch.workgroups.contains(&0) { continue; }
+                    for binding in dispatch.bindings {
+                        let buffer = self.buffers.get(binding.buffer.buffer)?;
+                        owned.push(buffer.resource.as_ref().ok_or_else(|| {
+                            Error::Backend("DX12 typed Compute buffer allocation missing".into())
+                        })?.clone());
+                    }
+                }
+                Ok(owned)
+            })();
+            match owned {
+                Ok(owned) => self.command_encoders
+                    .get_mut(encoder)?.native_buffer_owners = owned,
+                Err(error) => {
+                    let _ = self.release_temporary_command_encoder_after_failure(encoder);
+                    return Err(error);
+                }
+            }
+        }
         let mut states = HashMap::new();
         let result = (|| {
             self.begin_texture_command_encoder(encoder, None)?;
