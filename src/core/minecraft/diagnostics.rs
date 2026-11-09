@@ -32,7 +32,7 @@ impl Default for CrashExportOptions {
             include_launcher: true,
             include_game: true,
             include_extensions: true,
-            include_windows: true,
+            include_windows: cfg!(target_os = "windows"),
             include_dumps: false,
             redact_text: true,
         }
@@ -267,8 +267,11 @@ impl GameSessionReport {
         mut self, result: Result<u32, String>, output: &str, early_exit: bool,
     ) -> Self {
         self.early_exit = early_exit;
-        let start = output.len().saturating_sub(MAX_TEXT_BYTES as usize);
-        let tail = &output[output.ceil_char_boundary(start)..];
+        let mut start = output.len().saturating_sub(MAX_TEXT_BYTES as usize);
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        let tail = &output[start..];
         self.compatibility_fault = self.compatibility_fault.or_else(|| classify_compatibility_output(tail));
         if !tail.is_empty() {
             if let Err(error) = fs::write(
