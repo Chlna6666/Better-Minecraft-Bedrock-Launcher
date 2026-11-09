@@ -234,6 +234,10 @@ pub struct GpuSubmissionDependencyGraph {
     live: HashMap<SubmissionId, GpuSubmissionRecord>,
     /// GPU completion of the key proves the transitive ancestors finished.
     ancestors: HashMap<SubmissionId, HashSet<SubmissionId>>,
+    /// Only the last submitted native fence on each physical ordered queue.
+    /// An accepted tail covers the complete FIFO prefix, so scanning all
+    /// in-flight submissions for every Section Compute batch is unnecessary.
+    queue_tails: HashMap<GpuQueueId, SubmissionId>,
     /// Work without a reliable native SubmissionId, scoped by real queue.
     unknown: Vec<(GpuQueueId, GpuSubmissionAccess)>,
 }
@@ -259,6 +263,7 @@ impl GpuSubmissionDependencyGraph {
     pub fn reset_after_gpu_idle(&mut self) {
         self.live.clear();
         self.ancestors.clear();
+        self.queue_tails.clear();
         self.unknown.clear();
     }
 
@@ -275,12 +280,10 @@ impl GpuSubmissionDependencyGraph {
             ));
         }
         let mut covered = HashSet::new();
-        for (id, previous) in &self.live {
-            if previous.queue == record.queue {
-                covered.insert(*id);
-                if let Some(older) = self.ancestors.get(id) {
-                    covered.extend(older.iter().copied());
-                }
+        if let Some(&tail) = self.queue_tails.get(&record.queue) {
+            covered.insert(tail);
+            if let Some(older) = self.ancestors.get(&tail) {
+                covered.extend(older.iter().copied());
             }
         }
         for waited in record.gpu_waits() {
@@ -290,6 +293,7 @@ impl GpuSubmissionDependencyGraph {
             }
         }
         self.ancestors.insert(record.id, covered);
+        self.queue_tails.insert(record.queue, record.id);
         self.live.insert(record.id, record);
         Ok(())
     }
@@ -466,6 +470,31 @@ mod tests {
         // The backend's native GPU wait establishes transfer -> compute.
         slot.complete_with_proof(&graph.complete(id(11)).unwrap());
         assert!(slot.safe_to_reuse());
+    }
+
+    #[test]
+    fn queue_tail_preserves_fifo_order_without_scanning_every_live_submission() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let queue = GpuQueueId::PRIMARY;
+        let unrelated = GpuQueueId { family: 12, index: 1 };
+        graph.register(record(201, queue,
+            vec![use_of(buf(0, 16), GpuAccess::StorageWrite)], vec![])).unwrap();
+        graph.register(record(202, unrelated,
+            vec![use_of(buf(16, 16), GpuAccess::StorageWrite)], vec![])).unwrap();
+        graph.register(record(203, queue,
+            vec![use_of(buf(32, 16), GpuAccess::ReadBuffer)], vec![])).unwrap();
+        let mut old_primary = graph.retirement(&[buf(0, 16)]);
+        let mut independent = graph.retirement(&[buf(16, 16)]);
+        old_primary.complete_with_proof(&graph.complete(id(203)).unwrap());
+        assert!(old_primary.safe_to_reuse());
+        assert!(!independent.safe_to_reuse());
+        independent.complete_with_proof(&graph.complete(id(202)).unwrap());
+        assert!(independent.safe_to_reuse());
+        graph.register(record(204, queue,
+            vec![use_of(buf(48, 16), GpuAccess::ReadBuffer)], vec![])).unwrap();
+        assert_eq!(graph.live_count(), 1);
+        graph.complete(id(204)).unwrap();
+        assert_eq!(graph.live_count(), 0);
     }
 
     #[test]
