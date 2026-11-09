@@ -12,7 +12,9 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
-const GAME_DIAGNOSTICS_SCHEMA: u32 = 3;
+pub mod analysis;
+pub use analysis::{CrashFinding, CrashReason, Confidence, EvidenceSource};
+const GAME_DIAGNOSTICS_SCHEMA: u32 = 4;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -106,6 +108,7 @@ pub struct GameSessionReport {
     pub summary: String,
     pub acknowledged: bool,
     pub wer_fault: Option<WerFault>,
+    pub findings: Vec<CrashFinding>,
 }
 
 /// Wine and Proton diagnostics do not establish which Windows guest process
@@ -212,6 +215,7 @@ fn save_locked(report: &GameSessionReport) -> Result<(), String> {
             latest.wer_fault = existing.wer_fault;
             latest.kind = existing.kind;
             latest.summary = existing.summary;
+            latest.findings = existing.findings;
         }
     }
     let temp = root().join(format!("{}.{}.tmp", report.id, Uuid::new_v4()));
@@ -261,6 +265,7 @@ impl GameSessionReport {
             summary: "游戏运行中".to_string(),
             acknowledged: false,
             wer_fault: None,
+            findings: Vec::new(),
         };
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
@@ -360,6 +365,10 @@ impl GameSessionReport {
         // create unnecessary raw log copies or increase persistent disk usage.
         if self.kind.is_abnormal() || self.early_exit {
             snapshot_text_evidence(&self);
+            self.findings = analyze_snapshot(&self);
+            if let Err(error) = save(&self) {
+                tracing::warn!(%error, session_id=%self.id, "无法保存游戏崩溃自动分析");
+            }
         }
         // Proton can write large direct logs. Only bounded evidence snapshots
         // are retained. Never remove arbitrary directories supplied by a
@@ -507,6 +516,7 @@ pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionRep
                 wer.exception_code, wer.module
             );
             report.wer_fault = Some(wer);
+            report.findings = analyze_snapshot(&report);
             if let Err(error) = save(&report) {
                 tracing::warn!(%error, session_id = %report.id, "无法保存 Windows WER 证据");
             }
@@ -799,6 +809,22 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
     }
 }
 
+/// Evaluate only immutable, bounded per-session evidence on the I/O worker.
+/// Stored findings contain stable reason identifiers and evidence origin only.
+fn analyze_snapshot(report: &GameSessionReport) -> Vec<CrashFinding> {
+    let mut sources = Vec::new();
+    let mut total = 0usize;
+    for (name, path) in frozen_text_files(report).into_iter().take(16) {
+        if total >= 2 * 1024 * 1024 { break; }
+        let remaining = 2 * 1024 * 1024 - total;
+        if let Some(text) = tail_bytes(&path, (MAX_TEXT_BYTES as usize).min(remaining) as u64) {
+            total += text.len();
+            sources.push((name, text));
+        }
+    }
+    analysis::analyze(report, &sources)
+}
+
 fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
     let directory = evidence_dir(report);
     if let Ok(data) = fs::read(directory.join("manifest.json"))
@@ -935,6 +961,7 @@ pub fn export_zip_with_options(
             "started_at": report.started_at, "ended_at": report.ended_at,
             "exit_code": report.exit_code, "exit_signal": report.exit_signal,
             "kind": report.kind,
+            "findings": report.findings,
             "compatibility_fault": report.compatibility_fault,
             "observed_process": if report.compatibility_prefix.is_some() { "runner" } else { "game" },
             "early_exit": report.early_exit,
@@ -1047,6 +1074,7 @@ mod tests {
             summary: "未确认".to_string(),
             acknowledged: false,
             wer_fault: None,
+            findings: Vec::new(),
         };
         let event = |process_id: &str, app_start: &str| format!(
             r#"<Event><System><EventID>1000</EventID><TimeCreated SystemTime="{}"/></System><EventData><Data Name="ProcessId">{process_id}</Data><Data Name="AppStartTime">{app_start}</Data><Data Name="AppName">Minecraft.Windows.exe</Data><Data Name="ModuleName">example.dll</Data><Data Name="ExceptionCode">c0000005</Data></EventData></Event>"#,
@@ -1131,6 +1159,7 @@ mod tests {
             summary: String::new(),
             acknowledged: false,
             wer_fault: None,
+            findings: Vec::new(),
         };
         let bytes = serde_json::to_vec(&report).unwrap();
         assert!(decode_report(&bytes).is_ok());
