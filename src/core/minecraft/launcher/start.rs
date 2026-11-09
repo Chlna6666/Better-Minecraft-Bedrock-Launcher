@@ -163,22 +163,44 @@ pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str, pids_
 
 /// Wait for the actual game process and preserve its native Windows exit status.
 /// Do not confuse a successful wait with a successful game exit.
-pub async fn wait_for_process_exit(process_id: u32) -> Result<u32, String> {
+pub async fn wait_for_process_exit(
+    process_id: u32,
+    expected_created_at: Option<u64>,
+) -> Result<u32, String> {
+    // Keep the HANDLE alive across the entire wait so the PID cannot silently
+    // switch to a different process while the game is running.
     crate::tasks::runtime::run_io_blocking(move || unsafe {
-        use windows::Win32::System::Threading::GetExitCodeProcess;
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes};
         // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
         let access = PROCESS_ACCESS_RIGHTS(0x0010_1000);
         let process = OpenProcess(access, false, process_id)
             .map_err(|error| format!("无法打开游戏进程 {process_id}：{error}"))?;
-        let wait_result = WaitForSingleObject(process, INFINITE);
-        let result = if wait_result == windows::Win32::Foundation::WAIT_OBJECT_0 {
+        let result = (|| {
+            if let Some(expected) = expected_created_at {
+                let mut created = FILETIME::default();
+                let mut exited = FILETIME::default();
+                let mut kernel = FILETIME::default();
+                let mut user = FILETIME::default();
+                GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user)
+                    .map_err(|error| format!("读取游戏进程创建时间失败：{error}"))?;
+                let observed = ((created.dwHighDateTime as u64) << 32)
+                    | created.dwLowDateTime as u64;
+                if observed != expected {
+                    return Err(format!(
+                        "游戏 PID {process_id} 已被其他进程复用，拒绝关联其退出结果"
+                    ));
+                }
+            }
+            let wait_result = WaitForSingleObject(process, INFINITE);
+            if wait_result != windows::Win32::Foundation::WAIT_OBJECT_0 {
+                return Err(format!("等待游戏进程 {process_id} 退出失败：{wait_result:?}"));
+            }
             let mut code = 0u32;
             GetExitCodeProcess(process, &mut code)
-                .map_err(|error| format!("无法读取游戏退出码 {process_id}：{error}"))
-                .map(|_| code)
-        } else {
-            Err(format!("等待游戏进程 {process_id} 退出失败：{wait_result:?}"))
-        };
+                .map_err(|error| format!("无法读取游戏退出码 {process_id}：{error}"))?;
+            Ok(code)
+        })();
         let _ = CloseHandle(process);
         result
     })
