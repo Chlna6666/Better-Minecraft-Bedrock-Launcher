@@ -233,6 +233,11 @@ impl NovaRenderer {
                 match status {
                     SubmissionStatus::Complete => {
                         self.pending_submissions[index].predecessors.remove(0);
+                        // The producer's own native fence has completed even
+                        // if the later UI sampler/Present has not. Notify 3D
+                        // resident allocators now; texture consumer cohorts
+                        // remain tied to their distinct actual UI fence.
+                        self.renderer_registry.gpu_submission_completed(predecessor);
                     }
                     SubmissionStatus::Pending => break,
                     SubmissionStatus::Failed(error) => {
@@ -300,6 +305,10 @@ impl NovaRenderer {
                     return Err(error.into());
                 }
                 self.pending_submissions[0].predecessors.remove(0);
+                // This explicit slow-path wait is used for trim/resize, not
+                // per-frame CPU synchronization. It still proves the exact
+                // native producer completed before its UI consumer.
+                self.renderer_registry.gpu_submission_completed(predecessor);
             }
             let started_at = Instant::now();
             let result = lock_backend(&self.backend).wait_submission(submission);
