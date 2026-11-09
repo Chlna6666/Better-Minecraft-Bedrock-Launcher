@@ -9,6 +9,93 @@ use std::time::Duration;
 #[path = "present/extension_tests.rs"]
 mod extension_tests;
 
+#[derive(Default)]
+struct SidecarBridgeCpuTrace {
+    window_start: Option<Instant>,
+    producer_calls: u64,
+    producer_passes: u64,
+    producer_us: u128,
+    producer_max_us: u128,
+    independent_calls: u64,
+    consumer_calls: u64,
+    consumer_commands: u64,
+    consumer_us: u128,
+    consumer_max_us: u128,
+    linked_consumers: u64,
+    max_pending: usize,
+}
+
+enum SidecarBridgeCpuPhase {
+    Producer { passes: usize, independent: bool },
+    Consumer { commands: usize, has_predecessor: bool },
+}
+
+/// Submission *call* duration is CPU time, not time executing the queued
+/// GPU commands. Native DrawIndirect timestamps and host fence-wait metrics
+/// remain separate; do not present these values as GPU compositor latency.
+fn sidecar_bridge_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
+}
+
+fn record_sidecar_bridge_cpu(
+    phase: SidecarBridgeCpuPhase,
+    elapsed: Duration,
+    pending: usize,
+) {
+    if !sidecar_bridge_trace_enabled() {
+        return;
+    }
+    std::thread_local! {
+        static TRACE: std::cell::RefCell<SidecarBridgeCpuTrace> =
+            std::cell::RefCell::new(SidecarBridgeCpuTrace::default());
+    }
+    TRACE.with(|cell| {
+        let mut trace = cell.borrow_mut();
+        let micros = elapsed.as_micros();
+        trace.max_pending = trace.max_pending.max(pending);
+        match phase {
+            SidecarBridgeCpuPhase::Producer { passes, independent } => {
+                trace.producer_calls += 1;
+                trace.producer_passes += passes as u64;
+                trace.producer_us = trace.producer_us.saturating_add(micros);
+                trace.producer_max_us = trace.producer_max_us.max(micros);
+                trace.independent_calls += u64::from(independent);
+            }
+            SidecarBridgeCpuPhase::Consumer { commands, has_predecessor } => {
+                trace.consumer_calls += 1;
+                trace.consumer_commands += commands as u64;
+                trace.consumer_us = trace.consumer_us.saturating_add(micros);
+                trace.consumer_max_us = trace.consumer_max_us.max(micros);
+                trace.linked_consumers += u64::from(has_predecessor);
+            }
+        }
+        let now = Instant::now();
+        let window_start = trace.window_start.get_or_insert(now);
+        if now.saturating_duration_since(*window_start) < Duration::from_secs(1) {
+            return;
+        }
+        eprintln!(
+            "gpui3d native_bridge_cpu producer_calls={} producer_passes={} independent_calls={} producer_avg_us={:.1} producer_max_us={} consumer_calls={} consumer_commands={} linked_consumers={} consumer_avg_us={:.1} consumer_max_us={} pending_peak={} gpu_execution_time=not_measured_by_cpu_trace",
+            trace.producer_calls,
+            trace.producer_passes,
+            trace.independent_calls,
+            trace.producer_us as f64 / trace.producer_calls.max(1) as f64,
+            trace.producer_max_us,
+            trace.consumer_calls,
+            trace.consumer_commands,
+            trace.linked_consumers,
+            trace.consumer_us as f64 / trace.consumer_calls.max(1) as f64,
+            trace.consumer_max_us,
+            trace.max_pending,
+        );
+        *trace = SidecarBridgeCpuTrace {
+            window_start: Some(now),
+            ..SidecarBridgeCpuTrace::default()
+        };
+    });
+}
+
 struct MainPresentDescriptor<'a> {
     extension_submission: Option<SubmissionId>,
     submission_mode: GpuSubmissionMode,
@@ -31,6 +118,7 @@ where
 {
     let predecessor = descriptor.extension_submission;
     let pending_before = descriptor.pending_submissions.len();
+    let cpu_started = sidecar_bridge_trace_enabled().then(Instant::now);
     let result = NovaRenderer::submit_present_frame(
         descriptor.submission_mode,
         descriptor.async_capabilities,
@@ -44,6 +132,16 @@ where
         descriptor.frame_resource_index,
         descriptor.damage,
     );
+    if let Some(started) = cpu_started {
+        record_sidecar_bridge_cpu(
+            SidecarBridgeCpuPhase::Consumer {
+                commands: commands.len(),
+                has_predecessor: predecessor.is_some(),
+            },
+            started.elapsed(),
+            descriptor.pending_submissions.len(),
+        );
+    }
     if descriptor.pending_submissions.len() > pending_before {
         attach_extension_submission(descriptor.pending_submissions, predecessor);
     }
@@ -70,6 +168,7 @@ impl ExtensionSubmission<'_> {
         let timed = tags.iter().any(Option::is_some);
         let independent = self.registry.independent_producers_only()
             && device.independent_graphics_queue_available();
+        let cpu_started = (!passes.is_empty() && sidecar_bridge_trace_enabled()).then(Instant::now);
         let submission = if passes.is_empty() {
             None
         } else if independent && timed {
@@ -81,6 +180,16 @@ impl ExtensionSubmission<'_> {
         } else {
             device.render_to_textures(&passes)?
         };
+        if let Some(started) = cpu_started {
+            record_sidecar_bridge_cpu(
+                SidecarBridgeCpuPhase::Producer {
+                    passes: passes.len(),
+                    independent,
+                },
+                started.elapsed(),
+                self.pending.len() + usize::from(submission.is_some()),
+            );
+        }
         drop(passes);
         self.registry.render_passes_submitted();
         if let Some(submission) = submission {
