@@ -324,12 +324,18 @@ impl GameSessionReport {
                     self.summary = "Wine 记录了未处理异常，疑似游戏或兼容层子进程崩溃，尚未确认具体进程".to_string();
                 }
                 CompatibilityFault::WineDependencyFailure => {
-                    self.kind = ExitKind::RunnerFailure;
-                    self.summary = "Wine/Proton 报告依赖库或未实现函数错误".to_string();
+                    // Wine can log optional DLL failures even during a healthy
+                    // session. Do not elevate a zero-exit runner to a crash.
+                    if self.exit_code != Some(0) || self.early_exit {
+                        self.kind = ExitKind::RunnerFailure;
+                        self.summary = "Wine/Proton 报告依赖库或未实现函数错误".to_string();
+                    }
                 }
                 CompatibilityFault::RuntimeFailure => {
-                    self.kind = ExitKind::RunnerFailure;
-                    self.summary = "Proton/UMU/Wine 运行环境发生错误".to_string();
+                    if self.exit_code != Some(0) || self.early_exit {
+                        self.kind = ExitKind::RunnerFailure;
+                        self.summary = "Proton/UMU/Wine 运行环境发生错误".to_string();
+                    }
                 }
             }
         }
