@@ -433,6 +433,8 @@ impl EffectsRenderer {
             settings.reflections,
             view.voxel_shading.shadow_strength > 0.0,
             tile_updated,
+            froxel_view.is_some(),
+            light.0,
         )?;
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
