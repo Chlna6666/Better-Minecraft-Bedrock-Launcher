@@ -21,8 +21,8 @@ pub(crate) use path::{PathCacheId, PathGeometryGeneration, PathId, PathVertex_Sc
 pub use path_builder::*;
 pub(crate) use renderer_extension::PaintRendererExtension;
 pub use renderer_extension::{
-    MemoryTrimLevel, RendererExtension, RendererExtensionContext, RendererExtensionPass,
-    RendererExtensionRenderer,
+    MemoryTrimLevel, RendererExtension, RendererExtensionComputePass,
+    RendererExtensionContext, RendererExtensionPass, RendererExtensionRenderer,
 };
 
 pub(crate) type DrawOrder = u32;
