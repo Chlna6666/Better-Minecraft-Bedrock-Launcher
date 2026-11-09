@@ -15,6 +15,7 @@ mod tests;
 
 pub(super) struct State {
     programs: HashMap<ShaderModuleId, Arc<Program>>,
+    resource_set_programs: HashMap<(ShaderModuleId, BindGroupLayoutId), Arc<Program>>,
     indirect_pack: NativeIndirectPack,
     indirect_buffers: Vec<Indirect>,
 }
@@ -72,12 +73,14 @@ impl State {
         let indirect_pack = create_native_indirect_pack(device)?;
         Ok(Self {
             programs: HashMap::new(),
+            resource_set_programs: HashMap::new(),
             indirect_pack,
             indirect_buffers: Vec::new(),
         })
     }
     pub(super) fn remove_shader(&mut self, id: ShaderModuleId) {
         self.programs.remove(&id);
+        self.resource_set_programs.retain(|(shader, _), _| *shader != id);
     }
 
     pub(super) fn recycle_indirect(&mut self, mut resource: Indirect, submitted: bool) {
@@ -782,6 +785,30 @@ fn create_native_indirect_pack(device: &ID3D12Device) -> Result<NativeIndirectPa
     // SAFETY: descriptor owns one temporary COM reference.
     unsafe { core::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
     Ok(NativeIndirectPack {
+        root,
+        pipeline: result.map_err(dx_error)?,
+    })
+}
+
+/// Build a compute PSO from the exact resource-set layout. This native path
+/// handles sampled textures, UAV images and samplers, including Naga's sampler
+/// index buffer ABI; it does not alter the buffer-only compute fast path.
+fn create_resource_set_program(
+    device: &ID3D12Device,
+    shader: &Dx12ShaderModule,
+    layout: &BindGroupLayoutDescriptor,
+) -> Result<Program> {
+    if shader.stage != ShaderStage::Compute {
+        return Err(Error::InvalidInput("resource set requires a compute shader".into()));
+    }
+    let root = create_root_signature(device, std::slice::from_ref(layout))?;
+    let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC::default();
+    desc.pRootSignature = core::mem::ManuallyDrop::new(Some(root.clone()));
+    desc.CS = shader_bytecode(shader.bytecode.as_slice());
+    let result = unsafe { device.CreateComputePipelineState(&desc) };
+    unsafe { core::mem::ManuallyDrop::drop(&mut desc.pRootSignature) };
+    Ok(Program {
+        signature: Vec::new(),
         root,
         pipeline: result.map_err(dx_error)?,
     })
