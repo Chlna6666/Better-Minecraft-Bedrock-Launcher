@@ -836,6 +836,44 @@ mod tests {
         assert_eq!(catalog.shape_for_state_shared(&state).unwrap().planes.len(),1);
     }
     #[test]
+    fn real_embedded_v3_resolves_at_least_one_complete_renderable_recipe() {
+        let catalog = RuntimeCaptureCatalog::open_embedded().expect("real embedded v3");
+        let mut resolved = false;
+        for recipe in catalog.states.values() {
+            if recipe.meshes.is_empty() {
+                continue;
+            }
+            let mut has_planes = false;
+            let mut complete = true;
+            for (geometry_id, appearance_id) in &recipe.meshes {
+                let Some(geometry) = catalog.shared_geometry(geometry_id) else {
+                    complete = false;
+                    break;
+                };
+                let Some(appearance) = catalog.shared_appearance(appearance_id) else {
+                    complete = false;
+                    break;
+                };
+                let Some(planes) = shared_mesh_planes(
+                    &geometry, &appearance, geometry_id, &recipe.texture_aliases
+                ) else {
+                    complete = false;
+                    break;
+                };
+                has_planes |= !planes.is_empty();
+            }
+            if complete && has_planes {
+                resolved = true;
+                break;
+            }
+        }
+        assert!(
+            resolved,
+            "real embedded v3 pool must restore a complete model, not just parse an index"
+        );
+    }
+
+    #[test]
     fn v3_diagonal_cross_uv_preserved() {
         let geometry=CaptureGeometryV3 {
             vertices:vec![[0.,0.,0.],[1.,0.,1.],[1.,1.,1.],[0.,1.,0.]],
