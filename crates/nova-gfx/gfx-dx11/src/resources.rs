@@ -174,6 +174,13 @@ impl ResourceDevice for Dx11Device {
     fn dispatch_compute_bind_group(&mut self, dispatch: &ComputeBindGroupDispatch) -> Result<()> {
         self.dispatch_bind_group_buffers(dispatch)
     }
+    fn dispatch_compute_bind_group_profiled(
+        &mut self,
+        dispatch: &ComputeBindGroupDispatch,
+        tag: GpuTimestampTag,
+    ) -> Result<()> {
+        self.profile_gpu_work(tag, |device| device.dispatch_bind_group_buffers(dispatch))
+    }
     fn gpu_work_timestamps_supported(&self) -> bool {
         self.timestamp_queries_supported
     }
