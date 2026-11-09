@@ -3,7 +3,8 @@
 //! The prepared scene keeps a dense logical order for transparent sorting and
 //! culling. DrawParams and Instance records live at stable physical addresses;
 //! a compact u32 logical-to-physical table decouples GPU storage from ordering.
-//! Freed slots are reused before new capacity is allocated.
+//! Reusable slots have a completed GPU fence. Newly retired physical rows
+//! are quarantined until a real submission-completion proof is received.
 
 use super::*;
 use std::collections::HashMap;
@@ -42,6 +43,55 @@ pub(in crate::scene_view) struct StableDrawSlots {
     occupied: HashMap<SlotIdentity, usize>,
     identities: Vec<Option<SlotIdentity>>,
     free: Vec<usize>,
+    /// Physically removed rows, not yet associated with a native queue fence.
+    /// They MUST NOT be allocated by a later Section edit.
+    retired_unbound: Vec<usize>,
+    /// The final GUI consumer fence is a conservative upper bound on all
+    /// preceding ordered Graphics/DrawIndirect reads in this GPU owner.
+    retired_by_submission: Vec<(gfx_core::SubmissionId, Vec<usize>)>,
+}
+
+impl StableDrawSlots {
+    /// Retired physical addresses are still potentially read by the GPU.
+    pub(in crate::scene_view) fn has_retired_slots(&self) -> bool {
+        !self.retired_unbound.is_empty() || !self.retired_by_submission.is_empty()
+    }
+
+    /// Attach only retirements from preceding GPU work to an accepted native
+    /// completion handle. Acceptance is never itself permission to reuse.
+    pub(in crate::scene_view) fn submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        if !self.retired_unbound.is_empty() {
+            self.retired_by_submission.push((
+                submission,
+                std::mem::take(&mut self.retired_unbound),
+            ));
+        }
+    }
+
+    /// A completed consumer fence proves that all preceding ordered producer
+    /// reads have ended. Release *only* the matching cohort, not every retired
+    /// row of this scene or another GPU owner.
+    pub(in crate::scene_view) fn submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        let mut index = 0;
+        while index < self.retired_by_submission.len() {
+            if self.retired_by_submission[index].0 != submission {
+                index += 1;
+                continue;
+            }
+            let (_, slots) = self.retired_by_submission.swap_remove(index);
+            self.free.extend(slots);
+        }
+    }
+
+    /// Safe fallback when the GPU Owner has verified ALL in-flight consumers
+    /// completed. Necessary for backends that cannot return SubmissionId and
+    /// failed/skipped Present paths.
+    pub(in crate::scene_view) fn gpu_work_completed(&mut self) {
+        self.free.append(&mut self.retired_unbound);
+        for (_, mut slots) in self.retired_by_submission.drain(..) {
+            self.free.append(&mut slots);
+        }
+    }
 }
 
 impl StableDrawSlots {
@@ -63,9 +113,18 @@ impl StableDrawSlots {
         {
             return previous;
         }
-        let next = self.identities.iter()
+        // A retired tail must retain its physical address until its fence
+        // completes, even though the logical identity is already removed.
+        // Otherwise a growing Scene could allocate the same tail row while
+        // an older DrawIndirect command still references that index.
+        let last_live = self.identities.iter()
             .rposition(Option::is_some)
             .map_or(0, |last| last + 1);
+        let last_retired = self.retired_unbound.iter().copied()
+            .chain(self.retired_by_submission.iter()
+                .flat_map(|(_, slots)| slots.iter().copied()))
+            .max().map_or(0, |last| last + 1);
+        let next = last_live.max(last_retired);
         if next < previous {
             self.identities.truncate(next);
             self.free.retain(|&slot| slot < next);
@@ -120,13 +179,16 @@ impl StableDrawSlots {
             occupied: HashMap::with_capacity(wanted.len()),
             identities: self.identities.clone(),
             free: self.free.clone(),
+            retired_unbound: self.retired_unbound.clone(),
+            retired_by_submission: self.retired_by_submission.clone(),
         };
-        // Recycle all retired identities before assigning new slots. Preserve
-        // deterministic old LIFO free-list order and transactional semantics.
+        // Removed DrawIndirect rows are not reusable until their last reader
+        // has completed. Only old, already fence-released free rows may be
+        // allocated to newly inserted Sections.
         for (index, identity) in next.identities.iter_mut().enumerate() {
             if identity.is_some() && !live_slots[index] {
                 *identity = None;
-                next.free.push(index);
+                next.retired_unbound.push(index);
             }
         }
 
@@ -189,6 +251,9 @@ impl StructuralSlotPlan {
 
     /// Called only after the GPU mapping and bounds writes have succeeded.
     pub(in crate::scene_view) fn commit(self, slots: &mut StableDrawSlots) {
+        // Keep identities that merely changed logical index in their
+        // original physical location; quarantine only genuinely unused rows.
+        let retired = self.retired.iter().map(|(_, slot)| *slot).collect::<Vec<_>>();
         for (identity, slot) in self.retired {
             debug_assert_eq!(slots.occupied.remove(&identity), Some(slot));
             slots.identities[slot] = None;
@@ -198,6 +263,11 @@ impl StructuralSlotPlan {
             debug_assert!(slots.identities[slot].is_none());
             slots.identities[slot] = Some(identity);
             debug_assert!(slots.occupied.insert(identity, slot).is_none());
+        }
+        for slot in retired {
+            if slots.identities[slot].is_none() {
+                slots.retired_unbound.push(slot);
+            }
         }
         slots.free = self.free;
     }
@@ -303,12 +373,9 @@ impl StableDrawSlots {
                 return Ok(None);
             }
         }
+        // Retired rows not retained by an identical draw are quarantined
+        // on commit; do not put them into this transaction's free-list.
         let mut free = self.free.clone();
-        for &(_, slot) in &retired {
-            if !reused.contains(&slot) {
-                free.push(slot);
-            }
-        }
         let mut high_water = self.identities.len();
         let mut added = Vec::with_capacity(additions.len());
         for (identity, logical) in additions {
