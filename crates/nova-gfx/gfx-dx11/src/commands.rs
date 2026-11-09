@@ -700,6 +700,12 @@ impl Dx11Device {
 }
 
 impl PresentationDevice for Dx11Device {
+    fn ordered_mixed_graphics_compute_supported(&self) -> bool {
+        // D3D11 immediate-context calls are device-ordered; compute dispatch
+        // unbinds OM targets and UAV conflicts before the next draw.
+        true
+    }
+
     fn render_and_present(
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
