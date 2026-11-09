@@ -249,6 +249,32 @@ fn details(report: &GameSessionReport) -> String {
     result
 }
 
+#[derive(Clone, Copy)]
+struct DialogGeometry {
+    card_width: Pixels,
+    card_height: Pixels,
+    compact: bool,
+    inset: f32,
+    available_width: Pixels,
+    option_width: Pixels,
+}
+
+fn dialog_geometry(window_width: Pixels, window_height: Pixels) -> DialogGeometry {
+    let card_width = (window_width - px(24.)).max(px(0.)).min(px(760.));
+    let card_height = (window_height - px(24.)).max(px(0.)).min(px(690.));
+    let compact = window_width < px(560.) || window_height < px(460.);
+    let inset = if compact { 12. } else { 20. };
+    let available_width = (card_width - px(inset * 2. + 8.)).max(px(0.));
+    let option_width = if compact {
+        available_width
+    } else {
+        (available_width - px(10.)).max(px(0.)) * 0.5
+    };
+    DialogGeometry {
+        card_width, card_height, compact, inset, available_width, option_width,
+    }
+}
+
 fn entrance_animation() -> Animation {
     Animation::from_spec(
         AnimationSpec::new(Duration::from_millis(190))
@@ -270,17 +296,11 @@ pub fn render_game_diagnostics_overlay(
     state: &GameDiagnosticsState,
 ) -> Option<AnyElement> {
     let report = state.pending.clone()?;
-    // Never enforce a minimum taller/wider than the actual viewport.
-    let card_width = (window_width - px(24.)).max(px(0.)).min(px(760.));
-    let card_height = (window_height - px(24.)).max(px(0.)).min(px(690.));
-    let compact = window_width < px(560.) || window_height < px(460.);
-    let inset = if compact { 12. } else { 20. };
-    let available_width = (card_width - px(inset * 2. + 8.)).max(px(0.));
-    let option_width = if compact {
-        available_width
-    } else {
-        (available_width - px(10.)) * 0.5
-    };
+    // Constrain all layout dimensions to the current viewport, including tiny
+    // floating windows and mid-animation resizes.
+    let DialogGeometry {
+        card_width, card_height, compact, inset, available_width, option_width,
+    } = dialog_geometry(window_width, window_height);
     let selection = state.options;
     let exporting = state.exporting;
     let export_status = state.export_status.clone();
@@ -685,4 +705,32 @@ pub fn render_game_diagnostics_overlay(
             .child(animated)
             .into_any_element(),
     )
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_diagnostics_layout_never_exceeds_viewport() {
+        for (width, height) in [
+            (0.0, 0.0),
+            (180.0, 160.0),
+            (320.0, 240.0),
+            (450.0, 350.0),
+            (760.0, 500.0),
+            (972.0, 600.0),
+            (2560.0, 1440.0),
+        ] {
+            let metrics = dialog_geometry(px(width), px(height));
+            assert!(metrics.card_width >= px(0.));
+            assert!(metrics.card_height >= px(0.));
+            assert!(metrics.card_width <= px(width));
+            assert!(metrics.card_height <= px(height));
+            assert!(metrics.option_width >= px(0.));
+            assert!(metrics.option_width <= metrics.available_width);
+            assert!(metrics.available_width <= metrics.card_width);
+        }
+    }
 }
