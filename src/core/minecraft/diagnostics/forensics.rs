@@ -24,6 +24,8 @@ pub struct WineStack {
 pub struct MiniDump {
     pub streams: u32,
     pub exception_code: Option<u32>,
+    /// Module containing the exception address, never a full file path.
+    pub fault_module: Option<String>,
 }
 
 fn safe_name(input: &str) -> Option<String> {
@@ -166,6 +168,64 @@ fn le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 
 /// Parse the 32-byte MINIDUMP_HEADER and up to 128 directories. Extract only
 /// the numeric exception code from ExceptionStream (type 6). No memory payloads.
+fn le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let data: [u8; 8] = bytes.get(offset..offset.checked_add(8)?)?.try_into().ok()?;
+    Some(u64::from_le_bytes(data))
+}
+
+fn module_name<R: Read + Seek>(
+    reader: &mut R, file_len: u64, name_rva: u32,
+) -> Option<String> {
+    let offset = u64::from(name_rva);
+    if offset.checked_add(4)? > file_len { return None; }
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    let mut length = [0u8; 4];
+    reader.read_exact(&mut length).ok()?;
+    let bytes = u64::from(u32::from_le_bytes(length));
+    if bytes == 0 || bytes > 256 || bytes % 2 != 0
+        || offset.checked_add(4)?.checked_add(bytes)? > file_len
+    {
+        return None;
+    }
+    let mut utf16_bytes = [0u8; 256];
+    reader.read_exact(&mut utf16_bytes[..bytes as usize]).ok()?;
+    let units = utf16_bytes[..bytes as usize].chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let full_path = String::from_utf16(&units).ok()?;
+    let basename = full_path.rsplit(['\\', '/']).next()?;
+    safe_name(basename)
+}
+
+fn module_at_address<R: Read + Seek>(
+    reader: &mut R, file_len: u64, rva: u64, length: u64, address: u64,
+) -> Option<String> {
+    if length < 4 || rva.checked_add(length)? > file_len { return None; }
+    reader.seek(SeekFrom::Start(rva)).ok()?;
+    let mut count = [0u8; 4];
+    reader.read_exact(&mut count).ok()?;
+    let count = u32::from_le_bytes(count);
+    // Each MINIDUMP_MODULE is 108 bytes, and the list begins with u32 count.
+    if count > 1024 || u64::from(count).checked_mul(108)?.checked_add(4)? > length {
+        return None;
+    }
+    for index in 0..count {
+        let offset = rva.checked_add(4 + u64::from(index) * 108)?;
+        reader.seek(SeekFrom::Start(offset)).ok()?;
+        let mut fields = [0u8; 24];
+        reader.read_exact(&mut fields).ok()?;
+        let base = le_u64(&fields, 0)?;
+        let size = u64::from(le_u32(&fields, 8)?);
+        if address >= base && address < base.saturating_add(size) {
+            return module_name(reader, file_len, le_u32(&fields, 20)?);
+        }
+    }
+    None
+}
+
+/// Read only the header, a bounded stream directory and selected numeric
+/// exception/module metadata. No stack, memory bytes or private file paths
+/// are retained by the diagnostic report.
 pub fn parse_minidump<R: Read + Seek>(reader: &mut R, file_len: u64) -> Option<MiniDump> {
     if file_len < 32 { return None; }
     reader.seek(SeekFrom::Start(0)).ok()?;
@@ -175,28 +235,47 @@ pub fn parse_minidump<R: Read + Seek>(reader: &mut R, file_len: u64) -> Option<M
         return None;
     }
     let count = le_u32(&header, 8)?;
-    let offset = u64::from(le_u32(&header, 12)?);
-    if count > 128 || offset.checked_add(u64::from(count) * 12)? > file_len {
+    let directory_start = u64::from(le_u32(&header, 12)?);
+    if count > 128 || directory_start.checked_add(u64::from(count) * 12)? > file_len {
         return None;
     }
     let mut exception_code = None;
+    let mut exception_address = None;
+    let mut module_list = None;
     for n in 0..count {
-        reader.seek(SeekFrom::Start(offset + u64::from(n) * 12)).ok()?;
+        reader.seek(SeekFrom::Start(directory_start + u64::from(n) * 12)).ok()?;
         let mut directory = [0u8; 12];
         reader.read_exact(&mut directory).ok()?;
-        if le_u32(&directory, 0)? != 6 { continue; }
+        let kind = le_u32(&directory, 0)?;
         let bytes = u64::from(le_u32(&directory, 4)?);
         let rva = u64::from(le_u32(&directory, 8)?);
-        // MINIDUMP_EXCEPTION_STREAM is 168 bytes; reject partial streams.
-        if bytes < 168 || rva.checked_add(bytes)? > file_len { continue; }
-        reader.seek(SeekFrom::Start(rva + 8)).ok()?;
-        let mut code = [0u8; 4];
-        reader.read_exact(&mut code).ok()?;
-        exception_code = Some(u32::from_le_bytes(code));
-        break;
+        if rva.checked_add(bytes)? > file_len { continue; }
+        match kind {
+            6 if bytes >= 168 => {
+                // MINIDUMP_EXCEPTION_STREAM:
+                // ThreadId (4), alignment (4), ExceptionCode at +8,
+                // ExceptionAddress at +24.
+                reader.seek(SeekFrom::Start(rva + 8)).ok()?;
+                let mut code = [0u8; 4];
+                reader.read_exact(&mut code).ok()?;
+                exception_code = Some(u32::from_le_bytes(code));
+                reader.seek(SeekFrom::Start(rva + 24)).ok()?;
+                let mut ip = [0u8; 8];
+                reader.read_exact(&mut ip).ok()?;
+                exception_address = Some(u64::from_le_bytes(ip));
+            }
+            4 if bytes >= 4 => module_list = Some((rva, bytes)),
+            _ => {}
+        }
     }
-    Some(MiniDump { streams: count, exception_code })
+    let fault_module = match (exception_address, module_list) {
+        (Some(address), Some((rva, bytes))) =>
+            module_at_address(reader, file_len, rva, bytes, address),
+        _ => None,
+    };
+    Some(MiniDump { streams: count, exception_code, fault_module })
 }
+
 pub fn inspect_dumps(paths: &[PathBuf]) -> Vec<MiniDump> {
     let mut out = Vec::new();
     for path in paths.iter().take(4) {
@@ -261,6 +340,39 @@ mod tests {
         assert_eq!(parse_minidump(&mut Cursor::new(bytes), 216).unwrap().exception_code,
             Some(0xC0000005));
     }
+    #[test]
+    fn dump_fault_module_is_derived_from_exception_ip_and_sanitized() {
+        let mut bytes = vec![0u8; 512];
+        bytes[..4].copy_from_slice(b"MDMP");
+        bytes[4..8].copy_from_slice(&0x0000a793u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&32u32.to_le_bytes());
+        // Exception stream: 168 bytes beginning at RVA 56.
+        bytes[32..36].copy_from_slice(&6u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&168u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&56u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(&0xC0000005u32.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x100010u64.to_le_bytes());
+        // ModuleList stream: count 1 + one 108-byte MINIDUMP_MODULE.
+        bytes[44..48].copy_from_slice(&4u32.to_le_bytes());
+        bytes[48..52].copy_from_slice(&112u32.to_le_bytes());
+        bytes[52..56].copy_from_slice(&224u32.to_le_bytes());
+        bytes[224..228].copy_from_slice(&1u32.to_le_bytes());
+        bytes[228..236].copy_from_slice(&0x100000u64.to_le_bytes());
+        bytes[236..240].copy_from_slice(&0x2000u32.to_le_bytes());
+        bytes[248..252].copy_from_slice(&352u32.to_le_bytes());
+        let name = "C:\\private\\bloader.dll";
+        let utf16 = name.encode_utf16().collect::<Vec<_>>();
+        bytes[352..356].copy_from_slice(&(utf16.len() as u32 * 2).to_le_bytes());
+        for (i, unit) in utf16.iter().enumerate() {
+            let offset = 356 + i * 2;
+            bytes[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        let summary = parse_minidump(&mut Cursor::new(bytes), 512).unwrap();
+        assert_eq!(summary.fault_module.as_deref(), Some("bloader.dll"));
+        assert_eq!(summary.exception_code, Some(0xC0000005));
+    }
+
     #[test]
     fn malformed_minidump_rejected() {
         let mut bytes = vec![0u8; 32];
