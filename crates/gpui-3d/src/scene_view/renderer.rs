@@ -1284,6 +1284,16 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         for &(scene_id, _) in &self.pending_capture_epochs {
             if let Some(scene) = self.scenes.get_mut(&scene_id) {
                 scene.draw_producer_submitted(submitted);
+                if let Some(submission) = submitted {
+                    // This *native Graphics producer* is on the same ordered
+                    // owner queue AFTER the scene's Compute/Transfer uploads.
+                    // Its real fence also covers unfenced culling dispatches;
+                    // seal those retirements now, rather than retaining them
+                    // until a possibly skipped GUI Present/consumer fence.
+                    // A second independent queue must never use this shortcut
+                    // without a native GPU-side wait recorded on this queue.
+                    scene.draw_submission_accepted(submission);
+                }
             }
         }
         self.pending_passes.clear();
