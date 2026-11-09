@@ -65,6 +65,7 @@ mod scene;
 mod shadow;
 pub use effects::{FlipbookTexture, ScreenEffects};
 mod uploads;
+mod volume_texture;
 /// A prepared scene and camera snapshot rendered as a GPUI layout element through Nova.
 ///
 /// A scene view owns immutable scene, camera, and texture snapshots. Use
