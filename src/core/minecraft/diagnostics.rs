@@ -135,6 +135,16 @@ impl GameSessionReport {
         if let Err(error) = save(&self) {
             tracing::warn!(%error, session_id = %self.id, "无法保存游戏退出记录");
         }
+        // Preserve task-specific launch lines before the launch task is evicted
+        // or latest.log is rotated. This is local-only, never sent automatically.
+        let lines = crate::tasks::task_manager::task_logs(&self.task_id);
+        if !lines.is_empty() {
+            let contents = lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>().join("\n");
+            let path = root().join(format!("{}.task.log", self.id));
+            if let Err(error) = fs::write(path, log_privacy::redact_log_text(&contents).as_bytes()) {
+                tracing::warn!(%error, session_id = %self.id, "无法保存游戏启动任务日志");
+            }
+        }
         tracing::info!(
             session_id = %self.id,
             pid = self.pid,
@@ -283,6 +293,10 @@ pub fn acknowledge(id: &str) -> Result<(), String> {
 }
 
 fn tail_bytes(path: &Path, max: u64) -> Option<String> {
+    // Never follow symlinks from a mod-controlled log directory into private files.
+    if !fs::symlink_metadata(path).ok()?.file_type().is_file() {
+        return None;
+    }
     let mut file = fs::File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     if size > max {
@@ -294,15 +308,86 @@ fn tail_bytes(path: &Path, max: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn text_files(report: &GameSessionReport) -> Vec<(&'static str, PathBuf)> {
-    // Paths are intentionally narrow and tied to the launched version.
-    vec![
-        ("logs/bmcbl.log", file_ops::logs_dir().join("latest.log")),
-        ("logs/bmcbl-previous.log", file_ops::logs_dir().join("previous.log")),
-        ("logs/game.log", report.game_directory.join("logs/latest.log")),
-        ("logs/levilamina.log", report.game_directory.join("logs/LeviLamina.log")),
-        ("logs/bloader.log", report.game_directory.join("logs/BLoader.log")),
-    ]
+/// Bounded evidence provider discovery; never traverse world saves or resource packs.
+fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
+    let mut files = vec![
+        ("logs/bmcbl.log".to_string(), file_ops::logs_dir().join("latest.log")),
+        ("logs/launch-task.log".to_string(), root().join(format!("{}.task.log", report.id))),
+        ("logs/game.log".to_string(), report.game_directory.join("logs/latest.log")),
+        ("logs/levilamina.log".to_string(), report.game_directory.join("logs/LeviLamina.log")),
+        ("logs/bloader.log".to_string(), report.game_directory.join("logs/BLoader.log")),
+    ];
+    let directories = [
+        report.game_directory.join("crash-logs"),
+        report.game_directory.join("logs/crash"),
+        report.game_directory.join("LeviLamina/logs"),
+        report.game_directory.join("Minecraft Bedrock/logs"),
+        report.game_directory.join("Minecraft Bedrock/CrashLogs"),
+        report.game_directory.join("BLoader/logs"),
+    ];
+    let mut number = 0usize;
+    for dir in directories {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.take(128).flatten() {
+            if number >= 48 { return files; }
+            let path = entry.path();
+            let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else { continue };
+            if !matches!(ext.to_ascii_lowercase().as_str(), "log" | "txt" | "json") { continue }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+            let name = name.to_ascii_lowercase();
+            if !name.contains("crash") && !name.contains("levilamina") && !name.contains("bloader") {
+                continue;
+            }
+            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+            if !meta.file_type().is_file() { continue }
+            let Some(modified) = meta.modified().ok().map(DateTime::<Utc>::from) else { continue };
+            if modified < report.started_at - chrono::Duration::minutes(5) { continue; }
+            if report.ended_at.is_some_and(|end| modified > end + chrono::Duration::minutes(10)) {
+                continue;
+            }
+            files.push((format!("logs/provider-{number:02}.{ext}"), path));
+            number += 1;
+        }
+    }
+    files
+}
+
+fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut dirs = vec![
+        report.game_directory.clone(),
+        report.game_directory.join("crash-logs"),
+        report.game_directory.join("logs"),
+        report.game_directory.join("LeviLamina/logs"),
+    ];
+    #[cfg(target_os = "windows")]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local_app_data).join("CrashDumps"));
+    }
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for entry in entries.take(128).flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("dmp")) { continue }
+            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+            if !meta.file_type().is_file() || meta.len() > MAX_DUMP_BYTES { continue }
+            let Some(modified) = meta.modified().ok().map(DateTime::<Utc>::from) else { continue };
+            if modified < report.started_at - chrono::Duration::minutes(5) { continue }
+            if report.ended_at.is_some_and(|end| modified > end + chrono::Duration::minutes(10)) {
+                continue;
+            }
+            // Global CrashDumps can contain other Minecraft instances.
+            if path.parent().is_some_and(|parent| parent.ends_with("CrashDumps")) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+                if !name.contains("minecraft") || !name.contains(&report.pid.to_string()) {
+                    continue;
+                }
+            }
+            candidates.push(path);
+            if candidates.len() >= 4 { return candidates; }
+        }
+    }
+    candidates
 }
 
 /// Export a bounded, redacted ZIP. No upload is ever performed here.
@@ -341,19 +426,26 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
             writer.write_all(log_privacy::redact_log_text(&safe).as_bytes())
                 .map_err(|error| error.to_string())?;
         }
-        for (entry_name, path) in text_files(&report) {
+        let sources = text_files(&report);
+        let source_manifest = sources.iter().map(|(name, path)| {
+            serde_json::json!({"archive_path": name, "found": path.is_file()})
+        }).collect::<Vec<_>>();
+        writer.start_file("evidence.json", options).map_err(|error| error.to_string())?;
+        writer.write_all(
+            serde_json::to_string_pretty(&source_manifest).map_err(|error| error.to_string())?.as_bytes()
+        ).map_err(|error| error.to_string())?;
+        for (entry_name, path) in sources {
             if let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) {
                 writer.start_file(entry_name, options).map_err(|error| error.to_string())?;
                 writer.write_all(log_privacy::redact_log_text(&contents).as_bytes()).map_err(|error| error.to_string())?;
             }
         }
         if include_dump {
-            // Only include an explicitly chosen, bounded dump from the launched version.
-            // The UI must warn that minidumps cannot be reliably redacted.
-            let dump = report.game_directory.join("crash.dmp");
-            if dump.is_file() && dump.metadata().is_ok_and(|m| m.len() <= MAX_DUMP_BYTES) {
-                writer.start_file("dumps/game.dmp", options).map_err(|error| error.to_string())?;
-                let mut source = fs::File::open(&dump).map_err(|error| error.to_string())?;
+            // Explicit opt-in only. DMPs cannot be scrubbed with text redaction.
+            for (index, dump) in dump_candidates(&report).iter().enumerate() {
+                writer.start_file(format!("dumps/game-{index}.dmp"), options)
+                    .map_err(|error| error.to_string())?;
+                let mut source = fs::File::open(dump).map_err(|error| error.to_string())?;
                 std::io::copy(&mut source, &mut writer).map_err(|error| error.to_string())?;
             }
         }
