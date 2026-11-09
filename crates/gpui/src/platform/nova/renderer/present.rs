@@ -210,8 +210,7 @@ impl ExtensionSubmission<'_> {
         // half of a frame recorded on the native device.
         let mut last_boundary = 0usize;
         for stage in &computes {
-            if stage.after_graphics_pass == 0
-                || stage.after_graphics_pass >= count
+            if stage.after_graphics_pass >= count
                 || stage.after_graphics_pass < last_boundary
             {
                 return Err(gfx_core::Error::InvalidInput(
