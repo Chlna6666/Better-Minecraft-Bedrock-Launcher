@@ -246,23 +246,21 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
         };
         let Some(actual_pid) = actual_pid else { continue };
         if actual_pid != report.pid { continue; }
-        if let (Some(expected), Some(app_start)) =
-            (report.process_created_at, data(block, "AppStartTime"))
-        {
-            let parsed = if app_start.starts_with("0x") || app_start.starts_with("0X") {
-                u64::from_str_radix(&app_start[2..], 16).ok()
-            } else {
-                app_start.parse::<u64>().ok()
-            };
-            if parsed.is_some_and(|created| created != expected) { continue; }
-        }
-        // Interrupted sessions lack an observed exit code. For them, matching
-        // PID alone is insufficient: the OS may already have reused the PID.
-        if report.kind == ExitKind::Unknown
-            && report.process_created_at.is_some()
-            && data(block, "AppStartTime").is_none()
-        {
-            continue;
+        // An abandoned session can be confirmed only by exact process
+        // generation, not by PID/time proximity. Windows may reuse PIDs.
+        match (report.process_created_at, data(block, "AppStartTime")) {
+            (Some(expected), Some(app_start)) => {
+                let parsed = if app_start.starts_with("0x") || app_start.starts_with("0X") {
+                    u64::from_str_radix(&app_start[2..], 16).ok()
+                } else {
+                    app_start.parse::<u64>().ok()
+                };
+                if parsed != Some(expected) { continue; }
+            }
+            (None, _) | (Some(_), None) if report.kind == ExitKind::Unknown => {
+                continue;
+            }
+            _ => {}
         }
         let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
         if !app_name.contains("minecraft") { continue; }
@@ -701,6 +699,39 @@ mod tests {
         assert_eq!(classify_exit("gdk", 0), ExitKind::Normal);
         assert_eq!(classify_exit("gdk", 0xC0000005), ExitKind::SuspectedCrash);
         assert_eq!(classify_exit("proton", 1), ExitKind::RunnerFailure);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wer_match_requires_pid_and_creation_time_for_recovered_session() {
+        let now = Utc::now();
+        let mut report = GameSessionReport {
+            id: Uuid::new_v4().to_string(),
+            task_id: "task-1".to_string(),
+            version: "1.26.51".to_string(),
+            game_directory: PathBuf::from("C:/game"),
+            platform: "gdk".to_string(),
+            pid: 0x112A,
+            process_created_at: Some(0xABCD),
+            started_at: now - chrono::Duration::seconds(8),
+            ended_at: Some(now),
+            exit_code: None,
+            exit_signal: None,
+            kind: ExitKind::Unknown,
+            summary: "未确认".to_string(),
+            acknowledged: false,
+            wer_fault: None,
+        };
+        let event = |process_id: &str, app_start: &str| format!(
+            r#"<Event><System><EventID>1000</EventID><TimeCreated SystemTime="{}"/></System><EventData><Data Name="ProcessId">{process_id}</Data><Data Name="AppStartTime">{app_start}</Data><Data Name="AppName">Minecraft.Windows.exe</Data><Data Name="ModuleName">example.dll</Data><Data Name="ExceptionCode">c0000005</Data></EventData></Event>"#,
+            now.to_rfc3339()
+        );
+        assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_some());
+        assert!(match_application_error(&event("0x112b", "0xabcd"), &report).is_none());
+        assert!(match_application_error(&event("0x112a", "0xff00"), &report).is_none());
+        assert!(match_application_error(&event("0x112a", "invalid"), &report).is_none());
+        report.process_created_at = None;
+        assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_none());
     }
 
     #[test]
