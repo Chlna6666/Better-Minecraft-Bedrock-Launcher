@@ -402,6 +402,9 @@ impl ToastState {
         }
         if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
             item.kind = kind;
+            if kind != ToastKind::Error {
+                item.diagnostic_report_id = None;
+            }
             item.message = message;
             item.created_at = now;
             item.anim_delay = Duration::ZERO;
@@ -416,6 +419,9 @@ impl ToastState {
 
         if let Some(item) = self.breadcrumb.as_mut().filter(|item| item.id == id) {
             item.kind = kind;
+            if kind != ToastKind::Error {
+                item.diagnostic_report_id = None;
+            }
             item.message = message;
             item.created_at = now;
             item.anim_delay = Duration::ZERO;
