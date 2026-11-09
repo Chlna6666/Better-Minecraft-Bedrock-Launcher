@@ -115,6 +115,14 @@ impl CaptureEpoch {
             self.queued = None;
         }
     }
+    /// A failed native producer may have overwritten retained pixels.
+    /// Never publish either the failed revision or stale previous content.
+    fn abandon(&mut self, revision: u64) {
+        if self.queued == Some(revision) {
+            self.submitted = None;
+            self.queued = None;
+        }
+    }
 }
 
 /// Uniform/bind-group generations are immutable while an older GUI frame
@@ -885,6 +893,20 @@ impl SidecarSurface {
         }
     }
 
+    /// Failed native submissions are not GPU completion proofs. Invalidate
+    /// only the matching queued captures and keep their native allocations
+    /// owned by the GPU-sidecar until the host's error recovery path runs.
+    pub(super) fn render_passes_failed(
+        &mut self,
+        failed: &[(SceneViewId, u64)],
+    ) {
+        for &(id, revision) in failed {
+            if let Some(target) = self.targets.get_mut(&id) {
+                target.capture.abandon(revision);
+            }
+        }
+    }
+
     pub(super) fn enqueue(
         &mut self,
         device: &mut dyn ExtensionDevice,
@@ -1103,6 +1125,40 @@ mod tests {
         assert_eq!(target.recycled_placements.len(), MAX_RECYCLED_PLACEMENTS_PER_VIEW);
         assert!(target.recycle_placement(view, pair(99)).is_err());
         assert_eq!(target.recycled_placements.len(), MAX_RECYCLED_PLACEMENTS_PER_VIEW);
+    }
+
+    #[test]
+    fn failed_native_capture_does_not_publish_old_or_new_texels() {
+        let mut epoch = CaptureEpoch::default();
+        epoch.enqueue(10);
+        epoch.acknowledge(10);
+        assert!(epoch.reusable(10));
+        epoch.enqueue(11);
+        epoch.abandon(11);
+        assert!(!epoch.reusable(10), "the failed write may have damaged old pixels");
+        assert!(!epoch.reusable(11));
+        epoch.enqueue(12);
+        epoch.acknowledge(12);
+        assert!(epoch.reusable(12));
+        epoch.abandon(11);
+        assert!(epoch.reusable(12), "stale failure cannot revoke newer capture");
+    }
+
+    #[test]
+    fn native_pass_borrows_immutable_3d_commands_without_copying() {
+        let cmds: Arc<[RenderCommand]> = Vec::<RenderCommand>::new().into();
+        let pass = NativeOffscreenPass {
+            target: TextureViewId::from_parts(1, 1),
+            render_pass: RenderPassId::from_parts(1, 1),
+            commands: Arc::clone(&cmds),
+            gpu_work_tag: None,
+            color_load_op: LoadOp::Load,
+            depth_attachment: None,
+        };
+        let native = pass.commands();
+        assert_eq!(native.commands.len(), 0);
+        assert!(std::ptr::eq(native.commands.as_ptr(), cmds.as_ptr()));
+        assert_eq!(native.color_attachments, &[pass.target]);
     }
 
     #[test]
