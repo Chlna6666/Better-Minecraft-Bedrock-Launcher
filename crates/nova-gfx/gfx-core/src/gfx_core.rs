@@ -52,7 +52,10 @@ pub use texture_copy::TextureCopy;
 
 pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
 pub use gpu_timestamps::{GpuTimestampSample, GpuTimestampStage, GpuTimestampTag};
-pub use render_graph::{GpuAccess, GpuResource, GpuResourceUse, GpuTransition, GpuWorkExecutor, GpuWorkGraph, GpuWorkPass, GpuWorkPlan, GpuWorkStage};
+pub use render_graph::{
+    GpuAccess, GpuResource, GpuResourceUse, GpuTransition, GpuWorkExecutor,
+    GpuWorkGraph, GpuWorkPass, GpuWorkPlan, GpuWorkStage, GpuWorkSubmissionExecutor,
+};
 pub use memory::{
     DeviceMemoryBudget, MemoryAccounting, MemoryArchitecture, MemoryBudget, MemoryCompactReport,
 };
