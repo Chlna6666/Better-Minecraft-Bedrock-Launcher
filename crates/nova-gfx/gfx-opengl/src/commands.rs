@@ -55,6 +55,12 @@ impl OpenGlDevice {
 }
 
 impl PresentationDevice for OpenGlDevice {
+    fn ordered_mixed_graphics_compute_supported(&self) -> bool {
+        // Render and Compute use the same current GL context; writable
+        // resource-set dispatch publishes the corresponding memory barriers.
+        true
+    }
+
     fn render_and_present(
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
