@@ -618,6 +618,10 @@ impl Backend for Dx11Device {
     }
 }
 impl SubmissionDevice for Dx11Device {
+    fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
+        self.signal()
+    }
+
     fn wait_queue_idle(&mut self) -> Result<()> {
         let submission = self.signal()?;
         SubmissionDevice::wait_submission(self, submission)
