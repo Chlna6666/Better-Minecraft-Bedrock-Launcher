@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
+const GAME_DIAGNOSTICS_SCHEMA: u32 = 3;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -85,25 +86,58 @@ impl ExitKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GameSessionReport {
+    pub schema_version: u32,
     pub id: String,
     pub task_id: String,
     pub version: String,
     pub game_directory: PathBuf,
     pub platform: String,
     pub pid: u32,
-    #[serde(default)]
     pub process_created_at: Option<u64>,
+    pub compatibility_prefix: Option<PathBuf>,
+    pub compatibility_fault: Option<CompatibilityFault>,
+    pub early_exit: bool,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub exit_code: Option<u32>,
-    #[serde(default)]
     pub exit_signal: Option<i32>,
     pub kind: ExitKind,
     pub summary: String,
-    #[serde(default)]
     pub acknowledged: bool,
-    #[serde(default)]
     pub wer_fault: Option<WerFault>,
+}
+
+/// Wine and Proton diagnostics do not establish which Windows guest process
+/// emitted the error; the observed process is still the native runner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityFault {
+    WineUnhandledException,
+    WineDependencyFailure,
+    RuntimeFailure,
+}
+
+pub fn classify_compatibility_output(text: &str) -> Option<CompatibilityFault> {
+    let text = text.to_ascii_lowercase();
+    if ["unhandled page fault", "unhandled exception", "wine: unhandled",
+        "wine: assertion failed"].iter().any(|term| text.contains(term)) {
+        Some(CompatibilityFault::WineUnhandledException)
+    } else if ["err:module:import_dll", "unimplemented function",
+        "library not found", "module not found"].iter().any(|term| text.contains(term)) {
+        Some(CompatibilityFault::WineDependencyFailure)
+    } else if ["wineserver: failed", "failed to initialize wine",
+        "proton: fatal", "pressure-vessel-wrap: error"]
+        .iter().any(|term| text.contains(term)) {
+        Some(CompatibilityFault::RuntimeFailure)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_creation_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
 }
 
 static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
@@ -188,8 +222,12 @@ fn save(report: &GameSessionReport) -> Result<(), String> {
 }
 
 impl GameSessionReport {
-    pub fn begin(task_id: &str, version: &str, game_directory: &Path, platform: &str, pid: u32) -> Self {
+    pub fn begin(
+        task_id: &str, version: &str, game_directory: &Path,
+        platform: &str, pid: u32, compatibility_prefix: Option<PathBuf>,
+    ) -> Self {
         let report = Self {
+            schema_version: GAME_DIAGNOSTICS_SCHEMA,
             id: Uuid::new_v4().to_string(),
             task_id: task_id.to_string(),
             version: version.to_string(),
@@ -199,9 +237,12 @@ impl GameSessionReport {
             process_created_at: {
                 #[cfg(target_os = "windows")]
                 { process_creation_filetime(pid) }
-                #[cfg(not(target_os = "windows"))]
-                { None }
+                #[cfg(target_os = "linux")]
+                { process_creation_ticks(pid) }
             },
+            compatibility_prefix,
+            compatibility_fault: None,
+            early_exit: false,
             started_at: Utc::now(),
             ended_at: None,
             exit_code: None,
@@ -217,6 +258,23 @@ impl GameSessionReport {
         if let Ok(mut active) = sessions().lock() { active.insert(report.id.clone()); }
         tracing::info!(session_id = %report.id, pid, platform, "游戏会话已开始");
         report
+    }
+
+    pub fn finish_compatibility(
+        mut self, result: Result<u32, String>, output: &str, early_exit: bool,
+    ) -> Self {
+        self.early_exit = early_exit;
+        let start = output.len().saturating_sub(MAX_TEXT_BYTES as usize);
+        let tail = &output[output.ceil_char_boundary(start)..];
+        self.compatibility_fault = classify_compatibility_output(tail);
+        if !tail.is_empty() {
+            if let Err(error) = fs::write(
+                root().join(format!("{}.runner.log", self.id)), tail.as_bytes()
+            ) {
+                tracing::warn!(%error, session_id=%self.id, "无法保存兼容运行器输出");
+            }
+        }
+        self.finish(result)
     }
 
     pub fn finish(mut self, result: Result<u32, String>) -> Self {
@@ -235,8 +293,28 @@ impl GameSessionReport {
         if let Some(signal) = self.exit_signal {
             self.kind = ExitKind::RunnerFailure;
             self.summary = format!(
-                "Linux Proton/Wine 运行器收到信号 {signal} 后退出；无法单凭包装进程的信号确认 Minecraft 崩溃"
+                "Linux 兼容运行器收到信号 {signal} 后退出，不能据此确认 Minecraft 本体崩溃"
             );
+        }
+        if let Some(fault) = self.compatibility_fault {
+            match fault {
+                CompatibilityFault::WineUnhandledException => {
+                    self.kind = ExitKind::SuspectedCrash;
+                    self.summary = "Wine 记录了未处理异常，疑似游戏或兼容层子进程崩溃，尚未确认具体进程".to_string();
+                }
+                CompatibilityFault::WineDependencyFailure => {
+                    self.kind = ExitKind::RunnerFailure;
+                    self.summary = "Wine/Proton 报告依赖库或未实现函数错误".to_string();
+                }
+                CompatibilityFault::RuntimeFailure => {
+                    self.kind = ExitKind::RunnerFailure;
+                    self.summary = "Proton/UMU/Wine 运行环境发生错误".to_string();
+                }
+            }
+        }
+        if self.early_exit && self.kind == ExitKind::Normal {
+            self.kind = ExitKind::Unknown;
+            self.summary = "兼容运行器在启动检测期退出（状态码 0），无法确认游戏已启动".to_string();
         }
         if let Err(error) = save(&self) {
             tracing::warn!(%error, session_id = %self.id, "无法保存游戏退出记录");
@@ -419,7 +497,19 @@ pub fn exit_description(kind: ExitKind, code: u32) -> String {
 
 pub fn read_report(id: &str) -> Result<GameSessionReport, String> {
     let bytes = fs::read(report_path(id)?).map_err(|error| error.to_string())?;
-    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+    decode_report(&bytes)
+}
+
+fn decode_report(bytes: &[u8]) -> Result<GameSessionReport, String> {
+    let report: GameSessionReport =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if report.schema_version != GAME_DIAGNOSTICS_SCHEMA {
+        return Err(format!(
+            "不支持的开发诊断格式 {}（当前为 {}）",
+            report.schema_version, GAME_DIAGNOSTICS_SCHEMA
+        ));
+    }
+    Ok(report)
 }
 
 /// Reconcile sessions left as Running when a previous launcher instance ended
@@ -437,7 +527,7 @@ pub fn recover_interrupted_sessions() -> Vec<GameSessionReport> {
             continue;
         }
         let Ok(bytes) = fs::read(&path) else { continue };
-        let Ok(mut report) = serde_json::from_slice::<GameSessionReport>(&bytes) else { continue };
+        let Ok(mut report) = decode_report(&bytes) else { continue };
         if report.kind != ExitKind::Running { continue }
         if sessions().lock().is_ok_and(|active| active.contains(&report.id)) {
             continue;
@@ -454,8 +544,14 @@ pub fn recover_interrupted_sessions() -> Vec<GameSessionReport> {
             if running { continue; }
         }
         #[cfg(target_os = "linux")]
-        if Path::new("/proc").join(report.pid.to_string()).exists() {
-            continue;
+        {
+            let observed = process_creation_ticks(report.pid);
+            if observed.is_some()
+                && (report.process_created_at.is_none()
+                    || observed == report.process_created_at)
+            {
+                continue;
+            }
         }
         report.ended_at = Some(Utc::now()); // Reconciliation time, NOT observed exit time.
         report.kind = ExitKind::Unknown;
@@ -474,7 +570,7 @@ pub fn recent_reports(limit: usize, unacknowledged_only: bool) -> Vec<GameSessio
     let mut reports = entries.flatten().filter_map(|entry| {
         if entry.path().extension().is_none_or(|ext| ext != "json") { return None; }
         let bytes = fs::read(entry.path()).ok()?;
-        let report: GameSessionReport = serde_json::from_slice(&bytes).ok()?;
+        let report = decode_report(&bytes).ok()?;
         // Unknown sessions remain inspectable in history but must not
         // trigger an automatic game-crash popup without supporting evidence.
         if !(report.kind.is_abnormal() || (!unacknowledged_only && report.kind == ExitKind::Unknown))
@@ -609,8 +705,6 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
         let _ = fs::create_dir_all(&directory);
         if let Err(error) = fs::write(directory.join("manifest.json"), data) {
             tracing::warn!(%error, session_id=%report.id, "无法保存游戏诊断证据清单");
-        } else if let Err(error) = fs::write(directory.join("raw-snapshot-v1"), b"raw-v1") {
-            tracing::warn!(%error, session_id=%report.id, "无法标记原始诊断快照格式");
         }
     }
 }
@@ -632,14 +726,8 @@ fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             })
         }).collect();
     }
-    // Pre-upgrade reports did not freeze all providers. Only the per-task
-    // snapshot remains safe to export; never fallback to live game logs.
-    let task = root().join(format!("{}.task.log", report.id));
-    if task.is_file() {
-        vec![("logs/launch-task.log".to_string(), task)]
-    } else {
-        Vec::new()
-    }
+    // No migration/fallback for prior development snapshot formats.
+    Vec::new()
 }
 
 fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
@@ -725,12 +813,16 @@ pub fn export_zip_with_options(
 
         // Source directory is intentionally never serialized into the ZIP.
         let metadata = serde_json::json!({
+            "schema_version": report.schema_version,
             "session_id": report.id, "task_id": report.task_id, "version": report.version,
             "platform": report.platform, "pid": report.pid,
             "process_created_at": report.process_created_at,
             "started_at": report.started_at, "ended_at": report.ended_at,
             "exit_code": report.exit_code, "exit_signal": report.exit_signal,
             "kind": report.kind,
+            "compatibility_fault": report.compatibility_fault,
+            "observed_process": if report.compatibility_prefix.is_some() { "runner" } else { "game" },
+            "early_exit": report.early_exit,
         });
         writer.start_file("session.json", compression).map_err(|error| error.to_string())?;
         let json = serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?;
@@ -753,16 +845,6 @@ pub fn export_zip_with_options(
                 EvidenceCategory::Extension => options.include_extensions,
             })
             .collect::<Vec<_>>();
-        // Legacy reports were already sanitized at capture. Never label those
-        // snapshots as "raw"; original bytes cannot be reconstructed.
-        if !options.redact_text && !sources.is_empty()
-            && !evidence_dir(&report).join("raw-snapshot-v1").is_file()
-        {
-            return Err(
-                "旧版本诊断日志已在采集时脱敏，无法还原原文；请开启脱敏后导出"
-                    .to_string(),
-            );
-        }
         let mut manifest = Vec::with_capacity(sources.len());
         for (entry_name, path) in sources {
             let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) else {
@@ -814,18 +896,6 @@ pub fn export_zip_with_options(
     Ok(())
 }
 
-/// Keep the original API working for existing call sites.
-pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<(), String> {
-    export_zip_with_options(
-        id,
-        destination,
-        CrashExportOptions {
-            include_dumps: include_dump,
-            ..CrashExportOptions::default()
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +912,7 @@ mod tests {
     fn wer_match_requires_pid_and_creation_time_for_recovered_session() {
         let now = Utc::now();
         let mut report = GameSessionReport {
+            schema_version: GAME_DIAGNOSTICS_SCHEMA,
             id: Uuid::new_v4().to_string(),
             task_id: "task-1".to_string(),
             version: "1.26.51".to_string(),
@@ -849,6 +920,9 @@ mod tests {
             platform: "gdk".to_string(),
             pid: 0x112A,
             process_created_at: Some(0xABCD),
+            compatibility_prefix: None,
+            compatibility_fault: None,
+            early_exit: false,
             started_at: now - chrono::Duration::seconds(8),
             ended_at: Some(now),
             exit_code: None,
@@ -887,6 +961,25 @@ mod tests {
         assert!(options.needs_confirmation());
         let options = CrashExportOptions { include_dumps: true, ..Default::default() };
         assert!(options.needs_confirmation());
+    }
+
+    #[test]
+    fn wine_faults_are_not_inferred_from_runner_exit_code() {
+        assert_eq!(
+            classify_compatibility_output("wine: Unhandled page fault on read access"),
+            Some(CompatibilityFault::WineUnhandledException)
+        );
+        assert_eq!(
+            classify_compatibility_output("0024:err:module:import_dll Library foo.dll not found"),
+            Some(CompatibilityFault::WineDependencyFailure)
+        );
+        assert_eq!(classify_compatibility_output("exited with code 1"), None);
+    }
+
+    #[test]
+    fn previous_dev_schema_is_not_migrated() {
+        let json = br#"{"schema_version":1,"id":"x"}"#;
+        assert!(decode_report(json).is_err());
     }
 
     #[test]
