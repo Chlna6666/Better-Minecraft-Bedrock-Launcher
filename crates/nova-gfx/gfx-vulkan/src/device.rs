@@ -4830,10 +4830,17 @@ impl SubmissionDevice for VulkanDevice {
                 "Vulkan requested queue needs unsupported family ownership transfers".into(),
             ));
         }
-        // This SubmissionId must still be owned by the native device. All
-        // tracked Vulkan submissions are fenced on the primary graphics
-        // queue, including secondary sidecar work after the GPU-side join.
-        let _ = self.submissions.get(producer)?;
+        // The binary signal below is submitted to the PRIMARY graphics
+        // queue. It can only certify a producer whose own native commands
+        // were submitted on that exact queue. A secondary producer followed
+        // by an unrelated primary signal has NO GPU ordering edge and would
+        // create a false gpu_waits proof, potentially recycling live memory.
+        let source = self.submissions.get(producer)?;
+        if source.queue != gfx_core::GpuQueueId::PRIMARY {
+            return Err(Error::Unavailable(
+                "Vulkan cross-queue bridge cannot signal an unrelated producer queue".into(),
+            ));
+        }
 
         let info = vk::SemaphoreCreateInfo::default();
         // SAFETY: Binary semaphore is allocated on this live logical device.
