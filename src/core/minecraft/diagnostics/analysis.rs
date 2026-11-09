@@ -168,7 +168,14 @@ pub fn analyze_with_forensics(
             let rank = |c: Confidence| match c {
                 Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
             };
-            if rank(confidence) < rank(found.confidence) {
+            if reason == CrashReason::ModLoadFailure
+                && source == EvidenceSource::ModLog
+                && confidence == Confidence::Low
+                && found.source == EvidenceSource::ModLog
+            {
+                // A shared file can contain another instance's loader error.
+                found.confidence = Confidence::Low;
+            } else if rank(confidence) < rank(found.confidence) {
                 found.confidence = confidence;
                 found.source = source;
             }
@@ -177,7 +184,10 @@ pub fn analyze_with_forensics(
         }
     };
     if !evidence.failed_mods.is_empty() {
-        add_or_promote(CrashReason::ModLoadFailure, Confidence::Medium, EvidenceSource::ModLog);
+        let own_log = evidence.failed_mods.iter().any(|item| item.session_private);
+        let confidence = if own_log { Confidence::Medium } else { Confidence::Low };
+        let source = if own_log { EvidenceSource::LauncherLog } else { EvidenceSource::ModLog };
+        add_or_promote(CrashReason::ModLoadFailure, confidence, source);
     }
     if evidence.wine_stack.is_some() {
         add_or_promote(CrashReason::WineGuestException, Confidence::Medium, EvidenceSource::RunnerLog);
@@ -293,6 +303,18 @@ mod tests {
         let findings = analyze_with_forensics(&report, &mod_logs, &forensic);
         assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
         assert_eq!(forensic.failed_mods[0].identifier, "BadAddon.dll");
+    }
+
+    #[test]
+    fn shared_mod_logs_are_only_low_confidence_for_multilaunch_sessions() {
+        let report = report("gdk", Some(0xC0000005));
+        let files = vec![("logs/mod-provider-00.log".to_string(),
+            "Failed to load mod: OtherInstance.dll".to_string())];
+        let evidence = super::super::forensics::inspect_text(&files);
+        let findings = analyze_with_forensics(&report, &files, &evidence);
+        let mod_finding = findings.iter()
+            .find(|f| f.reason == CrashReason::ModLoadFailure).unwrap();
+        assert_eq!(mod_finding.confidence, Confidence::Low);
     }
 
     #[test]
