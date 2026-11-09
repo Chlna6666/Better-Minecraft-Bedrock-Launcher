@@ -55,6 +55,7 @@ pub struct GameSessionReport {
 
 static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
 static ACTIVE_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static REPORT_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn sessions() -> &'static Mutex<HashSet<String>> {
     ACTIVE_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -104,17 +105,33 @@ fn report_path(id: &str) -> Result<PathBuf, String> {
     Ok(root().join(format!("{id}.json")))
 }
 
-fn save(report: &GameSessionReport) -> Result<(), String> {
+/// Caller holds REPORT_WRITE_LOCK; merge immutable crash evidence so a late
+/// acknowledgement cannot overwrite a more recent WER classification.
+fn save_locked(report: &GameSessionReport) -> Result<(), String> {
     let path = report_path(&report.id)?;
     fs::create_dir_all(root()).map_err(|error| error.to_string())?;
+    let mut latest = report.clone();
+    if let Ok(existing) = read_report(&report.id) {
+        latest.acknowledged |= existing.acknowledged;
+        if latest.wer_fault.is_none() && existing.wer_fault.is_some() {
+            latest.wer_fault = existing.wer_fault;
+            latest.kind = existing.kind;
+            latest.summary = existing.summary;
+        }
+    }
     let temp = root().join(format!("{}.{}.tmp", report.id, Uuid::new_v4()));
-    let bytes = serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&latest).map_err(|error| error.to_string())?;
     fs::write(&temp, bytes).map_err(|error| error.to_string())?;
     if let Err(error) = fs::rename(&temp, path) {
         let _ = fs::remove_file(temp);
         return Err(error.to_string());
     }
     Ok(())
+}
+
+fn save(report: &GameSessionReport) -> Result<(), String> {
+    let _guard = REPORT_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
+    save_locked(report)
 }
 
 impl GameSessionReport {
@@ -210,21 +227,30 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
         let block = found.as_str();
         if !block.contains("<EventID>1000</EventID>") { continue; }
         let Some(pid_text) = data(block, "ProcessId") else { continue };
-        let actual_pid = u32::from_str_radix(pid_text.trim_start_matches("0x"), 16)
-            .or_else(|_| pid_text.parse::<u32>()).ok();
+        let actual_pid = if pid_text.starts_with("0x") || pid_text.starts_with("0X") {
+            u32::from_str_radix(&pid_text[2..], 16).ok()
+        } else {
+            pid_text.parse::<u32>().ok()
+        };
         let Some(actual_pid) = actual_pid else { continue };
         if actual_pid != report.pid { continue; }
         if let (Some(expected), Some(app_start)) =
             (report.process_created_at, data(block, "AppStartTime"))
         {
-            let parsed = u64::from_str_radix(app_start.trim_start_matches("0x"), 16).ok();
+            let parsed = if app_start.starts_with("0x") || app_start.starts_with("0X") {
+                u64::from_str_radix(&app_start[2..], 16).ok()
+            } else {
+                app_start.parse::<u64>().ok()
+            };
             if parsed.is_some_and(|created| created != expected) { continue; }
         }
         let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
         if !app_name.contains("minecraft") { continue; }
-        let timestamp = event_time.captures(block)
+        let Some(timestamp) = event_time.captures(block)
             .and_then(|c| DateTime::parse_from_rfc3339(&c[1]).ok())
-            .map(|value| value.with_timezone(&Utc))?;
+            .map(|value| value.with_timezone(&Utc)) else {
+                continue;
+            };
         if timestamp < report.started_at - chrono::Duration::seconds(30) { continue; }
         if report.ended_at.is_some_and(|end| timestamp > end + chrono::Duration::seconds(120)) {
             continue;
@@ -245,27 +271,47 @@ pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionRep
     if report.kind != ExitKind::SuspectedCrash {
         return report;
     }
-    let mut command = tokio::process::Command::new("wevtutil.exe");
-    command.args([
-        "qe", "Application",
-        "/q:*[System[(EventID=1000)]]",
-        "/c:32", "/rd:true", "/f:xml",
-    ]).kill_on_drop(true);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await;
-    if let Ok(Ok(output)) = result
-        && output.status.success()
-        && let Some(wer) = match_application_error(&String::from_utf8_lossy(&output.stdout), &report)
-    {
-        report.kind = ExitKind::ConfirmedCrash;
-        report.summary = format!(
-            "Windows 确认 Minecraft 发生崩溃：{}（故障模块 {}）",
-            wer.exception_code, wer.module
-        );
-        report.wer_fault = Some(wer);
-        if let Err(error) = save(&report) {
-            tracing::warn!(%error, session_id = %report.id, "无法保存 Windows WER 证据");
+    // WER often writes Event 1000 after the crashed process has exited.
+    // Bounded retries avoid permanently missing a late event without polling at
+    // frame rate. Every probe is outside the GPUI thread.
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        let _ = event_bus().send(report.clone());
+        let mut command = tokio::process::Command::new("wevtutil.exe");
+        command.args([
+            "qe", "Application",
+            "/q:*[System[(EventID=1000)]]",
+            "/c:64", "/rd:true", "/f:xml",
+        ]).kill_on_drop(true);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5), command.output()
+        ).await;
+        if let Ok(Ok(output)) = result
+            && output.status.success()
+            && let Some(wer) = match_application_error(
+                &String::from_utf8_lossy(&output.stdout), &report
+            )
+        {
+            report.kind = ExitKind::ConfirmedCrash;
+            report.summary = format!(
+                "Windows 确认 Minecraft 发生崩溃：{}（故障模块 {}）",
+                wer.exception_code, wer.module
+            );
+            report.wer_fault = Some(wer);
+            if let Err(error) = save(&report) {
+                tracing::warn!(%error, session_id = %report.id, "无法保存 Windows WER 证据");
+            }
+            // Respect an acknowledgement that may have happened while WER
+            // was being written. Never reopen dismissed reports.
+            if let Ok(saved) = read_report(&report.id) {
+                report.acknowledged = saved.acknowledged;
+            }
+            if !report.acknowledged {
+                let _ = event_bus().send(report.clone());
+            }
+            break;
+        }
     }
     report
 }
@@ -322,9 +368,10 @@ pub fn recent_reports(limit: usize, unacknowledged_only: bool) -> Vec<GameSessio
 }
 
 pub fn acknowledge(id: &str) -> Result<(), String> {
+    let _guard = REPORT_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
     let mut report = read_report(id)?;
     report.acknowledged = true;
-    save(&report)
+    save_locked(&report)
 }
 
 fn tail_bytes(path: &Path, max: u64) -> Option<String> {
@@ -346,7 +393,8 @@ fn tail_bytes(path: &Path, max: u64) -> Option<String> {
 /// Bounded evidence provider discovery; never traverse world saves or resource packs.
 fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
     let mut files = vec![
-        ("logs/bmcbl.log".to_string(), file_ops::logs_dir().join("latest.log")),
+        // Global latest.log may already belong to another Minecraft session.
+        // Export only the launch task snapshot tied to this report ID.
         ("logs/launch-task.log".to_string(), root().join(format!("{}.task.log", report.id))),
         ("logs/game.log".to_string(), report.game_directory.join("logs/latest.log")),
         ("logs/levilamina.log".to_string(), report.game_directory.join("logs/LeviLamina.log")),
@@ -454,7 +502,8 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
             "wer_fault": report.wer_fault,
         });
         writer.start_file("session.json", options).map_err(|error| error.to_string())?;
-        writer.write_all(serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?.as_bytes())
+        let safe_json = serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?;
+        writer.write_all(log_privacy::redact_log_text(&safe_json).as_bytes())
             .map_err(|error| error.to_string())?;
         if let Some(wer) = &report.wer_fault {
             writer.start_file("windows/application-error.json", options)
