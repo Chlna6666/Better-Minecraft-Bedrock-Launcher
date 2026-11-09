@@ -88,7 +88,9 @@ impl FroxelGrid {
             return None;
         }
         let t = (index as f32 + 0.5) / self.extent[2] as f32;
-        Some(near * (far / near).powf(t))
+        // Log interpolation avoids overflowing far/near for otherwise
+        // finite, valid clipping distances.
+        Some((near.ln() * (1.0 - t) + far.ln() * t).exp())
     }
 }
 
