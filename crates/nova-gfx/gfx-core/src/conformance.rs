@@ -381,7 +381,7 @@ pub fn compute_resource_set_roundtrip<D>(
     reader: crate::ShaderBinary,
 ) -> Result<()>
 where
-    D: Device,
+    D: Device + TextureTransferDevice,
 {
     use crate::{
         BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
