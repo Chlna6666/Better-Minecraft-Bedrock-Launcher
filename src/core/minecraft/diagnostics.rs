@@ -200,6 +200,9 @@ impl GameSessionReport {
                 tracing::warn!(%error, session_id = %self.id, "无法保存游戏启动任务日志");
             }
         }
+        // Freeze log evidence at process exit. Reading live latest.log only
+        // when the user later exports can silently capture another session.
+        snapshot_text_evidence(&self);
         tracing::info!(
             session_id = %self.id,
             pid = self.pid,
@@ -504,6 +507,77 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
     files
 }
 
+fn evidence_dir(report: &GameSessionReport) -> PathBuf {
+    root().join(format!("{}-evidence", report.id))
+}
+
+/// Snapshot only bounded, redacted text during the session's exit processing.
+/// Never store absolute source paths in the exported evidence manifest.
+fn snapshot_text_evidence(report: &GameSessionReport) {
+    let directory = evidence_dir(report);
+    let mut included = Vec::<String>::new();
+    for (name, path) in text_files(report) {
+        if name != "logs/launch-task.log" {
+            let Some(modified) = fs::symlink_metadata(&path).ok()
+                .and_then(|meta| meta.modified().ok())
+                .map(DateTime::<Utc>::from) else { continue };
+            if modified < report.started_at - chrono::Duration::minutes(5)
+                || report.ended_at.is_some_and(|end| {
+                    modified > end + chrono::Duration::minutes(5)
+                })
+            {
+                continue;
+            }
+        }
+        let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) else { continue };
+        let target = directory.join(&name);
+        if let Some(parent) = target.parent()
+            && fs::create_dir_all(parent).is_err()
+        {
+            continue;
+        }
+        let sanitized = log_privacy::redact_log_text(&contents);
+        if fs::write(&target, sanitized.as_bytes()).is_ok() {
+            included.push(name);
+        }
+    }
+    // The manifest is written last: a partial capture never falsely claims
+    // that missing log entries were preserved.
+    if let Ok(data) = serde_json::to_vec(&included) {
+        let _ = fs::create_dir_all(&directory);
+        if let Err(error) = fs::write(directory.join("manifest.json"), data) {
+            tracing::warn!(%error, session_id=%report.id, "无法保存游戏诊断证据清单");
+        }
+    }
+}
+
+fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
+    let directory = evidence_dir(report);
+    if let Ok(data) = fs::read(directory.join("manifest.json"))
+        && let Ok(names) = serde_json::from_slice::<Vec<String>>(&data)
+    {
+        return names.into_iter().take(64).filter_map(|name| {
+            let valid = name.starts_with("logs/")
+                && !name.contains('\\')
+                && name.split('/').all(|segment| {
+                    !segment.is_empty() && segment != "." && segment != ".."
+                });
+            valid.then(|| {
+                let path = directory.join(&name);
+                (name, path)
+            })
+        }).collect();
+    }
+    // Pre-upgrade reports did not freeze all providers. Only the per-task
+    // snapshot remains safe to export; never fallback to live game logs.
+    let task = root().join(format!("{}.task.log", report.id));
+    if task.is_file() {
+        vec![("logs/launch-task.log".to_string(), task)]
+    } else {
+        Vec::new()
+    }
+}
+
 fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut dirs = vec![
@@ -581,7 +655,7 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
             writer.write_all(log_privacy::redact_log_text(&safe).as_bytes())
                 .map_err(|error| error.to_string())?;
         }
-        let sources = text_files(&report);
+        let sources = frozen_text_files(&report);
         let source_manifest = sources.iter().map(|(name, path)| {
             serde_json::json!({"archive_path": name, "found": path.is_file()})
         }).collect::<Vec<_>>();
