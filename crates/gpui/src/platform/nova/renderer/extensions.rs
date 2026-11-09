@@ -110,6 +110,22 @@ impl RendererRegistry {
         Ok(submitted)
     }
 
+    /// The final UI sampling submission is now tracked by the GPU owner.
+    /// Extensions attach retired GUI-consumed resources to this exact fence,
+    /// without waiting for the other windows or unrelated GPU work.
+    pub(super) fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        for renderer in self.renderers.values_mut() {
+            renderer.gpu_submission_accepted(submission);
+        }
+    }
+
+    /// Native fence completion, never mere CPU submit acceptance.
+    pub(super) fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        for renderer in self.renderers.values_mut() {
+            renderer.gpu_submission_completed(submission);
+        }
+    }
+
     pub(super) fn needs_gpu_completion(&self) -> bool {
         self.renderers
             .values()
