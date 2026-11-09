@@ -165,7 +165,9 @@ impl OpenGlDevice {
                 binding.unit,
                 Some(view.native),
                 0,
-                false,
+                // A 3D image (or a 2D array) must expose every Z slice/layer.
+                // Non-layered binding silently redirects imageStore to one slice.
+                view.target == glow::TEXTURE_3D || view.target == glow::TEXTURE_2D_ARRAY,
                 0,
                 access,
                 internal,
