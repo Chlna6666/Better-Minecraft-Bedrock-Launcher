@@ -96,6 +96,12 @@ impl VulkanDevice {
             if allocation_memory(&old.allocation)? != source {
                 continue;
             }
+            // The relocation encoder currently copies 2D subresources. A
+            // true 3D image needs an Extent3D transfer and a 3D image view;
+            // never misinterpret its Z slices as array layers during compaction.
+            if matches!(old.desc.dimension, TextureDimension::D3 { .. }) {
+                return Ok(false);
+            }
             let Some(texture) =
                 allocate_texture(&self.device, &mut self.allocator, &old.desc, source)?
             else {
