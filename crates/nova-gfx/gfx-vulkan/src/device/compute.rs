@@ -195,9 +195,6 @@ impl VulkanDevice {
                 ).map_err(VulkanError::from)?;
                 if let Some(query) = query {
                     self.device.cmd_reset_query_pool(command, query, 0, 2);
-                    self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
-                    );
                 }
             }
             let mut pre_images = Vec::with_capacity(images.len());
@@ -265,10 +262,20 @@ impl VulkanDevice {
                     command, vk::PipelineBindPoint::COMPUTE, program.layout, 0,
                     &[set_handle], &[],
                 );
+                if let Some(query) = query {
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                    );
+                }
                 self.device.cmd_dispatch(
                     command,
                     dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
                 );
+                if let Some(query) = query {
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
+                    );
+                }
                 if writes_storage || !post_images.is_empty() {
                     let after = vk::MemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -283,11 +290,6 @@ impl VulkanDevice {
                         vk::PipelineStageFlags::COMPUTE_SHADER,
                         vk::PipelineStageFlags::ALL_COMMANDS,
                         vk::DependencyFlags::empty(), memory, &[], &post_images,
-                    );
-                }
-                if let Some(query) = query {
-                    self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
                     );
                 }
                 self.device.end_command_buffer(command).map_err(VulkanError::from)?;
