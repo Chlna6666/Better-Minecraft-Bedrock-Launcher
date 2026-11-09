@@ -18,9 +18,21 @@ use std::time::Instant;
 pub(super) const SHADOW_MAP_SIZE: u32 = 1536;
 pub(super) const SHADOW_WORLD_HEIGHT: f32 = 320.0;
 const SHADOW_TEXEL_WORLD: f32 = SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32;
+/// Move the shadow projection in whole light-space texel groups instead of
+/// invalidating a 1536² shadow map on every ~0.2-block camera displacement.
+/// An integer-texel displacement preserves the shadow raster's world alignment.
+/// 32 texels is a 6.67-block projection tile, with at most half that deviation
+/// from the viewer; the existing 320-block footprint remains unchanged.
+const SHADOW_SCROLL_TEXELS: f32 = 32.0;
+const SHADOW_SCROLL_WORLD: f32 = SHADOW_TEXEL_WORLD * SHADOW_SCROLL_TEXELS;
+/// Light-depth motion cannot change the 2D texel grid, but still must stay
+/// inside the orthographic depth interval. Preserve a 16-block hysteresis.
+const SHADOW_DEPTH_SCROLL_WORLD: f32 = 16.0;
 
-/// Snap in light-space, rather than snapping world X/Y/Z to four-block steps.
-/// Reprojecting at world-grid transitions caused the whole shadow map to jump.
+/// Virtual light-space shadow clipmap: the caster projection stays fixed as the
+/// camera pans inside a tile, and refreshes only when crossing a tile boundary.
+/// Grid steps are integer multiples of the world units per texel, so rotating
+/// or translating the viewer does not resample the stored shadow edges.
 fn stable_shadow_camera(eye: Vec3, sun: Vec3) -> gpui::Result<([i32; 6], Camera)> {
     let sun = sun.normalized().ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
     let quant = [
@@ -36,14 +48,14 @@ fn stable_shadow_camera(eye: Vec3, sun: Vec3) -> gpui::Result<([i32; 6], Camera)
     let vertical = direction.cross(right).normalized()
         .ok_or_else(|| anyhow::anyhow!("invalid shadow up"))?;
     let key = [
-        (eye.dot(right) / SHADOW_TEXEL_WORLD).round() as i32,
-        (eye.dot(vertical) / SHADOW_TEXEL_WORLD).round() as i32,
-        (eye.dot(direction) / 4.0).round() as i32,
+        (eye.dot(right) / SHADOW_SCROLL_WORLD).round() as i32,
+        (eye.dot(vertical) / SHADOW_SCROLL_WORLD).round() as i32,
+        (eye.dot(direction) / SHADOW_DEPTH_SCROLL_WORLD).round() as i32,
         quant[0], quant[1], quant[2],
     ];
-    let center = right * (key[0] as f32 * SHADOW_TEXEL_WORLD)
-        + vertical * (key[1] as f32 * SHADOW_TEXEL_WORLD)
-        + direction * (key[2] as f32 * 4.0);
+    let center = right * (key[0] as f32 * SHADOW_SCROLL_WORLD)
+        + vertical * (key[1] as f32 * SHADOW_SCROLL_WORLD)
+        + direction * (key[2] as f32 * SHADOW_DEPTH_SCROLL_WORLD);
     Ok((key, Camera::orthographic(
         center + direction * SHADOW_WORLD_HEIGHT,
         center,
@@ -299,7 +311,11 @@ impl EffectScene {
                     // its light-space frustum performs independent caster culling.
                     // Changing the camera's Section bounds cannot invalidate this map.
                     || !Arc::ptr_eq(&old.animation, &view.animation)
-                    || old.animation_time != view.animation_time
+                    // Static scenes may advance the presentation clock for
+                    // water/cloud Shader animation without moving any caster.
+                    // Only sampled transform tracks can invalidate the map.
+                    || (!view.animation.is_empty()
+                        && old.animation_time != view.animation_time)
             });
         if !changed {
             return Ok(());
@@ -311,7 +327,7 @@ impl EffectScene {
         self.shadow_scene = Some(view.scene.clone());
         self.shadow_transform = view.scene_transform;
         self.shadow_input = Some(view.clone());
-         self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
+        self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
         let shadow_context =
             local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?);
         let commands = if view.voxel_shading.shadow_strength > 0. {
@@ -483,9 +499,39 @@ mod stable_shadow_tests {
         for axis in [right, vertical] {
             let normalized = camera.target.dot(axis) / SHADOW_TEXEL_WORLD;
             assert!((normalized - normalized.round()).abs() < 0.005);
+            let tile = camera.target.dot(axis) / SHADOW_SCROLL_WORLD;
+            assert!((tile - tile.round()).abs() < 0.005);
         }
     }
 
+    #[test]
+    fn shadow_map_remains_reused_during_small_camera_translations() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let center = Vec3::new(16.0, 72.0, -8.0);
+        let (key, first) = stable_shadow_camera(center, sun).unwrap();
+        // The viewer can translate by a fraction of a world block without
+        // invalidating a full shadow render or moving the raster projection.
+        for dx in [0.0001, 0.01, 0.05, 0.1] {
+            let (moved, next) = stable_shadow_camera(center + Vec3::X * dx, sun).unwrap();
+            assert_eq!(key, moved);
+            assert_eq!(first, next);
+        }
+    }
+    #[test]
+    fn shadow_map_crosses_integer_texel_grid_when_scrolling() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let viewer = Vec3::new(0.0, 64.0, 0.0);
+        let (key, camera) = stable_shadow_camera(viewer, sun).unwrap();
+        let right = camera.up.cross((camera.eye - camera.target).normalized().unwrap())
+            .normalized().unwrap();
+        let (next_key, next) = stable_shadow_camera(
+            viewer + right * (SHADOW_SCROLL_WORLD * 1.5),
+            sun,
+        ).unwrap();
+        assert_ne!(key, next_key);
+        let displacement = (next.target - camera.target).dot(right) / SHADOW_TEXEL_WORLD;
+        assert!((displacement - displacement.round()).abs() < 0.01);
+    }
     #[test]
     fn enlarged_shadow_map_keeps_previous_world_texel_density() {
         assert!(SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32 < 0.22);
