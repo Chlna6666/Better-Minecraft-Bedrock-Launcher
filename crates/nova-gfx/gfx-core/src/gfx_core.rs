@@ -32,6 +32,7 @@ mod gpu_timestamps;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 mod memory;
+mod render_graph;
 mod texture_array;
 mod texture_copy;
 pub use buffer_texture_copy::{
@@ -51,6 +52,7 @@ pub use texture_copy::TextureCopy;
 
 pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
 pub use gpu_timestamps::{GpuTimestampSample, GpuTimestampStage, GpuTimestampTag};
+pub use render_graph::{GpuAccess, GpuResource, GpuResourceUse, GpuTransition, GpuWorkGraph, GpuWorkPass, GpuWorkPlan, GpuWorkStage};
 pub use memory::{
     DeviceMemoryBudget, MemoryAccounting, MemoryArchitecture, MemoryBudget, MemoryCompactReport,
 };
