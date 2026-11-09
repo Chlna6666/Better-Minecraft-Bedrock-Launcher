@@ -4744,6 +4744,9 @@ impl SubmissionDevice for VulkanDevice {
         // encoder, second queue, semaphore or frame-slot allocation is needed.
         let fence = create_fence(&self.device, false)?;
         let submits = [vk::SubmitInfo::default()];
+        // SAFETY: The graphics queue belongs to this live device and the
+        // unsignaled fence is exclusively owned by this checkpoint. An empty
+        // submission still follows all prior commands in queue order.
         if let Err(error) = unsafe {
             self.device.queue_submit(self.graphics_queue, &submits, fence)
         } {
@@ -4936,6 +4939,8 @@ impl Drop for VulkanDevice {
         // native fences before the logical device itself is released.
         for (_, submission) in self.submissions.drain_live() {
             if submission.owned_by_submission {
+                // SAFETY: device_wait_idle completed above and these checkpoint
+                // fences have no encoder/swapchain owner left to destroy them.
                 unsafe { self.device.destroy_fence(submission.fence, None) };
             }
         }
