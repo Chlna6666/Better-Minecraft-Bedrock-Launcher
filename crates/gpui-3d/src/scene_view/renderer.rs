@@ -1,8 +1,9 @@
 use super::{
     SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
-    sidecar_surface::{NativeOffscreenPass, SidecarSurface}, projection::FrameProjection,
+    sidecar_surface::SidecarSurface, projection::FrameProjection,
 };
 use crate::prepare::StructuralDrawDelta;
+use crate::{NativeOffscreenPass, submit_native_offscreen_passes};
 use anyhow::{anyhow, bail};
 use gfx_core::{BackendKind, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
@@ -1238,26 +1239,12 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // Arc-backed RenderCommand spans directly: no GPUI 2D command encoder,
         // global pass registry or per-DrawIndirect clone on the hot path.
         let count = self.pending_passes.len();
-        // The common one-SceneView case takes a stack-only submission path:
-        // avoid allocating command/tag descriptor Vecs every 3D frame.
-        // Multiple SceneViews still batch their native passes together.
-        // Immutable DrawIndirect data always stays in the shared Arc cache.
-        let native_result = if count == 1 {
-            let pass = &self.pending_passes[0];
-            device.submit_offscreen_graphics(
-                std::slice::from_ref(&pass.commands()),
-                std::slice::from_ref(&pass.gpu_work_tag),
-                true,
-            )
-        } else {
-            let commands = self.pending_passes.iter()
-                .map(NativeOffscreenPass::commands)
-                .collect::<Vec<_>>();
-            let tags = self.pending_passes.iter()
-                .map(|pass| pass.gpu_work_tag)
-                .collect::<Vec<_>>();
-            device.submit_offscreen_graphics(&commands, &tags, true)
-        };
+        // The pure gpui-3d submission core reuses existing Arc draw data,
+        // emits no GPUI paint commands, and uses the stack for one SceneView.
+        let native_result = submit_native_offscreen_passes(
+            &self.pending_passes,
+            |passes, tags| device.submit_offscreen_graphics(passes, tags, true),
+        );
         let submitted = match native_result {
             Ok(submitted) => submitted,
             Err(error) => {
