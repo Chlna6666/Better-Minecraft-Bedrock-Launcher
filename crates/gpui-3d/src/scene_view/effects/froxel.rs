@@ -222,7 +222,10 @@ pub(super) struct FroxelProgram {
 }
 
 impl FroxelProgram {
-    pub fn new(device: &mut dyn ExtensionDevice, backend: BackendKind) -> gpui::Result<Self> {
+    pub fn new(
+        device: &mut dyn ExtensionDevice,
+        context: &gpui::RendererExtensionContext,
+    ) -> gpui::Result<Self> {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
             let inject_layout = cleanup.record(
@@ -263,11 +266,21 @@ impl FroxelProgram {
                 |d, id| { let _ = d.destroy_bind_group_layout(id); },
             );
             let inject_shader = cleanup.record(
-                super::super::generated::create_shader(device, backend, "cs_froxel_inject")?,
+                device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("cs_froxel_inject".into()),
+                    binary: super::super::resources::embedded_shader(
+                        context, ShaderStage::Compute, "cs_froxel_inject",
+                    )?,
+                })?,
                 |d, id| { let _ = d.destroy_shader_module(id); },
             );
             let integrate_shader = cleanup.record(
-                super::super::generated::create_shader(device, backend, "cs_froxel_integrate")?,
+                device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("cs_froxel_integrate".into()),
+                    binary: super::super::resources::embedded_shader(
+                        context, ShaderStage::Compute, "cs_froxel_integrate",
+                    )?,
+                })?,
                 |d, id| { let _ = d.destroy_shader_module(id); },
             );
             Ok(Self {
