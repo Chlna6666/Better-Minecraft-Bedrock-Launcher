@@ -193,6 +193,16 @@ pub fn analyze_with_forensics(
         add_or_promote(CrashReason::WineGuestException, Confidence::Medium, EvidenceSource::RunnerLog);
     }
     for dump in &evidence.minidumps {
+        if dump.fault_module.as_deref().is_some_and(|module| {
+            let name = module.to_ascii_lowercase();
+            name.contains("bloader") || name.contains("levilamina")
+        }) {
+            add_or_promote(
+                CrashReason::LoaderFailure,
+                Confidence::Medium,
+                EvidenceSource::CrashDump,
+            );
+        }
         let reason = match dump.exception_code {
             Some(0xC0000005) => Some((CrashReason::AccessViolation, Confidence::Medium)),
             Some(0xC000001D) => Some((CrashReason::IllegalInstruction, Confidence::High)),
@@ -318,6 +328,26 @@ mod tests {
     }
 
     #[test]
+    fn minidump_module_only_suggests_the_loader_without_blame() {
+        let report = report("gdk", Some(0xC0000005));
+        let evidence = super::super::forensics::ForensicSummary {
+            failed_mods: vec![],
+            wine_stack: None,
+            minidumps: vec![super::super::forensics::MiniDump {
+                streams: 2,
+                exception_code: Some(0xC0000005),
+                fault_module: Some("bloader.dll".to_string()),
+            }],
+        };
+        let findings = analyze_with_forensics(&report, &[], &evidence);
+        assert!(findings.iter().any(|finding|
+            finding.reason == CrashReason::LoaderFailure
+                && finding.confidence == Confidence::Medium
+        ));
+        assert!(!findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
+    }
+
+    #[test]
     fn dump_metadata_improves_exception_confidence_without_attributing_a_mod() {
         let report = report("gdk", Some(0xC0000005));
         let evidence = super::super::forensics::ForensicSummary {
@@ -326,6 +356,7 @@ mod tests {
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 1,
                 exception_code: Some(0xC0000005),
+                fault_module: None,
             }],
         };
         let findings = analyze_with_forensics(&report, &[], &evidence);
