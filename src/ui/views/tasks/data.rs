@@ -153,14 +153,24 @@ impl TasksPageView {
 
     pub(crate) fn open_error_dialog(
         &mut self,
+        task_id: Arc<str>,
         _title: SharedString,
         message: SharedString,
         cx: &mut Context<Self>,
     ) {
-        // Task failures use the shared diagnostic UI, never the crash marker.
+        // Keep a correlation ID in the shareable report without exposing
+        // instance names or unrelated file paths.
+        let safe_task_id = if task_id.len() <= 80
+            && task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        {
+            task_id.as_ref()
+        } else {
+            "[hidden]"
+        };
+        let detail = format!("task_id={safe_task_id}\n{message}");
         cx.update_global(
             |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
-                let report_id = state.record_operation_error("task_failure", message.as_ref());
+                let report_id = state.record_operation_error("task_failure", &detail);
                 state.show_operation_report(&report_id);
             },
         );

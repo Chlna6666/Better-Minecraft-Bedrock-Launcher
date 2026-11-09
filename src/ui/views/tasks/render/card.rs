@@ -260,6 +260,7 @@ pub(crate) fn render_task_card(
         };
         let error_title = SharedString::from(model.title.clone());
         let error_message = SharedString::from(message.clone());
+        let error_task_id = task_id.clone();
         div()
             .id(("task-message", stable_task_id(task_id.as_ref())))
             .w_full()
@@ -273,7 +274,12 @@ pub(crate) fn render_task_card(
             .when(is_error, |this| {
                 this.cursor_pointer()
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.open_error_dialog(error_title.clone(), error_message.clone(), cx);
+                        view.open_error_dialog(
+                            error_task_id.clone(),
+                            error_title.clone(),
+                            error_message.clone(),
+                            cx,
+                        );
                     }))
             })
             .into_any_element()
