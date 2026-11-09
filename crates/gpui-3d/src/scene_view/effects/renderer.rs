@@ -287,7 +287,7 @@ impl EffectsRenderer {
             state.tile_transform = view.scene_transform;
             state.tile_scene = Some(view.scene.clone());
         }
-        let hiz_view = state.ssr_hiz.as_ref().map(|hiz| hiz.sample_view);
+        let hiz_view = state.ssr_hiz.as_ref().map(|hiz| hiz.sampled_views()[0]);
         let key = (light.0, settings.texture_ids(), hiz_view);
         // The screen shader reads whatever depth the geometry passes wrote: the
         // multisampled copies when MSAA is on, matching its `_ms` shader variant.
@@ -313,7 +313,10 @@ impl EffectsRenderer {
                 // When SSR is disabled or unsupported, bind the existing
                 // near-cascade depth view; frame.work.z==0 guarantees no
                 // depth-hierarchy sampling on the linear fallback path.
-                ssr_hiz: hiz_view.unwrap_or(state.shadow[0].view),
+                ssr_hiz: state.ssr_hiz.as_ref().map_or(
+                    [state.shadow[0].view; super::ssr_hiz::SSR_HIZ_LEVELS],
+                    |hiz| hiz.sampled_views(),
+                ),
                 cloud,
                 water,
                 water_flow,
