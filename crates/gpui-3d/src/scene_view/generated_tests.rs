@@ -572,6 +572,10 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         )
         .unwrap();
     for (source, expected, static_count) in [
+        // Two touching canonical cubes have 10 exposed faces. The opt-in
+        // horizontal GPU run fuses their shared top, bottom, front and back
+        // plane pairs into six quads while CPU fallback remains unchanged.
+        (crate::voxel_mesh::tests::source().with_greedy_visible_faces(true), 36u16, 0),
         (crate::voxel_mesh::tests::source(), 60u16, 0),
         (
             crate::voxel_mesh::tests::source()
