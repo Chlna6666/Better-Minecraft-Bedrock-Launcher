@@ -182,10 +182,13 @@ fn shadow_visibility(p:vec3<f32>,n:vec3<f32>)->f32 {
 }
 fn atmosphere(direction:vec3<f32>)->vec3<f32>{
     if(frame.sky.x<0.0){return frame.sky.yzw;}
-    let horizon=pow(clamp(1.0-max(direction.y,0.0),0.0,1.0),4.0);
+    let horizon_factor=clamp(1.0-max(direction.y,0.0),0.0,1.0);
+    let horizon_sq=horizon_factor*horizon_factor;
+    let horizon=horizon_sq*horizon_sq;
     let rayleigh=mix(vec3<f32>(0.055,0.17,0.42),vec3<f32>(0.46,0.57,0.7),horizon)*frame.sun.w;
     let mu=clamp(dot(direction,frame.sun.xyz),-1.0,1.0);
-    let mie=0.018/pow(max(1.0+0.76*0.76-2.0*0.76*mu,0.02),1.5);
+    let anisotropy=max(1.0+0.76*0.76-2.0*0.76*mu,0.02);
+    let mie=0.018/(anisotropy*sqrt(anisotropy));
     let disk=smoothstep(0.99994,0.99998,mu)*8.0;
     return rayleigh+frame.sun_color.rgb*frame.sun_color.w*(mie+disk)+vec3<f32>(0.001,0.002,0.005);
 }
@@ -292,10 +295,15 @@ fn local_lighting(uv:vec2<f32>,p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32
     let tile=vec2<u32>(pixel(uv))/16u;let at=(tile.y*frame.light_meta.y+tile.x)*65u;var radiance=vec3<f32>(0.0);
     let overflow=tiles[at]>64u;let count=select(tiles[at],frame.light_meta.x,overflow);
     for(var i=0u;i<count;i++){var light_id=i;if(!overflow){light_id=tiles[at+1u+i];}let light=lights[light_id];if(light.kind!=2u && light.kind!=3u && light.kind!=4u && light.kind!=5u){continue;}let delta=light.position-p;let distance=length(delta);if(distance>=light.range || distance<0.001 || dot(n,delta)<=0.0){continue;}
-        var attenuation=pow(max(1.0-distance/light.range,0.0),2.0)/max(distance*distance,0.04);
+        let fade=max(1.0-distance/light.range,0.0);
+        var attenuation=fade*fade/max(distance*distance,0.04);
         if(light.kind==3u){attenuation*=smoothstep(light.outer_cone_cosine,light.inner_cone_cosine,dot(light.direction,-delta/distance));}
         let radius=select(0.0,light.outer_cone_cosine,light.kind==4u || light.kind==5u);
-        radiance+=local_brdf(base,metallic,roughness,n,v,delta/distance,light.color*light.intensity*attenuation,light.kind==4u,radius,distance)*local_visibility(p+n*0.04,light.position,radius);
+        // The visibility function is binary. A blocked local light does
+        // not need its GGX/Fresnel BRDF evaluated at all.
+        let visibility=local_visibility(p+n*0.04,light.position,radius);
+        if(visibility==0.0){continue;}
+        radiance+=local_brdf(base,metallic,roughness,n,v,delta/distance,light.color*light.intensity*attenuation,light.kind==4u,radius,distance)*visibility;
     }return radiance;
 }
 fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
@@ -308,7 +316,8 @@ fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
     var radiance=vec3<f32>(0.0);
     let g=0.55;
     let mu=dot(direction,frame.sun.xyz);
-    let phase=(1.0-g*g)/(4.0*PI*pow(1.0+g*g-2.0*g*mu,1.5));
+    let phase_denom=max(1.0+g*g-2.0*g*mu,0.0001);
+    let phase=(1.0-g*g)/(4.0*PI*phase_denom*sqrt(phase_denom));
     // These terms are uniform across all 8 integration samples. Hoist them
     // out of the GPU's hot fog loop instead of rebuilding them per sample.
     let environment=select(
