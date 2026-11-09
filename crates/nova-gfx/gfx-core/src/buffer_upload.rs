@@ -18,6 +18,37 @@ pub struct BufferWrite<'a> {
     pub data: &'a [u8],
 }
 
+/// One GPU-to-GPU buffer transfer (no host byte staging). These logical
+/// ranges are also the exact CopyRead/CopyWrite resources recorded by a
+/// GPU-resident allocator for cross-queue retirement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuBufferCopy {
+    pub source: BufferId,
+    pub source_offset: u64,
+    pub destination: BufferId,
+    pub destination_offset: u64,
+    pub bytes: u64,
+}
+
+impl GpuBufferCopy {
+    pub fn validate(self) -> Result<()> {
+        if self.bytes == 0 {
+            return Err(Error::InvalidInput("GPU buffer copy cannot be empty".into()));
+        }
+        if self.source == self.destination {
+            return Err(Error::InvalidInput(
+                "GPU buffer copy between overlapping views of one allocation is unsupported".into(),
+            ));
+        }
+        if self.source_offset.checked_add(self.bytes).is_none()
+            || self.destination_offset.checked_add(self.bytes).is_none()
+        {
+            return Err(Error::InvalidInput("GPU buffer copy range overflows u64".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Destination upload work accepted by a successful buffer batch.
 ///
 /// Calls count native buffer updates, mapped destination copies, or staging-to-destination
