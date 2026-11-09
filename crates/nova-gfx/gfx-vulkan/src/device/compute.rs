@@ -421,6 +421,21 @@ impl VulkanDevice {
         dispatches: &[ComputeDispatch<'_>],
         tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
+        // Existing high-frequency queue path remains unchanged and does not
+        // allocate a public submission handle for every mesh dispatch.
+        self.dispatch_buffer_batch_on_queue(dispatches, tag, None)
+            .map(|_| ())
+    }
+
+    /// Optional native Compute submission. Some(queue) must execute on that
+    /// exact physical queue and return a real fence for that producer.
+    /// None keeps the original primary-queue batch without a public fence.
+    pub(super) fn dispatch_buffer_batch_on_queue(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+        native_queue: Option<gfx_core::GpuQueueId>,
+    ) -> Result<Option<gfx_core::SubmissionId>> {
         let mut calls: Vec<(usize, Arc<Call>)> = Vec::new();
         let mut descriptors = HashMap::<Vec<(u32, BufferId, u64, u64, u8)>, usize>::new();
         for (index, dispatch) in dispatches.iter().enumerate() {
@@ -449,7 +464,13 @@ impl VulkanDevice {
             }
         }
         if calls.is_empty() {
-            return Ok(());
+            return if native_queue.is_some() {
+                Err(Error::InvalidInput(
+                    "native tracked Compute batch has no executable dispatches".into(),
+                ))
+            } else {
+                Ok(None)
+            };
         }
         let encoder = self.create_command_encoder_with_buffer_count(1)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
@@ -572,7 +593,16 @@ impl VulkanDevice {
                     .end_command_buffer(command)
                     .map_err(VulkanError::from)?;
             }
-            self.submit_command_encoder_deferred(encoder)
+            match native_queue {
+                None => self.submit_command_encoder_deferred(encoder).map(|_| None),
+                Some(queue) if queue == gfx_core::GpuQueueId::PRIMARY =>
+                    self.submit_command_encoder_deferred_tracked(encoder).map(Some),
+                Some(queue) if self.independent_queue(gfx_core::GpuWorkStage::Compute) == Some(queue) =>
+                    self.submit_command_encoder_independent(encoder, true),
+                Some(_) => Err(Error::Unavailable(
+                    "native Vulkan Compute queue is not available".into(),
+                )),
+            }
         })();
         if result.is_err() {
             let _ = self.destroy_temporary_command_encoder_now(encoder);
