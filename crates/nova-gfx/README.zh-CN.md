@@ -23,6 +23,9 @@ Direct3D 11/12、OpenGL 4.5 与 Metal 实现这些 trait。
 - `PipelineDevice`：shader、render pass layout、pipeline layout、pipeline；
 - `CommandDevice`：显式 command encoder；
 - `SubmissionDevice`：deferred submission 与完成跟踪；
+- `OffscreenSubmissionDevice`：与 UI 无关的原生 Graphics 离屏生产者提交；通过
+  `OffscreenQueuePreference` 选择队列偏好，返回可选的 `SubmissionId`。
+  Scene、材质、光照、DrawIndirect 合批策略属于 3D 引擎，而不是此图形封装库；
 - `PresentationDevice`：`render_and_present`、`render_to_textures`、surface readiness 与呈现能力；
 - `DiagnosticsDevice`：资源与内存诊断。
 
