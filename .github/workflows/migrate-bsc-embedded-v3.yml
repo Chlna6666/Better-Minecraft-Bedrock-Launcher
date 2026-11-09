@@ -4,6 +4,7 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/migrate-bsc-embedded-v3.yml'
+      - 'scripts/convert_embedded_bsc_v2_once.py'
   workflow_dispatch:
 permissions:
   contents: write

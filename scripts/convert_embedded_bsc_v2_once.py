@@ -49,7 +49,11 @@ def convert() -> None:
         blocks = json.loads(read("blocks.json"))
         entities = json.loads(read("entities.json"))
         catalog = json.loads(read("geometry_catalog.json"))
-        rest = {name:json.loads(read(name)) for name in ("materials.json","coverage.json")}
+        rest = {"materials.json":json.loads(read("materials.json"))}
+        rest["coverage.json"] = (json.loads(read("coverage.json"))
+            if "coverage.json" in paths else
+            {"schema":1,"counts":{},"coverage_report_available":False,
+             "reason":"original embedded v2 ZIP omitted coverage.json"})
 
         refs = {kind:set() for kind in KINDS}
         for block in blocks["blocks"]:
