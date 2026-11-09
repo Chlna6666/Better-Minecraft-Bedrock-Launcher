@@ -624,8 +624,9 @@ fn same_static_capture_input(previous: &SceneView, current: &SceneView) -> bool 
         && previous.fog == current.fog
         && previous.voxel_shading == current.voxel_shading
         && previous.culling_bounds == current.culling_bounds
-        && (Arc::ptr_eq(&previous.hidden_nodes, &current.hidden_nodes)
-            || previous.hidden_nodes == current.hidden_nodes)
+        // The early GUI path must remain O(1). Different Arc identities
+        // take the normal prepare path, which already compares mask contents.
+        && Arc::ptr_eq(&previous.hidden_nodes, &current.hidden_nodes)
 }
 
 struct SidecarGpuBackend {
