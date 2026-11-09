@@ -2,9 +2,17 @@
 
 [English](README.md)
 
-`gpui-3d` 提供可复用的 3D 场景、几何、相机、材质、动画、查询与 GPUI scene-view 层。
-应用把领域数据转换成本 crate 的类型；GPUI 负责通用 `RendererExtension` 调度与 Nova 集成，
-`gpui-3d` 负责 3D 场景准备与 scene-view 资源；BMCBL 专属的世界/预览策略留在 `src/ui`。
+`gpui-3d` 是可复用、面向游戏的专业 3D 渲染库，负责场景、相机、几何、材质、
+光照、GPU Resident 缓冲、Compute Meshing、可见性和原生离屏输出，通过 `gfx-core`
+调用 `nova-gfx`。GPUI 是**可选的 Sidecar 消费者**，只负责 UI 布局、裁剪、
+颜色纹理合成与窗口 Present，不拥有 3D DrawIndirect 批处理策略。当前 crate
+仍包含 GPUI 适配模块，尚未完成可关闭的 Cargo feature 拆分；Minecraft 世界及
+预览业务策略继续留在应用侧 `src/ui`。
+
+纯 3D 模块已公开 `NativeOffscreenPass`、`submit_native_graphics`，
+可供独立游戏渲染器以已有 `nova-gfx` 设备执行原生离屏提交；GPUI 适配器通过
+`submit_native_offscreen_passes` 向宿主 GPU Owner 转发同一份命令，避免复制
+DrawIndirect 数据。原生提交确认不等于 Fence 完成，资源退休必须等待真正的 GPU 完成。
 
 ## 渲染路径
 
@@ -13,7 +21,9 @@ GPUI scene view 根据 `Material::double_sided` 与 `front_face` 选择光栅剔
 `front_face` 默认为 `FrontFace::Ccw`；顺时针创作的网格应显式使用 `FrontFace::Cw`。
 此管线选择目前仅接入 scene view，离屏 PBR 渲染路径仍保持原有行为。
 
-- **GPUI scene view**：通过 `RendererExtension` 在宿主合成 pass 内绘制。
+- **GPUI scene view**：3D 生产者通过 `gfx-core::OffscreenSubmissionDevice`
+  直接提交原生离屏 Graphics Pass，GPUI 只在对应布局位置采样 color view；
+  不会把 DrawIndirect 转换成 2D 图元。
 - **Offscreen renderer**：`OffscreenRenderer` 渲染方向光阴影、线性 PBR 场景、可选 IBL/天空、
   显示参考后处理到离屏目标，支持 readback、resize、trim、调试视图、延迟完成轮询与逐帧统计。
   使用调用方提供的 Nova device，不创建第二个窗口渲染器、swapchain 或缓存所有者。
