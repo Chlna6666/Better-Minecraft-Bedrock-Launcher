@@ -7437,11 +7437,22 @@ fn transition_image_layout_levels_with_layers(
                 color_attachment_access,
                 vk::AccessFlags::SHADER_READ,
             ),
-            _ => (
+            // Storage images may stay in GENERAL between compute dispatches.
+            // Transfers, attachments and future sampled consumers must observe
+            // their shader writes. Unlike TOP_OF_PIPE -> BOTTOM_OF_PIPE with
+            // empty access masks, this fallback establishes a real dependency
+            // for uncommon layout pairs without involving the CPU.
+            _ if old_layout == vk::ImageLayout::UNDEFINED => (
                 vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags::ALL_COMMANDS,
                 vk::AccessFlags::empty(),
-                vk::AccessFlags::empty(),
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+            ),
+            _ => (
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
             ),
         };
     let barrier = vk::ImageMemoryBarrier::default()
