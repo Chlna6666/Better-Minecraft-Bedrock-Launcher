@@ -759,6 +759,26 @@ pub trait CommandDevice {
 
 /// Tracks deferred GPU submissions.
 pub trait SubmissionDevice {
+    /// Enqueue an actual device-side wait for a previously accepted producer
+    /// submission on a distinct physical queue. This operation must return a
+    /// proof only after the backend has successfully encoded the wait on
+    /// `target_queue`; a host wait, host order, barrier or fence ID alone is
+    /// never sufficient. The producer's completion primitive must remain
+    /// valid until the GPU no longer needs the wait.
+    ///
+    /// Backends that expose no independently synchronized queue MUST return
+    /// Unavailable, not a simulated wait. The native consumer submission is
+    /// still separate and needs its own completion handle.
+    fn enqueue_gpu_queue_wait(
+        &mut self,
+        _target_queue: crate::GpuQueueId,
+        _producer: SubmissionId,
+    ) -> Result<crate::GpuNativeWaitProof> {
+        Err(Error::Unavailable(
+            "explicit GPU-side cross-queue wait is unsupported".into(),
+        ))
+    }
+
     /// Enqueue a nonblocking native completion checkpoint AFTER work in the
     /// specified domain has already entered the ordered primary GPU queue.
     ///
