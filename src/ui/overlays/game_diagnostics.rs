@@ -407,6 +407,26 @@ fn details(report: &GameSessionReport) -> String {
     result
 }
 
+/// A useful community support payload contains the readable diagnosis and
+/// actionable recommendations, not just a stack of opaque exit codes.
+fn shareable_diagnosis(report: &GameSessionReport, findings: &[CrashFinding]) -> String {
+    let mut output = details(report);
+    output.push_str(&format!("\n\n{}", t!("GameCrash.ui.analysis")));
+    for finding in findings {
+        output.push_str(&format!(
+            "\n\n{}\n{}\n{}: {}\n{}: {}\n{}",
+            reason_title(finding.reason),
+            reason_detail(finding.reason),
+            t!("GameCrash.ui.evidence"),
+            evidence_label(finding.source),
+            t!("GameCrash.ui.confidence.low"),
+            confidence_label(finding.confidence),
+            reason_action(finding.reason),
+        ));
+    }
+    crate::utils::log_privacy::redact_log_text(&output).into_owned()
+}
+
 #[derive(Clone, Copy)]
 struct DialogGeometry {
     card_width: Pixels,
@@ -465,7 +485,7 @@ pub fn render_game_diagnostics_overlay(
     let export_location = state.export_location.clone();
     let history = state.history.clone();
     let confirmation = state.awaiting_sensitive_confirmation;
-    let copy_text = crate::utils::log_privacy::redact_log_text(&details(&report)).into_owned();
+
     let copy_path = export_location.clone();
     let id_for_export = report.id.clone();
     let id_for_confirm = report.id.clone();
@@ -482,6 +502,7 @@ pub fn render_game_diagnostics_overlay(
     } else {
         report.findings.clone()
     };
+    let copy_text = shareable_diagnosis(&report, &findings);
 
     let export_warning = if !selection.redact_text && selection.include_dumps {
         t!("GameCrash.ui.riskBoth")
