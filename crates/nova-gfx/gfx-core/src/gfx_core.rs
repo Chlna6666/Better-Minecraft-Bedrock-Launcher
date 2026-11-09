@@ -39,8 +39,9 @@ pub use buffer_texture_copy::{
     texture_copy_row_pitch,
 };
 pub use compute::{
-    BufferBindingLimits, ComputeBindGroupDispatch, ComputeBufferAccess, ComputeBufferBinding,
-    ComputeCapabilities, ComputeDispatch, ComputeKernelProfile, VoxelExecutionPath,
+    BufferBindingLimits, ComputeBindGroupCapabilities, ComputeBindGroupDispatch,
+    ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
+    ComputeKernelProfile, VoxelExecutionPath,
 };
 pub use texture_array::{
     TextureArrayCapabilities, TextureArrayLayerUpload, TextureArrayLayerWriteDescriptor,

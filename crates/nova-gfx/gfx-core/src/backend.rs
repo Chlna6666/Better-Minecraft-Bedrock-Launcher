@@ -256,6 +256,12 @@ pub trait ResourceDevice {
         crate::ComputeCapabilities::default()
     }
 
+    /// Advertises which compute resource-set binding kinds are implemented.
+    #[must_use]
+    fn compute_bind_group_capabilities(&self) -> crate::ComputeBindGroupCapabilities {
+        crate::ComputeBindGroupCapabilities::default()
+    }
+
     /// Number of color attachments one render pass may use.
     ///
     /// The trait default is one. Backends that support MRT report their native

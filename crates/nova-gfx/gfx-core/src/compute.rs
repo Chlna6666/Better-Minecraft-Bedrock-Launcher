@@ -5,6 +5,46 @@ use crate::{
     Error, Result, ShaderModuleId, ShaderStages,
 };
 
+/// Capabilities of native compute resource-set dispatches, separate from
+/// ordered buffer compute and indirect rendering support.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ComputeBindGroupCapabilities {
+    /// Uniform and read-only storage buffers are supported in resource sets.
+    pub buffers: bool,
+    /// Sampled image views in compute resource sets.
+    pub sampled_textures: bool,
+    /// Samplers in compute resource sets.
+    pub samplers: bool,
+    /// Storage images in compute resource sets.
+    pub storage_textures: bool,
+}
+
+impl ComputeBindGroupCapabilities {
+    /// Portable buffer-only compute descriptor support.
+    pub const fn buffer_only() -> Self {
+        Self {
+            buffers: true,
+            sampled_textures: false,
+            samplers: false,
+            storage_textures: false,
+        }
+    }
+
+    /// Reports whether all entries in a compute layout can be represented.
+    pub fn supports(self, layout: &BindGroupLayoutDescriptor) -> bool {
+        !layout.entries.is_empty()
+            && layout.entries.iter().all(|entry| {
+                entry.stages.contains(ShaderStages::COMPUTE)
+                    && match entry.binding_type {
+                        BindingType::UniformBuffer | BindingType::StorageBuffer => self.buffers,
+                        BindingType::SampledTexture => self.sampled_textures,
+                        BindingType::Sampler => self.samplers,
+                        BindingType::StorageTexture { .. } => self.storage_textures,
+                    }
+            })
+    }
+}
+
 /// Optional buffer-compute capabilities. Defaults advertise no compute support.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ComputeCapabilities {
@@ -418,6 +458,35 @@ mod tests {
         BindGroupEntry, BindGroupLayoutEntry, BindGroupLayoutId, BufferId, TextureBinding,
         TextureViewId,
     };
+
+    #[test]
+    fn compute_resource_set_capability_requires_all_bindings_to_be_supported() {
+        let mut layout = BindGroupLayoutDescriptor {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                binding_type: BindingType::UniformBuffer,
+                stages: ShaderStages::COMPUTE,
+            }],
+        };
+        let buffer_only = ComputeBindGroupCapabilities::buffer_only();
+        assert!(buffer_only.supports(&layout));
+        layout.entries.push(BindGroupLayoutEntry {
+            binding: 1,
+            binding_type: BindingType::SampledTexture,
+            stages: ShaderStages::COMPUTE,
+        });
+        assert!(!buffer_only.supports(&layout));
+        let with_textures = ComputeBindGroupCapabilities {
+            sampled_textures: true,
+            samplers: true,
+            storage_textures: true,
+            ..buffer_only
+        };
+        assert!(with_textures.supports(&layout));
+        layout.entries[1].stages = ShaderStages::FRAGMENT;
+        assert!(!with_textures.supports(&layout));
+    }
 
     #[test]
     fn compute_bind_group_lowers_buffers_but_rejects_invisible_and_texture_bindings() {

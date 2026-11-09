@@ -49,6 +49,11 @@ pub trait ExtensionDevice {
         gfx_core::ComputeCapabilities::default()
     }
 
+    /// Resource kinds supported by compute bind-group dispatch on this device.
+    fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
+        gfx_core::ComputeBindGroupCapabilities::default()
+    }
+
     /// Queues GPU buffer compute before subsequent extension draws, without waiting.
     ///
     /// # Errors
@@ -330,6 +335,10 @@ where
 
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         ResourceDevice::compute_capabilities(self)
+    }
+
+    fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
+        ResourceDevice::compute_bind_group_capabilities(self)
     }
 
     fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
