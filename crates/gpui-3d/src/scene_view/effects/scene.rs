@@ -305,65 +305,70 @@ impl EffectScene {
         shadow_pass: RenderPassId,
         passes: &mut Vec<RendererExtensionPass>,
     ) -> gpui::Result<()> {
-        if view.voxel_shading.shadow_strength <= 0. && self.shadow_valid {
+        if view.voxel_shading.shadow_strength <= 0. {
+            // Shading is disabled, so neither a map clear nor a GPU cull is
+            // necessary. Retain the old maps for a subsequent re-enable.
             return Ok(());
         }
-        let (key, camera) = stable_shadow_camera(
-            view.camera.eye,
-            view.voxel_shading.sun_direction,
-        )?;
-        let changed = !self.shadow_valid
-            || self.shadow_key != Some(key)
-            || self
-                .shadow_scene
-                .as_ref()
-                .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
+        let Some(sun) = view.voxel_shading.sun_direction.normalized() else {
+            self.shadow_valid.fill(false);
+            return Err(anyhow::anyhow!("invalid sun"));
+        };
+        let scene_dirty = self.shadow_scene.as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
             || self.shadow_transform != view.scene_transform
             || self.shadow_input.as_ref().is_none_or(|old| {
-                (old.voxel_shading.shadow_strength > 0.)
-                    != (view.voxel_shading.shadow_strength > 0.)
-                    || !Arc::ptr_eq(&old.textures, &view.textures)
+                !Arc::ptr_eq(&old.textures, &view.textures)
                     || old.sampling != view.sampling
                     || old.anisotropy_enabled != view.anisotropy_enabled
                     || old.blend_edge_feather != view.blend_edge_feather
-                    // Main-camera culling bounds do not enter shadow_steps():
-                    // its light-space frustum performs independent caster culling.
-                    // Changing the camera's Section bounds cannot invalidate this map.
                     || !Arc::ptr_eq(&old.animation, &view.animation)
-                    // Static scenes may advance the presentation clock for
-                    // water/cloud Shader animation without moving any caster.
-                    // Only sampled transform tracks can invalidate the map.
                     || (!view.animation.is_empty()
                         && old.animation_time != view.animation_time)
             });
-        if !changed {
-            return Ok(());
+        // Persistent CSM: rebuild only a cascade whose texel-snapped camera
+        // crossed an integer tile, or whose actual caster geometry changed.
+        // Rotation of the main viewer never invalidates any shadow cascade.
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = match stable_shadow_camera(view.camera.eye, sun, cascade) {
+                Ok(camera) => camera,
+                Err(error) => {
+                    self.shadow_valid.fill(false);
+                    return Err(error);
+                }
+            };
+            if self.shadow_valid[cascade]
+                && !scene_dirty
+                && self.shadow_key[cascade] == Some(key)
+            {
+                continue;
+            }
+            // Transactional failure: keep this map invalid until the backend
+            // has actually submitted the full compute+draw command sequence.
+            self.shadow_valid[cascade] = false;
+            self.shadow_key[cascade] = Some(key);
+            self.shadow_matrix[cascade] = camera.projection_matrix(1.)? * camera.view()?;
+            let context = local.offscreen(
+                shadow_pass, Format::R8Unorm,
+                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+            );
+            let casters = shadow_caster_bounds(view.camera.eye, sun, cascade);
+            let commands = self.scene.shadow_steps(
+                device, renderer, camera, cascade, casters, &context,
+            )?;
+            passes.push(pass(
+                shadow_pass,
+                self.shadow_color[cascade].view,
+                self.shadow[cascade].view,
+                None,
+                commands,
+                true,
+            ));
+            self.queued_shadow[cascade] = true;
         }
-        // Any subsequent error must retry this projection, not reuse the old map
-        // with the new cache key.
-        self.shadow_valid = false;
-        self.shadow_key = Some(key);
         self.shadow_scene = Some(view.scene.clone());
         self.shadow_transform = view.scene_transform;
         self.shadow_input = Some(view.clone());
-        self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
-        let shadow_context =
-            local.offscreen(shadow_pass, Format::R8Unorm, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?);
-        let commands = if view.voxel_shading.shadow_strength > 0. {
-            self.scene
-                .shadow_steps(device, renderer, camera, &shadow_context)?
-        } else {
-            Vec::new()
-        };
-        passes.push(pass(
-            shadow_pass,
-            self.shadow_color.view,
-            self.shadow.view,
-            None,
-            commands,
-            true,
-        ));
-        self.queued_shadow = true;
         Ok(())
     }
     pub(super) fn write_frames(
@@ -386,7 +391,7 @@ impl EffectScene {
                 matrix
                     .inverse()
                     .ok_or_else(|| anyhow::anyhow!("singular projection"))?,
-                self.shadow_matrix,
+                self.shadow_matrix[0],
             ] {
                 for column in matrix.columns() {
                     for value in column {
@@ -479,6 +484,19 @@ impl EffectScene {
                     bytes.extend(value.to_le_bytes());
                 }
             }
+            // Existing 416-byte effect ABI is followed by two additional
+            // light matrices and one 16-byte vec4 of cascade split distances.
+            for matrix in &self.shadow_matrix[1..] {
+                for column in matrix.columns() {
+                    for value in column {
+                        bytes.extend(value.to_le_bytes());
+                    }
+                }
+            }
+            for value in SHADOW_CASCADE_SPLITS {
+                bytes.extend(value.to_le_bytes());
+            }
+            debug_assert_eq!(bytes.len(), super::FRAME_BYTES as usize);
             device.write_buffer(buffer, 0, &bytes)?;
         }
         Ok(())
