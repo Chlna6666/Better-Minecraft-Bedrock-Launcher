@@ -361,7 +361,15 @@ fn effects_shade(input:ScreenOutput)->vec4<f32>{
         let geometric=n;
         if(water && frame.flags.y>0.5){n=water_normal(p,n,footprint);roughness=0.08;
             if(frame.water_animation.x>0.0){albedo=vec4<f32>(albedo.rgb*water_albedo(p,geometric,n).rgb,albedo.a);}}
-        let direct=cook_torrance_lighting(albedo.rgb,metallic,roughness,n,v,frame.sun.xyz,frame.sun_color.rgb*frame.sun_color.w*3.0);
+        // A disabled directional light contributes no BRDF energy. This
+        // uniform branch prevents the entire Cook-Torrance evaluation.
+        var direct=vec3<f32>(0.0);
+        if(frame.sun_color.w>0.0){
+            direct=cook_torrance_lighting(
+                albedo.rgb,metallic,roughness,n,v,frame.sun.xyz,
+                frame.sun_color.rgb*frame.sun_color.w*3.0
+            );
+        }
         let visibility=shadow_visibility(p,receiver_normal)*cloud_visibility(p);color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
         if(water||glass){
             let refracted=refraction_uv(uv,p,ray,n,depth,water);let behind_depth=textureLoad(opaque_depth,pixel(refracted),0).r;var behind=textureSampleLevel(scene,linear_sampler,refracted,0.0).rgb;
@@ -377,7 +385,13 @@ fn effects_shade(input:ScreenOutput)->vec4<f32>{
             if(blended && textureLoad(opaque_depth,at,0).r>=1.0){color+=atmosphere(ray)*(1.0-coverage);}
         }
         color+=local_lighting(uv,p,n,v,albedo.rgb,metallic,roughness)*coverage;
-        if(roughness<0.5||water||glass||metallic>0.0){let reflected=reflect(ray,n);var hit=vec4<f32>(0.0);if(roughness<0.5){hit=trace_reflection(p+n*0.08,reflected);}
+        // Disabled SSR/reflections must bypass *all* environment reflection
+        // work, including cloud DDA and atmosphere sampling. The previous
+        // code calculated it and only then multiplied the result by zero.
+        if(frame.flags.x>0.0 && (roughness<0.5||water||glass||metallic>0.0)){
+            let reflected=reflect(ray,n);
+            var hit=vec4<f32>(0.0);
+            if(roughness<0.5){hit=trace_reflection(p+n*0.08,reflected);}
             let direction=normalize(mix(reflected,n,roughness*roughness));var environment=atmosphere(direction);if(roughness<0.5){environment=sky(direction);}let reflection=mix(environment,hit.rgb,hit.a);
             let f0=select(mix(vec3<f32>(0.04),albedo.rgb,metallic),vec3<f32>(0.02),water);let fresnel=environment_reflectance(max(dot(n,v),0.0),roughness,metallic,f0);color=mix(color,reflection,clamp(fresnel,vec3<f32>(0.0),vec3<f32>(1.0))*coverage*frame.flags.x);}
     }
