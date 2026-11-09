@@ -98,7 +98,7 @@ impl VulkanDevice {
     pub(super) fn dispatch_resource_set_profiled(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
-        tag: Option<GpuTimestampTag>,
+        tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
         dispatch.validate(self.compute.capabilities)?;
         let (layout_id, set_handle, desc) = {
