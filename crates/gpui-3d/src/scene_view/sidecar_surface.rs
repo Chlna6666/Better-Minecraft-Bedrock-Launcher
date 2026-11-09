@@ -128,7 +128,7 @@ impl Target {
         &mut self,
         color_view: TextureViewId,
         placement: PlacementResources,
-    ) -> Result<(), PlacementResources> {
+    ) -> std::result::Result<(), PlacementResources> {
         if self.color_view != color_view
             || self.recycled_placements.len() >= MAX_RECYCLED_PLACEMENTS_PER_VIEW
         {
