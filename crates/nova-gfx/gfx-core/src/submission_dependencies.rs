@@ -292,6 +292,42 @@ impl GpuSubmissionDependencyGraph {
                 covered.extend(older.iter().copied());
             }
         }
+        // Work on distinct native queues is unordered unless its completion
+        // is covered by an actual backend-issued GPU wait. A matching queue
+        // name or CPU submission order is never sufficient for RAW/WAR/WAW.
+        // Ignore read/read overlap; independent immutable readers can run
+        // concurrently without a barrier.
+        for (id, previous) in &self.live {
+            if previous.queue == record.queue || covered.contains(id) {
+                continue;
+            }
+            if record.uses.iter().any(|new_use| {
+                previous.uses.iter().any(|old_use| {
+                    (new_use.access.writes() || old_use.access.writes())
+                        && new_use.span.overlaps(&old_use.span)
+                })
+            }) {
+                return Err(Error::InvalidInput(format!(
+                    "cross-queue GPU resource hazard: {:?} must wait for {:?} before conflicting resource access",
+                    record.queue, previous.queue,
+                )));
+            }
+        }
+        // An untracked submission on another queue has no verifiable
+        // completion ID to wait upon. It must first be sealed by a real
+        // same-queue checkpoint; otherwise never treat a new registered
+        // native submission as safe just because the CPU submitted it later.
+        for (queue, previous) in &self.unknown {
+            if *queue != record.queue && record.uses.iter().any(|new_use| {
+                (new_use.access.writes() || previous.access.writes())
+                    && new_use.span.overlaps(&previous.span)
+            }) {
+                return Err(Error::InvalidInput(format!(
+                    "cross-queue GPU resource hazard: untracked work on {:?} requires its own native checkpoint",
+                    queue,
+                )));
+            }
+        }
         self.ancestors.insert(record.id, covered);
         self.queue_tails.insert(record.queue, record.id);
         self.live.insert(record.id, record);
@@ -565,6 +601,60 @@ mod tests {
         assert!(!ticket.safe_to_reuse());
         ticket.complete_with_proof(&graph.complete(id(61)).unwrap());
         assert!(ticket.safe_to_reuse());
+    }
+
+    #[test]
+    fn conflicting_cross_queue_writes_require_native_gpu_wait_proof() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let compute = GpuQueueId { family: 1, index: 0 };
+        let transfer = GpuQueueId { family: 2, index: 0 };
+        graph.register(record(81, transfer,
+            vec![use_of(buf(0, 32), GpuAccess::CopyWrite)], vec![])).unwrap();
+
+        // No GPU wait: neither a second physical queue nor a later CPU API
+        // call establishes GPU execution order for overlapping writes.
+        assert!(graph.register(record(82, compute,
+            vec![use_of(buf(16, 32), GpuAccess::StorageWrite)], vec![])).is_err());
+        assert_eq!(graph.live_count(), 1);
+
+        // Disjoint physical byte regions and simultaneous immutable readers
+        // do not need artificial cross-queue serialization.
+        graph.register(record(83, compute,
+            vec![use_of(buf(32, 32), GpuAccess::StorageWrite)], vec![])).unwrap();
+        graph.register(record(84, GpuQueueId::PRIMARY,
+            vec![use_of(buf(0, 32), GpuAccess::CopyRead)], vec![id(81)])).unwrap();
+
+        // A true native producer->consumer wait certifies the overlapping
+        // transfer-write -> compute-read/modify/write dependency.
+        graph.register(record(85, compute,
+            vec![use_of(buf(0, 32), GpuAccess::StorageReadWrite)],
+            vec![id(81), id(84)])).unwrap();
+    }
+
+    #[test]
+    fn unfenced_other_queue_work_requires_own_checkpoint_before_conflict() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let compute = GpuQueueId { family: 3, index: 0 };
+        graph.register_untracked(compute,
+            use_of(buf(0, 32), GpuAccess::StorageWrite));
+        assert!(graph.register(record(86, GpuQueueId::PRIMARY,
+            vec![use_of(buf(0, 32), GpuAccess::ReadBuffer)], vec![])).is_err());
+
+        graph.register(record(87, compute, vec![], vec![])).unwrap();
+        graph.seal_untracked_queue(compute, id(87)).unwrap();
+        graph.register(record(88, GpuQueueId::PRIMARY,
+            vec![use_of(buf(0, 32), GpuAccess::ReadBuffer)], vec![id(87)])).unwrap();
+    }
+
+    #[test]
+    fn independent_readers_can_share_immutable_resource_without_waits() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let compute = GpuQueueId { family: 3, index: 0 };
+        let transfer = GpuQueueId { family: 4, index: 0 };
+        graph.register(record(89, compute,
+            vec![use_of(buf(0, 32), GpuAccess::ReadBuffer)], vec![])).unwrap();
+        graph.register(record(90, transfer,
+            vec![use_of(buf(0, 32), GpuAccess::CopyRead)], vec![])).unwrap();
     }
 
     #[test]
