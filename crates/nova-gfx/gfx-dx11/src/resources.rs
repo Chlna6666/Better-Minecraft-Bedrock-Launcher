@@ -159,7 +159,14 @@ impl ResourceDevice for Dx11Device {
     }
 
     fn compute_bind_group_capabilities(&self) -> ComputeBindGroupCapabilities {
-        ComputeBindGroupCapabilities::buffer_only()
+        // Native SRV/UAV/CBV and sampler bindings on the D3D11 immediate
+        // context. Storage images currently require a single D2 mip.
+        ComputeBindGroupCapabilities {
+            buffers: true,
+            sampled_textures: true,
+            samplers: true,
+            storage_textures: true,
+        }
     }
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
