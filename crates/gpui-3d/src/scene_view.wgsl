@@ -302,7 +302,13 @@ fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
-            let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
+            // Out-of-range/back-facing lights can never contribute, so avoid
+            // costly GGX, Fresnel and half-vector work for these fragments.
+            if(light_distance >= light_range || dot(surface_normal,surface_to_light) <= 0.0){
+                continue;
+            }
+            let fade = max(1.0 - light_distance / light_range, 0.0);
+            let attenuation = fade * fade
                 / max(light_distance * light_distance, 0.01);
             radiance += local_brdf(
                 base_color.rgb,
@@ -317,7 +323,13 @@ fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
             let surface_to_light = light.position - input.world_position;
             let light_distance = length(surface_to_light);
             let light_range = max(light.range, 0.0001);
-            let attenuation = pow(max(1.0 - light_distance / light_range, 0.0), 2.0)
+            // Out-of-range/back-facing lights can never contribute, so avoid
+            // costly GGX, Fresnel and half-vector work for these fragments.
+            if(light_distance >= light_range || dot(surface_normal,surface_to_light) <= 0.0){
+                continue;
+            }
+            let fade = max(1.0 - light_distance / light_range, 0.0);
+            let attenuation = fade * fade
                 / max(light_distance * light_distance, 0.01);
             let light_to_surface = -normalize(surface_to_light);
             let cone_attenuation = smoothstep(
