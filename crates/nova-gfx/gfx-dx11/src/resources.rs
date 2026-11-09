@@ -600,16 +600,15 @@ impl ResourceDevice for Dx11Device {
                     )
                     .map_err(backend)?;
             }
-            if texture
+            // One native texture may be both an attachment and a sampled
+            // mip chain. A full-mip SRV is legal; only the per-mip RTV/DSV
+            // requires one selected level. Do not reject the valid SRV just
+            // because its underlying texture supports render attachments.
+            if desc.mip_level_count == 1 && texture
                 .desc
                 .usage
                 .intersects(TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT)
             {
-                if desc.mip_level_count != 1 {
-                    return Err(Error::InvalidInput(
-                        "attachment view must select one mip".into(),
-                    ));
-                }
                 // Multisampled storage requires the MS view dimensions; TEXTURE2D is
                 // E_INVALIDARG over a multisampled resource on D3D11.
                 let multisampled = texture.desc.sample_count > 1;
