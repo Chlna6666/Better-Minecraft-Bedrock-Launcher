@@ -3,10 +3,11 @@
 use crate::utils::{file_ops, log_privacy};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
@@ -51,6 +52,17 @@ pub struct GameSessionReport {
 }
 
 static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
+static ACTIVE_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn sessions() -> &'static Mutex<HashSet<String>> {
+    ACTIVE_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Used by the hidden-window policy to avoid closing the monitor while any
+/// launched Minecraft instance remains alive.
+pub fn active_sessions() -> usize {
+    sessions().lock().map_or(0, |active| active.len())
+}
 
 fn event_bus() -> &'static broadcast::Sender<GameSessionReport> {
     REPORT_EVENTS.get_or_init(|| broadcast::channel(64).0)
@@ -102,6 +114,7 @@ impl GameSessionReport {
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
         }
+        if let Ok(mut active) = sessions().lock() { active.insert(report.id.clone()); }
         tracing::info!(session_id = %report.id, pid, platform, "游戏会话已开始");
         report
     }
@@ -129,9 +142,10 @@ impl GameSessionReport {
             kind = ?self.kind,
             "游戏会话结束"
         );
-        if self.kind.is_abnormal() {
-            let _ = event_bus().send(self.clone());
-        }
+        if let Ok(mut active) = sessions().lock() { active.remove(&self.id); }
+        // Normal exits are events too, so a launcher hidden for crash monitoring
+        // can terminate once its final game session exits.
+        let _ = event_bus().send(self.clone());
         self
     }
 }
