@@ -54,7 +54,7 @@ pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
 pub use gpu_timestamps::{GpuTimestampSample, GpuTimestampStage, GpuTimestampTag};
 mod submission_dependencies;
 pub use submission_dependencies::{
-    GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+    GpuNativeWaitProof, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
     GpuRetirementDependencies, GpuSubmissionCompletion, GpuSubmissionDependencyGraph,
 };
 pub use render_graph::{
