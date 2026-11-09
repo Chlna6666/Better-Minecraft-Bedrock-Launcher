@@ -268,7 +268,7 @@ impl Dx11Device {
         }
     }
 
-    fn create_compute_uav(&self, binding: BufferBinding) -> Result<ID3D11UnorderedAccessView> {
+    pub(crate) fn create_compute_uav(&self, binding: BufferBinding) -> Result<ID3D11UnorderedAccessView> {
         let buffer = self.buffers.get(binding.buffer)?;
         if let Some(cached) = buffer
             .compute_uav

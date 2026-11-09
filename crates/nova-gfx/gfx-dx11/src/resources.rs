@@ -699,6 +699,7 @@ impl ResourceDevice for Dx11Device {
                 BindingType::UniformBuffer => 13,
                 BindingType::Sampler => 16,
                 BindingType::StorageBuffer | BindingType::SampledTexture => 128,
+                BindingType::StorageBufferReadWrite => 8,
                 BindingType::StorageTexture { .. } => {
                     return Err(Error::Unavailable(
                         "D3D11 storage textures need an unordered-access-view binding path".into(),
@@ -716,9 +717,31 @@ impl ResourceDevice for Dx11Device {
     fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         let layout = self.layouts.get(desc.layout)?;
         desc.validate_against(layout)?;
+        // Graphics bindings never accept writable storage buffers. Validate
+        // their native compute UAV views once at set creation, and leave the
+        // graphics binding cache limited to SRV/CBV/samplers.
+        for binding in &desc.entries {
+            let entry = layout
+                .entries
+                .iter()
+                .find(|entry| entry.binding == binding.binding)
+                .ok_or_else(|| Error::InvalidInput("missing bind group layout entry".into()))?;
+            if entry.binding_type == BindingType::StorageBufferReadWrite {
+                let BindingResource::Buffer(range) = binding.resource else {
+                    return Err(Error::InvalidInput("writable storage must bind a buffer".into()));
+                };
+                let _ = self.create_compute_uav(range)?;
+            }
+        }
         let bindings = desc
             .entries
             .iter()
+            .filter(|binding| {
+                !layout.entries.iter().any(|entry| {
+                    entry.binding == binding.binding
+                        && entry.binding_type == BindingType::StorageBufferReadWrite
+                })
+            })
             .map(|binding| {
                 let entry = layout
                     .entries
