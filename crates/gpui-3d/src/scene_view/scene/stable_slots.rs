@@ -160,13 +160,10 @@ impl StableDrawSlots {
                 // DrawIndirect reader merely because it shares BufferId.
                 // Register an ordering-only queue submission in the generic
                 // graph; per-slot Graphics readers remain in in_flight_draws.
-                if self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord {
-                    id: submission,
-                    queue: gfx_core::GpuQueueId::PRIMARY,
-                    stage: gfx_core::GpuWorkStage::Graphics,
-                    uses: Vec::new(),
-                    gpu_waits: Vec::new(),
-                }).is_err() {
+                if self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord::new(
+                    submission, gfx_core::GpuQueueId::PRIMARY,
+                    gfx_core::GpuWorkStage::Graphics, Vec::new(),
+                )).is_err() {
                     // Fail closed rather than publish a corrupt native proof.
                     self.untracked_gpu_access_submitted();
                 }
@@ -247,13 +244,10 @@ impl StableDrawSlots {
         {
             // An accepted primary-queue consumer is an ordered checkpoint,
             // not a new DrawParams read. The owner alone guarantees this queue.
-            let _ = self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord {
-                id: submission,
-                queue: gfx_core::GpuQueueId::PRIMARY,
-                stage: gfx_core::GpuWorkStage::Graphics,
-                uses: Vec::new(),
-                gpu_waits: Vec::new(),
-            });
+            let _ = self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord::new(
+                submission, gfx_core::GpuQueueId::PRIMARY,
+                gfx_core::GpuWorkStage::Graphics, Vec::new(),
+            ));
         }
         if self.gpu_dependencies.contains_submission(submission) {
             let _ = self.gpu_dependencies.seal_untracked_queue(
@@ -955,16 +949,13 @@ mod tests {
         let (mut slots, _) = StableDrawSlots::with_resident_buffers(&[(buffer, 80)])
             .plan(&original).unwrap();
         let foreign = gfx_core::SubmissionId::from_parts(501, 1);
-        slots.register_native_access(GpuSubmissionRecord {
-            id: foreign,
-            queue: GpuQueueId {family:4,index:1},
-            stage: GpuWorkStage::Compute,
-            uses: vec![GpuSubmissionAccess {
+        slots.register_native_access(GpuSubmissionRecord::new(
+            foreign, GpuQueueId {family:4,index:1}, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
                 span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
                 access: GpuAccess::StorageReadWrite,
             }],
-            gpu_waits: vec![],
-        }).unwrap();
+        )).unwrap();
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         slots.gpu_work_completed(); // Simulate UI queue-only completion.
         assert!(slots.free.is_empty());
@@ -986,16 +977,13 @@ mod tests {
         let (mut slots, _) = slots.plan(&original).unwrap();
         let async_queue = GpuQueueId { family: 7, index: 1 };
         let compute = gfx_core::SubmissionId::from_parts(170, 1);
-        slots.register_native_access(GpuSubmissionRecord {
-            id: compute,
-            queue: async_queue,
-            stage: GpuWorkStage::Compute,
-            uses: vec![GpuSubmissionAccess {
+        slots.register_native_access(GpuSubmissionRecord::new(
+            compute, async_queue, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
                 span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
                 access: GpuAccess::StorageReadWrite,
             }],
-            gpu_waits: vec![],
-        }).unwrap();
+        )).unwrap();
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         assert!(slots.free.is_empty());
         assert_eq!(slots.retired_by_submission.len(), 1);
@@ -1013,16 +1001,13 @@ mod tests {
         // Matching index on a different BufferId must not create a hazard.
         let mut separate = StableDrawSlots::with_resident_buffers(&[(foreign, 80)]);
         let (mut separate, _) = separate.plan(&original).unwrap();
-        separate.register_native_access(GpuSubmissionRecord {
-            id: compute,
-            queue: async_queue,
-            stage: GpuWorkStage::Compute,
-            uses: vec![GpuSubmissionAccess {
+        separate.register_native_access(GpuSubmissionRecord::new(
+            compute, async_queue, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
                 span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
                 access: GpuAccess::StorageReadWrite,
             }],
-            gpu_waits: vec![],
-        }).unwrap();
+        )).unwrap();
         let (separate, _) = separate.plan(&original[1..]).unwrap();
         assert!(separate.retired_by_submission.is_empty());
         assert_eq!(separate.retired_unbound, vec![0]);
