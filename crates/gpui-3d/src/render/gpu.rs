@@ -14,12 +14,10 @@
 use super::{
     CapturedImage, DebugView, FrameStatistics, RenderError, RenderOptions, RendererStatistics,
 };
-use crate::scene_view::gpu::{
+use crate::gpu_encoding::{
     encode_draw_slot, encode_instances_into, encode_lights_into, encode_mesh, write_matrix,
-    write_vec4,
-};
-use crate::scene_view::{
-    DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, PACKED_VERTEX_STRIDE,
+    write_vec4, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE,
+    PACKED_VERTEX_STRIDE,
 };
 use crate::{
     Aabb, AlphaMode, Camera, EnvironmentMap, Mat4, Mesh, MeshId, PreparedLight, PreparedScene,
@@ -1285,46 +1283,46 @@ impl GpuState {
             layout: scene_layout,
             entries: vec![
                 buffer_binding(
-                    crate::scene_view::VERTEX_BINDING,
+                    crate::gpu_encoding::VERTEX_BINDING,
                     vertices,
                     0,
                     vertex_bytes,
                     Some(PACKED_VERTEX_STRIDE),
                 ),
                 buffer_binding(
-                    crate::scene_view::DRAW_BINDING,
+                    crate::gpu_encoding::DRAW_BINDING,
                     draw_buffer,
                     draw_offset,
                     u64::from(DRAW_PARAMS_STRIDE),
                     Some(DRAW_PARAMS_STRIDE),
                 ),
                 buffer_binding(
-                    crate::scene_view::LIGHT_BINDING,
+                    crate::gpu_encoding::LIGHT_BINDING,
                     light_buffer,
                     0,
                     light_bytes.max(u64::from(LIGHT_STRIDE)),
                     Some(LIGHT_STRIDE),
                 ),
-                texture_binding(crate::scene_view::ALBEDO_BINDING, albedo_view),
-                sampler_binding(crate::scene_view::SAMPLER_BINDING, material_sampler),
-                texture_binding(crate::scene_view::NORMAL_MAP_BINDING, normal_view),
-                texture_binding(crate::scene_view::OCCLUSION_BINDING, occlusion_view),
+                texture_binding(crate::gpu_encoding::ALBEDO_BINDING, albedo_view),
+                sampler_binding(crate::gpu_encoding::SAMPLER_BINDING, material_sampler),
+                texture_binding(crate::gpu_encoding::NORMAL_MAP_BINDING, normal_view),
+                texture_binding(crate::gpu_encoding::OCCLUSION_BINDING, occlusion_view),
                 buffer_binding(
-                    crate::scene_view::TANGENT_BINDING,
+                    crate::gpu_encoding::TANGENT_BINDING,
                     tangent_buffer,
                     tangent_offset,
                     tangent_size,
                     Some(16),
                 ),
                 buffer_binding(
-                    crate::scene_view::INSTANCE_BINDING,
+                    crate::gpu_encoding::INSTANCE_BINDING,
                     instance_buffer,
                     0,
                     instance_bytes.max(u64::from(INSTANCE_STRIDE)),
                     Some(INSTANCE_STRIDE),
                 ),
                 buffer_binding(
-                    crate::scene_view::FRAME_BINDING,
+                    crate::gpu_encoding::FRAME_BINDING,
                     frame_buffer,
                     0,
                     FRAME_STRIDE,
@@ -2205,52 +2203,52 @@ impl Pipelines {
             label: Some("gpui-3d offscreen scene layout".into()),
             entries: vec![
                 layout_entry(
-                    crate::scene_view::VERTEX_BINDING,
+                    crate::gpu_encoding::VERTEX_BINDING,
                     BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
-                    crate::scene_view::DRAW_BINDING,
+                    crate::gpu_encoding::DRAW_BINDING,
                     BindingType::StorageBuffer,
                     ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::LIGHT_BINDING,
+                    crate::gpu_encoding::LIGHT_BINDING,
                     BindingType::StorageBuffer,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::ALBEDO_BINDING,
+                    crate::gpu_encoding::ALBEDO_BINDING,
                     BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::SAMPLER_BINDING,
+                    crate::gpu_encoding::SAMPLER_BINDING,
                     BindingType::Sampler,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::NORMAL_MAP_BINDING,
+                    crate::gpu_encoding::NORMAL_MAP_BINDING,
                     BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::OCCLUSION_BINDING,
+                    crate::gpu_encoding::OCCLUSION_BINDING,
                     BindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
                 layout_entry(
-                    crate::scene_view::TANGENT_BINDING,
+                    crate::gpu_encoding::TANGENT_BINDING,
                     BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
-                    crate::scene_view::INSTANCE_BINDING,
+                    crate::gpu_encoding::INSTANCE_BINDING,
                     BindingType::StorageBuffer,
                     ShaderStages::VERTEX,
                 ),
                 layout_entry(
-                    crate::scene_view::FRAME_BINDING,
+                    crate::gpu_encoding::FRAME_BINDING,
                     BindingType::UniformBuffer,
                     ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ),
