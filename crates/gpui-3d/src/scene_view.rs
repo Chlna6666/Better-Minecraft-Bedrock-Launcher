@@ -20,28 +20,10 @@ pub(crate) const SHADER: &str = concat!(
     "\n",
     include_str!("scene_view.wgsl")
 );
-pub(crate) const PACKED_VERTEX_STRIDE: u32 = 64;
-pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
-// WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
-// stride is 80 bytes. Keeping this smaller makes DX12/Vulkan expose only a prefix of the
-// record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
-pub(crate) const DRAW_PARAMS_STRIDE: u32 = 80;
-pub(crate) const DRAW_SLOT_STRIDE: usize = 512;
-pub(crate) const FRAME_PARAMS_STRIDE: usize = 272;
-pub(crate) const INSTANCE_STRIDE: u32 = 144;
-pub(crate) const LIGHT_STRIDE: u32 = 80;
-pub(crate) const VERTEX_BINDING: u32 = 0;
-pub(crate) const DRAW_BINDING: u32 = 1;
-pub(crate) const LIGHT_BINDING: u32 = 2;
-pub(crate) const ALBEDO_BINDING: u32 = 3;
-pub(crate) const SAMPLER_BINDING: u32 = 4;
-pub(crate) const NORMAL_MAP_BINDING: u32 = 5;
-pub(crate) const OCCLUSION_BINDING: u32 = 6;
-pub(crate) const TANGENT_BINDING: u32 = 7;
-pub(crate) const INSTANCE_BINDING: u32 = 8;
-pub(crate) const FRAME_BINDING: u32 = 9;
-pub(crate) const METALLIC_ROUGHNESS_BINDING: u32 = 10;
-pub(crate) const VISIBLE_INSTANCE_BINDING: u32 = 11;
+// The shader ABI belongs to the reusable 3D core, not the optional UI adapter.
+pub(crate) use crate::gpu_encoding::{
+    PACKED_VERTEX_STRIDE, VOXEL_VERTEX_STRIDE, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, VERTEX_BINDING, DRAW_BINDING, LIGHT_BINDING, ALBEDO_BINDING, SAMPLER_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, TANGENT_BINDING, INSTANCE_BINDING, FRAME_BINDING, METALLIC_ROUGHNESS_BINDING, VISIBLE_INSTANCE_BINDING
+};
 
 static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
