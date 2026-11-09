@@ -239,7 +239,8 @@ fn managed_texture_memory_reports_live_and_reserved_bytes() {
 #[ignore = "requires Vulkan hardware with a second graphics-family queue"]
 fn secondary_gpu_buffer_copy_has_native_queue_fence_and_reverse_gpu_wait() {
     use gfx_core::{
-        GpuBufferCopy, GpuQueueId, GpuWorkStage, SubmissionDevice,
+        BufferDescriptor, BufferUsage, GpuBufferCopy, GpuQueueId, GpuWorkStage,
+        SubmissionDevice,
     };
     let mut device = match gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()) {
         Ok(device) => device,
