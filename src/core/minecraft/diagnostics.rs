@@ -13,8 +13,9 @@ use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
 pub mod analysis;
+pub mod forensics;
 pub use analysis::{CrashFinding, CrashReason, Confidence, EvidenceSource};
-const GAME_DIAGNOSTICS_SCHEMA: u32 = 4;
+const GAME_DIAGNOSTICS_SCHEMA: u32 = 5;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -109,6 +110,7 @@ pub struct GameSessionReport {
     pub acknowledged: bool,
     pub wer_fault: Option<WerFault>,
     pub findings: Vec<CrashFinding>,
+    pub forensics: forensics::ForensicSummary,
 }
 
 /// Wine and Proton diagnostics do not establish which Windows guest process
@@ -216,6 +218,7 @@ fn save_locked(report: &GameSessionReport) -> Result<(), String> {
             latest.kind = existing.kind;
             latest.summary = existing.summary;
             latest.findings = existing.findings;
+            latest.forensics = existing.forensics;
         }
     }
     let temp = root().join(format!("{}.{}.tmp", report.id, Uuid::new_v4()));
@@ -266,6 +269,7 @@ impl GameSessionReport {
             acknowledged: false,
             wer_fault: None,
             findings: Vec::new(),
+            forensics: forensics::ForensicSummary::default(),
         };
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
@@ -365,7 +369,9 @@ impl GameSessionReport {
         // create unnecessary raw log copies or increase persistent disk usage.
         if self.kind.is_abnormal() || self.early_exit {
             snapshot_text_evidence(&self);
-            self.findings = analyze_snapshot(&self);
+            let (findings, evidence) = analyze_snapshot(&self);
+            self.findings = findings;
+            self.forensics = evidence;
             if let Err(error) = save(&self) {
                 tracing::warn!(%error, session_id=%self.id, "无法保存游戏崩溃自动分析");
             }
@@ -516,7 +522,9 @@ pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionRep
                 wer.exception_code, wer.module
             );
             report.wer_fault = Some(wer);
-            report.findings = analyze_snapshot(&report);
+            let (findings, evidence) = analyze_snapshot(&report);
+            report.findings = findings;
+            report.forensics = evidence;
             if let Err(error) = save(&report) {
                 tracing::warn!(%error, session_id = %report.id, "无法保存 Windows WER 证据");
             }
@@ -816,10 +824,12 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
 
 /// Evaluate only immutable, bounded per-session evidence on the I/O worker.
 /// Stored findings contain stable reason identifiers and evidence origin only.
-fn analyze_snapshot(report: &GameSessionReport) -> Vec<CrashFinding> {
+fn analyze_snapshot(
+    report: &GameSessionReport,
+) -> (Vec<CrashFinding>, forensics::ForensicSummary) {
     let mut sources = Vec::new();
     let mut total = 0usize;
-    for (name, path) in frozen_text_files(report).into_iter().take(16) {
+    for (name, path) in frozen_text_files(report).into_iter().take(32) {
         if total >= 2 * 1024 * 1024 { break; }
         let remaining = 2 * 1024 * 1024 - total;
         if let Some(text) = tail_bytes(&path, (MAX_TEXT_BYTES as usize).min(remaining) as u64) {
@@ -827,7 +837,10 @@ fn analyze_snapshot(report: &GameSessionReport) -> Vec<CrashFinding> {
             sources.push((name, text));
         }
     }
-    analysis::analyze(report, &sources)
+    let mut evidence = forensics::inspect_text(&sources);
+    evidence.minidumps = forensics::inspect_dumps(&dump_candidates(report));
+    let findings = analysis::analyze_with_forensics(report, &sources, &evidence);
+    (findings, evidence)
 }
 
 fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
@@ -967,6 +980,7 @@ pub fn export_zip_with_options(
             "exit_code": report.exit_code, "exit_signal": report.exit_signal,
             "kind": report.kind,
             "findings": report.findings,
+            "forensics": report.forensics,
             "compatibility_fault": report.compatibility_fault,
             "observed_process": if report.compatibility_prefix.is_some() { "runner" } else { "game" },
             "early_exit": report.early_exit,
@@ -1080,6 +1094,7 @@ mod tests {
             acknowledged: false,
             wer_fault: None,
             findings: Vec::new(),
+            forensics: forensics::ForensicSummary::default(),
         };
         let event = |process_id: &str, app_start: &str| format!(
             r#"<Event><System><EventID>1000</EventID><TimeCreated SystemTime="{}"/></System><EventData><Data Name="ProcessId">{process_id}</Data><Data Name="AppStartTime">{app_start}</Data><Data Name="AppName">Minecraft.Windows.exe</Data><Data Name="ModuleName">example.dll</Data><Data Name="ExceptionCode">c0000005</Data></EventData></Event>"#,
@@ -1165,6 +1180,7 @@ mod tests {
             acknowledged: false,
             wer_fault: None,
             findings: Vec::new(),
+            forensics: forensics::ForensicSummary::default(),
         };
         let bytes = serde_json::to_vec(&report).unwrap();
         assert!(decode_report(&bytes).is_ok());
