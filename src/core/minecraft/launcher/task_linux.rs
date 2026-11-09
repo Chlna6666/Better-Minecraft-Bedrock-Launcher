@@ -29,7 +29,7 @@ const GAME_INPUT_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
 const PROTON_PREFIX_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const ROUNDMCDEV_PREFIX_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const ROUNDMCDEV_PREFIX_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const RECENT_RUNNER_OUTPUT_LIMIT: usize = 32;
+const RECENT_RUNNER_OUTPUT_LIMIT: usize = 256;
 const GDK_GNUTLS_PRIORITY: &[u8] = b"[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n";
 
 #[derive(Clone, Debug)]
@@ -116,6 +116,7 @@ async fn configure_proton_command(
     runner: &crate::core::linux_runtime::Runner,
     prefix_path: &Path,
     task_id: &str,
+    game_log_directory: Option<&Path>,
 ) -> Result<(), String> {
     let proton_root =
         runner_runtime_root(runner).ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
@@ -123,7 +124,8 @@ async fn configure_proton_command(
         .then(|| crate::core::linux_runtime::roundmcdev_bundle_root(runner))
         .flatten();
     let steam_client_path = proton_steam_client_path(runner)?;
-    let proton_log_directory = crate::utils::file_ops::logs_dir().join("proton");
+    let proton_log_directory = game_log_directory.map(Path::to_path_buf)
+        .unwrap_or_else(|| crate::utils::file_ops::logs_dir().join("proton"));
     let gnutls_priority_file = if runner.kind == RunnerKind::Umu {
         bundle_root
             .as_ref()
@@ -193,13 +195,12 @@ async fn configure_proton_command(
             .env("UMU_FOLDERS_PATH", bundle_root)
             .env("UMU_RUNTIME_UPDATE", "0")
             .env("GAMEID", "umu-default")
-            .env("WINEDEBUG", "-all");
+            .env("WINEDEBUG", "-all,+seh");
     } else {
         command
-            .env("STEAM_COMPAT_DATA_PATH", prefix_path)
-            .env("PROTON_LOG", "1")
-            .env("PROTON_LOG_DIR", &proton_log_directory);
+            .env("STEAM_COMPAT_DATA_PATH", prefix_path);
     }
+    command.env("PROTON_LOG", "1").env("PROTON_LOG_DIR", &proton_log_directory);
     set_runner_ld_library_path(command, runner);
     append_task_log(
         task_id,
@@ -278,7 +279,7 @@ async fn initialize_proton_prefix(
         .await
         .map_err(|error| format!("创建 Proton dosdevices 目录失败：{error}"))?;
     let mut command = Command::new(&runner.executable);
-    configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+    configure_proton_command(&mut command, runner, prefix_path, task_id, None).await?;
     if runner.kind == RunnerKind::Proton {
         command.arg("run");
     }
@@ -721,10 +722,18 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         None
     };
 
+    // Proton's native output is isolated per launch. Task IDs may repeat
+    // across launcher restarts; UUIDs avoid cross-instance log contamination.
+    let compat_logs = crate::utils::file_ops::state_subdir("diagnostics/game/compat-logs")
+        .join(uuid::Uuid::new_v4().to_string());
+    if matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu) {
+        tokio::fs::create_dir_all(&compat_logs).await
+            .map_err(|error| format!("无法创建游戏兼容层日志目录：{error}"))?;
+    }
     let mut command = match runner.kind {
         RunnerKind::Proton => {
             let mut command = Command::new(&runner.executable);
-            configure_proton_command(&mut command, &runner, &prefix_path, task_id).await?;
+            configure_proton_command(&mut command, &runner, &prefix_path, task_id, Some(&compat_logs)).await?;
             let windows_game_executable = wine_z_path(&game_executable)?;
             append_task_log(
                 task_id,
@@ -741,7 +750,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
         RunnerKind::Umu => {
             let mut command = Command::new(&runner.executable);
-            configure_proton_command(&mut command, &runner, &prefix_path, task_id).await?;
+            configure_proton_command(&mut command, &runner, &prefix_path, task_id, Some(&compat_logs)).await?;
             append_task_log(
                 task_id,
                 format!("UMU GDK 游戏路径：{}", game_executable.display()),
@@ -757,6 +766,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 .env("WINEPREFIX", &prefix_path)
                 .env("WINEARCH", "win64")
                 .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9=b")
+                .env("WINEDEBUG", "-all,+seh")
                 .arg(&game_executable);
             if let Some(working_directory) = game_executable.parent() {
                 command.current_dir(working_directory);
@@ -794,6 +804,26 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     let process_id = child
         .id()
         .ok_or_else(|| "兼容环境已启动，但没有返回进程 PID".to_string())?;
+    // Create the diagnostic session before the early-exit grace window and
+    // before game-time statistics I/O. The PID here belongs to the native
+    // Wine/Proton/UMU runner, not the Windows Minecraft guest.
+    let crash_report = crate::core::minecraft::diagnostics::GameSessionReport::begin(
+        task_id,
+        request.version.as_ref(),
+        Path::new(request.package_folder.as_ref()),
+        match runner.kind {
+            RunnerKind::Proton => "proton",
+            RunnerKind::Umu => "umu",
+            RunnerKind::Wine => "wine",
+        },
+        process_id,
+        Some(match runner.kind {
+            RunnerKind::Wine => prefix_path.clone(),
+            RunnerKind::Proton | RunnerKind::Umu => prefix_path.join("pfx"),
+        }),
+        matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu)
+            .then_some(compat_logs),
+    );
 
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
     let publish_startup_output = Arc::new(AtomicBool::new(true));
@@ -832,14 +862,35 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             finish_output_pumps(task_id, stdout_pump.take(), stderr_pump.take()).await;
             let output = recent_runner_output(&recent_output);
             let detail = if output.is_empty() {
-                "\nProton wrapper 没有输出；请查看任务中记录的 Proton 日志目录".to_string()
+                "\n运行器没有输出；请检查会话诊断报告".to_string()
             } else {
                 format!("\n{output}")
             };
+            use std::os::unix::process::ExitStatusExt as _;
+            let mut report = crash_report;
+            report.exit_signal = status.signal();
+            let code = status.code().map_or(
+                u32::MAX, |exit_code| exit_code as u32
+            );
+            match crate::tasks::runtime::run_io_blocking(move || {
+                report.finish_compatibility(Ok(code), &output, true)
+            }).await {
+                Ok(report) => append_task_log(
+                    task_id, format!("已保存启动期兼容层诊断：{}", report.id)
+                ),
+                Err(error) => warn!(task_id, %error, "启动期诊断记录失败"),
+            }
             return Err(format!("兼容运行器在启动检测期内退出（{status}）{detail}"));
         }
         Ok(None) => {}
         Err(error) => {
+            // Keep tracking an uncertain child instead of abandoning an
+            // active process with a permanently Running diagnostics record.
+            spawn_process_monitor(
+                task_id.to_string(), crash_report, child,
+                stdout_pump, stderr_pump, recent_output,
+                launch_auth, None,
+            );
             return Err(format!("检查兼容运行器进程状态失败：{error}"));
         }
     }
@@ -855,15 +906,6 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     })
     .ok()
     .flatten();
-    let crash_report = crate::core::minecraft::diagnostics::GameSessionReport::begin(
-        task_id, request.version.as_ref(), Path::new(request.package_folder.as_ref()),
-        match runner.kind {
-            RunnerKind::Proton => "proton",
-            RunnerKind::Umu => "umu",
-            RunnerKind::Wine => "wine",
-        },
-        process_id,
-    );
     spawn_process_monitor(
         task_id.to_string(),
         crash_report,
@@ -1723,7 +1765,7 @@ async fn install_proton_game_input(
         command
     } else {
         let mut command = Command::new(&runner.executable);
-        configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+        configure_proton_command(&mut command, runner, prefix_path, task_id, None).await?;
         command.arg("runinprefix");
         command
     };
