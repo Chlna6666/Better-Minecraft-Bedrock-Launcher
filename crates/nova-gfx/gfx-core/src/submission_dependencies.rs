@@ -287,6 +287,15 @@ impl GpuSubmissionDependencyGraph {
         self.unknown.clear();
     }
 
+    /// True when a tracked submission or unknown native operation belongs
+    /// to an independent queue. Draining the primary graphics queue cannot
+    /// prove these operations complete without an explicit GPU-side wait.
+    #[must_use]
+    pub fn has_independent_queue_work(&self) -> bool {
+        self.live.values().any(|record| record.queue != GpuQueueId::PRIMARY)
+            || self.unknown.iter().any(|(queue, _)| *queue != GpuQueueId::PRIMARY)
+    }
+
     /// Number of currently tracked native submissions.
     #[must_use]
     pub fn live_count(&self) -> usize { self.live.len() }
@@ -376,6 +385,19 @@ mod tests {
         }
         assert_eq!(graph.live_count(), 0);
         assert!(graph.ancestors.is_empty());
+    }
+
+    #[test]
+    fn independent_queue_survives_primary_graphics_completion() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let secondary = GpuQueueId { family: 3, index: 1 };
+        graph.register(record(70, GpuQueueId::PRIMARY, vec![], vec![])).unwrap();
+        graph.register(record(71, secondary, vec![use_of(buf(0, 8), GpuAccess::StorageWrite)], vec![])).unwrap();
+        assert!(graph.has_independent_queue_work());
+        graph.complete(id(70)).unwrap();
+        assert!(graph.has_independent_queue_work());
+        graph.complete(id(71)).unwrap();
+        assert!(!graph.has_independent_queue_work());
     }
 
     #[test]
