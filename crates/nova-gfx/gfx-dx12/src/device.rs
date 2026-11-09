@@ -92,7 +92,8 @@ mod platform {
                 D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
                 D3D12_COLOR_WRITE_ENABLE_ALPHA, D3D12_COLOR_WRITE_ENABLE_BLUE,
                 D3D12_COLOR_WRITE_ENABLE_GREEN, D3D12_COLOR_WRITE_ENABLE_RED,
-                D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+                D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_QUEUE_DESC,
                 D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC, D3D12_COMPARISON_FUNC_ALWAYS,
                 D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_GREATER,
                 D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_LESS,
@@ -223,6 +224,10 @@ mod platform {
         sidecar_queue: Option<ID3D12CommandQueue>,
         sidecar_fence: Option<ID3D12Fence>,
         next_sidecar_fence_value: u64,
+        /// Dedicated native queues, kept separate from the default ordered
+        /// 3D/UI path until explicit barriers and GPU waits are proven.
+        async_compute: Option<Dx12NativeQueue>,
+        async_transfer: Option<Dx12NativeQueue>,
         fence: ID3D12Fence,
         fence_event: FenceEvent,
         next_fence_value: u64,
@@ -306,6 +311,26 @@ mod platform {
                         "DX12 independent offscreen queue unavailable; using graphics queue: {error}"
                     );
                     (None, None)
+                }
+            };
+            // The driver may reject dedicated queue creation. Keep these
+            // optional: the primary DIRECT queue remains the exact fallback.
+            let async_compute = match create_native_queue(
+                &device, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+            ) {
+                Ok(queue) => Some(queue),
+                Err(error) => {
+                    log::warn!("DX12 dedicated Compute queue unavailable: {error}");
+                    None
+                }
+            };
+            let async_transfer = match create_native_queue(
+                &device, D3D12_COMMAND_LIST_TYPE_COPY,
+            ) {
+                Ok(queue) => Some(queue),
+                Err(error) => {
+                    log::warn!("DX12 dedicated Copy queue unavailable: {error}");
+                    None
                 }
             };
             // SAFETY: The queue is live and returns its timestamp tick frequency by value.
@@ -430,6 +455,8 @@ mod platform {
                 sidecar_queue,
                 sidecar_fence,
                 next_sidecar_fence_value: 1,
+                async_compute,
+                async_transfer,
                 buffers: ResourceRegistry::new("buffer"),
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
@@ -2119,7 +2146,7 @@ mod platform {
             });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
-            Ok(self.submissions.insert(Dx12Submission { fence_value }))
+            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
         }
 
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
@@ -2132,7 +2159,7 @@ mod platform {
                 });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
-            Ok(self.submissions.insert(Dx12Submission { fence_value }))
+            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
         }
 
         fn poll_submission(&mut self, submission_id: SubmissionId) -> Result<SubmissionStatus> {
@@ -4515,8 +4542,22 @@ mod platform {
     fn create_command_queue(
         device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
     ) -> Result<ID3D12CommandQueue> {
+        create_command_queue_of_type(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
+    }
+
+    fn create_native_queue(
+        device: &ID3D12Device, kind: D3D12_COMMAND_LIST_TYPE,
+    ) -> Result<Dx12NativeQueue> {
+        let queue = create_command_queue_of_type(device, kind)?;
+        let fence = create_fence(device)?;
+        Ok(Dx12NativeQueue { queue, fence, next_fence_value: 1 })
+    }
+
+    fn create_command_queue_of_type(
+        device: &ID3D12Device, kind: D3D12_COMMAND_LIST_TYPE,
+    ) -> Result<ID3D12CommandQueue> {
         let desc = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+            Type: kind,
             Priority: 0,
             Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
             NodeMask: 0,
@@ -5678,7 +5719,7 @@ mod platform {
             // point, not a CPU-side submit timestamp.
             let fence_value = self.signal_frame()?;
             self.check_device_removed("DX12 ordered queue checkpoint")?;
-            Ok(self.submissions.insert(Dx12Submission { fence_value }))
+            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
         }
 
         fn wait_queue_idle(&mut self) -> Result<()> {
@@ -7634,8 +7675,20 @@ mod platform {
         _encoder: Dx12CommandEncoder,
     }
 
+    /// Queue-specific completion identity. Never poll a Compute/COPY native
+    /// fence by reading the primary DIRECT queue's fence counter.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Dx12SubmissionQueue { Primary, Sidecar, Compute, Transfer }
+
+    struct Dx12NativeQueue {
+        queue: ID3D12CommandQueue,
+        fence: ID3D12Fence,
+        next_fence_value: u64,
+    }
+
     struct Dx12Submission {
         fence_value: u64,
+        queue: Dx12SubmissionQueue,
     }
 
     #[derive(Clone)]
