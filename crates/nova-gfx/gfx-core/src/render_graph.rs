@@ -154,6 +154,30 @@ impl GpuWorkGraph {
         let resources = resources.into_iter().collect::<Vec<_>>();
         let mut used = HashSet::new();
         for item in &resources {
+            // The work graph describes logical command domains, not native
+            // queue families. Invalid combinations must fail before a backend
+            // attempts to translate them into native resource states.
+            let valid_stage = match stage {
+                GpuWorkStage::Graphics => !matches!(
+                    item.access,
+                    GpuAccess::CopyRead | GpuAccess::CopyWrite
+                ),
+                GpuWorkStage::Compute => !matches!(
+                    item.access,
+                    GpuAccess::ColorAttachment | GpuAccess::DepthAttachment
+                        | GpuAccess::CopyRead | GpuAccess::CopyWrite
+                ),
+                GpuWorkStage::Transfer => matches!(
+                    item.access,
+                    GpuAccess::CopyRead | GpuAccess::CopyWrite
+                ),
+            };
+            if !valid_stage {
+                return Err(Error::InvalidInput(format!(
+                    "GPU work graph {:?} pass uses incompatible {:?} access",
+                    stage, item.access
+                )));
+            }
             if !used.insert(item.resource) {
                 return Err(Error::InvalidInput(
                     "GPU work graph binds one allocation more than once in a pass".into(),
@@ -237,6 +261,34 @@ mod tests {
     }
     fn use_(resource:GpuResource,access:GpuAccess)->GpuResourceUse {
         GpuResourceUse {resource,access}
+    }
+
+    #[test]
+    fn rejects_resource_access_in_incompatible_command_domains() {
+        let invalid = [
+            (GpuWorkStage::Compute, GpuAccess::ColorAttachment),
+            (GpuWorkStage::Compute, GpuAccess::DepthAttachment),
+            (GpuWorkStage::Compute, GpuAccess::CopyWrite),
+            (GpuWorkStage::Graphics, GpuAccess::CopyRead),
+            (GpuWorkStage::Transfer, GpuAccess::Sampled),
+            (GpuWorkStage::Transfer, GpuAccess::StorageWrite),
+        ];
+        for (stage, access) in invalid {
+            let mut graph = GpuWorkGraph::new();
+            assert!(matches!(
+                graph.push("invalid domain", stage, [use_(tex(1), access)]),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+        let mut graph = GpuWorkGraph::new();
+        graph.push("upload", GpuWorkStage::Transfer,
+            [use_(tex(1), GpuAccess::CopyWrite)]).unwrap();
+        graph.push("sample", GpuWorkStage::Compute,
+            [use_(tex(1), GpuAccess::Sampled)]).unwrap();
+        let plan = graph.compile().unwrap();
+        assert_eq!(plan.transitions.len(), 1);
+        assert_eq!(plan.transitions[0].from_stage, GpuWorkStage::Transfer);
+        assert_eq!(plan.transitions[0].to_stage, GpuWorkStage::Compute);
     }
 
     #[test]
