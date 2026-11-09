@@ -1249,9 +1249,16 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let count = self.pending_passes.len();
         // The pure gpui-3d submission core reuses existing Arc draw data,
         // emits no GPUI paint commands, and uses the stack for one SceneView.
+        // The SceneView owns its independent native Graphics command stream,
+        // not a second physical GPU queue. Prefer the owner's ordered primary
+        // queue: it naturally sequences uploads, Compute, DrawIndirect and the
+        // subsequent GPUI texture consumer without DX12/Vulkan cross-queue
+        // semaphore/Fence handshakes or CPU waits. Other standalone engines
+        // can request the generic IndependentGraphicsIfAvailable mode through
+        // gfx-core when measured concurrency justifies its extra submissions.
         let native_result = submit_native_offscreen_passes(
             &self.pending_passes,
-            |passes, tags| device.submit_offscreen_graphics(passes, tags, true),
+            |passes, tags| device.submit_offscreen_graphics(passes, tags, false),
         );
         let submitted = match native_result {
             Ok(submitted) => submitted,
@@ -1269,7 +1276,8 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             }
         };
         self.pending_passes.clear();
-        // The final GUI sampler uses this native producer's queue ordering.
+        // The GUI sampler follows this native producer on the same ordered
+        // GPU-owner queue. No CPU fence wait or 2D geometry conversion.
         // Submission acceptance != fence completion or resource retirement.
         self.submitted_capture_epochs.append(&mut self.pending_capture_epochs);
         if let Some(started) = started {
