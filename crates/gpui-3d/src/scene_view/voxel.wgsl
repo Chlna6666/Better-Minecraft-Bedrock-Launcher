@@ -460,5 +460,13 @@ struct VoxelAttributeTargets {
 @fragment fn fs_voxel_shadow(input:VoxelOutput)->@location(0) vec4<f32>{
     let draw=draws[input.draw_index];
     if(draw.alpha_mode==ALPHA_MODE_BLEND){discard;}
-    let color=test_voxel_alpha(input,draw);return vec4<f32>(1.0);
+    // Opaque shadow casters contribute only depth. Avoid sampling their
+    // albedo texture entirely: the opaque material contract says no alpha
+    // coverage test is necessary. Masked leaves/plants retain exact UV alpha.
+    if(draw.alpha_mode==ALPHA_MODE_MASK){
+        let color=test_voxel_alpha(input,draw);
+    }else if(draw.base_color.a*input.vertex_color.a<0.001){
+        discard;
+    }
+    return vec4<f32>(1.0);
 }
