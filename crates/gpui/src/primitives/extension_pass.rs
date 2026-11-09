@@ -2,6 +2,22 @@
 use gfx_core::*;
 use std::sync::Arc;
 
+/// Compute work inserted between two host-owned graphics passes.
+///
+/// The index is one-based and relative to the renderer's current drained
+/// graphics passes: `after_graphics_pass = 1` means after its first graphics
+/// pass, before its second. The host validates the index and preserves the
+/// order of dispatches sharing one boundary. The last operation must remain
+/// a graphics pass so its submission/fence covers the preceding compute.
+///
+/// This is a GPU-owner submission request, not a native command queue handle.
+/// The device is responsible for resource transitions and GPU-side visibility.
+#[derive(Clone, Copy, Debug)]
+pub struct RendererExtensionComputePass {
+    pub after_graphics_pass: usize,
+    pub dispatch: ComputeBindGroupDispatch,
+}
+
 /// One ordered offscreen pass. All handles belong to the host's current device.
 /// Extensions keep referenced handles valid until submission. Submitted resources may then be
 /// destroyed through the device, which retains their native storage for outstanding GPU work.
