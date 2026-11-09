@@ -19,6 +19,89 @@ struct Program {
     images: Vec<ImageSlot>,
 }
 
+ // shader storage writes are incoherent in OpenGL. Publish only the consumers
+ // permitted by the actual writable bindings; a read-only dispatch needs no
+ // memory barrier at all. Rendering/texture fetch commands remain ordered on
+ // the same GL context without an additional CPU synchronization point.
+fn compute_write_barrier_bits(bindings: impl IntoIterator<Item = BindingType>) -> u32 {
+    let mut bits = 0;
+    for binding in bindings {
+        match binding {
+            BindingType::StorageBufferReadWrite => {
+                bits |= glow::SHADER_STORAGE_BARRIER_BIT
+                    | glow::COMMAND_BARRIER_BIT
+                    | glow::BUFFER_UPDATE_BARRIER_BIT
+                    | glow::UNIFORM_BARRIER_BIT
+                    | glow::VERTEX_ATTRIB_ARRAY_BARRIER_BIT
+                    | glow::ELEMENT_ARRAY_BARRIER_BIT
+                    | glow::PIXEL_BUFFER_BARRIER_BIT;
+            }
+            BindingType::StorageTexture { read_only: false, .. } => {
+                bits |= glow::SHADER_IMAGE_ACCESS_BARRIER_BIT
+                    | glow::TEXTURE_FETCH_BARRIER_BIT
+                    | glow::FRAMEBUFFER_BARRIER_BIT
+                    | glow::TEXTURE_UPDATE_BARRIER_BIT;
+            }
+            _ => {}
+        }
+    }
+    bits
+}
+
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_dispatch_does_not_enqueue_memory_barriers() {
+        assert_eq!(
+            compute_write_barrier_bits([
+                BindingType::UniformBuffer,
+                BindingType::StorageBuffer,
+                BindingType::SampledTexture,
+                BindingType::StorageTexture {
+                    format: Format::Rgba8Unorm,
+                    read_only: true,
+                },
+            ]),
+            0,
+        );
+    }
+
+    #[test]
+    fn writable_buffers_publish_all_supported_graphics_consumers() {
+        let mask = compute_write_barrier_bits([BindingType::StorageBufferReadWrite]);
+        for required in [
+            glow::SHADER_STORAGE_BARRIER_BIT,
+            glow::COMMAND_BARRIER_BIT,
+            glow::UNIFORM_BARRIER_BIT,
+            glow::VERTEX_ATTRIB_ARRAY_BARRIER_BIT,
+            glow::ELEMENT_ARRAY_BARRIER_BIT,
+            glow::BUFFER_UPDATE_BARRIER_BIT,
+        ] {
+            assert_ne!(mask & required, 0);
+        }
+        assert_eq!(mask & glow::TEXTURE_FETCH_BARRIER_BIT, 0);
+    }
+
+    #[test]
+    fn writable_images_publish_texture_and_framebuffer_consumers() {
+        let mask = compute_write_barrier_bits([BindingType::StorageTexture {
+            format: Format::Rgba8Unorm,
+            read_only: false,
+        }]);
+        for required in [
+            glow::SHADER_IMAGE_ACCESS_BARRIER_BIT,
+            glow::TEXTURE_FETCH_BARRIER_BIT,
+            glow::FRAMEBUFFER_BARRIER_BIT,
+            glow::TEXTURE_UPDATE_BARRIER_BIT,
+        ] {
+            assert_ne!(mask & required, 0);
+        }
+        assert_eq!(mask & glow::SHADER_STORAGE_BARRIER_BIT, 0);
+    }
+}
+
 impl State {
     pub(crate) fn new(gl: &glow::Context) -> Self {
         // SAFETY: the owning GL4.5 context is current during device construction.
@@ -176,14 +259,16 @@ impl OpenGlDevice {
                 dispatch.workgroups[1],
                 dispatch.workgroups[2],
             );
-            self.gl.memory_barrier(
-                glow::SHADER_STORAGE_BARRIER_BIT
-                    | glow::COMMAND_BARRIER_BIT
-                    | glow::BUFFER_UPDATE_BARRIER_BIT
-                    | glow::UNIFORM_BARRIER_BIT
-                    | glow::VERTEX_ATTRIB_ARRAY_BARRIER_BIT
-                    | glow::ELEMENT_ARRAY_BARRIER_BIT,
-            );
+            let barrier_bits = compute_write_barrier_bits(dispatch.bindings.iter().map(
+                |binding| match binding.access {
+                    ComputeBufferAccess::ReadWrite => BindingType::StorageBufferReadWrite,
+                    ComputeBufferAccess::ReadOnly => BindingType::StorageBuffer,
+                    ComputeBufferAccess::Uniform => BindingType::UniformBuffer,
+                },
+            ));
+            if barrier_bits != 0 {
+                self.gl.memory_barrier(barrier_bits);
+            }
             self.gl.use_program(None);
         }
         self.check()
@@ -395,15 +480,12 @@ impl OpenGlDevice {
                 dispatch.workgroups[1],
                 dispatch.workgroups[2],
             );
-            self.gl.memory_barrier(
-                glow::SHADER_STORAGE_BARRIER_BIT
-                    | glow::SHADER_IMAGE_ACCESS_BARRIER_BIT
-                    | glow::TEXTURE_FETCH_BARRIER_BIT
-                    | glow::FRAMEBUFFER_BARRIER_BIT
-                    | glow::TEXTURE_UPDATE_BARRIER_BIT
-                    | glow::COMMAND_BARRIER_BIT
-                    | glow::BUFFER_UPDATE_BARRIER_BIT,
+            let barrier_bits = compute_write_barrier_bits(
+                layout.entries.iter().map(|entry| entry.binding_type),
             );
+            if barrier_bits != 0 {
+                self.gl.memory_barrier(barrier_bits);
+            }
         }
         self.check()
     }
