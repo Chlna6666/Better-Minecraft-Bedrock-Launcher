@@ -13,6 +13,10 @@ use std::{collections::HashMap, sync::Arc};
 struct BaseIdentity {
     node: NodeId,
     mesh: MeshId,
+    // A reused MeshId with a new GPU allocation generation is not the same
+    // physical DrawIndirect resource. Preserve the old row until its reader
+    // fence completes instead of overwriting it in place.
+    mesh_generation: u64,
     material: MaterialId,
     first_index: u32,
     index_count: u32,
@@ -30,6 +34,7 @@ impl BaseIdentity {
         Self {
             node: draw.node,
             mesh: draw.mesh.id(),
+            mesh_generation: draw.mesh.generation(),
             material: draw.material.id(),
             first_index: draw.part.first_index(),
             index_count: draw.part.index_count(),
