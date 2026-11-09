@@ -1215,6 +1215,9 @@ mod native_volume_texture_tests {
         let volume = desc(TextureDimension::D3 { depth: 8 }, TextureUsage::SAMPLED, 4);
         assert_eq!(volume.dimension.layers(), 1);
         assert_eq!(volume.dimension.mip_depth(1), 4);
+        assert_eq!(volume.mip_extent_3d(0).unwrap(), [8, 8, 8]);
+        assert_eq!(volume.mip_extent_3d(2).unwrap(), [2, 2, 2]);
+        assert!(volume.mip_extent_3d(4).is_err());
         assert_eq!(volume.byte_size(), 4_680);
         volume.validate().unwrap();
         assert_eq!(
@@ -1412,6 +1415,13 @@ impl TextureDescriptor {
             (self.size.width() >> mip_level).max(1),
             (self.size.height() >> mip_level).max(1),
         )
+    }
+
+    /// Full native extent at one mip level, including true 3D Z voxels.
+    /// D2 and D2Array have depth one; array layers remain a distinct concept.
+    pub fn mip_extent_3d(&self, mip_level: u32) -> Result<[u32; 3]> {
+        let xy = self.mip_extent(mip_level)?;
+        Ok([xy.width(), xy.height(), self.dimension.mip_depth(mip_level)])
     }
 }
 
