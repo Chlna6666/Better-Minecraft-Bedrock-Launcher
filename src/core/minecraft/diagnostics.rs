@@ -15,7 +15,7 @@ use zip::write::SimpleFileOptions;
 pub mod analysis;
 pub mod forensics;
 pub use analysis::{CrashFinding, CrashReason, Confidence, EvidenceSource};
-const GAME_DIAGNOSTICS_SCHEMA: u32 = 6;
+const GAME_DIAGNOSTICS_SCHEMA: u32 = 7;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
