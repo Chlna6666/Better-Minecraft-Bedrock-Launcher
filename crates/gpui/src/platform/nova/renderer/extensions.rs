@@ -150,7 +150,7 @@ mod tests {
         assert!(!registry.independent_producers_only());
         registry.passes.push(crate::RendererExtensionPass {
             target: TextureViewId::from_parts(1, 1),
-            color_attachments: Arc::from([]),
+            color_attachments: std::sync::Arc::from([]),
             gpu_work_tag: None,
             resolve_target: None,
             render_pass: RenderPassId::from_parts(1, 1),
