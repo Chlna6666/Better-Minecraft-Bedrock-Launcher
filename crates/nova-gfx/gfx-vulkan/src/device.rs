@@ -4759,6 +4759,50 @@ impl CommandDevice for VulkanDevice {
 }
 
 impl SubmissionDevice for VulkanDevice {
+    fn independent_queue(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
+        // The optional second GRAPHICS-family queue supports graphics,
+        // compute and transfer. No distinct-family queues are exposed until
+        // ownership transfer barriers exist for resident resources.
+        match stage {
+            gfx_core::GpuWorkStage::Graphics
+            | gfx_core::GpuWorkStage::Compute
+            | gfx_core::GpuWorkStage::Transfer => self.sidecar_queue.map(|_| {
+                gfx_core::GpuQueueId {
+                    family: self.graphics_queue_family_index,
+                    index: 1,
+                }
+            }),
+        }
+    }
+
+    fn checkpoint_gpu_queue(&mut self, queue: gfx_core::GpuQueueId) -> Result<SubmissionId> {
+        if queue == gfx_core::GpuQueueId::PRIMARY {
+            return self.checkpoint_ordered_queue(gfx_core::GpuWorkStage::Graphics);
+        }
+        if self.independent_queue(gfx_core::GpuWorkStage::Graphics) != Some(queue) {
+            return Err(Error::Unavailable(
+                "Vulkan checkpoint target is not an active native queue".into(),
+            ));
+        }
+        let secondary = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
+            "Vulkan secondary queue is not available".into(),
+        ))?;
+        let fence = create_fence(&self.device, false)?;
+        let submits = [vk::SubmitInfo::default()];
+        // SAFETY: The secondary queue belongs to this Vulkan device. This
+        // fence-only submit is ordered after that queue's commands and GPU
+        // semaphore waits; no CPU wait occurs.
+        if let Err(error) = unsafe { self.device.queue_submit(secondary, &submits, fence) } {
+            // SAFETY: A failed native submission does not own the fence.
+            unsafe { self.device.destroy_fence(fence, None) };
+            return Err(VulkanError::from(error).into());
+        }
+        Ok(self.submissions.insert(VulkanSubmission {
+            fence,
+            owned_by_submission: true,
+        }))
+    }
+
     fn enqueue_gpu_queue_wait(
         &mut self,
         target_queue: gfx_core::GpuQueueId,
