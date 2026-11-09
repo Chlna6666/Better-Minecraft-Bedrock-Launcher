@@ -1191,6 +1191,14 @@ impl RendererExtensionRenderer for Renderer {
         self.backend.submit_native_offscreen(device)
     }
 
+    fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.backend.gpu_submission_accepted(submission);
+    }
+
+    fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.backend.gpu_submission_completed(submission);
+    }
+
     fn needs_gpu_completion(&self) -> bool {
         self.backend.needs_gpu_completion()
     }
@@ -1279,6 +1287,18 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             surface.render_passes_submitted(&self.submitted_capture_epochs);
         }
         self.submitted_capture_epochs.clear();
+    }
+
+    fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_submission_accepted(submission);
+        }
+    }
+
+    fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_submission_completed(submission);
+        }
     }
 
     fn needs_gpu_completion(&self) -> bool {
