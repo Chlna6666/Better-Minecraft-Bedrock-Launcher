@@ -1163,6 +1163,7 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
 #[cfg(test)]
 mod offscreen_submission_tests {
     use super::*;
+    use crate::LoadOp;
 
     #[derive(Default)]
     struct MockDevice {
