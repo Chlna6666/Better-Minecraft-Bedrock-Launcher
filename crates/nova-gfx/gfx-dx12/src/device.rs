@@ -5349,6 +5349,13 @@ mod platform {
         ) -> Result<()> {
             self.dispatch_resource_set(dispatch)
         }
+        fn dispatch_compute_bind_group_profiled(
+            &mut self,
+            dispatch: &gfx_core::ComputeBindGroupDispatch,
+            tag: gfx_core::GpuTimestampTag,
+        ) -> Result<()> {
+            self.dispatch_resource_set_profiled(dispatch, Some(tag))
+        }
         fn dispatch_compute_batch(
             &mut self,
             dispatches: &[gfx_core::ComputeDispatch<'_>],
