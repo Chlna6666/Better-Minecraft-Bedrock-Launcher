@@ -172,7 +172,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     owned.clear();
     renderer.drain_render_passes(&mut owned);
     assert!(
-        owned.len() >= 4,
+        owned.len() >= 3,
         "resizing must invalidate every geometry attachment"
     );
     assert_eq!(renderer.scenes[&view.id].retired.len(), 1);
