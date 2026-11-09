@@ -615,7 +615,7 @@ mod stable_shadow_tests {
                 "cascade {cascade} must fit its receiver radius and fade margin",
             );
         }
-        assert!(SHADOW_CASCADE_WIDTHS[0] / SHADOW_MAP_SIZE as f32 < 0.22);
+        assert!(SHADOW_CASCADE_WIDTHS[0] / (SHADOW_MAP_SIZE as f32) < 0.22);
         assert!(SHADOW_CASCADE_WIDTHS[2] > 320.0);
     }
 
