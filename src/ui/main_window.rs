@@ -269,7 +269,7 @@ pub struct MainWindowView {
     startup_deferred_ready: bool,
     was_window_minimized: bool,
     theme_color_cache: Option<ThemeColorCache>,
-    last_diagnostics_render_signature: (Option<String>, bool, bool),
+    last_diagnostics_render_signature: (Option<String>, Option<String>, bool, bool),
     diagnostics_visible: bool,
     agreement_render_state: Arc<AgreementRenderState>,
     last_auth_blocked: Option<bool>,

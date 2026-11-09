@@ -1,4 +1,4 @@
-use super::{TaskConfirmAction, TaskConfirmDialog, TaskErrorDialog, TasksPageView};
+use super::{TaskConfirmAction, TaskConfirmDialog, TasksPageView};
 use crate::tasks::task_manager;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
@@ -60,7 +60,6 @@ impl TasksPageView {
         let mut this = Self {
             _subscriptions: Vec::new(),
             confirm_dialog: None,
-            error_dialog: None,
             task_snapshots: task_manager::snapshot_arcs_map(),
             render_model: super::TasksPageRenderModel::loading(),
             card_motions: Default::default(),
@@ -154,16 +153,17 @@ impl TasksPageView {
 
     pub(crate) fn open_error_dialog(
         &mut self,
-        title: SharedString,
+        _title: SharedString,
         message: SharedString,
         cx: &mut Context<Self>,
     ) {
-        self.error_dialog = Some(TaskErrorDialog { title, message });
-        cx.notify();
-    }
-
-    pub(crate) fn close_error_dialog(&mut self, cx: &mut Context<Self>) {
-        self.error_dialog = None;
+        // Task failures use the shared diagnostic UI, never the crash marker.
+        cx.update_global(
+            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                let report_id = state.record_operation_error("task_failure", message.as_ref());
+                state.show_operation_report(&report_id);
+            },
+        );
         cx.notify();
     }
 

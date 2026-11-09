@@ -30,7 +30,6 @@ const TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS: u64 = 800;
 pub struct TasksPageView {
     _subscriptions: Vec<Subscription>,
     confirm_dialog: Option<TaskConfirmDialog>,
-    error_dialog: Option<TaskErrorDialog>,
     task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     render_model: TasksPageRenderModel,
     card_motions: HashMap<Arc<str>, TaskCardMotionState>,
@@ -56,12 +55,6 @@ struct TaskConfirmDialog {
     title: SharedString,
     description: SharedString,
     action: TaskConfirmAction,
-}
-
-#[derive(Clone)]
-pub(super) struct TaskErrorDialog {
-    title: SharedString,
-    message: SharedString,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

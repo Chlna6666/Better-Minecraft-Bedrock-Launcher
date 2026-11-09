@@ -50,6 +50,19 @@ pub(super) fn render(
                 .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                     clean_inactive_logs(cx);
                 }),
+            )
+            .child(
+                settings_action_button(colors, SharedString::from("最近错误"), true)
+                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                        let opened = cx.update_global(
+                            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                                state.show_latest_operation_report()
+                            },
+                        );
+                        if !opened {
+                            toast::push(cx, SharedString::from("当前会话暂无操作错误记录"));
+                        }
+                    }),
             );
 
     let card = settings_flat_card(colors, "settings-launcher-log-management")

@@ -264,12 +264,13 @@ impl MainWindowView {
                         .pending_report
                         .as_ref()
                         .map(|report| report.id.clone()),
+                    state.active_operation_report_id().map(str::to_owned),
                     state.submitting_sentry,
                     state.auto_report_attempted,
                 );
                 if this.last_diagnostics_render_signature != signature {
                     this.last_diagnostics_render_signature = signature;
-                    this.diagnostics_visible = state.pending_report.is_some();
+                    this.diagnostics_visible = state.has_visible_report();
                     cx.notify();
                 }
             }),
@@ -705,12 +706,13 @@ impl MainWindowView {
         let launcher_snapshot =
             Arc::new(crate::ui::hooks::use_launcher::read_launcher_snapshot(cx));
         let diagnostics_state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
-        let diagnostics_visible = diagnostics_state.pending_report.is_some();
+        let diagnostics_visible = diagnostics_state.has_visible_report();
         let diagnostics_signature = (
             diagnostics_state
                 .pending_report
                 .as_ref()
                 .map(|report| report.id.clone()),
+            diagnostics_state.active_operation_report_id().map(str::to_owned),
             diagnostics_state.submitting_sentry,
             diagnostics_state.auto_report_attempted,
         );
