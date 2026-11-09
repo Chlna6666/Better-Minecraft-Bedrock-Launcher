@@ -273,7 +273,7 @@ pub(super) fn verify_shadows<D: Device + TextureTransferDevice>(
         }))
         .unwrap();
         draw(device, renderer, context, &view, target, depth);
-        let shadow = renderer.scenes[&view.id].shadow.texture;
+        let shadow = renderer.scenes[&view.id].shadow[0].texture;
         let values = TextureTransferDevice::read_texture(device, shadow).unwrap();
         counts.push(
             values
