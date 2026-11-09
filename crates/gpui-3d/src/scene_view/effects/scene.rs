@@ -4,6 +4,7 @@ use super::renderer::pass;
 use super::{
     ScreenEffects, SHADOW_CASCADE_COUNT,
     light_tiles::LightTiles,
+    froxel::FroxelVolume,
     targets::{Target, Targets, uniform},
     ssr_hiz::SsrHiZ,
 };
@@ -190,6 +191,7 @@ pub(super) struct EffectScene {
     pub(super) targets_valid: bool,
     pub(super) queued_capture: bool,
     pub(super) ssr_hiz: Option<SsrHiZ>,
+    pub(super) froxel: Option<FroxelVolume>,
     pub(super) ssr_hiz_valid: bool,
     pub(super) queued_ssr_hiz: bool,
     pub(super) ssr_hiz_unavailable: bool,
@@ -223,6 +225,7 @@ pub(super) struct RetiredTargets {
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
     pub(super) ssr_hiz: Option<SsrHiZ>,
+    pub(super) froxel: Option<FroxelVolume>,
 }
 impl RetiredTargets {
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -232,6 +235,7 @@ impl RetiredTargets {
             }
         }
         if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
+        if let Some(froxel) = self.froxel { froxel.destroy(device)?; }
         self.tiles.destroy(device)?;
         self.targets.destroy(device)
     }
@@ -554,6 +558,7 @@ impl EffectScene {
                 targets_valid: false,
                 queued_capture: false,
                 ssr_hiz: None,
+                froxel: None,
                 ssr_hiz_valid: false,
                 queued_ssr_hiz: false,
                 ssr_hiz_unavailable: false,
@@ -608,6 +613,7 @@ impl EffectScene {
             tiles: std::mem::replace(&mut self.tiles, tiles),
             groups: self.groups.take(),
             ssr_hiz: self.ssr_hiz.take(),
+            froxel: self.froxel.take(),
         });
         self.tile_camera = None;
         self.group_key = None;
@@ -839,6 +845,7 @@ impl EffectScene {
         }
         self.scene.destroy(device)?;
         if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
+        if let Some(froxel) = self.froxel { froxel.destroy(device)?; }
         self.tiles.destroy(device)?;
         self.targets.destroy(device)?;
         for cascade in self.shadow {
