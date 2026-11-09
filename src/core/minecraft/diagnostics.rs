@@ -609,6 +609,8 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
         let _ = fs::create_dir_all(&directory);
         if let Err(error) = fs::write(directory.join("manifest.json"), data) {
             tracing::warn!(%error, session_id=%report.id, "无法保存游戏诊断证据清单");
+        } else if let Err(error) = fs::write(directory.join("raw-snapshot-v1"), b"raw-v1") {
+            tracing::warn!(%error, session_id=%report.id, "无法标记原始诊断快照格式");
         }
     }
 }
@@ -751,6 +753,16 @@ pub fn export_zip_with_options(
                 EvidenceCategory::Extension => options.include_extensions,
             })
             .collect::<Vec<_>>();
+        // Legacy reports were already sanitized at capture. Never label those
+        // snapshots as "raw"; original bytes cannot be reconstructed.
+        if !options.redact_text && !sources.is_empty()
+            && !evidence_dir(&report).join("raw-snapshot-v1").is_file()
+        {
+            return Err(
+                "旧版本诊断日志已在采集时脱敏，无法还原原文；请开启脱敏后导出"
+                    .to_string(),
+            );
+        }
         let mut manifest = Vec::with_capacity(sources.len());
         for (entry_name, path) in sources {
             let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) else {
