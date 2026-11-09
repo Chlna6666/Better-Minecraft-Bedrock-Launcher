@@ -1539,6 +1539,16 @@ fn format_duration_hms(d: Duration) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn operation_category_classifies_map_and_resource_tasks_without_names() {
+        assert_eq!(operation_category("导出 OBJ", "map_export"), "地图/模型导出");
+        assert_eq!(operation_category("导入结构", "map_import"), "地图/结构导入");
+        assert_eq!(operation_category("导入资源包", "initializing"), "资源包导入");
+        assert_eq!(operation_category("安装 Minecraft", "installing"), "安装");
+        assert_eq!(safe_operation_field("task-123"), "task-123");
+        assert_eq!(safe_operation_field(r"C:\\Users\\Alice\\secret"), "[已隐藏]");
+    }
+
     fn test_snapshot(task_id: &str, sequence: u64) -> Arc<TaskSnapshot> {
         Arc::new(TaskSnapshot {
             id: Arc::from(task_id),

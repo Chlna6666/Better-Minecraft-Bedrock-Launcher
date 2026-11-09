@@ -447,11 +447,7 @@ pub fn init_logging(
         "GPUI/Nova Trace enabled: {} (restart required to change)",
         gpui_trace_enabled
     );
-    info!(
-        "Managed log files ready: latest={}, archive={}",
-        latest_log_file.display(),
-        logs_dir.join("archive").display()
-    );
+    info!("Managed log files ready: latest.log and archive directory initialized");
 }
 #[cfg(test)]
 mod tests {

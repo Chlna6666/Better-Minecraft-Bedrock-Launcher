@@ -9,7 +9,7 @@ static URL: Lazy<Regex> = Lazy::new(|| {
 });
 static SECRET: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\b(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|cookie|session[_-]?key|xsts|xuid|uhs|user[_-]?id|username|gamertag|display_name|world_root|source_url|target_exe_path)\s*[:=]\s*(?:Some\([^)\r\n]*\)|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)"#,
+        r#"(?i)\b(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|cookie|session[_-]?key|xsts|xuid|uhs|user[_-]?id|username|gamertag|display_name|world_root|target_exe_path)\s*[:=]\s*(?:Some\([^)\r\n]*\)|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)"#,
     ).expect("valid secret-field regex")
 });
 static BEARER: Lazy<Regex> = Lazy::new(|| {
@@ -36,14 +36,15 @@ pub(crate) fn redact_log_text(input: &str) -> Cow<'_, str> {
     if input.is_empty() {
         return Cow::Borrowed(input);
     }
-    let mut text = Cow::Borrowed(input);
-    text = SECRET.replace_all(&text, "[敏感字段]");
-    text = BEARER.replace_all(&text, "[认证信息]");
-    text = URL.replace_all(&text, "[URL]");
-    text = EMAIL.replace_all(&text, "[邮箱]");
-    text = QUOTED_PATH.replace_all(&text, "[本地路径]");
-    text = ABSOLUTE_PATH.replace_all(&text, "[本地路径]");
-    Cow::Owned(text.into_owned())
+    // Each Cow must outlive the next replacement: rebinding a Cow which may
+    // borrow from its previous value fails lifetime checking.
+    let secret = SECRET.replace_all(input, "[敏感字段]");
+    let bearer = BEARER.replace_all(secret.as_ref(), "[认证信息]");
+    let urls = URL.replace_all(bearer.as_ref(), "[URL]");
+    let emails = EMAIL.replace_all(urls.as_ref(), "[邮箱]");
+    let quoted_paths = QUOTED_PATH.replace_all(emails.as_ref(), "[本地路径]");
+    let paths = ABSOLUTE_PATH.replace_all(quoted_paths.as_ref(), "[本地路径]");
+    Cow::Owned(paths.into_owned())
 }
 
 #[cfg(test)]
