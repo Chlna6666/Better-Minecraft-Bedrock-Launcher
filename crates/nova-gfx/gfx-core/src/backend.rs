@@ -244,6 +244,13 @@ pub trait ResourceDevice {
         crate::TextureArrayCapabilities::default()
     }
 
+    /// Native 3D image limits plus implemented sampled/storage descriptor ABI.
+    /// Defaults to unsupported. A backend must enable this only when its
+    /// create_texture, create_texture_view and bind-group paths are wired.
+    fn texture_volume_capabilities(&self) -> crate::TextureVolumeCapabilities {
+        crate::TextureVolumeCapabilities::default()
+    }
+
     /// Native buffer binding limits used to plan storage/uniform suballocations.
     /// Backends that cannot report limits return zeros; callers must fail
     /// validation rather than assume a fictional hardware capability.
