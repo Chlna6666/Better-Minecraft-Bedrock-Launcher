@@ -143,8 +143,14 @@ impl GpuWorkGraph {
     /// fail closed instead of sampling undefined GPU memory. Unused imported
     /// outputs are harmless (e.g. retained shadows on an unlit frame).
     pub fn compile(self) -> Result<GpuWorkPlan> {
+        type Use = (usize, GpuWorkStage, GpuAccess);
+        #[derive(Default)]
+        struct Tracker {
+            writer: Option<Use>,
+            readers: Vec<Use>,
+        }
         let mut available = self.imports;
-        let mut last: HashMap<GpuResource,(usize,GpuWorkStage,GpuAccess)> = HashMap::new();
+        let mut tracked: HashMap<GpuResource, Tracker> = HashMap::new();
         let mut transitions = Vec::new();
         for (index,pass) in self.passes.iter().enumerate() {
             for use_ in &pass.resources {
@@ -154,21 +160,37 @@ impl GpuWorkGraph {
                         pass.label
                     )));
                 }
-                if let Some(&(previous, prior_stage, prior_access))=last.get(&use_.resource) {
-                    if prior_access.writes() || use_.access.writes() {
-                        transitions.push(GpuTransition {
-                            resource:use_.resource,
-                            from_pass:previous,
-                            to_pass:index,
-                            from_stage:prior_stage,
-                            to_stage:pass.stage,
-                            before:prior_access,
-                            after:use_.access,
-                        });
+                let state = tracked.entry(use_.resource).or_default();
+                let mut depend = |(before_pass, before_stage, before): Use| {
+                    transitions.push(GpuTransition {
+                        resource: use_.resource,
+                        from_pass: before_pass,
+                        to_pass: index,
+                        from_stage: before_stage,
+                        to_stage: pass.stage,
+                        before,
+                        after: use_.access,
+                    });
+                };
+                if use_.access.writes() {
+                    // A write must wait for every outstanding reader, not just
+                    // the most recently recorded one. On separate native GPU
+                    // queues they may all still be in flight simultaneously.
+                    if let Some(writer) = state.writer {
+                        depend(writer);
                     }
+                    for &reader in &state.readers {
+                        depend(reader);
+                    }
+                    state.readers.clear();
+                    state.writer = Some((index,pass.stage,use_.access));
+                    available.insert(use_.resource);
+                } else if use_.access.reads() {
+                    if let Some(writer) = state.writer {
+                        depend(writer);
+                    }
+                    state.readers.push((index,pass.stage,use_.access));
                 }
-                if use_.access.writes() { available.insert(use_.resource); }
-                last.insert(use_.resource,(index,pass.stage,use_.access));
             }
         }
         Ok(GpuWorkPlan {passes:self.passes,transitions})
@@ -246,6 +268,22 @@ mod tests {
             ]),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn write_waits_for_all_parallel_readers_in_distinct_work_domains() {
+        let mut graph=GpuWorkGraph::new();
+        graph.import(tex(8));
+        graph.push("raster sample",GpuWorkStage::Graphics,
+            [use_(tex(8),GpuAccess::Sampled)]).unwrap();
+        graph.push("compute sample",GpuWorkStage::Compute,
+            [use_(tex(8),GpuAccess::Sampled)]).unwrap();
+        graph.push("next-frame write",GpuWorkStage::Compute,
+            [use_(tex(8),GpuAccess::StorageWrite)]).unwrap();
+        let plan=graph.compile().unwrap();
+        assert_eq!(plan.transitions.len(),2);
+        assert_eq!(plan.transitions[0].from_pass,0);
+        assert_eq!(plan.transitions[1].from_pass,1);
     }
 
     #[test]
