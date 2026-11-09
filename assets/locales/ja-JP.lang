@@ -532,6 +532,7 @@ GDKUserSelect.user_n=ユーザー {{index}}
 GameCrash.forensics.dump=有効なミニダンプ {{count}} 件、例外コード {{code}}
 GameCrash.forensics.dumpWarning=ダンプの例外コードだけでは責任のある Mod やセッションを特定できません。
 GameCrash.forensics.mods=読み込みに失敗した Mod：{{mods}}
+GameCrash.forensics.module=ミニダンプの障害モジュール：{{module}}（原因の断定ではありません）
 GameCrash.forensics.private=今回の起動ログにある読み込みエラーですが、クラッシュの直接原因とは限りません。
 GameCrash.forensics.shared=このログは複数のゲームと共有されている可能性があるため、今回のセッションとは断定できません。
 GameCrash.forensics.title=検出された具体的な手がかり
