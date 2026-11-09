@@ -22,11 +22,11 @@ mod tests;
 pub(in crate::scene_view) struct EffectsRenderer {
     last_frame: Option<Instant>,
     pass: RenderPassId,
+    attributes_pass: RenderPassId,
     /// Single-sampled pass for the light-aligned shadow map.
     shadow_pass: RenderPassId,
     hdr: RendererResources,
-    surface: RendererResources,
-    albedo: RendererResources,
+    attributes: RendererResources,
     shadow_resources: RendererResources,
     compositor: Compositor,
     scenes: HashMap<SceneViewId, EffectScene>,
@@ -82,6 +82,23 @@ impl EffectsRenderer {
                     let _ = d.destroy_render_pass(id);
                 },
             );
+            // Capture both material attributes in one native MRT pass.
+            let attributes_pass = cleanup.record(
+                device.create_render_pass(&RenderPassDescriptor {
+                    label: Some("gpui-3d surface+albedo MRT".into()),
+                    color_attachments: vec![
+                        ColorAttachmentDescriptor { format: Format::Rgba16Float },
+                        ColorAttachmentDescriptor { format: Format::Rgba16Float },
+                    ],
+                    depth_attachment: Some(DepthAttachmentDescriptor {
+                        format: Format::Depth32Float,
+                        stencil_format: None,
+                    }),
+                    sample_count: msaa_sample_count,
+                    resolve_target: None,
+                })?,
+                |d, id| { let _ = d.destroy_render_pass(id); },
+            );
             let shadow_pass = cleanup.record(
                 device.create_render_pass(&RenderPassDescriptor {
                     label: Some("gpui-3d shadow attachments".into()),
@@ -100,37 +117,33 @@ impl EffectsRenderer {
                 },
             );
             let local = context.offscreen(pass, Format::Rgba16Float, target_extent);
-            for kind in [
-                PassKind::Hdr,
-                PassKind::Surface,
-                PassKind::Albedo,
-                PassKind::Shadow,
-            ] {
-                let context = if kind == PassKind::Shadow {
-                    local.offscreen(
+            for kind in [PassKind::Hdr, PassKind::AttributesMrt, PassKind::Shadow] {
+                let context = match kind {
+                    PassKind::Shadow => local.offscreen(
                         shadow_pass,
                         Format::Rgba16Float,
                         Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
-                    )
-                } else {
-                    local.clone()
+                    ),
+                    PassKind::AttributesMrt =>
+                        local.offscreen(attributes_pass, Format::Rgba16Float, target_extent),
+                    _ => local.clone(),
                 };
                 let resource =
                     RendererResources::new_pass(device, &context, renderers.first(), kind)?;
                 renderers.push(resource);
             }
             let textures = super::textures::Textures::new(device)?;
-            let [hdr, surface, albedo, shadow_resources]: [RendererResources; 4] =
+            let [hdr, attributes, shadow_resources]: [RendererResources; 3] =
                 std::mem::take(&mut renderers)
                     .try_into()
-                    .unwrap_or_else(|_| unreachable!("four passes were constructed"));
+                    .unwrap_or_else(|_| unreachable!("three passes were constructed"));
             Ok(Self {
                 last_frame: None,
                 pass,
+                attributes_pass,
                 shadow_pass,
                 hdr,
-                surface,
-                albedo,
+                attributes,
                 shadow_resources,
                 compositor: compositor
                     .take()
@@ -208,17 +221,20 @@ impl EffectsRenderer {
         let local = context.offscreen(self.pass, Format::Rgba16Float, extent);
         if self.target_extent != extent {
             self.hdr.replace_pipelines(device, &local)?;
-            self.surface.replace_pipelines(device, &local)?;
-            self.albedo.replace_pipelines(device, &local)?;
+            self.attributes.replace_pipelines(
+                device,
+                &local.offscreen(self.attributes_pass, Format::Rgba16Float, extent),
+            )?;
             self.target_extent = extent;
         }
         self.compositor.sync_post(device, &local)?;
         // Sun visibility is resolved once from the real material-aware shadow map below.
         state.capture_geometry(
             device,
-            [&mut self.hdr, &mut self.surface, &mut self.albedo],
+            [&mut self.hdr, &mut self.attributes],
             view,
             &local,
+            self.attributes_pass,
             &mut self.passes,
         )?;
         let [cloud, water, water_flow] = self
@@ -283,6 +299,7 @@ impl EffectsRenderer {
                     .msaa
                     .as_ref()
                     .map_or(state.targets.surface_depth.view, |m| m.surface_depth.view),
+                multisampled,
                 uniform: frame,
                 lights: (light.0, light.1),
                 tiles: (state.tiles.buffer, state.tiles.bytes),
@@ -380,6 +397,7 @@ pub(super) fn pass(
 ) -> RendererExtensionPass {
     RendererExtensionPass {
         target,
+        color_attachments: Arc::from([]),
         gpu_work_tag: None,
         render_pass,
         commands: commands.into(),
@@ -503,13 +521,14 @@ impl RendererExtensionRenderer for EffectsRenderer {
             scene.destroy(device)?;
         }
         self.shadow_resources.destroy(device)?;
-        self.albedo.destroy(device)?;
-        self.surface.destroy(device)?;
+        self.attributes.destroy(device)?;
         self.hdr.destroy(device)?;
         if let Some(textures) = self.textures.take() {
             textures.destroy(device)?;
         }
         self.compositor.destroy(device)?;
+        device.destroy_render_pass(self.attributes_pass)?;
+        device.destroy_render_pass(self.shadow_pass)?;
         device.destroy_render_pass(self.pass)?;
         Ok(())
     }
