@@ -8,6 +8,28 @@ use std::collections::HashMap;
 pub(super) struct State {
     pub capabilities: ComputeCapabilities,
     programs: HashMap<ShaderModuleId, Arc<Program>>,
+    resource_set_programs: HashMap<(ShaderModuleId, BindGroupLayoutId), Arc<ResourceSetProgram>>,
+}
+
+/// Compute pipeline using a live bind-group layout and its native descriptor set.
+struct ResourceSetProgram {
+    device: Arc<ash::Device>,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+}
+
+impl Drop for ResourceSetProgram {
+    fn drop(&mut self) {
+        // All cached programs are cleared only after outstanding work retires.
+        unsafe {
+            if self.pipeline != vk::Pipeline::null() {
+                self.device.destroy_pipeline(self.pipeline, None);
+            }
+            if self.layout != vk::PipelineLayout::null() {
+                self.device.destroy_pipeline_layout(self.layout, None);
+            }
+        }
+    }
 }
 
 struct Program {
@@ -55,9 +77,11 @@ impl State {
     }
     pub(super) fn remove_shader(&mut self, shader: ShaderModuleId) {
         self.programs.remove(&shader);
+        self.resource_set_programs.retain(|(id, _), _| *id != shader);
     }
     pub(super) fn clear(&mut self) {
         self.programs.clear();
+        self.resource_set_programs.clear();
     }
 }
 
@@ -323,6 +347,46 @@ impl VulkanDevice {
         }
         result
     }
+}
+
+fn create_resource_set_program(
+    device: Arc<ash::Device>,
+    cache: vk::PipelineCache,
+    shader: &VulkanShaderModule,
+    set_layout: vk::DescriptorSetLayout,
+) -> Result<ResourceSetProgram> {
+    if shader.stage != ShaderStage::Compute {
+        return Err(Error::InvalidInput("resource set requires a compute shader".into()));
+    }
+    let entry = CString::new(shader.entry_point.as_str())
+        .map_err(|e| Error::InvalidInput(e.to_string()))?;
+    let mut program = ResourceSetProgram {
+        device, layout: vk::PipelineLayout::null(), pipeline: vk::Pipeline::null(),
+    };
+    // This pipeline layout references the existing resource-set layout;
+    // descriptor pools and sets remain owned by their GPU-fence-retired set.
+    unsafe {
+        program.layout = program.device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::default().set_layouts(&[set_layout]),
+            None,
+        ).map_err(VulkanError::from)?;
+        let info = vk::ComputePipelineCreateInfo::default()
+            .layout(program.layout)
+            .stage(vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .module(shader.module)
+                .name(&entry));
+        match program.device.create_compute_pipelines(cache, &[info], None) {
+            Ok(pipelines) => program.pipeline = pipelines[0],
+            Err((pipelines, error)) => {
+                for pipeline in pipelines {
+                    program.device.destroy_pipeline(pipeline, None);
+                }
+                return Err(VulkanError::from(error).into());
+            }
+        }
+    }
+    Ok(program)
 }
 
 fn descriptor_type(uniform: bool) -> vk::DescriptorType {
