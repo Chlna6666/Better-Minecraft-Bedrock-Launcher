@@ -2664,7 +2664,7 @@ impl VulkanDevice {
             // semaphore. Retire this encoder by its consumer-queue fence,
             // as the legacy Vulkan offscreen path does, without returning
             // a duplicate SubmissionId that could outlive its VkFence.
-            self.submit_command_encoder_independent(encoder).map(|_| None)
+            self.submit_command_encoder_independent(encoder, false).map(|_| None)
         } else {
             self.submit_command_encoder_deferred(encoder).map(|_| None)
         };
@@ -2730,9 +2730,15 @@ impl VulkanDevice {
     fn submit_command_encoder_independent(
         &mut self,
         encoder: CommandEncoderId,
-    ) -> Result<()> {
+        track_native_producer: bool,
+    ) -> Result<Option<SubmissionId>> {
         let Some(queue) = self.sidecar_queue else {
-            return self.submit_command_encoder_deferred(encoder);
+            if track_native_producer {
+                return Err(Error::Unavailable(
+                    "independent Vulkan Compute queue is unavailable".into(),
+                ));
+            }
+            return self.submit_command_encoder_deferred(encoder).map(|_| None);
         };
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let first = unsafe {
@@ -2757,6 +2763,26 @@ impl VulkanDevice {
                 return Err(error);
             }
         };
+        // The consumer join fence protects command-encoder destruction. A
+        // separate producer fence, only when requested, certifies the actual
+        // physical queue on which Compute/3D command buffers ran.
+        let producer_fence = if track_native_producer {
+            match create_fence(&self.device, false) {
+                Ok(fence) => Some(fence),
+                Err(error) => {
+                    // SAFETY: Neither semaphore nor consumer fence has yet
+                    // been submitted to any native queue.
+                    unsafe {
+                        self.device.destroy_fence(fence, None);
+                        self.device.destroy_semaphore(second, None);
+                        self.device.destroy_semaphore(first, None);
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let result = (|| -> Result<()> {
             // Earlier GPU uploads and main GUI work must precede 3D.
             let releases = [first];
@@ -2776,7 +2802,9 @@ impl VulkanDevice {
                 .command_buffers(buffers)
                 .signal_semaphores(&signals);
             unsafe {
-                self.device.queue_submit(queue, &[producer], vk::Fence::null())
+                self.device.queue_submit(
+                    queue, &[producer], producer_fence.unwrap_or(vk::Fence::null()),
+                )
             }.map_err(VulkanError::from)?;
 
             // Keep the sampled attachment unavailable to the GUI graphics
@@ -2800,6 +2828,9 @@ impl VulkanDevice {
             let _ = unsafe { self.device.device_wait_idle() };
             unsafe {
                 self.device.destroy_fence(fence, None);
+                if let Some(producer_fence) = producer_fence {
+                    self.device.destroy_fence(producer_fence, None);
+                }
                 self.device.destroy_semaphore(second, None);
                 self.device.destroy_semaphore(first, None);
             }
@@ -2812,7 +2843,19 @@ impl VulkanDevice {
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
-        Ok(())
+        // This fence is on the actual SECONDARY GPU queue, not the primary
+        // consumer join. The native submission can be waited on without a
+        // host stall; the deferred encoder retains the separate join fence.
+        Ok(producer_fence.map(|native_fence| {
+            self.submissions.insert(VulkanSubmission {
+                fence: native_fence,
+                queue: gfx_core::GpuQueueId {
+                    family: self.graphics_queue_family_index,
+                    index: 1,
+                },
+                owned_by_submission: true,
+            })
+        }))
     }
 
     fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
