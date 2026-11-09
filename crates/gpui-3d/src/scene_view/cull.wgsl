@@ -60,7 +60,15 @@ fn is_visible(box: Bounds) -> bool {
     // depth-bias/Hi-Z semantics; 2 means temporarily portal-hidden.
     // No draw/batch/material/instance re-encoding is necessary.
     if (box.bounds_max.w >= 2.0) { return false; }
-    if (box.origin.w != 0.0 &&
+    // Shadow CSM uses a conservative receiver volume swept upstream towards
+    // the sun. Test the *entire* caster AABB, never just its origin: a tree
+    // outside the current camera can still shadow terrain inside it.
+    if (range.minimum.w < 0.0) {
+        if (any(box.bounds_max.xyz < range.minimum.xyz)
+            || any(box.bounds_min.xyz > range.maximum.xyz)) {
+            return false;
+        }
+    } else if (box.origin.w != 0.0 &&
         (any(box.origin.xyz < range.minimum.xyz) || any(box.origin.xyz >= range.maximum.xyz))) {
         return false;
     }
@@ -71,7 +79,7 @@ fn is_visible(box: Bounds) -> bool {
     }
     // Empty Hi-Z means no occluder can reject a draw. Preserve frustum/range
     // tests while avoiding eight clip transforms and four depth reads per draw.
-    if (range.minimum.w == 0.0) { return true; }
+    if (range.minimum.w <= 0.0) { return true; }
     return !is_occluded(box);
 }
 
