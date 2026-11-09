@@ -741,8 +741,11 @@ mod tests {
         assert!(resident.free.is_empty());
         assert_eq!(resident.retired_unbound, vec![19]);
         // Before GPU completion a new Section must NOT reuse this slot.
-        let pending = resident.plan(&draws(97)).unwrap().0;
-        assert_ne!(pending.occupied.values().copied().max(), Some(95));
+        let mut return_before_fence = removed.clone();
+        return_before_fence.insert(31, original[19].clone());
+        let (pending, pending_mapping) = resident.plan(&return_before_fence).unwrap();
+        assert_eq!(pending.high_water(), 97);
+        assert_ne!(pending_mapping[31], map[19]);
         // Match the exact accepted final GUI consumer, not an unrelated
         // submission or mere acceptance.
         let consumer = gfx_core::SubmissionId::from_parts(8, 1);
