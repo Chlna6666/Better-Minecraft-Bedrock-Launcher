@@ -251,9 +251,11 @@ impl GameSessionReport {
                 tracing::warn!(%error, session_id = %self.id, "无法保存游戏启动任务日志");
             }
         }
-        // Freeze log evidence at process exit. Reading live latest.log only
-        // when the user later exports can silently capture another session.
-        snapshot_text_evidence(&self);
+        // Freeze evidence only for abnormal sessions. Normal play should not
+        // create unnecessary raw log copies or increase persistent disk usage.
+        if self.kind.is_abnormal() {
+            snapshot_text_evidence(&self);
+        }
         tracing::info!(
             session_id = %self.id,
             pid = self.pid,
