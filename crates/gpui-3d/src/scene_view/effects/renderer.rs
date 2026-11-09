@@ -5,6 +5,7 @@ use super::super::{
 use super::{
     ScreenEffects,
     compositor::{Compositor, Inputs},
+    froxel::{FroxelGrid, FroxelProgram, FroxelVolume},
     scene::{EffectScene, SHADOW_MAP_SIZE},
 };
 
@@ -29,6 +30,7 @@ pub(in crate::scene_view) struct EffectsRenderer {
     attributes: RendererResources,
     shadow_resources: RendererResources,
     compositor: Compositor,
+    froxel_program: Option<FroxelProgram>,
     scenes: HashMap<SceneViewId, EffectScene>,
     passes: Vec<RendererExtensionPass>,
     // Mixed work is drained by GPUI's GPU owner between shadow raster and
@@ -66,6 +68,24 @@ impl EffectsRenderer {
             } else {
                 1
             };
+            let froxel_program =
+                if settings.volumetric_fog && settings.fog_density > 0.0
+                    && compositor_resources.supports_froxel(msaa_sample_count > 1)
+                    && device.texture_volume_capabilities().sampled
+                    && device.texture_volume_capabilities().storage
+                    && device.compute_bind_group_capabilities().storage_textures
+                    && device.compute_bind_group_capabilities().sampled_textures
+                {
+                    match FroxelProgram::new(device, context.backend_kind()) {
+                        Ok(program) => Some(cleanup.record(program, |d, program| {
+                            let _ = program.destroy(d);
+                        })),
+                        Err(error) => {
+                            eprintln!("gpui-3d: native Froxel disabled: {error}");
+                            None
+                        },
+                    }
+                } else { None };
             compositor = Some(compositor_resources);
             let pass = cleanup.record(
                 device.create_render_pass(&RenderPassDescriptor {
@@ -154,6 +174,7 @@ impl EffectsRenderer {
                 compositor: compositor
                     .take()
                     .unwrap_or_else(|| unreachable!("compositor was constructed")),
+                froxel_program,
                 scenes: HashMap::new(),
                 passes: Vec::new(),
                 compute_passes: Vec::new(),
@@ -495,6 +516,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
             if std::mem::take(&mut state.queued_capture) {
                 state.targets_valid = true;
             }
+            if let Some(volume) = state.froxel.as_mut() {
+                volume.submitted();
+            }
             if std::mem::take(&mut state.queued_ssr_hiz) {
                 state.ssr_hiz_valid = true;
             }
@@ -523,6 +547,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
             self.passes.clear();
             self.compute_passes.clear();
             for state in self.scenes.values_mut() {
+                if let Some(volume) = state.froxel.as_mut() {
+                    volume.invalidate();
+                }
                 state.queued_capture = false;
                 state.queued_ssr_hiz = false;
                 state.ssr_hiz_valid = false;
@@ -568,6 +595,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
             textures.destroy(device)?;
         }
         self.compositor.destroy(device)?;
+        if let Some(program) = self.froxel_program.take() {
+            program.destroy(device)?;
+        }
         device.destroy_render_pass(self.attributes_pass)?;
         device.destroy_render_pass(self.shadow_pass)?;
         device.destroy_render_pass(self.pass)?;
