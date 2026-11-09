@@ -274,6 +274,7 @@ pub struct MainWindowView {
     agreement_render_state: Arc<AgreementRenderState>,
     last_auth_blocked: Option<bool>,
     last_handled_game_launch: Option<String>,
+    game_diagnostics_listener_installed: bool,
     last_minecraft_termination_dialog:
         crate::ui::views::tools::state::MinecraftTerminationDialogState,
     easter_egg: easter_egg::EasterEggState,
@@ -281,9 +282,12 @@ pub struct MainWindowView {
 
 impl MainWindowView {
     fn ensure_global_reactor_subscriptions(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if !self._reactor_subscriptions.is_empty() {
+        // install_reactors() has already populated _reactor_subscriptions
+        // before the first render. It must not control this listener's lifetime.
+        if self.game_diagnostics_listener_installed {
             return;
         }
+        self.game_diagnostics_listener_installed = true;
 
         let subscription =
             cx.observe_global::<crate::ui::views::tools::state::ToolsPageState>(|this, cx| {
