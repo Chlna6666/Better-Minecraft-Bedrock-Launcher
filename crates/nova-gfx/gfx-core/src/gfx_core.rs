@@ -882,6 +882,10 @@ pub enum BindingType {
     UniformBuffer,
     /// Read-only storage buffer.
     StorageBuffer,
+    /// Compute-writable storage buffer; requires STORAGE_WRITE on the resource.
+    /// Kept distinct from read-only storage so the backend binds a native UAV
+    /// (DX11/DX12) or shader-writable storage descriptor (Vulkan/OpenGL).
+    StorageBufferReadWrite,
     /// Sampled texture or texture view.
     SampledTexture,
     /// Storage texture view bound as a UAV / image unit.
@@ -904,7 +908,7 @@ impl BindingType {
         matches!(
             (self, binding),
             (
-                Self::UniformBuffer | Self::StorageBuffer,
+                Self::UniformBuffer | Self::StorageBuffer | Self::StorageBufferReadWrite,
                 BindingResource::Buffer(_)
             ) | (
                 Self::SampledTexture | Self::StorageTexture { .. },
@@ -952,6 +956,14 @@ impl BindGroupLayoutDescriptor {
             if entry.stages.is_empty() {
                 return Err(Error::InvalidInput(
                     "bind group layout entry must be visible to at least one shader stage"
+                        .to_string(),
+                ));
+            }
+            if entry.binding_type == BindingType::StorageBufferReadWrite
+                && entry.stages != ShaderStages::COMPUTE
+            {
+                return Err(Error::InvalidInput(
+                    "writable storage buffer bind groups require compute-only visibility"
                         .to_string(),
                 ));
             }

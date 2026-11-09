@@ -36,7 +36,8 @@ impl ComputeBindGroupCapabilities {
             && layout.entries.iter().all(|entry| {
                 entry.stages.contains(ShaderStages::COMPUTE)
                     && match entry.binding_type {
-                        BindingType::UniformBuffer | BindingType::StorageBuffer => self.buffers,
+                        BindingType::UniformBuffer | BindingType::StorageBuffer
+                        | BindingType::StorageBufferReadWrite => self.buffers,
                         BindingType::SampledTexture => self.sampled_textures,
                         BindingType::Sampler => self.samplers,
                         BindingType::StorageTexture { .. } => self.storage_textures,
@@ -347,6 +348,7 @@ impl ComputeBindGroupDispatch {
             let access = match entry.binding_type {
                 BindingType::UniformBuffer => ComputeBufferAccess::Uniform,
                 BindingType::StorageBuffer => ComputeBufferAccess::ReadOnly,
+                BindingType::StorageBufferReadWrite => ComputeBufferAccess::ReadWrite,
                 BindingType::SampledTexture
                 | BindingType::StorageTexture { .. }
                 | BindingType::Sampler => {
@@ -516,6 +518,11 @@ mod tests {
         let converted = dispatch.buffer_bindings(&set, &layout).unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].access, ComputeBufferAccess::ReadOnly);
+        layout.entries[0].binding_type = BindingType::StorageBufferReadWrite;
+        assert_eq!(
+            dispatch.buffer_bindings(&set, &layout).unwrap()[0].access,
+            ComputeBufferAccess::ReadWrite
+        );
         layout.entries[0].stages = ShaderStages::VERTEX;
         assert!(matches!(dispatch.buffer_bindings(&set, &layout), Err(Error::InvalidInput(_))));
         layout.entries[0].stages = ShaderStages::COMPUTE;
