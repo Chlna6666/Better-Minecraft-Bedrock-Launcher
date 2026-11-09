@@ -35,7 +35,9 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
   DrawIndirect、原生离屏 Pass 调度及其资源生命周期策略**。纯 3D 引擎模块只依赖
   `gfx-core` 和无 UI 的库；不得引用 `gpui::`、`RendererExtension*`、UI 布局和 BMCBL
   业务代码。当前 crate 尚包含 GPUI 适配代码，应持续将其限定在
-  `scene_view` 等 sidecar/adapter 模块；不能以已有历史依赖为由继续增加核心耦合。
+  `scene_view` 等 sidecar/adapter 模块，并由默认启用的 `gpui-sidecar` Cargo feature
+  控制；`cargo check -p gpui-3d --no-default-features --lib` 应不再引入 `gpui`。
+  不能以已有历史依赖为由继续增加核心耦合。
 - `gpui` 负责窗口/swapchain、输入/布局、GPU Owner 设备访问协调、纹理 Sidecar 消费、
   Present 与 Fence 生命周期跟踪。不得接收后重新编码、排序或合并 3D 的 DrawIndirect；
   只允许在设备所有者线程调用通用 `nova-gfx` 原生提交入口，并跟踪 `SubmissionId`。
@@ -57,6 +59,10 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
   3D Pass 的实际命令编码器；一张最终 3D 结果纹理的 UI 合成不等于“伪 3D”。
 - `GpuWorkPlan` 的依赖验证不等于原生 Barrier/状态转换；只有后端确实编码同步并能保证
   提交顺序、Fence 退休和资源可见性，才能宣称支持完整 Graphics→Compute→Graphics。
+- 侧载颜色/深度纹理、BindGroup/Placement、Pipeline 的释放必须依据实际
+  UI Consumer `SubmissionId` 的 `gpu_submission_completed` 证明，或 GPU Owner
+  全局完成证明；`gpu_submission_accepted` 不代表 GPU 已执行完毕。
+  GPU Resident Mesh/Draw Slot 仍被多个提交引用时不得因单次 Fence 完成提前回收。
 - 上传、Compute Meshing、DrawIndirect 的**原生 GPU 时间戳**必须与
   `sidecar_cpu_prepared`、`gpu_owner_phase`、`offscreen_native_submit`、
   `native_bridge_cpu`、`gpu_owner_submission_wait`、Present 等主机耗时分开记录；
