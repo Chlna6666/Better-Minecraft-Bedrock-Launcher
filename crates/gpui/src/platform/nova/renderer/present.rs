@@ -1413,6 +1413,21 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
+                    if let Some(submission) =
+                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    {
+                        // The UI consumer is the last user of any old sidecar
+                        // color/depth/placement resources retired this frame.
+                        // Bind their retirement to this real native fence.
+                        self.renderer_registry.gpu_submission_accepted(submission);
+                        if submission_mode == GpuSubmissionMode::Synchronous
+                            || !async_capabilities.async_presentation
+                        {
+                            // submit_present_frame already waited for this
+                            // submission in the synchronous presentation path.
+                            self.renderer_registry.gpu_submission_completed(submission);
+                        }
+                    }
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
                         presentation_frame.and_then(|frame| frame.timings);
@@ -1543,6 +1558,21 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
+                    if let Some(submission) =
+                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    {
+                        // The UI consumer is the last user of any old sidecar
+                        // color/depth/placement resources retired this frame.
+                        // Bind their retirement to this real native fence.
+                        self.renderer_registry.gpu_submission_accepted(submission);
+                        if submission_mode == GpuSubmissionMode::Synchronous
+                            || !async_capabilities.async_presentation
+                        {
+                            // submit_present_frame already waited for this
+                            // submission in the synchronous presentation path.
+                            self.renderer_registry.gpu_submission_completed(submission);
+                        }
+                    }
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
                         presentation_frame.and_then(|frame| frame.timings);
@@ -1673,6 +1703,21 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
+                    if let Some(submission) =
+                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    {
+                        // The UI consumer is the last user of any old sidecar
+                        // color/depth/placement resources retired this frame.
+                        // Bind their retirement to this real native fence.
+                        self.renderer_registry.gpu_submission_accepted(submission);
+                        if submission_mode == GpuSubmissionMode::Synchronous
+                            || !async_capabilities.async_presentation
+                        {
+                            // submit_present_frame already waited for this
+                            // submission in the synchronous presentation path.
+                            self.renderer_registry.gpu_submission_completed(submission);
+                        }
+                    }
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
                         presentation_frame.and_then(|frame| frame.timings);
@@ -1785,6 +1830,21 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
+                    if let Some(submission) =
+                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    {
+                        // The UI consumer is the last user of any old sidecar
+                        // color/depth/placement resources retired this frame.
+                        // Bind their retirement to this real native fence.
+                        self.renderer_registry.gpu_submission_accepted(submission);
+                        if submission_mode == GpuSubmissionMode::Synchronous
+                            || !async_capabilities.async_presentation
+                        {
+                            // submit_present_frame already waited for this
+                            // submission in the synchronous presentation path.
+                            self.renderer_registry.gpu_submission_completed(submission);
+                        }
+                    }
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
                         presentation_frame.and_then(|frame| frame.timings);
@@ -1883,6 +1943,21 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
+                    if let Some(submission) =
+                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    {
+                        // The UI consumer is the last user of any old sidecar
+                        // color/depth/placement resources retired this frame.
+                        // Bind their retirement to this real native fence.
+                        self.renderer_registry.gpu_submission_accepted(submission);
+                        if submission_mode == GpuSubmissionMode::Synchronous
+                            || !async_capabilities.async_presentation
+                        {
+                            // submit_present_frame already waited for this
+                            // submission in the synchronous presentation path.
+                            self.renderer_registry.gpu_submission_completed(submission);
+                        }
+                    }
                     let did_present = presentation_frame.is_some();
                     let backend_presentation_timings =
                         presentation_frame.and_then(|frame| frame.timings);
