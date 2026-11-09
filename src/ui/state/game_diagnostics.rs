@@ -15,9 +15,10 @@ pub struct GameDiagnosticsState {
 }
 
 impl GameDiagnosticsState {
-    /// Switching incidents never resets the user's deliberate export choices.
+    /// Each incident starts from privacy-safe defaults, regardless of earlier choices.
     pub fn select_report(&mut self, report: GameSessionReport) {
         self.pending = Some(report);
+        self.options = CrashExportOptions::default();
         self.awaiting_sensitive_confirmation = false;
         self.show_technical = false;
         self.export_status = None;
