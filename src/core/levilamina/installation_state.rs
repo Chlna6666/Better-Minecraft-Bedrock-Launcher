@@ -62,11 +62,10 @@ pub(super) async fn write_preloader_manifest(
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("创建 PreLoader 目录失败: {error}"))?;
         let manifest = serde_json::json!({
-            "name": "LeviLamina PreLoader",
+            "name": "PreLoader",
             "entry": "PreLoader.dll",
-            "type": "preload",
-            "inject_delay_ms": null,
-            "version": version,
+            "type": "preload-native",
+                        "version": version,
         });
         let bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| format!("序列化 PreLoader 清单失败: {error}"))?;
