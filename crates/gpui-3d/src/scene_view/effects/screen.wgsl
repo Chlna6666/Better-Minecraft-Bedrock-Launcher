@@ -12,7 +12,19 @@ const PI:f32=3.14159265359;
 @group(0) @binding(15) var shadow_depth_far:texture_2d<f32>;
 // Min-Z from real opaque geometry, not the approximate batch-culling Hi-Z.
 // Zero frame.work.z denotes unsupported or disabled native SSR pyramid.
-@group(0) @binding(16) var ssr_depth_hiz:texture_2d<f32>;
+// Four independent nearest-depth images. No same-image mip read/write
+// hazards on Vulkan or DX12; four images keep OpenGL under its 16-slot
+// minimum fragment sampled-texture limit.
+@group(0) @binding(16) var ssr_depth_hiz_0:texture_2d<f32>;
+@group(0) @binding(17) var ssr_depth_hiz_1:texture_2d<f32>;
+@group(0) @binding(18) var ssr_depth_hiz_2:texture_2d<f32>;
+@group(0) @binding(19) var ssr_depth_hiz_3:texture_2d<f32>;
+fn ssr_nearest_depth(mip:i32,at:vec2<i32>)->f32 {
+    if(mip==0){return textureLoad(ssr_depth_hiz_0,at,0).r;}
+    if(mip==1){return textureLoad(ssr_depth_hiz_1,at,0).r;}
+    if(mip==2){return textureLoad(ssr_depth_hiz_2,at,0).r;}
+    return textureLoad(ssr_depth_hiz_3,at,0).r;
+}
 @group(0) @binding(8) var cloud_texture:texture_2d<f32>;
 @group(0) @binding(9) var<storage,read> lights:array<EffectLight>;
 @group(0) @binding(10) var<storage,read> tiles:array<u32>;
@@ -288,11 +300,13 @@ fn trace_reflection(origin:vec3<f32>,direction:vec3<f32>)->vec4<f32>{
             let next=project(end_position);
             if(all(next.xy>vec2<f32>(0.0)) && all(next.xy<vec2<f32>(1.0))
                 && next.z>0.0 && next.z<1.0){
-                let level=i32(min(u32(frame.work.z)-1u,4u));
-                let dims=vec2<f32>(textureDimensions(ssr_depth_hiz,level));
+                let level=i32(min(u32(frame.work.z)-1u,3u));
+                let base=vec2<i32>(textureDimensions(ssr_depth_hiz_0));
+                let mip_size=max(base / i32(1u<<u32(level)),vec2<i32>(1));
+                let dims=vec2<f32>(mip_size);
                 let tile=vec2<i32>(q.xy*dims);
                 if(all(tile==vec2<i32>(next.xy*dims))){
-                    let nearest=textureLoad(ssr_depth_hiz,tile,level).r;
+                    let nearest=ssr_nearest_depth(level,tile);
                     if(max(q.z,next.z)+0.00001<nearest){
                         previous=end_position;
                         i+=3u;
