@@ -201,7 +201,12 @@ impl VulkanDevice {
                     })
                     .dst_access_mask(vk::AccessFlags::SHADER_READ |
                         if writable { vk::AccessFlags::SHADER_WRITE } else { vk::AccessFlags::empty() }));
-                if writable {
+                // A storage-only image has no sampled-image usage. Keep it in
+                // GENERAL across dispatches; the global post-dispatch memory
+                // dependency below makes its writes visible without a redundant
+                // layout transition. Images that can be sampled return to the
+                // read-only layout required by their sampled descriptors.
+                if writable && texture.desc.usage.contains(TextureUsage::SAMPLED) {
                     post_images.push(vk::ImageMemoryBarrier::default()
                         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -210,7 +215,7 @@ impl VulkanDevice {
                         .image(texture.image)
                         .subresource_range(range)
                         .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE));
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ));
                 }
             }
             let before = vk::MemoryBarrier::default()
@@ -253,8 +258,13 @@ impl VulkanDevice {
             let _ = self.destroy_temporary_command_encoder_now(encoder);
             return Err(error);
         }
-        for &(id, _) in &images {
-            self.textures.get_mut(id)?.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        for &(id, storage) in &images {
+            let texture = self.textures.get_mut(id)?;
+            texture.layout = if storage && !texture.desc.usage.contains(TextureUsage::SAMPLED) {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            };
         }
         self.poll_cleanup();
         Ok(())
