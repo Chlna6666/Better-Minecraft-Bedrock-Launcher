@@ -2107,9 +2107,22 @@ mod platform {
         /// fence here. All earlier main-queue uploads complete before 3D,
         /// and later GUI composition waits for this producer's color target.
         fn submit_sidecar_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
+            self.submit_sidecar_deferred_native(encoder, false)
+        }
+
+        /// The sidecar DIRECT queue accepts ordinary graphics or compute
+        /// DIRECT command lists. The optional producer identity has its OWN
+        /// sidecar fence; encoder allocation is still retired using the
+        /// primary-queue GPU join fence. Neither path performs a CPU wait.
+        fn submit_sidecar_deferred_native(
+            &mut self, encoder: CommandEncoderId, track_sidecar_producer: bool,
+        ) -> Result<SubmissionId> {
             let (queue, fence) = match (&self.sidecar_queue, &self.sidecar_fence) {
                 (Some(queue), Some(fence)) => (queue.clone(), fence.clone()),
-                _ => return self.submit_deferred(encoder),
+                _ if !track_sidecar_producer => return self.submit_deferred(encoder),
+                _ => return Err(Error::Unavailable(
+                    "DX12 independent DIRECT queue is unavailable".into(),
+                )),
             };
             self.validate_swapchain_submission(encoder)?;
             self.check_device_removed("DX12 sidecar submit preflight")?;
@@ -2129,7 +2142,9 @@ mod platform {
             self.command_encoders.get_mut(encoder)?.submitted = true;
             unsafe { queue.ExecuteCommandLists(&[Some(executable)]) };
             let producer_output = self.next_sidecar_fence_value;
-            self.next_sidecar_fence_value = producer_output.saturating_add(1);
+            self.next_sidecar_fence_value = producer_output.checked_add(1).ok_or_else(|| {
+                Error::InvalidInput("DX12 sidecar producer fence timeline exhausted".into())
+            })?;
             unsafe { queue.Signal(&fence, producer_output) }
                 .map_err(|error| Error::Backend(format!("DX12 sidecar queue signal: {error}")))?;
             // Queue-side dependency: the next GPUI render pass cannot sample
@@ -2146,7 +2161,17 @@ mod platform {
             });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
-            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
+            Ok(if track_sidecar_producer {
+                self.submissions.insert(Dx12Submission {
+                    fence_value: producer_output,
+                    queue: Dx12SubmissionQueue::Sidecar,
+                })
+            } else {
+                self.submissions.insert(Dx12Submission {
+                    fence_value,
+                    queue: Dx12SubmissionQueue::Primary,
+                })
+            })
         }
 
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
