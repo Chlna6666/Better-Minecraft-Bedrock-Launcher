@@ -1,8 +1,10 @@
-//! Reusable 3D scene data and preparation for GPUI renderer extensions.
+//! Game-oriented 3D rendering engine with a GPU-resident native offscreen path.
 //!
-//! The crate owns generic geometry, camera, material, scene-graph, preparation, and query APIs.
-//! Application crates convert domain data into these types; GPUI owns presentation and Nova owns
-//! backend resources.
+//! The core owns geometry, camera, materials, lighting, scene preparation,
+//! GPU draw plans and native offscreen submission through gfx-core. GPUI is
+//! only an optional scene-view/Sidecar consumer (feature `gpui-sidecar`);
+//! standalone games can use `--no-default-features` and provide their own
+//! nova-gfx device and presentation lifecycle.
 //!
 //! # CPU scene quick start
 //!
@@ -77,6 +79,7 @@ mod prepare;
 mod raycast;
 mod render;
 mod scene;
+#[cfg(feature = "gpui-sidecar")]
 mod scene_view;
 
 pub use animation::{
@@ -105,6 +108,7 @@ pub use render::{
     RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated, project,
 };
 pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Scene, SceneError};
+#[cfg(feature = "gpui-sidecar")]
 pub use scene_view::{
     DistanceFog, FlipbookTexture, ProjectionRegion, SceneView, SceneViewConfigError,
     SceneViewRaycastError, SceneViewRaycastScratch, SceneViewTextureError, ScreenEffects,
