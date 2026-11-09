@@ -10,7 +10,7 @@
 use gfx_core::{
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
     BufferDescriptor, BufferId, BufferUploadStats, BufferWrite, GpuTimestampSample,
-    GpuTimestampTag, PipelineDevice, PresentationDevice,
+    GpuTimestampTag, OffscreenQueuePreference, OffscreenSubmissionDevice, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDescriptor, RenderPassId,
     RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, Result, SamplerDescriptor,
     SamplerId, ShaderModuleDescriptor, ShaderModuleId, TextureDescriptor, TextureId,
@@ -350,7 +350,7 @@ pub trait ExtensionDevice {
 
 impl<T> ExtensionDevice for T
 where
-    T: ResourceDevice + PipelineDevice + PresentationDevice,
+    T: ResourceDevice + PipelineDevice + OffscreenSubmissionDevice,
 {
     fn submit_offscreen_graphics(
         &mut self,
@@ -358,27 +358,20 @@ where
         tags: &[Option<GpuTimestampTag>],
         independent: bool,
     ) -> Result<Option<gfx_core::SubmissionId>> {
-        if passes.len() != tags.len() {
-            return Err(gfx_core::Error::InvalidInput(
-                "offscreen pass/timestamp count mismatch".into(),
-            ));
-        }
-        let timed = tags.iter().any(Option::is_some);
-        if independent && PresentationDevice::independent_graphics_queue_available(self) {
-            if timed {
-                PresentationDevice::render_to_textures_independent_profiled(self, passes, tags)
+        OffscreenSubmissionDevice::submit_offscreen_graphics(
+            self,
+            passes,
+            tags,
+            if independent {
+                OffscreenQueuePreference::IndependentGraphicsIfAvailable
             } else {
-                PresentationDevice::render_to_textures_independent(self, passes)
-            }
-        } else if timed {
-            PresentationDevice::render_to_textures_profiled(self, passes, tags)
-        } else {
-            PresentationDevice::render_to_textures(self, passes)
-        }
+                OffscreenQueuePreference::OrderedGraphics
+            },
+        )
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
-        PresentationDevice::independent_graphics_queue_available(self)
+        OffscreenSubmissionDevice::independent_graphics_queue_available(self)
     }
 
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
