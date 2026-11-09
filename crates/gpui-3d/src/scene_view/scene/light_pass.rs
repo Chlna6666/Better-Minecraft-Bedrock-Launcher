@@ -118,11 +118,20 @@ impl SceneResources {
         renderer: &RendererResources,
         pass: &mut LightPass,
     ) -> gpui::Result<Vec<BindGroupId>> {
-        let mut groups = Vec::with_capacity(self.batches.len());
+        // Shadow DrawIndirect explicitly excludes alpha-blended materials.
+        // Build and cache BindGroups only for actual depth casters; transparent
+        // water/glass batches can never use their binding in append_pass_steps.
+        // Retain a positional slot so the existing stable batch indexing stays
+        // unchanged, without an additional CPU remapping layer.
+        let mut groups = Vec::<Option<BindGroupId>>::with_capacity(self.batches.len());
         let mut active = HashSet::new();
         let fallback = renderer.fallback_texture_view()?;
         for (index, batch) in self.batches.iter().enumerate() {
             let draw = &self.prepared.draws[batch.first_instance];
+            if draw.material.alpha_mode == AlphaMode::Blend {
+                groups.push(None);
+                continue;
+            }
             let mesh = &self.meshes[&mesh_key(draw, true)];
             let mut key = self.draw_resource_keys[index];
             key.visible_instances = Some(pass.culling.visible_instances);
@@ -172,7 +181,7 @@ impl SceneResources {
                 pass.groups.insert(key, group);
                 group
             };
-            groups.push(group);
+            groups.push(Some(group));
         }
         let stale = pass
             .groups
@@ -185,6 +194,14 @@ impl SceneResources {
                 device.destroy_bind_group(group)?;
             }
         }
-        Ok(groups)
+        // The skipped blend positions are never read: shadow draw encoding
+        // excludes them before indexing this vector. Fill with a caster group
+        // if available to preserve the fixed RenderCommand batch indexing.
+        // All-blended scenes correctly return an empty binding list because
+        // no shadow draw can dereference it.
+        let Some(first_caster) = groups.iter().flatten().copied().next() else {
+            return Ok(Vec::new());
+        };
+        Ok(groups.into_iter().map(|group| group.unwrap_or(first_caster)).collect())
     }
 }
