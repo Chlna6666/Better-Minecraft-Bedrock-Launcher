@@ -174,9 +174,10 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     *pid,
                 );
                 let pid = *pid;
+                let process_created_at = crash_record.process_created_at;
                 let monitor_task_id = task_id_for_task.clone();
                 match crate::tasks::runtime::spawn_io(async move {
-                    let process_exit = wait_for_process_exit(pid);
+                    let process_exit = wait_for_process_exit(pid, process_created_at);
                     tokio::pin!(process_exit);
                     let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
                     checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
