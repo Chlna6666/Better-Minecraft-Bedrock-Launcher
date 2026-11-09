@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::warn;
@@ -218,6 +219,24 @@ pub fn create_startup_failure_report(
     )
 }
 
+/// Construct a non-fatal, user-initiated operation diagnostic without reading
+/// multi-megabyte log files on the GPUI thread. Export gathers the log tail
+/// asynchronously when requested. This is never a pending crash report.
+pub fn create_operation_error_report(
+    stage: impl Into<String>,
+    error: impl Into<String>,
+) -> DiagnosticsReport {
+    build_report_with_log_tail(
+        DiagnosticsKind::ApplicationError,
+        DiagnosticsSeverity::Error,
+        DiagnosticsDetail::ApplicationError {
+            stage: sanitize_string(stage.into()),
+            error: sanitize_string(error.into()),
+        },
+        String::new(),
+    )
+}
+
 pub fn create_application_error_report(
     stage: impl Into<String>,
     error: impl Into<String>,
@@ -254,7 +273,8 @@ pub fn acknowledge_pending_report() -> Result<()> {
 }
 
 pub fn diagnostics_share_payload(report: &DiagnosticsReport) -> DiagnosticsSharePayload {
-    let body_markdown = report_markdown(report);
+    let report = sanitized_share_report(report);
+    let body_markdown = report_markdown(&report);
     let title = format!("[{}] {}", report.kind.label(), report.summary);
     let issue_url = format!(
         "{base}?title={title}&body={body}",
@@ -275,6 +295,9 @@ pub fn diagnostics_share_payload(report: &DiagnosticsReport) -> DiagnosticsShare
 }
 
 pub fn submit_report_to_sentry(report: &DiagnosticsReport, dsn: &str) -> Result<()> {
+    // The Sentry path is explicitly crash-only in the overlay. Keep the
+    // report's detail and breadcrumbs redacted before crossing that boundary.
+    let report = sanitized_share_report(report);
     let guard = init_sentry_client(dsn)?;
     if !guard.is_enabled() {
         anyhow::bail!("sentry client is disabled");
@@ -347,6 +370,7 @@ fn init_sentry_client(dsn: &str) -> Result<sentry::ClientInitGuard> {
 }
 
 pub fn report_markdown(report: &DiagnosticsReport) -> String {
+    let report = sanitized_share_report(report);
     let detail_json =
         serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string());
     format!(
@@ -375,6 +399,78 @@ pub fn report_markdown(report: &DiagnosticsReport) -> String {
         detail_json,
         report.log_tail
     )
+}
+
+fn sanitized_share_report(report: &DiagnosticsReport) -> DiagnosticsReport {
+    let mut safe = report.clone();
+    safe.summary = sanitize_string(safe.summary);
+    safe.build_info = sanitize_string(safe.build_info);
+    safe.os = sanitize_string(safe.os);
+    safe.log_tail = sanitize_string(safe.log_tail);
+    safe.detail = match safe.detail {
+        DiagnosticsDetail::Panic { location, payload, backtrace } => DiagnosticsDetail::Panic {
+            location: location.map(sanitize_string),
+            payload: sanitize_string(payload),
+            backtrace: backtrace.map(sanitize_string),
+        },
+        DiagnosticsDetail::UnhandledException { code, address } =>
+            DiagnosticsDetail::UnhandledException {
+                code: sanitize_string(code),
+                address: sanitize_string(address),
+            },
+        DiagnosticsDetail::UnexpectedExit { reason } =>
+            DiagnosticsDetail::UnexpectedExit { reason: sanitize_string(reason) },
+        DiagnosticsDetail::StartupFailure { stage, error } =>
+            DiagnosticsDetail::StartupFailure {
+                stage: sanitize_string(stage),
+                error: sanitize_string(error),
+            },
+        DiagnosticsDetail::ApplicationError { stage, error } =>
+            DiagnosticsDetail::ApplicationError {
+                stage: sanitize_string(stage),
+                error: sanitize_string(error),
+            },
+    };
+    safe
+}
+
+/// Export a self-contained diagnostic ZIP. The caller must run this on an IO
+/// worker, never the UI/GPU owner thread. Only text diagnostics and bounded log
+/// tails are included; no tokens, profiles, worlds, configs or save files.
+pub fn export_diagnostics_bundle(report: &DiagnosticsReport) -> Result<PathBuf> {
+    let _ = crate::utils::log_manager::flush_async_logs(Duration::from_secs(2));
+    let destination = file_ops::logs_dir().join("reports");
+    fs::create_dir_all(&destination)?;
+    let id = uuid::Uuid::parse_str(&report.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let archive_path = destination.join(format!("bmcbl-diagnostics-{id}.zip"));
+    let temp_path = destination.join(format!("bmcbl-diagnostics-{id}.zip.part"));
+    let result = (|| -> Result<()> {
+        let file = fs::File::create(&temp_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let safe = sanitized_share_report(report);
+
+        zip.start_file("report.md", options)?;
+        zip.write_all(report_markdown(&safe).as_bytes())?;
+        zip.start_file("report.json", options)?;
+        zip.write_all(&serde_json::to_vec_pretty(&safe)?)?;
+        let latest = read_sanitized_log_tail(&latest_log_path()).unwrap_or_default();
+        zip.start_file("logs/latest-tail.log", options)?;
+        zip.write_all(latest.as_bytes())?;
+        let previous = read_sanitized_log_tail(&previous_log_path()).unwrap_or_default();
+        if !previous.is_empty() {
+            zip.start_file("logs/previous-tail.log", options)?;
+            zip.write_all(previous.as_bytes())?;
+        }
+        zip.finish()?;
+        fs::rename(&temp_path, &archive_path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result.map(|()| archive_path)
 }
 
 fn report_from_crash_signal() -> Result<Option<DiagnosticsReport>> {
@@ -541,13 +637,14 @@ fn read_sanitized_log_tail(path: &Path) -> Result<String> {
         return Ok(String::new());
     }
 
-    let bytes = fs::read(path)?;
-    let tail = if bytes.len() > MAX_LOG_TAIL_BYTES {
-        &bytes[bytes.len() - MAX_LOG_TAIL_BYTES..]
-    } else {
-        bytes.as_slice()
-    };
-    let text = String::from_utf8_lossy(tail).into_owned();
+    // Read only the tail, not the whole potentially very large active log.
+    let mut file = fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    let offset = length.saturating_sub(MAX_LOG_TAIL_BYTES as u64);
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity(MAX_LOG_TAIL_BYTES);
+    file.take(MAX_LOG_TAIL_BYTES as u64).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok(sanitize_string(text).trim().to_string())
 }
 
@@ -563,7 +660,7 @@ fn sanitize_string(input: impl Into<String>) -> String {
         output = output.replace(&candidate, "<user-path>");
         output = output.replace(&candidate.replace('\\', "/"), "<user-path>");
     }
-    output
+    crate::utils::log_privacy::redact_log_text(&output).into_owned()
 }
 
 fn sensitive_path_candidates() -> Vec<String> {
@@ -708,6 +805,22 @@ mod tests {
         let output = truncate_string(input, 20);
         assert!(output.len() <= 23);
         assert!(output.ends_with("..."));
+    }
+
+    #[test]
+    fn operation_error_has_no_crash_report_side_effects() {
+        let report = create_operation_error_report("download", "network error");
+        assert_eq!(report.kind, DiagnosticsKind::ApplicationError);
+        assert_eq!(report.severity, DiagnosticsSeverity::Error);
+        assert!(report.log_tail.is_empty());
+    }
+
+    #[test]
+    fn shared_report_masks_sensitive_operation_data() {
+        let report = create_operation_error_report("install", "token=secretvalue https://example.org");
+        let shared = report_markdown(&report);
+        assert!(!shared.contains("secretvalue"));
+        assert!(!shared.contains("example.org"));
     }
 
     #[test]

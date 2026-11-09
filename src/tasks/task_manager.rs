@@ -654,11 +654,23 @@ fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
     // only its numeric chunk count is allowed through this narrow parser.
     let chunks = task_chunk_count(snapshot.detail.as_deref());
     let total_units = snapshot.total;
+    let safe_reason = if event == "error" {
+        let raw = snapshot.message.as_deref().unwrap_or("未提供错误详情");
+        Some(
+            crate::utils::log_privacy::redact_log_text(raw)
+                .chars()
+                .take(1000)
+                .collect::<String>(),
+        )
+    } else {
+        None
+    };
     match event {
         "error" => error!(
             target: "bmcbl::operation",
             operation = category, task_id, stage, event,
-            "操作失败；可在任务面板查看详细原因"
+            reason = safe_reason.as_deref().unwrap_or("未知错误"),
+            "操作失败；详情已保留在任务面板"
         ),
         "cancelled" => warn!(
             target: "bmcbl::operation",
