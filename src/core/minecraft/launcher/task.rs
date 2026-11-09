@@ -145,7 +145,10 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
             version = %request.version,
             "游戏启动任务开始执行"
         );
-        let result = launch_game(&request, &task_id_for_task).await;
+        // The manifest identity is the single source of truth for UWP vs GDK.
+        // The user-selected display version may be renamed or contain aliases.
+        let mut detected_platform = "unknown";
+        let result = launch_game(&request, &task_id_for_task, &mut detected_platform).await;
         let mut monitor = None;
         match &result {
             Ok(Some(pid)) => {
@@ -167,7 +170,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     &task_id_for_task,
                     request.version.as_ref(),
                     Path::new(request.package_folder.as_ref()),
-                    if is_win32_version(request.version.as_ref()) { "gdk" } else { "uwp" },
+                    detected_platform,
                     *pid,
                 );
                 let pid = *pid;
@@ -185,7 +188,17 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                                 if let Err(error) = &result {
                                     append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
                                 }
-                                let completed = crash_record.finish(result);
+                                // JSON serialization, log tail extraction, and fsync work
+                                // must never block the Tokio I/O driver.
+                                let completed = match crate::tasks::runtime::run_io_blocking(
+                                    move || crash_record.finish(result)
+                                ).await {
+                                    Ok(completed) => completed,
+                                    Err(error) => {
+                                        warn!(%error, %pid, "无法完成游戏诊断会话持久化");
+                                        break;
+                                    }
+                                };
                                 #[cfg(target_os = "windows")]
                                 let completed = crate::core::minecraft::diagnostics::enrich_windows_wer(completed).await;
                                 if completed.kind.is_abnormal() {
@@ -539,7 +552,11 @@ async fn prepare_direct_win32_auth(
     Ok((Some(metadata), launch_gamertag))
 }
 
-async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
+async fn launch_game(
+    request: &LaunchRequest,
+    task_id: &str,
+    detected_platform: &mut &'static str,
+) -> Result<Option<u32>, String> {
     let control = task_control(task_id);
     check_cancelled(task_id)?;
     check_cancelled_control(control.as_deref())?;
@@ -574,6 +591,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .await
         .map_err(|error| format!("Manifest 解析失败: {error}"))?;
     let is_win32 = is_win32_version(&identity_version);
+    *detected_platform = if is_win32 { "gdk" } else { "uwp" };
     let legacy_uwp_runtime_injection_only =
         is_legacy_uwp_runtime_injection_only(&identity_version, is_win32);
     info!(
