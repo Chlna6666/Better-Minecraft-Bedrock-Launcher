@@ -48,7 +48,7 @@ BMCBL app (src/)
   -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-api, nethernet, easytier-bmcbl
 egpui -> gpui
 gpui-3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
-gpui-3d (scene_view/Sidecar 适配) -> gpui + gfx-core  # 当前 crate 尚未完成 feature 拆分
+gpui-3d (feature: gpui-sidecar) -> gpui + gfx-core  # 默认启用，可 --no-default-features 禁用
 gpui -> gfx-core + 所选 gfx-<backend>
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
@@ -75,9 +75,10 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 - **可测量边界**：CPU 场景准备、GPU Owner 主机工作、原生离屏提交、原生 GPU
   BufferUpload/GeneratedMesh/DrawIndirect 时间戳、GPUI Consumer 合成、Present、
   Fence 等待分别记录；只用完成的原生计时样本推断 GPU 执行成本。
-- **可选适配原则**：纯 3D 内核模块禁止引用 `gpui::`；将 `RendererExtension`、
-  GPUI Layout/Painter、Sidecar 放在适配边界。当前 crate 仍有 GPUI 依赖，
-  尚未实现完全可关闭的 feature，不能宣称独立游戏窗口生命周期已完成。
+- **可选适配原则**：纯 3D 内核模块禁止引用 `gpui::`；`RendererExtension`、
+  GPUI Layout/Painter、Sidecar 已通过 Cargo `gpui-sidecar` feature 隔离。
+  默认启用以保持启动器行为，独立 3D 应用使用 `--no-default-features` 构建纯引擎，
+  无 GPUI 依赖；独立游戏窗口和 Swapchain 仍由消费方提供。
 
 
 ## 3. crate 职责
