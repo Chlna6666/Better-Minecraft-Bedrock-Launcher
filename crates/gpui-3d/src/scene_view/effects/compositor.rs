@@ -288,7 +288,11 @@ impl Compositor {
             (1, inputs.depth),
             (2, t.surface.view),
             (3, inputs.surface_depth),
-            (4, t.albedo.view),
+            (4, if inputs.multisampled {
+                t.msaa.as_ref().map_or(t.albedo.view, |m| m.albedo.view)
+            } else {
+                t.albedo.view
+            }),
             (7, inputs.shadow),
             (8, inputs.cloud),
             (12, inputs.water),
@@ -366,6 +370,8 @@ pub(super) struct Inputs<'a> {
     pub depth: TextureViewId,
     /// Surface-pass depth sampled by the screen shader (single- or multisampled).
     pub surface_depth: TextureViewId,
+    /// Unresolved multisample albedo is read directly by the MSAA screen shader.
+    pub multisampled: bool,
     pub uniform: BufferId,
     pub lights: (BufferId, u64),
     pub tiles: (BufferId, u64),
