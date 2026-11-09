@@ -779,7 +779,7 @@ pub fn render_game_diagnostics_overlay(
                                 .child(
                                     div().flex().flex_wrap().gap(px(8.))
                                         .child(
-                                            action(""game-export-confirm", t!("GameCrash.ui.confirmExport"), true, !exporting, colors)
+                                            action("game-export-confirm", t!("GameCrash.ui.confirmExport"), true, !exporting, colors)
                                                 .on_click(move |_, _, cx| {
                                                     let options = cx.global::<GameDiagnosticsState>().options;
                                                     if options.needs_confirmation() {
@@ -788,7 +788,7 @@ pub fn render_game_diagnostics_overlay(
                                                 }),
                                         )
                                         .child(
-                                            action(""game-export-back", t!("GameCrash.ui.back"), false, true, colors)
+                                            action("game-export-back", t!("GameCrash.ui.back"), false, true, colors)
                                                 .on_click(|_, _, cx| {
                                                     cx.update_global(
                                                         |state: &mut GameDiagnosticsState, _| {
@@ -825,7 +825,7 @@ pub fn render_game_diagnostics_overlay(
                                         .child(path.clone()),
                                 )
                                 .child(
-                                    action(""game-export-copy-path", t!("GameCrash.ui.copyPath"), false, true, colors)
+                                    action("game-export-copy-path", t!("GameCrash.ui.copyPath"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
                                         }),
@@ -840,7 +840,7 @@ pub fn render_game_diagnostics_overlay(
                                 .items_center()
                                 .gap(px(8.))
                                 .child(
-                                    action(""game-diagnostics-copy", t!("GameCrash.ui.copy"), false, true, colors)
+                                    action("game-diagnostics-copy", t!("GameCrash.ui.copy"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(
                                                 ClipboardItem::new_string(copy_text.clone()),
@@ -848,14 +848,14 @@ pub fn render_game_diagnostics_overlay(
                                         }),
                                 )
                                 .child(
-                                    action(""game-diagnostics-export", t!("GameCrash.ui.exportButton"),
+                                    action("game-diagnostics-export", t!("GameCrash.ui.exportButton"),
                                         true, !exporting && selection.includes_any(), colors,
                                     ).on_click(move |_, _, cx| {
                                         request_export(cx, id_for_export.clone());
                                     }),
                                 )
                                 .child(
-                                    action(""game-diagnostics-dismiss", t!("GameCrash.ui.close"), false, true, colors)
+                                    action("game-diagnostics-dismiss", t!("GameCrash.ui.close"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             let id = id_for_acknowledge.clone();
                                             cx.update_global(|state: &mut GameDiagnosticsState, _| {
