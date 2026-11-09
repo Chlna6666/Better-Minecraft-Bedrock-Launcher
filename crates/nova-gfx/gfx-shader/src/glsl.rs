@@ -4,7 +4,7 @@ use gfx_core::{ShaderBinary, ShaderStage};
 impl WgslModule {
     /// Translates one WGSL entry point to desktop GLSL 4.50 and resource reflection.
     ///
-    /// Group-zero buffers and sampled textures are supported. Writable storage is allowed
+    /// Group-zero buffers and sampled 2D/3D float textures are supported. Writable storage is allowed
     /// only for compute entry points; graphics buffers remain read-only. Reflection
     /// preserves logical resource slots while the runtime assigns compact native slots.
     /// GL4.5 clip control retains WGSL coordinates; instance offsets use Naga's
@@ -29,7 +29,7 @@ impl WgslModule {
                 let supported = matches!(
                     self.module.types[variable.ty].inner,
                     naga::TypeInner::Image {
-                        dim: naga::ImageDimension::D2,
+                        dim: naga::ImageDimension::D2 | naga::ImageDimension::D3,
                         arrayed: false,
                         class: naga::ImageClass::Sampled {
                             kind: naga::ScalarKind::Float,
@@ -38,9 +38,9 @@ impl WgslModule {
                             multi: _
                         }
                     }
-                    // Storage images map to `layout(...) image2D` image units.
+                    // Storage images map to `layout(...) image2D/image3D` image units.
                     | naga::TypeInner::Image {
-                        dim: naga::ImageDimension::D2,
+                        dim: naga::ImageDimension::D2 | naga::ImageDimension::D3,
                         arrayed: false,
                         class: naga::ImageClass::Storage { .. }
                     }
@@ -48,7 +48,7 @@ impl WgslModule {
                 );
                 if !supported {
                     return Err(ShaderError::Glsl(
-                        "OpenGL supports non-comparison samplers and sampled float 2D textures"
+                        "OpenGL supports non-comparison samplers, sampled float 2D/3D textures, and 2D/3D storage images"
                             .into(),
                     ));
                 }
@@ -247,6 +247,57 @@ mod tests {
             module.compile_glsl(ShaderStage::Fragment, "fs"),
             Err(ShaderError::Glsl(_))
         ));
+    }
+
+    #[test]
+    fn sampled_3d_texture_reflection_preserves_texture_and_sampler_bindings() {
+        let module = WgslModule::parse(
+            "@group(0) @binding(20) var volume: texture_3d<f32>; \
+             @group(0) @binding(5) var filtering: sampler; \
+             @fragment fn fs()->@location(0) vec4<f32>{ \
+                 return textureSampleLevel(volume, filtering, vec3<f32>(0.5), 0.0); \
+             }",
+        )
+        .unwrap();
+        let ShaderCode::Glsl(shader) = module
+            .compile_glsl(ShaderStage::Fragment, "fs")
+            .unwrap()
+            .code
+        else {
+            panic!("GLSL");
+        };
+        assert!(shader.source.contains("sampler3D"));
+        assert_eq!(shader.textures.len(), 1);
+        assert_eq!(shader.textures[0].texture, 20);
+        assert_eq!(shader.textures[0].sampler, Some(5));
+    }
+
+    #[test]
+    fn compute_3d_storage_image_and_sampled_volume_are_reflected() {
+        let module = WgslModule::parse(
+            "@group(0) @binding(0) var src: texture_3d<f32>; \
+             @group(0) @binding(1) var dst: texture_storage_3d<rgba16float, write>; \
+             @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) { \
+                 textureStore(dst, vec3<i32>(id), \
+                     textureLoad(src, vec3<i32>(id), 0)); \
+             }",
+        )
+        .unwrap();
+        let ShaderCode::Glsl(shader) = module
+            .compile_glsl(ShaderStage::Compute, "cs")
+            .unwrap()
+            .code
+        else {
+            panic!("GLSL");
+        };
+        assert!(shader.source.contains("image3D"));
+        assert_eq!(shader.textures.len(), 1);
+        assert_eq!(shader.textures[0].texture, 0);
+        assert_eq!(shader.textures[0].sampler, None);
+        assert_eq!(shader.images.len(), 1);
+        assert_eq!(shader.images[0].binding, 1);
+        assert_eq!(shader.images[0].format, gfx_core::Format::Rgba16Float);
+        assert!(!shader.images[0].read_only);
     }
 
     #[test]
