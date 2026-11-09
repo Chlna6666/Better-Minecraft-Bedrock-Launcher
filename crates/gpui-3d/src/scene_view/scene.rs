@@ -4148,6 +4148,20 @@ fn upload_pending_meshes(
     // every pending entry uses resident device buffers there are no CPU bytes
     // to stage; skip the empty native buffer submission entirely.
     if write_count > 0 {
+        // Compact voxel vertex/index data shares immutable MeshArena pages.
+        // A submitted transfer can still write its exact allocation after
+        // write_buffer_batch returns. Stamp ranges before native submission;
+        // the owner queue's subsequent completion checkpoint seals them.
+        for (_, mesh, upload) in pending.iter() {
+            if upload.is_some()
+                && let Some(allocation) = mesh.allocation
+                && mesh.generated.is_none()
+            {
+                arena.mark_untracked_access(
+                    allocation, gfx_core::GpuAccess::CopyWrite,
+                )?;
+            }
+        }
         let upload_started = Instant::now();
         let profiled = batch_id != 0 && crate::gpu_submission_trace::enabled()
             && device.gpu_work_timestamps_supported();
