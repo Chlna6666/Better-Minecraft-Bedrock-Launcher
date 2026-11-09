@@ -845,6 +845,9 @@ mod platform {
         /// Returns [`Error`] when validation fails.
         fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             desc.validate()?;
+            if matches!(desc.dimension, TextureDimension::D3 { .. }) {
+                self.texture_volume_capabilities().validate(desc)?;
+            }
             if let TextureDimension::D2Array { layers } = desc.dimension {
                 self.texture_array_capabilities().plan(
                     desc.size.width(),
@@ -1553,7 +1556,10 @@ mod platform {
                                 BindingType::StorageTexture { format, .. } => {
                                     if !texture.desc.usage.contains(TextureUsage::STORAGE)
                                         || view.format != format
-                                        || texture.desc.dimension != TextureDimension::D2
+                                        || !matches!(
+                                            texture.desc.dimension,
+                                            TextureDimension::D2 | TextureDimension::D3 { .. }
+                                        )
                                         || texture.desc.sample_count != 1
                                         || view.mip_level_count != 1
                                         || format == Format::Depth32Float
@@ -1584,7 +1590,10 @@ mod platform {
                                 {
                                     if !texture.desc.usage.contains(TextureUsage::STORAGE)
                                         || view.format != format
-                                        || texture.desc.dimension != TextureDimension::D2
+                                        || !matches!(
+                                            texture.desc.dimension,
+                                            TextureDimension::D2 | TextureDimension::D3 { .. }
+                                        )
                                         || texture.desc.sample_count != 1
                                         || view.mip_level_count != 1
                                         || format == Format::Depth32Float
@@ -1596,12 +1605,26 @@ mod platform {
                                     let uav =
                                         windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC {
                                             Format: format_to_dxgi(view.format),
-                                            ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE2D,
-                                            Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                                                Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_UAV {
-                                                    MipSlice: view.base_mip_level,
-                                                    PlaneSlice: 0,
-                                                },
+                                            ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                                windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE3D
+                                            } else {
+                                                windows::Win32::Graphics::Direct3D12::D3D12_UAV_DIMENSION_TEXTURE2D
+                                            },
+                                            Anonymous: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                                windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                                    Texture3D: windows::Win32::Graphics::Direct3D12::D3D12_TEX3D_UAV {
+                                                        MipSlice: view.base_mip_level,
+                                                        FirstWSlice: 0,
+                                                        WSize: texture.desc.dimension.mip_depth(view.base_mip_level),
+                                                    },
+                                                }
+                                            } else {
+                                                windows::Win32::Graphics::Direct3D12::D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                                    Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_UAV {
+                                                        MipSlice: view.base_mip_level,
+                                                        PlaneSlice: 0,
+                                                    },
+                                                }
                                             },
                                             ..Default::default()
                                         };
@@ -1635,14 +1658,24 @@ mod platform {
                                         format_to_dxgi(view.format)
                                     },
                                     // Multisampled textures must use the MS view dimensions.
-                                    ViewDimension: match (array, texture.desc.sample_count > 1) {
+                                    ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE3D
+                                    } else { match (array, texture.desc.sample_count > 1) {
                                         (false, false) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2D,
                                         (true, false) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
                                         (false, true) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DMS,
                                         (true, true) => windows::Win32::Graphics::Direct3D12::D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY,
-                                    },
+                                    } },
                                     Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                                    Anonymous: if array && texture.desc.sample_count > 1 {
+                                    Anonymous: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                                        windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                            Texture3D: windows::Win32::Graphics::Direct3D12::D3D12_TEX3D_SRV {
+                                                MostDetailedMip: view.base_mip_level,
+                                                MipLevels: view.mip_level_count,
+                                                ResourceMinLODClamp: 0.0,
+                                            },
+                                        }
+                                    } else if array && texture.desc.sample_count > 1 {
                                         windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                                             Texture2DMSArray: windows::Win32::Graphics::Direct3D12::D3D12_TEX2DMS_ARRAY_SRV {
                                                 FirstArraySlice: 0,
@@ -5294,6 +5327,17 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+            // Feature-level 11.0 has a mandated 3D dimension limit.
+            // Native texture3D SRV/UAV creation is implemented in the
+            // resource-table path below.
+            gfx_core::TextureVolumeCapabilities {
+                max_dimension_3d: windows::Win32::Graphics::Direct3D12::D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+                sampled: true,
+                storage: true,
+            }
+        }
+
         fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
             // FL11.0 guarantees these D3D12 resource limits; they are not
             // queryable per adapter. Dynamic indexed sampling for Generated
@@ -6244,12 +6288,18 @@ mod platform {
                 windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         }
         let resource_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Dimension: if matches!(desc.dimension, TextureDimension::D3 { .. }) {
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_DIMENSION_TEXTURE3D
+            } else {
+                D3D12_RESOURCE_DIMENSION_TEXTURE2D
+            },
             Alignment: 0,
             Width: u64::from(desc.size.width()),
             Height: desc.size.height(),
-            DepthOrArraySize: u16::try_from(desc.dimension.layers()).map_err(|_| {
-                Error::InvalidInput("D3D12 texture array layer count exceeds u16".into())
+            DepthOrArraySize: u16::try_from(
+                desc.dimension.layers().max(desc.dimension.mip_depth(0))
+            ).map_err(|_| {
+                Error::InvalidInput("D3D12 texture Z extent/array layers exceeds u16".into())
             })?,
             MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
                 Error::InvalidInput(format!("texture mip level count overflow: {error}"))
