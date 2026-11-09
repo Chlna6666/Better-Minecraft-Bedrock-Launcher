@@ -42,6 +42,9 @@ pub(super) struct RendererRegistry {
     /// extension must never mark another renderer's failed/old submission
     /// as published.
     submitted_types: Vec<TypeId>,
+    /// Native producers in scene traversal order. GPUI does not build or
+    /// batch their gfx-core passes; it only invokes them on the GPU owner.
+    native_producers: Vec<TypeId>,
     /// True only when every producer in the current frame explicitly opts
     /// into a native secondary graphics queue. No role mixing across one
     /// shared render-to-textures submission.
@@ -66,6 +69,7 @@ impl RendererRegistry {
         // A previous submit may have failed after draining producer passes.
         // Do not carry its pending acknowledgements to an unrelated frame.
         self.submitted_types.clear();
+        self.native_producers.clear();
     }
     pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
         &self.passes
@@ -73,6 +77,36 @@ impl RendererRegistry {
     pub(super) fn compute_passes(&self) -> &[crate::RendererExtensionComputePass] {
         &self.compute_passes
     }
+    /// Invoke each native producer at most once for this owner frame.
+    ///
+    /// A successful SubmissionId is registered immediately, before another
+    /// producer or any UI operation can fail. The producer independently
+    /// owns the internal Graphics/Compute scheduling; the host only tracks
+    /// the native fence and runs the final UI sampler consumer afterward.
+    pub(super) fn submit_native_offscreen(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        mut register: impl FnMut(gfx_core::SubmissionId),
+    ) -> Result<usize> {
+        let mut submitted = 0;
+        for type_id in std::mem::take(&mut self.native_producers) {
+            let renderer = self.renderers.get_mut(&type_id)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "native producer was removed before GPU submission"
+                ))?;
+            if !renderer.has_native_offscreen_work() {
+                continue;
+            }
+            let submission = renderer.submit_native_offscreen(device)?;
+            if let Some(submission) = submission {
+                register(submission);
+            }
+            renderer.render_passes_submitted();
+            submitted += 1;
+        }
+        Ok(submitted)
+    }
+
     pub(super) fn needs_gpu_completion(&self) -> bool {
         self.renderers
             .values()
@@ -113,6 +147,11 @@ impl RendererRegistry {
         renderer.drain_compute_passes(&mut self.compute_passes);
         let new_compute = &mut self.compute_passes[compute_before..];
         rebase_compute_passes(new_compute, before, self.passes.len() - before)?;
+        if renderer.has_native_offscreen_work()
+            && !self.native_producers.contains(&type_id)
+        {
+            self.native_producers.push(type_id);
+        }
         if self.passes.len() > before || !new_compute.is_empty() {
             // A mixed sequence must stay on the GPU owner's ordered primary
             // queue, even when the renderer otherwise prefers an independent
