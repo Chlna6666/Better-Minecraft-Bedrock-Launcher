@@ -2557,6 +2557,7 @@ impl VulkanDevice {
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         let submission = self.submissions.insert(VulkanSubmission {
             fence: present_frame.fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: false,
         });
         self.poll_cleanup();
@@ -2691,7 +2692,11 @@ impl VulkanDevice {
         encoder: CommandEncoderId,
     ) -> Result<SubmissionId> {
         let fence = self.submit_command_encoder_deferred_to_fence(encoder)?;
-        Ok(self.submissions.insert(VulkanSubmission { fence, owned_by_submission: false }))
+        Ok(self.submissions.insert(VulkanSubmission {
+            fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
+            owned_by_submission: false,
+        }))
     }
 
     fn submit_command_encoder_deferred_to_fence(
@@ -4799,6 +4804,7 @@ impl SubmissionDevice for VulkanDevice {
         }
         Ok(self.submissions.insert(VulkanSubmission {
             fence,
+            queue,
             owned_by_submission: true,
         }))
     }
@@ -4904,6 +4910,7 @@ impl SubmissionDevice for VulkanDevice {
         }
         Ok(self.submissions.insert(VulkanSubmission {
             fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: true,
         }))
     }
@@ -5752,6 +5759,9 @@ struct VulkanQueueWait {
 #[derive(Clone, Copy)]
 struct VulkanSubmission {
     fence: vk::Fence,
+    /// Actual native queue that signaled this fence. Never infer this from
+    /// the shader stage or SubmissionId arena index.
+    queue: gfx_core::GpuQueueId,
     /// A pure queue checkpoint owns its fence directly; command encoders and
     /// swapchains retire their own fences through existing GPU owners.
     owned_by_submission: bool,
