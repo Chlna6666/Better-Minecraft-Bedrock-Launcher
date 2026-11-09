@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn compute_pass_insertion_requires_an_interior_graphics_boundary() {
         let dispatch = gfx_core::ComputeBindGroupDispatch {
-            shader: ShaderModuleId::from_parts(1, 1),
+            shader: gfx_core::ShaderModuleId::from_parts(1, 1),
             bind_group: BindGroupId::from_parts(2, 1),
             workgroups: [1; 3],
         };
