@@ -72,6 +72,7 @@ use thiserror::Error as ThisError;
 
 pub use backend::{
     Backend, CommandDevice, Device, DiagnosticsDevice, FrameGpuTimestamps, PipelineDevice,
+    OffscreenQueuePreference, OffscreenSubmissionDevice,
     PresentTimings, PresentationDevice, PresentedFrame, ResourceDevice, SubmissionDevice,
     SurfaceDevice, TextureTransferDevice,
 };
