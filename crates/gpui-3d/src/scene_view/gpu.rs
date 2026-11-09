@@ -954,6 +954,45 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn native_compute_reads_and_writes_retire_by_its_own_physical_queue_fence() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1300, 1);
+        let queue = GpuQueueId { family: 0, index: 2 };
+        let compute = gfx_core::SubmissionId::from_parts(1301, 1);
+        let graphics = gfx_core::SubmissionId::from_parts(1302, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 448, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![(128, 64), (256, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let changed = [
+            (ArenaAllocation { page: 0, offset: 128, bytes: 64 }, GpuAccess::StorageWrite),
+            (ArenaAllocation { page: 0, offset: 256, bytes: 64 }, GpuAccess::ReadBuffer),
+        ];
+        arena.register_native_compute_allocations(compute, queue, &changed, &[]).unwrap();
+        for &(allocation, _) in &changed {
+            let span = GpuResourceSpan::buffer(buffer, allocation.offset, allocation.bytes).unwrap();
+            arena.retirements.push(RetiredMeshRange {
+                page: 0, offset: allocation.offset, bytes: allocation.bytes,
+                dependencies: arena.native_work.retirement(&[span]),
+                fallback: vec![], needs_primary_proof: true,
+            });
+        }
+        assert!(arena.native_work.retirement(&[
+            GpuResourceSpan::buffer(buffer, 384, 32).unwrap(),
+        ]).safe_to_reuse());
+        arena.gpu_submission_accepted(graphics);
+        arena.gpu_submission_completed(graphics);
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        assert_eq!(arena.retirements.len(), 2);
+        arena.gpu_submission_completed(compute);
+        assert!(arena.retirements.is_empty());
+        assert_eq!(arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64), (256, 64)]);
+    }
+
+    #[test]
     fn native_copy_writer_retains_exact_mesh_range_until_its_own_queue_fence() {
         use gfx_core::{GpuBufferCopy, GpuQueueId, GpuResourceSpan};
         let buffer = BufferId::from_parts(1200, 1);
