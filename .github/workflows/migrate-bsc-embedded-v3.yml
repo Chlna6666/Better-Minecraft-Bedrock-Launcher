@@ -1,0 +1,47 @@
+name: One-time BSC embedded model v3 migration
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/migrate-bsc-embedded-v3.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  convert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Convert committed v2 embedded resource into v3
+        run: python3 scripts/convert_embedded_bsc_v2_once.py
+      - name: Validate converted archive and references
+        run: |
+          python3 - <<'PY'
+          import json,struct,zipfile
+          p='crates/bedrock-block-model/generated/bsc_models.bin'
+          with zipfile.ZipFile(p) as z:
+              m=json.loads(z.read('manifest.json'))
+              assert m['shared_geometry_pool_schema']==3
+              b=z.read('geometry_pool.bin')
+              assert b[:8]==b'BSCPOOL3'
+              assert struct.unpack_from('<I',b,8)[0]==3
+              assert 'geometry_pool.json' not in z.namelist()
+          PY
+          python3 scripts/test_pack_bsc_v3.py
+      - name: Ensure runtime model crate accepts the migrated embedded resource
+        run: cargo test -p bedrock-block-model --test capture_library
+      - name: Commit v3 artifact and delete one-time migration support
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/convert_embedded_bsc_v2_once.py .github/workflows/migrate-bsc-embedded-v3.yml
+          git add crates/bedrock-block-model/generated/bsc_models.bin
+          git commit -m "data: replace embedded BSC v2 archive with numeric Geometry Pool v3"
+          git push origin HEAD:master
