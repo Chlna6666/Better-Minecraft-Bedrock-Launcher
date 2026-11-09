@@ -30,7 +30,7 @@ fn surface_normal(input:VoxelOutput,draw:DrawParams)->vec3<f32> {
     if(abs(det)<0.00001){return n;}
     let t=normalize((dp1*du2.y-dp2*du1.y)/det);
     let b=normalize((-dp1*du2.x+dp2*du1.x)/det);
-    let mapped=textureSample(normal_texture,material_sampler,input.uv).xyz*2.0-vec3<f32>(1.0);
+    let mapped=textureSampleGrad(normal_texture,material_sampler,voxel_tiled_uv(input),dpdx(input.uv),dpdy(input.uv)).xyz*2.0-vec3<f32>(1.0);
     n=normalize(t*mapped.x+b*mapped.y+n*mapped.z);
     return n;
 }
@@ -45,7 +45,7 @@ fn shade_surface(input:VoxelOutput,draw:DrawParams,color:vec3<f32>)->vec3<f32> {
     let v=normalize(frame.camera_position-input.world_position);
     var metallic=draw.metallic;var roughness=draw.roughness;var emission=0.0;
     if(frame.voxel_settings.x==0.0 && (draw.texture_flags&8u)!=0u){
-        let sample=textureSample(material_texture,material_sampler,input.uv);
+        let sample=textureSampleGrad(material_texture,material_sampler,voxel_tiled_uv(input),dpdx(input.uv),dpdy(input.uv));
         if((draw.texture_flags&16u)!=0u){metallic=sample.r;roughness=sample.b;emission=sample.g;}
         else{metallic*=sample.b;roughness*=sample.g;}
     }
