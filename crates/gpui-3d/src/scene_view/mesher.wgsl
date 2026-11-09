@@ -90,10 +90,22 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,span:u32){
 // A 16-cell tile cap bounds each GPU invocation's traversal cost.
 fn visible_run(cell:u32,kind:u32,face:Face)->u32 {
     if(params.origin.w<0.5){return 1u;}
+    var uv_min=vec2<f32>(1.0e20);
+    var uv_max=vec2<f32>(-1.0e20);
     for(var i=0u;i<4u;i++){
         let v=face.vertices[i];
         let p=vec3<f32>(v.x,v.y,v.z);
         if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0)))){return 1u;}
+        uv_min=min(uv_min,vec2<f32>(v.u,v.v));
+        uv_max=max(uv_max,vec2<f32>(v.u,v.v));
+    }
+    // Textures with sub-rectangular atlas UVs cannot safely repeat through
+    // fract(), even when neighboring cubes share a material identifier.
+    for(var axis=0u;axis<2u;axis++){
+        if(uv_max[axis]-uv_min[axis]>0.00001 &&
+            (abs(uv_min[axis])>0.00001 || abs(uv_max[axis]-1.0)>0.00001)){
+            return 1u;
+        }
     }
     let delta=bitcast<i32>(face.info.y);
     // For +/-X faces the horizontal tangent is Z. For Y/Z faces use X.
