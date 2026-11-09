@@ -2131,12 +2131,27 @@ fn spawn_process_monitor(
                 }
             }
         };
+        use std::os::unix::process::ExitStatusExt as _;
+        let mut crash_report = crash_report;
+        crash_report.exit_signal = process_status.as_ref().ok().and_then(|status| status.signal());
         let result_for_report = process_status.as_ref()
-            .map(|status| status.code().map_or(u32::MAX, |code| code as u32))
+            .map(|status| status.code().map_or_else(
+                || status.signal().map_or(u32::MAX, |signal| 128 + signal as u32),
+                |code| code as u32,
+            ))
             .map_err(ToString::to_string);
-        let completed = crash_report.finish(result_for_report);
-        if completed.kind.is_abnormal() {
-            append_task_log(&task_id, completed.summary.clone());
+        // File writes and log redaction must not block the I/O runtime while
+        // waiting for the final stdout/stderr pumps and game-time checkpoint.
+        match crate::tasks::runtime::run_io_blocking(move || {
+            crash_report.finish(result_for_report)
+        }).await {
+            Ok(completed) if completed.kind.is_abnormal() => {
+                append_task_log(&task_id, completed.summary.clone());
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(task_id, %error, "failed to persist Linux game diagnostics");
+            }
         }
         match process_status {
             Ok(status) => {
