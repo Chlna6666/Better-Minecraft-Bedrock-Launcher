@@ -281,7 +281,17 @@ fn verify_attribute_mrt_matches_split<D: Device + TextureTransferDevice>(
     let mut combined = RendererResources::new_pass(
         device, &mrt_local, Some(&renderer.hdr), PassKind::AttributesMrt,
     ).unwrap();
-    let scene = &renderer.scenes[&view.id].scene;
+    // Never mutate the production SceneResources' persistent binding cache
+    // when building temporary MRT-reference renderers. The old test used the
+    // production object and invalidated its bind groups before the next draw,
+    // causing native Vulkan's "stale or invalid bind group handle" failure.
+    let mut scene = super::super::super::scene::SceneResources::new(
+        device, D::BACKEND_KIND,
+    ).unwrap();
+    let mut shading = view.voxel_shading;
+    shading.shadow_strength = 0.0;
+    let reference_view = view.with_voxel_shader().with_voxel_shading(shading).unwrap();
+    scene.prepare(device, &mut reference_surface, &reference_view, &local).unwrap();
     for (renderer, target) in [
         (&reference_surface, &targets[0]),
         (&reference_albedo, &targets[1]),
@@ -318,6 +328,7 @@ fn verify_attribute_mrt_matches_split<D: Device + TextureTransferDevice>(
             "MRT attribute {index} was never populated"
         );
     }
+    scene.destroy(device).unwrap();
     combined.destroy(device).unwrap();
     reference_albedo.destroy(device).unwrap();
     reference_surface.destroy(device).unwrap();
