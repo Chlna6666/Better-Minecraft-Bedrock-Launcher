@@ -48,7 +48,9 @@ zstd = "0.14.0"
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx"] }
-gpui-3d = { path = "crates/gpui-3d" }
+# BMCBL always requires native 3D editor sidecar integration even if the
+# reusable gpui-3d crate changes its standalone defaults in the future.
+gpui-3d = { path = "crates/gpui-3d", default-features = false, features = ["gpui-sidecar"] }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui-router = { version = "0.5.0", default-features = false, features = ["gpui"] }
 gpui_hooks = { path = "crates/gpui-hooks" }
