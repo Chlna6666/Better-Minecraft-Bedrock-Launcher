@@ -982,6 +982,14 @@ pub fn import_files_batch_cancellable(
 ) -> Result<(usize, usize)> {
     let mut success = 0;
     let mut fail = 0;
+    let file_count = files.len();
+    info!(
+        target: "bmcbl::operation",
+        operation = "资源包/世界批量导入",
+        count = file_count,
+        overwrite,
+        "开始导入选中的文件"
+    );
 
     debug!(
         "Import batch start: count={}, build={:?}, edition={:?}, version={}, isolation={}, user_id={:?}, overwrite={}",
@@ -994,14 +1002,29 @@ pub fn import_files_batch_cancellable(
         overwrite
     );
 
-    for file_path in files {
+    for (index, file_path) in files.into_iter().enumerate() {
         if is_cancelled() {
+            info!(target: "bmcbl::operation", operation = "资源包/世界批量导入", "导入已取消");
             return Err(anyhow::anyhow!("导入已取消"));
         }
 
         let path = PathBuf::from(&file_path);
+        let kind = match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("mcworld") => "地图",
+            Some(ext) if ext.eq_ignore_ascii_case("mcpack") => "资源包",
+            Some(ext) if ext.eq_ignore_ascii_case("mcaddon") => "附加包",
+            Some(ext) if ext.eq_ignore_ascii_case("mctemplate") => "世界模板",
+            _ => "压缩包/其他资源",
+        };
+        info!(
+            target: "bmcbl::operation",
+            operation = "资源包/世界批量导入",
+            kind, item = index + 1, count = file_count,
+            "正在导入文件"
+        );
         if !path.exists() {
             warn!("Import skipped (file not found): {}", file_path);
+            warn!(target: "bmcbl::operation", kind, item = index + 1, "跳过不存在的导入文件");
             fail += 1;
             continue;
         }
@@ -1009,11 +1032,13 @@ pub fn import_files_batch_cancellable(
         match process_single_archive(&path, options, overwrite) {
             Ok(_) => {
                 debug!("Import success: {}", file_path);
+                info!(target: "bmcbl::operation", kind, item = index + 1, "文件导入成功");
                 success += 1;
                 cleanup_compound_cache_for_file(&path);
             }
             Err(e) => {
                 error!("Failed to import {}: {:?}", file_path, e);
+                error!(target: "bmcbl::operation", kind, item = index + 1, "文件导入失败");
                 fail += 1;
             }
         }
@@ -1021,9 +1046,16 @@ pub fn import_files_batch_cancellable(
         // A single package commits transactionally. If cancellation arrives while that commit is
         // in progress, finish the atomic commit/rollback first, then stop before the next package.
         if is_cancelled() {
+            info!(target: "bmcbl::operation", operation = "资源包/世界批量导入", "导入已取消");
             return Err(anyhow::anyhow!("导入已取消"));
         }
     }
+    info!(
+        target: "bmcbl::operation",
+        operation = "资源包/世界批量导入",
+        count = file_count, success, failed = fail,
+        "批量导入结束"
+    );
     debug!("Import batch done: success={}, fail={}", success, fail);
     Ok((success, fail))
 }

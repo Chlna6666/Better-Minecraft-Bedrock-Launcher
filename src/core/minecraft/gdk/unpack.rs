@@ -24,8 +24,10 @@ pub fn start_unpack_gdk_task(
     let folder_name = folder_name.to_string();
     let version_dir = file_ops::bmcbl_subdir("versions").join(&folder_name);
     info!(
-        "start gdk unpack task: {}, input: {:?}, output: {:?}",
-        task_id, input_path_buf, version_dir
+        target: "bmcbl::operation",
+        task_id = %task_id,
+        operation = "GDK 安装",
+        "已创建 GDK 本地安装任务"
     );
 
     spawn_archive_task(task_id.clone(), {
@@ -77,8 +79,10 @@ fn run_unpack_gdk_task(
     match stream.extract_to(&version_dir, task_id.clone()) {
         Ok(()) => {
             info!(
-                "GDK 解包任务完成: task_id={}, folder_name={}, input={:?}, output={:?}",
-                task_id, folder_name, input_path, version_dir
+                target: "bmcbl::operation",
+                task_id = %task_id,
+                operation = "GDK 安装",
+                "GDK 解包完成"
             );
             finish_task(
                 &task_id,

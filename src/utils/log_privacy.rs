@@ -1,0 +1,72 @@
+//! Redaction at the final logging sink: apply this to both managed logs and consoles.
+//! Avoid transforming business data; this protects *diagnostic output* only.
+use once_cell::sync::Lazy;
+use regex::Regex;
+use std::borrow::Cow;
+
+static URL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]{1,20}://[^\s"'<>]+"#).expect("valid URL regex")
+});
+static SECRET: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)\b(?:authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|password|passwd|secret|client[_-]?secret|api[_-]?key|apikey|cookie|session[_-]?key|xsts|xuid|uhs|user[_-]?id|username|gamertag|display_name|world_root|source_url|target_exe_path)\s*[:=]\s*(?:Some\([^)\r\n]*\)|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)"#,
+    ).expect("valid secret-field regex")
+});
+static BEARER: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9_~+/=.-]{8,}").expect("valid bearer regex")
+});
+static EMAIL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("valid email regex")
+});
+static QUOTED_PATH: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)"(?:[a-z]:\\+|\\\\+|/(?:home|users|root|tmp|mnt|media|private)/)[^"\r\n]*"|'(?:[a-z]:\\+|\\\\+|/(?:home|users|root|tmp|mnt|media|private)/)[^'\r\n]*'"#,
+    ).expect("valid quoted-path regex")
+});
+static ABSOLUTE_PATH: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:[a-z]:\\+|\\\\+|/(?:home|users|root|tmp|mnt|media|private)/)[^\s"'<>\]\)\},;]+"#,
+    ).expect("valid absolute-path regex")
+});
+
+/// Protect log files, DevTools' latest.log tail, and the optional OS console.
+/// The regular expressions execute on the asynchronous file-writer thread for
+/// managed logs, never on UI, scene, download-progress or GPU-owner hot paths.
+pub(crate) fn redact_log_text(input: &str) -> Cow<'_, str> {
+    if input.is_empty() {
+        return Cow::Borrowed(input);
+    }
+    let mut text = Cow::Borrowed(input);
+    text = SECRET.replace_all(&text, "[敏感字段]");
+    text = BEARER.replace_all(&text, "[认证信息]");
+    text = URL.replace_all(&text, "[URL]");
+    text = EMAIL.replace_all(&text, "[邮箱]");
+    text = QUOTED_PATH.replace_all(&text, "[本地路径]");
+    text = ABSOLUTE_PATH.replace_all(&text, "[本地路径]");
+    Cow::Owned(text.into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_credentials_urls_paths_and_email() {
+        let example = r#"source_url=https://example.com/private?token=abcd access_token=abcd1234 Authorization:Bearer-secret username=alice path="C:\Users\Alice\My Worlds\private.mcworld" /home/alice/.config/secret test@example.org"#;
+        let output = redact_log_text(example);
+        for secret in [
+            "example.com", "abcd1234", "alice", "My Worlds", "/home/alice",
+            "test@example.org",
+        ] {
+            assert!(!output.to_lowercase().contains(&secret.to_lowercase()), "{output}");
+        }
+        assert!(output.contains("[URL]"));
+        assert!(output.contains("[本地路径]"));
+    }
+
+    #[test]
+    fn keeps_task_identifiers_and_progress_metrics() {
+        let line = "INFO bmcbl::operation task_id=task-13-17000 stage=map_export chunks=128 elapsed_ms=240";
+        assert_eq!(redact_log_text(line).as_ref(), line);
+    }
+}

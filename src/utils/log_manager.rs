@@ -273,10 +273,14 @@ fn write_log_batch(state: &Mutex<ActiveLog>, batch: &mut Vec<u8>, dropped: &Atom
         return;
     }
 
+    // Redaction is intentionally performed by the existing background writer,
+    // after event batching. It never blocks tracing emitters or the GPU thread.
+    let decoded = String::from_utf8_lossy(batch);
+    let redacted = crate::utils::log_privacy::redact_log_text(&decoded);
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Err(error) = state.write_event(batch) {
+    if let Err(error) = state.write_event(redacted.as_bytes()) {
         eprintln!("Failed to write application log event: {error}");
     }
     batch.clear();

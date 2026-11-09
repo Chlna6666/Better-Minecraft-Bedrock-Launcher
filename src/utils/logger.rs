@@ -202,6 +202,35 @@ where
     }
 }
 
+// Optional attached terminal output is redacted too. A complete formatted event
+// is accumulated before writing, so tokens split across fmt::Write calls cannot leak.
+#[derive(Default)]
+struct RedactedConsoleWriter {
+    bytes: Vec<u8>,
+}
+
+impl std::io::Write for RedactedConsoleWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for RedactedConsoleWriter {
+    fn drop(&mut self) {
+        if self.bytes.is_empty() {
+            return;
+        }
+        let decoded = String::from_utf8_lossy(&self.bytes);
+        let output = crate::utils::log_privacy::redact_log_text(&decoded);
+        let _ = std::io::stdout().lock().write_all(output.as_bytes());
+    }
+}
+
 // 自定义启动时间计时器
 struct UptimeTimer;
 
@@ -228,6 +257,8 @@ fn elapsed_time() -> String {
 }
 
 fn append_crash_line(message: &str) {
+    let safe_message = crate::utils::log_privacy::redact_log_text(message);
+    let message = safe_message.as_ref();
     // Keep crash diagnostics after the buffered context instead of racing the
     // asynchronous writer. This only runs on panic/unhandled-exception paths.
     let _ = crate::utils::log_manager::flush_async_logs(Duration::from_millis(200));
@@ -379,6 +410,7 @@ pub fn init_logging(
     // 线程不应为看不见的控制台承担格式化与管道写入成本。
     let console_enabled = console_output && std::io::stdout().is_terminal();
     let console_layer = tracing_subscriber::fmt::layer()
+        .with_writer(RedactedConsoleWriter::default)
         .with_timer(UptimeTimer) // 使用启动时间计时器
         .with_ansi(console_enabled) // 控制台输出时使用 ANSI 转义字符
         .with_target(true) // 显示目标模块

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::{Notify, broadcast};
 use tokio::task::AbortHandle;
-use tracing::debug;
+use tracing::{debug, error, info, warn};
 
 const TASK_EMIT_INTERVAL_MS: u128 = 100;
 const TASK_EVENT_BATCH_LIMIT: usize = 256;
@@ -573,6 +573,107 @@ fn clear_task_cancel_hook(task_id: &str) {
     TASK_CANCEL_HOOKS.lock().unwrap().remove(task_id);
 }
 
+/// A bounded, privacy-preserving operation label. Task titles/details can contain
+/// user-defined instance names, file names and paths; do not serialize them.
+fn operation_category(title: &str, stage: &str) -> &'static str {
+    if stage.starts_with("map_")
+        || title.contains("区块")
+        || title.contains("区域包")
+        || title.contains("结构")
+        || title.contains("地图")
+        || title.contains("世界")
+        || title.contains("模型")
+    {
+        if stage.contains("export") || title.contains("导出") {
+            "地图/模型导出"
+        } else if stage.contains("import") || title.contains("导入") {
+            "地图/结构导入"
+        } else if stage.contains("copy") || title.contains("复制") {
+            "地图区块复制"
+        } else {
+            "地图编辑"
+        }
+    } else if title.contains("资源包") || title.contains("材质包") || title.contains("附加包") {
+        if title.contains("导入") || title.contains("添加") {
+            "资源包导入"
+        } else if title.contains("导出") {
+            "资源包导出"
+        } else {
+            "资源包管理"
+        }
+    } else if title.contains("导入") || title.contains("Import") {
+        "文件/版本导入"
+    } else if title.contains("导出") || title.contains("Export") {
+        "数据导出"
+    } else if title.contains("更新") || title.contains("Update") {
+        "程序/组件更新"
+    } else if title.contains("下载") || title.contains("Download") || stage == "downloading" {
+        "下载"
+    } else if title.contains("安装") || title.contains("Install") || stage == "installing" {
+        "安装"
+    } else if title.contains("启动") || title.contains("Launch") || stage == "launching" {
+        "启动"
+    } else if title.contains("添加") || title.contains("Add") {
+        "添加"
+    } else if title.contains("删除") || title.contains("移除") {
+        "删除"
+    } else {
+        "后台任务"
+    }
+}
+
+fn safe_operation_field(input: &str) -> &str {
+    if input.len() <= 80
+        && !input.is_empty()
+        && input.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+    {
+        input
+    } else {
+        "[已隐藏]"
+    }
+}
+
+fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
+    if snapshot.visibility == TaskVisibility::Hidden {
+        return;
+    }
+    let category = operation_category(&snapshot.title, &snapshot.stage);
+    let task_id = safe_operation_field(&snapshot.id);
+    let stage = safe_operation_field(&snapshot.stage);
+    match event {
+        "error" => error!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "操作失败；可在任务面板查看详细原因"
+        ),
+        "cancelled" => warn!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "操作已取消"
+        ),
+        "cancelling" => info!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "正在取消操作并清理资源"
+        ),
+        "completed" => info!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "操作已完成"
+        ),
+        "stage" => info!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "操作进入新阶段"
+        ),
+        _ => info!(
+            target: "bmcbl::operation",
+            operation = category, task_id, stage, event,
+            "操作已开始"
+        ),
+    }
+}
+
 pub fn create_task(id_opt: Option<String>, initial_stage: &str, total: Option<u64>) -> String {
     create_task_with_options(id_opt, initial_stage, total, false)
 }
@@ -631,6 +732,7 @@ pub fn create_task_with_details_and_visibility(
     register_task_control(id.clone(), Arc::new(TaskControl::new()));
 
     debug!("task_manager: created task {}", id);
+    record_operation_event(&snapshot, "started");
     emit_task_update(snapshot);
     id
 }
@@ -750,6 +852,7 @@ fn update_progress_inner(
     visualization: Option<TaskVisualization>,
 ) {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    let mut stage_changed = false;
 
     {
         let mut map = TASKS.lock().unwrap();
@@ -757,7 +860,7 @@ fn update_progress_inner(
             if is_terminal_status(t.status.as_ref()) {
                 return;
             }
-            let stage_changed = stage.is_some_and(|next_stage| next_stage != t.stage.as_ref());
+            stage_changed = stage.is_some_and(|next_stage| next_stage != t.stage.as_ref());
             if let Some(tt) = total {
                 t.total = Some(tt);
             }
@@ -816,6 +919,9 @@ fn update_progress_inner(
     }
 
     if let Some(snap) = snapshot_to_emit {
+        if stage_changed {
+            record_operation_event(&snap, "stage");
+        }
         emit_task_update(snap);
     }
 }
@@ -904,6 +1010,7 @@ pub fn set_total(task_id: &str, total: Option<u64>) {
 
 pub fn reset_progress(task_id: &str, total: Option<u64>, stage: Option<&str>) {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    let mut stage_changed = false;
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
@@ -917,6 +1024,7 @@ pub fn reset_progress(task_id: &str, total: Option<u64>, stage: Option<&str>) {
             t.last_instant = Instant::now();
             t.visualization = Arc::new(TaskVisualization::default());
             if let Some(stage) = stage {
+                stage_changed = t.stage.as_ref() != stage;
                 t.stage = Arc::from(stage);
             }
             t.touch();
@@ -925,6 +1033,9 @@ pub fn reset_progress(task_id: &str, total: Option<u64>, stage: Option<&str>) {
     }
 
     if let Some(snap) = snapshot_to_emit {
+        if stage_changed {
+            record_operation_event(&snap, "stage");
+        }
         emit_task_update(snap);
     }
 }
@@ -976,10 +1087,12 @@ pub fn maybe_set_task_visualization(
 
 pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    let mut was_terminal = false;
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            if is_terminal_status(t.status.as_ref()) && t.status.as_ref() != status {
+            was_terminal = is_terminal_status(t.status.as_ref());
+            if was_terminal && t.status.as_ref() != status {
                 return;
             }
             t.status = Arc::from(status);
@@ -1021,6 +1134,9 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
             message = snap.message.as_deref().unwrap_or(""),
             "task_manager: task finished"
         );
+        if !was_terminal {
+            record_operation_event(&snap, status);
+        }
         emit_task_update(snap);
     }
 
@@ -1076,6 +1192,10 @@ pub fn cancel_task(task_id: &str) {
         t.snapshot()
     };
 
+    record_operation_event(
+        &snapshot_to_emit,
+        if cooperative { "cancelling" } else { "cancelled" },
+    );
     emit_task_update(snapshot_to_emit);
     if let Some(control) = task_control(task_id) {
         control.cancel();
