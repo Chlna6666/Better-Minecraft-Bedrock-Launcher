@@ -592,6 +592,7 @@ impl SceneResources {
         &mut self,
         submission: Option<gfx_core::SubmissionId>,
     ) {
+        self.arena.native_draw_submitted(submission);
         self.stable_slots.draw_producer_submitted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_producer_submitted(submission);
@@ -606,6 +607,7 @@ impl SceneResources {
         &mut self,
         submission: gfx_core::SubmissionId,
     ) {
+        self.arena.gpu_submission_accepted(submission);
         self.stable_slots.submission_accepted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_submission_accepted(submission);
@@ -616,6 +618,7 @@ impl SceneResources {
         &mut self,
         submission: gfx_core::SubmissionId,
     ) {
+        self.arena.gpu_submission_completed(submission);
         self.stable_slots.submission_completed(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_submission_completed(submission);
