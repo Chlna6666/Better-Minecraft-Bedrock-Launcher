@@ -2055,52 +2055,65 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     crate::tasks::runtime::spawn_io(async move {
+        // read_until() can allocate without limit when a buggy runner prints
+        // an unterminated line. Use fixed-size reads and bounded line storage.
+        const MAX_RUNNER_LINE: usize = 4096;
         let mut reader = BufReader::new(reader);
-        let mut line_bytes = Vec::with_capacity(1024);
+        let mut chunk = [0u8; 8192];
+        let mut line_bytes = Vec::with_capacity(MAX_RUNNER_LINE);
+        let record = |bytes: &[u8]| {
+            let line = String::from_utf8_lossy(bytes);
+            let prefix = if is_error { "runner stderr" } else { "runner" };
+            if let Some(kind) =
+                crate::core::minecraft::diagnostics::classify_compatibility_output(&line)
+                && let Some(first_fault) = &first_fault
+            {
+                let mut found = first_fault
+                    .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if found.is_none()
+                    || kind == crate::core::minecraft::diagnostics::CompatibilityFault::WineUnhandledException
+                {
+                    *found = Some(kind);
+                }
+            }
+            let displayed = normalize_runner_output_line(&line)
+                .trim_end_matches('\r').to_string();
+            let log_line = format!("{prefix}: {displayed}");
+            if publish_to_task.as_ref()
+                .is_none_or(|publish| publish.load(Ordering::Acquire))
+            {
+                append_task_log(&task_id, log_line.clone());
+            } else if is_error {
+                debug!(task_id, line=%displayed, "compatibility runner stderr");
+            }
+            if let Some(failure) = classify_runner_failure(&line)
+                && let Some(sender) = failure_sender.as_ref()
+                && let Err(error) = sender.send(failure)
+            {
+                debug!(task_id, %error, "runner failure receiver already closed");
+            }
+            let mut output = recent_output.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if output.len() >= RECENT_RUNNER_OUTPUT_LIMIT {
+                output.pop_front();
+            }
+            output.push_back(log_line);
+        };
         loop {
-            line_bytes.clear();
-            match reader.read_until(b'\n', &mut line_bytes).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    // Wine writes locale-dependent stdout/stderr. Invalid UTF-8
-                    // must not silently stop the crash-evidence stream.
-                    let line = String::from_utf8_lossy(&line_bytes);
-                    let prefix = if is_error { "runner stderr" } else { "runner" };
-                    if let Some(kind) =
-                        crate::core::minecraft::diagnostics::classify_compatibility_output(&line)
-                        && let Some(first_fault) = &first_fault
-                    {
-                        let mut found = first_fault
-                            .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        if found.is_none()
-                            || kind == crate::core::minecraft::diagnostics::CompatibilityFault::WineUnhandledException
-                        {
-                            *found = Some(kind);
+            match tokio::io::AsyncReadExt::read(&mut reader, &mut chunk).await {
+                Ok(0) => {
+                    if !line_bytes.is_empty() { record(&line_bytes); }
+                    break;
+                }
+                Ok(size) => {
+                    for &byte in &chunk[..size] {
+                        if byte == b'\n' {
+                            record(&line_bytes);
+                            line_bytes.clear();
+                        } else if line_bytes.len() < MAX_RUNNER_LINE {
+                            line_bytes.push(byte);
                         }
                     }
-                    let normalized = normalize_runner_output_line(&line);
-                    let displayed = normalized.trim_end_matches(['\r', '\n'])
-                        .chars().take(4096).collect::<String>();
-                    let log_line = format!("{prefix}: {displayed}");
-                    if publish_to_task.as_ref()
-                        .is_none_or(|publish| publish.load(Ordering::Acquire))
-                    {
-                        append_task_log(&task_id, log_line.clone());
-                    } else if is_error {
-                        debug!(task_id, line=%displayed, "compatibility runner stderr");
-                    }
-                    if let Some(failure) = classify_runner_failure(&line)
-                        && let Some(sender) = failure_sender.as_ref()
-                        && let Err(error) = sender.send(failure)
-                    {
-                        debug!(task_id, %error, "runner failure receiver already closed");
-                    }
-                    let mut output = recent_output
-                        .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if output.len() >= RECENT_RUNNER_OUTPUT_LIMIT {
-                        output.pop_front();
-                    }
-                    output.push_back(log_line);
                 }
                 Err(error) => {
                     warn!(task_id, %error, "failed to read compatibility runner output");
