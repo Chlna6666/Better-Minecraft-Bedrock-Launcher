@@ -90,6 +90,14 @@ pub(in crate::scene_view) struct StableDrawSlots {
 }
 
 impl StableDrawSlots {
+    pub(in crate::scene_view) fn with_resident_buffers(
+        buffers: &[(gfx_core::BufferId, u64)],
+    ) -> Self {
+        let mut slots = Self::default();
+        slots.set_resident_buffers(buffers);
+        slots
+    }
+
     /// Associate physical slot storage with its current GPU buffer allocations.
     /// Replacing a backing buffer changes the allocation identity; old buffers
     /// are retired separately by the GPU owner, never silently aliased.
@@ -904,6 +912,61 @@ mod tests {
         assert!(slots.free.is_empty(), "the unknown native reader is not completed");
         slots.submission_completed(consumer);
         assert_eq!(slots.free, vec![0]);
+    }
+
+    #[test]
+    fn independent_compute_buffer_writer_pins_removed_physical_row() {
+        use gfx_core::{
+            GpuQueueId, GpuWorkStage, GpuAccess, GpuResourceSpan, GpuSubmissionAccess,
+            GpuSubmissionRecord,
+        };
+        let buffer = gfx_core::BufferId::from_parts(321, 1);
+        let foreign = gfx_core::BufferId::from_parts(322, 1);
+        let mut slots = StableDrawSlots::with_resident_buffers(&[(buffer, 80)]);
+        let original = draws(4);
+        let (mut slots, _) = slots.plan(&original).unwrap();
+        let async_queue = GpuQueueId { family: 7, index: 1 };
+        let compute = gfx_core::SubmissionId::from_parts(170, 1);
+        slots.register_native_access(GpuSubmissionRecord {
+            id: compute,
+            queue: async_queue,
+            stage: GpuWorkStage::Compute,
+            uses: vec![GpuSubmissionAccess {
+                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                access: GpuAccess::StorageReadWrite,
+            }],
+            gpu_waits: vec![],
+        }).unwrap();
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        assert!(slots.free.is_empty());
+        assert_eq!(slots.retired_by_submission.len(), 1);
+        assert_eq!(slots.retired_by_submission[0].gpu_dependency.pending().len(), 1);
+
+        // An unrelated GUI consumer on the primary queue cannot authorize
+        // recycling the physical row still owned by async Compute.
+        let ui = gfx_core::SubmissionId::from_parts(171, 1);
+        slots.submission_accepted(ui);
+        slots.submission_completed(ui);
+        assert!(slots.free.is_empty());
+        slots.submission_completed(compute);
+        assert_eq!(slots.free, vec![0]);
+
+        // Matching index on a different BufferId must not create a hazard.
+        let mut separate = StableDrawSlots::with_resident_buffers(&[(foreign, 80)]);
+        let (mut separate, _) = separate.plan(&original).unwrap();
+        separate.register_native_access(GpuSubmissionRecord {
+            id: compute,
+            queue: async_queue,
+            stage: GpuWorkStage::Compute,
+            uses: vec![GpuSubmissionAccess {
+                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                access: GpuAccess::StorageReadWrite,
+            }],
+            gpu_waits: vec![],
+        }).unwrap();
+        let (separate, _) = separate.plan(&original[1..]).unwrap();
+        assert!(separate.retired_by_submission.is_empty());
+        assert_eq!(separate.retired_unbound, vec![0]);
     }
 
     #[test]
