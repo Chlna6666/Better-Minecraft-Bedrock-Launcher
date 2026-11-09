@@ -106,6 +106,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     });
     PresentationDevice::render_to_textures(&mut device, &passes).unwrap();
     renderer.render_passes_submitted();
+    verify_attribute_mrt_matches_split(&mut device, &renderer, &context, &view);
     let pixels = TextureTransferDevice::read_texture(&mut device, target.texture).unwrap();
     let center = &pixels.bytes[(32 * 64 + 32) * 4..][..4];
     assert!(
@@ -227,6 +228,105 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     target.destroy(&mut device).unwrap();
     depth.destroy(&mut device).unwrap();
     PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
+}
+
+/// Per-backend render equivalence against the original two independent
+/// attribute passes. Both sides use the same native scene commands, single-
+/// sample format and depth state; only the fragment MRT output differs.
+fn verify_attribute_mrt_matches_split<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    renderer: &EffectsRenderer,
+    context: &RendererExtensionContext,
+    view: &SceneView,
+) {
+    let extent = renderer.scenes[&view.id].targets.extent;
+    let depth = Target::create(device, extent, Format::Depth32Float, true, 1).unwrap();
+    let targets = (0..4)
+        .map(|_| Target::create(device, extent, Format::Rgba16Float, false, 1).unwrap())
+        .collect::<Vec<_>>();
+    let single_pass = PipelineDevice::create_render_pass(
+        device,
+        &RenderPassDescriptor {
+            label: Some("MRT reference surface/albedo".into()),
+            color_attachments: vec![ColorAttachmentDescriptor { format: Format::Rgba16Float }],
+            depth_attachment: Some(DepthAttachmentDescriptor {
+                format: Format::Depth32Float,
+                stencil_format: None,
+            }),
+            sample_count: 1,
+            resolve_target: None,
+        },
+    ).unwrap();
+    let mrt_pass = PipelineDevice::create_render_pass(
+        device,
+        &RenderPassDescriptor {
+            label: Some("MRT comparison surface+albedo".into()),
+            color_attachments: vec![ColorAttachmentDescriptor { format: Format::Rgba16Float }; 2],
+            depth_attachment: Some(DepthAttachmentDescriptor {
+                format: Format::Depth32Float,
+                stencil_format: None,
+            }),
+            sample_count: 1,
+            resolve_target: None,
+        },
+    ).unwrap();
+    let local = context.offscreen(single_pass, Format::Rgba16Float, extent);
+    let mrt_local = context.offscreen(mrt_pass, Format::Rgba16Float, extent);
+    let mut reference_surface = RendererResources::new_pass(
+        device, &local, Some(&renderer.hdr), PassKind::Surface,
+    ).unwrap();
+    let mut reference_albedo = RendererResources::new_pass(
+        device, &local, Some(&renderer.hdr), PassKind::Albedo,
+    ).unwrap();
+    let mut combined = RendererResources::new_pass(
+        device, &mrt_local, Some(&renderer.hdr), PassKind::AttributesMrt,
+    ).unwrap();
+    let scene = &renderer.scenes[&view.id].scene;
+    for (renderer, target) in [
+        (&reference_surface, &targets[0]),
+        (&reference_albedo, &targets[1]),
+    ] {
+        let mut steps = Vec::new();
+        scene.append_steps(renderer, true, &mut steps).unwrap();
+        let capture = super::pass(
+            single_pass, target.view, depth.view, None, steps, true,
+        );
+        PresentationDevice::render_to_textures(device, &[capture.commands()]).unwrap();
+    }
+    let mut commands = Vec::new();
+    scene.append_steps(&combined, true, &mut commands).unwrap();
+    let mut capture = super::pass(
+        mrt_pass, targets[2].view, depth.view, None, commands, true,
+    );
+    capture.color_attachments = Arc::from([targets[2].view, targets[3].view]);
+    assert_eq!(capture.commands().color_attachments.len(), 2);
+    PresentationDevice::render_to_textures(device, &[capture.commands()]).unwrap();
+    // A complete byte comparison detects incorrect backend attachment mapping,
+    // channel swizzles, missing second target, and Shader output divergence.
+    for index in 0..2 {
+        let reference = TextureTransferDevice::read_texture(device, targets[index].texture)
+            .unwrap().bytes;
+        let actual = TextureTransferDevice::read_texture(device, targets[index+2].texture)
+            .unwrap().bytes;
+        assert_eq!(
+            reference, actual,
+            "MRT attribute {} differs from split pass on {:?}",
+            index, D::BACKEND_KIND
+        );
+        assert!(
+            actual.iter().any(|&byte| byte != 0),
+            "MRT attribute {index} was never populated"
+        );
+    }
+    combined.destroy(device).unwrap();
+    reference_albedo.destroy(device).unwrap();
+    reference_surface.destroy(device).unwrap();
+    PipelineDevice::destroy_render_pass(device, mrt_pass).unwrap();
+    PipelineDevice::destroy_render_pass(device, single_pass).unwrap();
+    for target in targets {
+        target.destroy(device).unwrap();
+    }
+    depth.destroy(device).unwrap();
 }
 
 fn draw<D: Device + TextureTransferDevice>(
