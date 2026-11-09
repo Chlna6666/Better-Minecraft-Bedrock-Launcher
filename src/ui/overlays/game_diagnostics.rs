@@ -396,6 +396,11 @@ fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
         lines.push(t!(
             "GameCrash.forensics.dump", count = evidence.minidumps.len(), code = code
         ).to_string());
+        if let Some(module) = evidence.minidumps.iter()
+            .find_map(|dump| dump.fault_module.as_deref())
+        {
+            lines.push(t!("GameCrash.forensics.module", module = module).to_string());
+        }
         lines.push(t!("GameCrash.forensics.dumpWarning").to_string());
     }
     lines
