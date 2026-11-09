@@ -582,6 +582,7 @@ impl SceneResources {
     }
     pub(super) fn has_retired_arena_ranges(&self) -> bool {
         self.arena.has_retired_ranges() || self.stable_slots.has_retired_slots()
+            || self.culling.as_ref().is_some_and(CullResources::has_retired_slots)
     }
 
     /// A final GPUI consumer on the same ordered native queue proves all
@@ -593,6 +594,9 @@ impl SceneResources {
         submission: gfx_core::SubmissionId,
     ) {
         self.stable_slots.submission_accepted(submission);
+        if let Some(culling) = self.culling.as_mut() {
+            culling.draw_submission_accepted(submission);
+        }
     }
 
     pub(super) fn draw_submission_completed(
@@ -600,11 +604,17 @@ impl SceneResources {
         submission: gfx_core::SubmissionId,
     ) {
         self.stable_slots.submission_completed(submission);
+        if let Some(culling) = self.culling.as_mut() {
+            culling.draw_submission_completed(submission);
+        }
     }
 
     pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
         self.arena.reclaim_after_gpu_idle();
         self.stable_slots.gpu_work_completed();
+        if let Some(culling) = self.culling.as_mut() {
+            culling.gpu_work_completed();
+        }
     }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
