@@ -5663,9 +5663,7 @@ mod platform {
             // physical queue and never stalls the host thread. The fence
             // itself is device-owned and remains alive across submissions.
             unsafe { queue.Wait(&self.fence, producer_fence) }
-                .map_err(|error| self.backend_error_with_device_reason(
-                    "DX12 independent queue Wait", &error,
-                ))?;
+                .map_err(|error| Error::Backend(format!("DX12 independent queue Wait: {error}")))?;
             // SAFETY: The native ID3D12CommandQueue::Wait above succeeded on
             // precisely target_queue, ordering all subsequent sidecar work
             // behind the registered primary-queue producer fence.
