@@ -1237,16 +1237,28 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // The 3D renderer owns the native command ordering. Borrow immutable
         // Arc-backed RenderCommand spans directly: no GPUI 2D command encoder,
         // global pass registry or per-DrawIndirect clone on the hot path.
-        let commands = self.pending_passes.iter()
-            .map(NativeOffscreenPass::commands)
-            .collect::<Vec<_>>();
-        let tags = self.pending_passes.iter()
-            .map(|pass| pass.gpu_work_tag)
-            .collect::<Vec<_>>();
-        let count = commands.len();
-        // Independent queue synchronization remains inside the graphics
-        // backend; when unavailable submit on the shared primary owner queue.
-        let submitted = match device.submit_offscreen_graphics(&commands, &tags, true) {
+        let count = self.pending_passes.len();
+        // The common one-SceneView case takes a stack-only submission path:
+        // avoid allocating command/tag descriptor Vecs every 3D frame.
+        // Multiple SceneViews still batch their native passes together.
+        // Immutable DrawIndirect data always stays in the shared Arc cache.
+        let native_result = if count == 1 {
+            let pass = &self.pending_passes[0];
+            device.submit_offscreen_graphics(
+                std::slice::from_ref(&pass.commands()),
+                std::slice::from_ref(&pass.gpu_work_tag),
+                true,
+            )
+        } else {
+            let commands = self.pending_passes.iter()
+                .map(NativeOffscreenPass::commands)
+                .collect::<Vec<_>>();
+            let tags = self.pending_passes.iter()
+                .map(|pass| pass.gpu_work_tag)
+                .collect::<Vec<_>>();
+            device.submit_offscreen_graphics(&commands, &tags, true)
+        };
+        let submitted = match native_result {
             Ok(submitted) => submitted,
             Err(error) => {
                 if let Some(surface) = self.offscreen.as_mut() {
@@ -1255,14 +1267,12 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 // A failed GPU submission cannot establish a new producer
                 // revision. Keep the old resource lifetime owner; never
                 // render its possibly overwritten texels in a future UI frame.
-                drop(commands);
                 self.pending_passes.clear();
                 self.pending_capture_epochs.clear();
                 self.submitted_capture_epochs.clear();
                 return Err(error.into());
             }
         };
-        drop(commands);
         self.pending_passes.clear();
         // The final GUI sampler uses this native producer's queue ordering.
         // Submission acceptance != fence completion or resource retirement.
