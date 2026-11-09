@@ -30,7 +30,7 @@ pub(super) struct GeneratedMesh {
     pub argument_offset: u64,
     pub argument_page_bytes: u64,
 }
-pub(super) struct Shaders(pub [ShaderModuleId; 6]);
+pub(super) struct Shaders(pub [ShaderModuleId; 7]);
 pub(super) fn create_shaders(
     device: &mut dyn ExtensionDevice,
     backend: BackendKind,
@@ -43,6 +43,7 @@ pub(super) fn create_shaders(
         "cs_mesh_instance_counts",
         "cs_mesh_instance_scan",
         "cs_mesh_instance_emit",
+        "cs_mesh_greedy_mask",
     ] {
         match create_shader(device, backend, entry) {
             Ok(shader) => shaders.push(shader),
@@ -321,6 +322,9 @@ fn prepare_generated(
         .flat_map(|count| [0u32, 1, 0, count])
         .flat_map(u32::to_le_bytes)
         .collect::<Vec<_>>();
+    let greedy = source.greedy_visible_faces
+        && source.lighting.as_ref().is_none_or(|light| light.uniform)
+        && source.model_faces > 0;
     let params = source
         .size
         .into_iter()
@@ -334,8 +338,7 @@ fn prepare_generated(
                 // Uniform sky/block lighting is safe for rectangle merging;
                 // non-uniform per-corner light remains unmerged. AO is tested
                 // per exposed face on the GPU, not dropped globally.
-                f32::from(source.greedy_visible_faces
-                    && source.lighting.as_ref().is_none_or(|light| light.uniform)),
+                f32::from(greedy),
             ]
                 .into_iter()
                 .flat_map(f32::to_le_bytes),
@@ -374,6 +377,12 @@ fn prepare_generated(
         .capacity()
         .checked_mul(16)
         .ok_or_else(|| anyhow!("voxel capacity overflow"))?;
+    // Keep instance prefix sums and per-cell greedy masks in disjoint ranges
+    // of the same batch-scoped scratch buffer. Do not add a new bind group.
+    let scratch_bytes = jobs.len().max(1)
+        .checked_add(if greedy { source.cells.len() } else { 0 })
+        .and_then(|words| words.checked_mul(4))
+        .ok_or_else(|| anyhow!("GPU greedy mask scratch capacity overflow"))?;
     let specs = [
         (cells.len(), BufferUsage::STORAGE | BufferUsage::COPY_DST),
         (
@@ -393,7 +402,7 @@ fn prepare_generated(
         ),
         (64, BufferUsage::UNIFORM | BufferUsage::COPY_DST),
         (
-            jobs.len().max(1) * 4,
+            scratch_bytes,
             BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE,
         ),
     ];
@@ -545,6 +554,11 @@ fn prepare_generated(
             .collect::<Vec<_>>();
         let mut stages = Vec::new();
         if source.model_faces > 0 {
+            // Ordered Compute dispatches publish the transient face masks
+            // before the main mesh pass, without CPU readback or sync.
+            if greedy {
+                stages.push((6, source.cells.len().div_ceil(64)));
+            }
             stages.push((0, source.cells.len().div_ceil(64)));
         }
         if source.templates.len() > source.static_start {

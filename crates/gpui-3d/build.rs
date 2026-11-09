@@ -128,7 +128,8 @@ fn main() {
                 .entry("cs_mesh_static_emit", ShaderStage::Compute)
                 .entry("cs_mesh_instance_counts", ShaderStage::Compute)
                 .entry("cs_mesh_instance_scan", ShaderStage::Compute)
-                .entry("cs_mesh_instance_emit", ShaderStage::Compute),
+                .entry("cs_mesh_instance_emit", ShaderStage::Compute)
+                .entry("cs_mesh_greedy_mask", ShaderStage::Compute),
         )
         .shader(
             Shader::new("mesher_draws")

@@ -17,6 +17,9 @@ struct Params { size:vec4<u32>, origin:vec4<f32>, clip:vec4<f32>, extra:vec4<u32
 @group(0) @binding(3) var<storage,read_write> args:array<atomic<u32>>;
 @group(0) @binding(4) var<uniform> params:Params;
 @group(0) @binding(5) var<storage,read_write> scratch:array<u32>;
+// [0, jobs): instance prefix sums; [max(jobs, 1), ...): transient greedy
+// masks. Six low bits mark exposed faces, six high bits mark faces certified
+// for UV-preserving greedy merge. No host readback or new binding.
 var<workgroup> prefix:array<u32,64>;
 var<workgroup> output_base:u32;
 fn opaque_cell(p:vec3<i32>,instance:bool)->bool {
@@ -89,7 +92,11 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u3
     // Values never exceed 0x1010, so f32 integer representation is exact
     // and cannot be flushed to zero as a subnormal on native backends.
     let scale=select(1.0,f32(packed),merged);
-    output[slot]=GeneratedFace(tagged,model_face,scale,face_ao(face,cell,false));
+    // Every merged cell was certified to have four fully unoccluded AO corners.
+    var ao=0u;
+    if(merged && bitcast<u32>(params.clip.w)!=0u){ao=0xffffffffu;}
+    else{ao=face_ao(face,cell,false);}
+    output[slot]=GeneratedFace(tagged,model_face,scale,ao);
 }
 // Only axis-aligned full-tile cubes with one uniform base vertex color can
 // repeat UVs over a larger rectangle. Atlas subrects, corner tint gradients,
@@ -126,34 +133,55 @@ fn repeatable_cube(face:Face)->bool {
     }
     return true;
 }
-fn exposed_cube(cell:u32,kind:u32,face:Face)->bool {
-    if(cells[cell]!=kind){return false;}
-    let delta=bitcast<i32>(face.info.y);
-    if(cells[u32(i32(cell)+delta)]!=0u){return false;}
-    let y=params.origin.y+f32(cell/params.size.x%params.size.y)+bitcast<f32>(face.info.w);
-    if(y<params.clip.x || y>=params.clip.y){return false;}
-    // AO is safe only when each constituent face is completely unoccluded.
-    // If not, that face is rendered individually with its exact 4-corner AO.
-    return bitcast<u32>(params.clip.w)==0u || face_ao(face,cell,false)==0xffffffffu;
+
+ // One writer per cell. Compute each cell's six exposure bits and up to six
+ // fully-unoccluded merge bits once, before rectangle scanning.
+fn build_greedy_mask(index:u32){
+    let kind=cells[index];
+    var mask=0u;
+    if(kind!=0u && kind!=0xffffffffu){
+        let y=params.origin.y+f32(index/params.size.x%params.size.y);
+        for(var direction=0u;direction<6u;direction++){
+            let face=templates.faces[(kind-1u)*6u+direction];
+            let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
+            if(cells[neighbour]!=0u){continue;}
+            mask|=1u<<direction;
+            let face_y=y+bitcast<f32>(face.info.w);
+            if(face_y<params.clip.x || face_y>=params.clip.y){continue;}
+            if(bitcast<u32>(params.clip.w)!=0u && face_ao(face,index,false)!=0xffffffffu){continue;}
+            mask|=1u<<(direction+6u);
+        }
+    }
+    scratch[max(params.extra.x,1u)+index]=mask;
 }
-fn face_row_width(cell:u32,kind:u32,face:Face,stride:u32,coordinate:u32,dimension:u32)->u32 {
+fn exposed_cube(cell:u32,kind:u32,direction:u32)->bool {
+    return cells[cell]==kind &&
+        (scratch[max(params.extra.x,1u)+cell]&(1u<<(direction+6u)))!=0u;
+}
+fn face_row_width(cell:u32,kind:u32,direction:u32,stride:u32,coordinate:u32,dimension:u32)->u32 {
     let within=(coordinate-1u)%16u;
     var width=0u;
     for(var i=0u;i<16u;i++){
         if(within+i>=16u || coordinate+i+1u>=dimension){break;}
-        if(!exposed_cube(cell+i*stride,kind,face)){break;}
+        if(!exposed_cube(cell+i*stride,kind,direction)){break;}
         width++;
     }
     return width;
 }
-// Deterministic width-first 2D rectangle partition within 16x16 face tiles.
-// Each GPU invocation reads visibility directly from the input cell grid;
-// no intermediate faces, shared race-prone mask, host readback or CPU sorting.
-// A row is vertically absorbed only by an exactly matching complete row-run.
-// This prevents T-junction overlaps and preserves every exposed face exactly.
-fn visible_rectangle(cell:u32,kind:u32,face:Face)->vec2<u32> {
+// Check the exact required run and one possible continuation instead of
+// rescanning up to 16 cells to compare the width of every adjacent row.
+fn row_has_exact_width(cell:u32,kind:u32,direction:u32,stride:u32,
+                       coordinate:u32,dimension:u32,width:u32)->bool {
+    let available=min(16u-(coordinate-1u)%16u,dimension-coordinate-1u);
+    if(width>available){return false;}
+    for(var i=0u;i<width;i++){
+        if(!exposed_cube(cell+i*stride,kind,direction)){return false;}
+    }
+    return width==available || !exposed_cube(cell+width*stride,kind,direction);
+}
+fn visible_rectangle(cell:u32,kind:u32,face:Face,direction:u32)->vec2<u32> {
     if(params.origin.w<0.5 || !repeatable_cube(face)){return vec2<u32>(1u);}
-    if(!exposed_cube(cell,kind,face)){return vec2<u32>(1u);}
+    if(!exposed_cube(cell,kind,direction)){return vec2<u32>(1u);}
     let delta=bitcast<i32>(face.info.y);
     let along_z=abs(delta)==1;
     let normal_y=abs(delta)==i32(params.size.x);
@@ -165,13 +193,13 @@ fn visible_rectangle(cell:u32,kind:u32,face:Face)->vec2<u32> {
     let v_size=select(params.size.y,params.size.z,normal_y);
     let local_u=(u-1u)%16u;
     let local_v=(v-1u)%16u;
-    if(local_u>0u && exposed_cube(cell-u_stride,kind,face)){return vec2<u32>(0u);}
-    let width=face_row_width(cell,kind,face,u_stride,u,u_size);
+    if(local_u>0u && exposed_cube(cell-u_stride,kind,direction)){return vec2<u32>(0u);}
+    let width=face_row_width(cell,kind,direction,u_stride,u,u_size);
     if(width==0u){return vec2<u32>(1u);}
     if(local_v>0u){
         let previous=cell-v_stride;
-        let previous_starts=local_u==0u || !exposed_cube(previous-u_stride,kind,face);
-        if(previous_starts && face_row_width(previous,kind,face,u_stride,u,u_size)==width){
+        let previous_starts=local_u==0u || !exposed_cube(previous-u_stride,kind,direction);
+        if(previous_starts && row_has_exact_width(previous,kind,direction,u_stride,u,u_size,width)){
             return vec2<u32>(0u);
         }
     }
@@ -179,8 +207,8 @@ fn visible_rectangle(cell:u32,kind:u32,face:Face)->vec2<u32> {
     for(var row=1u;row<16u;row++){
         if(local_v+row>=16u || v+row+1u>=v_size){break;}
         let next=cell+row*v_stride;
-        if(local_u>0u && exposed_cube(next-u_stride,kind,face)){break;}
-        if(face_row_width(next,kind,face,u_stride,u,u_size)!=width){break;}
+        if(local_u>0u && exposed_cube(next-u_stride,kind,direction)){break;}
+        if(!row_has_exact_width(next,kind,direction,u_stride,u,u_size,width)){break;}
         height++;
     }
     return vec2<u32>(width,height);
@@ -188,6 +216,10 @@ fn visible_rectangle(cell:u32,kind:u32,face:Face)->vec2<u32> {
 @compute @workgroup_size(64)
 fn cs_mesh(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
     mesh_stage(0u,group,groups,lane);
+}
+@compute @workgroup_size(64)
+fn cs_mesh_greedy_mask(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32){
+    mesh_stage(6u,group,groups,lane);
 }
 @compute @workgroup_size(64)
 fn cs_mesh_static_counts(@builtin(workgroup_id) group:vec3<u32>,@builtin(num_workgroups) groups:vec3<u32>,@builtin(local_invocation_index) lane:u32){mesh_stage(1u,group,groups,lane);}
@@ -256,15 +288,21 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
         return;
     }
     if(index>=params.size.x*params.size.y*params.size.z){return;}
+    if(mode==6u){build_greedy_mask(index);return;}
     let kind=cells[index];
     if(kind==0u || kind==0xffffffffu){return;}
     let position=params.origin.xyz+vec3<f32>(f32(index%params.size.x),f32(index/params.size.x%params.size.y),f32(index/params.size.x/params.size.y));
+    var exposed=0u;
+    if(params.origin.w>=0.5){exposed=scratch[max(params.extra.x,1u)+index];}
     for(var direction=0u;direction<6u;direction++){
+        if(params.origin.w>=0.5 && (exposed&(1u<<direction))==0u){continue;}
         let model_face=(kind-1u)*6u+direction;
         let face=templates.faces[model_face];
-        let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
-        if(cells[neighbour]!=0u){continue;}
-        let extent=visible_rectangle(index,kind,face);
+        if(params.origin.w<0.5){
+            let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
+            if(cells[neighbour]!=0u){continue;}
+        }
+        let extent=visible_rectangle(index,kind,face,direction);
         if(extent.x==0u){continue;}
         emit_face(face,model_face,position,index,extent);
     }
