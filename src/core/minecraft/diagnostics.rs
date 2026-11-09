@@ -136,9 +136,16 @@ pub fn classify_compatibility_output(text: &str) -> Option<CompatibilityFault> {
 }
 
 #[cfg(target_os = "linux")]
+fn parse_linux_proc_starttime(stat: &str) -> Option<u64> {
+    // Linux /proc/PID/stat field 2 may contain whitespace and parentheses.
+    // Field 22 is the starttime tick counter (index 19 after comm).
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
 fn process_creation_ticks(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+    parse_linux_proc_starttime(&stat)
 }
 
 static REPORT_EVENTS: OnceLock<broadcast::Sender<GameSessionReport>> = OnceLock::new();
@@ -1083,6 +1090,48 @@ mod tests {
     fn previous_dev_schema_is_not_migrated() {
         let json = br#"{"schema_version":1,"id":"x"}"#;
         assert!(decode_report(json).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_process_generation_ignores_parenthesized_comm() {
+        let mut fields = vec!["S".to_string()];
+        fields.extend((4..=52).map(|value| value.to_string()));
+        fields[19] = "987654321".to_string();
+        let stat = format!("123 (Minecraft (Wine) Windows.exe) {}", fields.join(" "));
+        assert_eq!(parse_linux_proc_starttime(&stat), Some(987654321));
+    }
+
+    #[test]
+    fn strict_format_requires_current_schema() {
+        let report = GameSessionReport {
+            schema_version: GAME_DIAGNOSTICS_SCHEMA,
+            id: Uuid::new_v4().to_string(),
+            task_id: "dev-test".to_string(),
+            version: "test".to_string(),
+            game_directory: PathBuf::new(),
+            platform: "wine".to_string(),
+            pid: 123,
+            process_created_at: Some(42),
+            compatibility_prefix: Some(PathBuf::from("/tmp/wine-test")),
+            compatibility_logs: None,
+            compatibility_fault: None,
+            early_exit: false,
+            started_at: Utc::now(),
+            ended_at: None,
+            exit_code: None,
+            exit_signal: None,
+            kind: ExitKind::Running,
+            summary: String::new(),
+            acknowledged: false,
+            wer_fault: None,
+        };
+        let bytes = serde_json::to_vec(&report).unwrap();
+        assert!(decode_report(&bytes).is_ok());
+        let mut obsolete = serde_json::to_value(&report).unwrap();
+        obsolete["schema_version"] = serde_json::json!(GAME_DIAGNOSTICS_SCHEMA - 1);
+        let obsolete = serde_json::to_vec(&obsolete).unwrap();
+        assert!(decode_report(&obsolete).is_err());
     }
 
     #[test]
