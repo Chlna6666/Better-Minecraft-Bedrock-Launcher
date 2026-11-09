@@ -125,13 +125,17 @@ fn plan_portal_visibility_words(
 ) -> Vec<(usize, u32)> {
     let mut patches = BTreeMap::<usize, u32>::new();
     for &slot in previous.difference(next) {
-        let original = resident.get(slot)
-            .and_then(|key| key.as_ref())
-            .map_or(0, |key| key.0[7]);
-        patches.insert(slot, original);
+        // Tombstones retain their bytes until the last native GPU reader
+        // completes. An unmapped physical row must never be "restored" by
+        // writing its old Portal flag while a prior DrawIndirect is in flight.
+        if let Some(key) = resident.get(slot).and_then(Option::as_ref) {
+            patches.insert(slot, key.0[7]);
+        }
     }
     for &slot in next {
-        if !previous.contains(&slot) || reapply {
+        if (!previous.contains(&slot) || reapply)
+            && resident.get(slot).and_then(Option::as_ref).is_some()
+        {
             patches.insert(slot, PORTAL_HIDDEN_WORD);
         }
     }
@@ -202,29 +206,42 @@ fn plan_resident_bounds(
     Ok((next_slots, mapping))
 }
 
-/// Materialize only dirty 48-byte GPU pages from exact record-key bits.
-/// Empty/retired slots are deliberately zeroed to prevent stale visibility.
+/// Materialize dirty resident Bounds rows without writing retired physical
+/// addresses. Tombstones are quarantined by StableDrawSlots: overwriting them
+/// with zeros before their native reader fences finish is a GPU RAW hazard.
+/// Once the slot is actually recycled, None -> Some forces a fresh upload.
 fn resident_bounds_patches(
     previous: &[Option<BoundsRecordKey>],
     next: &[Option<BoundsRecordKey>],
 ) -> Vec<(u64, Vec<u8>)> {
-    super::uploads::changed_ranges_for_keys(
+    let mut patches = Vec::new();
+    for range in super::uploads::changed_ranges_for_keys(
         previous, next, previous.len() * BOUNDS_STRIDE, BOUNDS_STRIDE, 12, 3,
-    ).into_iter().map(|range| {
-        let mut bytes = vec![0u8; range.len()];
-        for (row, key) in next[range.start / BOUNDS_STRIDE..range.end / BOUNDS_STRIDE]
-            .iter().enumerate()
-        {
-            if let Some(key) = key {
-                let start = row * BOUNDS_STRIDE;
-                for (word, bits) in key.0.iter().enumerate() {
-                    bytes[start + word * 4..start + word * 4 + 4]
-                        .copy_from_slice(&bits.to_le_bytes());
+    ) {
+        let mut row = range.start / BOUNDS_STRIDE;
+        let end = range.end / BOUNDS_STRIDE;
+        while row < end {
+            while row < end && next[row].is_none() {
+                row += 1;
+            }
+            let start = row;
+            while row < end && next[row].is_some() {
+                row += 1;
+            }
+            if start == row {
+                continue;
+            }
+            let mut bytes = Vec::with_capacity((row - start) * BOUNDS_STRIDE);
+            for record in &next[start..row] {
+                let key = record.as_ref().expect("retired Bounds rows are excluded");
+                for bits in key.0 {
+                    bytes.extend_from_slice(&bits.to_le_bytes());
                 }
             }
+            patches.push((start as u64 * BOUNDS_STRIDE as u64, bytes));
         }
-        (range.start as u64, bytes)
-    }).collect()
+    }
+    patches
 }
 
 /// Logical batch reorder affects only four-byte indirection entries.
@@ -1983,7 +2000,7 @@ mod bounds_cache_tests {
         }
         assert_eq!(next_slots.high_water(), slots.high_water());
         let changes = resident_bounds_patches(&initial_keys, &next_keys);
-        assert_eq!(changes.iter().map(|(_, b)| b.len()).sum::<usize>(), BOUNDS_STRIDE);
+        assert!(changes.is_empty(), "retired Bounds rows must not be cleared before GPU completion");
         let next_bytes = apply_sparse_patches(
             first_bytes, &changes, next_slots.high_water() * BOUNDS_STRIDE,
         );
@@ -1995,6 +2012,34 @@ mod bounds_cache_tests {
         assert!(!resident_mapping_patches(&first_map, &next_map).is_empty());
         let empty_change = resident_bounds_patches(&next_keys, &next_keys);
         assert!(empty_change.is_empty(), "unchanged Section bounds must not be uploaded");
+    }
+
+    #[test]
+    fn retired_gpu_bounds_are_never_overwritten_by_adjacent_dirty_uploads() {
+        let mut original = sample_draws();
+        original.truncate(3);
+        let original_keys = original.iter()
+            .map(|draw| Some(BoundsRecordKey::from_draw(draw)))
+            .collect::<Vec<_>>();
+        let mut next_keys = original_keys.clone();
+        next_keys[1] = None; // Retired physical row still read by native GPU work.
+        let mut changed = original[2].clone();
+        changed.bounds.max.x += 1.0;
+        next_keys[2] = Some(BoundsRecordKey::from_draw(&changed));
+        let patches = resident_bounds_patches(&original_keys, &next_keys);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, (2 * BOUNDS_STRIDE) as u64);
+        assert_eq!(patches[0].1.len(), BOUNDS_STRIDE);
+        assert!(resident_bounds_patches(&original_keys, &[
+            original_keys[0], None, original_keys[2],
+        ]).is_empty());
+
+        let old_masked = HashSet::from([1usize]);
+        let next_masked = HashSet::new();
+        let visibility = plan_portal_visibility_words(
+            &old_masked, &next_masked, &next_keys, false,
+        );
+        assert!(visibility.is_empty(), "Portal restore must not touch a retired row");
     }
 
     #[test]
