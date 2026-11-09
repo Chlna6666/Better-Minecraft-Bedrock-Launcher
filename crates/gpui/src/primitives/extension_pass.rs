@@ -9,6 +9,9 @@ use std::sync::Arc;
 pub struct RendererExtensionPass {
     /// Output color attachment, distinct from every sampled input in this pass.
     pub target: TextureViewId,
+    /// Ordered MRT attachments. Empty retains the single-target semantics.
+    /// An explicit set includes `target` as its first element.
+    pub color_attachments: Arc<[TextureViewId]>,
     /// Optional single-sample resolve destination when [`Self::target`] is
     /// multisampled. The MSAA color is resolved into this view after the pass.
     pub resolve_target: Option<TextureViewId>,
@@ -32,7 +35,11 @@ impl RendererExtensionPass {
     /// Borrows this owned plan for the host graphics submission.
     pub fn commands(&self) -> RenderPassCommands<'_> {
         RenderPassCommands {
-            color_attachments: std::slice::from_ref(&self.target),
+            color_attachments: if self.color_attachments.is_empty() {
+                std::slice::from_ref(&self.target)
+            } else {
+                &self.color_attachments
+            },
             render_pass: self.render_pass,
             commands: &self.commands,
             color_load_op: self.color_load_op,
