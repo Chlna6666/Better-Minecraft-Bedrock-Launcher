@@ -31,6 +31,8 @@ impl SceneResources {
         device: &mut dyn ExtensionDevice,
         renderer: &RendererResources,
         camera: Camera,
+        cascade: usize,
+        caster_bounds: Aabb,
         context: &RendererExtensionContext,
     ) -> gpui::Result<Vec<RenderCommand>> {
         let matrix = camera.projection_matrix(1.)? * camera.view()?;
@@ -46,7 +48,7 @@ impl SceneResources {
             dst.copy_from_slice(&value.to_le_bytes());
         }
         bytes[268..272].copy_from_slice(&2f32.to_le_bytes());
-        if self.light_pass.is_none() {
+        if self.light_pass[cascade].is_none() {
             let frame = device.create_buffer(&BufferDescriptor {
                 label: Some("gpui-3d shadow frame".into()),
                 size: FRAME_PARAMS_STRIDE as u64,
@@ -66,16 +68,14 @@ impl SceneResources {
                     return Err(error);
                 }
             };
-            self.light_pass = Some(LightPass {
+            self.light_pass[cascade] = Some(LightPass {
                 frame,
                 culling,
                 groups: HashMap::new(),
             });
         }
-        let mut pass = self
-            .light_pass
-            .take()
-            .ok_or_else(|| anyhow!("shadow pass missing"))?;
+        let mut pass = self.light_pass[cascade]
+            .take().ok_or_else(|| anyhow!("shadow cascade pass missing"))?;
         let result = (|| {
             device.write_buffer(pass.frame, 0, &bytes)?;
             pass.culling.update(
@@ -84,19 +84,17 @@ impl SceneResources {
                 &self.batches,
                 Some(&self.meshes),
             )?;
-            pass.culling.dispatch_optimized(
+            pass.culling.dispatch_shadow_optimized(
                 device,
                 renderer
                     .cull_shader
                     .ok_or_else(|| anyhow!("shadow culling requires compute"))?,
                 renderer.singleton_cull_shader,
                 pass.frame,
-                // A shadow caster may be outside the main camera's Section
-                // bounds while its shadow falls inside the illuminated view.
-                // The light-space frustum already provides conservative GPU
-                // rejection; applying the main camera's culling_bounds here
-                // incorrectly drops nearby casters after camera movement.
-                None,
+                // Full AABB versus receiver volume extruded along the sun:
+                // preserves offscreen casters and rejects work that cannot
+                // influence this cascade. Light frustum is then tested on GPU.
+                caster_bounds,
                 self.generated_arguments,
             )?;
             let groups = self.shadow_bindings(device, renderer, &mut pass)?;
@@ -109,7 +107,7 @@ impl SceneResources {
             )?;
             Ok(commands)
         })();
-        self.light_pass = Some(pass);
+        self.light_pass[cascade] = Some(pass);
         result
     }
     fn shadow_bindings(
