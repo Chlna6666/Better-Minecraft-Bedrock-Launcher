@@ -58,6 +58,8 @@ struct NativeDrawUse {
 struct RetiredSlotCohort {
     slots: Arc<[usize]>,
     pending: Vec<gfx_core::SubmissionId>,
+    /// Exact native buffer allocation reads/writes captured for these slots.
+    gpu_dependency: gfx_core::GpuRetirementDependencies,
     /// True if at least one native read had no completion handle. Only a
     /// subsequent, explicitly ordered GPU-owner submission can seal this gap.
     needs_ordered_fallback: bool,
@@ -77,6 +79,10 @@ pub(in crate::scene_view) struct StableDrawSlots {
     retired_unbound: Vec<usize>,
     retired_by_submission: Vec<RetiredSlotCohort>,
     in_flight_draws: Vec<NativeDrawUse>,
+    /// Actual resident GPU allocation IDs and their per-physical-slot strides.
+    /// This is not scene/material policy; only native resource bytes matter.
+    resident_buffers: Vec<(gfx_core::BufferId, u64)>,
+    gpu_dependencies: gfx_core::GpuSubmissionDependencyGraph,
     submission_epoch: u64,
     /// Native work without a reliable SubmissionId cannot be proven finished
     /// by completing any unrelated tracked producer.
@@ -84,6 +90,44 @@ pub(in crate::scene_view) struct StableDrawSlots {
 }
 
 impl StableDrawSlots {
+    /// Associate physical slot storage with its current GPU buffer allocations.
+    /// Replacing a backing buffer changes the allocation identity; old buffers
+    /// are retired separately by the GPU owner, never silently aliased.
+    pub(in crate::scene_view) fn set_resident_buffers(
+        &mut self,
+        buffers: &[(gfx_core::BufferId, u64)],
+    ) {
+        self.resident_buffers.clear();
+        self.resident_buffers.extend_from_slice(buffers);
+    }
+
+    /// Snapshot a range of removed physical rows against the exact native
+    /// byte ranges. Disjoint buffers cannot keep each other's slots alive.
+    fn resource_retirement(&self, slots: &[usize]) -> gfx_core::GpuRetirementDependencies {
+        let Some((&min_slot, &max_slot)) = slots.iter().min().zip(slots.iter().max()) else {
+            return Default::default();
+        };
+        let regions = self.resident_buffers.iter().filter_map(|&(buffer, stride)| {
+            let start = (min_slot as u64).checked_mul(stride)?;
+            let length = (max_slot as u64).checked_sub(min_slot as u64)?
+                .checked_add(1)?.checked_mul(stride)?;
+            gfx_core::GpuResourceSpan::buffer(buffer, start, length).ok()
+        }).collect::<Vec<_>>();
+        // A malformed/overflowed span cannot establish an early-release
+        // proof. All buffers are validated and u32-addressed at allocation.
+        self.gpu_dependencies.retirement(&regions)
+    }
+
+    /// Future multi-queue producers can register validated native resource
+    /// reads/writes here, including their actual GPU-side wait prerequisites.
+    /// This remains a single device-owner operation, without CPU waiting.
+    pub(in crate::scene_view) fn register_native_access(
+        &mut self,
+        record: gfx_core::GpuSubmissionRecord,
+    ) -> gfx_core::Result<()> {
+        self.gpu_dependencies.register(record)
+    }
+
     /// Called only AFTER the native owner has accepted an actual producer.
     /// Keep all outstanding readers: neither later acceptance nor a later
     /// fence completing can prove an independent earlier queue is finished.
@@ -99,6 +143,26 @@ impl StableDrawSlots {
                     epoch: self.submission_epoch,
                 });
             }
+            if !self.resident_buffers.is_empty()
+                && !self.gpu_dependencies.contains_submission(submission)
+            {
+                let uses = self.resident_buffers.iter().map(|&(buffer, _)| {
+                    gfx_core::GpuSubmissionAccess {
+                        span: gfx_core::GpuResourceSpan::WholeBuffer(buffer),
+                        access: gfx_core::GpuAccess::ReadBuffer,
+                    }
+                }).collect();
+                if self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord {
+                    id: submission,
+                    queue: gfx_core::GpuQueueId::PRIMARY,
+                    stage: gfx_core::GpuWorkStage::Graphics,
+                    uses,
+                    gpu_waits: Vec::new(),
+                }).is_err() {
+                    // Fail closed rather than publish a corrupt native proof.
+                    self.untracked_gpu_access_submitted();
+                }
+            }
         } else {
             self.untracked_gpu_access_submitted();
         }
@@ -110,6 +174,15 @@ impl StableDrawSlots {
     pub(in crate::scene_view) fn untracked_gpu_access_submitted(&mut self) {
         self.submission_epoch = self.submission_epoch.saturating_add(1);
         self.untracked_draw_use = true;
+        for &(buffer, _) in &self.resident_buffers {
+            self.gpu_dependencies.register_untracked(
+                gfx_core::GpuQueueId::PRIMARY,
+                gfx_core::GpuSubmissionAccess {
+                    span: gfx_core::GpuResourceSpan::WholeBuffer(buffer),
+                    access: gfx_core::GpuAccess::ReadBuffer,
+                },
+            );
+        }
     }
 
     /// Snapshot the native GPU readers of each physical allocation, not the
@@ -128,16 +201,18 @@ impl StableDrawSlots {
                 .filter(|reader| reader.epoch >= first_use)
                 .map(|reader| reader.submission)
                 .collect::<Vec<_>>();
-            if pending.is_empty() {
+            if pending.is_empty() && self.resource_retirement(&[slot]).safe_to_reuse() {
                 self.retired_unbound.push(slot);
             } else {
                 groups.entry(pending).or_default().push(slot);
             }
         }
         for (pending, slots) in groups {
+            let gpu_dependency = self.resource_retirement(&slots);
             self.retired_by_submission.push(RetiredSlotCohort {
                 slots: Arc::from(slots),
                 pending,
+                gpu_dependency,
                 needs_ordered_fallback: self.untracked_draw_use,
             });
         }
@@ -152,14 +227,38 @@ impl StableDrawSlots {
     /// queue would instead require an explicit native semaphore dependency
     /// or GPU-global completion, never a coincidental consumer fence.
     pub(in crate::scene_view) fn submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        if !self.resident_buffers.is_empty()
+            && !self.gpu_dependencies.contains_submission(submission)
+        {
+            // An accepted primary-queue consumer is an ordered checkpoint,
+            // not a new DrawParams read. The owner alone guarantees this queue.
+            let _ = self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord {
+                id: submission,
+                queue: gfx_core::GpuQueueId::PRIMARY,
+                stage: gfx_core::GpuWorkStage::Graphics,
+                uses: Vec::new(),
+                gpu_waits: Vec::new(),
+            });
+        }
+        if self.gpu_dependencies.contains_submission(submission) {
+            let _ = self.gpu_dependencies.seal_untracked_queue(
+                gfx_core::GpuQueueId::PRIMARY, submission,
+            );
+        }
         if !self.retired_unbound.is_empty() {
+            let slots = std::mem::take(&mut self.retired_unbound);
+            let gpu_dependency = self.resource_retirement(&slots);
             self.retired_by_submission.push(RetiredSlotCohort {
-                slots: Arc::from(std::mem::take(&mut self.retired_unbound)),
+                slots: Arc::from(slots),
                 pending: vec![submission],
+                gpu_dependency,
                 needs_ordered_fallback: false,
             });
         }
         for cohort in &mut self.retired_by_submission {
+            cohort.gpu_dependency.seal_ordered_queue(
+                gfx_core::GpuQueueId::PRIMARY, submission,
+            );
             if cohort.needs_ordered_fallback {
                 if !cohort.pending.contains(&submission) {
                     cohort.pending.push(submission);
@@ -173,12 +272,21 @@ impl StableDrawSlots {
     /// Out-of-order GPU completions are legal; a row cannot be recycled until
     /// every snapshotted native reader AND any required fallback is finished.
     pub(in crate::scene_view) fn submission_completed(&mut self, submission: gfx_core::SubmissionId) {
-        self.in_flight_draws.retain(|reader| reader.submission != submission);
+        let proof = self.gpu_dependencies.complete(submission).ok();
+        self.in_flight_draws.retain(|reader| reader.submission != submission
+            && !proof.as_ref().is_some_and(|done| done.finished().contains(&reader.submission))
+        );
         let mut index = 0;
         while index < self.retired_by_submission.len() {
             let cohort = &mut self.retired_by_submission[index];
-            cohort.pending.retain(|pending| *pending != submission);
-            if cohort.pending.is_empty() && !cohort.needs_ordered_fallback {
+            if let Some(proof) = &proof {
+                cohort.gpu_dependency.complete_with_proof(proof);
+            }
+            cohort.pending.retain(|pending| *pending != submission
+                && !proof.as_ref().is_some_and(|done| done.finished().contains(pending))
+            );
+            if cohort.pending.is_empty() && !cohort.needs_ordered_fallback
+                && cohort.gpu_dependency.safe_to_reuse() {
                 let completed = self.retired_by_submission.swap_remove(index);
                 self.free.extend(completed.slots.iter().copied());
             } else {
@@ -195,6 +303,7 @@ impl StableDrawSlots {
             self.free.extend(cohort.slots.iter().copied());
         }
         self.in_flight_draws.clear();
+        self.gpu_dependencies.reset_after_gpu_idle();
         self.untracked_draw_use = false;
     }
 }
@@ -288,6 +397,8 @@ impl StableDrawSlots {
             retired_unbound: self.retired_unbound.clone(),
             retired_by_submission: self.retired_by_submission.clone(),
             in_flight_draws: self.in_flight_draws.clone(),
+            resident_buffers: self.resident_buffers.clone(),
+            gpu_dependencies: self.gpu_dependencies.clone(),
             submission_epoch: self.submission_epoch,
             untracked_draw_use: self.untracked_draw_use,
         };
