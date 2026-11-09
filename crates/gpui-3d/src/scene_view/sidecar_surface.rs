@@ -59,6 +59,9 @@ struct Target {
     /// to rectangular clip geometry is already represented by 'region'.
     rounded_mask: RoundedMask,
     capture: CaptureEpoch,
+    /// Descriptor/buffer pairs reference this target's color view. Completed
+    /// generations can be rewritten and recycled without native allocation.
+    recycled_placements: Vec<PlacementResources>,
 }
 
 /// Submission means the native device accepted the producer commands and
@@ -93,6 +96,18 @@ struct PlacementResources {
     buffer: BufferId,
 }
 
+/// The owner and exact sampled color view must match before a retired pair
+/// can enter its target's reusable pool. A resized target has a NEW view.
+struct RetiredPlacement {
+    owner: SceneViewId,
+    color_view: TextureViewId,
+    resources: PlacementResources,
+}
+
+/// Bound the idle descriptors per view. A busy GPU can still accumulate
+/// in-flight generations, but those can never be reused before its fence.
+const MAX_RECYCLED_PLACEMENTS_PER_VIEW: usize = 3;
+
 impl PlacementResources {
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         device.destroy_bind_group(self.binding)?;
@@ -111,6 +126,9 @@ impl Target {
 
     fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         PlacementResources { binding: self.binding, buffer: self.placement }.destroy(device)?;
+        for placement in self.recycled_placements {
+            placement.destroy(device)?;
+        }
         device.destroy_texture_view(self.depth_view)?;
         device.destroy_texture(self.depth)?;
         device.destroy_texture_view(self.color_view)?;
@@ -236,6 +254,9 @@ struct TargetTrace {
     allocated: u64,
     relocated: u64,
     captured: u64,
+    placement_allocated: u64,
+    placement_recycled: u64,
+    placement_update_us: u128,
 }
 
 /// GPU resources stay on the graphics owner. Only the CPU render preparation
@@ -261,8 +282,8 @@ pub(super) struct SidecarSurface {
     ready_to_release: Vec<Target>,
     /// Placement-only generations are fence-retired independently. Moving an
     /// unchanged-size view must not evict its color/depth GPU textures.
-    awaiting_placement_gpu: Vec<PlacementResources>,
-    ready_placement_release: Vec<PlacementResources>,
+    awaiting_placement_gpu: Vec<RetiredPlacement>,
+    ready_placement_release: Vec<RetiredPlacement>,
     /// A presentation pass/format switch must not synchronously destroy the
     /// previous compositor PSO while an earlier GUI submission still uses it.
     awaiting_pipeline_gpu: Vec<RenderPipelineId>,
@@ -502,6 +523,7 @@ impl SidecarSurface {
             color, color_view, depth, depth_view, binding, placement, extent,
             region, host_extent, rounded_mask: rounded_mask(host.content_mask()),
             capture: CaptureEpoch::default(),
+            recycled_placements: Vec::new(),
         })
     }
 
@@ -586,8 +608,17 @@ impl SidecarSurface {
     fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         // Retired descriptor generations can reference still-active color
         // targets, so release them separately after verified completion.
-        while let Some(placement) = self.ready_placement_release.pop() {
-            placement.destroy(device)?;
+        while let Some(retired) = self.ready_placement_release.pop() {
+            if let Some(target) = self.targets.get_mut(&retired.owner)
+                && target.color_view == retired.color_view
+                && target.recycled_placements.len() < MAX_RECYCLED_PLACEMENTS_PER_VIEW
+            {
+                target.recycled_placements.push(retired.resources);
+            } else {
+                // A resized or removed target cannot inherit descriptors
+                // referencing its predecessor's sampled color view.
+                retired.resources.destroy(device)?;
+            }
         }
         // Destroy only fence-proven targets on the native owner. A backend
         // error propagates to GPUI rather than being silently ignored.
@@ -632,11 +663,15 @@ impl SidecarSurface {
             .fold(0u64, |sum, target| {
                 sum.saturating_add(sum_pixels(target.extent.width(), target.extent.height()))
             });
+        let idle_placements: usize = self.targets.values()
+            .map(|target| target.recycled_placements.len()).sum();
         eprintln!(
-            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
+            "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} recycled_bindings={} placement_new={} placement_reused={} placement_update_us={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1}",
             self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
             self.awaiting_gpu.len() + self.ready_to_release.len(),
             self.awaiting_placement_gpu.len() + self.ready_placement_release.len(),
+            idle_placements, self.trace.placement_allocated, self.trace.placement_recycled,
+            self.trace.placement_update_us,
             self.awaiting_pipeline_gpu.len() + self.ready_pipeline_release.len(),
             cropped.saturating_mul(bpp),
             full_window.saturating_mul(bpp),
@@ -705,9 +740,28 @@ impl SidecarSurface {
             // attachment; enqueue owns the transactional replacement.
             return Ok(());
         }
-        let updated = self.create_placement(
-            device, target.color_view, region, host,
-        )?;
+        let color_view = target.color_view;
+        let cached = self.targets.get_mut(&id)
+            .and_then(|target| target.recycled_placements.pop());
+        let started = Instant::now();
+        let updated = if let Some(placement) = cached {
+            let bytes = placement_bytes(region, host.viewport(), host.content_mask());
+            if let Err(error) = device.write_buffer(placement.buffer, 0, &bytes) {
+                // The pair is still valid and fence-proven. A later
+                // successful rewrite may reclaim it without allocation.
+                self.targets.get_mut(&id).expect("checked above")
+                    .recycled_placements.push(placement);
+                return Err(error.into());
+            }
+            self.trace.placement_recycled = self.trace.placement_recycled.saturating_add(1);
+            placement
+        } else {
+            let placement = self.create_placement(device, color_view, region, host)?;
+            self.trace.placement_allocated = self.trace.placement_allocated.saturating_add(1);
+            placement
+        };
+        self.trace.placement_update_us = self.trace.placement_update_us
+            .saturating_add(started.elapsed().as_micros());
         let target = self.targets.get_mut(&id).expect("checked above");
         let previous = PlacementResources {
             binding: std::mem::replace(&mut target.binding, updated.binding),
@@ -716,7 +770,9 @@ impl SidecarSurface {
         target.region = region;
         target.host_extent = host.viewport();
         target.rounded_mask = rounded_mask(host.content_mask());
-        self.awaiting_placement_gpu.push(previous);
+        self.awaiting_placement_gpu.push(RetiredPlacement {
+            owner: id, color_view, resources: previous,
+        });
         self.trace.relocated = self.trace.relocated.saturating_add(1);
         Ok(())
     }
@@ -808,6 +864,7 @@ impl SidecarSurface {
             .is_none_or(|target| !target.can_relocate(extent));
         if recreate {
             let new_target = self.create_target(device, region, host)?;
+            self.trace.placement_allocated = self.trace.placement_allocated.saturating_add(1);
             if let Some(previous) = self.targets.insert(id, new_target) {
                 self.awaiting_gpu.push(previous);
             }
@@ -884,7 +941,7 @@ impl SidecarSurface {
         for placement in self.awaiting_placement_gpu.drain(..)
             .chain(self.ready_placement_release.drain(..))
         {
-            placement.destroy(device)?;
+            placement.resources.destroy(device)?;
         }
         for pipeline in self.awaiting_pipeline_gpu.drain(..)
             .chain(self.ready_pipeline_release.drain(..))
@@ -936,6 +993,7 @@ mod tests {
                 host_extent: Extent2d::new(32, 32).unwrap(),
                 rounded_mask: RoundedMask::default(),
                 capture: CaptureEpoch::default(),
+                recycled_placements: Vec::new(),
             }],
             ready_to_release: Vec::new(),
             awaiting_placement_gpu: Vec::new(),
@@ -955,9 +1013,13 @@ mod tests {
         assert!(!surface.awaiting_gpu[0].can_relocate(
             Extent2d::new(64, 32).unwrap(),
         ));
-        surface.awaiting_placement_gpu.push(PlacementResources {
-            binding: BindGroupId::from_parts(7, 1),
-            buffer: BufferId::from_parts(8, 1),
+        surface.awaiting_placement_gpu.push(RetiredPlacement {
+            owner: SceneViewId(9),
+            color_view: TextureViewId::from_parts(1, 1),
+            resources: PlacementResources {
+                binding: BindGroupId::from_parts(7, 1),
+                buffer: BufferId::from_parts(8, 1),
+            },
         });
         surface.awaiting_pipeline_gpu.push(RenderPipelineId::from_parts(11, 1));
         surface.gpu_work_completed();
