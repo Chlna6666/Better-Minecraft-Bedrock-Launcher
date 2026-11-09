@@ -360,13 +360,12 @@ impl StableDrawSlots {
             return Ok(None);
         }
         let mut seen = std::collections::HashSet::with_capacity(additions.len());
-        let mut reused = std::collections::HashSet::with_capacity(additions.len());
         for &(identity, _) in &additions {
             if !seen.insert(identity) {
                 return Ok(None);
             }
-            if let Some(&slot) = retired_lookup.get(&identity) {
-                reused.insert(slot);
+            if retired_lookup.contains_key(&identity) {
+                // The identical draw survives at its existing address.
             } else if self.occupied.contains_key(&identity) {
                 // An allegedly inserted identity belongs to an untouched
                 // Section; the splice description was incomplete.
@@ -595,10 +594,23 @@ mod tests {
         assert_eq!(mapping[19..], map[20..]);
         assert_eq!(plan.high_water, resident.high_water());
         plan.commit(&mut resident);
-        assert_eq!(resident.free.len(), 1);
+        assert!(resident.free.is_empty());
+        assert_eq!(resident.retired_unbound, vec![19]);
+        // Before GPU completion a new Section must NOT reuse this slot.
+        let pending = resident.plan(&draws(97)).unwrap().0;
+        assert_ne!(pending.occupied.values().copied().max(), Some(95));
+        // Match the exact accepted final GUI consumer, not an unrelated
+        // submission or mere acceptance.
+        let consumer = gfx_core::SubmissionId::from_parts(8, 1);
+        let unrelated = gfx_core::SubmissionId::from_parts(9, 1);
+        resident.submission_accepted(consumer);
+        resident.submission_completed(unrelated);
+        assert!(resident.free.is_empty());
+        resident.submission_completed(consumer);
+        assert_eq!(resident.free, vec![19]);
 
-        // New root inserted into the middle of the dense logical ordering:
-        // the retired physical row is reused, without relocating survivors.
+        // Once the owner reports the real fence completed, the retired
+        // physical row is reused without relocating survivors.
         let extra = draws(97).pop().unwrap();
         assert!(!original.iter().any(|draw| draw.node == extra.node));
         let mut inserted = removed.clone();
@@ -704,11 +716,17 @@ mod tests {
                 "existing draw must retain its physical slot"
             );
         }
-        assert_eq!(second.free.len(), 1);
+        assert!(second.free.is_empty());
+        assert_eq!(second.retired_unbound.len(), 1);
         let mut extended = changed.clone();
         extended.push(original[15].clone());
-        let (third, restored) = second.plan(&extended).unwrap();
-        assert_eq!(third.high_water(), 80, "free slot must be reused");
+        let (unfenced, unsafe_mapping) = second.plan(&extended).unwrap();
+        assert_eq!(unfenced.high_water(), 81);
+        assert_ne!(unsafe_mapping.last(), Some(&assigned[15]));
+        let mut completed = second;
+        completed.gpu_work_completed();
+        let (third, restored) = completed.plan(&extended).unwrap();
+        assert_eq!(third.high_water(), 80, "completed slot must be reused");
         assert_eq!(restored.last(), Some(&assigned[15]));
     }
 
@@ -729,7 +747,8 @@ mod tests {
             moved.rotate_left(11);
             let (second, new_map) = first.plan(&moved).unwrap();
             assert_eq!(second.high_water(), first.high_water());
-            assert_eq!(second.free.len(), 1);
+            assert!(second.free.is_empty());
+            assert_eq!(second.retired_unbound.len(), 1);
             for (logical, &slot) in new_map.iter().enumerate() {
                 let original_index = original
                     .iter()
@@ -776,9 +795,12 @@ mod tests {
         resident = next;
         assert_eq!(mapping, old_map[..128]);
         assert_eq!(resident.high_water(), 1024);
-        assert_eq!(resident.trim_unused_tail(), 128);
+        assert_eq!(resident.trim_unused_tail(), 1024, "pending GPU readers pin the tail");
         assert!(resident.free.is_empty());
         assert_eq!(resident.occupied.len(), 128);
+        resident.gpu_work_completed();
+        assert_eq!(resident.trim_unused_tail(), 128);
+        assert!(resident.free.is_empty());
 
         let added = original[..129].to_vec();
         let (restored, remap) = resident.plan(&added).unwrap();
@@ -797,6 +819,8 @@ mod tests {
         resident = next;
         assert_eq!(mapping[..21], old_map[..21]);
         assert_eq!(mapping[21..], old_map[22..300]);
+        assert_eq!(resident.trim_unused_tail(), 1024);
+        resident.gpu_work_completed();
         assert_eq!(resident.trim_unused_tail(), 300);
         assert_eq!(resident.free, vec![21]);
         assert!(resident.identities[21].is_none());
@@ -819,6 +843,8 @@ mod tests {
         let mapping = plan.mapping.clone();
         plan.commit(&mut resident);
         assert_eq!(mapping, old_map[..64]);
+        assert_eq!(resident.trim_unused_tail(), 512);
+        resident.gpu_work_completed();
         assert_eq!(resident.trim_unused_tail(), 64);
         assert!(resident.free.is_empty());
     }
