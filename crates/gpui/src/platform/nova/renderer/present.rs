@@ -205,6 +205,22 @@ impl ExtensionSubmission<'_> {
             ));
         }
         let count = self.registry.passes().len();
+        // Reject invalid insertion points and workgroup dimensions before
+        // submitting any graphics producer. A rejected plan must not leave
+        // half of a frame recorded on the native device.
+        let mut last_boundary = 0usize;
+        for stage in &computes {
+            if stage.after_graphics_pass == 0
+                || stage.after_graphics_pass >= count
+                || stage.after_graphics_pass < last_boundary
+            {
+                return Err(gfx_core::Error::InvalidInput(
+                    "mixed Compute boundary is outside the ordered graphics sequence".into()
+                ));
+            }
+            stage.dispatch.validate(ResourceDevice::compute_capabilities(device))?;
+            last_boundary = stage.after_graphics_pass;
+        }
         let independent = !mixed
             && self.registry.independent_producers_only()
             && device.independent_graphics_queue_available();
@@ -212,15 +228,6 @@ impl ExtensionSubmission<'_> {
         let mut cursor = 0usize;
         let mut last = None;
         for stage in computes {
-            // Every Compute insertion point was checked when the renderer
-            // drained work. Keep the native boundary check fail-closed too.
-            if stage.after_graphics_pass < cursor
-                || stage.after_graphics_pass >= count
-            {
-                return Err(gfx_core::Error::InvalidInput(
-                    "mixed Compute boundary is not inside the graphics sequence".into()
-                ));
-            }
             if let Some(submission) =
                 self.submit_graphics(device, cursor..stage.after_graphics_pass, false)?
             {
