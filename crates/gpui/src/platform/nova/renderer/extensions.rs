@@ -89,7 +89,10 @@ impl RendererRegistry {
         mut register: impl FnMut(gfx_core::SubmissionId),
     ) -> Result<usize> {
         let mut submitted = 0;
-        for type_id in std::mem::take(&mut self.native_producers) {
+        // Drain keeps the TypeId vector's capacity across GUI frames. A
+        // mem::take here discarded it and reallocated when the 3D producer
+        // reappeared every frame (even for one SceneView).
+        for type_id in self.native_producers.drain(..) {
             let renderer = self.renderers.get_mut(&type_id)
                 .ok_or_else(|| anyhow::anyhow!(
                     "native producer was removed before GPU submission"
