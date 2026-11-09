@@ -194,6 +194,7 @@ mod tests {
         let make = |after_graphics_pass| crate::RendererExtensionComputePass {
             after_graphics_pass,
             dispatch,
+            gpu_work_tag: None,
         };
         let mut stages = [make(1), make(2)];
         rebase_compute_passes(&mut stages, 4, 3).unwrap();
