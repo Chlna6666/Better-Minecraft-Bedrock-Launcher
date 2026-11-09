@@ -154,17 +154,17 @@ impl StableDrawSlots {
             if !self.resident_buffers.is_empty()
                 && !self.gpu_dependencies.contains_submission(submission)
             {
-                let uses = self.resident_buffers.iter().map(|&(buffer, _)| {
-                    gfx_core::GpuSubmissionAccess {
-                        span: gfx_core::GpuResourceSpan::WholeBuffer(buffer),
-                        access: gfx_core::GpuAccess::ReadBuffer,
-                    }
-                }).collect();
+                // The per-slot NativeDrawUse epoch is more precise than
+                // recording a whole-buffer Graphics read here. A newly
+                // allocated physical slot must not inherit an older frame's
+                // DrawIndirect reader merely because it shares BufferId.
+                // Register an ordering-only queue submission in the generic
+                // graph; per-slot Graphics readers remain in in_flight_draws.
                 if self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord {
                     id: submission,
                     queue: gfx_core::GpuQueueId::PRIMARY,
                     stage: gfx_core::GpuWorkStage::Graphics,
-                    uses,
+                    uses: Vec::new(),
                     gpu_waits: Vec::new(),
                 }).is_err() {
                     // Fail closed rather than publish a corrupt native proof.
@@ -891,6 +891,26 @@ mod tests {
         assert_eq!(slots.free, vec![map[0] as usize]);
         slots.submission_completed(first);
         assert_eq!(slots.free.len(), 1);
+    }
+
+    #[test]
+    fn native_buffer_id_does_not_override_physical_slot_allocation_epoch() {
+        let buffer = gfx_core::BufferId::from_parts(720, 1);
+        let original = draws(2);
+        let (mut slots, _) = StableDrawSlots::with_resident_buffers(&[(buffer, 80)])
+            .plan(&original[..1]).unwrap();
+        let old = gfx_core::SubmissionId::from_parts(721, 1);
+        let recent = gfx_core::SubmissionId::from_parts(722, 1);
+        slots.draw_producer_submitted(Some(old));
+        let (mut slots, map) = slots.plan(&original).unwrap();
+        slots.draw_producer_submitted(Some(recent));
+        let (mut slots, _) = slots.plan(&original[..1]).unwrap();
+        assert_eq!(slots.retired_by_submission.len(), 1);
+        assert_eq!(slots.retired_by_submission[0].pending, vec![recent]);
+        assert_eq!(slots.retired_by_submission[0].gpu_dependency.pending().len(), 0);
+        slots.submission_completed(recent);
+        assert_eq!(slots.free, vec![map[1] as usize]);
+        slots.submission_completed(old);
     }
 
     #[test]
