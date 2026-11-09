@@ -237,7 +237,13 @@ impl ExtensionSubmission<'_> {
             // must transition the preceding attachments to shader-readable
             // states and make any Compute writes visible to the next Graphics
             // run. No CPU fence wait is permitted between these operations.
-            ResourceDevice::dispatch_compute_bind_group(device, &stage.dispatch)?;
+            if let Some(tag) = stage.gpu_work_tag {
+                ResourceDevice::dispatch_compute_bind_group_profiled(
+                    device, &stage.dispatch, tag,
+                )?;
+            } else {
+                ResourceDevice::dispatch_compute_bind_group(device, &stage.dispatch)?;
+            }
             cursor = stage.after_graphics_pass;
         }
         if let Some(submission) = self.submit_graphics(device, cursor..count, independent)? {
