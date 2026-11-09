@@ -2,7 +2,7 @@
 use super::super::{SceneView, resources::RendererResources, scene::SceneResources};
 use super::renderer::pass;
 use super::{
-    ScreenEffects,
+    ScreenEffects, SHADOW_CASCADE_COUNT,
     light_tiles::LightTiles,
     targets::{Target, Targets, uniform},
 };
@@ -13,28 +13,40 @@ use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Shared capture dimensions. The enlarged shadow footprint covers more
-/// terrain without changing the old shadow texel density appreciably.
-pub(super) const SHADOW_MAP_SIZE: u32 = 1536;
-pub(super) const SHADOW_WORLD_HEIGHT: f32 = 320.0;
-const SHADOW_TEXEL_WORLD: f32 = SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32;
-/// Move the shadow projection in whole light-space texel groups instead of
-/// invalidating a 1536² shadow map on every ~0.2-block camera displacement.
-/// An integer-texel displacement preserves the shadow raster's world alignment.
-/// 32 texels is a 6.67-block projection tile, with at most half that deviation
-/// from the viewer; the existing 320-block footprint remains unchanged.
+/// Stable, rotationally independent three-level shadow clipmap. Each level
+/// has a dedicated GPU depth texture and culling output to avoid overwriting
+/// another cascade's indirect arguments before native submission.
+pub(super) const SHADOW_MAP_SIZE: u32 = 1024;
+pub(super) const SHADOW_CASCADE_WIDTHS: [f32; SHADOW_CASCADE_COUNT] = [128.0, 320.0, 640.0];
+pub(super) const SHADOW_CASCADE_DEPTHS: [f32; SHADOW_CASCADE_COUNT] = [384.0, 768.0, 1280.0];
+/// Near/mid/far receiver radius and crossfade half-width.
+pub(super) const SHADOW_CASCADE_SPLITS: [f32; 4] = [52.0, 140.0, 296.0, 8.0];
 const SHADOW_SCROLL_TEXELS: f32 = 32.0;
-const SHADOW_SCROLL_WORLD: f32 = SHADOW_TEXEL_WORLD * SHADOW_SCROLL_TEXELS;
-/// Light-depth motion cannot change the 2D texel grid, but still must stay
-/// inside the orthographic depth interval. Preserve a 16-block hysteresis.
 const SHADOW_DEPTH_SCROLL_WORLD: f32 = 16.0;
 
-/// Virtual light-space shadow clipmap: the caster projection stays fixed as the
-/// camera pans inside a tile, and refreshes only when crossing a tile boundary.
-/// Grid steps are integer multiples of the world units per texel, so rotating
-/// or translating the viewer does not resample the stored shadow edges.
-fn stable_shadow_camera(eye: Vec3, sun: Vec3) -> gpui::Result<([i32; 6], Camera)> {
+/// Conservatively include casters upstream along sunlight, even when outside
+/// main-camera frustum. Shadows can only be received in this radial partition.
+fn shadow_caster_bounds(eye: Vec3, sun: Vec3, cascade: usize) -> crate::Aabb {
+    let radius = SHADOW_CASCADE_SPLITS[cascade] + SHADOW_CASCADE_SPLITS[3];
+    let padding = Vec3::new(radius, radius, radius);
+    let upstream = sun * SHADOW_CASCADE_DEPTHS[cascade];
+    crate::Aabb {
+        min: eye.min(eye + upstream) - padding,
+        max: eye.max(eye + upstream) + padding,
+    }
+}
+
+/// Stable light-space texel snapping: movement inside a tile does not change
+/// this projection. Quantized light direction and whole-texel movement avoid
+/// temporal shimmer without any CPU readback or GPU queue synchronization.
+fn stable_shadow_camera(
+    eye: Vec3,
+    sun: Vec3,
+    cascade: usize,
+) -> gpui::Result<([i32; 6], Camera)> {
     let sun = sun.normalized().ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
+    let width = SHADOW_CASCADE_WIDTHS[cascade];
+    let scroll_world = width / SHADOW_MAP_SIZE as f32 * SHADOW_SCROLL_TEXELS;
     let quant = [
         (sun.x * 4096.0).round() as i32,
         (sun.y * 4096.0).round() as i32,
@@ -48,21 +60,22 @@ fn stable_shadow_camera(eye: Vec3, sun: Vec3) -> gpui::Result<([i32; 6], Camera)
     let vertical = direction.cross(right).normalized()
         .ok_or_else(|| anyhow::anyhow!("invalid shadow up"))?;
     let key = [
-        (eye.dot(right) / SHADOW_SCROLL_WORLD).round() as i32,
-        (eye.dot(vertical) / SHADOW_SCROLL_WORLD).round() as i32,
+        (eye.dot(right) / scroll_world).round() as i32,
+        (eye.dot(vertical) / scroll_world).round() as i32,
         (eye.dot(direction) / SHADOW_DEPTH_SCROLL_WORLD).round() as i32,
         quant[0], quant[1], quant[2],
     ];
-    let center = right * (key[0] as f32 * SHADOW_SCROLL_WORLD)
-        + vertical * (key[1] as f32 * SHADOW_SCROLL_WORLD)
+    let center = right * (key[0] as f32 * scroll_world)
+        + vertical * (key[1] as f32 * scroll_world)
         + direction * (key[2] as f32 * SHADOW_DEPTH_SCROLL_WORLD);
+    let depth = SHADOW_CASCADE_DEPTHS[cascade];
     Ok((key, Camera::orthographic(
-        center + direction * SHADOW_WORLD_HEIGHT,
+        center + direction * depth,
         center,
         up,
-        SHADOW_WORLD_HEIGHT,
+        width,
         0.1,
-        SHADOW_WORLD_HEIGHT * 2.0,
+        depth * 2.0,
     )))
 }
 
@@ -71,8 +84,8 @@ pub(super) struct EffectScene {
     pub(super) capture: Option<SceneView>,
     pub(super) targets_valid: bool,
     pub(super) queued_capture: bool,
-    pub(super) shadow_valid: bool,
-    pub(super) queued_shadow: bool,
+    pub(super) shadow_valid: [bool; SHADOW_CASCADE_COUNT],
+    pub(super) queued_shadow: [bool; SHADOW_CASCADE_COUNT],
     pub(super) scene: SceneResources,
     pub(super) targets: Targets,
     pub(super) msaa_sample_count: u32,
@@ -81,13 +94,13 @@ pub(super) struct EffectScene {
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
     pub(super) group_key: Option<(BufferId, [Option<crate::TextureAssetId>; 3])>,
-    pub(super) shadow: Target,
-    pub(super) shadow_color: Target,
-    pub(super) shadow_key: Option<[i32; 6]>,
+    pub(super) shadow: [Target; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_color: [Target; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_key: [Option<[i32; 6]>; SHADOW_CASCADE_COUNT],
     pub(super) shadow_input: Option<SceneView>,
     pub(super) shadow_scene: Option<Arc<Scene>>,
     pub(super) shadow_transform: Mat4,
-    pub(super) shadow_matrix: Mat4,
+    pub(super) shadow_matrix: [Mat4; SHADOW_CASCADE_COUNT],
     pub(super) tile_transform: Mat4,
     pub(super) tile_camera: Option<Camera>,
     pub(super) tile_scene: Option<Arc<Scene>>,
