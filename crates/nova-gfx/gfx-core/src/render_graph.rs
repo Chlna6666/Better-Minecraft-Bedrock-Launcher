@@ -10,7 +10,7 @@
 //! A ResourceId represents the complete allocation, not one TextureViewId:
 //! separate views of the same texture must synchronize against one another.
 use std::collections::{HashMap, HashSet};
-use crate::{BufferId, Error, Result, TextureId};
+use crate::{BufferId, Error, Result, SubmissionId, TextureId};
 
 /// Complete allocation identity. A mip view cannot escape an aliasing hazard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -122,6 +122,27 @@ pub trait GpuWorkExecutor {
     fn execute_pass(&mut self, index: usize, pass: &GpuWorkPass) -> Result<()>;
 }
 
+/// Native submission lifecycle of an ordered GPU work graph.
+///
+/// Implementations record barriers through `GpuWorkExecutor`, then submit a
+/// single native work stream and return its real completion handle. No CPU
+/// synchronization is allowed. A backend MUST NOT return an error after
+/// accepting GPU work without preserving its GPU completion ownership:
+/// failure to prove completion must never allow resource retirement.
+///
+/// This trait is an execution contract, not a default mock barrier. A backend
+/// that cannot encode all required state transitions must return Unavailable.
+pub trait GpuWorkSubmissionExecutor: GpuWorkExecutor {
+    /// Discard an incompletely encoded, not-yet-submitted GPU work stream.
+    /// Must release only unsubmitted command resources; no GPU wait.
+    fn abort_recording(&mut self);
+
+    /// Submit previously encoded passes, native barriers and all dependencies
+    /// in order. A returned SubmissionId is a pending GPU fence, never proof
+    /// that the GPU has finished.
+    fn submit_recorded(&mut self) -> Result<Option<SubmissionId>>;
+}
+
 impl GpuWorkPlan {
     /// Check that all resource transitions can be consumed in submission
     /// order before touching a native command encoder.
@@ -190,6 +211,23 @@ impl GpuWorkPlan {
             executor.execute_pass(index, pass)?;
         }
         Ok(())
+    }
+
+    /// Encode, then submit one ordered GPU workload without any CPU fence
+    /// wait. On a native encoder/barrier failure, abort the unsubmitted
+    /// recording and do not publish any outputs or completion handles.
+    ///
+    /// Resource retirement belongs to the caller's GPU owner and its real
+    /// SubmissionDevice::poll_submission completion result.
+    pub fn submit_ordered(
+        &self,
+        executor: &mut impl GpuWorkSubmissionExecutor,
+    ) -> Result<Option<SubmissionId>> {
+        if let Err(error) = self.encode_ordered(executor) {
+            executor.abort_recording();
+            return Err(error);
+        }
+        executor.submit_recorded()
     }
 
     /// Validate the currently supported extension execution model: independent
@@ -471,6 +509,56 @@ mod tests {
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(trace.encoded, 0);
+    }
+
+    #[test]
+    fn ordered_native_submission_aborts_before_fence_publication_on_barrier_failure() {
+        struct NativeOwner {
+            calls: Vec<&'static str>,
+            reject_barrier: bool,
+        }
+        impl GpuWorkExecutor for NativeOwner {
+            fn apply_transitions(&mut self, _: &[GpuTransition]) -> Result<()> {
+                self.calls.push("barrier");
+                if self.reject_barrier {
+                    Err(Error::Unavailable("unsupported native image barrier".into()))
+                } else {
+                    Ok(())
+                }
+            }
+            fn execute_pass(&mut self, _: usize, _: &GpuWorkPass) -> Result<()> {
+                self.calls.push("encode");
+                Ok(())
+            }
+        }
+        impl GpuWorkSubmissionExecutor for NativeOwner {
+            fn abort_recording(&mut self) {
+                self.calls.push("abort");
+            }
+            fn submit_recorded(&mut self) -> Result<Option<SubmissionId>> {
+                self.calls.push("submit");
+                Ok(None)
+            }
+        }
+        let mut graph = GpuWorkGraph::new();
+        graph.push("shadow", GpuWorkStage::Graphics, [
+            use_(tex(4), GpuAccess::DepthAttachment),
+        ]).unwrap();
+        graph.push("froxel", GpuWorkStage::Compute, [
+            use_(tex(4), GpuAccess::Sampled),
+        ]).unwrap();
+        let plan = graph.compile().unwrap();
+        let mut owner = NativeOwner {
+            calls: Vec::new(), reject_barrier: true,
+        };
+        assert!(matches!(
+            plan.submit_ordered(&mut owner), Err(Error::Unavailable(_))
+        ));
+        assert_eq!(owner.calls, ["encode", "barrier", "abort"]);
+        owner.calls.clear();
+        owner.reject_barrier = false;
+        assert!(plan.submit_ordered(&mut owner).unwrap().is_none());
+        assert_eq!(owner.calls, ["encode", "barrier", "encode", "submit"]);
     }
 
     #[test]
