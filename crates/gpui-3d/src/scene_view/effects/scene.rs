@@ -192,6 +192,7 @@ pub(super) struct EffectScene {
     pub(super) queued_capture: bool,
     pub(super) ssr_hiz: Option<SsrHiZ>,
     pub(super) froxel: Option<FroxelVolume>,
+    pub(super) froxel_unavailable: bool,
     pub(super) ssr_hiz_valid: bool,
     pub(super) queued_ssr_hiz: bool,
     pub(super) ssr_hiz_unavailable: bool,
@@ -206,7 +207,10 @@ pub(super) struct EffectScene {
     pub(super) composite_frame: BufferId,
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
-    pub(super) group_key: Option<(BufferId, [Option<crate::TextureAssetId>; 3], Option<TextureViewId>)>,
+    pub(super) group_key: Option<(
+        BufferId, [Option<crate::TextureAssetId>; 3],
+        Option<TextureViewId>, Option<TextureViewId>,
+    )>,
     pub(super) shadow: [Target; SHADOW_CASCADE_COUNT],
     pub(super) shadow_color: [Target; SHADOW_CASCADE_COUNT],
     pub(super) shadow_key: [Option<[i32; 6]>; SHADOW_CASCADE_COUNT],
@@ -559,6 +563,7 @@ impl EffectScene {
                 queued_capture: false,
                 ssr_hiz: None,
                 froxel: None,
+                froxel_unavailable: false,
                 ssr_hiz_valid: false,
                 queued_ssr_hiz: false,
                 ssr_hiz_unavailable: false,
@@ -620,6 +625,7 @@ impl EffectScene {
         self.ssr_hiz_valid = false;
         self.queued_ssr_hiz = false;
         self.ssr_hiz_unavailable = false;
+        self.froxel_unavailable = false;
         self.resource_epoch = self.resource_epoch.wrapping_add(1);
         self.cached_graph = None;
         Ok(())
