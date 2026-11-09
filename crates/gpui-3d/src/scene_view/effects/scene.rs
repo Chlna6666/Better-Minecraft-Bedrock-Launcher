@@ -165,6 +165,25 @@ fn shadow_caster_scene_changed(
     false
 }
 
+/// Structural identity of the per-frame GPU dependency plan. Repeated
+/// camera frames with identical pass topology reuse validation without hash
+/// maps or allocations on the render owner. Resource relocation invalidates
+/// this key through `resource_epoch`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EffectGraphKey {
+    resource_epoch: u64,
+    capture_queued: bool,
+    targets_valid: bool,
+    tile_updated: bool,
+    reflections: bool,
+    ssr_levels: u32,
+    ssr_queued: bool,
+    ssr_valid: bool,
+    shadows_enabled: bool,
+    shadow_queued: [bool; SHADOW_CASCADE_COUNT],
+    shadow_valid: [bool; SHADOW_CASCADE_COUNT],
+    multisampled: bool,
+}
 pub(super) struct EffectScene {
     pub(super) last_seen: Instant,
     pub(super) capture: Option<SceneView>,
@@ -179,6 +198,8 @@ pub(super) struct EffectScene {
     pub(super) scene: SceneResources,
     pub(super) targets: Targets,
     pub(super) msaa_sample_count: u32,
+    resource_epoch: u64,
+    cached_graph: Option<(EffectGraphKey, usize)>,
     pub(super) frame: BufferId,
     pub(super) composite_frame: BufferId,
     pub(super) tiles: LightTiles,
@@ -328,11 +349,30 @@ impl EffectScene {
     /// mixed Graphics/Compute ordered submission. A shadow map queued to be
     /// rendered later is NOT yet safe for dispatch_compute_bind_group().
     pub(super) fn validate_gpu_work_graph(
-        &self,
+        &mut self,
         reflection_enabled: bool,
         shadows_enabled: bool,
         tile_updated: bool,
     ) -> gpui::Result<usize> {
+        let key = EffectGraphKey {
+            resource_epoch: self.resource_epoch,
+            capture_queued: self.queued_capture,
+            targets_valid: self.targets_valid,
+            tile_updated,
+            reflections: reflection_enabled,
+            ssr_levels: self.ssr_hiz_levels(),
+            ssr_queued: self.queued_ssr_hiz,
+            ssr_valid: self.ssr_hiz_valid,
+            shadows_enabled,
+            shadow_queued: self.queued_shadow,
+            shadow_valid: self.shadow_valid,
+            multisampled: self.targets.msaa.is_some(),
+        };
+        if let Some((cached_key, transitions)) = self.cached_graph {
+            if cached_key == key {
+                return Ok(transitions);
+            }
+        }
         let mut graph = GpuWorkGraph::new();
         let texture = |id, access| GpuResourceUse {
             resource: GpuResource::Texture(id), access,
@@ -444,7 +484,9 @@ impl EffectScene {
             );
         }
         graph.push("deferred effects composite", GpuWorkStage::Graphics, composite_reads)?;
-        Ok(graph.compile()?.transitions.len())
+        let transitions = graph.compile()?.transitions.len();
+        self.cached_graph = Some((key, transitions));
+        Ok(transitions)
     }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
@@ -515,6 +557,8 @@ impl EffectScene {
                 scene,
                 targets,
                 msaa_sample_count,
+                resource_epoch: 0,
+                cached_graph: None,
                 frame,
                 composite_frame,
                 tiles,
@@ -565,6 +609,8 @@ impl EffectScene {
         self.ssr_hiz_valid = false;
         self.queued_ssr_hiz = false;
         self.ssr_hiz_unavailable = false;
+        self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        self.cached_graph = None;
         Ok(())
     }
     pub(super) fn shadow_pass(
