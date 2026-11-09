@@ -380,7 +380,7 @@ fn compute_writes_storage_image_through_bind_group() {
                     format: Format::Rgba8Unorm,
                     read_only: false,
                 },
-                stages: ShaderStages::FRAGMENT,
+                stages: ShaderStages::COMPUTE,
             }],
         })
         .expect("layout");
