@@ -176,6 +176,8 @@ struct EffectGraphKey {
     capture_queued: bool,
     targets_valid: bool,
     tile_updated: bool,
+    light_buffer: BufferId,
+    froxel_texture: Option<TextureId>,
     reflections: bool,
     ssr_levels: u32,
     ssr_queued: bool,
@@ -372,6 +374,10 @@ impl EffectScene {
             capture_queued: self.queued_capture,
             targets_valid: self.targets_valid,
             tile_updated,
+            light_buffer,
+            froxel_texture: self.froxel.as_ref()
+                .filter(|_| froxel_enabled)
+                .map(|volume| volume.integrated.texture),
             reflections: reflection_enabled,
             ssr_levels: self.ssr_hiz_levels(),
             ssr_queued: self.queued_ssr_hiz,
