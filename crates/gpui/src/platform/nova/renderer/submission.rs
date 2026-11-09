@@ -255,6 +255,10 @@ impl NovaRenderer {
                         self.complete_gpu_submission(publication);
                     }
                     self.on_offscreen_submission_complete(submission);
+                    // Notify each extension of this *exact* fence before the
+                    // global idle path. Per-submission sidecar allocations may
+                    // retire while unrelated GUI frames remain in flight.
+                    self.renderer_registry.gpu_submission_completed(submission);
                 }
                 SubmissionStatus::Failed(error) => {
                     self.pending_submissions.remove(index);
@@ -322,6 +326,7 @@ impl NovaRenderer {
                 self.complete_gpu_submission(publication);
             }
             self.on_offscreen_submission_complete(submission);
+            self.renderer_registry.gpu_submission_completed(submission);
         }
         // A synchronous/resize/trim drain is the same completion proof as
         // a successful asynchronous poll. Without this notification, retired
