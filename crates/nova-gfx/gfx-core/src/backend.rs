@@ -759,6 +759,31 @@ pub trait CommandDevice {
 
 /// Tracks deferred GPU submissions.
 pub trait SubmissionDevice {
+    /// Query a real additional native queue suitable for the requested work
+    /// class, if one is independently owned by this device.
+    ///
+    /// A queue is not exposed merely because an API defines Compute/Transfer
+    /// stages: backends must have created the physical queue and its completion
+    /// fence. Queue availability does not imply that arbitrary resources can be
+    /// shared without transition/ownership barriers.
+    fn independent_queue(&self, _stage: crate::GpuWorkStage) -> Option<crate::GpuQueueId> {
+        None
+    }
+
+    /// GPU-side signal checkpoint on one actual native queue. It proves that
+    /// queue's earlier native work finished and does not block the CPU.
+    /// Implementations must not submit a checkpoint to some other queue as a
+    /// fake completion proof for Compute or Copy.
+    fn checkpoint_gpu_queue(&mut self, queue: crate::GpuQueueId) -> Result<SubmissionId> {
+        if queue == crate::GpuQueueId::PRIMARY {
+            self.checkpoint_ordered_queue(crate::GpuWorkStage::Graphics)
+        } else {
+            Err(Error::Unavailable(
+                "native checkpoint on the requested independent queue is unsupported".into(),
+            ))
+        }
+    }
+
     /// Enqueue an actual device-side wait for a previously accepted producer
     /// submission on a distinct physical queue. This operation must return a
     /// proof only after the backend has successfully encoded the wait on
