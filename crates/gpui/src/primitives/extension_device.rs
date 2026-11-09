@@ -1,16 +1,16 @@
 //! Object-safe resource and pipeline access for renderer-owned extensions.
 //!
 //! GPUI hands this facade to [`RendererExtension`](super::RendererExtension)
-//! implementations. It deliberately excludes window surfaces, command submission,
-//! and presentation: the host window renderer owns those operations and calls the
-//! extension back with resources it can create and destroy.
+//! implementations. It excludes swapchain presentation and native queue ownership,
+//! but exposes ordinary gfx-core offscreen production: a renderer can submit its
+//! own 3D passes without the UI compositor re-encoding their command stream.
 //! Optional ordered buffer compute is queued before subsequent host draws; it does not
 //! grant extensions ownership of frame submission or presentation.
 
 use gfx_core::{
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
     BufferDescriptor, BufferId, BufferUploadStats, BufferWrite, GpuTimestampSample,
-    GpuTimestampTag, PipelineDevice,
+    GpuTimestampTag, PipelineDevice, PresentationDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDescriptor, RenderPassId,
     RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, Result, SamplerDescriptor,
     SamplerId, ShaderModuleDescriptor, ShaderModuleId, TextureDescriptor, TextureId,
@@ -23,6 +23,33 @@ use gfx_core::{
 /// [`PipelineDevice`], so a renderer can pass `&mut dyn ExtensionDevice` without
 /// knowing the concrete nova-gfx backend type.
 pub trait ExtensionDevice {
+    /// Directly submits native offscreen graphics work on the owning GPU device.
+    ///
+    /// This is the public, renderer-agnostic producer path for 3D engines,
+    /// image processing and other offscreen clients. The caller owns pass
+    /// construction; GPUI never converts its draw commands to 2D primitives.
+    /// SubmissionId is handed back to the host for nonblocking fence tracking.
+    /// Independent queues must provide GPU-side producer/consumer ordering.
+    ///
+    /// No CPU fence wait and no swapchain operation is permitted here.
+    fn submit_offscreen_graphics(
+        &mut self,
+        _passes: &[gfx_core::RenderPassCommands<'_>],
+        _tags: &[Option<GpuTimestampTag>],
+        _independent: bool,
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        Err(gfx_core::Error::Unavailable(
+            "native offscreen graphics submission is unsupported".into(),
+        ))
+    }
+
+    /// Whether the device actually supports independent, GPU-synchronized
+    /// native graphics queue submission. False still permits the ordered
+    /// primary graphics queue and never forces a CPU wait.
+    fn independent_graphics_queue_available(&self) -> bool {
+        false
+    }
+
     /// Physical array-texture limits and end-to-end layered sampling support.
     /// Extensions can plan resource sizes without hard-coding any backend.
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
@@ -323,8 +350,37 @@ pub trait ExtensionDevice {
 
 impl<T> ExtensionDevice for T
 where
-    T: ResourceDevice + PipelineDevice,
+    T: ResourceDevice + PipelineDevice + PresentationDevice,
 {
+    fn submit_offscreen_graphics(
+        &mut self,
+        passes: &[gfx_core::RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+        independent: bool,
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(gfx_core::Error::InvalidInput(
+                "offscreen pass/timestamp count mismatch".into(),
+            ));
+        }
+        let timed = tags.iter().any(Option::is_some);
+        if independent && PresentationDevice::independent_graphics_queue_available(self) {
+            if timed {
+                PresentationDevice::render_to_textures_independent_profiled(self, passes, tags)
+            } else {
+                PresentationDevice::render_to_textures_independent(self, passes)
+            }
+        } else if timed {
+            PresentationDevice::render_to_textures_profiled(self, passes, tags)
+        } else {
+            PresentationDevice::render_to_textures(self, passes)
+        }
+    }
+
+    fn independent_graphics_queue_available(&self) -> bool {
+        PresentationDevice::independent_graphics_queue_available(self)
+    }
+
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
         ResourceDevice::texture_array_capabilities(self)
     }
