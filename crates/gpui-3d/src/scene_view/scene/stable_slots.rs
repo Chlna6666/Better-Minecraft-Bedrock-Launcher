@@ -570,6 +570,63 @@ mod tests {
     }
 
     #[test]
+    fn different_native_fences_retire_only_their_own_physical_slots() {
+        let original = draws(24);
+        let (slots, _) = StableDrawSlots::default().plan(&original).unwrap();
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        let first_fence = gfx_core::SubmissionId::from_parts(3, 1);
+        let second_fence = gfx_core::SubmissionId::from_parts(4, 1);
+        slots.submission_accepted(first_fence);
+        assert!(slots.free.is_empty());
+        assert!(slots.has_retired_slots());
+
+        // Another Section is removed in the next owner frame, while the
+        // first native GPU draw is still in flight.
+        let (mut slots, _) = slots.plan(&original[2..]).unwrap();
+        slots.submission_accepted(second_fence);
+        assert_eq!(slots.retired_by_submission.len(), 2);
+        assert!(slots.retired_unbound.is_empty());
+
+        // Different graphics submissions may complete out of order.
+        slots.submission_completed(second_fence);
+        assert_eq!(slots.free, vec![1]);
+        assert_eq!(slots.retired_by_submission.len(), 1);
+        // The first removal's slot is still forbidden even though a later
+        // producer finished.
+        let (_updated, mapping) = slots.plan(&original).unwrap();
+        assert!(!mapping.contains(&0));
+        assert!(slots.has_retired_slots());
+
+        slots.submission_completed(first_fence);
+        assert!(slots.free.contains(&0));
+        assert!(slots.free.contains(&1));
+        assert!(!slots.has_retired_slots());
+        // Duplicate completion notifications must not double-release slots.
+        let free_count = slots.free.len();
+        slots.submission_completed(first_fence);
+        assert_eq!(slots.free.len(), free_count);
+    }
+
+    #[test]
+    fn missing_native_submission_id_uses_only_full_gpu_completion_proof() {
+        let original = draws(512);
+        let (slots, mapping) = StableDrawSlots::default().plan(&original).unwrap();
+        let (mut slots, remaining) = slots.plan(&original[..32]).unwrap();
+        assert_eq!(remaining, mapping[..32]);
+        assert!(slots.has_retired_slots());
+        assert!(slots.free.is_empty());
+        assert_eq!(slots.trim_unused_tail(), 512);
+        // No fence handle is available on some backend fallbacks, so a new
+        // Section must grow the table rather than alias an in-flight row.
+        let (unfenced, slots_before) = slots.plan(&original[..33]).unwrap();
+        assert_eq!(unfenced.high_water(), 513);
+        assert_eq!(slots_before[32], 512);
+        slots.gpu_work_completed(); // Explicit GPU Owner global completion.
+        assert!(!slots.has_retired_slots());
+        assert_eq!(slots.trim_unused_tail(), 32);
+    }
+
+    #[test]
     fn structural_splices_keep_survivor_slots_and_reuse_retired_storage() {
         let original = draws(96);
         let (mut resident, map) = StableDrawSlots::default().plan(&original).unwrap();
