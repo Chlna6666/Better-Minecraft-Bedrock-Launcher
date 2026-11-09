@@ -96,7 +96,7 @@ pub(super) struct SceneResources {
     uploaded_frame_params: Vec<u8>,
     frame_state: Option<FrameState>,
     shadow: Option<super::shadow::Shadow>,
-    light_pass: Option<light_pass::LightPass>,
+    light_pass: [Option<light_pass::LightPass>; super::effects::SHADOW_CASCADE_COUNT],
     uploaded_tables: [Vec<u8>; 3],
     scratch_tables: [Vec<u8>; 3],
     draw_record_cache: DrawRecordCache,
@@ -717,7 +717,7 @@ impl SceneResources {
             uploaded_frame_params: Vec::new(),
             frame_state: None,
             shadow: None,
-            light_pass: None,
+            light_pass: std::array::from_fn(|_| None),
             uploaded_tables: Default::default(),
             scratch_tables: Default::default(),
             draw_record_cache: DrawRecordCache::default(),
@@ -3940,8 +3940,10 @@ impl SceneResources {
         if let Some(shadow) = self.shadow.take() {
             shadow.destroy(device)?;
         }
-        if let Some(pass) = self.light_pass.take() {
-            pass.destroy(device)?;
+        for cascade in &mut self.light_pass {
+            if let Some(pass) = cascade.take() {
+                pass.destroy(device)?;
+            }
         }
         self.page_refs.clear();
         for (_, mesh) in self.meshes.drain() {
