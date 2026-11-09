@@ -864,14 +864,10 @@ impl VulkanDevice {
             image,
             allocation,
             desc: desc.clone(),
-            // A storage image is bound as a UAV, which every backend must expose in a
-            // layout the image never leaves; GENERAL is that single layout. Other textures
-            // start undefined and acquire a layout on first use.
-            layout: if desc.usage.contains(TextureUsage::STORAGE) {
-                vk::ImageLayout::GENERAL
-            } else {
-                vk::ImageLayout::UNDEFINED
-            },
+            // VkImageCreateInfo starts in UNDEFINED. A storage image must be
+            // transitioned to GENERAL by a GPU image barrier before its first
+            // shader write; reporting GENERAL here without a barrier was invalid.
+            layout: vk::ImageLayout::UNDEFINED,
         }))
     }
 
