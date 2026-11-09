@@ -186,6 +186,92 @@ impl SsrHiZ {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn verify_native<D: Device + TextureTransferDevice>(mut device:D) {
+        const SIDE:u32=16;
+        let extent=Extent2d::new(SIDE,SIDE).unwrap();
+        let source=device.create_texture(&TextureDescriptor {
+            label: Some("SSR hierarchy source fixture".into()),
+            size:extent,mip_level_count:1,format:Format::R32Float,
+            usage:TextureUsage::SAMPLED | TextureUsage::COPY_DST,
+            memory_location:MemoryLocation::GpuOnly,
+            dimension:TextureDimension::D2,sample_count:1,
+        }).unwrap();
+        let source_view=device.create_texture_view(&TextureViewDescriptor {
+            label:None,texture:source,base_mip_level:0,mip_level_count:1,
+            format:Format::R32Float,
+        }).unwrap();
+        let mut pixels=vec![1.0f32;(SIDE*SIDE) as usize];
+        pixels[0]=0.25;
+        pixels[(SIDE*SIDE-1) as usize]=0.05;
+        let bytes=pixels.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
+        device.write_texture(TextureWriteDescriptor {
+            texture:source,mip_level:0,
+            layout:TextureDataLayout::new(0,SIDE*4,SIDE).unwrap(),
+            origin:Origin2d::ZERO,size:extent,
+        },&bytes).unwrap();
+        let pass=device.create_render_pass(&RenderPassDescriptor {
+            label:Some("SSR hierarchy fixture base render pass".into()),
+            color_attachments:vec![ColorAttachmentDescriptor {format:Format::Rgba8Unorm}],
+            depth_attachment:None,sample_count:1,resolve_target:None,
+        }).unwrap();
+        let context=RendererExtensionContext::for_target(
+            D::BACKEND_KIND,pass,Format::Rgba8Unorm,extent,
+        );
+        let pyramid=SsrHiZ::new(&mut device,&context,extent,source_view,false).unwrap();
+        assert_eq!(pyramid.levels,4);
+        let mut queued=Vec::new();
+        pyramid.enqueue(&mut queued);
+        let passes=queued.iter().map(RendererExtensionPass::commands).collect::<Vec<_>>();
+        let submission=PresentationDevice::render_to_textures(&mut device,&passes).unwrap();
+        if let Some(submission)=submission {
+            SubmissionDevice::wait_submission(&mut device,submission).unwrap();
+        }
+        for (mip,x,y,expected) in [
+            (0usize,0usize,0usize,0.25f32),
+            (0,7,7,0.05),
+            (1,0,0,0.25),
+            (1,3,3,0.05),
+            (2,0,0,0.25),
+            (2,1,1,0.05),
+            (3,0,0,0.05),
+        ] {
+            let side=8usize>>mip;
+            let data=TextureTransferDevice::read_texture(
+                &mut device,pyramid.targets[mip].texture,
+            ).unwrap().bytes;
+            let offset=(y*side+x)*4;
+            let actual=f32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+            assert!((actual-expected).abs()<0.0001,
+                "native SSR hierarchy mip={mip} x={x} y={y}: {actual} != {expected}");
+        }
+        drop(passes);
+        drop(queued);
+        pyramid.destroy(&mut device).unwrap();
+        device.destroy_render_pass(pass).unwrap();
+        device.destroy_texture_view(source_view).unwrap();
+        device.destroy_texture(source).unwrap();
+    }
+
+    #[test]
+    #[ignore="requires Vulkan native GPU; validates all four SSR hierarchy levels"]
+    fn ssr_hiz_vulkan() {
+        verify_native(gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap());
+    }
+
+    #[cfg(target_os="windows")]
+    #[test]
+    #[ignore="requires D3D11 native GPU; validates all four SSR hierarchy levels"]
+    fn ssr_hiz_dx11() {
+        verify_native(gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap());
+    }
+
+    #[cfg(target_os="windows")]
+    #[test]
+    #[ignore="requires D3D12 native GPU; validates all four SSR hierarchy levels"]
+    fn ssr_hiz_dx12() {
+        verify_native(gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap());
+    }
+
     #[test]
     fn separate_mip_targets_round_down_without_zero_sized_levels() {
         let full=Extent2d::new(961,541).unwrap();
