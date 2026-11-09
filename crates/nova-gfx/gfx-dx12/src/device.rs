@@ -2162,17 +2162,41 @@ mod platform {
             Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
         }
 
+        fn submission_fence(&self, queue: Dx12SubmissionQueue) -> Result<ID3D12Fence> {
+            match queue {
+                Dx12SubmissionQueue::Primary => Ok(self.fence.clone()),
+                Dx12SubmissionQueue::Sidecar => self.sidecar_fence.clone().ok_or_else(|| {
+                    Error::Unavailable("DX12 sidecar fence is unavailable".into())
+                }),
+                Dx12SubmissionQueue::Compute => self.async_compute.as_ref()
+                    .map(|native| native.fence.clone()).ok_or_else(|| {
+                        Error::Unavailable("DX12 Compute fence is unavailable".into())
+                    }),
+                Dx12SubmissionQueue::Transfer => self.async_transfer.as_ref()
+                    .map(|native| native.fence.clone()).ok_or_else(|| {
+                        Error::Unavailable("DX12 Copy fence is unavailable".into())
+                    }),
+            }
+        }
+
         fn poll_submission(&mut self, submission_id: SubmissionId) -> Result<SubmissionStatus> {
             self.poll_cleanup();
-            let submission = self.submissions.get(submission_id)?;
-            let completed = match self.completed_fence_value("ID3D12Fence::GetCompletedValue") {
-                Ok(completed) => completed,
-                Err(error) => {
-                    let _completed = self.submissions.take(submission_id)?;
-                    return Ok(SubmissionStatus::Failed(error.to_string()));
-                }
+            let (queue, fence_value) = {
+                let submission = self.submissions.get(submission_id)?;
+                (submission.queue, submission.fence_value)
             };
-            if completed >= submission.fence_value {
+            let fence = self.submission_fence(queue)?;
+            // SAFETY: This native fence is owned by the same live device as
+            // the submission, and remains alive until the device is dropped.
+            let completed = unsafe { fence.GetCompletedValue() };
+            if completed == u64::MAX {
+                let _failed = self.submissions.take(submission_id)?;
+                return Ok(SubmissionStatus::Failed(format!(
+                    "DX12 {:?} fence signaled device removal: {}",
+                    queue, self.device_removed_reason()
+                )));
+            }
+            if completed >= fence_value {
                 let _completed = self.submissions.take(submission_id)?;
                 Ok(SubmissionStatus::Complete)
             } else if let Err(error) = self.check_device_removed("DX12 submission poll") {
@@ -2184,8 +2208,26 @@ mod platform {
         }
 
         fn wait_submission(&mut self, submission_id: SubmissionId) -> Result<()> {
-            let fence_value = self.submissions.get(submission_id)?.fence_value;
-            match self.wait_for_fence_value(fence_value) {
+            let (queue, fence_value) = {
+                let submission = self.submissions.get(submission_id)?;
+                (submission.queue, submission.fence_value)
+            };
+            let result = if queue == Dx12SubmissionQueue::Primary {
+                self.wait_for_fence_value(fence_value)
+            } else {
+                // Explicit blocking drain / resize path only. The GPU performs
+                // the cross-queue wait; normal streaming never waits on CPU.
+                let fence = self.submission_fence(queue)?;
+                // SAFETY: The producer signaled this valid device fence before
+                // exposing its SubmissionId. Queue::Wait is GPU-side only.
+                unsafe { self.graphics_queue.Wait(&fence, fence_value) }
+                    .map_err(|error| Error::Backend(format!(
+                        "DX12 native queue drain dependency: {error}"
+                    )))?;
+                let witness = self.signal_frame()?;
+                self.wait_for_fence_value(witness)
+            };
+            match result {
                 Ok(()) => {
                     let _completed = self.submissions.take(submission_id)?;
                     self.poll_cleanup();
