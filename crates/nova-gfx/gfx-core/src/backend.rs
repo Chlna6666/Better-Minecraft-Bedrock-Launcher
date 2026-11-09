@@ -784,6 +784,26 @@ pub trait SubmissionDevice {
         }
     }
 
+    /// Submit a nonempty Compute batch on the exact requested NATIVE queue,
+    /// returning the native completion submission for that queue. Unlike a
+    /// checkpoint this must actually encode and execute each ComputeDispatch
+    /// on `queue`; it must not run work on PRIMARY and signal another queue.
+    ///
+    /// Resource transitions and GPU-side waits remain backend obligations:
+    /// callers must not reuse allocations until the returned submission
+    /// completes, and a later Graphics consumer requires a real queue wait.
+    /// Backends without safe typed command allocators and ownership barriers
+    /// return Unavailable instead of silently falling back to PRIMARY.
+    fn submit_compute_batch_on_queue(
+        &mut self,
+        _queue: crate::GpuQueueId,
+        _dispatches: &[crate::ComputeDispatch<'_>],
+    ) -> Result<SubmissionId> {
+        Err(Error::Unavailable(
+            "native compute command submission on this queue is unavailable".into(),
+        ))
+    }
+
     /// Enqueue an actual device-side wait for a previously accepted producer
     /// submission on a distinct physical queue. This operation must return a
     /// proof only after the backend has successfully encoded the wait on
