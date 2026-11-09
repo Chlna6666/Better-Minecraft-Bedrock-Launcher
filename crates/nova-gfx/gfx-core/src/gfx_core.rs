@@ -1148,6 +1148,46 @@ impl TextureDimension {
     }
 }
 
+/// Native 3D texture limits and implemented shader binding capabilities.
+///
+/// A 3D image has one image layer, Z voxels and 3D sampling coordinates;
+/// reporting 2D array support does not imply this capability.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextureVolumeCapabilities {
+    /// Maximum supported X/Y/Z texture extent, or zero when unavailable.
+    pub max_dimension_3d: u32,
+    /// Shader-readable texture_3d bindings are implemented.
+    pub sampled: bool,
+    /// Writable texture_storage_3d bindings are implemented.
+    pub storage: bool,
+}
+
+impl TextureVolumeCapabilities {
+    /// Validate a native volume allocation against implemented capabilities.
+    /// The common descriptor performs format, mip and usage checks first.
+    pub fn validate(self, desc: &TextureDescriptor) -> Result<()> {
+        desc.validate()?;
+        let TextureDimension::D3 { depth } = desc.dimension else {
+            return Err(Error::InvalidInput("expected a 3D texture descriptor".into()));
+        };
+        if self.max_dimension_3d == 0
+            || (desc.usage.contains(TextureUsage::SAMPLED) && !self.sampled)
+            || (desc.usage.contains(TextureUsage::STORAGE) && !self.storage)
+        {
+            return Err(Error::Unavailable("native 3D shader textures are unsupported".into()));
+        }
+        if desc.size.width() > self.max_dimension_3d
+            || desc.size.height() > self.max_dimension_3d
+            || depth > self.max_dimension_3d
+        {
+            return Err(Error::InvalidInput(
+                "3D texture dimensions exceed the device limit".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Texture creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextureDescriptor {
