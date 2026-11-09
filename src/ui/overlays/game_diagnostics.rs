@@ -123,6 +123,7 @@ fn evidence_label(value: EvidenceSource) -> SharedString {
         EvidenceSource::RunnerLog => t!("GameCrash.ui.source.runner"),
         EvidenceSource::LauncherLog => t!("GameCrash.ui.source.launcher"),
         EvidenceSource::WindowsWer => t!("GameCrash.ui.source.wer"),
+        EvidenceSource::CrashDump => t!("GameCrash.ui.source.dump"),
         EvidenceSource::ExitStatus => t!("GameCrash.ui.source.exit"),
     }
 }
