@@ -1280,27 +1280,44 @@ impl VulkanDevice {
                         .find(|entry| entry.binding == binding.binding)
                         .map(|entry| entry.binding_type)
                         .ok_or_else(|| Error::InvalidInput("missing image layout binding".into()))?;
-                    // Vulkan's storage image descriptor requires STORAGE_IMAGE and
-                    // GENERAL layout with an explicit shader-write transition.
-                    // The current sampled-image path cannot safely implement it.
-                    if matches!(kind, BindingType::StorageTexture { .. }) {
-                        return Err(Error::Unavailable(
-                            "Vulkan storage-image bind groups require native image barriers"
-                                .into(),
-                        ));
-                    }
                     let view = self.texture_views.get(texture_binding.texture_view)?;
-                    if self.textures.get(view.texture)?.desc.format == Format::Depth32Float {
-                        sampled_depth.push(view.texture);
-                    }
+                    let texture = self.textures.get(view.texture)?;
+                    let (descriptor_type, image_layout) = match kind {
+                        BindingType::StorageTexture { format, .. } => {
+                            if !texture.desc.usage.contains(TextureUsage::STORAGE)
+                                || view.desc.format != format
+                                || texture.desc.dimension != TextureDimension::D2
+                                || texture.desc.sample_count != 1
+                                || view.desc.mip_level_count != 1
+                                || format == Format::Depth32Float
+                            {
+                                return Err(Error::InvalidInput(
+                                    "Vulkan storage image requires matching single-sample color D2 view".into(),
+                                ));
+                            }
+                            (vk::DescriptorType::STORAGE_IMAGE, vk::ImageLayout::GENERAL)
+                        }
+                        BindingType::SampledTexture => {
+                            if !texture.desc.usage.contains(TextureUsage::SAMPLED) {
+                                return Err(Error::InvalidInput(
+                                    "Vulkan sampled image lacks SAMPLED usage".into(),
+                                ));
+                            }
+                            if texture.desc.format == Format::Depth32Float {
+                                sampled_depth.push(view.texture);
+                            }
+                            (vk::DescriptorType::SAMPLED_IMAGE, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        }
+                        _ => return Err(Error::InvalidInput("invalid Vulkan image binding kind".into())),
+                    };
                     image_infos.push(
                         vk::DescriptorImageInfo::default()
                             .image_view(view.view)
-                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                            .image_layout(image_layout),
                     );
                     pending_writes.push(PendingDescriptorWrite::Image {
                         binding: binding.binding,
-                        descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+                        descriptor_type,
                         info_index: image_infos.len() - 1,
                     });
                 }

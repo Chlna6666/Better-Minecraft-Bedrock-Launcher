@@ -63,6 +63,7 @@ fn create_pool(device: &ash::Device) -> Result<vk::DescriptorPool> {
         vk::DescriptorType::UNIFORM_BUFFER,
         vk::DescriptorType::STORAGE_BUFFER,
         vk::DescriptorType::SAMPLED_IMAGE,
+        vk::DescriptorType::STORAGE_IMAGE,
         vk::DescriptorType::SAMPLER,
     ]
     .map(|ty| vk::DescriptorPoolSize {
