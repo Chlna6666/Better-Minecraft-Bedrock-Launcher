@@ -90,6 +90,19 @@ pub struct DiagnosticsReport {
     pub log_tail: String,
 }
 
+impl DiagnosticsReport {
+    pub fn is_fatal_incident(&self) -> bool {
+        self.severity == DiagnosticsSeverity::Fatal
+            || matches!(
+                self.kind,
+                DiagnosticsKind::Panic
+                    | DiagnosticsKind::UnhandledException
+                    | DiagnosticsKind::UnexpectedExit
+                    | DiagnosticsKind::StartupFailure
+            )
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 struct SessionMarker {
     process_id: u32,
@@ -805,6 +818,12 @@ mod tests {
         let output = truncate_string(input, 20);
         assert!(output.len() <= 23);
         assert!(output.ends_with("..."));
+    }
+
+    #[test]
+    fn ordinary_errors_are_not_fatal_incidents() {
+        assert!(!create_operation_error_report("install", "disk full").is_fatal_incident());
+        assert!(create_startup_failure_report("bootstrap", "failed").is_fatal_incident());
     }
 
     #[test]

@@ -19,7 +19,11 @@ pub fn render_diagnostics_overlay(
     auto_sentry_enabled: bool,
 ) -> Option<AnyElement> {
     // Crash report state must remain independent of recoverable operation errors.
-    let crash_report = state.pending_report.is_some();
+    let persisted_report = state.pending_report.is_some();
+    let crash_report = state
+        .pending_report
+        .as_ref()
+        .is_some_and(DiagnosticsReport::is_fatal_incident);
     let report = state
         .pending_report
         .clone()
@@ -418,7 +422,7 @@ pub fn render_diagnostics_overlay(
                                 true,
                             )
                             .on_click(move |_event, _window, cx| {
-                                if crash_report {
+                                if persisted_report {
                                     if let Err(error) =
                                         crate::utils::diagnostics::acknowledge_pending_report()
                                     {
@@ -461,7 +465,10 @@ pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
         if state.auto_report_attempted || state.submitting_sentry || !auto_sentry_enabled {
             None
         } else {
-            state.pending_report.clone()
+            state.pending_report
+                .as_ref()
+                .filter(|report| report.is_fatal_incident())
+                .cloned()
         }
     };
 
