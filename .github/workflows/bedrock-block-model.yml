@@ -7,6 +7,8 @@ on:
       - 'crates/bedrock-world/**'
       - 'crates/bedrock-brarchive/**'
       - 'crates/bedrock-leveldb/**'
+      - 'scripts/pack_bsc_model_library.py'
+      - 'scripts/test_pack_bsc_v3.py'
       - '.github/workflows/bedrock-block-model.yml'
   workflow_dispatch:
 
@@ -34,3 +36,5 @@ jobs:
         run: cargo test -p bedrock-block-model --lib
       - name: Test v3 BSC packer
         run: python3 scripts/test_pack_bsc_v3.py
+      - name: Test real embedded Geometry Pool v3 library
+        run: cargo test -p bedrock-block-model --test capture_library
