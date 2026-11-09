@@ -61,6 +61,7 @@ pub(crate) enum Bound {
 }
 pub(crate) struct BindGroup {
     pub(crate) layout: BindGroupLayoutId,
+    pub(crate) desc: BindGroupDescriptor,
     pub(crate) bindings: Vec<(u32, ShaderStages, Bound)>,
 }
 
@@ -157,6 +158,9 @@ impl ResourceDevice for Dx11Device {
 
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
+    }
+    fn dispatch_compute_bind_group(&mut self, dispatch: &ComputeBindGroupDispatch) -> Result<()> {
+        self.dispatch_bind_group_buffers(dispatch)
     }
     fn gpu_work_timestamps_supported(&self) -> bool {
         self.timestamp_queries_supported
@@ -727,6 +731,7 @@ impl ResourceDevice for Dx11Device {
             .collect::<Result<Vec<_>>>()?;
         Ok(self.sets.insert(BindGroup {
             layout: desc.layout,
+            desc: desc.clone(),
             bindings,
         }))
     }

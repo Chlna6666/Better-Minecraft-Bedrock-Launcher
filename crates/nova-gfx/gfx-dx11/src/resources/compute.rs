@@ -87,6 +87,21 @@ mod tests {
 }
 
 impl Dx11Device {
+    pub(crate) fn dispatch_bind_group_buffers(
+        &mut self,
+        dispatch: &ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        dispatch.validate(self.compute_capabilities())?;
+        let set = self.sets.get(dispatch.bind_group)?;
+        let layout = self.layouts.get(set.layout)?;
+        let bindings = dispatch.buffer_bindings(&set.desc, layout)?;
+        self.dispatch_buffers(&ComputeDispatch {
+            shader: dispatch.shader,
+            bindings: &bindings,
+            workgroups: dispatch.workgroups,
+        })
+    }
+
     pub(crate) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         dispatch.validate_with_limits(self.compute_capabilities(), self.buffer_binding_limits())?;
         let Shader::Compute(shader) = self.shaders.get(dispatch.shader)? else {
