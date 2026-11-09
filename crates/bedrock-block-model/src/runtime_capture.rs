@@ -297,7 +297,6 @@ impl RuntimeCaptureCatalog {
                 .shared_geometry_refs
                 .into_iter()
                 .zip(variant.shared_appearance_refs)
-                .filter(|(g, a)| (*g as usize) < pool.count(0) && (*a as usize) < pool.count(1))
                 .collect();
             let recipe = StateRecipe {
                 meshes,
@@ -489,7 +488,7 @@ pub fn decode_capture_texture_slot(slot: &str) -> Option<String> {
     let bytes = decode_hex(hex)?;
     String::from_utf8(bytes).ok()
 }
-// Canonical V2 triangles are sorted independently from source quad order.
+// V3 canonical triangles are sorted independently from source quad order.
 // Match two oppositely directed shared edges to recover a *real* quad;
 // never invent a face from unrelated triangles or assume adjacent indices.
 fn shared_mesh_planes(
@@ -508,8 +507,8 @@ fn shared_mesh_planes(
     if count == 0
         || count > 32768
         || count % 2 != 0
-        || appearance.corner_attributes.len() != count * 3
-        || appearance.triangle_texture_slots.len() != count
+        || appearance.corners.len() != count * 3
+        || appearance.slots.len() != count
     {
         return None;
     }

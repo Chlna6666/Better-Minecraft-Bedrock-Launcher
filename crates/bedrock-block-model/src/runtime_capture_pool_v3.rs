@@ -95,15 +95,15 @@ impl PoolV3 {
             entries[kind].reserve(count);
             for _ in 0..count {
                 let offset = u64_at(&directory, &mut at).ok_or("missing pool offset")?;
-                let len = u32_at(&directory, &mut at).ok_or("missing pool length")?;
-                if offset != next || len as usize > MAX_ENTRY {
+                let entry_len = u32_at(&directory, &mut at).ok_or("missing pool length")?;
+                if offset != next || entry_len as usize > MAX_ENTRY {
                     return Err("noncanonical pool offset/length".into());
                 }
-                next = offset.checked_add(u64::from(len)).ok_or("pool offset overflow")?;
-                if next > len_of(&source)? {
+                next = offset.checked_add(u64::from(entry_len)).ok_or("pool offset overflow")?;
+                if next > len {
                     return Err("pool entry outside file".into());
                 }
-                entries[kind].push(Entry { offset, len });
+                entries[kind].push(Entry { offset, len: entry_len });
             }
         }
         if next != len {
@@ -132,14 +132,6 @@ impl PoolV3 {
         Some(buf)
     }
 }
-fn len_of(source: &Source) -> Result<u64, String> {
-    match source {
-        Source::File(file) => file.lock().map_err(|e| e.to_string())?
-            .metadata().map_err(|e| e.to_string()).map(|m| m.len()),
-        Source::Embedded(data) => Ok(data.len() as u64),
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct Geometry {
     pub(super) vertices: Vec<[f32; 3]>,

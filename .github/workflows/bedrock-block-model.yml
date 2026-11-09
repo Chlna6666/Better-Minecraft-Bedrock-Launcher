@@ -30,5 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: bedrock-block-model
-      - name: Test runtime model-state and face-UV resolution
-        run: cargo test --locked -p bedrock-block-model --lib
+      - name: Test v3 binary model-state and face-UV resolution
+        run: cargo test -p bedrock-block-model --lib
+      - name: Test v3 BSC packer
+        run: python3 scripts/test_pack_bsc_v3.py
