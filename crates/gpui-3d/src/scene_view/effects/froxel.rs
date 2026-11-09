@@ -203,3 +203,315 @@ mod tests {
         assert!(grid.depth_at_slice(0, 0.0, 512.0).is_none());
     }
 }
+
+
+use gfx_core::*;
+use gpui::{ExtensionDevice, RendererExtensionComputePass};
+use super::targets::Target;
+use super::ScreenEffects;
+use super::super::SceneView;
+
+/// Shared native compute programs and descriptor layouts, one per GPU owner.
+/// SceneView instances only own their small 3D textures and bind groups.
+pub(super) struct FroxelProgram {
+    inject_layout: BindGroupLayoutId,
+    integrate_layout: BindGroupLayoutId,
+    inject_shader: ShaderModuleId,
+    integrate_shader: ShaderModuleId,
+}
+
+impl FroxelProgram {
+    pub fn new(device: &mut dyn ExtensionDevice, backend: BackendKind) -> gpui::Result<Self> {
+        let mut cleanup = super::construction::Construction::default();
+        let result = (|| {
+            let inject_layout = cleanup.record(
+                device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some("gpui-3d froxel injection bindings".into()),
+                    entries: (0..7).map(|binding| BindGroupLayoutEntry {
+                        binding,
+                        binding_type: match binding {
+                            0 => BindingType::UniformBuffer,
+                            1 | 2 => BindingType::StorageBuffer,
+                            6 => BindingType::StorageTexture {
+                                format: Format::Rgba16Float, read_only: false,
+                            },
+                            _ => BindingType::SampledTexture,
+                        },
+                        stages: ShaderStages::COMPUTE,
+                    }).collect(),
+                })?,
+                |d, id| { let _ = d.destroy_bind_group_layout(id); },
+            );
+            let integrate_layout = cleanup.record(
+                device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some("gpui-3d froxel integration bindings".into()),
+                    entries: vec![
+                        BindGroupLayoutEntry {
+                            binding: 0, binding_type: BindingType::SampledTexture,
+                            stages: ShaderStages::COMPUTE,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 1,
+                            binding_type: BindingType::StorageTexture {
+                                format: Format::Rgba16Float, read_only: false,
+                            },
+                            stages: ShaderStages::COMPUTE,
+                        },
+                    ],
+                })?,
+                |d, id| { let _ = d.destroy_bind_group_layout(id); },
+            );
+            let inject_shader = cleanup.record(
+                super::super::generated::create_shader(device, backend, "cs_froxel_inject")?,
+                |d, id| { let _ = d.destroy_shader_module(id); },
+            );
+            let integrate_shader = cleanup.record(
+                super::super::generated::create_shader(device, backend, "cs_froxel_integrate")?,
+                |d, id| { let _ = d.destroy_shader_module(id); },
+            );
+            Ok(Self {
+                inject_layout, integrate_layout, inject_shader, integrate_shader,
+            })
+        })();
+        cleanup.finish(device, result)
+    }
+
+    pub fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        device.destroy_shader_module(self.inject_shader)?;
+        device.destroy_shader_module(self.integrate_shader)?;
+        device.destroy_bind_group_layout(self.inject_layout)?;
+        device.destroy_bind_group_layout(self.integrate_layout)
+            .map_err(Into::into)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InjectBindings {
+    frame: BufferId,
+    lights: (BufferId, u64),
+    tiles: (BufferId, u64),
+    shadows: [TextureViewId; 3],
+}
+
+/// Two independent GPU-native 3D volumes. Integration reads one image and
+/// writes the other, so no sampled/UAV aliasing is ever legal or required.
+pub(super) struct FroxelVolume {
+    pub grid: FroxelGrid,
+    injection: Target,
+    pub integrated: Target,
+    injection_group: Option<BindGroupId>,
+    integration_group: BindGroupId,
+    binding_key: Option<InjectBindings>,
+    pub valid: bool,
+    pub queued: bool,
+    last_view: Option<SceneView>,
+    last_settings: Option<ScreenEffects>,
+    last_scene_version: u64,
+    last_lights: Option<(BufferId, u32)>,
+}
+
+impl FroxelVolume {
+    pub fn new(
+        device: &mut dyn ExtensionDevice,
+        program: &FroxelProgram,
+        grid: FroxelGrid,
+    ) -> gpui::Result<Self> {
+        let mut cleanup = super::construction::Construction::default();
+        let result = (|| {
+            let create = |device: &mut dyn ExtensionDevice| -> gpui::Result<Target> {
+                let desc = TextureDescriptor {
+                    label: Some("gpui-3d froxel 3D RGBA16F".into()),
+                    size: Extent2d::new(grid.extent[0], grid.extent[1])?,
+                    mip_level_count: 1,
+                    format: Format::Rgba16Float,
+                    usage: TextureUsage::SAMPLED | TextureUsage::STORAGE,
+                    memory_location: MemoryLocation::GpuOnly,
+                    dimension: TextureDimension::D3 { depth: grid.extent[2] },
+                    sample_count: 1,
+                };
+                device.texture_volume_capabilities().validate(&desc)?;
+                let texture = device.create_texture(&desc)?;
+                let view = match device.create_texture_view(&TextureViewDescriptor {
+                    label: None, texture, base_mip_level: 0,
+                    mip_level_count: 1, format: desc.format,
+                }) {
+                    Ok(view) => view,
+                    Err(err) => {
+                        let _ = device.destroy_texture(texture);
+                        return Err(err.into());
+                    }
+                };
+                Ok(Target { texture, view })
+            };
+            let injection = create(device)?;
+            injection.record(&mut cleanup);
+            let integrated = create(device)?;
+            integrated.record(&mut cleanup);
+            let integration_group = cleanup.record(
+                device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("gpui-3d froxel volume integration".into()),
+                    layout: program.integrate_layout,
+                    entries: vec![
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::Texture(TextureBinding {
+                                texture_view: injection.view,
+                            }),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: BindingResource::Texture(TextureBinding {
+                                texture_view: integrated.view,
+                            }),
+                        },
+                    ],
+                })?,
+                |d, group| { let _ = d.destroy_bind_group(group); },
+            );
+            Ok(Self {
+                grid, injection, integrated, injection_group: None,
+                integration_group, binding_key: None,
+                valid: false, queued: false, last_view: None,
+                last_settings: None, last_scene_version: 0, last_lights: None,
+            })
+        })();
+        cleanup.finish(device, result)
+    }
+
+    /// A previously submitted volume is reusable only when *all* inputs that
+    /// influence its compute path are unchanged, including the scene revision.
+    /// No reprojection claim is made on a moving camera: recompute instead.
+    pub fn reusable(
+        &self, view: &SceneView, settings: ScreenEffects,
+        lights: (BufferId, u32), tile_updated: bool, shadow_updated: bool,
+    ) -> bool {
+        self.valid && !self.queued && !tile_updated && !shadow_updated
+            && self.last_scene_version == view.scene.version()
+            && self.last_settings == Some(settings)
+            && self.last_lights == Some(lights)
+            && self.last_view.as_ref().is_some_and(|previous|
+                super::renderer::same_capture(previous, view))
+    }
+
+    fn bind_injection(
+        &mut self, device: &mut dyn ExtensionDevice,
+        program: &FroxelProgram, key: InjectBindings,
+    ) -> gpui::Result<BindGroupId> {
+        if self.binding_key == Some(key) {
+            if let Some(group) = self.injection_group { return Ok(group); }
+        }
+        let mut entries = Vec::with_capacity(7);
+        for (binding, buffer, bytes) in [
+            (0, key.frame, super::FRAME_BYTES),
+            (1, key.lights.0, key.lights.1),
+            (2, key.tiles.0, key.tiles.1),
+        ] {
+            entries.push(BindGroupEntry {
+                binding,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer, offset: 0, size: bytes, stride: None,
+                }),
+            });
+        }
+        for (index, view) in key.shadows.into_iter().enumerate() {
+            entries.push(BindGroupEntry {
+                binding: 3 + index as u32,
+                resource: BindingResource::Texture(TextureBinding { texture_view: view }),
+            });
+        }
+        entries.push(BindGroupEntry {
+            binding: 6,
+            resource: BindingResource::Texture(TextureBinding {
+                texture_view: self.injection.view,
+            }),
+        });
+        let group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("gpui-3d froxel shadow/light injection".into()),
+            layout: program.inject_layout,
+            entries,
+        })?;
+        if let Some(old) = self.injection_group.replace(group) {
+            device.destroy_bind_group(old)?;
+        }
+        self.binding_key = Some(key);
+        Ok(group)
+    }
+
+    /// Queue exactly two GPU work stages after the last shadow/geometry pass
+    /// and before the screen composite. The GPU owner handles submission and
+    /// native barriers; neither dispatch waits for a CPU fence.
+    pub fn queue(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        program: &FroxelProgram,
+        frame: BufferId, lights: (BufferId, u64, u32),
+        tiles: (BufferId, u64), shadows: [TextureViewId; 3],
+        after_graphics_pass: usize,
+        queue: &mut Vec<RendererExtensionComputePass>,
+        batch_id: u64,
+        profiled: bool,
+        view: &SceneView,
+        settings: ScreenEffects,
+    ) -> gpui::Result<()> {
+        let group = self.bind_injection(device, program, InjectBindings {
+            frame, lights: (lights.0, lights.1), tiles, shadows,
+        })?;
+        let injection = ComputeBindGroupDispatch {
+            shader: program.inject_shader,
+            bind_group: group,
+            workgroups: self.grid.workgroups,
+        };
+        let integration = ComputeBindGroupDispatch {
+            shader: program.integrate_shader,
+            bind_group: self.integration_group,
+            workgroups: [
+                self.grid.extent[0].div_ceil(8),
+                self.grid.extent[1].div_ceil(8),
+                1,
+            ],
+        };
+        let caps = device.compute_capabilities();
+        injection.validate(caps)?;
+        integration.validate(caps)?;
+        queue.push(RendererExtensionComputePass {
+            after_graphics_pass, dispatch: injection,
+            gpu_work_tag: profiled.then_some(GpuTimestampTag {
+                batch_id, stage: GpuTimestampStage::FroxelInjection,
+            }),
+        });
+        queue.push(RendererExtensionComputePass {
+            after_graphics_pass, dispatch: integration,
+            gpu_work_tag: profiled.then_some(GpuTimestampTag {
+                batch_id, stage: GpuTimestampStage::FroxelIntegration,
+            }),
+        });
+        self.queued = true;
+        self.valid = false;
+        self.last_view = Some(view.clone());
+        self.last_settings = Some(settings);
+        self.last_scene_version = view.scene.version();
+        self.last_lights = Some((lights.0, lights.2));
+        Ok(())
+    }
+
+    pub fn submitted(&mut self) {
+        if self.queued {
+            self.queued = false;
+            self.valid = true;
+        }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+        self.queued = false;
+    }
+
+    pub fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if let Some(group) = self.injection_group {
+            device.destroy_bind_group(group)?;
+        }
+        device.destroy_bind_group(self.integration_group)?;
+        self.injection.destroy(device)?;
+        self.integrated.destroy(device)
+    }
+}
