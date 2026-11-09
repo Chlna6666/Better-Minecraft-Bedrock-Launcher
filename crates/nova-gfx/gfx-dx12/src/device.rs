@@ -5868,10 +5868,11 @@ mod platform {
         fn independent_queue(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
             let index = match stage {
                 gfx_core::GpuWorkStage::Graphics if self.sidecar_queue.is_some() => 1,
-                // The extra DIRECT queue can actually execute the current
-                // portable COMPUTE command encoder today. Do not advertise
-                // the typed COMPUTE-only queue until its allocator/transition
-                // path can execute actual shaders rather than fence-only work.
+                // Prefer the actual dedicated COMPUTE hardware queue with
+                // typed native command lists, DIRECT release barriers, and
+                // GPU-side input/output waits. Fall back to the second DIRECT
+                // queue only when the hardware cannot allocate COMPUTE.
+                gfx_core::GpuWorkStage::Compute if self.async_compute.is_some() => 2,
                 gfx_core::GpuWorkStage::Compute if self.sidecar_queue.is_some() => 1,
                 gfx_core::GpuWorkStage::Transfer if self.async_transfer.is_some() => 3,
                 _ => return None,
@@ -5938,18 +5939,16 @@ mod platform {
             queue: gfx_core::GpuQueueId,
             dispatches: &[gfx_core::ComputeDispatch<'_>],
         ) -> Result<SubmissionId> {
-            // A DIRECT queue can execute a DIRECT encoder containing Compute
-            // commands. The existing optional second DIRECT queue has native
-            // GPU-side input/output waits and a separate producer fence.
-            //
-            // A dedicated COMPUTE queue (index 2) MUST NOT execute a DIRECT
-            // command list: it requires COMPUTE-typed command allocator/list,
-            // plus GPU resource-state release/acquire. Fail closed for now.
+            // The dedicated COMPUTE path uses a COMPUTE-typed allocator
+            // and command list with PRIMARY release to COMMON and a native
+            // COMPUTE->Graphics GPU-side wait. The independent DIRECT queue
+            // remains an opt-in fallback and may share the 3D sidecar.
             if queue != gfx_core::GpuQueueId::PRIMARY
                 && queue != (gfx_core::GpuQueueId { family: 0, index: 1 })
+                && queue != (gfx_core::GpuQueueId { family: 0, index: 2 })
             {
                 return Err(Error::Unavailable(
-                    "DX12 requested Compute queue cannot execute the current native command list".into(),
+                    "DX12 requested Compute queue is not supported".into(),
                 ));
             }
             self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
