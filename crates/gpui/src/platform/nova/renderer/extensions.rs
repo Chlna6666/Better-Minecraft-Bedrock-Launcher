@@ -4,10 +4,39 @@ use super::*;
 use crate::ExtensionDevice;
 use std::{any::TypeId, collections::hash_map::Entry};
 
+/// Validate one extension's compute insertion points before rebasing them
+/// into the window's global offscreen pass stream. A trailing Compute stage
+/// cannot serve as the frame's final fence-bearing producer.
+fn rebase_compute_passes(
+    stages: &mut [crate::RendererExtensionComputePass],
+    first_graphics: usize,
+    graphics_count: usize,
+) -> Result<()> {
+    let mut previous = 0;
+    for stage in stages.iter() {
+        let offset = stage.after_graphics_pass;
+        if offset == 0 || offset >= graphics_count || offset < previous
+            || first_graphics.checked_add(offset).is_none()
+        {
+            return Err(anyhow::anyhow!(
+                "extension Compute must follow a graphics pass, precede the final graphics pass, and keep submission order"
+            ));
+        }
+        previous = offset;
+    }
+    for stage in stages {
+        stage.after_graphics_pass += first_graphics;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(super) struct RendererRegistry {
     renderers: FxHashMap<TypeId, Box<dyn crate::RendererExtensionRenderer>>,
     passes: Vec<crate::RendererExtensionPass>,
+    /// Ordered Compute stages interleaved with offscreen graphics passes.
+    /// Empty on the existing graphics-only fast path.
+    compute_passes: Vec<crate::RendererExtensionComputePass>,
     /// Only renderer extensions that actually contributed producer passes
     /// to this frame may receive a submission acknowledgement. An unrelated
     /// extension must never mark another renderer's failed/old submission
@@ -32,6 +61,7 @@ impl RendererRegistry {
     }
     pub(super) fn begin_frame(&mut self) {
         self.passes.clear();
+        self.compute_passes.clear();
         self.independent_producers_only = true;
         // A previous submit may have failed after draining producer passes.
         // Do not carry its pending acknowledgements to an unrelated frame.
@@ -39,6 +69,9 @@ impl RendererRegistry {
     }
     pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
         &self.passes
+    }
+    pub(super) fn compute_passes(&self) -> &[crate::RendererExtensionComputePass] {
+        &self.compute_passes
     }
     pub(super) fn needs_gpu_completion(&self) -> bool {
         self.renderers
@@ -76,8 +109,16 @@ impl RendererRegistry {
         };
         renderer.render(input, device, context, steps)?;
         renderer.drain_render_passes(&mut self.passes);
-        if self.passes.len() > before {
-            self.independent_producers_only &= renderer.prefers_independent_graphics_queue();
+        let compute_before = self.compute_passes.len();
+        renderer.drain_compute_passes(&mut self.compute_passes);
+        let new_compute = &mut self.compute_passes[compute_before..];
+        rebase_compute_passes(new_compute, before, self.passes.len() - before)?;
+        if self.passes.len() > before || !new_compute.is_empty() {
+            // A mixed sequence must stay on the GPU owner's ordered primary
+            // queue, even when the renderer otherwise prefers an independent
+            // secondary graphics queue for pure offscreen captures.
+            self.independent_producers_only &= new_compute.is_empty()
+                && renderer.prefers_independent_graphics_queue();
             if !self.submitted_types.contains(&type_id) {
                 self.submitted_types.push(type_id);
             }
@@ -140,6 +181,31 @@ mod tests {
         }
         fn destroy(&mut self, _device: &mut dyn ExtensionDevice) -> crate::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn compute_pass_insertion_requires_an_interior_graphics_boundary() {
+        let dispatch = gfx_core::ComputeBindGroupDispatch {
+            shader: ShaderModuleId::from_parts(1, 1),
+            bind_group: BindGroupId::from_parts(2, 1),
+            workgroups: [1; 3],
+        };
+        let make = |after_graphics_pass| crate::RendererExtensionComputePass {
+            after_graphics_pass,
+            dispatch,
+        };
+        let mut stages = [make(1), make(2)];
+        rebase_compute_passes(&mut stages, 4, 3).unwrap();
+        assert_eq!(stages[0].after_graphics_pass, 5);
+        assert_eq!(stages[1].after_graphics_pass, 6);
+
+        for mut invalid in [
+            [make(0), make(1)],
+            [make(1), make(3)],
+            [make(2), make(1)],
+        ] {
+            assert!(rebase_compute_passes(&mut invalid, 4, 3).is_err());
         }
     }
 
