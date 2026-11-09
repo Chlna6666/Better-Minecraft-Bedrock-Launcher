@@ -163,7 +163,7 @@ impl GpuSubmissionDependencyGraph {
         if self.ancestors.contains_key(&record.id) {
             return Err(Error::InvalidInput("GPU submission ID was registered twice".into()));
         }
-        if record.gpu_waits.iter().any(|id| !self.ancestors.contains_key(id)) {
+        if record.gpu_waits.iter().any(|id| !self.live.contains_key(id)) {
             return Err(Error::InvalidInput(
                 "cross-queue wait does not reference a registered native submission".into(),
             ));
@@ -225,9 +225,40 @@ impl GpuSubmissionDependencyGraph {
         finished.insert(submission);
         for id in &finished {
             self.live.remove(id);
+            self.ancestors.remove(id);
         }
-        // Retain ancestry for valid later gpu_wait edges and completion order.
+        // Release finished records and their closure: retaining every fence
+        // from a 60-fps renderer would otherwise grow without bound.
         Ok(GpuSubmissionCompletion { finished })
+    }
+
+    /// Convert untracked native accesses to a checkpoint on the SAME
+    /// physical queue. The backend must have queued the checkpoint after
+    /// these accesses. Retirement tickets created before this call must be
+    /// sealed with GpuRetirementDependencies::seal_ordered_queue as well.
+    /// The checkpoint inherits the precise recorded GPU use spans.
+    pub fn seal_untracked_queue(
+        &mut self, queue: GpuQueueId, native_checkpoint: SubmissionId,
+    ) -> Result<usize> {
+        if self.live.get(&native_checkpoint).is_none_or(|record| record.queue != queue) {
+            return Err(Error::InvalidInput(
+                "GPU queue checkpoint is not a registered submission on this queue".into(),
+            ));
+        }
+        let mut carried = Vec::new();
+        self.unknown.retain(|(origin, access)| {
+            if *origin == queue {
+                carried.push(access.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let count = carried.len();
+        self.live.get_mut(&native_checkpoint)
+            .expect("validated registered checkpoint")
+            .uses.extend(carried);
+        Ok(count)
     }
 
     /// Forget unfenced work only when the backend proves the entire device is
@@ -314,6 +345,36 @@ mod tests {
         let completion = GpuSubmissionCompletion { finished: HashSet::from([id(51)]) };
         dependency.complete_with_proof(&completion);
         assert!(dependency.safe_to_reuse());
+    }
+
+    #[test]
+    fn submission_metadata_is_bounded_after_completion() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        for serial in 1..=1000 {
+            graph.register(record(serial, GpuQueueId::PRIMARY,
+                vec![use_of(buf(0, 4), GpuAccess::ReadBuffer)], vec![])).unwrap();
+            graph.complete(id(serial)).unwrap();
+        }
+        assert_eq!(graph.live_count(), 0);
+        assert!(graph.ancestors.is_empty());
+    }
+
+    #[test]
+    fn unknown_accesses_are_only_sealed_by_their_own_queue() {
+        let mut graph = GpuSubmissionDependencyGraph::default();
+        let compute = GpuQueueId { family: 1, index: 0 };
+        graph.register_untracked(compute, use_of(buf(8, 8), GpuAccess::StorageWrite));
+        graph.register(record(60, GpuQueueId::PRIMARY, vec![], vec![])).unwrap();
+        assert!(graph.seal_untracked_queue(compute, id(60)).is_err());
+        graph.register(record(61, compute, vec![], vec![])).unwrap();
+        assert_eq!(graph.seal_untracked_queue(compute, id(61)).unwrap(), 1);
+        let mut ticket = graph.retirement(&[buf(8, 8)]);
+        assert_eq!(ticket.pending(), &HashSet::from([id(61)]));
+        assert!(ticket.untracked_queues().is_empty());
+        ticket.complete_with_proof(&graph.complete(id(60)).unwrap());
+        assert!(!ticket.safe_to_reuse());
+        ticket.complete_with_proof(&graph.complete(id(61)).unwrap());
+        assert!(ticket.safe_to_reuse());
     }
 
     #[test]
