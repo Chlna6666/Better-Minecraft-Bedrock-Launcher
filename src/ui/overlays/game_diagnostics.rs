@@ -2,8 +2,8 @@
 use crate::core::minecraft::diagnostics::{self, GameSessionReport};
 use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 use crate::ui::theme::colors::ThemeColors;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::time::Duration;
 
 fn action(text: &'static str, colors: &ThemeColors) -> Div {
     div()
