@@ -407,4 +407,15 @@ struct SceneAttributeTargets {
         select(kind,-1.0,draw.shading_model==SHADING_MODEL_UNLIT && !blended));
     return SceneAttributeTargets(surface,vec4<f32>(color.rgb,clamp(color.a,0.0,1.0)));
 }
-@fragment fn fs_scene_shadow(input:VertexOutput)->@location(0) vec4<f32>{if(draws[input.draw_index].alpha_mode==ALPHA_MODE_BLEND){discard;}let color=scene_base(input);return vec4<f32>(1.0);}
+@fragment fn fs_scene_shadow(input:VertexOutput)->@location(0) vec4<f32>{
+    let draw=draws[input.draw_index];
+    if(draw.alpha_mode==ALPHA_MODE_BLEND){discard;}
+    // Depth-only opaque casters do not require texture or PBR sampling.
+    // Masked geometry still samples albedo to preserve cutout coverage.
+    if(draw.alpha_mode==ALPHA_MODE_MASK){
+        let color=scene_base(input);
+    }else if(draw.base_color.a*input.vertex_color.a<0.001){
+        discard;
+    }
+    return vec4<f32>(1.0);
+}
