@@ -22,6 +22,14 @@ struct Params { size:vec4<u32>, origin:vec4<f32>, clip:vec4<f32>, extra:vec4<u32
 // for UV-preserving greedy merge. No host readback or new binding.
 var<workgroup> prefix:array<u32,64>;
 var<workgroup> output_base:u32;
+struct RowStageFace { descriptor:GeneratedFace, ticket:u32 };
+// 32 row owners x at most 16 rectangles; 128 hash buckets for <=64 materials.
+// Total shared storage including the existing prefix array is under 12 KiB.
+var<workgroup> row_staged:array<RowStageFace,512>;
+var<workgroup> row_keys:array<atomic<u32>,128>;
+var<workgroup> row_counts:array<atomic<u32>,128>;
+var<workgroup> row_bases:array<u32,128>;
+
 fn opaque_cell(p:vec3<i32>,instance:bool)->bool {
     if(any(p<vec3<i32>(0)) || any(p>=vec3<i32>(params.size.xyz))){return false;}
     let index=(u32(p.z)*params.size.y+u32(p.y))*params.size.x+u32(p.x);
@@ -81,22 +89,48 @@ fn instance_visible(face:Face,job:u32)->bool {
 // descriptor word stores two u8 spans as an exactly represented integer f32; ordinary
 // quads and arbitrary-model instance heights retain their original layout.
 // Halo cells, static-face sentinel and instance descriptors are never tagged.
-fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u32>){
-    let y=position.y+bitcast<f32>(face.info.w);
-    if(y<params.clip.x || y>=params.clip.y){return;}
-    let vertex=atomicAdd(&args[face.info.x*4u],6u);
-    let slot=(face.info.z&0x7fffffffu)+vertex/6u;
+// Keep identical AO and rectangle bit packing in both native emit paths.
+fn face_descriptor(face:Face,model_face:u32,cell:u32,extent:vec2<u32>)->GeneratedFace{
     let merged=extent.x>1u || extent.y>1u;
     let tagged=select(cell,cell|0x80000000u,merged);
     let packed=extent.x | (extent.y<<8u);
-    // Values never exceed 0x1010, so f32 integer representation is exact
-    // and cannot be flushed to zero as a subnormal on native backends.
     let scale=select(1.0,f32(packed),merged);
-    // Every merged cell was certified to have four fully unoccluded AO corners.
     var ao=0u;
     if(merged && bitcast<u32>(params.clip.w)!=0u){ao=0xffffffffu;}
     else{ao=face_ao(face,cell,false);}
-    output[slot]=GeneratedFace(tagged,model_face,scale,ao);
+    return GeneratedFace(tagged,model_face,scale,ao);
+}
+fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u32>){
+    let y=position.y+bitcast<f32>(face.info.w);
+    if(y<params.clip.x || y>=params.clip.y){return;}
+    let descriptor=face_descriptor(face,model_face,cell,extent);
+    let vertex=atomicAdd(&args[face.info.x*4u],6u);
+    output[(face.info.z&0x7fffffffu)+vertex/6u]=descriptor;
+}
+// Within one workgroup, local atomic tickets form the exclusive per-material
+// prefix. One global range reservation per occupied hash bucket follows after
+// the workgroup barrier in cs_mesh_rows_grouped.
+fn emit_row_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,
+                 extent:vec2<u32>,grouped:bool,lane:u32,
+                 count:ptr<function,u32>){
+    if(!grouped){
+        emit_face(face,model_face,position,cell,extent);
+        return;
+    }
+    let part=face.info.x;
+    var bucket=(part*2654435761u>>25u)&127u;
+    loop{
+        let claimed=atomicCompareExchangeWeak(&row_keys[bucket],0xffffffffu,part);
+        if(claimed.exchanged || claimed.old_value==part){break;}
+        bucket=(bucket+1u)&127u;
+    }
+    let rank=atomicAdd(&row_counts[bucket],1u);
+    let slot=lane*16u+(*count);
+    row_staged[slot]=RowStageFace(
+        face_descriptor(face,model_face,cell,extent),
+        (rank<<7u)|bucket
+    );
+    *count=(*count)+1u;
 }
 // Face repeatability is certified once while encoding immutable templates.
 // face.info.z stores its bit 31, with the 31 low bits still the part base.
@@ -197,7 +231,8 @@ fn visible_rectangle(cell:u32,kind:u32,face:Face,direction:u32)->vec2<u32> {
 // +/-X, +/-Y, +/-Z and whose six faces all permit canonical UV repetition.
 // Unlike the per-cell path, the owner advances by a complete horizontal run,
 // so an interior cell never launches another identical rectangle search.
-fn mesh_row(row_index:u32){
+fn mesh_row(row_index:u32,lane:u32,grouped:bool)->u32{
+    var emitted=0u;
     let sx=params.size.x;
     let sy=params.size.y;
     let sz=params.size.z;
@@ -210,7 +245,7 @@ fn mesh_row(row_index:u32){
     let y_rows=core_y*core_z*tiles_x;
     let z_rows=core_z*core_y*tiles_x;
     let total=2u*(x_rows+y_rows+z_rows);
-    if(row_index>=total){return;}
+    if(row_index>=total){return 0u;}
 
     var local=row_index;
     var direction=0u;
@@ -271,13 +306,13 @@ fn mesh_row(row_index:u32){
         // A nonuniform AO edge must retain its exact unit quad and four-corner
         // AO. The row owner still processes it, but does not merge it.
         if(!exposed_cube(cell,kind,direction)){
-            emit_face(face,model_face,position,cell,vec2<u32>(1u));
+            emit_row_face(face,model_face,position,cell,vec2<u32>(1u),grouped,lane,&emitted);
             u++;
             continue;
         }
         let width=face_row_width(cell,kind,direction,u_stride,u,u_size);
         if(width==0u){
-            emit_face(face,model_face,position,cell,vec2<u32>(1u));
+            emit_row_face(face,model_face,position,cell,vec2<u32>(1u),grouped,lane,&emitted);
             u++;
             continue;
         }
@@ -300,9 +335,10 @@ fn mesh_row(row_index:u32){
             if(!row_has_exact_width(next,kind,direction,u_stride,u,u_size,width)){break;}
             height++;
         }
-        emit_face(face,model_face,position,cell,vec2<u32>(width,height));
+        emit_row_face(face,model_face,position,cell,vec2<u32>(width,height),grouped,lane,&emitted);
         u+=width;
     }
+    return emitted;
 }
 
 @compute @workgroup_size(64)
@@ -310,6 +346,40 @@ fn cs_mesh_rows(@builtin(workgroup_id) group:vec3<u32>,
                 @builtin(num_workgroups) groups:vec3<u32>,
                 @builtin(local_invocation_index) lane:u32){
     mesh_stage(7u,group,groups,lane);
+}
+
+@compute @workgroup_size(32)
+fn cs_mesh_rows_grouped(@builtin(workgroup_id) group:vec3<u32>,
+                         @builtin(num_workgroups) groups:vec3<u32>,
+                         @builtin(local_invocation_index) lane:u32){
+    // A full workgroup participates, including inactive tail-row lanes.
+    for(var b=lane;b<128u;b+=32u){
+        atomicStore(&row_keys[b],0xffffffffu);
+        atomicStore(&row_counts[b],0u);
+    }
+    workgroupBarrier();
+    let row_index=(group.y*groups.x+group.x)*32u+lane;
+    let emitted=mesh_row(row_index,lane,true);
+    workgroupBarrier();
+    // One device-wide indirect count reservation per occupied material bin.
+    for(var b=lane;b<128u;b+=32u){
+        let part=atomicLoad(&row_keys[b]);
+        if(part!=0xffffffffu){
+            let count=atomicLoad(&row_counts[b]);
+            row_bases[b]=atomicAdd(&args[part*4u],count*6u)/6u;
+        }
+    }
+    workgroupBarrier();
+    // The local ticket is a per-material exclusive offset, not a global
+    // Section index. Different workgroups reserve disjoint ranges through
+    // the one global atomic above; no separate scan dispatch is required.
+    for(var i=0u;i<emitted;i++){
+        let staged=row_staged[lane*16u+i];
+        let bucket=staged.ticket&127u;
+        let rank=staged.ticket>>7u;
+        let material_base=templates.faces[staged.descriptor.model_face].info.z&0x7fffffffu;
+        output[material_base+row_bases[bucket]+rank]=staged.descriptor;
+    }
 }
 
 @compute @workgroup_size(64)
@@ -332,7 +402,7 @@ fn cs_mesh_instance_scan(@builtin(workgroup_id) group:vec3<u32>,@builtin(num_wor
 fn cs_mesh_instance_emit(@builtin(workgroup_id) group:vec3<u32>,@builtin(num_workgroups) groups:vec3<u32>,@builtin(local_invocation_index) lane:u32){mesh_stage(5u,group,groups,lane);}
 fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
     let index=(group.y*groups.x+group.x)*64u+lane;
-    if(mode==7u){mesh_row(index);return;}
+    if(mode==7u){let completed=mesh_row(index,lane,false);return;}
     if(mode==4u){
         let part=group.y*groups.x+group.x;
         if(part>=arrayLength(&args)/4u){return;}

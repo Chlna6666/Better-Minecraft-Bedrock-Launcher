@@ -130,7 +130,8 @@ fn main() {
                 .entry("cs_mesh_instance_scan", ShaderStage::Compute)
                 .entry("cs_mesh_instance_emit", ShaderStage::Compute)
                 .entry("cs_mesh_greedy_mask", ShaderStage::Compute)
-                .entry("cs_mesh_rows", ShaderStage::Compute),
+                .entry("cs_mesh_rows", ShaderStage::Compute)
+                .entry("cs_mesh_rows_grouped", ShaderStage::Compute),
         )
         .shader(
             Shader::new("mesher_draws")

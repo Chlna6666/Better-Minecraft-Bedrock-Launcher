@@ -614,6 +614,28 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             row_dense.templates.to_vec(),
         ).unwrap().with_greedy_visible_faces(true).with_ambient_occlusion(16)
     };
+    // 16^3 interior with every other Y layer occupied. This has enough
+    // exposed faces to exercise cs_mesh_rows_grouped, but still reduces to
+    // exactly six rectangles per layer (48 quads / 288 vertices).
+    let row_layers = {
+        let size = [18u32; 3];
+        let mut cells = vec![0u32; 18 * 18 * 18];
+        for z in 1..17 {
+            for y in (1..17).step_by(2) {
+                for x in 1..17 {
+                    cells[(z * 18 + y) * 18 + x] = 1;
+                }
+            }
+        }
+        let source = crate::VoxelMeshSource::new(
+            size, crate::Vec3::new(-1.0, -1.0, -1.0), cells,
+            crate::voxel_mesh::tests::source().templates.to_vec(),
+        ).unwrap().with_greedy_visible_faces(true);
+        assert!(prefer_grouped_row_reservation(
+            &source, gpu_row_workgroups(source.size, 64)
+        ));
+        source
+    };
     let uniform_light = crate::voxel_mesh::tests::source()
         .with_lighting(vec![0x77; 36], 0.2).unwrap()
         .with_greedy_visible_faces(true);
@@ -627,6 +649,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         // surviving 2D rectangles. The CPU fallback still keeps all faces.
         (dense, 36u16, 0),
         (row_dense, 36u16, 0),
+        (row_layers, 288u16, 0),
         (row_dense_ao, 36u16, 0),
         // Lit merge is safe only when all light samples are equivalent;
         // a single differing sample preserves the exact original ten quads.

@@ -30,7 +30,7 @@ pub(super) struct GeneratedMesh {
     pub argument_offset: u64,
     pub argument_page_bytes: u64,
 }
-pub(super) struct Shaders(pub [ShaderModuleId; 8]);
+pub(super) struct Shaders(pub [ShaderModuleId; 9]);
 pub(super) fn create_shaders(
     device: &mut dyn ExtensionDevice,
     backend: BackendKind,
@@ -45,6 +45,7 @@ pub(super) fn create_shaders(
         "cs_mesh_instance_emit",
         "cs_mesh_greedy_mask",
         "cs_mesh_rows",
+        "cs_mesh_rows_grouped",
     ] {
         match create_shader(device, backend, entry) {
             Ok(shader) => shaders.push(shader),
@@ -184,7 +185,8 @@ fn row_template_order(source: &VoxelMeshSource) -> Option<Vec<usize>> {
 /// Every work item owns one 16-cell row on one plane and one face direction;
 /// the six directions share one Compute dispatch. u64 intermediates prevent
 /// overflow for fused world3d sections; the caller falls back on large grids.
-fn gpu_row_workgroups(size: [u32; 3]) -> Option<usize> {
+fn gpu_row_workgroups(size: [u32; 3], group_size: u32) -> Option<usize> {
+    if group_size == 0 { return None; }
     let sx = u64::from(size[0].checked_sub(2)?);
     let sy = u64::from(size[1].checked_sub(2)?);
     let sz = u64::from(size[2].checked_sub(2)?);
@@ -195,7 +197,20 @@ fn gpu_row_workgroups(size: [u32; 3]) -> Option<usize> {
     let nz = sz.checked_mul(sy)?.checked_mul(x_tiles)?;
     let rows = nx.checked_add(ny)?.checked_add(nz)?.checked_mul(2)?;
     let rows = u32::try_from(rows).ok()?;
-    Some(usize::try_from(rows.div_ceil(64)).ok()?)
+    Some(usize::try_from(rows.div_ceil(group_size)).ok()?)
+}
+
+/// Use shared-memory material tickets only for fragmented canonical rows.
+/// Dense solid Sections already emit very few rectangles, so bypassing the
+/// workgroup hash/staging is cheaper. Part count limits hash-table occupancy.
+fn prefer_grouped_row_reservation(
+    source: &VoxelMeshSource,
+    row_groups: Option<usize>,
+) -> bool {
+    row_groups.is_some()
+        && (1..=64).contains(&source.parts.len())
+        && source.exposed_cube_faces >= 512
+        && source.exposed_cube_faces.saturating_mul(2) >= source.occupied_cube_cells
 }
 
 fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool, bool) {
@@ -299,9 +314,45 @@ mod row_meshing_algorithm_tests {
 
     #[test]
     fn row_dispatch_respects_3d_section_and_fusion_bounds() {
-        assert_eq!(gpu_row_workgroups([18, 18, 18]), Some(24));
-        assert_eq!(gpu_row_workgroups([18, 66, 18]), Some(96));
-        assert_eq!(gpu_row_workgroups([34, 66, 34]), Some(384));
+        assert_eq!(gpu_row_workgroups([18, 18, 18], 64), Some(24));
+        assert_eq!(gpu_row_workgroups([18, 66, 18], 64), Some(96));
+        assert_eq!(gpu_row_workgroups([34, 66, 34], 64), Some(384));
+        assert_eq!(gpu_row_workgroups([18, 18, 18], 32), Some(48));
+        assert_eq!(gpu_row_workgroups([18, 66, 18], 32), Some(192));
+        assert_eq!(gpu_row_workgroups([34, 66, 34], 32), Some(768));
+    }
+
+    #[test]
+    fn grouped_prefix_reservation_only_for_fragmented_row_meshes() {
+        // 16^3 solid block: the original greedy row kernel already collapses
+        // six surfaces to six rectangles; local aggregation would cost more.
+        let size = [18u32; 3];
+        let mut cells = vec![0u32; 18 * 18 * 18];
+        for z in 1..17 { for y in 1..17 { for x in 1..17 {
+            cells[(z*18+y)*18+x] = 1;
+        }}}
+        let solid = crate::VoxelMeshSource::new(
+            size, crate::Vec3::ZERO, cells.clone(),
+            crate::voxel_mesh::tests::source().templates.to_vec(),
+        ).unwrap().with_greedy_visible_faces(true);
+        assert!(!prefer_grouped_row_reservation(&solid, gpu_row_workgroups(size, 64)));
+
+        // Disjoint horizontal layers have many exposed faces, but no overlap
+        // between adjacent layers. Grouped row material reservations can
+        // amortize global atomic contention on this class of input.
+        for z in 1..17 { for y in 1..17 { for x in 1..17 {
+            if y % 2 == 0 { cells[(z*18+y)*18+x] = 0; }
+        }}}
+        let layers = crate::VoxelMeshSource::new(
+            size, crate::Vec3::ZERO, cells,
+            crate::voxel_mesh::tests::source().templates.to_vec(),
+        ).unwrap().with_greedy_visible_faces(true);
+        assert!(prefer_grouped_row_reservation(&layers, gpu_row_workgroups(size, 64)));
+        assert!(!prefer_grouped_row_reservation(&layers, None));
+
+        // WGSL RowStageFace is 20 bytes. The 512 records + 128 triads +
+        // existing 64-word instance scan fit under the portable 16-KiB limit.
+        assert!(512 * 20 + 128 * 3 * 4 + 64 * 4 + 4 <= 16 * 1024);
     }
 }
 
@@ -487,9 +538,23 @@ fn prepare_generated(
         && source.exposed_cube_faces
             <= source.occupied_cube_cells.saturating_mul(3)
     {
-        gpu_row_workgroups(source.size)
+        gpu_row_workgroups(source.size, 64)
     } else {
         None
+    };
+    // The shared-material reservation path uses 32 row owners, each emitting
+    // at most 16 local descriptors into a 512-entry workgroup array. Its
+    // 128-bin material table accepts at most 64 distinct parts, bounding
+    // hash occupancy and ensuring progress without a global synchronization.
+    //
+    // Avoid running this extra local scan on solid terrain: greedy compression
+    // already reduces a fully opaque section to a handful of rectangles, so
+    // per-rectangle global atomics are cheaper there.
+    let grouped_row = prefer_grouped_row_reservation(source, row_groups);
+    let row_dispatch_groups = if grouped_row {
+        gpu_row_workgroups(source.size, 32)
+    } else {
+        row_groups
     };
     let cached_greedy = greedy && source.exposed_cube_faces >= 128
         && (source.ambient_occlusion != 0
@@ -743,8 +808,8 @@ fn prepare_generated(
             if needs_mask {
                 stages.push((6, source.cells.len().div_ceil(64)));
             }
-            if let Some(groups) = row_groups {
-                stages.push((7, groups));
+            if let Some(groups) = row_dispatch_groups {
+                stages.push((if grouped_row { 8 } else { 7 }, groups));
             } else {
                 stages.push((0, source.cells.len().div_ceil(64)));
             }
