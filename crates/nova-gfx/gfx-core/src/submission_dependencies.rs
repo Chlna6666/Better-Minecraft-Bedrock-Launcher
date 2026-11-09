@@ -11,7 +11,7 @@ use std::ops::Range;
 use crate::{BufferId, Error, GpuAccess, GpuResource, GpuWorkStage, Result, SubmissionId, TextureId};
 
 /// Native queue identity scoped to exactly one GPU device/owner.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct GpuQueueId {
     /// Queue family (zero for non-Vulkan APIs).
     pub family: u32,
@@ -20,8 +20,13 @@ pub struct GpuQueueId {
 }
 
 impl GpuQueueId {
-    /// The primary ordered graphics queue of a device.
-    pub const PRIMARY: Self = Self { family: 0, index: 0 };
+    /// The primary ordered graphics queue of a device. Use an unambiguous
+    /// logical sentinel: Vulkan's actual family 0/index 0 may instead name a
+    /// different native queue in an application-provided queue map.
+    pub const PRIMARY: Self = Self { family: u32::MAX, index: u32::MAX };
+}
+impl Default for GpuQueueId {
+    fn default() -> Self { Self::PRIMARY }
 }
 
 /// A whole allocation or checked half-open byte region. Texture views use
