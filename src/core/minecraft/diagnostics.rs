@@ -356,10 +356,28 @@ impl GameSessionReport {
             && logs.file_name().and_then(|name| name.to_str())
                 .is_some_and(|name| Uuid::parse_str(name).is_ok())
         {
-            if let Err(error) = fs::remove_dir_all(logs)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!(%error, session_id=%self.id, "清理临时 Proton 日志失败");
+            // Proton crash-report directories may contain minidumps, which
+            // cannot be safely text-redacted. Keep bounded dumps available
+            // for explicit opt-in export; delete ordinary verbose logs once
+            // frozen so they do not accumulate after normal play.
+            let contains_dump = fs::read_dir(logs.join("crash-reports"))
+                .ok().is_some_and(|entries| {
+                    entries.flatten().take(128).any(|entry| {
+                        let path = entry.path();
+                        path.extension().and_then(|ext| ext.to_str()).is_some_and(
+                            |ext| ext.eq_ignore_ascii_case("dmp")
+                                || ext.eq_ignore_ascii_case("mdmp")
+                        ) && fs::symlink_metadata(&path).is_ok_and(
+                            |meta| meta.file_type().is_file() && meta.len() <= MAX_DUMP_BYTES
+                        )
+                    })
+                });
+            if !contains_dump {
+                if let Err(error) = fs::remove_dir_all(logs)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(%error, session_id=%self.id, "清理临时 Proton 日志失败");
+                }
             }
         }
         tracing::info!(
@@ -656,6 +674,8 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
         report.game_directory.join("Minecraft Bedrock/CrashLogs"),
         report.game_directory.join("BLoader/logs"),
         report.compatibility_logs.clone().unwrap_or_default(),
+        report.compatibility_logs.as_ref()
+            .map(|logs| logs.join("crash-reports")).unwrap_or_default(),
     ];
     let mut number = 0usize;
     let mut directories = directories.to_vec();
@@ -690,6 +710,7 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             let name = name.to_ascii_lowercase();
             if report.compatibility_logs.as_ref() != Some(&dir)
+                && report.compatibility_logs.as_ref().is_none_or(|logs| dir != logs.join("crash-reports"))
                 && !name.contains("crash")
                 && !name.contains("levilamina")
                 && !name.contains("bloader")
@@ -794,6 +815,9 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         report.game_directory.join("logs"),
         report.game_directory.join("LeviLamina/logs"),
     ];
+    if let Some(logs) = &report.compatibility_logs {
+        dirs.push(logs.join("crash-reports"));
+    }
     #[cfg(target_os = "linux")]
     if let Some(prefix) = &report.compatibility_prefix {
         if let Ok(users) = fs::read_dir(prefix.join("drive_c/users")) {
