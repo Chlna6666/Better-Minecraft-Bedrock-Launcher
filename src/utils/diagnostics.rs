@@ -18,6 +18,7 @@ const REPORT_ARCHIVE_DIR: &str = "archive";
 const LATEST_LOG_FILE: &str = "latest.log";
 const PREVIOUS_LOG_FILE: &str = "previous.log";
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
+const MAX_EXPORT_LOG_TAIL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SUMMARY_LEN: usize = 240;
 const GITHUB_ISSUE_BASE_URL: &str =
     "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/issues/new";
@@ -468,10 +469,16 @@ pub fn export_diagnostics_bundle(report: &DiagnosticsReport) -> Result<PathBuf> 
         zip.write_all(report_markdown(&safe).as_bytes())?;
         zip.start_file("report.json", options)?;
         zip.write_all(&serde_json::to_vec_pretty(&safe)?)?;
-        let latest = read_sanitized_log_tail(&latest_log_path()).unwrap_or_default();
+        let latest = read_sanitized_log_tail_bounded(
+            &latest_log_path(),
+            MAX_EXPORT_LOG_TAIL_BYTES,
+        ).unwrap_or_default();
         zip.start_file("logs/latest-tail.log", options)?;
         zip.write_all(latest.as_bytes())?;
-        let previous = read_sanitized_log_tail(&previous_log_path()).unwrap_or_default();
+        let previous = read_sanitized_log_tail_bounded(
+            &previous_log_path(),
+            MAX_EXPORT_LOG_TAIL_BYTES,
+        ).unwrap_or_default();
         if !previous.is_empty() {
             zip.start_file("logs/previous-tail.log", options)?;
             zip.write_all(previous.as_bytes())?;
@@ -646,6 +653,10 @@ fn previous_log_path() -> PathBuf {
 }
 
 fn read_sanitized_log_tail(path: &Path) -> Result<String> {
+    read_sanitized_log_tail_bounded(path, MAX_LOG_TAIL_BYTES)
+}
+
+fn read_sanitized_log_tail_bounded(path: &Path, limit: usize) -> Result<String> {
     if !path.exists() {
         return Ok(String::new());
     }
@@ -653,10 +664,10 @@ fn read_sanitized_log_tail(path: &Path) -> Result<String> {
     // Read only the tail, not the whole potentially very large active log.
     let mut file = fs::File::open(path)?;
     let length = file.metadata()?.len();
-    let offset = length.saturating_sub(MAX_LOG_TAIL_BYTES as u64);
+    let offset = length.saturating_sub(limit as u64);
     file.seek(SeekFrom::Start(offset))?;
-    let mut bytes = Vec::with_capacity(MAX_LOG_TAIL_BYTES);
-    file.take(MAX_LOG_TAIL_BYTES as u64).read_to_end(&mut bytes)?;
+    let mut bytes = Vec::with_capacity(limit);
+    file.take(limit as u64).read_to_end(&mut bytes)?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok(sanitize_string(text).trim().to_string())
 }
