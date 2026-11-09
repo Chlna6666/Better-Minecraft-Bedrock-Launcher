@@ -1066,6 +1066,49 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn accepted_graphics_draw_quarantines_unordered_async_mesh_writer() {
+        use gfx_core::{
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
+            GpuSubmissionRecord, GpuWorkStage,
+        };
+        let buffer = BufferId::from_parts(1500, 1);
+        let write = gfx_core::SubmissionId::from_parts(1501, 1);
+        let draw = gfx_core::SubmissionId::from_parts(1502, 1);
+        let compute_queue = GpuQueueId { family: 4, index: 1 };
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 256, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: vec![],
+        }));
+        let span = GpuResourceSpan::buffer(buffer, 0, 128).unwrap();
+        arena.register_native_access(GpuSubmissionRecord::new(
+            write, compute_queue, GpuWorkStage::Compute,
+            vec![GpuSubmissionAccess {
+                span: span.clone(), access: GpuAccess::StorageWrite,
+            }],
+        )).unwrap();
+
+        // A graphics producer with no explicit native wait proof conflicts
+        // with the independent writer, so it must be quarantined rather than
+        // silently dropped from the Mesh Arena's physical lifetime model.
+        arena.native_draw_submitted(Some(draw));
+        assert!(arena.native_work.contains_submission(draw));
+        assert!(!arena.native_work.has_untracked_work());
+        let dependency = arena.native_work.retirement(&[span.clone()]);
+        assert!(dependency.pending().contains(&write));
+        assert!(dependency.pending().contains(&draw));
+
+        arena.gpu_submission_completed(draw);
+        let dependency = arena.native_work.retirement(&[span]);
+        assert!(dependency.pending().contains(&write));
+        assert!(!dependency.safe_to_reuse());
+        arena.gpu_submission_completed(write);
+        assert!(arena.native_work.retirement(&[
+            GpuResourceSpan::buffer(buffer, 0, 128).unwrap()
+        ]).safe_to_reuse());
+    }
+
+    #[test]
     fn independent_compute_writer_prevents_primary_fence_mesh_reuse() {
         use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess,
             GpuSubmissionRecord, GpuWorkStage};
