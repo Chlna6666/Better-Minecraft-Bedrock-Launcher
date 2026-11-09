@@ -188,6 +188,9 @@ pub struct VoxelMeshSource {
     pub(crate) bounds: Aabb,
     pub(crate) clip_y: [f32; 2],
     pub(crate) ambient_occlusion: u32,
+    /// Enable GPU-only horizontal visible-face runs for canonical solid cubes.
+    /// Disabled for lit/AO sources to preserve distinct corner illumination.
+    pub(crate) greedy_visible_faces: bool,
     pub(crate) lighting: Option<illumination::Lighting>,
     fallback: OnceLock<Mesh>,
 }
@@ -411,6 +414,9 @@ impl VoxelMeshSource {
         }
         combined = combined.with_static_faces(statics)?;
         combined = combined.with_ambient_occlusion(base.ambient_occlusion);
+        combined = combined.with_greedy_visible_faces(
+            inputs.iter().all(|input| input.source.greedy_visible_faces),
+        );
         if let (Some(light), Some(levels)) = (&base.lighting, levels) {
             combined = combined.with_lighting(levels, light.ambient)?;
         }
@@ -590,6 +596,7 @@ impl VoxelMeshSource {
             bounds,
             clip_y: [-f32::MAX, f32::MAX],
             ambient_occlusion: 0,
+            greedy_visible_faces: false,
             lighting: None,
             fallback: OnceLock::new(),
         })
@@ -641,6 +648,14 @@ impl VoxelMeshSource {
         self.templates = templates.into_boxed_slice();
         self.fallback = OnceLock::new();
         Ok(self)
+    }
+
+    /// Opt into GPU-side row-run compaction after neighbor-face culling.
+    /// The CPU fallback intentionally preserves the original visible quads.
+    #[must_use]
+    pub fn with_greedy_visible_faces(mut self, enabled: bool) -> Self {
+        self.greedy_visible_faces = enabled;
+        self
     }
 
     pub(crate) fn capacity(&self) -> usize {
@@ -782,6 +797,7 @@ impl VoxelMeshSource {
             hasher.write_u32(value.to_bits());
         }
         hasher.write_u32(self.ambient_occlusion);
+        hasher.write_u32(u32::from(self.greedy_visible_faces));
         match &self.instances {
             Some(instances) => {
                 hasher.write_u32(1);
