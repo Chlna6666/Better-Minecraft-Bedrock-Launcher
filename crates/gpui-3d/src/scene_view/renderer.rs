@@ -1275,6 +1275,17 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 return Err(error.into());
             }
         };
+        // Track the real last DrawIndirect producer per SceneView. The
+        // submitted native batch references exactly these captured scenes;
+        // unchanged cached scenes are not falsely stamped as new readers.
+        // On a backend with no native SubmissionId, record None and retain
+        // the conservative consumer/global fallback instead of inventing a
+        // fence or relying on a stale previous frame's producer handle.
+        for &(scene_id, _) in &self.pending_capture_epochs {
+            if let Some(scene) = self.scenes.get_mut(&scene_id) {
+                scene.draw_producer_submitted(submitted);
+            }
+        }
         self.pending_passes.clear();
         // The GUI sampler follows this native producer on the same ordered
         // GPU-owner queue. No CPU fence wait or 2D geometry conversion.
@@ -1300,9 +1311,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_submission_accepted(submission);
-            // Only the default ordered GPUI sidecar may use its final UI
-            // consumer submission to retire preceding physical Draw Slots.
-            // Backend-specific independent queues need a separate proof.
+            // Draw Slot retirements prefer the exact last DrawIndirect
+            // producer's SubmissionId. The ordered GUI consumer fence only
+            // stamps any remaining untracked cohorts (older backend paths
+            // returning None). Independent queues need their own GPU-side
+            // dependency before this fallback could be enabled.
             for scene in self.scenes.values_mut() {
                 scene.draw_submission_accepted(submission);
             }
