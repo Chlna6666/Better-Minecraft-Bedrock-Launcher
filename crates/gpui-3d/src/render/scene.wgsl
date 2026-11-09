@@ -239,13 +239,20 @@ fn shadow_visibility(light_clip: vec4<f32>, surface_normal: vec3<f32>) -> f32 {
     // (carry across color channels) and averaging depth before comparison also
     // creates light leaks and unstable shadow silhouettes.
     let receiver = ndc.z - bias - 0.00002;
+    let shadow_size = vec2<i32>(textureDimensions(shadow_map_texture));
     var visible = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let offset = vec2<f32>(f32(x), f32(y)) * step;
-            let encoded = textureSampleLevel(
-                shadow_map_texture, material_sampler, uv + offset, 0.0,
+            // Packed depth is an integer encoding, not a filterable linear
+            // quantity. Bilinear filtering RGB before decoding invents
+            // arbitrary depth values, even when each PCF tap is compared
+            // separately. Load exact texels and filter binary visibility.
+            let texel = clamp(
+                vec2<i32>((uv + offset) * vec2<f32>(shadow_size)),
+                vec2<i32>(0), shadow_size - vec2<i32>(1),
             );
+            let encoded = textureLoad(shadow_map_texture, texel, 0);
             visible += select(0.0, 1.0, receiver <= unpack_depth(encoded));
         }
     }
@@ -313,7 +320,10 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
         else{metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
         roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);}
     }
-    let shadow_visibility_value = shadow_visibility(input.light_clip, surface_normal);
+    // Defer shadow PCF until the first front-facing, energy-contributing
+    // directional light. Unlit scenes and surfaces need no shadow lookups.
+    var shadow_visibility_value = 1.0;
+    var shadow_sampled = false;
 
     var radiance = draw_params.emissive.rgb * draw_params.emissive.a+base_color.rgb*packed_emission;
     var ambient_radiance = vec3<f32>(0.03);
@@ -326,7 +336,13 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
         if (light.kind == LIGHT_KIND_AMBIENT) {
             ambient_radiance += light.color * light.intensity;
         } else if (light.kind == LIGHT_KIND_DIRECTIONAL) {
+            if (light.intensity <= 0.0) { continue; }
             let light_direction = normalize(-light.direction);
+            if (dot(surface_normal, light_direction) <= 0.0) { continue; }
+            if (!shadow_sampled) {
+                shadow_visibility_value = shadow_visibility(input.light_clip, surface_normal);
+                shadow_sampled = true;
+            }
             radiance += cook_torrance_lighting(
                 base_color.rgb,
                 metallic,
