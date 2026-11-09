@@ -32,6 +32,11 @@ fn mip_extent(base: Extent2d, mip: u32) -> gpui::Result<Extent2d> {
 }
 
 impl SsrHiZ {
+    /// Allocation IDs, not views: pass hazards must account for all aliases.
+    pub(super) fn level_textures(&self) -> impl ExactSizeIterator<Item = TextureId> + '_ {
+        self.targets.iter().map(|target| target.texture)
+    }
+
     pub(super) fn sampled_views(&self) -> [TextureViewId; SSR_HIZ_LEVELS] {
         let fallback = self.targets[0].view;
         std::array::from_fn(|i| self.targets.get(i).map_or(fallback, |t| t.view))
