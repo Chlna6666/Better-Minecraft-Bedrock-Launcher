@@ -322,6 +322,22 @@ pub trait RendererExtensionRenderer {
     /// shader that depends on graphics work recorded for this frame: queue the
     /// dispatch here so the host can submit Graphics -> Compute -> Graphics.
     fn drain_compute_passes(&mut self, _compute: &mut Vec<RendererExtensionComputePass>) {}
+    /// A native UI consumer submission was accepted by the GPU owner.
+    ///
+    /// Renderer-owned sidecar resources may attach their pending retirement
+    /// to this exact fence. This callback is NOT evidence of GPU completion.
+    /// Only resource generations that the consumer could have referenced
+    /// should be associated with this submission.
+    fn gpu_submission_accepted(&mut self, _submission: gfx_core::SubmissionId) {}
+
+    /// A native submission with this exact ID has completed on the GPU.
+    ///
+    /// Useful for fine-grained sidecar texture/descriptor retirement.
+    /// Generic GPU-resident mesh ranges that can be read by multiple
+    /// overlapping submissions still require their own dependency proofs
+    /// (or the conservative gpu_work_completed callback).
+    fn gpu_submission_completed(&mut self, _submission: gfx_core::SubmissionId) {}
+
     /// Whether this renderer has retired suballocations awaiting a GPU completion proof.
     fn needs_gpu_completion(&self) -> bool {
         false
