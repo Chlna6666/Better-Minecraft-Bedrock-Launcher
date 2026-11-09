@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 /// Compute work inserted between two host-owned graphics passes.
 ///
-/// The index is one-based and relative to the renderer's current drained
-/// graphics passes: `after_graphics_pass = 1` means after its first graphics
-/// pass, before its second. The host validates the index and preserves the
-/// order of dispatches sharing one boundary. The last operation must remain
-/// a graphics pass so its submission/fence covers the preceding compute.
+/// The index is relative to the renderer's current drained graphics
+/// passes: zero means before its first Graphics pass, one means after the
+/// first. The host preserves work order across stages sharing one boundary.
+/// The final operation is always Graphics, so its submission/fence covers
+/// the preceding Compute. Zero is necessary when cached shadow maps do not
+/// need a Graphics refresh in the current frame.
 ///
 /// This is a GPU-owner submission request, not a native command queue handle.
 /// The device is responsible for resource transitions and GPU-side visibility.
