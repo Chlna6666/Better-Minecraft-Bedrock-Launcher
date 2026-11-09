@@ -152,6 +152,15 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
         let mut monitor = None;
         match &result {
             Ok(Some(pid)) => {
+                // Capture PID generation before the async game-time database call.
+                // Very early game exits must not be lost while initializing stats.
+                let crash_record = crate::core::minecraft::diagnostics::GameSessionReport::begin(
+                    &task_id_for_task,
+                    request.version.as_ref(),
+                    Path::new(request.package_folder.as_ref()),
+                    detected_platform,
+                    *pid,
+                );
                 let session = crate::core::version::game_info::GameSession::start(
                     PathBuf::from(request.package_folder.as_ref()),
                     *pid,
@@ -164,15 +173,6 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                         None
                     }
                 };
-                // Monitoring must never depend on successful play-time persistence.
-                // Use the launch task only as correlation; the session outlives it.
-                let crash_record = crate::core::minecraft::diagnostics::GameSessionReport::begin(
-                    &task_id_for_task,
-                    request.version.as_ref(),
-                    Path::new(request.package_folder.as_ref()),
-                    detected_platform,
-                    *pid,
-                );
                 let pid = *pid;
                 let process_created_at = crash_record.process_created_at;
                 let monitor_task_id = task_id_for_task.clone();
