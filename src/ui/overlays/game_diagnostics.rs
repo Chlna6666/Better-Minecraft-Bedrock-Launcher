@@ -227,19 +227,37 @@ fn request_export(cx: &mut App, id: String) {
 }
 
 fn details(report: &GameSessionReport) -> String {
+    let compatibility = report.compatibility_prefix.is_some();
+    let pid_label = if compatibility { "Linux 兼容运行器 PID" } else { "Minecraft 原生 PID" };
+    let exit_label = if compatibility { "兼容运行器退出码" } else { "游戏退出码" };
     let mut result = format!(
-        "会话 ID：{}\n版本：{}\n平台：{}\nPID：{}\n开始：{}\n结束：{}\n退出状态：{}\n{}",
-        report.id, report.version, report.platform, report.pid,
+        "会话 ID：{}\n版本：{}\n平台：{}\n{}：{}\n开始：{}\n结束：{}\n{}：{}\n{}",
+        report.id, report.version, report.platform, pid_label, report.pid,
         report.started_at.format("%Y-%m-%d %H:%M:%S UTC"),
         report.ended_at.map_or_else(
             || "未知".to_string(),
             |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         ),
+        exit_label,
         report.exit_code.map_or_else(
             || "未知".to_string(), |code| format!("0x{code:08X}")
         ),
         report.summary,
     );
+    if compatibility {
+        result.push_str(
+            "\n注意：兼容运行器 PID/退出码不等于 Wine 中的 Minecraft Windows 进程 PID/退出码。"
+        );
+    }
+    if report.early_exit {
+        result.push_str("\n在启动检测阶段提前退出");
+    }
+    if let Some(signal) = report.exit_signal {
+        result.push_str(&format!("\nLinux 终止信号：{signal}"));
+    }
+    if let Some(fault) = report.compatibility_fault {
+        result.push_str(&format!("\n兼容层证据：{fault:?}（未自动确认客户端崩溃）"));
+    }
     if let Some(wer) = &report.wer_fault {
         result.push_str(&format!(
             "\nWindows WER：故障模块 {}，异常码 {}",
@@ -520,12 +538,12 @@ pub fn render_game_diagnostics_overlay(
                                             ExportField::Extensions, selection.include_extensions,
                                             option_width, !exporting, colors,
                                         ))
-                                        .child(option_row(
-                                            "game-export-windows", "系统故障事件",
-                                            "匹配当前进程的 Windows WER 证据",
+                                        .when(cfg!(target_os = "windows"), |panel| panel.child(option_row(
+                                            "game-export-windows", "Windows 系统故障事件",
+                                            "按进程身份关联的 Windows WER 证据",
                                             ExportField::Windows, selection.include_windows,
                                             option_width, !exporting, colors,
-                                        ))
+                                        )))
                                         .child(option_row(
                                             "game-export-dumps", "内存转储 DMP",
                                             "仅主动选择时导出，无法自动脱敏",
