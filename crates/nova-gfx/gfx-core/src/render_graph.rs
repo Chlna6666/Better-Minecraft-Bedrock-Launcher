@@ -106,6 +106,35 @@ pub struct GpuWorkPlan {
     pub transitions: Vec<GpuTransition>,
 }
 
+impl GpuWorkPlan {
+    /// Validate the currently supported extension execution model: independent
+    /// compute may precede recorded graphics passes, but graphics -> compute
+    /// dependencies need native ordered mixed-pass recording and barriers.
+    ///
+    /// Until a backend implements mixed GPU work submission, a shadow-dependent
+    /// Froxel injection pass must fail here instead of silently consuming a
+    /// shadow map that has not been rendered yet. This never waits on the CPU.
+    pub fn validate_pregraphics_compute_only(&self) -> Result<()> {
+        if self.transitions.iter().any(|edge| {
+            edge.from_stage == GpuWorkStage::Graphics
+                && edge.to_stage == GpuWorkStage::Compute
+        }) {
+            return Err(Error::Unavailable(
+                "GPU frame graph requires native Graphics->Compute ordering before Froxel dispatch"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Count transitions that change command domains, for audit/telemetry.
+    pub fn cross_stage_transitions(&self) -> usize {
+        self.transitions.iter()
+            .filter(|edge| edge.from_stage != edge.to_stage)
+            .count()
+    }
+}
+
 impl GpuWorkGraph {
     pub fn new() -> Self { Self::default() }
 
@@ -284,6 +313,35 @@ mod tests {
         assert_eq!(plan.transitions.len(),2);
         assert_eq!(plan.transitions[0].from_pass,0);
         assert_eq!(plan.transitions[1].from_pass,1);
+    }
+
+    #[test]
+    fn pregraphics_compute_rejects_shadow_dependent_froxel_until_native_support() {
+        let mut graph=GpuWorkGraph::new();
+        graph.push("CSM",GpuWorkStage::Graphics,
+            [use_(tex(1),GpuAccess::DepthAttachment)]).unwrap();
+        graph.push("froxel light injection",GpuWorkStage::Compute,[
+            use_(tex(1),GpuAccess::Sampled),
+            use_(buf(1),GpuAccess::StorageWrite)
+        ]).unwrap();
+        let plan=graph.compile().unwrap();
+        assert_eq!(plan.cross_stage_transitions(),1);
+        assert!(matches!(
+            plan.validate_pregraphics_compute_only(),
+            Err(Error::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn existing_light_tiles_can_precede_screen_graphics() {
+        let mut graph=GpuWorkGraph::new();
+        graph.push("light tiles",GpuWorkStage::Compute,
+            [use_(buf(1),GpuAccess::StorageWrite)]).unwrap();
+        graph.push("scene composite",GpuWorkStage::Graphics,[
+            use_(buf(1),GpuAccess::ReadBuffer),
+            use_(tex(2),GpuAccess::ColorAttachment)
+        ]).unwrap();
+        graph.compile().unwrap().validate_pregraphics_compute_only().unwrap();
     }
 
     #[test]
