@@ -13,11 +13,15 @@ pub(super) struct Compositor {
     /// Present only when the backend can build the multisampled depth variant, which
     /// is the single capability that decides whether the effect path may render 4x.
     ms_shaders: Option<[ShaderModuleId; 3]>,
+    froxel_shaders: [Option<ShaderModuleId>; 2],
     pub sampler: SamplerId,
+    froxel_sampler: SamplerId,
     cloud_sampler: SamplerId,
     pub post_pass: RenderPassId,
     post_pipeline: RenderPipelineId,
     ms_post_pipeline: Option<RenderPipelineId>,
+    froxel_post_pipeline: Option<RenderPipelineId>,
+    froxel_ms_post_pipeline: Option<RenderPipelineId>,
     post_extent: Extent2d,
     pipeline: Option<(RenderPassId, Extent2d, RenderPipelineId)>,
     ms_pipeline: Option<(RenderPassId, Extent2d, RenderPipelineId)>,
@@ -32,11 +36,14 @@ impl Compositor {
             let layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d screen inputs".into()),
-                    entries: (0..20)
+                    // Bindings 20/21 are used only by Froxel shader variants.
+                    // Legacy shader variants bind a 2D fallback at slot 20;
+                    // they never sample it, so unsupported devices stay safe.
+                    entries: (0..22)
                         .map(|binding| BindGroupLayoutEntry {
                             binding,
                             binding_type: match binding {
-                                5 | 11 => BindingType::Sampler,
+                                5 | 11 | 21 => BindingType::Sampler,
                                 6 => BindingType::UniformBuffer,
                                 9 | 10 => BindingType::StorageBuffer,
                                 _ => BindingType::SampledTexture,
@@ -108,6 +115,17 @@ impl Compositor {
                     let _ = d.destroy_sampler(id);
                 },
             );
+            let froxel_sampler = cleanup.record(
+                device.create_sampler(&SamplerDescriptor {
+                    mag_filter: FilterMode::Linear,
+                    min_filter: FilterMode::Linear,
+                    address_mode_u: AddressMode::ClampToEdge,
+                    address_mode_v: AddressMode::ClampToEdge,
+                    address_mode_w: AddressMode::ClampToEdge,
+                    ..SamplerDescriptor::default()
+                })?,
+                |d, id| { let _ = d.destroy_sampler(id); },
+            );
             let cloud_sampler = cleanup.record(
                 device.create_sampler(&SamplerDescriptor {
                     address_mode_u: AddressMode::Repeat,
@@ -133,6 +151,24 @@ impl Compositor {
                     let _ = d.destroy_render_pass(id);
                 },
             );
+            let mut froxel_shaders = [None, None];
+            if device.texture_volume_capabilities().sampled
+                && device.texture_volume_capabilities().storage
+            {
+                for (index, entry) in [
+                    "fs_effects_froxel", "fs_effects_froxel_ms"
+                ].into_iter().enumerate() {
+                    if let Ok(binary) = embedded_shader(&context, ShaderStage::Fragment, entry) {
+                        if let Ok(shader) = device.create_shader_module(&ShaderModuleDescriptor {
+                            label: Some(entry.into()), binary,
+                        }) {
+                            froxel_shaders[index] = Some(cleanup.record(shader, |d, id| {
+                                let _ = d.destroy_shader_module(id);
+                            }));
+                        }
+                    }
+                }
+            }
             let post_extent = context.viewport();
             let post_pipeline = cleanup.record(
                 create_pipeline(
@@ -171,16 +207,44 @@ impl Compositor {
             } else {
                 None
             };
+            let make_froxel_post = |device: &mut dyn ExtensionDevice,
+                                    variant: Option<ShaderModuleId>,
+                                    multisampled: bool| -> Option<RenderPipelineId> {
+                let fragment = variant?;
+                let set = [shaders[0], fragment, shaders[2]];
+                create_pipeline(
+                    device, pipeline_layout, &set,
+                    context.offscreen(post_pass, Format::Rgba8Unorm, post_extent),
+                    false, multisampled, true,
+                ).ok()
+            };
+            let froxel_post_pipeline = make_froxel_post(device, froxel_shaders[0], false)
+                .map(|pipeline| cleanup.record(pipeline, |d,id| {
+                    let _ = d.destroy_render_pipeline(id);
+                }));
+            let froxel_ms_post_pipeline =
+                if ms_post_pipeline.is_some() {
+                    make_froxel_post(device, froxel_shaders[1], true)
+                        .map(|pipeline| cleanup.record(pipeline, |d,id| {
+                            let _ = d.destroy_render_pipeline(id);
+                        }))
+                } else {
+                    None
+                };
             Ok(Self {
                 layout,
                 pipeline_layout,
                 shaders,
                 ms_shaders,
+                froxel_shaders,
                 sampler,
+                froxel_sampler,
                 cloud_sampler,
                 post_pass,
                 post_pipeline,
                 ms_post_pipeline,
+                froxel_post_pipeline,
+                froxel_ms_post_pipeline,
                 pipeline: None,
                 ms_pipeline: None,
                 post_extent,
@@ -192,8 +256,26 @@ impl Compositor {
     pub(super) fn supports_multisampled_depth(&self) -> bool {
         self.ms_shaders.is_some() && self.ms_post_pipeline.is_some()
     }
+    /// Whether this backend has a compiled and validated Froxel shader path.
+    pub(super) fn supports_froxel(&self, multisampled: bool) -> bool {
+        if multisampled {
+            self.froxel_ms_post_pipeline.is_some()
+        } else {
+            self.froxel_post_pipeline.is_some()
+        }
+    }
+
     /// Resolve pipeline that writes the single-sampled display target.
-    pub(super) fn post_pipeline(&self, multisampled: bool) -> RenderPipelineId {
+    pub(super) fn post_pipeline(&self, multisampled: bool, froxel: bool) -> RenderPipelineId {
+        if froxel {
+            if multisampled {
+                if let Some(pipeline) = self.froxel_ms_post_pipeline {
+                    return pipeline;
+                }
+            } else if let Some(pipeline) = self.froxel_post_pipeline {
+                return pipeline;
+            }
+        }
         match (multisampled, self.ms_post_pipeline) {
             (true, Some(pipeline)) => pipeline,
             _ => self.post_pipeline,
@@ -284,6 +366,7 @@ impl Compositor {
         let t = inputs.targets;
         let mut entries = Vec::new();
         for (binding, view) in [
+            (20, inputs.froxel.unwrap_or(t.color.view)),
             (0, inputs.color.unwrap_or(t.color.view)),
             (1, inputs.depth),
             (2, t.surface.view),
@@ -313,6 +396,12 @@ impl Compositor {
             binding: 5,
             resource: BindingResource::Sampler(SamplerBinding {
                 sampler: self.sampler,
+            }),
+        });
+        entries.push(BindGroupEntry {
+            binding: 21,
+            resource: BindingResource::Sampler(SamplerBinding {
+                sampler: self.froxel_sampler,
             }),
         });
         entries.push(BindGroupEntry {
@@ -350,6 +439,12 @@ impl Compositor {
             device.destroy_render_pipeline(pipeline)?;
         }
         device.destroy_render_pipeline(self.post_pipeline)?;
+        if let Some(pipeline) = self.froxel_post_pipeline.take() {
+            device.destroy_render_pipeline(pipeline)?;
+        }
+        if let Some(pipeline) = self.froxel_ms_post_pipeline.take() {
+            device.destroy_render_pipeline(pipeline)?;
+        }
         if let Some(pipeline) = self.ms_post_pipeline.take() {
             device.destroy_render_pipeline(pipeline)?;
         }
@@ -363,6 +458,10 @@ impl Compositor {
                 device.destroy_shader_module(shader)?;
             }
         }
+        for shader in self.froxel_shaders.into_iter().flatten() {
+            device.destroy_shader_module(shader)?;
+        }
+        device.destroy_sampler(self.froxel_sampler)?;
         device.destroy_sampler(self.sampler)?;
         device.destroy_sampler(self.cloud_sampler)?;
         device.destroy_pipeline_layout(self.pipeline_layout)?;
@@ -387,6 +486,7 @@ pub(super) struct Inputs<'a> {
     pub water: TextureViewId,
     pub water_flow: TextureViewId,
     pub color: Option<TextureViewId>,
+    pub froxel: Option<TextureViewId>,
 }
 fn create_pipeline(
     device: &mut dyn ExtensionDevice,
