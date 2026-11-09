@@ -56,6 +56,7 @@ mod depth;
 mod descriptors;
 mod presentation;
 mod relocation;
+mod transfer_queue;
 
 const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -4871,6 +4872,14 @@ impl SubmissionDevice for VulkanDevice {
             .ok_or_else(|| Error::Unavailable(
                 "native Compute submission did not return a GPU fence".into(),
             ))
+    }
+
+    fn submit_buffer_copies_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        copies: &[gfx_core::GpuBufferCopy],
+    ) -> Result<SubmissionId> {
+        self.submit_native_buffer_copies(queue, copies)
     }
 
     fn enqueue_gpu_queue_wait(
