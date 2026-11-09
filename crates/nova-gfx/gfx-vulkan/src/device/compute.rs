@@ -92,6 +92,14 @@ impl VulkanDevice {
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
     ) -> Result<()> {
+        self.dispatch_resource_set_profiled(dispatch, None)
+    }
+
+    pub(super) fn dispatch_resource_set_profiled(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+        tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
         dispatch.validate(self.compute.capabilities)?;
         let (layout_id, set_handle, desc) = {
             let set = self.bind_groups.get(dispatch.bind_group)?;
@@ -174,6 +182,10 @@ impl VulkanDevice {
 
         let encoder = self.create_command_encoder_with_buffer_count(1)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
+        let query = self.command_encoders.get(encoder)?
+            .gpu_trace_query_pool.filter(|_| tag.is_some());
+        self.command_encoders.get_mut(encoder)?.gpu_work_tag =
+            tag.filter(|_| query.is_some());
         let result = (|| -> Result<()> {
             unsafe {
                 self.device.begin_command_buffer(
@@ -181,6 +193,12 @@ impl VulkanDevice {
                     &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 ).map_err(VulkanError::from)?;
+                if let Some(query) = query {
+                    self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                    );
+                }
             }
             let mut pre_images = Vec::with_capacity(images.len());
             let mut post_images = Vec::new();
@@ -265,6 +283,11 @@ impl VulkanDevice {
                         vk::PipelineStageFlags::COMPUTE_SHADER,
                         vk::PipelineStageFlags::ALL_COMMANDS,
                         vk::DependencyFlags::empty(), memory, &[], &post_images,
+                    );
+                }
+                if let Some(query) = query {
+                    self.device.cmd_write_timestamp(
+                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
                     );
                 }
                 self.device.end_command_buffer(command).map_err(VulkanError::from)?;
