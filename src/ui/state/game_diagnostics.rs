@@ -15,6 +15,16 @@ pub struct GameDiagnosticsState {
 }
 
 impl GameDiagnosticsState {
+    /// Refresh the evidence of the currently open incident without resetting
+    /// expanded details, ZIP selection, or in-progress export state.
+    pub fn receive_report(&mut self, report: GameSessionReport) {
+        if self.pending.as_ref().is_some_and(|current| current.id == report.id) {
+            self.pending = Some(report);
+        } else {
+            self.select_report(report);
+        }
+    }
+
     /// Each incident starts from privacy-safe defaults, regardless of earlier choices.
     pub fn select_report(&mut self, report: GameSessionReport) {
         self.pending = Some(report);
