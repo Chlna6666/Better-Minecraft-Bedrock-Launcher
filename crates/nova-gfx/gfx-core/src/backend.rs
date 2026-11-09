@@ -1091,6 +1091,75 @@ pub trait PresentationDevice {
     }
 }
 
+/// Preferred queue placement for GPU-only offscreen production.
+///
+/// This is a hint, not a request to create a second device or to wait for
+/// graphics completion on the CPU. Backends fall back to their primary queue
+/// when an independent graphics queue cannot guarantee producer/consumer
+/// visibility through native synchronization.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OffscreenQueuePreference {
+    #[default]
+    OrderedGraphics,
+    IndependentGraphicsIfAvailable,
+}
+
+/// General-purpose offscreen Graphics submission API, independent of any GUI
+/// framework or 3D scene library. This small capability sits above backend
+/// command recording and below engines such as gpui-3d.
+///
+/// The input commands reference existing native GPU buffers, pipelines and
+/// render targets. They are not converted to GUI primitives. Return values
+/// describe native queue acceptance, NOT GPU fence completion.
+pub trait OffscreenSubmissionDevice {
+    /// Submit native offscreen work without a CPU fence wait.
+    ///
+    /// Passes and timestamp tags are positional. A backend incapable of
+    /// recording GPU timestamps still executes the passes, without inventing
+    /// CPU time in place of hardware measurements.
+    fn submit_offscreen_graphics(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+        queue: OffscreenQueuePreference,
+    ) -> Result<Option<SubmissionId>>;
+
+    /// Hardware-supported independent native graphics-queue availability.
+    fn independent_graphics_queue_available(&self) -> bool;
+}
+
+impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
+    fn submit_offscreen_graphics(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: &[Option<GpuTimestampTag>],
+        queue: OffscreenQueuePreference,
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != tags.len() {
+            return Err(Error::InvalidInput(
+                "native offscreen pass/timestamp tag count mismatch".into(),
+            ));
+        }
+        let timed = tags.iter().any(Option::is_some);
+        let independent =
+            queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
+                && PresentationDevice::independent_graphics_queue_available(self);
+        if independent && timed {
+            PresentationDevice::render_to_textures_independent_profiled(self, passes, tags)
+        } else if independent {
+            PresentationDevice::render_to_textures_independent(self, passes)
+        } else if timed {
+            PresentationDevice::render_to_textures_profiled(self, passes, tags)
+        } else {
+            PresentationDevice::render_to_textures(self, passes)
+        }
+    }
+
+    fn independent_graphics_queue_available(&self) -> bool {
+        PresentationDevice::independent_graphics_queue_available(self)
+    }
+}
+
 /// A two-timestamp window is eligible only for a nonempty, purely indirect
 /// command sequence: regular draws would contaminate the native measurement.
 #[must_use]
