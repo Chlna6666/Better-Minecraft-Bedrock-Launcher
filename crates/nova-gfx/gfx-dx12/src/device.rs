@@ -5641,6 +5641,15 @@ mod platform {
     }
 
     impl SubmissionDevice for Dx12Device {
+        fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
+            // The DIRECT queue serializes upload, compute and graphics. A
+            // Signal after those commands is an actual native GPU completion
+            // point, not a CPU-side submit timestamp.
+            let fence_value = self.signal_frame()?;
+            self.check_device_removed("DX12 ordered queue checkpoint")?;
+            Ok(self.submissions.insert(Dx12Submission { fence_value }))
+        }
+
         fn wait_queue_idle(&mut self) -> Result<()> {
             self.wait_for_gpu()
         }
