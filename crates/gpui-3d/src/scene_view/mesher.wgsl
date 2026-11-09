@@ -74,12 +74,47 @@ fn instance_visible(face:Face,job:u32)->bool {
     else{kind=cells[class_base+neighbour];}
     return (kind&cells[job+7u])==0u;
 }
-fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32){
+// Extend the generated ABI without adding a buffer: bit 31 of cell marks
+// a horizontal merged run. The cell grid has at most i32::MAX entries, and
+// the all-ones static-face sentinel remains reserved.
+fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,span:u32){
     let y=position.y+bitcast<f32>(face.info.w);
     if(y<params.clip.x || y>=params.clip.y){return;}
     let vertex=atomicAdd(&args[face.info.x*4u],6u);
     let slot=face.info.z+vertex/6u;
-    output[slot]=GeneratedFace(cell,model_face,1.0,face_ao(face,cell,false));
+    let tagged=select(cell,cell|0x80000000u,span>1u);
+    output[slot]=GeneratedFace(tagged,model_face,f32(span),face_ao(face,cell,false));
+}
+// A safe horizontal run contains only already-exposed faces of the SAME
+// six-face material/model. No hidden face is materialized before merging.
+// A 16-cell tile cap bounds each GPU invocation's traversal cost.
+fn visible_run(cell:u32,kind:u32,face:Face)->u32 {
+    if(params.origin.w<0.5){return 1u;}
+    for(var i=0u;i<4u;i++){
+        let v=face.vertices[i];
+        let p=vec3<f32>(v.x,v.y,v.z);
+        if(any((p!=vec3<f32>(0.0))&(p!=vec3<f32>(1.0)))){return 1u;}
+    }
+    let delta=bitcast<i32>(face.info.y);
+    // For +/-X faces the horizontal tangent is Z. For Y/Z faces use X.
+    let along_z=delta==1 || delta==-1;
+    let stride=select(1u,params.size.x*params.size.y,along_z);
+    let coordinate=select(cell%params.size.x,cell/(params.size.x*params.size.y),along_z);
+    let dimension=select(params.size.x,params.size.z,along_z);
+    let within_tile=(coordinate-1u)%16u;
+    // Only the first exposed cell of a row run may output its merged quad.
+    if(within_tile>0u && coordinate>1u){
+        let previous=cell-stride;
+        if(cells[previous]==kind && cells[u32(i32(previous)+delta)]==0u){return 0u;}
+    }
+    var span=1u;
+    for(var step=1u;step<16u;step++){
+        if(within_tile+step>=16u || coordinate+step+1u>=dimension){break;}
+        let next=cell+step*stride;
+        if(cells[next]!=kind || cells[u32(i32(next)+delta)]!=0u){break;}
+        span++;
+    }
+    return span;
 }
 @compute @workgroup_size(64)
 fn cs_mesh(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
@@ -160,6 +195,8 @@ fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
         let face=templates.faces[model_face];
         let neighbour=u32(i32(index)+bitcast<i32>(face.info.y));
         if(cells[neighbour]!=0u){continue;}
-        emit_face(face,model_face,position,index);
+        let span=visible_run(index,kind,face);
+        if(span==0u){continue;}
+        emit_face(face,model_face,position,index,span);
     }
 }
