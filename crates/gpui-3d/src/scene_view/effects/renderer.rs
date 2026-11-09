@@ -102,8 +102,11 @@ impl EffectsRenderer {
             let shadow_pass = cleanup.record(
                 device.create_render_pass(&RenderPassDescriptor {
                     label: Some("gpui-3d shadow attachments".into()),
+                    // The shadow material shader populates depth only; native
+                    // backends currently require a color target. This unused
+                    // attachment is R8 instead of 8-byte RGBA16F.
                     color_attachments: vec![ColorAttachmentDescriptor {
-                        format: Format::Rgba16Float,
+                        format: Format::R8Unorm,
                     }],
                     depth_attachment: Some(DepthAttachmentDescriptor {
                         format: Format::Depth32Float,
@@ -121,7 +124,7 @@ impl EffectsRenderer {
                 let context = match kind {
                     PassKind::Shadow => local.offscreen(
                         shadow_pass,
-                        Format::Rgba16Float,
+                        Format::R8Unorm,
                         Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
                     ),
                     PassKind::AttributesMrt =>
