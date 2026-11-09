@@ -159,14 +159,31 @@ impl GpuWorkPlan {
     /// Froxel injection pass must fail here instead of silently consuming a
     /// shadow map that has not been rendered yet. This never waits on the CPU.
     pub fn validate_pregraphics_compute_only(&self) -> Result<()> {
-        if self.transitions.iter().any(|edge| {
+        // The extension host dispatches Compute before it submits its
+        // recorded Graphics passes. A direct Graphics -> Compute edge is
+        // unsafe, but so is any transitive chain through Transfer (or a
+        // future intermediate stage). Dependencies are already ordered by
+        // destination pass in the compiled plan, so propagation is linear.
+        //
+        // Keep the common Compute -> Graphics fast path allocation-free.
+        if !self.transitions.iter().any(|edge|
             edge.from_stage == GpuWorkStage::Graphics
-                && edge.to_stage == GpuWorkStage::Compute
-        }) {
-            return Err(Error::Unavailable(
-                "GPU frame graph requires native Graphics->Compute ordering before Froxel dispatch"
-                    .into(),
-            ));
+        ) {
+            return Ok(());
+        }
+        let mut requires_graphics = vec![false; self.passes.len()];
+        for edge in &self.transitions {
+            let depends_on_graphics = edge.from_stage == GpuWorkStage::Graphics
+                || requires_graphics[edge.from_pass];
+            if depends_on_graphics {
+                if edge.to_stage == GpuWorkStage::Compute {
+                    return Err(Error::Unavailable(
+                        "GPU frame graph requires native Graphics->Compute ordering before Froxel dispatch"
+                            .into(),
+                    ));
+                }
+                requires_graphics[edge.to_pass] = true;
+            }
         }
         Ok(())
     }
@@ -479,6 +496,28 @@ mod tests {
         ]).unwrap();
         let plan=graph.compile().unwrap();
         assert_eq!(plan.cross_stage_transitions(),1);
+        assert!(matches!(
+            plan.validate_pregraphics_compute_only(),
+            Err(Error::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn pregraphics_compute_rejects_transitive_graphics_transfer_compute_hazard() {
+        let mut graph = GpuWorkGraph::new();
+        graph.push("shadow producer", GpuWorkStage::Graphics, [
+            use_(tex(1), GpuAccess::ColorAttachment),
+        ]).unwrap();
+        graph.push("shadow resolve", GpuWorkStage::Transfer, [
+            use_(tex(1), GpuAccess::CopyRead),
+            use_(tex(2), GpuAccess::CopyWrite),
+        ]).unwrap();
+        graph.push("froxel consumer", GpuWorkStage::Compute, [
+            use_(tex(2), GpuAccess::Sampled),
+            use_(buf(1), GpuAccess::StorageWrite),
+        ]).unwrap();
+        let plan = graph.compile().unwrap();
+        assert_eq!(plan.transitions.len(), 2);
         assert!(matches!(
             plan.validate_pregraphics_compute_only(),
             Err(Error::Unavailable(_))
