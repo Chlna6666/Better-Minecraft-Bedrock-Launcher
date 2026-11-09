@@ -30,13 +30,58 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 }
 
 pub(crate) fn cauldron_shape() -> ModelShape {
-    ModelShape::from_cuboids([
-        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.1875, 1.0]),
-        ModelCuboid::new([0.0, 0.1875, 0.0], [0.125, 1.0, 1.0]),
-        ModelCuboid::new([0.875, 0.1875, 0.0], [1.0, 1.0, 1.0]),
-        ModelCuboid::new([0.125, 0.1875, 0.0], [0.875, 1.0, 0.125]),
-        ModelCuboid::new([0.125, 0.1875, 0.875], [0.875, 1.0, 1.0]),
-    ])
+    // Java Edition `block/cauldron`: four 2 px walls from y=3, a 2x1 inner floor, and eight
+    // corner feet. The previous shape used a 16x3 slab plus four walls, so the silhouette was
+    // a solid box rather than an open cauldron.
+    let px = |value: f32| value / 16.0;
+    let mut boxes = Vec::with_capacity(13);
+    // Walls (side art outside, top rim on top, inner floor underneath).
+    for (min, max) in [
+        ([0.0, 3.0, 0.0], [2.0, 16.0, 16.0]),
+        ([14.0, 3.0, 0.0], [16.0, 16.0, 16.0]),
+        ([2.0, 3.0, 0.0], [14.0, 16.0, 2.0]),
+        ([2.0, 3.0, 14.0], [14.0, 16.0, 16.0]),
+    ] {
+        boxes.push(
+            crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+                min.map(px),
+                max.map(px),
+            ))
+            .with_face_material_slot(BlockFace::Up, "top")
+            .with_face_material_slot(BlockFace::Down, "inner")
+            .with_face_material_slot(BlockFace::Side, "side"),
+        );
+    }
+    // Inner floor.
+    boxes.push(
+        crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+            [2.0, 3.0, 2.0].map(px),
+            [14.0, 4.0, 14.0].map(px),
+        ))
+        .with_face_material_slot(BlockFace::Up, "inner")
+        .with_face_material_slot(BlockFace::Down, "inner"),
+    );
+    // Corner feet.
+    for (min, max) in [
+        ([0.0, 0.0, 0.0], [4.0, 3.0, 2.0]),
+        ([0.0, 0.0, 2.0], [2.0, 3.0, 4.0]),
+        ([12.0, 0.0, 0.0], [16.0, 3.0, 2.0]),
+        ([14.0, 0.0, 2.0], [16.0, 3.0, 4.0]),
+        ([0.0, 0.0, 14.0], [4.0, 3.0, 16.0]),
+        ([0.0, 0.0, 12.0], [2.0, 3.0, 14.0]),
+        ([12.0, 0.0, 14.0], [16.0, 3.0, 16.0]),
+        ([14.0, 0.0, 12.0], [16.0, 3.0, 14.0]),
+    ] {
+        boxes.push(
+            crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+                min.map(px),
+                max.map(px),
+            ))
+            .with_face_material_slot(BlockFace::Down, "bottom")
+            .with_face_material_slot(BlockFace::Side, "side"),
+        );
+    }
+    ModelShape::from_cuboids(boxes)
 }
 
 use crate::model_family::shape::ModelPlane;

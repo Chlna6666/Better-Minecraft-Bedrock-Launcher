@@ -194,19 +194,95 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
         .or_else(|| crate::model_family::direction::state_bool(state, "has_book"))
         .unwrap_or(false);
 
-    let mut cuboids = vec![
-        ModelCuboid::new([0.125, 0.0, 0.125], [0.875, 0.125, 0.875]),
-        ModelCuboid::new([0.375, 0.125, 0.375], [0.625, 0.75, 0.625]),
-        ModelCuboid::new([0.0, 0.75, 0.0], [1.0, 0.875, 1.0]),
-    ];
+    // Java Edition `block/lectern`: a full-footprint 2 px base, a 8x13 px post, and a
+    // 16x4 px board tilted -22.5 degrees about X. The previous shape used an inset base and
+    // a full-footprint slab as the board, which is why lecterns looked like a low table.
+    let base = crate::model_family::shape::detail_cuboid_with_local_uv(
+        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0])
+            .with_face_material_slot(BlockFace::Up, "base")
+            .with_face_material_slot(BlockFace::Down, "bottom")
+            .with_face_material_slot(BlockFace::Side, "base"),
+    );
+    let post = crate::model_family::shape::detail_cuboid_with_local_uv(
+        ModelCuboid::new([0.25, 0.125, 0.25], [0.75, 0.9375, 0.75])
+            .with_face_material_slot(BlockFace::North, "front")
+            .with_face_material_slot(BlockFace::South, "front")
+            .with_face_material_slot(BlockFace::East, "sides")
+            .with_face_material_slot(BlockFace::West, "sides")
+            .with_face_material_slot(BlockFace::Up, "top")
+            .with_face_material_slot(BlockFace::Down, "bottom"),
+    );
+    let mut shape = oriented_xz_shape(along_x, &[base, post]);
+    // Board: vanilla `LECTERN_BOARD` (x ±7.9 px, y 11..15 px, z -6..7 px) tilted -22.5 degrees
+    // about the pivot (0, 7, -1) px and offset by (0, 1.05, 1.0) px. Sampling the tilted top
+    // face as a quad reproduces the slope without needing rotated cuboids.
+    let mut board_corners = [[0.0f32; 3]; 4];
+    for (index, (x, z)) in [(-7.9f32, -6.0f32), (7.9, -6.0), (7.9, 7.0), (-7.9, 7.0)]
+        .into_iter()
+        .enumerate()
+    {
+        board_corners[index] = lectern_board_point([x, 15.0, z]);
+    }
+    let normal = plane_normal(board_corners);
+    shape.planes.push(
+        ModelPlane::new(board_corners, normal)
+            .with_material_slot("top")
+            .with_uv(crate::model_family::shape::full_texture_uv()),
+    );
     if has_book {
-        cuboids.push(ModelCuboid::new(
-            [0.1875, 0.875, 0.1875],
-            [0.8125, 0.9375, 0.8125],
-        ));
+        shape.cuboids.push(
+            crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+                [0.1875, 0.78125, 0.3125],
+                [0.8125, 0.90625, 0.875],
+            ))
+            .with_material_slot("front"),
+        );
     }
 
-    oriented_xz_shape(along_x, &cuboids)
+    shape
+}
+
+/// Tilts a lectern board point around the vanilla pivot, then applies the model offset.
+///
+/// Input and output are block coordinates; the source table is in authoring pixels centred on
+/// the block, so the caller passes pixel values offset from the centre.
+fn lectern_board_point(point: [f32; 3]) -> [f32; 3] {
+    let [x, y, z] = point;
+    // Pivot (0, 7, -1) px, offset (0, 1.05, 1.0) px, slope -22.5 degrees about X.
+    let (pivot_y, pivot_z) = (7.0f32, -1.0f32);
+    let (offset_y, offset_z) = (1.05f32, 1.0f32);
+    let (sin, cos) = (-22.5f32).to_radians().sin_cos();
+    let local_y = y - pivot_y;
+    let local_z = z - pivot_z;
+    [
+        0.5 + x / 16.0,
+        (cos * local_y - sin * local_z + pivot_y + offset_y) / 16.0,
+        (sin * local_y + cos * local_z + pivot_z + offset_z) / 16.0,
+    ]
+}
+
+/// Signed normal of a quad, used so the tilted board faces the same way as its slope.
+fn plane_normal(corners: [[f32; 3]; 4]) -> [i32; 3] {
+    let edge_a = [
+        corners[1][0] - corners[0][0],
+        corners[1][1] - corners[0][1],
+        corners[1][2] - corners[0][2],
+    ];
+    let edge_b = [
+        corners[3][0] - corners[0][0],
+        corners[3][1] - corners[0][1],
+        corners[3][2] - corners[0][2],
+    ];
+    let cross = [
+        edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
+        edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
+        edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
+    ];
+    [
+        if cross[0] >= 0.0 { 1 } else { -1 },
+        if cross[1] >= 0.0 { 1 } else { -1 },
+        if cross[2] >= 0.0 { 1 } else { -1 },
+    ]
 }
 
 fn oriented_xz_shape(along_x: bool, cuboids: &[ModelCuboid]) -> ModelShape {

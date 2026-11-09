@@ -2345,10 +2345,17 @@ mod tests {
                 .any(|cuboid| { cuboid.min[0] >= 14.5 / 16.0 && cuboid.max[0] == 1.0 })
         );
 
+        // Java `block/cauldron`: four walls, an inner floor and eight corner feet.
         let cauldron = BlockStateQuery::new("minecraft:cauldron");
         let cauldron_shape =
             model_shape_for_block_state(&cauldron).unwrap_or_else(|| panic!("missing cauldron"));
-        assert_eq!(cauldron_shape.cuboids.len(), 5);
+        assert_eq!(cauldron_shape.cuboids.len(), 13);
+        assert!(
+            cauldron_shape
+                .cuboids
+                .iter()
+                .all(|cuboid| cuboid.max[1] <= 1.0)
+        );
     }
 
     #[test]
@@ -2386,23 +2393,17 @@ mod tests {
         assert_eq!(arm_shape.cuboids.len(), 1);
         assert!(arm_shape.cuboids[0].max[2] - arm_shape.cuboids[0].min[2] <= 0.25);
 
+        // Java `block/lectern`: base + post cuboids plus a tilted board plane; the book is an
+        // extra cuboid when the lectern holds one.
         let lectern_empty = BlockStateQuery::new("minecraft:lectern");
         let lectern_book =
             BlockStateQuery::new("minecraft:lectern").with_state("has_book_bit", true);
-        assert_eq!(
-            model_shape_for_block_state(&lectern_empty)
-                .unwrap()
-                .cuboids
-                .len(),
-            3
-        );
-        assert_eq!(
-            model_shape_for_block_state(&lectern_book)
-                .unwrap()
-                .cuboids
-                .len(),
-            4
-        );
+        let empty = model_shape_for_block_state(&lectern_empty).unwrap();
+        assert_eq!(empty.cuboids.len(), 2);
+        assert_eq!(empty.planes.len(), 1);
+        let with_book = model_shape_for_block_state(&lectern_book).unwrap();
+        assert_eq!(with_book.cuboids.len(), 3);
+        assert_eq!(with_book.planes.len(), 1);
     }
 
     #[test]
