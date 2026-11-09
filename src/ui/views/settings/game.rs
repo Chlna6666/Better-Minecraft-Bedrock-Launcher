@@ -102,9 +102,12 @@ pub(super) fn render_game_tab(
                             crate::core::minecraft::diagnostics::recent_reports(20, false)
                         }).await.unwrap_or_default();
                         let _ = cx.update_global(|state: &mut GameDiagnosticsState, _| {
-                            state.pending = history.first().cloned();
+                            if let Some(report) = history.first().cloned() {
+                                state.select_report(report);
+                            } else {
+                                state.pending = None;
+                            }
                             state.history = history;
-                            state.export_status = None;
                         });
                     }).detach();
                 })
