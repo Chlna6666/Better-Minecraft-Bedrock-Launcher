@@ -266,7 +266,7 @@ impl GameSessionReport {
         self.early_exit = early_exit;
         let start = output.len().saturating_sub(MAX_TEXT_BYTES as usize);
         let tail = &output[output.ceil_char_boundary(start)..];
-        self.compatibility_fault = classify_compatibility_output(tail);
+        self.compatibility_fault = self.compatibility_fault.or_else(|| classify_compatibility_output(tail));
         if !tail.is_empty() {
             if let Err(error) = fs::write(
                 root().join(format!("{}.runner.log", self.id)), tail.as_bytes()
@@ -615,6 +615,8 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
         // Export only the launch task snapshot tied to this report ID.
         ("logs/launch-task.log".to_string(), root().join(format!("{}.task.log", report.id))),
         ("logs/game.log".to_string(), report.game_directory.join("logs/latest.log")),
+        ("logs/compatibility-runner.log".to_string(),
+            root().join(format!("{}.runner.log", report.id))),
         ("logs/levilamina.log".to_string(), report.game_directory.join("logs/LeviLamina.log")),
         ("logs/bloader.log".to_string(), report.game_directory.join("logs/BLoader.log")),
     ];
@@ -625,10 +627,32 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
         report.game_directory.join("Minecraft Bedrock/logs"),
         report.game_directory.join("Minecraft Bedrock/CrashLogs"),
         report.game_directory.join("BLoader/logs"),
-        file_ops::logs_dir().join("proton"),
+        file_ops::logs_dir().join("proton").join(&report.task_id),
     ];
     let mut number = 0usize;
+    let mut directories = directories.to_vec();
+    #[cfg(target_os = "linux")]
+    if let Some(prefix) = &report.compatibility_prefix {
+        if let Ok(users) = fs::read_dir(prefix.join("drive_c/users")) {
+            for user in users.take(16).flatten() {
+                let profile = user.path();
+                if !fs::symlink_metadata(&profile)
+                    .is_ok_and(|meta| meta.file_type().is_dir())
+                {
+                    continue;
+                }
+                directories.push(profile.join("AppData/Local/CrashDumps"));
+                directories.push(profile.join("AppData/Local/Microsoft/Windows/WER"));
+                directories.push(profile.join("Temp"));
+            }
+        }
+    }
     for dir in directories {
+        if !fs::symlink_metadata(&dir)
+            .is_ok_and(|meta| meta.file_type().is_dir())
+        {
+            continue;
+        }
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries.take(128).flatten() {
             if number >= 48 { return files; }
@@ -637,7 +661,11 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             if !matches!(ext.to_ascii_lowercase().as_str(), "log" | "txt" | "json") { continue }
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             let name = name.to_ascii_lowercase();
-            if !name.contains("crash") && !name.contains("levilamina") && !name.contains("bloader") && !name.contains("proton") {
+            if !dir.ends_with(&report.task_id)
+                && !name.contains("crash")
+                && !name.contains("levilamina")
+                && !name.contains("bloader")
+            {
                 continue;
             }
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
@@ -738,6 +766,21 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         report.game_directory.join("logs"),
         report.game_directory.join("LeviLamina/logs"),
     ];
+    #[cfg(target_os = "linux")]
+    if let Some(prefix) = &report.compatibility_prefix {
+        if let Ok(users) = fs::read_dir(prefix.join("drive_c/users")) {
+            for user in users.take(16).flatten() {
+                let profile = user.path();
+                if !fs::symlink_metadata(&profile)
+                    .is_ok_and(|meta| meta.file_type().is_dir())
+                {
+                    continue;
+                }
+                dirs.push(profile.join("AppData/Local/CrashDumps"));
+                dirs.push(profile.join("Local Settings/Application Data/CrashDumps"));
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         dirs.push(PathBuf::from(local_app_data).join("CrashDumps"));
@@ -746,7 +789,8 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(dir) else { continue };
         for entry in entries.take(128).flatten() {
             let path = entry.path();
-            if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("dmp")) { continue }
+            if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext|
+                ext.eq_ignore_ascii_case("dmp") || ext.eq_ignore_ascii_case("mdmp")) { continue }
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
             if !meta.file_type().is_file() || meta.len() > MAX_DUMP_BYTES { continue }
             let Some(modified) = meta.modified().ok().map(DateTime::<Utc>::from) else { continue };
@@ -754,11 +798,17 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
             if report.ended_at.is_some_and(|end| modified > end + chrono::Duration::minutes(10)) {
                 continue;
             }
-            // Global CrashDumps can contain other Minecraft instances.
+            // A native Wine/Proton PID is not the Minecraft Windows guest PID.
+            // Prefix dumps are identified by EXE name and session time only.
             if path.parent().is_some_and(|parent| parent.ends_with("CrashDumps")) {
                 let Some(file_name) = path.file_name() else { continue };
                 let name = file_name.to_string_lossy().to_ascii_lowercase();
-                if !name.contains("minecraft") || !name.contains(&report.pid.to_string()) {
+                if !name.contains("minecraft") {
+                    continue;
+                }
+                if report.compatibility_prefix.is_none()
+                    && !name.contains(&report.pid.to_string())
+                {
                     continue;
                 }
             }
