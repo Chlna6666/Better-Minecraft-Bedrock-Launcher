@@ -4814,33 +4814,38 @@ impl SubmissionDevice for VulkanDevice {
         target_queue: gfx_core::GpuQueueId,
         producer: SubmissionId,
     ) -> Result<gfx_core::GpuNativeWaitProof> {
-        // A second graphics-capable queue in the SAME family is safe for
-        // existing shared resources without queue-family ownership transfer.
-        // Dedicated COMPUTE/TRANSFER families are not exposed until native
-        // ownership-release/acquire barriers are implemented.
+        // Both native queues belong to the SAME graphics queue family.
+        // Queue-family ownership transfers are not needed here, but resource
+        // layout/access barriers remain the command encoder's responsibility.
+        // Dedicated COMPUTE/TRANSFER families are not exposed until full
+        // release/acquire ownership barriers exist.
         let secondary = gfx_core::GpuQueueId {
             family: self.graphics_queue_family_index,
             index: 1,
         };
-        let target = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
+        let sidecar = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
             "Vulkan has no second GPU queue in its graphics family".into(),
         ))?;
-        if target_queue != secondary {
-            return Err(Error::Unavailable(
+        let target = match target_queue {
+            q if q == gfx_core::GpuQueueId::PRIMARY => self.graphics_queue,
+            q if q == secondary => sidecar,
+            _ => return Err(Error::Unavailable(
                 "Vulkan requested queue needs unsupported family ownership transfers".into(),
-            ));
-        }
-        // The binary signal below is submitted to the PRIMARY graphics
-        // queue. It can only certify a producer whose own native commands
-        // were submitted on that exact queue. A secondary producer followed
-        // by an unrelated primary signal has NO GPU ordering edge and would
-        // create a false gpu_waits proof, potentially recycling live memory.
+            )),
+        };
         let source = self.submissions.get(producer)?;
-        if source.queue != gfx_core::GpuQueueId::PRIMARY {
-            return Err(Error::Unavailable(
-                "Vulkan cross-queue bridge cannot signal an unrelated producer queue".into(),
+        if source.queue == target_queue {
+            return Err(Error::InvalidInput(
+                "Vulkan cross-queue GPU wait cannot target the producer queue".into(),
             ));
         }
+        let source_queue = match source.queue {
+            q if q == gfx_core::GpuQueueId::PRIMARY => self.graphics_queue,
+            q if q == secondary => sidecar,
+            _ => return Err(Error::Unavailable(
+                "Vulkan producer is not on a supported native queue".into(),
+            )),
+        };
 
         let info = vk::SemaphoreCreateInfo::default();
         // SAFETY: Binary semaphore is allocated on this live logical device.
@@ -4857,19 +4862,20 @@ impl SubmissionDevice for VulkanDevice {
         let result = (|| -> Result<()> {
             let signals = [semaphore];
             let release = vk::SubmitInfo::default().signal_semaphores(&signals);
-            // SAFETY: Queue 0 owns the already accepted producer and this
-            // signal is ordered AFTER all commands on that native queue.
+            // SAFETY: The accepted producer belongs to source_queue. The
+            // binary signal is enqueued AFTER that submission on precisely
+            // its native physical queue, not on an unrelated graphics queue.
             unsafe {
-                self.device.queue_submit(self.graphics_queue, &[release], vk::Fence::null())
+                self.device.queue_submit(source_queue, &[release], vk::Fence::null())
             }.map_err(VulkanError::from)?;
             let waits = [semaphore];
             let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
             let acquire = vk::SubmitInfo::default()
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&stages);
-            // SAFETY: Queue 1 was allocated in the SAME native family. Its
-            // future workloads execute only after the semaphore is signaled;
-            // the fence tracks completion of this GPU-side wait operation.
+            // SAFETY: The target queue shares this graphics family with the
+            // producer, and consumes the same binary semaphore exactly once.
+            // Future target-queue work follows this native GPU-side wait.
             unsafe {
                 self.device.queue_submit(target, &[acquire], fence)
             }.map_err(VulkanError::from)?;
