@@ -53,6 +53,55 @@ mod tests {
         );
     }
     #[test]
+    fn enclosed_instances_never_reserve_gpu_output_or_compute_jobs() {
+        let templates = super::super::tests::source().templates.to_vec();
+        let source = VoxelMeshSource::new([3, 3, 3], Vec3::ZERO, vec![0; 27], vec![])
+            .unwrap();
+        let mut classes = vec![0u32; 27];
+        for neighbor in [12, 14, 10, 16, 4, 22] {
+            classes[neighbor] = 1;
+        }
+        let source = source
+            .with_instances(
+                classes,
+                templates,
+                vec![VoxelMeshInstance {
+                    position: [1, 1, 1],
+                    faces: 0..6,
+                    height: 1.0,
+                    occlusion_mask: 1,
+                }],
+            )
+            .unwrap();
+        assert_eq!(source.capacity(), 0);
+        assert!(source.instances.as_ref().unwrap().jobs.is_empty());
+        assert_eq!(super::super::tests::visible(&source), 0);
+    }
+
+    #[test]
+    fn partial_occlusion_reserves_only_exposed_quads() {
+        let templates = super::super::tests::source().templates.to_vec();
+        let source = VoxelMeshSource::new([3, 3, 3], Vec3::ZERO, vec![0; 27], vec![])
+            .unwrap();
+        let mut classes = vec![0u32; 27];
+        classes[12] = 1; // One adjacent opaque cell suppresses exactly one face.
+        let source = source
+            .with_instances(
+                classes,
+                templates,
+                vec![VoxelMeshInstance {
+                    position: [1, 1, 1],
+                    faces: 0..6,
+                    height: 1.0,
+                    occlusion_mask: 1,
+                }],
+            )
+            .unwrap();
+        assert_eq!(source.capacity(), 5);
+        assert_eq!(source.instances.as_ref().unwrap().jobs.len(), 1);
+        assert_eq!(super::super::tests::visible(&source), 5);
+    }
+    #[test]
     fn models_can_fill_an_otherwise_empty_cell_source() {
         let templates = super::super::tests::source().templates.to_vec();
         let source = VoxelMeshSource::new([3, 3, 3], Vec3::ZERO, vec![0; 27], vec![]).unwrap();
@@ -188,9 +237,42 @@ impl VoxelMeshSource {
                         return Err(MeshError::InvalidParts);
                     }
                 }
+                // The padded class grid already contains every adjacent Section's
+                // occlusion halo. Count exposed template faces before reserving
+                // GPU output: hidden faces never need a DrawIndirect slot, and
+                // completely enclosed instances do not need a compute job.
+                // Only integer grid lookups are performed; no CPU vertices are
+                // expanded or copied into an intermediate mesh.
+                let cell = (i64::from(instance.position[2]) * i64::from(self.size[1])
+                    + i64::from(instance.position[1]))
+                    * i64::from(self.size[0])
+                    + i64::from(instance.position[0]);
+                let begin = first as usize - self.model_faces;
+                let exposed = templates[begin..begin + count as usize]
+                    .iter()
+                    .filter(|face| {
+                        let [dx, dy, dz] = face.neighbour;
+                        if [dx, dy, dz] == [0, 0, 0] {
+                            return true;
+                        }
+                        let delta = i64::from(dx)
+                            + i64::from(dy) * i64::from(self.size[0])
+                            + i64::from(dz)
+                                * i64::from(self.size[0])
+                                * i64::from(self.size[1]);
+                        classes[(cell + delta) as usize] & instance.occlusion_mask == 0
+                    })
+                    .count();
+                if exposed == 0 {
+                    continue;
+                }
+                let exposed_indices = u32::try_from(exposed)
+                    .ok()
+                    .and_then(|faces| faces.checked_mul(6))
+                    .ok_or(MeshError::TooLarge)?;
                 let capacity = capacities.entry(material).or_default();
                 *capacity = capacity
-                    .checked_add(count.checked_mul(6).ok_or(MeshError::TooLarge)?)
+                    .checked_add(exposed_indices)
                     .ok_or(MeshError::TooLarge)?;
                 let position = self.origin
                     + Vec3::new(

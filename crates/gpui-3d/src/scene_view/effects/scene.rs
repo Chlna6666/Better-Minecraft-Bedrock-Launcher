@@ -300,7 +300,9 @@ impl EffectScene {
                     || old.sampling != view.sampling
                     || old.anisotropy_enabled != view.anisotropy_enabled
                     || old.blend_edge_feather != view.blend_edge_feather
-                    || old.culling_bounds != view.culling_bounds
+                    // Main-camera culling bounds do not enter shadow_steps():
+                    // its light-space frustum performs independent caster culling.
+                    // Changing the camera's Section bounds cannot invalidate this map.
                     || !Arc::ptr_eq(&old.animation, &view.animation)
                     || old.animation_time != view.animation_time
             });
