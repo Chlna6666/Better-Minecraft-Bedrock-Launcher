@@ -58,7 +58,12 @@ fn find_mod(line: &str) -> Option<String> {
         }
     }
     // Loader-specific diagnostics: a failure message and a named mod context.
-    if !["failed", "error", "exception"].iter().any(|word| lower.contains(word)) {
+    // Many successful BLoader lines contain metrics such as failed=0.
+    // Those must NEVER be interpreted as loader failures.
+    if ![" failed to ", " initialization failed", " exception in ",
+        " panic:", " fatal:", " error:", " error]"]
+        .iter().any(|pattern| lower.contains(pattern))
+    {
         return None;
     }
     for loader in ["[bloader]", "[levilamina]"] {
@@ -237,7 +242,8 @@ mod tests {
     #[test]
     fn never_claim_mod_failure_from_discovery_count() {
         assert!(inspect_text(&[
-            ("logs/bloader.log".into(), "BLoader discovered 6 mods loaded=6 failed=0".into())
+            ("logs/bloader.log".into(),
+                "[19:03:26 INFO] [BLoader] [Cosmetics] cape scan discovered=6 loaded=6 failed=0 items=8".into())
         ]).failed_mods.is_empty());
         assert!(safe_name("C:\\Users\\secret\\mod.dll").is_none());
     }
