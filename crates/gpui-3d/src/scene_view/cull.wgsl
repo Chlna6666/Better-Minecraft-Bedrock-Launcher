@@ -59,7 +59,10 @@ fn is_visible(box: Bounds) -> bool {
     // word) when portal reachability changes. Values 0/1 keep the existing
     // depth-bias/Hi-Z semantics; 2 means temporarily portal-hidden.
     // No draw/batch/material/instance re-encoding is necessary.
-    if (box.bounds_max.w >= 2.0) { return false; }
+    // Portal/main-camera visibility is unrelated to sunlight. An object
+    // behind a camera portal can still cast into the active receiver region.
+    // CSM tests the sun-extruded bounds and light frustum instead.
+    if (box.bounds_max.w >= 2.0 && range.minimum.w >= 0.0) { return false; }
     // Shadow CSM uses a conservative receiver volume swept upstream towards
     // the sun. Test the *entire* caster AABB, never just its origin: a tree
     // outside the current camera can still shadow terrain inside it.
