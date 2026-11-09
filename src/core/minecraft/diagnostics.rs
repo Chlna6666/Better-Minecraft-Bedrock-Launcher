@@ -45,6 +45,8 @@ pub struct GameSessionReport {
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub exit_code: Option<u32>,
+    #[serde(default)]
+    pub exit_signal: Option<i32>,
     pub kind: ExitKind,
     pub summary: String,
     #[serde(default)]
@@ -152,6 +154,7 @@ impl GameSessionReport {
             started_at: Utc::now(),
             ended_at: None,
             exit_code: None,
+            exit_signal: None,
             kind: ExitKind::Running,
             summary: "游戏运行中".to_string(),
             acknowledged: false,
@@ -177,6 +180,12 @@ impl GameSessionReport {
                 self.kind = ExitKind::Unknown;
                 self.summary = format!("无法读取游戏进程的退出状态：{error}");
             }
+        }
+        if let Some(signal) = self.exit_signal {
+            self.kind = ExitKind::RunnerFailure;
+            self.summary = format!(
+                "Linux Proton/Wine 运行器收到信号 {signal} 后退出；无法单凭包装进程的信号确认 Minecraft 崩溃"
+            );
         }
         if let Err(error) = save(&self) {
             tracing::warn!(%error, session_id = %self.id, "无法保存游戏退出记录");
@@ -498,7 +507,8 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
         let metadata = serde_json::json!({
             "session_id": report.id, "task_id": report.task_id, "version": report.version,
             "platform": report.platform, "pid": report.pid, "process_created_at": report.process_created_at, "started_at": report.started_at,
-            "ended_at": report.ended_at, "exit_code": report.exit_code, "kind": report.kind,
+            "ended_at": report.ended_at, "exit_code": report.exit_code,
+            "exit_signal": report.exit_signal, "kind": report.kind,
             "wer_fault": report.wer_fault,
         });
         writer.start_file("session.json", options).map_err(|error| error.to_string())?;
