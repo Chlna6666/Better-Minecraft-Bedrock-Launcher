@@ -5813,6 +5813,31 @@ mod platform {
             }))
         }
 
+        fn submit_compute_batch_on_queue(
+            &mut self,
+            queue: gfx_core::GpuQueueId,
+            dispatches: &[gfx_core::ComputeDispatch<'_>],
+        ) -> Result<SubmissionId> {
+            // A DIRECT queue can execute a DIRECT encoder containing Compute
+            // commands. The existing optional second DIRECT queue has native
+            // GPU-side input/output waits and a separate producer fence.
+            //
+            // A dedicated COMPUTE queue (index 2) MUST NOT execute a DIRECT
+            // command list: it requires COMPUTE-typed command allocator/list,
+            // plus GPU resource-state release/acquire. Fail closed for now.
+            if queue != gfx_core::GpuQueueId::PRIMARY
+                && queue != (gfx_core::GpuQueueId { family: 0, index: 1 })
+            {
+                return Err(Error::Unavailable(
+                    "DX12 requested Compute queue cannot execute the current native command list".into(),
+                ));
+            }
+            self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
+                .ok_or_else(|| Error::Unavailable(
+                    "DX12 native Compute submit has no completion fence".into(),
+                ))
+        }
+
         fn enqueue_gpu_queue_wait(
             &mut self,
             target_queue: gfx_core::GpuQueueId,
