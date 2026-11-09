@@ -20,6 +20,7 @@ pub(crate) enum Phase {
     DrawIndirectEncode,
     OffscreenEnqueue,
     DrawTableUpload,
+    OffscreenSubmit,
     BindGroupSync,
 }
 
@@ -115,7 +116,7 @@ fn record_hardware_quantile(
     }
 }
 
-const PHASES: usize = 9;
+const PHASES: usize = 10;
 const BACKENDS: usize = 6;
 struct Accumulator {
     samples: AtomicU64,
@@ -158,7 +159,8 @@ const fn phase_name(index: usize) -> &'static str {
         5 => "draw_indirect_encode",
         6 => "offscreen_enqueue",
         7 => "draw_table_upload",
-        _ => "bind_group_sync",
+        8 => "bind_group_sync",
+        _ => "offscreen_native_submit",
     }
 }
 
