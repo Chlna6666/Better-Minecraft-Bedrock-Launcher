@@ -80,7 +80,8 @@
 
 - `nova-gfx`/`gfx-*` 不依赖 `gpui`/`egpui`/应用代码；`gfx-core` 不依赖窗口句柄。
 - `gpui` 不依赖应用层；`gpui-3d` 的纯引擎模块仅依赖 `gfx-core` 等无 UI 库，
-  `scene_view` 适配层仍依赖 `gpui`。当前 crate 尚未拆分可选 Cargo feature；
+  `scene_view` 适配层通过默认开启的 `gpui-sidecar` Cargo feature 依赖 `gpui`；
+  `--no-default-features` 可移除该 UI 依赖；
   3D 渲染策略、原生离屏 Pass/Compute 调度归 `gpui-3d`，窗口与 Swapchain 仍归宿主。
 - `egpui` 不拥有下载/地图/路由等产品语义。
 - `bedrock-*` 不依赖 UI/GPU 呈现；`bedrock-voxel` 只产出计划，不直接写世界。
