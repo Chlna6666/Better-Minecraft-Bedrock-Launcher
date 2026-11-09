@@ -69,7 +69,13 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
 - 侧载颜色/深度纹理、BindGroup/Placement、Pipeline 的释放必须依据实际
   UI Consumer `SubmissionId` 的 `gpu_submission_completed` 证明，或 GPU Owner
   全局完成证明；`gpu_submission_accepted` 不代表 GPU 已执行完毕。
-  GPU Resident Mesh/Draw Slot 仍被多个提交引用时不得因单次 Fence 完成提前回收。
+  GPU Resident DrawParams/Instance/Bounds 的物理槽位卸载后必须先进入隔离队列：
+  以该 SceneView **实际最后一次 Native DrawIndirect Producer SubmissionId** 的
+  完成状态为首选依据；原生后端未返回可靠 ID 时，仅允许使用同一有序 GPU Owner
+  上后续真正已完成的 Consumer Fence，或 GPU 全局完成证明作为保守上界。
+  逻辑槽位释放不等于物理地址可复用，Tail Trim 也不能回收未完成的槽位。
+  GPU Resident Mesh 子分配可能被多个 Compute/Draw 提交引用，不能直接套用
+  Draw Slot 的单 Producer 完成策略；仍需独立追踪使用者或保守全局退休。
 - 上传、Compute Meshing、DrawIndirect 的**原生 GPU 时间戳**必须与
   `sidecar_cpu_prepared`、`gpu_owner_phase`、`offscreen_native_submit`、
   `native_bridge_cpu`、`gpu_owner_submission_wait`、Present 等主机耗时分开记录；
