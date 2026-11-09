@@ -1,5 +1,11 @@
 fn fresnel_schlick(cosine: f32, f0: vec3<f32>) -> vec3<f32> {
-    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+    // Schlick is a fifth-degree polynomial. Explicit multiplies avoid
+    // general-purpose pow/log/exp instructions on each HDR, voxel and MRT
+    // light evaluation, while preserving the same reflectance curve.
+    let f = 1.0 - clamp(cosine, 0.0, 1.0);
+    let f2 = f * f;
+    let f5 = f2 * f2 * f;
+    return f0 + (vec3<f32>(1.0) - f0) * f5;
 }
 
 // Rough dielectrics lose sharp environment detail; rough metals retain a broad sky response.
