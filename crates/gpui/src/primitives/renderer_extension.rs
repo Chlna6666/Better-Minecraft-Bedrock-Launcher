@@ -12,7 +12,7 @@ use super::DrawOrder;
 pub use super::extension_device::ExtensionDevice;
 #[path = "extension_pass.rs"]
 mod extension_pass;
-pub use extension_pass::RendererExtensionPass;
+pub use extension_pass::{RendererExtensionComputePass, RendererExtensionPass};
 pub use gfx_core::{MemoryTrimLevel, RenderCommand, RenderPassId, ScissorRect};
 
 /// Frame-local information passed to a Nova renderer extension.
@@ -286,6 +286,15 @@ pub trait RendererExtensionRenderer {
     /// Moves ordered offscreen passes to the host. They execute before this frame's UI draws.
     /// Implementations must clear their pending list here, including on subsequent empty frames.
     fn drain_render_passes(&mut self, _passes: &mut Vec<RendererExtensionPass>) {}
+    /// Moves optional Compute work into the GPU owner's offscreen submission
+    /// stream. Indices are relative to this renderer's drained graphics passes
+    /// and must identify an interior boundary (not before the first or after
+    /// the final graphics pass). The default keeps legacy extensions unchanged.
+    ///
+    /// Do not call `dispatch_compute_bind_group` during `render()` for a
+    /// shader that depends on graphics work recorded for this frame: queue the
+    /// dispatch here so the host can submit Graphics -> Compute -> Graphics.
+    fn drain_compute_passes(&mut self, _compute: &mut Vec<RendererExtensionComputePass>) {}
     /// Whether this renderer has retired suballocations awaiting a GPU completion proof.
     fn needs_gpu_completion(&self) -> bool {
         false
