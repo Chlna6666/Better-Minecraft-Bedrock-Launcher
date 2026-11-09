@@ -241,7 +241,7 @@ impl ExtensionSubmission<'_> {
         if mixed && !device.ordered_mixed_graphics_compute_supported() {
             return Err(gfx_core::Error::Unavailable(
                 "native mixed Graphics/Compute offscreen submission is unsupported".into()
-            ));
+            ).into());
         }
         let count = self.registry.passes().len();
         // Reject invalid insertion points and workgroup dimensions before
@@ -254,7 +254,7 @@ impl ExtensionSubmission<'_> {
             {
                 return Err(gfx_core::Error::InvalidInput(
                     "mixed Compute boundary is outside the ordered graphics sequence".into()
-                ));
+                ).into());
             }
             stage.dispatch.validate(ResourceDevice::compute_capabilities(device))?;
             last_boundary = stage.after_graphics_pass;
