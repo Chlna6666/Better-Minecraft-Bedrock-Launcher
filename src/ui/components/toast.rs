@@ -1185,7 +1185,7 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
                                     .text_size(px(10.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.danger)
-                                    .child("点击查看完整错误 · 复制与导出"),
+                                    .child(t!("Diagnostics.toast.open_details")),
                             )
                         }),
                 ),

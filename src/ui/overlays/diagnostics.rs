@@ -32,14 +32,12 @@ pub fn render_diagnostics_overlay(
     let title = if crash_report {
         t!("Diagnostics.modal.title")
     } else {
-        SharedString::from("操作失败 · 诊断详情")
+        t!("Diagnostics.modal.operation_title")
     };
     let description = if crash_report {
         t!("Diagnostics.modal.description")
     } else {
-        SharedString::from(
-            "查看完整错误、复制脱敏报告或导出 ZIP 诊断包。普通操作错误不会自动提交到 Sentry。"
-        )
+        t!("Diagnostics.modal.operation_description")
     };
     let report_id_label = t!("Diagnostics.modal.report_id");
     let detail_label = t!("Diagnostics.modal.detail");
@@ -186,7 +184,7 @@ pub fn render_diagnostics_overlay(
                 .child(code_panel(
                     log_tail_label,
                     if report.log_tail.is_empty() {
-                        "最新日志会在导出诊断包时从 latest.log / previous.log 读取。".to_owned()
+                        t!("Diagnostics.modal.log_tail_export").to_string()
                     } else {
                         crate::utils::log_privacy::redact_log_text(&report.log_tail).into_owned()
                     },
@@ -236,7 +234,7 @@ pub fn render_diagnostics_overlay(
                         .child(
                             action_button(
                                 "diagnostics-export",
-                                SharedString::from("导出诊断包 ZIP"),
+                                t!("Diagnostics.modal.export_bundle"),
                                 colors,
                                 false,
                                 !state.exporting_bundle,
@@ -274,9 +272,7 @@ pub fn render_diagnostics_overlay(
                                                 Ok(path) => {
                                                     toast::success(
                                                         cx,
-                                                        SharedString::from(
-                                                            "诊断包已保存至 logs/reports"
-                                                        ),
+                                                        t!("Diagnostics.toast.bundle_saved"),
                                                     );
                                                     if let Some(directory) = path.parent() {
                                                         let directory =

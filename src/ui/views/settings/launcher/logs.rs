@@ -52,7 +52,7 @@ pub(super) fn render(
                 }),
             )
             .child(
-                settings_action_button(colors, SharedString::from("最近错误"), true)
+                settings_action_button(colors, t!("LauncherSettings.logs.recent_errors"), true)
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         let opened = cx.update_global(
                             |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
@@ -60,7 +60,7 @@ pub(super) fn render(
                             },
                         );
                         if !opened {
-                            toast::push(cx, SharedString::from("当前会话暂无操作错误记录"));
+                            toast::push(cx, t!("Diagnostics.toast.no_recent_errors"));
                         }
                     }),
             );
