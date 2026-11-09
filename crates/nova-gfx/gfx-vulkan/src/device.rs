@@ -4852,6 +4852,27 @@ impl SubmissionDevice for VulkanDevice {
         }))
     }
 
+    fn submit_compute_batch_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+    ) -> Result<SubmissionId> {
+        // Queue index 1 shares the native graphics family and all current
+        // command/descriptor pools. A separate-family compute queue would
+        // need explicit buffer/image ownership release/acquire barriers.
+        if queue != gfx_core::GpuQueueId::PRIMARY
+            && self.independent_queue(gfx_core::GpuWorkStage::Compute) != Some(queue)
+        {
+            return Err(Error::Unavailable(
+                "Vulkan native Compute queue is not available".into(),
+            ));
+        }
+        self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
+            .ok_or_else(|| Error::Unavailable(
+                "native Compute submission did not return a GPU fence".into(),
+            ))
+    }
+
     fn enqueue_gpu_queue_wait(
         &mut self,
         target_queue: gfx_core::GpuQueueId,
