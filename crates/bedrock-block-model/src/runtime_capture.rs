@@ -869,6 +869,113 @@ mod tests {
         fs::write(dir.path().join("geometry_pool.bin"),bytes).unwrap();
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
     }
+
+    fn native_appearance_with_atlas() -> Vec<u8> {
+        // Two triangles of one quad; exactly the v3 binary layout emitted
+        // by BedrockSceneCapture for a native terrain-atlas model.
+        let mut bytes = u32bytes(&[0, 0, 2, 1, 2]);
+        for [u, v] in [[0., 0.], [1., 1.], [0., 1.],
+                       [0., 0.], [1., 0.], [1., 1.]] {
+            for value in [0f32, 0., -1., 0.25 + u * 0.25, 0.5 + v * 0.25] {
+                bytes.extend(value.to_le_bytes());
+            }
+            bytes.extend(u32::MAX.to_le_bytes());
+        }
+        for _ in 0..2 {
+            bytes.extend(u32bytes(&[2, 3, 0]));
+        }
+        bytes
+    }
+
+    #[test]
+    fn native_atlas_uv_preserves_flips_and_rejects_invalid_rectangles() {
+        assert_eq!(
+            native_atlas_to_local([0.25, 0.75], [0.5, 0.75, 0.25, 0.5]),
+            Some([1., 0.]),
+        );
+        assert_eq!(
+            native_atlas_to_local([0.5, 0.5], [0.5, 0.75, 0.25, 0.5]),
+            Some([0., 1.]),
+        );
+        assert!(native_atlas_to_local([0.2, 0.6], [0.25, 0.5, 0.5, 0.75]).is_none());
+        assert!(native_atlas_to_local([0.25, 0.5], [0.25, 0.5, 0.25, 0.75]).is_none());
+        assert!(native_atlas_to_local([f32::NAN, 0.5], [0.25, 0.5, 0.5, 0.75]).is_none());
+    }
+
+    #[test]
+    fn v3_native_scene_uses_recorded_variant_frame_and_remaps_uv() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(), false);
+        let groups = [
+            vec![example_geometry()],
+            vec![native_appearance_with_atlas()],
+            vec![serde_json::to_vec(&json!({
+                "schema": 2,
+                "texture_bindings": [{
+                    "slot": 2,
+                    "resource_alias": "torch",
+                    "atlas_variants": [
+                        {"variant": 3, "frame": 0, "atlas_uv": [0.25, 0.5, 0.5, 0.75]}
+                    ]
+                }]
+            })).unwrap()],
+            vec![],
+        ];
+        fs::write(dir.path().join("geometry_pool.bin"), pool_bytes(&groups)).unwrap();
+        let mut index: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("blocks.json")).unwrap()
+        ).unwrap();
+        index["blocks"][0]["status"] = json!("dynamic");
+        index["blocks"][0]["geometry_context"] = json!("torch_mount_and_native_uv");
+        index["blocks"][0]["variants"][0]["neighborhood"] = json!("native_scene");
+        index["blocks"][0]["variants"][0]["position_variant_candidate"] = json!(false);
+        write(dir.path(), "blocks.json", &index);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
+        let shape = catalog.shape_for_state(&state).expect("native mesh with atlas UV");
+        assert_eq!(shape.planes.len(), 1);
+        let plane = &shape.planes[0];
+        assert_eq!(plane.material_slot.as_deref(),
+            Some(capture_texture_slot("torch").as_str()));
+        let uvs = plane.uv.expect("local UVs");
+        assert!(uvs.iter().all(|uv|
+            uv.iter().all(|c| (-0.0001..=1.0001).contains(c))));
+        assert!(uvs.iter().any(|uv| *uv == [0., 0.]));
+        assert!(uvs.iter().any(|uv| *uv == [1., 1.]));
+
+        // A missing frame-specific rectangle cannot silently map another tile.
+        let mut mismatched = groups;
+        mismatched[2][0] = serde_json::to_vec(&json!({
+            "schema":2, "texture_bindings":[{"slot":2, "resource_alias":"torch",
+                "atlas_variants":[{"variant":3,"frame":1,
+                    "atlas_uv":[0.25,0.5,0.5,0.75]}]}]
+        })).unwrap();
+        fs::write(dir.path().join("geometry_pool.bin"), pool_bytes(&mismatched)).unwrap();
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        assert!(catalog.shape_for_state(&state).is_none());
+    }
+
+    #[test]
+    fn v3_native_scene_rejects_inconsistent_neighbor_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(), false);
+        let mut index: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("blocks.json")).unwrap()
+        ).unwrap();
+        index["blocks"][0]["status"] = json!("dynamic");
+        index["blocks"][0]["geometry_context"] = json!("lantern_hanging_and_native_uv");
+        index["blocks"][0]["variants"] = json!([
+            {"neighborhood":"native_scene", "position_variant_candidate":false,
+             "shared_geometry_refs":[0], "shared_appearance_refs":[0]},
+            {"neighborhood":"native_scene", "position_variant_candidate":false,
+             "shared_geometry_refs":[0], "shared_appearance_refs":[1]}
+        ]);
+        write(dir.path(), "blocks.json", &index);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.state_count(), 0,
+            "neighbor-dependent geometry cannot become one static template");
+    }
+
     #[test]
     fn v3_invalid_resource_is_negative_cached() {
         let dir = tempfile::tempdir().unwrap();
