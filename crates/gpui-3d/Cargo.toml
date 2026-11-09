@@ -11,21 +11,25 @@ name = "gpui_3d"
 path = "src/lib.rs"
 
 [features]
-default = []
-# Optional CPU-only importers, without pulling them into every GPUI-3D consumer.
-nova-gfx-opengl = ["gpui/nova-gfx-opengl"]
-nova-gfx-dx11 = ["gpui/nova-gfx-dx11"]
-nova-gfx-dx12 = ["gpui/nova-gfx-dx12"]
-nova-gfx-vulkan = ["gpui/nova-gfx-vulkan"]
-nova-gfx-metal = ["gpui/nova-gfx-metal"]
-native = ["nova-gfx-opengl", "nova-gfx-dx11", "nova-gfx-dx12", "nova-gfx-vulkan"]
+# Preserve the launcher/GUI default. Standalone games may build the pure
+# scene renderer using --no-default-features without GPUI or a windowing layer.
+default = ["gpui-sidecar"]
+gpui-sidecar = ["dep:gpui"]
+# Backend selection for the optional GPUI sidecar. Standalone backends are
+# selected by the consumer's native gfx-* crate, not this 3D library.
+nova-gfx-opengl = ["gpui-sidecar", "gpui/nova-gfx-opengl"]
+nova-gfx-dx11 = ["gpui-sidecar", "gpui/nova-gfx-dx11"]
+nova-gfx-dx12 = ["gpui-sidecar", "gpui/nova-gfx-dx12"]
+nova-gfx-vulkan = ["gpui-sidecar", "gpui/nova-gfx-vulkan"]
+nova-gfx-metal = ["gpui-sidecar", "gpui/nova-gfx-metal"]
+native = ["gpui-sidecar", "nova-gfx-opengl", "nova-gfx-dx11", "nova-gfx-dx12", "nova-gfx-vulkan"]
 
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.23.0"
 bevy_mikktspace = "0.16.1"
 gfx-core = { path = "../nova-gfx/gfx-core" }
-gpui = { path = "../gpui", default-features = false }
+gpui = { path = "../gpui", default-features = false, optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0.145"
 rayon = "1.11.0"
