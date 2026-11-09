@@ -10,6 +10,9 @@ const PI:f32=3.14159265359;
 // cascade (or two in a narrow cross-fade band).
 @group(0) @binding(14) var shadow_depth_middle:texture_2d<f32>;
 @group(0) @binding(15) var shadow_depth_far:texture_2d<f32>;
+// Min-Z from real opaque geometry, not the approximate batch-culling Hi-Z.
+// Zero frame.work.z denotes unsupported or disabled native SSR pyramid.
+@group(0) @binding(16) var ssr_depth_hiz:texture_2d<f32>;
 @group(0) @binding(8) var cloud_texture:texture_2d<f32>;
 @group(0) @binding(9) var<storage,read> lights:array<EffectLight>;
 @group(0) @binding(10) var<storage,read> tiles:array<u32>;
@@ -274,6 +277,30 @@ fn trace_reflection(origin:vec3<f32>,direction:vec3<f32>)->vec4<f32>{
         let p=origin+direction*distance;
         let q=project(p);
         if(any(q.xy<=vec2<f32>(0.0)) || any(q.xy>=vec2<f32>(1.0)) || q.z<=0.0 || q.z>=1.0){break;}
+        // Hierarchical empty-space traversal: if the entire ray segment
+        // stays in one mip footprint and is nearer than its nearest scene
+        // depth, it cannot hit opaque geometry. Advance four march steps
+        // without fine depth reads, hit reconstruction, or CPU work.
+        // This conservative test works with perspective AND MSAA depth.
+        if(frame.work.z>0.5 && i+3u<=steps){
+            let t2=f32(i+3u)*inv_steps;
+            let end_position=origin+direction*(0.15+96.0*t2*sqrt(t2));
+            let next=project(end_position);
+            if(all(next.xy>vec2<f32>(0.0)) && all(next.xy<vec2<f32>(1.0))
+                && next.z>0.0 && next.z<1.0){
+                let level=i32(min(u32(frame.work.z)-1u,4u));
+                let dims=vec2<f32>(textureDimensions(ssr_depth_hiz,level));
+                let tile=vec2<i32>(q.xy*dims);
+                if(all(tile==vec2<i32>(next.xy*dims))){
+                    let nearest=textureLoad(ssr_depth_hiz,tile,level).r;
+                    if(max(q.z,next.z)+0.00001<nearest){
+                        previous=end_position;
+                        i+=3u;
+                        continue;
+                    }
+                }
+            }
+        }
         let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;
         if(i>2u && depth<1.0 && q.z>=depth){
             let hit=world(q.xy,depth);
