@@ -141,7 +141,7 @@ struct CaptureMaterialTable {
 #[derive(Clone, Debug)]
 struct StateRecipe {
     meshes: Vec<(u32, u32)>,
-    texture_aliases: HashMap<usize, String>,
+    texture_aliases: Arc<HashMap<usize, String>>,
 }
 // The packed ZIP is indexed once and entries are decompressed only on cache misses.
 // Serialized access prevents repeated archive-index creation and keeps memory bounded.
@@ -245,7 +245,7 @@ impl RuntimeCaptureCatalog {
         let mut states = HashMap::with_capacity(index.blocks.len());
         let mut canonical_by_network_id: HashMap<u32, (String, StateRecipe)> = HashMap::new();
         let mut geometry_aliases = Vec::new();
-        let mut material_cache: HashMap<u32, HashMap<usize, String>> = HashMap::new();
+        let mut material_cache: HashMap<u32, Arc<HashMap<usize, String>>> = HashMap::new();
         for block in index.blocks {
             // Neighbor-driven and BlockEntity geometry must come from explicit
             // connection/NBT rules, never from a single static visual-bounds mesh.
@@ -279,13 +279,13 @@ impl RuntimeCaptureCatalog {
                 if table.schema != 2 {
                     continue;
                 }
-                let aliases: HashMap<usize, String> = table
+                let aliases: Arc<HashMap<usize, String>> = Arc::new(table
                     .texture_bindings
                     .into_iter()
                     .filter(|t| !t.resource_alias.is_empty())
                     .map(|t| (t.slot, t.resource_alias))
-                    .collect();
-                material_cache.insert(material_ref, aliases.clone());
+                    .collect());
+                material_cache.insert(material_ref, Arc::clone(&aliases));
                 aliases
             };
             let Some(variant) = block
@@ -804,6 +804,21 @@ mod tests {
             catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note",24))
         );
     }
+    #[test]
+    fn v3_shared_material_aliases_reuse_arc_not_cloned_tables() {
+        let dir = tempfile::tempdir().expect("temporary v3 material library");
+        fixture(dir.path(), true);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
+        let first = query_key(&BlockStateQuery::new("noteblock").with_state("note", 2));
+        let second = query_key(&BlockStateQuery::new("noteblock").with_state("note", 24));
+        let primary = catalog.states.get(&first).expect("canonical state");
+        let alias = catalog.states.get(&second).expect("pitch alias");
+        assert!(
+            Arc::ptr_eq(&primary.texture_aliases, &alias.texture_aliases),
+            "material lookup tables must be shared across state recipes"
+        );
+    }
+
     #[test]
     fn v3_embedded_zip_reads_indexed_binary_pool() {
         let dir=tempfile::tempdir().unwrap();
