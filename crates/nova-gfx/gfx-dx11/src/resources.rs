@@ -156,6 +156,9 @@ impl ResourceDevice for Dx11Device {
         }
     }
 
+    fn compute_bind_group_capabilities(&self) -> ComputeBindGroupCapabilities {
+        ComputeBindGroupCapabilities::buffer_only()
+    }
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }

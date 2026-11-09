@@ -5240,6 +5240,9 @@ mod platform {
         fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
             compute::capabilities()
         }
+        fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
+            gfx_core::ComputeBindGroupCapabilities::buffer_only()
+        }
         fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
             self.dispatch_buffers(dispatch)
         }

@@ -84,6 +84,14 @@ impl ResourceDevice for OpenGlDevice {
     fn compute_capabilities(&self) -> ComputeCapabilities {
         self.compute.capabilities
     }
+    fn compute_bind_group_capabilities(&self) -> ComputeBindGroupCapabilities {
+        ComputeBindGroupCapabilities {
+            buffers: true,
+            sampled_textures: true,
+            samplers: true,
+            storage_textures: true,
+        }
+    }
     fn dispatch_compute(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }
