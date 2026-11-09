@@ -388,7 +388,9 @@ pub(super) struct CullResources {
     bounds: BufferId,
     pub(super) batches: BufferId,
     range: BufferId,
-    range_bounds: Option<(Option<Aabb>, bool, usize, usize)>,
+    // Range identity includes the shadow caster-volume mode; a normal camera
+    // update must never accidentally reuse an old directional-caster uniform.
+    range_bounds: Option<(Option<Aabb>, bool, usize, usize, bool)>,
     singleton_start: usize,
     last_singleton_report: Option<(usize, usize)>,
     pub(super) arguments: BufferId,
@@ -994,17 +996,54 @@ impl CullResources {
         range: Option<Aabb>,
         generated: Option<(BufferId, usize)>,
     ) -> gpui::Result<()> {
+        self.dispatch_region(
+            device, shader, singleton_shader, frame, range, generated, false,
+        )
+    }
+
+    /// GPU light-direction caster culling. The supplied range is a conservative
+    /// sun-extruded receiver volume, so its full Draw AABB must overlap the
+    /// range; unlike normal Section culling we cannot reject by draw origin.
+    pub(super) fn dispatch_shadow_optimized(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        shader: ShaderModuleId,
+        singleton_shader: Option<ShaderModuleId>,
+        frame: BufferId,
+        receiver_casters: Aabb,
+        generated: Option<(BufferId, usize)>,
+    ) -> gpui::Result<()> {
+        self.dispatch_region(
+            device, shader, singleton_shader, frame,
+            Some(receiver_casters), generated, true,
+        )
+    }
+
+    fn dispatch_region(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        shader: ShaderModuleId,
+        singleton_shader: Option<ShaderModuleId>,
+        frame: BufferId,
+        range: Option<Aabb>,
+        generated: Option<(BufferId, usize)>,
+        shadow_casters: bool,
+    ) -> gpui::Result<()> {
         if self.count == 0 {
             return Ok(());
         }
-        self.hiz.dispatch(device, frame)?;
+        // Shadow maps do not have a camera Hi-Z occluder pyramid. Avoid
+        // dispatching that pass three times for no useful visibility result.
+        if !shadow_casters {
+            self.hiz.dispatch(device, frame)?;
+        }
         let (min, max) = range.map_or(([-f32::MAX; 3], [f32::MAX; 3]), |range| {
             (
                 [range.min.x, range.min.y, range.min.z],
                 [range.max.x, range.max.y, range.max.z],
             )
         });
-        let occlusion_enabled = self.hiz.has_occluders();
+        let occlusion_enabled = !shadow_casters && self.hiz.has_occluders();
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
         let tail_start = u32::try_from(self.singleton_start)
             .context("GPU culling singleton tail exceeds u32")?;
@@ -1015,7 +1054,7 @@ impl CullResources {
         let mut range_bytes = [0; 48];
         for (chunk, value) in range_bytes
             .chunks_exact_mut(4)
-            .zip([min[0], min[1], min[2], if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], 0.0])
+            .zip([min[0], min[1], min[2], if shadow_casters { -1.0 } else if occlusion_enabled { 1.0 } else { 0.0 }, max[0], max[1], max[2], 0.0])
         {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
@@ -1024,9 +1063,9 @@ impl CullResources {
         {
             bytes.copy_from_slice(&value.to_le_bytes());
         }
-        if self.range_bounds != Some((range, occlusion_enabled, self.count, compact_start as usize)) {
+        if self.range_bounds != Some((range, occlusion_enabled, self.count, compact_start as usize, shadow_casters)) {
             device.write_buffer(self.range, 0, &range_bytes)?;
-            self.range_bounds = Some((range, occlusion_enabled, self.count, compact_start as usize));
+            self.range_bounds = Some((range, occlusion_enabled, self.count, compact_start as usize, shadow_casters));
         }
         let bindings = [
             compute_binding(
