@@ -15,7 +15,6 @@ pub(super) struct Compositor {
     ms_shaders: Option<[ShaderModuleId; 3]>,
     froxel_shaders: [Option<ShaderModuleId>; 2],
     pub sampler: SamplerId,
-    froxel_sampler: SamplerId,
     cloud_sampler: SamplerId,
     pub post_pass: RenderPassId,
     post_pipeline: RenderPipelineId,
@@ -36,14 +35,15 @@ impl Compositor {
             let layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d screen inputs".into()),
-                    // Bindings 20/21 are used only by Froxel shader variants.
+                    // Slot 20 adds the true 3D image; slot 5 reuses the
+                    // existing linear sampler (D3D11 only guarantees 16 samplers).
                     // Legacy shader variants bind a 2D fallback at slot 20;
                     // they never sample it, so unsupported devices stay safe.
-                    entries: (0..22)
+                    entries: (0..21)
                         .map(|binding| BindGroupLayoutEntry {
                             binding,
                             binding_type: match binding {
-                                5 | 11 | 21 => BindingType::Sampler,
+                                5 | 11 => BindingType::Sampler,
                                 6 => BindingType::UniformBuffer,
                                 9 | 10 => BindingType::StorageBuffer,
                                 _ => BindingType::SampledTexture,
@@ -114,17 +114,6 @@ impl Compositor {
                 |d, id| {
                     let _ = d.destroy_sampler(id);
                 },
-            );
-            let froxel_sampler = cleanup.record(
-                device.create_sampler(&SamplerDescriptor {
-                    mag_filter: FilterMode::Linear,
-                    min_filter: FilterMode::Linear,
-                    address_mode_u: AddressMode::ClampToEdge,
-                    address_mode_v: AddressMode::ClampToEdge,
-                    address_mode_w: AddressMode::ClampToEdge,
-                    ..SamplerDescriptor::default()
-                })?,
-                |d, id| { let _ = d.destroy_sampler(id); },
             );
             let cloud_sampler = cleanup.record(
                 device.create_sampler(&SamplerDescriptor {
@@ -240,7 +229,6 @@ impl Compositor {
                 ms_shaders,
                 froxel_shaders,
                 sampler,
-                froxel_sampler,
                 cloud_sampler,
                 post_pass,
                 post_pipeline,
@@ -425,12 +413,6 @@ impl Compositor {
             }),
         });
         entries.push(BindGroupEntry {
-            binding: 21,
-            resource: BindingResource::Sampler(SamplerBinding {
-                sampler: self.froxel_sampler,
-            }),
-        });
-        entries.push(BindGroupEntry {
             binding: 11,
             resource: BindingResource::Sampler(SamplerBinding {
                 sampler: self.cloud_sampler,
@@ -487,7 +469,6 @@ impl Compositor {
         for shader in self.froxel_shaders.into_iter().flatten() {
             device.destroy_shader_module(shader)?;
         }
-        device.destroy_sampler(self.froxel_sampler)?;
         device.destroy_sampler(self.sampler)?;
         device.destroy_sampler(self.cloud_sampler)?;
         device.destroy_pipeline_layout(self.pipeline_layout)?;
