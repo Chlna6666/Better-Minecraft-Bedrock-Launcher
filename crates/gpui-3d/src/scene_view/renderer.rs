@@ -1246,7 +1246,22 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let count = commands.len();
         // Independent queue synchronization remains inside the graphics
         // backend; when unavailable submit on the shared primary owner queue.
-        let submitted = device.submit_offscreen_graphics(&commands, &tags, true)?;
+        let submitted = match device.submit_offscreen_graphics(&commands, &tags, true) {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                if let Some(surface) = self.offscreen.as_mut() {
+                    surface.render_passes_failed(&self.pending_capture_epochs);
+                }
+                // A failed GPU submission cannot establish a new producer
+                // revision. Keep the old resource lifetime owner; never
+                // render its possibly overwritten texels in a future UI frame.
+                drop(commands);
+                self.pending_passes.clear();
+                self.pending_capture_epochs.clear();
+                self.submitted_capture_epochs.clear();
+                return Err(error.into());
+            }
+        };
         drop(commands);
         self.pending_passes.clear();
         // The final GUI sampler uses this native producer's queue ordering.
