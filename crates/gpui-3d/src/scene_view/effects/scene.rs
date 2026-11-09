@@ -317,6 +317,135 @@ impl EffectScene {
     pub(super) fn ssr_hiz_levels(&self) -> u32 {
         self.ssr_hiz.as_ref().map_or(0, |hiz| hiz.levels)
     }
+
+    /// Validate GPU producer/consumer order across native raster passes and the
+    /// already-dispatched light-tile Compute stage. All texture identities are
+    /// actual allocation IDs (including MSAA and SSR intermediates), never
+    /// aliases through a TextureView. This is a fail-closed graph validation,
+    /// not a claim to issue native barriers or execute shadow-dependent compute.
+    ///
+    /// Froxel light injection must only join this graph after the host exposes
+    /// mixed Graphics/Compute ordered submission. A shadow map queued to be
+    /// rendered later is NOT yet safe for dispatch_compute_bind_group().
+    pub(super) fn validate_gpu_work_graph(
+        &self,
+        reflection_enabled: bool,
+        shadows_enabled: bool,
+        tile_updated: bool,
+    ) -> gpui::Result<usize> {
+        let mut graph = GpuWorkGraph::new();
+        let texture = |id, access| GpuResourceUse {
+            resource: GpuResource::Texture(id), access,
+        };
+        let buffer = |id, access| GpuResourceUse {
+            resource: GpuResource::Buffer(id), access,
+        };
+        let msaa = self.targets.msaa.as_ref();
+        let hdr_depth = msaa.map_or(self.targets.depth.texture, |m| m.depth.texture);
+        let hdr_color = self.targets.color.texture;
+        let surface_depth = msaa.map_or(self.targets.surface_depth.texture, |m| m.surface_depth.texture);
+        let albedo = msaa.map_or(self.targets.albedo.texture, |m| m.albedo.texture);
+
+        // The light-tile Compute dispatch has no geometry/shadow dependency.
+        // It legitimately runs before the Graphics submission on the GPU
+        // owner; a future fog Compute pass reading CSM does not.
+        if tile_updated {
+            graph.push("light-tile compute", GpuWorkStage::Compute, [
+                buffer(self.tiles.buffer, GpuAccess::StorageWrite),
+            ])?;
+        } else {
+            graph.import(GpuResource::Buffer(self.tiles.buffer));
+        }
+
+        if self.queued_capture {
+            let mut outputs = vec![
+                texture(hdr_color, GpuAccess::ColorAttachment),
+                texture(hdr_depth, GpuAccess::DepthAttachment),
+            ];
+            if let Some(msaa) = msaa {
+                outputs.push(texture(msaa.color.texture, GpuAccess::ColorAttachment));
+            }
+            graph.push("HDR geometry", GpuWorkStage::Graphics, outputs)?;
+            let mut attributes = vec![
+                texture(surface_depth, GpuAccess::DepthAttachment),
+                texture(albedo, GpuAccess::ColorAttachment),
+                texture(self.targets.surface.texture, GpuAccess::ColorAttachment),
+            ];
+            if let Some(msaa) = msaa {
+                attributes.push(texture(msaa.surface.texture, GpuAccess::ColorAttachment));
+            }
+            graph.push("MRT surface/albedo geometry", GpuWorkStage::Graphics, attributes)?;
+        } else if self.targets_valid {
+            for target in [
+                hdr_color, hdr_depth, self.targets.surface.texture, surface_depth, albedo
+            ] {
+                graph.import(GpuResource::Texture(target));
+            }
+        } else {
+            return Err(anyhow::anyhow!("screen graph has no valid or queued geometry capture"));
+        }
+
+        if reflection_enabled && let Some(hiz) = &self.ssr_hiz {
+            let mut previous = hdr_depth;
+            for (level, output) in hiz.level_textures().enumerate() {
+                if self.queued_ssr_hiz {
+                    graph.push(
+                        format!("SSR Hi-Z level {level}"),
+                        GpuWorkStage::Graphics,
+                        [
+                            texture(previous, GpuAccess::Sampled),
+                            texture(output, GpuAccess::ColorAttachment),
+                        ],
+                    )?;
+                } else if self.ssr_hiz_valid {
+                    graph.import(GpuResource::Texture(output));
+                } else {
+                    return Err(anyhow::anyhow!("screen graph requires a valid SSR Hi-Z texture"));
+                }
+                previous = output;
+            }
+        }
+
+        if shadows_enabled {
+            for cascade in 0..SHADOW_CASCADE_COUNT {
+                let shadow = self.shadow[cascade].texture;
+                if self.queued_shadow[cascade] {
+                    graph.push(
+                        format!("CSM shadow cascade {cascade}"),
+                        GpuWorkStage::Graphics,
+                        [texture(shadow, GpuAccess::DepthAttachment)],
+                    )?;
+                } else if self.shadow_valid[cascade] {
+                    graph.import(GpuResource::Texture(shadow));
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "screen graph cascade {cascade} has no valid or queued shadow map"
+                    ));
+                }
+            }
+        }
+        let mut composite_reads = vec![
+            texture(hdr_color, GpuAccess::Sampled),
+            texture(hdr_depth, GpuAccess::Sampled),
+            texture(self.targets.surface.texture, GpuAccess::Sampled),
+            texture(surface_depth, GpuAccess::Sampled),
+            texture(albedo, GpuAccess::Sampled),
+            buffer(self.tiles.buffer, GpuAccess::ReadBuffer),
+            texture(self.targets.resolved.texture, GpuAccess::ColorAttachment),
+        ];
+        if reflection_enabled && let Some(hiz) = &self.ssr_hiz {
+            composite_reads.extend(
+                hiz.level_textures().map(|id| texture(id, GpuAccess::Sampled))
+            );
+        }
+        if shadows_enabled {
+            composite_reads.extend(
+                self.shadow.iter().map(|target| texture(target.texture, GpuAccess::Sampled))
+            );
+        }
+        graph.push("deferred effects composite", GpuWorkStage::Graphics, composite_reads)?;
+        Ok(graph.compile()?.transitions.len())
+    }
     pub(super) fn new(
         device: &mut dyn ExtensionDevice,
         backend: BackendKind,
