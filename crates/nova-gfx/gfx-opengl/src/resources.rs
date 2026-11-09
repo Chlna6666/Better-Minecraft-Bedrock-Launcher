@@ -303,6 +303,13 @@ impl ResourceDevice for OpenGlDevice {
                 )?;
                 glow::TEXTURE_2D_ARRAY
             }
+            TextureDimension::D3 { depth } => {
+                self.texture_volume_capabilities().validate(desc)?;
+                if depth > i32::MAX as u32 {
+                    return Err(Error::InvalidInput("3D texture depth exceeds GLsizei".into()));
+                }
+                glow::TEXTURE_3D
+            }
         };
         if desc.memory_location == MemoryLocation::GpuToCpu {
             return Err(Error::InvalidInput(
@@ -344,6 +351,11 @@ impl ResourceDevice for OpenGlDevice {
                     i32::try_from(layers).map_err(|_| {
                         Error::InvalidInput("OpenGL array depth exceeds native i32".into())
                     })?,
+                );
+            } else if let TextureDimension::D3 { depth } = desc.dimension {
+                self.gl.tex_storage_3d(
+                    target, desc.mip_level_count as i32, internal,
+                    width, height, depth as i32,
                 );
             } else {
                 self.gl.tex_storage_2d(
@@ -476,12 +488,15 @@ impl ResourceDevice for OpenGlDevice {
         let size = texture.desc.mip_extent(desc.base_mip_level)?;
         let target = if matches!(texture.desc.dimension, TextureDimension::D2Array { .. }) {
             glow::TEXTURE_2D_ARRAY
+        } else if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+            glow::TEXTURE_3D
         } else if texture.desc.sample_count > 1 {
             glow::TEXTURE_2D_MULTISAMPLE
         } else {
             glow::TEXTURE_2D
         };
-        let layers = texture.desc.dimension.layers();
+        let layers = texture.desc.dimension.layers()
+            .max(texture.desc.dimension.mip_depth(desc.base_mip_level));
         self.park()?;
         // SAFETY: source has immutable storage; the new name has never been bound and the
         // validated mip range shares native storage without a texture copy.
