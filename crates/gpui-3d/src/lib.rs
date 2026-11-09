@@ -65,6 +65,7 @@ mod material;
 pub use gfx_core::FrontFace;
 mod math;
 mod mesh;
+mod native_offscreen;
 mod voxel_mesh;
 mod gpu_submission_trace;
 mod upload_feedback;
@@ -95,6 +96,7 @@ pub use material::{
 };
 pub use math::{Aabb, Mat4, Quat, Ray, Transform, Vec2, Vec3};
 pub use mesh::{GeneratedTangents, Mesh, MeshError, MeshId, MeshPart, TriangleEdgeMask, Vertex};
+pub use native_offscreen::{NativeOffscreenPass, submit_native_graphics, submit_native_offscreen_passes};
 pub use prepare::{DrawBatch, PreparedDraw, PreparedScene};
 pub use raycast::{RaycastError, RaycastHit, RaycastScratch};
 pub use render::{
