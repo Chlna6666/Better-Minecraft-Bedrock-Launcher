@@ -48,7 +48,9 @@ permutation 覆盖。1,356 个 Bedrock 1.26.30 方块标识符的默认数字属
 Java 版网格、旧版打包模型数据库和自动更新任务均已从构建中移除。
 模型几何仅来自 BedrockSceneCapture 原生采集、基岩版资源包与基岩专用程序化模型族。
 
-3D 编辑器按选定游戏安装目录读取 BedrockSceneCapture 的 Geometry Pool v2：`manifest.json`、`blocks.json` 和 `geometry_pool` 下的几何、外观、材质表。通过完整 BlockState 精确查找，按 SHA-256 引用懒加载共享资源；不再依赖旧 `meshes/` 完整网格。
+3D 编辑器按选定游戏安装目录读取 BedrockSceneCapture 的 Geometry Pool v3：`manifest.json`、`blocks.json` 和单文件 `geometry_pool.bin`。通过完整 BlockState 精确查找，使用每次导出独立的 `u32` 数值资源索引读取共享 Geometry / Appearance；在本地二进制池内按偏移读取，避免 v2 的 SHA-256 文件名与大量零散 JSON。不同外观可以复用同一份精确拓扑数据。
+
+模型库身份包含路径、游戏版本和 `capture_revision`，同一版本重新导出时旧索引不会被误当作当前采集。内置 `bsc_models.bin` 为单二进制池组成的 ZIP，打开后解压池一次，再按 `u32` ID 延迟解析具体模型。导出不包含游戏纹理图像。
 纹理仅保存游戏中的资源别名，路径从当前游戏资源包的
 `terrain_texture.json` 动态解析；不维护跨版本硬编码贴图表。
 

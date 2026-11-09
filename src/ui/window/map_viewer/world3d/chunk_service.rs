@@ -5116,7 +5116,10 @@ fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
     {
-        return root.join("manifest.json").is_file().then_some(root);
+        return (root.join("manifest.json").is_file()
+            && root.join("blocks.json").is_file()
+            && root.join("geometry_pool.bin").is_file())
+            .then_some(root);
     }
     // Ignore exports from unrelated installed game versions. A known
     // package root is the only installation identity available to this worker.
@@ -5133,7 +5136,10 @@ fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
                 };
                 for entry in entries.flatten() {
                     let dir = entry.path();
-                    if !dir.join("manifest.json").is_file() || !dir.join("blocks.json").is_file() {
+                    if !dir.join("manifest.json").is_file()
+                        || !dir.join("blocks.json").is_file()
+                        || !dir.join("geometry_pool.bin").is_file()
+                    {
                         continue;
                     }
                     let Some(version) = dir.file_name().and_then(|name| name.to_str()) else {
