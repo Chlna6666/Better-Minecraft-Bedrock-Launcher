@@ -5724,35 +5724,116 @@ mod platform {
     }
 
     impl SubmissionDevice for Dx12Device {
+        fn independent_queue(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
+            let index = match stage {
+                gfx_core::GpuWorkStage::Graphics if self.sidecar_queue.is_some() => 1,
+                gfx_core::GpuWorkStage::Compute if self.async_compute.is_some() => 2,
+                gfx_core::GpuWorkStage::Transfer if self.async_transfer.is_some() => 3,
+                _ => return None,
+            };
+            Some(gfx_core::GpuQueueId { family: 0, index })
+        }
+
+        fn checkpoint_gpu_queue(&mut self, queue: gfx_core::GpuQueueId) -> Result<SubmissionId> {
+            if queue == gfx_core::GpuQueueId::PRIMARY {
+                return self.checkpoint_ordered_queue(gfx_core::GpuWorkStage::Graphics);
+            }
+            let (native, fence, fence_value, kind) = match (queue.family, queue.index) {
+                (0, 1) => {
+                    let native = self.sidecar_queue.clone().ok_or_else(|| Error::Unavailable(
+                        "DX12 independent DIRECT queue is unavailable".into(),
+                    ))?;
+                    let fence = self.sidecar_fence.clone().ok_or_else(|| Error::Unavailable(
+                        "DX12 independent DIRECT queue fence is unavailable".into(),
+                    ))?;
+                    let value = self.next_sidecar_fence_value;
+                    self.next_sidecar_fence_value = value.checked_add(1).ok_or_else(|| {
+                        Error::InvalidInput("DX12 sidecar timeline exhausted".into())
+                    })?;
+                    (native, fence, value, Dx12SubmissionQueue::Sidecar)
+                }
+                (0, 2) | (0, 3) => {
+                    let native = if queue.index == 2 {
+                        &mut self.async_compute
+                    } else {
+                        &mut self.async_transfer
+                    }.as_mut().ok_or_else(|| Error::Unavailable(
+                        "DX12 requested dedicated queue is unavailable".into(),
+                    ))?;
+                    let value = native.next_fence_value;
+                    native.next_fence_value = value.checked_add(1).ok_or_else(|| {
+                        Error::InvalidInput("DX12 dedicated queue timeline exhausted".into())
+                    })?;
+                    let kind = if queue.index == 2 {
+                        Dx12SubmissionQueue::Compute
+                    } else {
+                        Dx12SubmissionQueue::Transfer
+                    };
+                    (native.queue.clone(), native.fence.clone(), value, kind)
+                }
+                _ => return Err(Error::Unavailable(
+                    "DX12 checkpoint target does not exist on this device".into(),
+                )),
+            };
+            // SAFETY: The native queue and fence belong to the same device.
+            // Signal is a GPU-side operation that completes after every prior
+            // native command/wait on this physical queue; no CPU wait occurs.
+            unsafe { native.Signal(&fence, fence_value) }
+                .map_err(|error| Error::Backend(format!(
+                    "DX12 native {:?} checkpoint Signal: {error}", kind,
+                )))?;
+            self.check_device_removed("DX12 native queue checkpoint")?;
+            Ok(self.submissions.insert(Dx12Submission {
+                fence_value, queue: kind,
+            }))
+        }
+
         fn enqueue_gpu_queue_wait(
             &mut self,
             target_queue: gfx_core::GpuQueueId,
             producer: SubmissionId,
         ) -> Result<gfx_core::GpuNativeWaitProof> {
-            // Only the independently allocated DIRECT sidecar queue exists.
-            // There are no separate COPY or COMPUTE command queues yet; a
-            // caller cannot infer them from the stage of its GPU work.
-            if target_queue != (gfx_core::GpuQueueId { family: 0, index: 1 }) {
-                return Err(Error::Unavailable(
-                    "DX12 has no independent native queue at the requested identity".into(),
+            let (producer_kind, producer_value) = {
+                let accepted = self.submissions.get(producer)?;
+                (accepted.queue, accepted.fence_value)
+            };
+            let source_queue = match producer_kind {
+                Dx12SubmissionQueue::Primary => gfx_core::GpuQueueId::PRIMARY,
+                Dx12SubmissionQueue::Sidecar => gfx_core::GpuQueueId { family: 0, index: 1 },
+                Dx12SubmissionQueue::Compute => gfx_core::GpuQueueId { family: 0, index: 2 },
+                Dx12SubmissionQueue::Transfer => gfx_core::GpuQueueId { family: 0, index: 3 },
+            };
+            if target_queue == source_queue {
+                return Err(Error::InvalidInput(
+                    "cross-queue GPU wait must target a distinct physical queue".into(),
                 ));
             }
-            let queue = self.sidecar_queue.as_ref().ok_or_else(|| Error::Unavailable(
-                "DX12 independent DIRECT queue is not available".into(),
-            ))?;
-            let producer_fence = self.submissions.get(producer)?.fence_value;
-            // SAFETY: Both queues and the fence belong to this live D3D12
-            // device. Queue::Wait enqueues a GPU-side dependency on this
-            // physical queue and never stalls the host thread. The fence
-            // itself is device-owned and remains alive across submissions.
-            unsafe { queue.Wait(&self.fence, producer_fence) }
-                .map_err(|error| Error::Backend(format!("DX12 independent queue Wait: {error}")))?;
-            // SAFETY: The native ID3D12CommandQueue::Wait above succeeded on
-            // precisely target_queue, ordering all subsequent sidecar work
-            // behind the registered primary-queue producer fence.
-            Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(
-                producer, target_queue,
-            ) })
+            let source_fence = self.submission_fence(producer_kind)?;
+            let consumer = if target_queue == gfx_core::GpuQueueId::PRIMARY {
+                self.graphics_queue.clone()
+            } else {
+                match (target_queue.family, target_queue.index) {
+                    (0, 1) => self.sidecar_queue.clone(),
+                    (0, 2) => self.async_compute.as_ref().map(|q| q.queue.clone()),
+                    (0, 3) => self.async_transfer.as_ref().map(|q| q.queue.clone()),
+                    _ => None,
+                }.ok_or_else(|| Error::Unavailable(
+                    "DX12 target native queue is unavailable".into(),
+                ))?
+            };
+            // SAFETY: The producer has already enqueued Signal for precisely
+            // this queue-specific fence value. Both COM queues and the fence
+            // belong to this device. ID3D12CommandQueue::Wait is GPU-side and
+            // never stalls the CPU or spuriously completes the producer.
+            unsafe { consumer.Wait(&source_fence, producer_value) }
+                .map_err(|error| Error::Backend(format!(
+                    "DX12 native cross-queue GPU Wait: {error}"
+                )))?;
+            // SAFETY: The specific native consumer GPU queue successfully
+            // enqueued its Wait of the source queue's fence value.
+            Ok(unsafe {
+                gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue)
+            })
         }
 
         fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
