@@ -111,6 +111,8 @@ impl ScreenEffects {
 
 mod compositor;
 mod construction;
+#[allow(dead_code)] // 3D resource-creation ABI is pending; layout/tests stay compiled.
+mod froxel;
 mod light_tiles;
 mod renderer;
 mod scene;
