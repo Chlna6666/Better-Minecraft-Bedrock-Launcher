@@ -116,18 +116,17 @@ impl StableDrawSlots {
         {
             return previous;
         }
-        // A retired tail must retain its physical address until its fence
-        // completes, even though the logical identity is already removed.
-        // Otherwise a growing Scene could allocate the same tail row while
-        // an older DrawIndirect command still references that index.
-        let last_live = self.identities.iter()
+        // The physical tail cannot shrink while any retired row still has
+        // an outstanding GPU reader. This O(1) conservative guard avoids
+        // scanning potentially 100K+ retired slots on every streaming frame.
+        // Once all matching fences complete, the regular trailing-hole trim
+        // resumes without moving any live physical DrawParams/Instance row.
+        if self.has_retired_slots() {
+            return previous;
+        }
+        let next = self.identities.iter()
             .rposition(Option::is_some)
             .map_or(0, |last| last + 1);
-        let last_retired = self.retired_unbound.iter().copied()
-            .chain(self.retired_by_submission.iter()
-                .flat_map(|(_, slots)| slots.iter().copied()))
-            .max().map_or(0, |last| last + 1);
-        let next = last_live.max(last_retired);
         if next < previous {
             self.identities.truncate(next);
             self.free.retain(|&slot| slot < next);
