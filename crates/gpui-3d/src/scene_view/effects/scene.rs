@@ -209,10 +209,12 @@ impl EffectScene {
                 1,
             )?;
             shadow.record(&mut cleanup);
+            // Unused color output for depth shadow atlas: 1/8 bandwidth
+            // of RGBA16F while preserving identical depth precision.
             let shadow_color = Target::create(
                 device,
                 Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
-                Format::Rgba16Float,
+                Format::R8Unorm,
                 false,
                 1,
             )?;
@@ -329,7 +331,7 @@ impl EffectScene {
         self.shadow_input = Some(view.clone());
         self.shadow_matrix = camera.projection_matrix(1.)? * camera.view()?;
         let shadow_context =
-            local.offscreen(shadow_pass, Format::Rgba16Float, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?);
+            local.offscreen(shadow_pass, Format::R8Unorm, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?);
         let commands = if view.voxel_shading.shadow_strength > 0. {
             self.scene
                 .shadow_steps(device, renderer, camera, &shadow_context)?
