@@ -1,0 +1,63 @@
+name: GPUI 3D Native MRT Verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/gpui3d-native-mrt.yml'
+      - 'crates/gpui-3d/src/scene_view/mesher.wgsl'
+      - 'crates/gpui-3d/src/scene_view/voxel.wgsl'
+      - 'crates/gpui-3d/src/scene_view/effects/**'
+      - 'crates/gpui-3d/src/scene_view/generated_tests.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui3d-native-mrt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulkan-software:
+    name: Vulkan / Mesa Lavapipe native pixel verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+      RUST_MIN_STACK: "67108864"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native rendering and Rust build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config \
+            libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
+            libfreetype6-dev libgl1-mesa-dev libpipewire-0.3-dev libssl-dev \
+            libudev-dev libvulkan-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxrandr-dev mesa-vulkan-drivers vulkan-tools
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Select the software Vulkan driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "Mesa Vulkan ICD: $icd"
+      - name: Verify Vulkan adapter
+        run: vulkaninfo --summary
+      - name: Compile native backend test suite
+        run: cargo test -p gpui-3d --lib --features gpui/x11 --no-run
+      - name: Compare MRT output against legacy Surface and Albedo captures
+        run: cargo test -p gpui-3d --lib --features gpui/x11 effects_vulkan -- --ignored --nocapture
+      - name: Validate 2D Greedy and uniform-light fallback GPU counts
+        run: cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture
