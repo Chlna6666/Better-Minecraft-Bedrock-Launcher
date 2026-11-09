@@ -18,14 +18,29 @@ pub fn render_diagnostics_overlay(
     state: &DiagnosticsState,
     auto_sentry_enabled: bool,
 ) -> Option<AnyElement> {
-    let report = state.pending_report.clone()?;
+    // Crash report state must remain independent of recoverable operation errors.
+    let crash_report = state.pending_report.is_some();
+    let report = state
+        .pending_report
+        .clone()
+        .or_else(|| state.active_operation_report().cloned())?;
     let share_payload = diagnostics_share_payload(&report);
     let card_width = (window_width - px(48.)).max(px(360.)).min(px(760.));
     let card_height = (window_height - px(72.)).max(px(420.)).min(px(720.));
     let overlay_bg = hsla(0.0, 0.0, 0.0, 0.34);
 
-    let title = t!("Diagnostics.modal.title");
-    let description = t!("Diagnostics.modal.description");
+    let title = if crash_report {
+        t!("Diagnostics.modal.title")
+    } else {
+        SharedString::from("操作失败 · 诊断详情")
+    };
+    let description = if crash_report {
+        t!("Diagnostics.modal.description")
+    } else {
+        SharedString::from(
+            "查看完整错误、复制脱敏报告或导出 ZIP 诊断包。普通操作错误不会自动提交到 Sentry。"
+        )
+    };
     let report_id_label = t!("Diagnostics.modal.report_id");
     let detail_label = t!("Diagnostics.modal.detail");
     let log_tail_label = t!("Diagnostics.modal.log_tail");
@@ -40,8 +55,9 @@ pub fn render_diagnostics_overlay(
     };
     let dismiss_label = t!("Diagnostics.modal.dismiss");
 
-    let detail_text =
-        serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string());
+    let detail_text = crate::utils::log_privacy::redact_log_text(
+        &serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string())
+    ).into_owned();
     let code_panel = |heading: SharedString, body: String| {
         div()
             .flex()
@@ -79,7 +95,10 @@ pub fn render_diagnostics_overlay(
             )
     };
 
-    let detail_summary = report_detail_summary(&report);
+    let detail_summary = SharedString::from(
+        crate::utils::log_privacy::redact_log_text(report_detail_summary(&report).as_ref())
+            .into_owned()
+    );
     let modal_body = div()
         .w(card_width)
         .max_w(card_width)
@@ -164,7 +183,14 @@ pub fn render_diagnostics_overlay(
                 .flex_col()
                 .gap(px(14.))
                 .child(code_panel(detail_label, detail_text))
-                .child(code_panel(log_tail_label, report.log_tail.clone())),
+                .child(code_panel(
+                    log_tail_label,
+                    if report.log_tail.is_empty() {
+                        "最新日志会在导出诊断包时从 latest.log / previous.log 读取。".to_owned()
+                    } else {
+                        crate::utils::log_privacy::redact_log_text(&report.log_tail).into_owned()
+                    },
+                )),
         )
         .child(
             div()
@@ -209,6 +235,85 @@ pub fn render_diagnostics_overlay(
                         )
                         .child(
                             action_button(
+                                "diagnostics-export",
+                                SharedString::from("导出诊断包 ZIP"),
+                                colors,
+                                false,
+                                !state.exporting_bundle,
+                            )
+                            .on_click({
+                                let report = report.clone();
+                                move |_event, _window, cx| {
+                                    let can_start = cx.update_global(
+                                        |state: &mut DiagnosticsState, _cx| {
+                                            if state.exporting_bundle {
+                                                false
+                                            } else {
+                                                state.exporting_bundle = true;
+                                                true
+                                            }
+                                        },
+                                    );
+                                    if !can_start {
+                                        return;
+                                    }
+                                    let report = report.clone();
+                                    cx.spawn(async move |cx| {
+                                        let result = cx.background_spawn(async move {
+                                            crate::utils::diagnostics::export_diagnostics_bundle(
+                                                &report
+                                            )
+                                        }).await;
+                                        let _ = cx.update(move |cx| {
+                                            cx.update_global(
+                                                |state: &mut DiagnosticsState, _cx| {
+                                                    state.exporting_bundle = false;
+                                                },
+                                            );
+                                            match result {
+                                                Ok(path) => {
+                                                    toast::success(
+                                                        cx,
+                                                        SharedString::from(
+                                                            "诊断包已保存至 logs/reports"
+                                                        ),
+                                                    );
+                                                    if let Some(directory) = path.parent() {
+                                                        let directory =
+                                                            directory.to_string_lossy().to_string();
+                                                        cx.spawn(async move |_cx| {
+                                                            let _ = crate::utils::open_path::open_path(
+                                                                directory
+                                                            ).await;
+                                                            Ok::<(), anyhow::Error>(())
+                                                        }).detach();
+                                                    }
+                                                }
+                                                Err(error) => {
+                                                    let safe = crate::utils::log_privacy::redact_log_text(
+                                                        &error.to_string()
+                                                    ).into_owned();
+                                                    tracing::error!(
+                                                        target: "bmcbl::diagnostics",
+                                                        reason = %safe,
+                                                        "导出诊断包失败"
+                                                    );
+                                                    toast::error(
+                                                        cx,
+                                                        SharedString::from(format!(
+                                                            "诊断包导出失败：{safe}"
+                                                        )),
+                                                    );
+                                                }
+                                            }
+                                        });
+                                        Ok::<(), anyhow::Error>(())
+                                    }).detach();
+                                }
+                            }),
+                        )
+                        .child(
+                            action_button(
                                 "diagnostics-github",
                                 github_label,
                                 colors,
@@ -224,8 +329,9 @@ pub fn render_diagnostics_overlay(
                             }),
                         )
                         .child(
-                            action_button(
-                                "diagnostics-sentry",
+                            if crash_report {
+                                action_button(
+                                    "diagnostics-sentry",
                                 sentry_label,
                                 colors,
                                 true,
@@ -302,7 +408,10 @@ pub fn render_diagnostics_overlay(
                                     })
                                     .detach();
                                 }
-                            }),
+                            }).into_any_element()
+                            } else {
+                                div().into_any_element()
+                            },
                         )
                         .child(
                             action_button(
@@ -313,23 +422,32 @@ pub fn render_diagnostics_overlay(
                                 true,
                             )
                             .on_click(move |_event, _window, cx| {
-                                if let Err(error) = crate::utils::diagnostics::acknowledge_pending_report()
-                                {
-                                    toast::error(
-                                        cx,
-                                        SharedString::from(format!(
-                                            "{}: {error:#}",
-                                            t!("common.save_failed")
-                                        )),
+                                if crash_report {
+                                    if let Err(error) =
+                                        crate::utils::diagnostics::acknowledge_pending_report()
+                                    {
+                                        toast::error(
+                                            cx,
+                                            SharedString::from(format!(
+                                                "{}: {error:#}",
+                                                t!("common.save_failed")
+                                            )),
+                                        );
+                                        return;
+                                    }
+                                    clear_diagnostics_marker_files();
+                                    cx.update_global(
+                                        |state: &mut DiagnosticsState, _cx| {
+                                            state.clear();
+                                        },
                                     );
-                                    return;
+                                } else {
+                                    cx.update_global(
+                                        |state: &mut DiagnosticsState, _cx| {
+                                            state.close_operation_report();
+                                        },
+                                    );
                                 }
-                                clear_diagnostics_marker_files();
-                                cx.update_global(
-                                    |diagnostics_state: &mut DiagnosticsState, _cx| {
-                                        diagnostics_state.clear();
-                                    },
-                                );
                             }),
                         ),
                 ),
