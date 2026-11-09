@@ -821,6 +821,7 @@ impl SidecarSurface {
         self.trace.captured = self.trace.captured.saturating_add(1);
         passes.push(RendererExtensionPass {
             target: target.color_view,
+            color_attachments: Arc::from([]),
             // Eligibility is cached with this immutable command revision.
             // Hardware timestamp tagging must never rescan thousands of
             // native DrawIndirect records on each camera-only capture.
