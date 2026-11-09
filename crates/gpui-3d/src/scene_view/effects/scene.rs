@@ -61,11 +61,16 @@ fn stable_shadow_camera(
     ];
     let direction = Vec3::new(quant[0] as f32, quant[1] as f32, quant[2] as f32)
         .normalized().ok_or_else(|| anyhow::anyhow!("invalid shadow light axis"))?;
-    let up = if direction.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
-    let right = up.cross(direction).normalized()
+    // Keep the light-space basis continuous through high noon. Switching
+    // world-Y to world-Z when the sun crosses y=0.99 rotated the entire
+    // shadow map in one frame. Project a fixed world-X anchor instead;
+    // fallback only for the degenerate sun-along-X configuration.
+    let anchor = if direction.x.abs() > 0.99 { Vec3::Z } else { Vec3::X };
+    let right = (anchor - direction * anchor.dot(direction)).normalized()
         .ok_or_else(|| anyhow::anyhow!("invalid shadow right"))?;
     let vertical = direction.cross(right).normalized()
         .ok_or_else(|| anyhow::anyhow!("invalid shadow up"))?;
+    let up = vertical;
     let key = [
         (eye.dot(right) / scroll_world).round() as i32,
         (eye.dot(vertical) / scroll_world).round() as i32,
@@ -588,6 +593,17 @@ mod stable_shadow_tests {
             let displacement = (next.target - camera.target).dot(right) / texel;
             assert!((displacement - displacement.round()).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn near_zenith_sun_motion_does_not_flip_shadow_projection_basis() {
+        let eye = Vec3::new(0.0, 80.0, 0.0);
+        let a = Vec3::new(0.1, 0.986, 0.07).normalized().unwrap();
+        let b = Vec3::new(0.1, 0.996, 0.07).normalized().unwrap();
+        let (_, camera_a) = stable_shadow_camera(eye, a, 0).unwrap();
+        let (_, camera_b) = stable_shadow_camera(eye, b, 0).unwrap();
+        assert!(camera_a.up.dot(camera_b.up) > 0.99,
+            "sun passing near zenith must not rotate the entire shadow grid");
     }
 
     #[test]
