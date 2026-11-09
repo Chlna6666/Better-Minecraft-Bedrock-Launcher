@@ -43,98 +43,151 @@ impl BaseIdentity {
     }
 }
 
+/// One accepted native DrawIndirect read. Every active physical slot is a
+/// potential reader because GPU culling resolves visibility after submission.
+/// An epoch avoids attributing submissions to slots created after that draw.
+#[derive(Clone, Copy)]
+struct NativeDrawUse {
+    submission: gfx_core::SubmissionId,
+    epoch: u64,
+}
+
+/// A retired set of physical rows and ALL native fences that might still read
+/// them. The rows are Arc-backed to keep full scene replans inexpensive.
+#[derive(Clone)]
+struct RetiredSlotCohort {
+    slots: Arc<[usize]>,
+    pending: Vec<gfx_core::SubmissionId>,
+    /// True if at least one native read had no completion handle. Only a
+    /// subsequent, explicitly ordered GPU-owner submission can seal this gap.
+    needs_ordered_fallback: bool,
+}
+
 #[derive(Clone, Default)]
 pub(in crate::scene_view) struct StableDrawSlots {
     occupied: HashMap<SlotIdentity, usize>,
     identities: Vec<Option<SlotIdentity>>,
+    /// First producer epoch that is allowed to reference this allocation.
+    /// Retaining an identity across logical reorders preserves its epoch;
+    /// reassigning a completed physical address begins a new lifetime.
+    slot_first_use_epoch: Vec<u64>,
     free: Vec<usize>,
-    /// Physically removed rows, not yet associated with a native queue fence.
-    /// They MUST NOT be allocated by a later Section edit.
+    /// Rows without an outstanding tracked producer. Even in this case an
+    /// upload/unknown producer may be queued, so require an ordered fence.
     retired_unbound: Vec<usize>,
-    /// The final GUI consumer fence is a conservative upper bound on all
-    /// preceding ordered Graphics/DrawIndirect reads in this GPU owner.
-    // Large Section unloads can quarantine thousands of addresses. Keep
-    // completed-cohort snapshots refcounted so a transactional full re-plan
-    // does not copy every retired slot on each subsequent camera update.
-    retired_by_submission: Vec<(gfx_core::SubmissionId, Arc<[usize]>)>,
-    /// Most recent native DrawIndirect producer known to reference this
-    /// SceneView's physical records. A producer with no SubmissionId clears
-    /// this proof and forces the conservative owner-fence fallback.
-    last_draw_producer: Option<gfx_core::SubmissionId>,
+    retired_by_submission: Vec<RetiredSlotCohort>,
+    in_flight_draws: Vec<NativeDrawUse>,
+    submission_epoch: u64,
+    /// Native work without a reliable SubmissionId cannot be proven finished
+    /// by completing any unrelated tracked producer.
+    untracked_draw_use: bool,
 }
 
 impl StableDrawSlots {
-    /// Record a GPU submission only after the native producer accepted the
-    /// actual DrawIndirect commands. Do not confuse producer acceptance with
-    /// completion. Each new producer supersedes earlier readers on the same
-    /// ordered GPU-owner queue; independently submitted work requires a
-    /// separate dependency proof before using this fast path.
+    /// Called only AFTER the native owner has accepted an actual producer.
+    /// Keep all outstanding readers: neither later acceptance nor a later
+    /// fence completing can prove an independent earlier queue is finished.
     pub(in crate::scene_view) fn draw_producer_submitted(
         &mut self,
         submission: Option<gfx_core::SubmissionId>,
     ) {
-        self.last_draw_producer = submission;
+        self.submission_epoch = self.submission_epoch.saturating_add(1);
+        if let Some(submission) = submission {
+            if !self.in_flight_draws.iter().any(|reader| reader.submission == submission) {
+                self.in_flight_draws.push(NativeDrawUse {
+                    submission,
+                    epoch: self.submission_epoch,
+                });
+            }
+        } else {
+            self.untracked_draw_use = true;
+        }
     }
 
-    /// Retire physical rows against their actual latest known DrawIndirect
-    /// reader, rather than blindly assigning every removal to the GUI fence.
-    /// Without a tracked producer ID, keep the rows in the conservative
-    /// unbound cohort until a valid downstream queue or global GPU proof.
+    /// Snapshot the native GPU readers of each physical allocation, not the
+    /// most recent SceneView producer or a single GUI texture consumer. A
+    /// cohort is shared across rows with the same dependency set; there is no
+    /// per-draw per-frame tracking or additional CPU/GPU synchronization.
     fn quarantine(&mut self, slots: Vec<usize>) {
         if slots.is_empty() {
             return;
         }
-        if let Some(producer) = self.last_draw_producer {
-            self.retired_by_submission.push((producer, Arc::from(slots)));
-        } else {
-            self.retired_unbound.extend(slots);
+        let mut groups = HashMap::<Vec<gfx_core::SubmissionId>, Vec<usize>>::new();
+        for slot in slots {
+            let first_use = self.slot_first_use_epoch.get(slot).copied().unwrap_or(0);
+            let pending = self.in_flight_draws
+                .iter()
+                .filter(|reader| reader.epoch >= first_use)
+                .map(|reader| reader.submission)
+                .collect::<Vec<_>>();
+            if pending.is_empty() {
+                self.retired_unbound.push(slot);
+            } else {
+                groups.entry(pending).or_default().push(slot);
+            }
+        }
+        for (pending, slots) in groups {
+            self.retired_by_submission.push(RetiredSlotCohort {
+                slots: Arc::from(slots),
+                pending,
+                needs_ordered_fallback: self.untracked_draw_use,
+            });
         }
     }
 
-
-    /// Retired physical addresses are still potentially read by the GPU.
     pub(in crate::scene_view) fn has_retired_slots(&self) -> bool {
         !self.retired_unbound.is_empty() || !self.retired_by_submission.is_empty()
     }
 
-    /// Attach only retirements from preceding GPU work to an accepted native
-    /// completion handle. Acceptance is never itself permission to reuse.
+    /// Only the same ordered GPU-owner Graphics queue may supply this
+    /// fallback (the Sidecar uses its primary queue). A separate physical
+    /// queue would instead require an explicit native semaphore dependency
+    /// or GPU-global completion, never a coincidental consumer fence.
     pub(in crate::scene_view) fn submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
         if !self.retired_unbound.is_empty() {
-            self.retired_by_submission.push((
-                submission,
-                Arc::from(std::mem::take(&mut self.retired_unbound)),
-            ));
+            self.retired_by_submission.push(RetiredSlotCohort {
+                slots: Arc::from(std::mem::take(&mut self.retired_unbound)),
+                pending: vec![submission],
+                needs_ordered_fallback: false,
+            });
         }
+        for cohort in &mut self.retired_by_submission {
+            if cohort.needs_ordered_fallback {
+                if !cohort.pending.contains(&submission) {
+                    cohort.pending.push(submission);
+                }
+                cohort.needs_ordered_fallback = false;
+            }
+        }
+        self.untracked_draw_use = false;
     }
 
-    /// A completed consumer fence proves that all preceding ordered producer
-    /// reads have ended. Release *only* the matching cohort, not every retired
-    /// row of this scene or another GPU owner.
+    /// Out-of-order GPU completions are legal; a row cannot be recycled until
+    /// every snapshotted native reader AND any required fallback is finished.
     pub(in crate::scene_view) fn submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.in_flight_draws.retain(|reader| reader.submission != submission);
         let mut index = 0;
         while index < self.retired_by_submission.len() {
-            if self.retired_by_submission[index].0 != submission {
+            let cohort = &mut self.retired_by_submission[index];
+            cohort.pending.retain(|pending| *pending != submission);
+            if cohort.pending.is_empty() && !cohort.needs_ordered_fallback {
+                let completed = self.retired_by_submission.swap_remove(index);
+                self.free.extend(completed.slots.iter().copied());
+            } else {
                 index += 1;
-                continue;
             }
-            let (_, slots) = self.retired_by_submission.swap_remove(index);
-            self.free.extend(slots.iter().copied());
-        }
-        if self.last_draw_producer == Some(submission) {
-            self.last_draw_producer = None;
         }
     }
 
-    /// Safe fallback when the GPU Owner has verified ALL in-flight consumers
-    /// completed. Necessary for backends that cannot return SubmissionId and
-    /// failed/skipped Present paths.
+    /// This callback MUST mean that the owner has verified all GPU work is
+    /// idle, not merely that a frame was accepted or a GUI surface vanished.
     pub(in crate::scene_view) fn gpu_work_completed(&mut self) {
         self.free.append(&mut self.retired_unbound);
-        for (_, slots) in self.retired_by_submission.drain(..) {
-            self.free.extend(slots.iter().copied());
+        for cohort in self.retired_by_submission.drain(..) {
+            self.free.extend(cohort.slots.iter().copied());
         }
-        self.last_draw_producer = None;
+        self.in_flight_draws.clear();
+        self.untracked_draw_use = false;
     }
 }
 
@@ -170,6 +223,7 @@ impl StableDrawSlots {
             .map_or(0, |last| last + 1);
         if next < previous {
             self.identities.truncate(next);
+            self.slot_first_use_epoch.truncate(next);
             self.free.retain(|&slot| slot < next);
         }
         next
@@ -221,10 +275,13 @@ impl StableDrawSlots {
         let mut next = Self {
             occupied: HashMap::with_capacity(wanted.len()),
             identities: self.identities.clone(),
+            slot_first_use_epoch: self.slot_first_use_epoch.clone(),
             free: self.free.clone(),
             retired_unbound: self.retired_unbound.clone(),
             retired_by_submission: self.retired_by_submission.clone(),
-            last_draw_producer: self.last_draw_producer,
+            in_flight_draws: self.in_flight_draws.clone(),
+            submission_epoch: self.submission_epoch,
+            untracked_draw_use: self.untracked_draw_use,
         };
         // Gather genuinely removed physical rows while rebuilding only the
         // compact metadata. Newly added draws may use only already completed
@@ -239,14 +296,19 @@ impl StableDrawSlots {
         next.quarantine(retired);
 
         let mut mapping = Vec::with_capacity(wanted.len());
+        let first_use = next.submission_epoch.saturating_add(1);
         for (id, old_slot) in wanted {
             let slot = old_slot.unwrap_or_else(|| {
                 next.free.pop().unwrap_or_else(|| {
                     let slot = next.identities.len();
                     next.identities.push(None);
+                    next.slot_first_use_epoch.push(first_use);
                     slot
                 })
             });
+            if old_slot.is_none() {
+                next.slot_first_use_epoch[slot] = first_use;
+            }
             next.identities[slot] = Some(id);
             let replaced = next.occupied.insert(id, slot);
             debug_assert!(replaced.is_none(), "draw occurrences must be unique");
@@ -300,13 +362,23 @@ impl StructuralSlotPlan {
         // Keep identities that merely changed logical index in their
         // original physical location; quarantine only genuinely unused rows.
         let retired = self.retired.iter().map(|(_, slot)| *slot).collect::<Vec<_>>();
+        let old_identities = self.retired.iter()
+            .map(|(identity, slot)| (*slot, *identity))
+            .collect::<HashMap<_, _>>();
         for (identity, slot) in self.retired {
             debug_assert_eq!(slots.occupied.remove(&identity), Some(slot));
             slots.identities[slot] = None;
         }
         slots.identities.resize(self.high_water, None);
+        slots.slot_first_use_epoch.resize(
+            self.high_water,
+            slots.submission_epoch.saturating_add(1),
+        );
         for (identity, slot, _) in self.added {
             debug_assert!(slots.identities[slot].is_none());
+            if old_identities.get(&slot) != Some(&identity) {
+                slots.slot_first_use_epoch[slot] = slots.submission_epoch.saturating_add(1);
+            }
             slots.identities[slot] = Some(identity);
             debug_assert!(slots.occupied.insert(identity, slot).is_none());
         }
@@ -630,7 +702,7 @@ mod tests {
         assert_ne!(mapping, remapped);
         assert_eq!(next.high_water(), 2);
         assert!(next.free.is_empty());
-        assert_eq!(next.retired_by_submission[0].0, producer);
+        assert_eq!(next.retired_by_submission[0].pending.as_slice(), &[producer]);
         next.submission_completed(producer);
         assert_eq!(next.free, vec![mapping[0] as usize]);
         assert_eq!(next.occupied.len(), 1);
@@ -646,8 +718,8 @@ mod tests {
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         assert!(slots.retired_unbound.is_empty());
         assert_eq!(slots.retired_by_submission.len(), 1);
-        assert_eq!(slots.retired_by_submission[0].0, producer);
-        assert_eq!(slots.retired_by_submission[0].1.as_ref(), &[mapping[0] as usize]);
+        assert_eq!(slots.retired_by_submission[0].pending.as_slice(), &[producer]);
+        assert_eq!(slots.retired_by_submission[0].slots.as_ref(), &[mapping[0] as usize]);
         // Attaching a later GPUI Consumer does not change the actual
         // native DrawIndirect last-reader fence of this physical address.
         slots.submission_accepted(consumer);
@@ -657,6 +729,60 @@ mod tests {
         slots.submission_completed(producer);
         assert_eq!(slots.free, vec![mapping[0] as usize]);
         assert!(!slots.has_retired_slots());
+    }
+
+    #[test]
+    fn overlapping_native_producer_readers_must_all_complete_before_slot_reuse() {
+        let original = draws(8);
+        let (mut slots, map) = StableDrawSlots::default().plan(&original).unwrap();
+        let first = gfx_core::SubmissionId::from_parts(100, 1);
+        let second = gfx_core::SubmissionId::from_parts(101, 1);
+        slots.draw_producer_submitted(Some(first));
+        slots.draw_producer_submitted(Some(second));
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        assert_eq!(slots.retired_by_submission[0].pending, vec![first, second]);
+        slots.submission_completed(second);
+        assert!(slots.free.is_empty(), "a faster second queue cannot release the first reader");
+        let (_, before) = slots.plan(&original).unwrap();
+        assert_ne!(before[0], map[0]);
+        slots.submission_completed(first);
+        assert_eq!(slots.free, vec![map[0] as usize]);
+        slots.submission_completed(first);
+        assert_eq!(slots.free.len(), 1);
+    }
+
+    #[test]
+    fn allocation_birth_does_not_inherit_older_inflight_native_readers() {
+        let original = draws(2);
+        let (mut slots, _) = StableDrawSlots::default().plan(&original[..1]).unwrap();
+        let older = gfx_core::SubmissionId::from_parts(110, 1);
+        let newer = gfx_core::SubmissionId::from_parts(111, 1);
+        slots.draw_producer_submitted(Some(older));
+        let (mut slots, mapping) = slots.plan(&original).unwrap();
+        slots.draw_producer_submitted(Some(newer));
+        let (mut slots, _) = slots.plan(&original[..1]).unwrap();
+        assert_eq!(slots.retired_by_submission[0].pending, vec![newer]);
+        slots.submission_completed(newer);
+        assert_eq!(slots.free, vec![mapping[1] as usize]);
+        assert_eq!(slots.in_flight_draws.len(), 1);
+        slots.submission_completed(older);
+    }
+
+    #[test]
+    fn unknown_native_work_requires_ordered_owner_fence_as_well_as_known_readers() {
+        let original = draws(4);
+        let (mut slots, _) = StableDrawSlots::default().plan(&original).unwrap();
+        let reader = gfx_core::SubmissionId::from_parts(120, 1);
+        let consumer = gfx_core::SubmissionId::from_parts(121, 1);
+        slots.draw_producer_submitted(Some(reader));
+        slots.draw_producer_submitted(None);
+        let (mut slots, _) = slots.plan(&original[1..]).unwrap();
+        assert!(slots.retired_by_submission[0].needs_ordered_fallback);
+        slots.submission_accepted(consumer);
+        slots.submission_completed(reader);
+        assert!(slots.free.is_empty(), "the unknown native reader is not completed");
+        slots.submission_completed(consumer);
+        assert_eq!(slots.free, vec![0]);
     }
 
     #[test]
