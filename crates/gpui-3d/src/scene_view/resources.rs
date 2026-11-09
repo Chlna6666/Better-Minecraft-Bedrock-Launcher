@@ -320,6 +320,7 @@ pub(super) enum PassKind {
     Hdr,
     Surface,
     Albedo,
+    AttributesMrt,
     Shadow,
 }
 impl PassKind {
@@ -329,11 +330,12 @@ impl PassKind {
             Self::Hdr => ["fs_hdr", "fs_voxel_capture"],
             Self::Surface => ["fs_scene_surface", "fs_voxel_surface"],
             Self::Albedo => ["fs_scene_albedo", "fs_voxel_albedo"],
+            Self::AttributesMrt => ["fs_scene_attributes_mrt", "fs_voxel_attributes_mrt"],
             Self::Shadow => ["fs_scene_shadow", "fs_voxel_shadow"],
         }
     }
     fn is_attribute(self) -> bool {
-        matches!(self, Self::Surface | Self::Albedo | Self::Shadow)
+        matches!(self, Self::Surface | Self::Albedo | Self::AttributesMrt | Self::Shadow)
     }
 }
 
@@ -385,14 +387,21 @@ fn create_pipeline(
             vertex_buffers: Vec::new(),
             render_pass: context.render_pass(),
             pipeline_layout: resources.pipeline_layout,
-            color_targets: vec![gfx_core::ColorTargetState::new(
-                context.color_format(),
-                if blend && !resources.pass.is_attribute() {
-                    BlendMode::PremultipliedAlpha
-                } else {
-                    BlendMode::Replace
-                },
-            )],
+            color_targets: if resources.pass == PassKind::AttributesMrt {
+                vec![
+                    gfx_core::ColorTargetState::new(context.color_format(), BlendMode::Replace),
+                    gfx_core::ColorTargetState::new(context.color_format(), BlendMode::Replace),
+                ]
+            } else {
+                vec![gfx_core::ColorTargetState::new(
+                    context.color_format(),
+                    if blend && !resources.pass.is_attribute() {
+                        BlendMode::PremultipliedAlpha
+                    } else {
+                        BlendMode::Replace
+                    },
+                )]
+            },
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: gfx_core::RasterState {
                 front_face: front_face.unwrap_or_default(),
