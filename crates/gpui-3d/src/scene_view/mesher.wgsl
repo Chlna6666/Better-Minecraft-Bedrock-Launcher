@@ -75,7 +75,7 @@ fn instance_visible(face:Face,job:u32)->bool {
     return (kind&cells[job+7u])==0u;
 }
 // The high cell bit identifies a merged, canonical cube rectangle. The third
-// descriptor word stores two u8 spans as raw f32 bits in that case; ordinary
+// descriptor word stores two u8 spans as an exactly represented integer f32; ordinary
 // quads and arbitrary-model instance heights retain their original layout.
 // Halo cells, static-face sentinel and instance descriptors are never tagged.
 fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u32>){
@@ -86,7 +86,9 @@ fn emit_face(face:Face,model_face:u32,position:vec3<f32>,cell:u32,extent:vec2<u3
     let merged=extent.x>1u || extent.y>1u;
     let tagged=select(cell,cell|0x80000000u,merged);
     let packed=extent.x | (extent.y<<8u);
-    let scale=select(1.0,bitcast<f32>(packed),merged);
+    // Values never exceed 0x1010, so f32 integer representation is exact
+    // and cannot be flushed to zero as a subnormal on native backends.
+    let scale=select(1.0,f32(packed),merged);
     output[slot]=GeneratedFace(tagged,model_face,scale,face_ao(face,cell,false));
 }
 // Only axis-aligned full-tile cubes with one uniform base vertex color can
