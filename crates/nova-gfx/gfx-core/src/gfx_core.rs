@@ -82,6 +82,7 @@ pub use backend::{
     Backend, CommandDevice, Device, DiagnosticsDevice, FrameGpuTimestamps, PipelineDevice,
     OffscreenQueuePreference, OffscreenSubmissionDevice,
     PresentTimings, PresentationDevice, PresentedFrame, ResourceDevice, SubmissionDevice,
+    TrackedGpuWorkDevice,
     SurfaceDevice, TextureTransferDevice,
 };
 
