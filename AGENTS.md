@@ -38,6 +38,13 @@ BMCBL 是用 Rust + GPUI 编写的 Minecraft Bedrock 原生桌面启动器。主
   `scene_view` 等 sidecar/adapter 模块，并由默认启用的 `gpui-sidecar` Cargo feature
   控制；`cargo check -p gpui-3d --no-default-features --lib` 应不再引入 `gpui`。
   不能以已有历史依赖为由继续增加核心耦合。
+- BMCBL 使用 `gpui_3d::scene_view` 的地图编辑器、地图预览和皮肤预览必须
+  **显式开启 `gpui-3d/gpui-sidecar`**，不可仅依赖可复用库默认 feature。
+  只允许独立 3D 应用使用 `--no-default-features` 去除 GPUI 依赖。
+- 普通 GPUI Sidecar 的 3D 离屏生产者与 UI Consumer 默认使用**同一条有序
+  GPU 图形队列上的独立原生命令提交**，避免默认创建 Vulkan/DX12 第二队列
+  的 Semaphore/Fence 握手。只有基于 GPU 时间戳证明有收益时才允许改为独立
+  物理队列；`nova-gfx` 的通用 `IndependentGraphicsIfAvailable` 仍应保留。
 - `gpui` 负责窗口/swapchain、输入/布局、GPU Owner 设备访问协调、纹理 Sidecar 消费、
   Present 与 Fence 生命周期跟踪。不得接收后重新编码、排序或合并 3D 的 DrawIndirect；
   只允许在设备所有者线程调用通用 `nova-gfx` 原生提交入口，并跟踪 `SubmissionId`。
@@ -102,6 +109,7 @@ $env:RUST_MIN_STACK = '67108864'
 cargo test -p gpui --no-default-features --features nova-gfx-dx12 --lib platform::nova::
 pwsh -File scripts/check-nova-gfx-boundary.ps1
 pwsh -File scripts/check-gpui-3d-boundary.ps1
+pwsh -File scripts/check-bmcbl-gpui3d-integration.ps1
 pwsh -File scripts/check-naming.ps1
 ```
 
