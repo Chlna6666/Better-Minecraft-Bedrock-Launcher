@@ -571,11 +571,40 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             ],
         )
         .unwrap();
+    let dense = {
+        let size = [6, 6, 6];
+        let mut cells = vec![0u32; 6 * 6 * 6];
+        for z in 1..5 {
+            for y in 1..5 {
+                for x in 1..5 {
+                    cells[(z * 6 + y) * 6 + x] = 1;
+                }
+            }
+        }
+        crate::VoxelMeshSource::new(
+            size, Vec3::new(-2.0, -2.0, -2.0), cells,
+            crate::voxel_mesh::tests::source().templates.to_vec(),
+        ).unwrap().with_greedy_visible_faces(true)
+    };
+    assert_eq!(dense.capacity(), 96);
+    let uniform_light = crate::voxel_mesh::tests::source()
+        .with_lighting(vec![0x77; 36], 0.2).unwrap()
+        .with_greedy_visible_faces(true);
+    let mut gradient = vec![0x77; 36];
+    gradient[17] = 0x87;
+    let gradient_light = crate::voxel_mesh::tests::source()
+        .with_lighting(gradient, 0.2).unwrap()
+        .with_greedy_visible_faces(true);
     for (source, expected, static_count) in [
-        // Two touching canonical cubes have 10 exposed faces. The opt-in
-        // horizontal GPU run fuses their shared top, bottom, front and back
-        // plane pairs into six quads while CPU fallback remains unchanged.
-        (crate::voxel_mesh::tests::source().with_greedy_visible_faces(true), 36u16, 0),
+        // The 4x4x4 solid contains 96 exposed unit faces but only six
+        // surviving 2D rectangles. The CPU fallback still keeps all faces.
+        (dense, 36u16, 0),
+        // Lit merge is safe only when all light samples are equivalent;
+        // a single differing sample preserves the exact original ten quads.
+        (uniform_light, 36, 0),
+        (gradient_light, 60, 0),
+        // Two touching cubes have ten visible faces and merge to six.
+        (crate::voxel_mesh::tests::source().with_greedy_visible_faces(true), 36, 0),
         (crate::voxel_mesh::tests::source(), 60u16, 0),
         (
             crate::voxel_mesh::tests::source()
@@ -654,7 +683,11 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             counts(&mut device, output, 48),
             [expected as u8, (expected >> 8) as u8, 1, 11]
         );
-        if expected == 36 || expected == 60 || expected == 834 {
+        if (expected == 36 && mesh.gpu_voxels().is_some_and(|source| {
+            source.size == [4, 3, 3] && source.lighting.is_none()
+        })) || (expected == 60 && mesh.gpu_voxels().is_some_and(|source| {
+            source.lighting.is_none()
+        })) || expected == 834 {
             let before = mesh.geometry_storage_bytes();
             ResourceDevice::write_buffer(&mut device, mapping, 8, &0u32.to_le_bytes()).unwrap();
             ResourceDevice::dispatch_compute(
