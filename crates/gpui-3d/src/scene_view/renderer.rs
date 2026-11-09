@@ -1175,10 +1175,6 @@ impl Renderer {
 /// The shared native device owner still serializes backend access; arbitrary
 /// cross-thread native contexts are intentionally not exposed here.
 impl RendererExtensionRenderer for Renderer {
-    fn prefers_independent_graphics_queue(&self) -> bool {
-        self.backend.prefers_independent_graphics_queue()
-    }
-
     fn render_passes_submitted(&mut self) {
         self.backend.render_passes_submitted();
     }
@@ -1226,10 +1222,6 @@ impl RendererExtensionRenderer for Renderer {
 }
 
 impl RendererExtensionRenderer for SidecarGpuBackend {
-    fn prefers_independent_graphics_queue(&self) -> bool {
-        self.offscreen.is_some()
-    }
-
     fn has_native_offscreen_work(&self) -> bool {
         !self.pending_passes.is_empty()
     }
