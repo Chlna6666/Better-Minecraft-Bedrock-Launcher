@@ -978,6 +978,25 @@ fn create_many_impl(
         })
         .collect::<Vec<_>>();
     if !staging_writes.is_empty() {
+        // The native upload may still be using the shared resident template
+        // and argument pages after the host buffer-write API returns.
+        // Track the actual suballocation before dispatch, including a
+        // partial-error path. The later primary-queue fence seals these Copy
+        // writes; it does not imply GPU completion on return.
+        if let Some((_, templates, arguments, _)) = arena.as_mut() {
+            for mesh in &pending {
+                if let Some(allocation) = mesh.template_allocation {
+                    templates.mark_untracked_access(
+                        allocation, gfx_core::GpuAccess::CopyWrite,
+                    )?;
+                }
+                if let Some(allocation) = mesh.argument_allocation {
+                    arguments.mark_untracked_access(
+                        allocation, gfx_core::GpuAccess::CopyWrite,
+                    )?;
+                }
+            }
+        }
         let bytes = staging_writes.iter().map(|write| write.data.len()).sum::<usize>();
         let started = crate::gpu_submission_trace::enabled().then(Instant::now);
         let upload_result = if let Some(batch_id) = batch_id {
@@ -1039,6 +1058,30 @@ fn create_many_impl(
         }
     }
     let dispatch_count = dispatches.len();
+    if dispatch_count != 0 {
+        if let Some((faces, templates, arguments, _)) = arena.as_mut() {
+            // Compute reads templates and writes generated face/indirect
+            // argument slices. This records the *actual* changed Sections,
+            // not the whole shared arena on every frame.
+            for mesh in &pending {
+                if let Some(allocation) = mesh.allocation {
+                    faces.mark_untracked_access(
+                        allocation, gfx_core::GpuAccess::StorageWrite,
+                    )?;
+                }
+                if let Some(allocation) = mesh.template_allocation {
+                    templates.mark_untracked_access(
+                        allocation, gfx_core::GpuAccess::ReadBuffer,
+                    )?;
+                }
+                if let Some(allocation) = mesh.argument_allocation {
+                    arguments.mark_untracked_access(
+                        allocation, gfx_core::GpuAccess::StorageReadWrite,
+                    )?;
+                }
+            }
+        }
+    }
     let dispatch_started = (trace_started.is_some() || crate::gpu_submission_trace::enabled())
         .then(Instant::now);
     let submitted = if dispatches.is_empty() {
