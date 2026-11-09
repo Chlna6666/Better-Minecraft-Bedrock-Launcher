@@ -290,10 +290,18 @@ impl GameSessionReport {
                 self.exit_code = Some(code);
                 self.kind = classify_exit(self.platform.as_str(), code);
                 self.summary = exit_description(self.kind, code);
+                // The native Wine/Proton/UMU command can exit zero without
+                // proving that the Windows Minecraft guest exited cleanly.
+                if self.compatibility_prefix.is_some() && code == 0 {
+                    self.summary =
+                        "Linux 兼容运行器已结束（状态码 0）；未独立确认 Minecraft 客户端的退出状态"
+                            .to_string();
+                }
             }
             Err(error) => {
                 self.kind = ExitKind::Unknown;
-                self.summary = format!("无法读取游戏进程的退出状态：{error}");
+                let role = if self.compatibility_prefix.is_some() { "兼容运行器" } else { "游戏进程" };
+                self.summary = format!("无法读取{role}的退出状态：{error}");
             }
         }
         if let Some(signal) = self.exit_signal {
