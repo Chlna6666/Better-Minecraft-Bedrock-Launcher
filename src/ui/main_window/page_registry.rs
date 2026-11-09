@@ -792,6 +792,7 @@ impl MainWindowView {
             agreement_render_state,
             last_auth_blocked: None,
             last_handled_game_launch: None,
+            game_diagnostics_listener_installed: false,
             last_minecraft_termination_dialog: cx
                 .global::<crate::ui::views::tools::state::ToolsPageState>()
                 .minecraft_termination_dialog
