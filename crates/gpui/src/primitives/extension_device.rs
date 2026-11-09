@@ -71,6 +71,18 @@ pub trait ExtensionDevice {
         Ok(())
     }
 
+    /// Dispatches a compute shader with a native resource set on the GPU owner.
+    /// Unsupported texture/sampler bindings return Unavailable rather than
+    /// executing a buffer-only shader with incomplete bindings.
+    fn dispatch_compute_bind_group(
+        &mut self,
+        _dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        Err(gfx_core::Error::Unavailable(
+            "compute resource-set dispatch is unsupported".into(),
+        ))
+    }
+
     /// Whether the native backend can capture GPU work timestamps without
     /// inserting an additional queue submission or a CPU wait.
     fn gpu_work_timestamps_supported(&self) -> bool {
@@ -328,6 +340,12 @@ where
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<()> {
         ResourceDevice::dispatch_compute_batch(self, dispatches)
+    }
+    fn dispatch_compute_bind_group(
+        &mut self,
+        dispatch: &gfx_core::ComputeBindGroupDispatch,
+    ) -> Result<()> {
+        ResourceDevice::dispatch_compute_bind_group(self, dispatch)
     }
     fn gpu_work_timestamps_supported(&self) -> bool {
         ResourceDevice::gpu_work_timestamps_supported(self)
