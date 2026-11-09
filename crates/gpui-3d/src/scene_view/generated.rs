@@ -30,7 +30,7 @@ pub(super) struct GeneratedMesh {
     pub argument_offset: u64,
     pub argument_page_bytes: u64,
 }
-pub(super) struct Shaders(pub [ShaderModuleId; 7]);
+pub(super) struct Shaders(pub [ShaderModuleId; 8]);
 pub(super) fn create_shaders(
     device: &mut dyn ExtensionDevice,
     backend: BackendKind,
@@ -44,6 +44,7 @@ pub(super) fn create_shaders(
         "cs_mesh_instance_scan",
         "cs_mesh_instance_emit",
         "cs_mesh_greedy_mask",
+        "cs_mesh_rows",
     ] {
         match create_shader(device, backend, entry) {
             Ok(shader) => shaders.push(shader),
@@ -146,7 +147,58 @@ fn canonical_greedy_face(face: &VoxelFaceTemplate) -> bool {
         (uv_high[i] == 0.0 || (uv_high[i] - 1.0).abs() <= 0.00001))
 }
 
-fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool) {
+/// A dense canonical cube grid may be processed one 16-cell face row at a
+/// time. The row shader expects the six faces of each model in XYZ +/- order.
+/// Reorder the *GPU encoded templates only*: CPU fallback and instance template
+/// indices stay unchanged. Any duplicate/missing direction disables this path.
+fn row_template_order(source: &VoxelMeshSource) -> Option<Vec<usize>> {
+    if source.model_faces == 0 || source.model_faces % 6 != 0 {
+        return None;
+    }
+    let mut order = Vec::with_capacity(source.templates.len());
+    for group in source.templates[..source.model_faces].chunks_exact(6) {
+        let mut slots = [None; 6];
+        for (index, face) in group.iter().enumerate() {
+            if !canonical_greedy_face(face) {
+                return None;
+            }
+            let direction = match face.neighbour {
+                [1, 0, 0] => 0,
+                [-1, 0, 0] => 1,
+                [0, 1, 0] => 2,
+                [0, -1, 0] => 3,
+                [0, 0, 1] => 4,
+                [0, 0, -1] => 5,
+                _ => return None,
+            };
+            if slots[direction].replace(order.len() + index).is_some() {
+                return None;
+            }
+        }
+        order.extend(slots.into_iter().collect::<Option<Vec<_>>>()?);
+    }
+    order.extend(source.model_faces..source.templates.len());
+    Some(order)
+}
+
+/// Every work item owns one 16-cell row on one plane and one face direction;
+/// the six directions share one Compute dispatch. u64 intermediates prevent
+/// overflow for fused world3d sections; the caller falls back on large grids.
+fn gpu_row_workgroups(size: [u32; 3]) -> Option<usize> {
+    let sx = u64::from(size[0].checked_sub(2)?);
+    let sy = u64::from(size[1].checked_sub(2)?);
+    let sz = u64::from(size[2].checked_sub(2)?);
+    let x_tiles = sx.div_ceil(16);
+    let z_tiles = sz.div_ceil(16);
+    let nx = sx.checked_mul(sy)?.checked_mul(z_tiles)?;
+    let ny = sy.checked_mul(sz)?.checked_mul(x_tiles)?;
+    let nz = sz.checked_mul(sy)?.checked_mul(x_tiles)?;
+    let rows = nx.checked_add(ny)?.checked_add(nz)?.checked_mul(2)?;
+    let rows = u32::try_from(rows).ok()?;
+    Some(usize::try_from(rows.div_ceil(64)).ok()?)
+}
+
+fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool, bool) {
     // Two 112-byte header records allow every generated Section to be
     // addressed by one GPU template-record index, without per-Mesh BindGroups.
     // Header 0 stores the original float origin as raw u32 words; header 1
@@ -170,7 +222,13 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool) {
     // every face. Resolve each material slot once, independent of face count.
     let material_parts = material_part_lookup(source);
     let mut has_greedy_faces = false;
-    for (index, face) in source.templates.iter().enumerate() {
+    let row_order = row_template_order(source);
+    // No normalization for sources with repeated, missing or noncanonical
+    // directions: they continue to use the existing per-voxel kernel.
+    let encoded_indices = row_order.clone()
+        .unwrap_or_else(|| (0..source.templates.len()).collect());
+    for (index, source_index) in encoded_indices.into_iter().enumerate() {
+        let face = &source.templates[source_index];
         let part = material_parts.get(&face.material_slot).copied().unwrap_or(0);
         let center = face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
         let address = if index < source.static_start {
@@ -212,7 +270,39 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool) {
         bytes.extend_from_slice(&light.levels);
         bytes.resize(bytes.len().div_ceil(4) * 4, 0);
     }
-    (bytes, static_counts, has_greedy_faces)
+    (bytes, static_counts, has_greedy_faces, row_order.is_some())
+}
+
+
+#[cfg(test)]
+mod row_meshing_algorithm_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_face_order_is_an_immutable_gpu_copy() {
+        let source = crate::voxel_mesh::tests::source();
+        let order = row_template_order(&source).expect("unit cube must be row-compatible");
+        assert_eq!(order.len(), source.templates.len());
+        for (encoded_index, source_index) in order[..6].iter().copied().enumerate() {
+            let axis = match encoded_index / 2 {
+                0 => [1, 0, 0],
+                1 => [0, 1, 0],
+                _ => [0, 0, 1],
+            };
+            let sign = if encoded_index % 2 == 0 { 1 } else { -1 };
+            assert_eq!(source.templates[source_index].neighbour, axis.map(|v| v * sign));
+        }
+        let (encoded, _, has_greedy, row_safe) = encode(&source);
+        assert!(has_greedy && row_safe);
+        assert!(encoded.len() >= 224 + 6 * 112);
+    }
+
+    #[test]
+    fn row_dispatch_respects_3d_section_and_fusion_bounds() {
+        assert_eq!(gpu_row_workgroups([18, 18, 18]), Some(24));
+        assert_eq!(gpu_row_workgroups([18, 66, 18]), Some(96));
+        assert_eq!(gpu_row_workgroups([34, 66, 34]), Some(384));
+    }
 }
 
 /// Section-scoped GPU resources prepared for one shared native compute batch.
@@ -329,7 +419,7 @@ fn prepare_generated(
     let source = mesh
         .gpu_voxels()
         .ok_or_else(|| anyhow!("missing voxel source"))?;
-    let (mut templates, static_counts, has_greedy_faces) = encode(source);
+    let (mut templates, static_counts, has_greedy_faces, row_safe) = encode(source);
     let mut words = if source.model_faces == 0 {
         Vec::new()
     } else {
@@ -381,17 +471,44 @@ fn prepare_generated(
     let greedy = source.greedy_visible_faces
         && source.lighting.as_ref().is_none_or(|light| light.uniform)
         && has_greedy_faces;
-    // The masked algorithm pays an extra full-grid dispatch and scratch writes.
-    // Only enable it for sufficiently large work with repeated AO queries or
-    // sufficiently exposed/detailed input. Fully occluded dense grids should
-    // use direct neighbor checks when AO is disabled. Inputs already have these
-    // counters from their one-time conservative capacity validation.
+    // A 16-cell row owner replaces per-cell overlapping rectangle searches.
+    // Only exact canonical six-face models are normalized into the row ABI.
+    // Small or irregular sources continue using the proven original path.
+    let interior_cells = source.size.iter().fold(1usize, |product, &extent| {
+        product.saturating_mul((extent - 2) as usize)
+    });
+    // A row owner visits every interior position (including air) along its
+    // direction. Sparse grids and surfaces with nearly all faces isolated
+    // should keep the per-occupied-cell kernel; the 2D/3D benchmark confirms
+    // that pre-scanning short, fragmented runs cannot amortize its cost.
+    let row_groups = if greedy && row_safe
+        && source.exposed_cube_faces >= 128
+        && source.occupied_cube_cells.saturating_mul(4) >= interior_cells
+        && source.exposed_cube_faces
+            <= source.occupied_cube_cells.saturating_mul(3)
+    {
+        gpu_row_workgroups(source.size)
+    } else {
+        None
+    };
     let cached_greedy = greedy && source.exposed_cube_faces >= 128
         && (source.ambient_occlusion != 0
             || source.exposed_cube_faces.saturating_mul(4)
                 >= source.occupied_cube_cells.saturating_mul(7));
-    // 0: no greedy, 1: direct neighbor/AO, 2: precomputed GPU face mask.
-    let greedy_mode = if !greedy { 0.0 } else if cached_greedy { 2.0 } else { 1.0 };
+    let row_mask = row_groups.is_some() && source.ambient_occlusion != 0
+        && source.exposed_cube_faces >= 128;
+    // 0 = no merge; 1 = direct per-cell; 2 = cached per-cell;
+    // 3 = direct row-run; 4 = cached row-run.
+    let greedy_mode = if row_groups.is_some() {
+        if row_mask { 4.0 } else { 3.0 }
+    } else if !greedy {
+        0.0
+    } else if cached_greedy {
+        2.0
+    } else {
+        1.0
+    };
+    let needs_mask = if row_groups.is_some() { row_mask } else { cached_greedy };
     let params = source
         .size
         .into_iter()
@@ -447,7 +564,7 @@ fn prepare_generated(
     // Keep instance prefix sums and per-cell greedy masks in disjoint ranges
     // of the same batch-scoped scratch buffer. Do not add a new bind group.
     let scratch_bytes = jobs.len().max(1)
-        .checked_add(if cached_greedy { source.cells.len() } else { 0 })
+        .checked_add(if needs_mask { source.cells.len() } else { 0 })
         .and_then(|words| words.checked_mul(4))
         .ok_or_else(|| anyhow!("GPU greedy mask scratch capacity overflow"))?;
     let specs = [
@@ -621,12 +738,16 @@ fn prepare_generated(
             .collect::<Vec<_>>();
         let mut stages = Vec::new();
         if source.model_faces > 0 {
-            // Ordered Compute dispatches publish the transient face masks
-            // before the main mesh pass, without CPU readback or sync.
-            if cached_greedy {
+            // Per-cell and row-run paths are mutually exclusive for cube
+            // faces. Static and instance emission keep their original stages.
+            if needs_mask {
                 stages.push((6, source.cells.len().div_ceil(64)));
             }
-            stages.push((0, source.cells.len().div_ceil(64)));
+            if let Some(groups) = row_groups {
+                stages.push((7, groups));
+            } else {
+                stages.push((0, source.cells.len().div_ceil(64)));
+            }
         }
         if source.templates.len() > source.static_start {
             stages.extend([

@@ -125,7 +125,7 @@ fn build_greedy_mask(index:u32){
 }
 fn exposed_cube(cell:u32,kind:u32,direction:u32)->bool {
     if(cells[cell]!=kind){return false;}
-    if(params.origin.w>=1.5){
+    if(params.origin.w==2.0 || params.origin.w==4.0){
         return (scratch[max(params.extra.x,1u)+cell]&(1u<<(direction+6u)))!=0u;
     }
     // Direct mode avoids a full-grid mask pass on cheap/dense sections. AO
@@ -192,6 +192,126 @@ fn visible_rectangle(cell:u32,kind:u32,face:Face,direction:u32)->vec2<u32> {
     }
     return vec2<u32>(width,height);
 }
+// One invocation owns one 16-cell row for one of the six face directions.
+// Only called for models whose GPU template records have been normalized to
+// +/-X, +/-Y, +/-Z and whose six faces all permit canonical UV repetition.
+// Unlike the per-cell path, the owner advances by a complete horizontal run,
+// so an interior cell never launches another identical rectangle search.
+fn mesh_row(row_index:u32){
+    let sx=params.size.x;
+    let sy=params.size.y;
+    let sz=params.size.z;
+    let core_x=sx-2u;
+    let core_y=sy-2u;
+    let core_z=sz-2u;
+    let tiles_x=(core_x+15u)/16u;
+    let tiles_z=(core_z+15u)/16u;
+    let x_rows=core_x*core_y*tiles_z;
+    let y_rows=core_y*core_z*tiles_x;
+    let z_rows=core_z*core_y*tiles_x;
+    let total=2u*(x_rows+y_rows+z_rows);
+    if(row_index>=total){return;}
+
+    var local=row_index;
+    var direction=0u;
+    var v_count=core_y;
+    var tile_count=tiles_z;
+    var u_size=sz;
+    if(local<2u*x_rows){
+        direction=local/x_rows;
+        local=local%x_rows;
+    }else{
+        local-=2u*x_rows;
+        if(local<2u*y_rows){
+            direction=2u+local/y_rows;
+            local=local%y_rows;
+            v_count=core_z;
+            tile_count=tiles_x;
+            u_size=sx;
+        }else{
+            local-=2u*y_rows;
+            direction=4u+local/z_rows;
+            local=local%z_rows;
+            tile_count=tiles_x;
+            u_size=sx;
+        }
+    }
+    let plane=local/(v_count*tile_count)+1u;
+    let v=local/tile_count%v_count+1u;
+    let tile=local%tile_count;
+    let u_first=tile*16u+1u;
+    let u_limit=min(u_first+16u,u_size-1u);
+    let u_stride=select(1u,sx*sy,direction<2u);
+    let v_stride=select(sx,sx*sy,direction>=2u && direction<4u);
+    let local_v=(v-1u)%16u;
+    var u=u_first;
+    loop {
+        if(u>=u_limit){break;}
+        var cell=0u;
+        if(direction<2u){
+            // Normal X: plane=X, row=Y, scan=Z
+            cell=(u*sy+v)*sx+plane;
+        }else if(direction<4u){
+            // Normal Y: plane=Y, row=Z, scan=X
+            cell=(v*sy+plane)*sx+u;
+        }else{
+            // Normal Z: plane=Z, row=Y, scan=X
+            cell=(plane*sy+v)*sx+u;
+        }
+        let kind=cells[cell];
+        if(kind==0u || kind==0xffffffffu){u++;continue;}
+        let model_face=(kind-1u)*6u+direction;
+        let face=templates.faces[model_face];
+        let neighbour=u32(i32(cell)+bitcast<i32>(face.info.y));
+        if(cells[neighbour]!=0u){u++;continue;}
+        let y=params.origin.y+f32(cell/sx%sy)+bitcast<f32>(face.info.w);
+        if(y<params.clip.x || y>=params.clip.y){u++;continue;}
+        let position=params.origin.xyz+vec3<f32>(
+            f32(cell%sx),f32(cell/sx%sy),f32(cell/(sx*sy)));
+        // A nonuniform AO edge must retain its exact unit quad and four-corner
+        // AO. The row owner still processes it, but does not merge it.
+        if(!exposed_cube(cell,kind,direction)){
+            emit_face(face,model_face,position,cell,vec2<u32>(1u));
+            u++;
+            continue;
+        }
+        let width=face_row_width(cell,kind,direction,u_stride,u,u_size);
+        if(width==0u){
+            emit_face(face,model_face,position,cell,vec2<u32>(1u));
+            u++;
+            continue;
+        }
+        let local_u=(u-1u)%16u;
+        if(local_v>0u){
+            let previous=cell-v_stride;
+            let previous_starts=local_u==0u ||
+                !exposed_cube(previous-u_stride,kind,direction);
+            if(previous_starts &&
+                row_has_exact_width(previous,kind,direction,u_stride,u,u_size,width)){
+                u+=width;
+                continue;
+            }
+        }
+        var height=1u;
+        for(var row=1u;row<16u;row++){
+            if(local_v+row>=16u || v+row+1u>=v_count+2u){break;}
+            let next=cell+row*v_stride;
+            if(local_u>0u && exposed_cube(next-u_stride,kind,direction)){break;}
+            if(!row_has_exact_width(next,kind,direction,u_stride,u,u_size,width)){break;}
+            height++;
+        }
+        emit_face(face,model_face,position,cell,vec2<u32>(width,height));
+        u+=width;
+    }
+}
+
+@compute @workgroup_size(64)
+fn cs_mesh_rows(@builtin(workgroup_id) group:vec3<u32>,
+                @builtin(num_workgroups) groups:vec3<u32>,
+                @builtin(local_invocation_index) lane:u32){
+    mesh_stage(7u,group,groups,lane);
+}
+
 @compute @workgroup_size(64)
 fn cs_mesh(@builtin(workgroup_id) group:vec3<u32>, @builtin(num_workgroups) groups:vec3<u32>, @builtin(local_invocation_index) lane:u32) {
     mesh_stage(0u,group,groups,lane);
@@ -212,6 +332,7 @@ fn cs_mesh_instance_scan(@builtin(workgroup_id) group:vec3<u32>,@builtin(num_wor
 fn cs_mesh_instance_emit(@builtin(workgroup_id) group:vec3<u32>,@builtin(num_workgroups) groups:vec3<u32>,@builtin(local_invocation_index) lane:u32){mesh_stage(5u,group,groups,lane);}
 fn mesh_stage(mode:u32,group:vec3<u32>,groups:vec3<u32>,lane:u32){
     let index=(group.y*groups.x+group.x)*64u+lane;
+    if(mode==7u){mesh_row(index);return;}
     if(mode==4u){
         let part=group.y*groups.x+group.x;
         if(part>=arrayLength(&args)/4u){return;}
