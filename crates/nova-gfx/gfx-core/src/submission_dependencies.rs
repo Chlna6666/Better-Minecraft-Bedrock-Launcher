@@ -146,7 +146,7 @@ impl GpuSubmissionCompletion {
 
 /// GPU-owner-local record of accepted work. It does not create fake fences,
 /// schedule shader passes, or perform device operations.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct GpuSubmissionDependencyGraph {
     live: HashMap<SubmissionId, GpuSubmissionRecord>,
     /// GPU completion of the key proves the transitive ancestors finished.
@@ -156,6 +156,20 @@ pub struct GpuSubmissionDependencyGraph {
 }
 
 impl GpuSubmissionDependencyGraph {
+    /// Whether this owner already registered the exact native submission.
+    #[must_use]
+    pub fn contains_submission(&self, submission: SubmissionId) -> bool {
+        self.live.contains_key(&submission)
+    }
+
+    /// Forget all in-flight work ONLY after the native owner has proved the
+    /// entire device is idle. This is never used as a normal frame boundary.
+    pub fn reset_after_gpu_idle(&mut self) {
+        self.live.clear();
+        self.ancestors.clear();
+        self.unknown.clear();
+    }
+
     /// Register a successfully accepted native submission. A backend must
     /// declare gpu_waits only after it has encoded the native GPU-side wait.
     /// Preceding submissions on the same physical queue are inherently FIFO.
