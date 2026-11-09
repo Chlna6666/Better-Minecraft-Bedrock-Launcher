@@ -318,7 +318,11 @@ impl EffectsRenderer {
         // preparation phase (CSM textures are still unrendered there).
         let multisampled = self.msaa_sample_count > 1 && state.targets.msaa.is_some();
         let mut froxel_view = None;
+        // Until cloud-material shadow injection uses the same cloud-volume
+        // model as screen.wgsl, preserve the original cloud-occluded fog
+        // shader whenever a cloud material is active.
         if settings.volumetric_fog && settings.fog_density > 0.0
+            && !(settings.clouds && settings.cloud_texture.is_some())
             && !state.froxel_unavailable
             && self.compositor.supports_froxel(multisampled)
         {
