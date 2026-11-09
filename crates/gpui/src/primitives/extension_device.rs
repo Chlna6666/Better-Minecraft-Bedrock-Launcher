@@ -28,6 +28,10 @@ pub trait ExtensionDevice {
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
         gfx_core::TextureArrayCapabilities::default()
     }
+    /// True 3D texture limits for sampled and writable Froxel volumes.
+    fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+        gfx_core::TextureVolumeCapabilities::default()
+    }
 
     /// Device-specific uniform/storage buffer offsets and per-binding ranges.
     /// The host forwards the active native device's limits; renderer
@@ -323,6 +327,9 @@ where
 {
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
         ResourceDevice::texture_array_capabilities(self)
+    }
+    fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+        ResourceDevice::texture_volume_capabilities(self)
     }
 
     fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
