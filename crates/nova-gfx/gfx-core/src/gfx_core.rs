@@ -1352,6 +1352,11 @@ impl TextureDescriptor {
                     "3D textures require a nonzero depth".into(),
                 ));
             }
+            if self.memory_location != MemoryLocation::GpuOnly {
+                return Err(Error::Unavailable(
+                    "3D textures require native GPU-only allocation until a volume transfer ABI exists".into(),
+                ));
+            }
             // Attachment rendering, host readback and texture uploads need
             // separate 3D subresource/region contracts. Keep them fail-closed
             // rather than interpreting a 3D image as a 2D array.
