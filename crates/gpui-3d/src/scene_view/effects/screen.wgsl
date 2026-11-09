@@ -5,6 +5,11 @@ const PI:f32=3.14159265359;
 @group(0) @binding(5) var linear_sampler:sampler;
 @group(0) @binding(6) var<uniform> frame:EffectFrame;
 @group(0) @binding(7) var shadow_depth:texture_2d<f32>;
+// Every CSM map has a distinct resident depth attachment, and each keeps its
+// own GPU culling/indirect arguments. The screen pass samples only the relevant
+// cascade (or two in a narrow cross-fade band).
+@group(0) @binding(14) var shadow_depth_middle:texture_2d<f32>;
+@group(0) @binding(15) var shadow_depth_far:texture_2d<f32>;
 @group(0) @binding(8) var cloud_texture:texture_2d<f32>;
 @group(0) @binding(9) var<storage,read> lights:array<EffectLight>;
 @group(0) @binding(10) var<storage,read> tiles:array<u32>;
@@ -98,22 +103,82 @@ fn cloud_visibility(p:vec3<f32>)->f32{
     for(var i=0u;i<6u;i++){optical+=cloud_density(p+frame.sun.xyz*(start+(f32(i)+0.5)*step))*step;}
     return exp(-optical*0.09);
 }
-fn shadow_visibility(p:vec3<f32>,n:vec3<f32>)->f32{
-    if(frame.display_target.z<=0.0){return 1.0;}let c=frame.light_matrix*vec4<f32>(p,1.0);let q=c.xyz/c.w;
-    let uv=q.xy*vec2<f32>(0.5,-0.5)+0.5;if(any(uv<=vec2<f32>(0.0)) || any(uv>=vec2<f32>(1.0)) || q.z<=0.0 || q.z>=1.0){return 1.0;}
-    let size=vec2<i32>(textureDimensions(shadow_depth));let at=vec2<i32>(uv*vec2<f32>(size));var lit=0.0;
+fn shadow_sample_depth(cascade:u32,at:vec2<i32>)->f32 {
+    if(cascade==0u){return textureLoad(shadow_depth,at,0).r;}
+    if(cascade==1u){return textureLoad(shadow_depth_middle,at,0).r;}
+    return textureLoad(shadow_depth_far,at,0).r;
+}
+fn shadow_projection_matrix(cascade:u32)->mat4x4<f32> {
+    if(cascade==0u){return frame.light_matrix;}
+    if(cascade==1u){return frame.light_matrix_middle;}
+    return frame.light_matrix_far;
+}
+// Each cascade uses an independent, texel-snapped light projection. Receiver-
+// plane bias is computed in that cascade's depth space; applying a near-map
+// bias to the far map caused pronounced acne / detached contact shadows.
+fn shadow_cascade_visibility(p:vec3<f32>,n:vec3<f32>,cascade:u32)->f32{
+    let light=shadow_projection_matrix(cascade);
+    let c=light*vec4<f32>(p,1.0);
+    if(c.w<=0.0){return 1.0;}
+    let q=c.xyz/c.w;
+    let uv=q.xy*vec2<f32>(0.5,-0.5)+0.5;
+    if(any(uv<=vec2<f32>(0.0)) || any(uv>=vec2<f32>(1.0)) || q.z<=0.0 || q.z>=1.0){return 1.0;}
+    let size=vec2<i32>(textureDimensions(shadow_depth));
+    let at=vec2<i32>(uv*vec2<f32>(size));
+    var lit=0.0;
     let bias=frame.display_target.w*(1.0+3.0*(1.0-abs(dot(n,frame.sun.xyz))));
-    // Compare each PCF tap with the receiver plane at that tap, not its center depth.
     let tangent=normalize(cross(n,select(vec3<f32>(0.0,1.0,0.0),vec3<f32>(1.0,0.0,0.0),abs(n.y)>0.99)));
-    let bitangent=cross(n,tangent);let a=frame.light_matrix*vec4<f32>(tangent,0.0);let b=frame.light_matrix*vec4<f32>(bitangent,0.0);
-    let da=(a.xyz-q*a.w)/c.w;let db=(b.xyz-q*b.w)/c.w;let determinant=da.x*db.y-da.y*db.x;var gradient=vec2<f32>(0.0);
-    if(abs(determinant)>0.00000001){gradient=vec2<f32>((da.z*db.y-da.y*db.z)*2.0,(da.x*db.z-da.z*db.x)*-2.0)/determinant;}
-    for(var y=-1;y<=1;y++){for(var x=-1;x<=1;x++){let sample_at=clamp(at+vec2<i32>(x,y),vec2<i32>(0),size-1);let depth=textureLoad(shadow_depth,sample_at,0).r;let delta=(vec2<f32>(sample_at)+0.5)/vec2<f32>(size)-uv;lit+=select(0.0,1.0,q.z+dot(gradient,delta)-bias<=depth);}}
-    // The finite map has no occlusion data outside its footprint. Fade coverage
-    // continuously into that fallback instead of drawing the map's rectangular edge.
+    let bitangent=cross(n,tangent);
+    let a=light*vec4<f32>(tangent,0.0);
+    let b=light*vec4<f32>(bitangent,0.0);
+    let da=(a.xyz-q*a.w)/c.w;
+    let db=(b.xyz-q*b.w)/c.w;
+    let determinant=da.x*db.y-da.y*db.x;
+    var gradient=vec2<f32>(0.0);
+    if(abs(determinant)>0.00000001){
+        gradient=vec2<f32>((da.z*db.y-da.y*db.z)*2.0,(da.x*db.z-da.z*db.x)*-2.0)/determinant;
+    }
+    for(var y=-1;y<=1;y++){
+        for(var x=-1;x<=1;x++){
+            let sample_at=clamp(at+vec2<i32>(x,y),vec2<i32>(0),size-1);
+            let depth=shadow_sample_depth(cascade,sample_at);
+            let delta=(vec2<f32>(sample_at)+0.5)/vec2<f32>(size)-uv;
+            lit+=select(0.0,1.0,q.z+dot(gradient,delta)-bias<=depth);
+        }
+    }
     let edge=min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y));
-    let coverage=smoothstep(0.0,0.08,edge)*smoothstep(0.0,0.04,min(q.z,1.0-q.z));
-    return mix(1.0,lit/9.0,frame.display_target.z*coverage);
+    let coverage=smoothstep(0.0,0.055,edge)*smoothstep(0.0,0.025,min(q.z,1.0-q.z));
+    return mix(1.0,lit/9.0,coverage);
+}
+fn shadow_visibility(p:vec3<f32>,n:vec3<f32>)->f32 {
+    if(frame.display_target.z<=0.0){return 1.0;}
+    // Spherical receiver partitions are independent of camera rotation:
+    // rotating in place never changes a cascade key or its caster lists.
+    let distance=length(p-frame.eye.xyz);
+    let splits=frame.cascade_splits;
+    let fade=splits.w;
+    var value=1.0;
+    if(distance<splits.x-fade){
+        value=shadow_cascade_visibility(p,n,0u);
+    }else if(distance<splits.x+fade){
+        let near=shadow_cascade_visibility(p,n,0u);
+        let middle=shadow_cascade_visibility(p,n,1u);
+        value=mix(near,middle,smoothstep(splits.x-fade,splits.x+fade,distance));
+    }else if(distance<splits.y-fade){
+        value=shadow_cascade_visibility(p,n,1u);
+    }else if(distance<splits.y+fade){
+        let middle=shadow_cascade_visibility(p,n,1u);
+        let far=shadow_cascade_visibility(p,n,2u);
+        value=mix(middle,far,smoothstep(splits.y-fade,splits.y+fade,distance));
+    }else if(distance<splits.z){
+        value=shadow_cascade_visibility(p,n,2u);
+    }else{
+        // No shadow data beyond the last cascade; fade rather than leaving a
+        // visible square boundary or abruptly popping distant shadows.
+        let far=shadow_cascade_visibility(p,n,2u);
+        value=mix(far,1.0,smoothstep(splits.z,splits.z+fade*2.0,distance));
+    }
+    return mix(1.0,value,frame.display_target.z);
 }
 fn atmosphere(direction:vec3<f32>)->vec3<f32>{
     if(frame.sky.x<0.0){return frame.sky.yzw;}
