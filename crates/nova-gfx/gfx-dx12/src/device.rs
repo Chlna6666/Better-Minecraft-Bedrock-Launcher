@@ -2346,6 +2346,13 @@ mod platform {
                         "native COPY destination must be GPU-only memory".into(),
                     ));
                 }
+                if source.desc.memory_location != MemoryLocation::GpuOnly
+                    && source.desc.memory_location != MemoryLocation::CpuToGpu
+                {
+                    return Err(Error::InvalidInput(
+                        "native COPY source must be GPU-only or UPLOAD memory".into(),
+                    ));
+                }
                 if copy.source_offset.checked_add(copy.bytes).is_none_or(|end| end > source.desc.size)
                     || copy.destination_offset.checked_add(copy.bytes)
                         .is_none_or(|end| end > dest.desc.size)
