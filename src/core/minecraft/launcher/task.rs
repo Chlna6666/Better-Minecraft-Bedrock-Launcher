@@ -938,21 +938,23 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             legacy_uwp_runtime_injection_only,
             "准备启动 UWP 版本"
         );
-        let activated_pid =
-            launch_uwp_command_only(&aumid, final_launch_args.as_deref().or(Some("")))
-                .await
-                .map_err(|error| format!("启动请求失败: {error:?}"))?;
         let target_exe = if identity_name.contains("Education") {
             "Minecraft.Education.exe"
         } else {
             "Minecraft.Windows.exe"
         };
         let pfn = aumid.split('!').next().unwrap_or("").to_string();
-        let pid = match activated_pid {
-            Some(pid) if pid > 0 => pid,
-            _ => wait_for_uwp_pid(target_exe, &pfn)
+        let before_activation = crate::core::minecraft::launcher::start::get_pids_by_name(target_exe);
+        let activated_pid =
+            launch_uwp_command_only(&aumid, final_launch_args.as_deref().or(Some("")))
                 .await
-                .ok_or("启动超时".to_string())?,
+                .map_err(|error| format!("启动请求失败: {error:?}"))?;
+        let pid = match activated_pid {
+            Some(pid) if pid > 0
+                && crate::core::minecraft::launcher::start::is_process_in_package(pid, &pfn) => pid,
+            _ => wait_for_uwp_pid(target_exe, &pfn, &before_activation)
+                .await
+                .ok_or("无法确认新启动的 UWP 游戏进程；不会附着到其他实例".to_string())?,
         };
         if !version_config.disable_mod_loading {
             let log_task_id = task_id.to_string();
