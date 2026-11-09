@@ -532,6 +532,7 @@ GDKUserSelect.user_n=用户 {{index}}
 GameCrash.forensics.dump=发现 {{count}} 份有效 Mini Dump，异常码 {{code}}
 GameCrash.forensics.dumpWarning=转储异常码来自候选文件，仅能描述异常类型，不能独立确认责任模组。
 GameCrash.forensics.mods=加载失败的模组：{{mods}}
+GameCrash.forensics.module=Mini Dump 故障模块：{{module}}（不等于已确定根因）
 GameCrash.forensics.private=此加载错误来自启动任务独立保存的日志，但不一定是导致崩溃的最终原因。
 GameCrash.forensics.shared=这些错误来自可能被多个实例共享的日志，不能确定每条记录都属于本次游戏。
 GameCrash.forensics.title=检测到的具体线索
