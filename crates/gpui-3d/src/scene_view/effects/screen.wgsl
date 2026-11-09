@@ -248,20 +248,44 @@ fn cloud_volume(origin:vec3<f32>,direction:vec3<f32>,distance_limit:f32)->vec4<f
 fn sky(direction:vec3<f32>)->vec3<f32>{let cloud=cloud_volume(frame.eye.xyz,direction,4096.0);return atmosphere(direction)*cloud.a+cloud.rgb;}
 fn trace_reflection(origin:vec3<f32>,direction:vec3<f32>)->vec4<f32>{
     if(frame.flags.x<0.5){return vec4<f32>(0.0);}var previous=origin;let steps=u32(frame.work.x);
-    for(var i=1u;i<=steps;i++){let distance=0.15+96.0*pow(f32(i)/f32(steps),1.5);let p=origin+direction*distance;let q=project(p);
+    // Most SSR samples never intersect geometry. Screen depth is cheap but
+    // reconstructing a world-space hit requires a full inverse VP transform.
+    // Perform that transform only for a depth-crossing candidate.
+    // t*sqrt(t) is the same t^1.5 distribution without a general-purpose pow.
+    let inv_steps=1.0/max(f32(steps),1.0);
+    for(var i=1u;i<=steps;i++){
+        let t=f32(i)*inv_steps;
+        let distance=0.15+96.0*t*sqrt(t);
+        let p=origin+direction*distance;
+        let q=project(p);
         if(any(q.xy<=vec2<f32>(0.0)) || any(q.xy>=vec2<f32>(1.0)) || q.z<=0.0 || q.z>=1.0){break;}
-        let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;let hit=world(q.xy,depth);
-        if(i>2u && depth<1.0 && q.z>=depth && length(hit-p)<max(0.2,length(p-previous)*1.5)){
-            var a=previous;var b=p;for(var j=0u;j<5u;j++){let mid=(a+b)*0.5;let m=project(mid);if(m.z>textureLoad(opaque_depth,pixel(m.xy),0).r){b=mid;}else{a=mid;}}
-            let uv=project((a+b)*0.5).xy;let edge=min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y));
-            return vec4<f32>(textureSampleLevel(scene,linear_sampler,uv,0.0).rgb,clamp(edge*12.0,0.0,1.0));
-        }previous=p;
+        let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;
+        if(i>2u && depth<1.0 && q.z>=depth){
+            let hit=world(q.xy,depth);
+            if(length(hit-p)<max(0.2,length(p-previous)*1.5)){
+                var a=previous;var b=p;
+                for(var j=0u;j<5u;j++){
+                    let mid=(a+b)*0.5;
+                    let m=project(mid);
+                    if(m.z>textureLoad(opaque_depth,pixel(m.xy),0).r){b=mid;}else{a=mid;}
+                }
+                let uv=project((a+b)*0.5).xy;
+                let edge=min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y));
+                return vec4<f32>(textureSampleLevel(scene,linear_sampler,uv,0.0).rgb,clamp(edge*12.0,0.0,1.0));
+            }
+        }
+        previous=p;
     }return vec4<f32>(0.0);
 }
 fn local_visibility(p:vec3<f32>,light:vec3<f32>,radius:f32)->f32{
     let delta=light-p;let end=p+delta*max(1.0-radius/max(length(delta),0.001),0.0);
-    for(var i=1u;i<9u;i++){let q=project(mix(p,end,f32(i)/9.0));if(any(q.xy<=vec2<f32>(0.0)) || any(q.xy>=vec2<f32>(1.0))){continue;}
-        let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;if(depth<1.0 && q.z>depth && length(world(q.xy,depth)-mix(p,end,f32(i)/9.0))<0.6){return 0.0;}}
+    for(var i=1u;i<9u;i++){
+        let sample_position=mix(p,end,f32(i)/9.0);
+        let q=project(sample_position);
+        if(any(q.xy<=vec2<f32>(0.0)) || any(q.xy>=vec2<f32>(1.0))){continue;}
+        let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;
+        if(depth<1.0 && q.z>depth && length(world(q.xy,depth)-sample_position)<0.6){return 0.0;}
+    }
     return 1.0;
 }
 fn local_lighting(uv:vec2<f32>,p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32>,metallic:f32,roughness:f32)->vec3<f32>{
@@ -275,12 +299,36 @@ fn local_lighting(uv:vec2<f32>,p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32
     }return radiance;
 }
 fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
-    if(frame.flags.z<0.5){return vec4<f32>(0.0,0.0,0.0,1.0);}let distance=min(distance_limit,512.0);let step=distance/frame.work.y;var transmittance=1.0;var radiance=vec3<f32>(0.0);
-    let g=0.55;let mu=dot(direction,frame.sun.xyz);let phase=(1.0-g*g)/(4.0*PI*pow(1.0+g*g-2.0*g*mu,1.5));
-    for(var i=0u;i<u32(frame.work.y);i++){let p=frame.eye.xyz+direction*((f32(i)+0.5)*step);let density=frame.options.y*exp(-max(p.y+frame.origin.y-64.0,0.0)/80.0);
-        let extinction=exp(-density*step);let environment=select(vec3<f32>(0.08,0.13,0.22)*frame.sun.w,frame.sky.yzw*0.5,frame.sky.x<0.0);let illumination=environment+frame.sun_color.rgb*frame.sun_color.w*phase*shadow_visibility(p,frame.sun.xyz)*cloud_visibility(p);
-        radiance+=transmittance*(1.0-extinction)*illumination;transmittance*=extinction;
-    }return vec4<f32>(radiance,transmittance);
+    if(frame.flags.z<0.5 || frame.options.y<=0.0 || distance_limit<=0.0){
+        return vec4<f32>(0.0,0.0,0.0,1.0);
+    }
+    let distance=min(distance_limit,512.0);
+    let step=distance/frame.work.y;
+    var transmittance=1.0;
+    var radiance=vec3<f32>(0.0);
+    let g=0.55;
+    let mu=dot(direction,frame.sun.xyz);
+    let phase=(1.0-g*g)/(4.0*PI*pow(1.0+g*g-2.0*g*mu,1.5));
+    // These terms are uniform across all 8 integration samples. Hoist them
+    // out of the GPU's hot fog loop instead of rebuilding them per sample.
+    let environment=select(
+        vec3<f32>(0.08,0.13,0.22)*frame.sun.w,
+        frame.sky.yzw*0.5,
+        frame.sky.x<0.0
+    );
+    let sunlight=frame.sun_color.rgb*frame.sun_color.w*phase;
+    for(var i=0u;i<u32(frame.work.y);i++){
+        let p=frame.eye.xyz+direction*((f32(i)+0.5)*step);
+        let density=frame.options.y*exp(-max(p.y+frame.origin.y-64.0,0.0)/80.0);
+        let extinction=exp(-density*step);
+        var illumination=environment;
+        if(frame.sun_color.w>0.0){
+            illumination+=sunlight*shadow_visibility(p,frame.sun.xyz)*cloud_visibility(p);
+        }
+        radiance+=transmittance*(1.0-extinction)*illumination;
+        transmittance*=extinction;
+    }
+    return vec4<f32>(radiance,transmittance);
 }
 fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec3<f32>(0.0));let mapped=clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));return select(mapped*12.92,1.055*pow(mapped,vec3<f32>(1.0/2.4))-0.055,mapped>vec3<f32>(0.0031308));}
 fn effects_shade(input:ScreenOutput)->vec4<f32>{
