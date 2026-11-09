@@ -147,6 +147,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib sidecar_surface::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib stable_slots::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p gpui-3d --lib culling::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui --lib sidecar_target_retains_ui_projection_and_clip -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui --lib submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
@@ -273,6 +277,8 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 prepare::interruptible_prepare_tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 sidecar_surface::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 stable_slots::tests -- --nocapture
+          cargo test -p gpui-3d --lib --features gpui/x11 culling::tests -- --nocapture
           cargo test -p gpui --lib --features x11 sidecar_target_retains_ui_projection_and_clip -- --nocapture
           cargo test -p gpui --lib --features x11 submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 initial_and_incompatible_scene_publications -- --nocapture
