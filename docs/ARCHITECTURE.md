@@ -20,7 +20,7 @@ flowchart TB
     end
     subgraph UiCore["UI 核心"]
         Gpui["gpui\n窗口/实体/元素/布局/场景/呈现"]
-        Gpui3d["gpui-3d\n场景准备与 3D 扩展"]
+        Gpui3d["gpui-3d\n游戏级 3D 渲染器 + 可选侧载"]
     end
     subgraph Gfx["图形层"]
         Nova["nova-gfx\ngfx-core + 后端"]
@@ -47,7 +47,8 @@ flowchart TB
 BMCBL app (src/)
   -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-api, nethernet, easytier-bmcbl
 egpui -> gpui
-gpui-3d -> gpui + gfx-core
+gpui-3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
+gpui-3d (scene_view/Sidecar 适配) -> gpui + gfx-core  # 当前 crate 尚未完成 feature 拆分
 gpui -> gfx-core + 所选 gfx-<backend>
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
@@ -62,12 +63,29 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 
 以上约束即 gpui 与 nova-gfx 的边界；跨层变更需同步更新本文。
 
+### 2.1 3D 引擎 / 通用图形 API / 可选 UI Sidecar
+
+- **渲染生产链**：`gpui-3d` 的 Scene → CPU/GPU 准备 → Resident Buffer/3D Texture →
+  Compute/DrawIndirect → `nova-gfx` 原生离屏提交 → 颜色视图和原生提交句柄。
+- **UI 消费链**：`gpui-3d::scene_view` 的 Sidecar Adapter → `gpui` 视图布局、裁剪和
+  颜色视图采样 → Swapchain Present。纹理合成不意味着 3D 命令被绘制成 2D。
+- **资源与同步链**：GPU Owner 负责设备访问合法性、提交顺序和 `SubmissionId`；只有
+  GPU Fence 完成才能释放/复用在途资源。图的逻辑 `GpuTransition` 必须经原生 API
+  Barrier 和队列同步执行后才能当作已满足。不能用 CPU 等待补齐缺失的 GPU 同步。
+- **可测量边界**：CPU 场景准备、GPU Owner 主机工作、原生离屏提交、原生 GPU
+  BufferUpload/GeneratedMesh/DrawIndirect 时间戳、GPUI Consumer 合成、Present、
+  Fence 等待分别记录；只用完成的原生计时样本推断 GPU 执行成本。
+- **可选适配原则**：纯 3D 内核模块禁止引用 `gpui::`；将 `RendererExtension`、
+  GPUI Layout/Painter、Sidecar 放在适配边界。当前 crate 仍有 GPUI 依赖，
+  尚未实现完全可关闭的 feature，不能宣称独立游戏窗口生命周期已完成。
+
+
 ## 3. crate 职责
 
 | crate | 职责 | 关键约束 |
 | --- | --- | --- |
 | `gpui` | 窗口、实体状态、声明式元素、布局、输入、文本、场景与呈现调度 | 通用 UI 核心，不含 BMCBL 业务；渲染后端通过 nova-gfx |
-| `gpui-3d` | 3D 场景/相机/材质/动画/查询、glTF 导入、离屏渲染与 scene view | 只做 3D 场景准备与扩展资源；呈现与后端归 gpui/nova |
+| `gpui-3d` | 游戏级 3D 引擎：Scene、GPU Resident、剔除、构网、Graphics/Compute 工作图、DrawIndirect、离屏输出及 GPUI 可选侧载 | 3D 原生 Pass 编码及调度归 3D 引擎；窗口/Swapchain 由 UI/应用拥有 |
 | `gpui_tokio` | GPUI 与 Tokio 任务集成 | 不把 Tokio 句柄泄漏进 UI 状态 |
 | `gpui-hooks` / `gpui-hooks-macros` | GPUI hooks 与宏 | 只封装 UI 状态复用模式 |
 | `gpui-macros` | GPUI 派生宏镜像 | 与上游宏保持行为一致 |
@@ -102,10 +120,14 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
    - `SurfaceDevice::{resize_swapchain, recreate_swapchain, swapchain_extent, resolve_composite_alpha}`
 4. **backend**：DX11/DX12/Vulkan/OpenGL/Metal/WebGL。`gfx-core` 是无 UI、无窗口句柄的公共契约。
 
-通用 `RendererExtensionPass` 由扩展编码、GPUI 的呈现所有者先于 Root、元素层和背景模糊消费者
-按序提交，再合成窗口。后续消费者失败时仍保留已提交扩展的栅栏记录。扩展不
-拥有窗口或 swapchain。提交确认与 GPU 完成是两个独立通知：前者允许复用捕获结果，后者才
-允许回收仍可能被读取的资源。时间相关扩展可复用不可变 Paint 连续呈现，不触发 UI 布局。
+通用 `RendererExtensionPass` 仍可服务普通 UI 扩展；但 `gpui-3d` 的普通 `SceneView`
+通过 `gfx-core::OffscreenSubmissionDevice` 创建和提交自己的原生 Graphics Pass，
+不再交由 GPUI 重编码/整理 DrawIndirect。GPU Owner 只借出设备访问入口并接收
+`SubmissionId` 进行非阻塞 Fence 跟踪；GPUI 最后在对应布局位置采样 3D color view。
+`gpui-3d` 的 Graphics→Compute→Composite 效果链尚在逐步迁移，不能将目前的逻辑
+`GpuWorkPlan` 检查当作已实现原生 Barrier。提交确认和 GPU Fence 完成是两个独立事件：
+前者仅表示 Native Queue 接受工作，后者才允许资源退休。扩展不拥有窗口或 Swapchain。
+时间相关扩展可复用不可变 Paint 连续呈现，不触发 UI 布局。
 Windows 的 `gpui-gpu-owner` 独立线程负责呈现。窗口指标中的 `renderer_extension_prepare`
 单独记录扩展准备的主机耗时，它包含在 `renderer_scene_prepare` 内；两者不可相加，也不等于
 GPU 执行耗时。离屏提交与原生等待需分别结合 `offscreen_render` 和后端指标分析。
