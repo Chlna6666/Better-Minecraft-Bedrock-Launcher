@@ -1119,15 +1119,31 @@ pub enum TextureDimension {
         /// Number of independently addressed slices.
         layers: u32,
     },
+    /// True 3D image with depth shrinking through its mip chain. A volume
+    /// is one image layer, not a 2D texture array; its shader bindings use
+    /// texture_3d and texture_storage_3d, never texture_2d_array.
+    D3 {
+        /// Number of voxels on the Z axis at mip zero.
+        depth: u32,
+    },
 }
 
 impl TextureDimension {
-    /// Number of array layers per mip level.
+    /// Number of independent array layers per mip level (one for a 3D image).
     #[must_use]
     pub const fn layers(self) -> u32 {
         match self {
-            Self::D2 => 1,
+            Self::D2 | Self::D3 { .. } => 1,
             Self::D2Array { layers } => layers,
+        }
+    }
+
+    /// Number of Z voxels in one image at the selected mip level.
+    #[must_use]
+    pub const fn mip_depth(self, mip_level: u32) -> u32 {
+        match self {
+            Self::D3 { depth } => (depth >> mip_level).max(1),
+            Self::D2 | Self::D2Array { .. } => 1,
         }
     }
 }
@@ -1163,6 +1179,7 @@ impl TextureDescriptor {
                 total.saturating_add(
                     u64::from((self.size.width() >> mip).max(1))
                         .saturating_mul(u64::from((self.size.height() >> mip).max(1)))
+                        .saturating_mul(u64::from(self.dimension.mip_depth(mip)))
                         .saturating_mul(u64::from(self.format.bytes_per_pixel())),
                 )
             })
@@ -1225,6 +1242,27 @@ impl TextureDescriptor {
                 ));
             }
         }
+        if let TextureDimension::D3 { depth } = self.dimension {
+            if depth == 0 {
+                return Err(Error::InvalidInput(
+                    "3D textures require a nonzero depth".into(),
+                ));
+            }
+            // Attachment rendering, host readback and texture uploads need
+            // separate 3D subresource/region contracts. Keep them fail-closed
+            // rather than interpreting a 3D image as a 2D array.
+            if self.usage.intersects(
+                TextureUsage::COLOR_ATTACHMENT
+                    | TextureUsage::DEPTH_ATTACHMENT
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+            ) || self.is_format_depth()
+            {
+                return Err(Error::Unavailable(
+                    "3D textures currently support sampled/storage GPU usage only".into(),
+                ));
+            }
+        }
         if self.usage.contains(TextureUsage::STORAGE) {
             // Storage images are single-sampled, single-level and never depth.
             if self.sample_count > 1 {
@@ -1243,7 +1281,8 @@ impl TextureDescriptor {
                 ));
             }
         }
-        let largest_dimension = self.size.width().max(self.size.height());
+        let largest_dimension = self.size.width().max(self.size.height())
+            .max(self.dimension.mip_depth(0));
         let max_mip_level_count = u32::BITS - largest_dimension.leading_zeros();
         if self.mip_level_count == 0 || self.mip_level_count > max_mip_level_count {
             return Err(Error::InvalidInput(format!(
@@ -1302,6 +1341,11 @@ impl TextureViewDescriptor {
     /// is empty or exceeds the texture's mip range.
     pub fn validate_against(&self, texture: &TextureDescriptor) -> Result<()> {
         texture.validate()?;
+        if self.format != texture.format {
+            return Err(Error::InvalidInput(
+                "texture view format must match the underlying image format".into(),
+            ));
+        }
         let end = self
             .base_mip_level
             .checked_add(self.mip_level_count)
