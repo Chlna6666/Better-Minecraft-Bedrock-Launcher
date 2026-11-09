@@ -188,9 +188,10 @@ impl Dx11Device {
             return Err(Error::InvalidInput("dispatch requires a compute shader".into()));
         };
         self.clear_compute_graphics_srvs();
-        if !write_images.is_empty() {
-            // D3D11 refuses UAV bindings that overlap an active RTV/DSV.
-            // Leave the buffer-only fast path untouched.
+        if !write_images.is_empty() || !read_images.is_empty() {
+            // D3D11 silently nulls both SRVs and UAVs when the underlying
+            // texture is still attached to OM. Unbind only for image compute:
+            // ordinary buffer-only Section dispatches remain unaffected.
             unsafe { self.context.OMSetRenderTargets(None, None) };
         }
         for (slot, view) in &native {

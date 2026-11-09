@@ -399,6 +399,8 @@ impl OpenGlDevice {
                 glow::SHADER_STORAGE_BARRIER_BIT
                     | glow::SHADER_IMAGE_ACCESS_BARRIER_BIT
                     | glow::TEXTURE_FETCH_BARRIER_BIT
+                    | glow::FRAMEBUFFER_BARRIER_BIT
+                    | glow::TEXTURE_UPDATE_BARRIER_BIT
                     | glow::COMMAND_BARRIER_BIT
                     | glow::BUFFER_UPDATE_BARRIER_BIT,
             );

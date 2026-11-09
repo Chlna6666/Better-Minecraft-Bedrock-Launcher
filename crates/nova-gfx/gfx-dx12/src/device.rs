@@ -1537,6 +1537,31 @@ mod platform {
                             let resource = texture.resource.as_ref().ok_or_else(|| {
                                 Error::Backend("DX12 texture has no native resource".to_string())
                             })?;
+                            // Validate *before* shared descriptor allocation.
+                            // An invalid view must not strand an allocated heap slot.
+                            match entry.binding_type {
+                                BindingType::StorageTexture { format, .. } => {
+                                    if !texture.desc.usage.contains(TextureUsage::STORAGE)
+                                        || view.format != format
+                                        || texture.desc.dimension != TextureDimension::D2
+                                        || texture.desc.sample_count != 1
+                                        || view.mip_level_count != 1
+                                        || format == Format::Depth32Float
+                                    {
+                                        return Err(Error::InvalidInput(
+                                            "DX12 storage UAV requires one matching non-depth D2 mip".into(),
+                                        ));
+                                    }
+                                }
+                                BindingType::SampledTexture => {
+                                    if !texture.desc.usage.contains(TextureUsage::SAMPLED) {
+                                        return Err(Error::InvalidInput(
+                                            "DX12 compute sampled image lacks SAMPLED usage".into(),
+                                        ));
+                                    }
+                                }
+                                _ => return Err(Error::InvalidInput("DX12 texture binding type mismatch".into())),
+                            }
                             let is_storage = matches!(entry.binding_type, BindingType::StorageTexture { .. });
                             let descriptor_key = if is_storage {
                                 DescriptorKey::StorageTexture(texture_binding.texture_view)
