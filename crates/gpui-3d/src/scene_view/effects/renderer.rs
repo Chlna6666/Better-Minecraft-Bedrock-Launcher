@@ -390,7 +390,7 @@ impl EffectsRenderer {
                     scene
                         .group_key
                         .into_iter()
-                        .flat_map(|(_, ids)| ids.into_iter().flatten())
+                        .flat_map(|(_, ids, _)| ids.into_iter().flatten())
                 })
                 .chain(texture_ids.into_iter().flatten())
                 .collect::<std::collections::HashSet<_>>();
