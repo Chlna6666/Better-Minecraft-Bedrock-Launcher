@@ -747,7 +747,10 @@ impl SceneResources {
             draw_capacity,
             draw_slot_buffer,
             draw_slot_capacity,
-            stable_slots: stable_slots::StableDrawSlots::default(),
+            stable_slots: stable_slots::StableDrawSlots::with_resident_buffers(&[
+                (draw_buffer, DRAW_PARAMS_STRIDE as u64),
+                (instance_buffer, INSTANCE_STRIDE as u64),
+            ]),
             uploaded_slot_map: Vec::new(),
             scratch_slot_map: Vec::new(),
             scratch_packed_draws: Vec::new(),
