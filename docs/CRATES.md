@@ -17,7 +17,7 @@
 | crate | 路径 | 职责 | 状态 | 文档 |
 | --- | --- | --- | --- | --- |
 | `gpui` | `crates/gpui` | 窗口、实体、元素、布局、输入、文本、场景、呈现 | 活跃，pre-1.0 | [README](../crates/gpui/README.md) |
-| `gpui-3d` | `crates/gpui-3d` | 3D 场景/相机/材质/动画/查询、glTF、离屏渲染、scene view | 活跃，pre-1.0 | [README](../crates/gpui-3d/README.md) |
+| `gpui-3d` | `crates/gpui-3d` | 游戏级 3D 场景/材质/光照、GPU Resident/构网/剔除/DrawIndirect、无 GPUI 的原生离屏提交核心及可选 Sidecar 适配 | 活跃，pre-1.0 | [README](../crates/gpui-3d/README.md) |
 | `gpui_tokio` | `crates/gpui_tokio` | GPUI/Tokio 任务集成 | 活跃 | [README](../crates/gpui_tokio/README.md) |
 | `gpui-hooks` | `crates/gpui-hooks` | GPUI hooks 与状态复用 | 活跃 | [README](../crates/gpui-hooks/README.md) |
 | `gpui-hooks-macros` | `crates/gpui-hooks-macros` | hooks 宏实现 | 内部 | [README](../crates/gpui-hooks-macros/README.md) |
@@ -79,7 +79,9 @@
 ## 7. 边界速查
 
 - `nova-gfx`/`gfx-*` 不依赖 `gpui`/`egpui`/应用代码；`gfx-core` 不依赖窗口句柄。
-- `gpui` 不依赖应用层；`gpui-3d` 依赖 `gpui` + `gfx-core`，不拥有窗口或后端。
+- `gpui` 不依赖应用层；`gpui-3d` 的纯引擎模块仅依赖 `gfx-core` 等无 UI 库，
+  `scene_view` 适配层仍依赖 `gpui`。当前 crate 尚未拆分可选 Cargo feature；
+  3D 渲染策略、原生离屏 Pass/Compute 调度归 `gpui-3d`，窗口与 Swapchain 仍归宿主。
 - `egpui` 不拥有下载/地图/路由等产品语义。
 - `bedrock-*` 不依赖 UI/GPU 呈现；`bedrock-voxel` 只产出计划，不直接写世界。
 - 插件 ABI 变更必须同时更新 API 版本、manifest schema 与示例插件。
