@@ -1,6 +1,7 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::core::Interface as _;
 
 impl Dx11Device {
     pub(crate) fn readback(&mut self, id: TextureId) -> Result<TextureReadback> {
@@ -10,9 +11,11 @@ impl Dx11Device {
         }
         let mut staging = None;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
-        // SAFETY: source is live; descriptor/output are writable owned locals.
+        // COPY_SRC is only exposed for 2D images; a volume never reaches
+        // this cast. Keep the owned native resource generic for D2 and D3.
+        let source: ID3D11Texture2D = texture.native.cast().map_err(backend)?;
         unsafe {
-            texture.native.GetDesc(&mut desc);
+            source.GetDesc(&mut desc);
         }
         desc.MipLevels = 1;
         desc.BindFlags = 0;
