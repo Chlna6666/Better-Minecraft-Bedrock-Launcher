@@ -1,7 +1,7 @@
 const PI:f32=3.14159265359;
 @group(0) @binding(0) var scene:texture_2d<f32>;
 @group(0) @binding(2) var surfaces:texture_2d<f32>;
-@group(0) @binding(4) var albedos:texture_2d<f32>;
+// Albedo sample type is selected alongside the depth shader variant.
 @group(0) @binding(5) var linear_sampler:sampler;
 @group(0) @binding(6) var<uniform> frame:EffectFrame;
 @group(0) @binding(7) var shadow_depth:texture_2d<f32>;
