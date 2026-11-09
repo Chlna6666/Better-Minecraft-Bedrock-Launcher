@@ -102,8 +102,11 @@ pub struct GpuWorkGraph {
 
 #[derive(Debug)]
 pub struct GpuWorkPlan {
-    pub passes: Vec<GpuWorkPass>,
-    pub transitions: Vec<GpuTransition>,
+    // The compiled plan must be immutable from outside gfx-core. Letting a
+    // client delete a transition edge would silently bypass a native UAV or
+    // image barrier even if the remaining edge list was well-formed.
+    passes: Vec<GpuWorkPass>,
+    transitions: Vec<GpuTransition>,
 }
 
 /// Native command encoder for an already-compiled, ordered GPU work plan.
@@ -144,6 +147,19 @@ pub trait GpuWorkSubmissionExecutor: GpuWorkExecutor {
 }
 
 impl GpuWorkPlan {
+    /// Passes in their exact execution order. A work plan cannot be edited
+    /// after compile; edit GpuWorkGraph and compile a new plan instead.
+    #[must_use]
+    pub fn passes(&self) -> &[GpuWorkPass] {
+        &self.passes
+    }
+
+    /// Immutable native resource transition obligations.
+    #[must_use]
+    pub fn transitions(&self) -> &[GpuTransition] {
+        &self.transitions
+    }
+
     /// Check that all resource transitions can be consumed in submission
     /// order before touching a native command encoder.
     ///
