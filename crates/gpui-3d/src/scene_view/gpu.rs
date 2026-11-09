@@ -625,6 +625,83 @@ impl MeshArena {
         self.native_work.register(record)
     }
 
+    /// Bind a REAL native GPU Copy submission to precisely the source and
+    /// destination byte ranges owned by this arena. A cross-arena relocation
+    /// calls this for both arenas with the same native SubmissionId; neither
+    /// can release its physical suballocation until that fence is complete.
+    ///
+    /// Call only AFTER the backend accepts actual typed Copy commands and
+    /// returns its native producer ID. The renderer GPU owner must also poll
+    /// that ID and deliver gpu_submission_completed. A lost/invalid dependency
+    /// fails closed by registering unknown work rather than freeing bytes.
+    pub(super) fn register_native_buffer_copies(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+        queue: gfx_core::GpuQueueId,
+        copies: &[gfx_core::GpuBufferCopy],
+        native_waits: &[gfx_core::GpuNativeWaitProof],
+    ) -> gfx_core::Result<()> {
+        let mut uses = Vec::new();
+        for copy in copies {
+            copy.validate()?;
+            for page in self.pages.iter().flatten() {
+                if copy.source == page.buffer {
+                    let span = gfx_core::GpuResourceSpan::buffer(
+                        page.buffer, copy.source_offset, copy.bytes,
+                    )?;
+                    if copy.source_offset.checked_add(copy.bytes).is_none_or(|end|
+                        end > page.capacity
+                    ) {
+                        return Err(gfx_core::Error::InvalidInput(
+                            "native Copy source escapes the Mesh Arena physical page".into(),
+                        ));
+                    }
+                    uses.push(gfx_core::GpuSubmissionAccess {
+                        span, access: gfx_core::GpuAccess::CopyRead,
+                    });
+                }
+                if copy.destination == page.buffer {
+                    let span = gfx_core::GpuResourceSpan::buffer(
+                        page.buffer, copy.destination_offset, copy.bytes,
+                    )?;
+                    if copy.destination_offset.checked_add(copy.bytes).is_none_or(|end|
+                        end > page.capacity
+                    ) {
+                        return Err(gfx_core::Error::InvalidInput(
+                            "native Copy destination escapes the Mesh Arena physical page".into(),
+                        ));
+                    }
+                    uses.push(gfx_core::GpuSubmissionAccess {
+                        span, access: gfx_core::GpuAccess::CopyWrite,
+                    });
+                }
+            }
+        }
+        if uses.is_empty() {
+            return Err(gfx_core::Error::InvalidInput(
+                "native Copy has no source or destination in this Mesh Arena".into(),
+            ));
+        }
+        let mut record = gfx_core::GpuSubmissionRecord::new(
+            submission, queue, gfx_core::GpuWorkStage::Transfer, uses.clone(),
+        );
+        for proof in native_waits {
+            if let Err(error) = record.add_native_gpu_wait(*proof) {
+                for access in uses {
+                    self.native_work.register_untracked(queue, access);
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.native_work.register(record) {
+            for access in uses {
+                self.native_work.register_untracked(queue, access);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Attach unfenced primary-queue writes/reads to a real ordered producer
     /// or GUI submission. This is GPU ordering, not GPU completion.
     pub(super) fn gpu_submission_accepted(
