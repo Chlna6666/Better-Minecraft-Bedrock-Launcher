@@ -1025,6 +1025,17 @@ pub trait PresentationDevice {
         self.render_to_textures(passes)
     }
 
+    /// Whether the native implementation can alternate normal offscreen
+    /// Graphics submissions and compute resource-set dispatches on its primary
+    /// owner queue with correct resource transitions and GPU-side visibility.
+    ///
+    /// This is not an independent async-compute queue. No CPU fence waits may
+    /// be inserted between stages. The default is fail-closed so a backend
+    /// cannot silently execute Compute before a queued graphics producer.
+    fn ordered_mixed_graphics_compute_supported(&self) -> bool {
+        false
+    }
+
     /// True only if this device owns an actual second native GRAPHICS queue
     /// and implements device-side producer/consumer synchronization.
     /// DX11/OpenGL and unsupported Vulkan adapters report false.
