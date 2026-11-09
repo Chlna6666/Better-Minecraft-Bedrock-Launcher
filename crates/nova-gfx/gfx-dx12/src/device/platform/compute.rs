@@ -301,9 +301,15 @@ impl Dx12Device {
                     dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
                 );
             }
-            // Return images to the pixel-readable state before GPUI samples
-            // the sidecar target. Queue ordering carries UAV write visibility.
-            for &(id, writable) in &images {
+            // Writable UAV images must leave the UAV state before GPUI
+            // samples them. Sampled-only images can remain GENERIC_READ,
+            // which already includes both pixel and non-pixel shader reads.
+            // Avoid forcing every compute sample through a redundant
+            // GENERIC_READ -> PIXEL_SHADER_RESOURCE round trip.
+            for &(id, storage) in &images {
+                if !storage {
+                    continue;
+                }
                 let texture = self.textures.get(id)?;
                 let resource = texture.resource.as_ref().ok_or_else(|| {
                     Error::Backend("missing DX12 compute image".into())
@@ -311,8 +317,7 @@ impl Dx12Device {
                 record_transition_barrier(
                     &command,
                     resource,
-                    if writable { D3D12_RESOURCE_STATE_UNORDERED_ACCESS }
-                    else { D3D12_RESOURCE_STATE_GENERIC_READ },
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 );
             }
@@ -342,8 +347,12 @@ impl Dx12Device {
             for id in final_buffers {
                 self.buffers.get_mut(id)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
             }
-            for (id, _) in images {
-                self.textures.get_mut(id)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            for (id, storage) in images {
+                self.textures.get_mut(id)?.state = if storage {
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                } else {
+                    D3D12_RESOURCE_STATE_GENERIC_READ
+                };
             }
         }
         if result.is_err() {
