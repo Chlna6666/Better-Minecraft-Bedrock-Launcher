@@ -2,10 +2,10 @@
 //!
 //! GPUI hands this facade to [`RendererExtension`](super::RendererExtension)
 //! implementations. It excludes swapchain presentation and native queue ownership,
-//! but exposes ordinary gfx-core offscreen production: a renderer can submit its
-//! own 3D passes without the UI compositor re-encoding their command stream.
-//! Optional ordered buffer compute is queued before subsequent host draws; it does not
-//! grant extensions ownership of frame submission or presentation.
+//! but forwards gfx-core's generic OffscreenSubmissionDevice: a renderer
+//! submits its own native GPU passes without GPUI re-encoding any 3D work.
+//! The extension never owns the swapchain or physical native queue.
+//! Ordered compute remains GPU-owner-controlled and requires no CPU fence wait.
 
 use gfx_core::{
     BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor, BindGroupLayoutId,
