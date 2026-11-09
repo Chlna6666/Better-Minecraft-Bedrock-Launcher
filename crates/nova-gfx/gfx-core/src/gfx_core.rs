@@ -1188,6 +1188,62 @@ impl TextureVolumeCapabilities {
     }
 }
 
+#[cfg(test)]
+mod native_volume_texture_tests {
+    use super::*;
+
+    fn desc(dimension: TextureDimension, usage: TextureUsage, levels: u32) -> TextureDescriptor {
+        TextureDescriptor {
+            label: None,
+            size: Extent2d::new(8, 8).unwrap(),
+            mip_level_count: levels,
+            format: Format::Rgba16Float,
+            usage,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension,
+            sample_count: 1,
+        }
+    }
+
+    #[test]
+    fn true_3d_mips_shrink_depth_unlike_array_layers() {
+        let volume = desc(TextureDimension::D3 { depth: 8 }, TextureUsage::SAMPLED, 4);
+        assert_eq!(volume.dimension.layers(), 1);
+        assert_eq!(volume.dimension.mip_depth(1), 4);
+        assert_eq!(volume.byte_size(), 4_680);
+        volume.validate().unwrap();
+        assert_eq!(
+            desc(TextureDimension::D2Array { layers: 8 }, TextureUsage::SAMPLED, 4)
+                .byte_size(),
+            5_440,
+        );
+    }
+
+    #[test]
+    fn native_volume_usage_and_limits_fail_closed() {
+        let valid = desc(
+            TextureDimension::D3 { depth: 8 },
+            TextureUsage::SAMPLED | TextureUsage::STORAGE,
+            1,
+        );
+        let cap = TextureVolumeCapabilities {
+            max_dimension_3d: 16,
+            sampled: true,
+            storage: true,
+        };
+        cap.validate(&valid).unwrap();
+        assert!(TextureVolumeCapabilities::default().validate(&valid).is_err());
+        assert!(TextureVolumeCapabilities { storage: false, ..cap }.validate(&valid).is_err());
+        assert!(TextureVolumeCapabilities { max_dimension_3d: 4, ..cap }.validate(&valid).is_err());
+        assert!(desc(TextureDimension::D3 { depth: 0 }, TextureUsage::SAMPLED, 1)
+            .validate().is_err());
+        assert!(desc(TextureDimension::D3 { depth: 8 }, TextureUsage::COPY_SRC, 1)
+            .validate().is_err());
+        assert!(desc(TextureDimension::D3 { depth: 8 }, TextureUsage::STORAGE, 2)
+            .validate().is_err());
+    }
+}
+
 /// Texture creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextureDescriptor {
