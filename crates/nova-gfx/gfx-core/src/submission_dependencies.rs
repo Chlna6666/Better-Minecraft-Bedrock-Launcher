@@ -84,16 +84,85 @@ pub struct GpuSubmissionAccess {
     pub access: GpuAccess,
 }
 
+/// Evidence returned only after a native GPU queue wait was successfully
+/// enqueued. It is not a completed fence and cannot be obtained from queue IDs
+/// or the CPU order in which API calls were issued.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuNativeWaitProof {
+    producer: SubmissionId,
+    target_queue: GpuQueueId,
+}
+
+impl GpuNativeWaitProof {
+    /// Claim that a backend has actually encoded a GPU-side wait of
+    /// `producer` on `target_queue`. An unsuccessful queue submission,
+    /// CPU wait, or ordinary fence poll is NOT a valid reason to call this.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own both native GPU queues on the same logical device,
+    /// validate the producer's real queue completion primitive, and have
+    /// successfully enqueued a *device-side* wait that is ordered before the
+    /// consumer submission. Incorrect use permits premature resource reuse.
+    pub unsafe fn after_native_wait(
+        producer: SubmissionId,
+        target_queue: GpuQueueId,
+    ) -> Self {
+        Self { producer, target_queue }
+    }
+
+    /// Native producer whose completion precedes the waiting queue's work.
+    #[must_use]
+    pub const fn producer(&self) -> SubmissionId { self.producer }
+
+    /// The physical queue which contains the native wait.
+    #[must_use]
+    pub const fn target_queue(&self) -> GpuQueueId { self.target_queue }
+}
+
 /// Accepted native GPU submission and its resource use set.
+/// Unverified GPU waits cannot be constructed through public record fields.
 #[derive(Clone, Debug)]
 pub struct GpuSubmissionRecord {
     pub id: SubmissionId,
     pub queue: GpuQueueId,
     pub stage: GpuWorkStage,
     pub uses: Vec<GpuSubmissionAccess>,
-    /// Explicit native GPU waits encoded before this submission. Merely
-    /// knowing another queue's fence does NOT establish this relationship.
-    pub gpu_waits: Vec<SubmissionId>,
+    gpu_waits: Vec<GpuNativeWaitProof>,
+}
+
+impl GpuSubmissionRecord {
+    #[must_use]
+    pub fn new(
+        id: SubmissionId, queue: GpuQueueId, stage: GpuWorkStage,
+        uses: Vec<GpuSubmissionAccess>,
+    ) -> Self {
+        Self { id, queue, stage, uses, gpu_waits: Vec::new() }
+    }
+
+    /// Only an already encoded native GPU-side queue wait can create this edge.
+    pub fn add_native_gpu_wait(&mut self, proof: GpuNativeWaitProof) -> Result<()> {
+        if proof.target_queue != self.queue {
+            return Err(Error::InvalidInput(
+                "GPU wait target does not match consumer physical queue".into(),
+            ));
+        }
+        if proof.producer == self.id {
+            return Err(Error::InvalidInput(
+                "GPU submission cannot wait on its own completion".into(),
+            ));
+        }
+        if !self.gpu_waits.contains(&proof) {
+            self.gpu_waits.push(proof);
+        }
+        Ok(())
+    }
+
+    /// Real GPU-side wait source IDs, never inferred from CPU ordering.
+    #[must_use]
+    pub fn gpu_waits(&self) -> impl Iterator<Item = SubmissionId> + '_ {
+        self.gpu_waits.iter().map(|proof| proof.producer)
+    }
 }
 
 /// The immutable completion obligations of a retired allocation.
@@ -182,7 +251,7 @@ impl GpuSubmissionDependencyGraph {
         if self.ancestors.contains_key(&record.id) {
             return Err(Error::InvalidInput("GPU submission ID was registered twice".into()));
         }
-        if record.gpu_waits.iter().any(|id| !self.live.contains_key(id)) {
+        if record.gpu_waits().any(|id| !self.live.contains_key(&id)) {
             return Err(Error::InvalidInput(
                 "cross-queue wait does not reference a registered native submission".into(),
             ));
@@ -196,9 +265,9 @@ impl GpuSubmissionDependencyGraph {
                 }
             }
         }
-        for waited in &record.gpu_waits {
-            covered.insert(*waited);
-            if let Some(older) = self.ancestors.get(waited) {
+        for waited in record.gpu_waits() {
+            covered.insert(waited);
+            if let Some(older) = self.ancestors.get(&waited) {
                 covered.extend(older.iter().copied());
             }
         }
@@ -313,7 +382,27 @@ mod tests {
         GpuSubmissionAccess { span, access }
     }
     fn record(id_: u32, queue: GpuQueueId, uses: Vec<GpuSubmissionAccess>, waits: Vec<SubmissionId>) -> GpuSubmissionRecord {
-        GpuSubmissionRecord { id: id(id_), queue, stage: GpuWorkStage::Compute, uses, gpu_waits: waits }
+        let mut record = GpuSubmissionRecord::new(id(id_), queue, GpuWorkStage::Compute, uses);
+        for waited in waits {
+            // SAFETY: The test explicitly models a successful native GPU wait
+            // on this same target queue; no hardware submission is claimed.
+            let proof = unsafe { GpuNativeWaitProof::after_native_wait(waited, queue) };
+            record.add_native_gpu_wait(proof).unwrap();
+        }
+        record
+    }
+
+    #[test]
+    fn native_wait_proof_is_bound_to_its_actual_target_queue() {
+        let transfer = GpuQueueId { family: 1, index: 0 };
+        let graphics = GpuQueueId::PRIMARY;
+        // SAFETY: This is a unit-test model of native GPU queue waits.
+        let proof = unsafe { GpuNativeWaitProof::after_native_wait(id(91), transfer) };
+        let mut record = GpuSubmissionRecord::new(
+            id(92), graphics, GpuWorkStage::Graphics, vec![],
+        );
+        assert!(record.add_native_gpu_wait(proof).is_err());
+        assert_eq!(record.gpu_waits().count(), 0);
     }
 
     #[test]
