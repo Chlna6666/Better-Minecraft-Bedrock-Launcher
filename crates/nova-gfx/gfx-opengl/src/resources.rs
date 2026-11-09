@@ -77,6 +77,21 @@ impl ResourceDevice for OpenGlDevice {
         }
     }
 
+    fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+        if self.park().is_err() {
+            return gfx_core::TextureVolumeCapabilities::default();
+        }
+        // OpenGL 4.5 requires native 3D textures and image load/store.
+        let maximum = unsafe {
+            self.gl.get_parameter_i32(glow::MAX_3D_TEXTURE_SIZE).max(0) as u32
+        };
+        gfx_core::TextureVolumeCapabilities {
+            max_dimension_3d: maximum,
+            sampled: maximum != 0,
+            storage: maximum != 0 && self.compute.capabilities.supports_compute(),
+        }
+    }
+
     fn buffer_binding_limits(&self) -> BufferBindingLimits {
         self.binding_limits
     }
