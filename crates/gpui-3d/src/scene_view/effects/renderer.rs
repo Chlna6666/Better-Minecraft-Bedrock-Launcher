@@ -75,7 +75,7 @@ impl EffectsRenderer {
                     && device.compute_bind_group_capabilities().storage_textures
                     && device.compute_bind_group_capabilities().sampled_textures
                 {
-                    match FroxelProgram::new(device, context.backend_kind()) {
+                    match FroxelProgram::new(device, &context) {
                         Ok(program) => Some(cleanup.record(program, |d, program| {
                             let _ = program.destroy(d);
                         })),
