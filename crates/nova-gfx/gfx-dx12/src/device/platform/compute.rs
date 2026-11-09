@@ -694,6 +694,18 @@ impl Dx12Device {
                         "DX12 UPLOAD buffers cannot be writable Compute UAVs".into(),
                     ));
                 }
+                if resource.desc.memory_location != MemoryLocation::CpuToGpu
+                    && binding.access == ComputeBufferAccess::Uniform
+                {
+                    // D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER is not
+                    // a legal transition state for COMPUTE-only queues. A
+                    // GPU-only CBV cannot use this typed barrier path; callers
+                    // may submit the same workload on the independent DIRECT
+                    // queue instead, without pretending COMPUTE is safe.
+                    return Err(Error::Unavailable(
+                        "DX12 dedicated COMPUTE needs CPUToGpu CBV or storage/SRV bindings".into(),
+                    ));
+                }
                 buffers.push(binding.buffer.buffer);
             }
         }
