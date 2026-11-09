@@ -304,6 +304,15 @@ impl OpenGlDevice {
                     ));
                 };
                 let buffer = self.buffers.get(range.buffer)?;
+                let layout_entry = layout.entries.iter().find(|entry| entry.binding == slot.logical)
+                    .ok_or_else(|| Error::InvalidInput("OpenGL compute buffer missing layout entry".into()))?;
+                if layout_entry.binding_type == BindingType::StorageBufferReadWrite
+                    && !buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE)
+                {
+                    return Err(Error::InvalidInput(
+                        "OpenGL writable compute storage lacks STORAGE_WRITE".into(),
+                    ));
+                }
                 let uniform = slot.kind == BindingType::UniformBuffer;
                 if !buffer.desc.usage.contains(if uniform {
                     BufferUsage::UNIFORM

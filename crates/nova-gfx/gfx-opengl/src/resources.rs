@@ -636,9 +636,12 @@ impl ResourceDevice for OpenGlDevice {
                 } else {
                     (BufferUsage::STORAGE, self.storage_alignment)
                 };
-                if !buffer.desc.usage.contains(usage) {
+                if !buffer.desc.usage.contains(usage)
+                    || (kind == BindingType::StorageBufferReadWrite
+                        && !buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE))
+                {
                     return Err(Error::InvalidInput(
-                        "OpenGL buffer usage differs from layout".into(),
+                        "OpenGL buffer usage differs from layout or lacks write access".into(),
                     ));
                 }
                 if range.offset % alignment != 0 {
