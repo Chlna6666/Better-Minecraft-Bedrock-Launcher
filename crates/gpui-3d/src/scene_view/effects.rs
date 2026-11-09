@@ -1,6 +1,8 @@
 //! GPU-only screen effects and their bounded quality budget.
 use crate::{TextureAssetId, Vec3};
-pub(super) const FRAME_BYTES: u64 = 416;
+/// Three cascaded shadow matrices plus a vec4 of fade/split distances.
+pub(super) const FRAME_BYTES: u64 = 560;
+pub(super) const SHADOW_CASCADE_COUNT: usize = 3;
 
 /// Uniformly timed square frames laid out vertically in one immutable texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
