@@ -1160,6 +1160,107 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
     }
 }
 
+#[cfg(test)]
+mod offscreen_submission_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct MockDevice {
+        independent: bool,
+        route: Vec<&'static str>,
+    }
+
+    impl PresentationDevice for MockDevice {
+        fn render_and_present(
+            &mut self,
+            _frame: &PresentFrameDescriptor<'_>,
+        ) -> Result<Option<PresentedFrame>> {
+            Err(Error::Unavailable("mock device has no swapchain".into()))
+        }
+        fn independent_graphics_queue_available(&self) -> bool {
+            self.independent
+        }
+        fn render_to_textures(
+            &mut self,
+            _passes: &[RenderPassCommands<'_>],
+        ) -> Result<Option<SubmissionId>> {
+            self.route.push("primary");
+            Ok(None)
+        }
+        fn render_to_textures_profiled(
+            &mut self,
+            _passes: &[RenderPassCommands<'_>],
+            _tags: &[Option<GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            self.route.push("primary-profiled");
+            Ok(None)
+        }
+        fn render_to_textures_independent(
+            &mut self,
+            _passes: &[RenderPassCommands<'_>],
+        ) -> Result<Option<SubmissionId>> {
+            self.route.push("independent");
+            Ok(None)
+        }
+        fn render_to_textures_independent_profiled(
+            &mut self,
+            _passes: &[RenderPassCommands<'_>],
+            _tags: &[Option<GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            self.route.push("independent-profiled");
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn queue_preference_never_forces_unsupported_async_graphics() {
+        let mut device = MockDevice::default();
+        OffscreenSubmissionDevice::submit_offscreen_graphics(
+            &mut device, &[], &[],
+            OffscreenQueuePreference::IndependentGraphicsIfAvailable,
+        ).unwrap();
+        assert_eq!(device.route, ["primary"]);
+        device.independent = true;
+        OffscreenSubmissionDevice::submit_offscreen_graphics(
+            &mut device, &[], &[],
+            OffscreenQueuePreference::IndependentGraphicsIfAvailable,
+        ).unwrap();
+        assert_eq!(device.route, ["primary", "independent"]);
+    }
+
+    #[test]
+    fn timestamped_native_offscreen_work_uses_the_profiling_path() {
+        let pass = RenderPassCommands {
+            color_attachments: &[],
+            render_pass: RenderPassId::from_parts(1, 1),
+            commands: &[],
+            color_load_op: LoadOp::Load,
+            clear_region: None,
+            viewport: None,
+            depth_attachment: None,
+            resolve_target: None,
+        };
+        let tag = Some(GpuTimestampTag {
+            batch_id: 17,
+            stage: crate::GpuTimestampStage::DrawIndirect,
+        });
+        let mut device = MockDevice::default();
+        device.independent = true;
+        OffscreenSubmissionDevice::submit_offscreen_graphics(
+            &mut device, std::slice::from_ref(&pass), &[tag],
+            OffscreenQueuePreference::IndependentGraphicsIfAvailable,
+        ).unwrap();
+        assert_eq!(device.route, ["independent-profiled"]);
+        assert!(matches!(
+            OffscreenSubmissionDevice::submit_offscreen_graphics(
+                &mut device, std::slice::from_ref(&pass), &[],
+                OffscreenQueuePreference::OrderedGraphics,
+            ),
+            Err(Error::InvalidInput(_)),
+        ));
+    }
+}
+
 /// A two-timestamp window is eligible only for a nonempty, purely indirect
 /// command sequence: regular draws would contaminate the native measurement.
 #[must_use]
