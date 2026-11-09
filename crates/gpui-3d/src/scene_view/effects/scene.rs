@@ -528,53 +528,84 @@ impl EffectScene {
 #[cfg(test)]
 mod stable_shadow_tests {
     use super::*;
+
     #[test]
-    fn projection_stays_in_same_light_texel_under_subpixel_motion() {
+    fn all_cascades_use_texel_snapped_camera_projections() {
         let sun = Vec3::new(0.45, 0.81, 0.37);
-        let (key, camera) = stable_shadow_camera(Vec3::new(17.0, 80.0, -12.0), sun).unwrap();
-        let (moved, _) = stable_shadow_camera(Vec3::new(17.001, 80.0, -12.0), sun).unwrap();
-        assert_eq!(key, moved);
-        let light = (camera.eye - camera.target).normalized().unwrap();
-        let right = camera.up.cross(light).normalized().unwrap();
-        let vertical = light.cross(right).normalized().unwrap();
-        for axis in [right, vertical] {
-            let normalized = camera.target.dot(axis) / SHADOW_TEXEL_WORLD;
-            assert!((normalized - normalized.round()).abs() < 0.005);
-            let tile = camera.target.dot(axis) / SHADOW_SCROLL_WORLD;
-            assert!((tile - tile.round()).abs() < 0.005);
+        let eye = Vec3::new(17.0, 80.0, -12.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            let (moved, _) = stable_shadow_camera(
+                eye + Vec3::new(0.0001, 0.0001, -0.0001), sun, cascade,
+            ).unwrap();
+            assert_eq!(key, moved, "cascade {cascade} must not jitter on subpixel motion");
+            let light = (camera.eye - camera.target).normalized().unwrap();
+            let right = camera.up.cross(light).normalized().unwrap();
+            let vertical = light.cross(right).normalized().unwrap();
+            let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+            for axis in [right, vertical] {
+                let coordinate = camera.target.dot(axis) / texel;
+                assert!((coordinate - coordinate.round()).abs() < 0.01);
+            }
         }
     }
 
     #[test]
-    fn shadow_map_remains_reused_during_small_camera_translations() {
+    fn each_cascade_caches_camera_motion_within_its_shadow_tile() {
         let sun = Vec3::new(0.45, 0.81, 0.37);
-        let center = Vec3::new(16.0, 72.0, -8.0);
-        let (key, first) = stable_shadow_camera(center, sun).unwrap();
-        // The viewer can translate by a fraction of a world block without
-        // invalidating a full shadow render or moving the raster projection.
-        for dx in [0.0001, 0.01, 0.05, 0.1] {
-            let (moved, next) = stable_shadow_camera(center + Vec3::X * dx, sun).unwrap();
-            assert_eq!(key, moved);
-            assert_eq!(first, next);
+        let eye = Vec3::new(16.0, 72.0, -8.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, first) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            for dx in [0.0001, 0.001, 0.01] {
+                let (next_key, next) =
+                    stable_shadow_camera(eye + Vec3::X * dx, sun, cascade).unwrap();
+                assert_eq!(key, next_key);
+                assert_eq!(first, next);
+            }
         }
     }
+
     #[test]
-    fn shadow_map_crosses_integer_texel_grid_when_scrolling() {
+    fn light_space_scrolling_moves_in_whole_texels() {
         let sun = Vec3::new(0.45, 0.81, 0.37);
-        let viewer = Vec3::new(0.0, 64.0, 0.0);
-        let (key, camera) = stable_shadow_camera(viewer, sun).unwrap();
-        let right = camera.up.cross((camera.eye - camera.target).normalized().unwrap())
-            .normalized().unwrap();
-        let (next_key, next) = stable_shadow_camera(
-            viewer + right * (SHADOW_SCROLL_WORLD * 1.5),
-            sun,
-        ).unwrap();
-        assert_ne!(key, next_key);
-        let displacement = (next.target - camera.target).dot(right) / SHADOW_TEXEL_WORLD;
-        assert!((displacement - displacement.round()).abs() < 0.01);
+        let eye = Vec3::new(0.0, 64.0, 0.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            let right = camera.up.cross((camera.eye - camera.target).normalized().unwrap())
+                .normalized().unwrap();
+            let texel = SHADOW_CASCADE_WIDTHS[cascade] / SHADOW_MAP_SIZE as f32;
+            let (next_key, next) = stable_shadow_camera(
+                eye + right * (texel * SHADOW_SCROLL_TEXELS * 1.5), sun, cascade,
+            ).unwrap();
+            assert_ne!(key, next_key);
+            let displacement = (next.target - camera.target).dot(right) / texel;
+            assert!((displacement - displacement.round()).abs() < 0.01);
+        }
     }
+
     #[test]
-    fn enlarged_shadow_map_keeps_previous_world_texel_density() {
-        assert!(SHADOW_WORLD_HEIGHT / SHADOW_MAP_SIZE as f32 < 0.22);
+    fn cascade_splits_fit_inside_their_projection_widths() {
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            assert!(
+                SHADOW_CASCADE_SPLITS[cascade] + SHADOW_CASCADE_SPLITS[3]
+                    < SHADOW_CASCADE_WIDTHS[cascade] * 0.5,
+                "cascade {cascade} must fit its receiver radius and fade margin",
+            );
+        }
+        assert!(SHADOW_CASCADE_WIDTHS[0] / SHADOW_MAP_SIZE as f32 < 0.22);
+        assert!(SHADOW_CASCADE_WIDTHS[2] > 320.0);
+    }
+
+    #[test]
+    fn sun_extruded_caster_bounds_include_offscreen_upstream_casters() {
+        let sun = Vec3::new(0.45, 0.81, 0.37).normalized().unwrap();
+        let eye = Vec3::new(0.0, 64.0, 0.0);
+        let bounds = shadow_caster_bounds(eye, sun, 0);
+        let upstream = eye + sun * 128.0;
+        assert!(upstream.x >= bounds.min.x && upstream.x <= bounds.max.x);
+        assert!(upstream.y >= bounds.min.y && upstream.y <= bounds.max.y);
+        assert!(upstream.z >= bounds.min.z && upstream.z <= bounds.max.z);
+        let behind = eye - sun * 256.0;
+        assert!(behind.y < bounds.min.y);
     }
 }
