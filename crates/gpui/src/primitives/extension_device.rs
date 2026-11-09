@@ -371,7 +371,7 @@ where
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
-        OffscreenSubmissionDevice::independent_graphics_queue_available(self)
+        OffscreenSubmissionDevice::supports_independent_offscreen_graphics(self)
     }
 
     fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
