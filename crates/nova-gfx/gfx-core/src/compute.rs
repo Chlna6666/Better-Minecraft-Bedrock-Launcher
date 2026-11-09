@@ -129,12 +129,14 @@ impl BufferBindingLimits {
                 "storage allocation exceeds device binding limit".into(),
             ));
         }
+        // The maximum storage *binding range* is not the maximum allocation
+        // size. Padding an otherwise legal range to the native offset alignment
+        // may extend the backing allocation beyond the bindable range.
         requested
             .checked_add(align - 1)
             .map(|value| value / align * align)
-            .filter(|value| *value <= self.max_storage_binding_bytes)
             .ok_or_else(|| {
-                Error::InvalidInput("aligned storage allocation exceeds device limits".into())
+                Error::InvalidInput("aligned storage allocation size overflows".into())
             })
     }
 }
@@ -654,6 +656,22 @@ mod tests {
             max_workgroup_shared_memory_bytes: 16 * 1024,
             indirect_draw: false,
         }
+    }
+
+    #[test]
+    fn aligned_storage_allocation_can_exceed_maximum_binding_range() {
+        let limits = BufferBindingLimits {
+            storage_offset_alignment: 256,
+            max_storage_binding_bytes: 1023,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 1023,
+        };
+        // The 1023-byte binding is valid even though its backing allocation
+        // rounds up to 1024 bytes for the next aligned suballocation.
+        assert_eq!(limits.storage_allocation_size(1023).unwrap(), 1024);
+        assert!(limits.validate_range(0, 1023, false).is_ok());
+        assert!(limits.storage_allocation_size(1024).is_err());
+        assert!(limits.validate_range(0, 1024, false).is_err());
     }
 
     #[test]
