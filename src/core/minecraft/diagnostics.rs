@@ -95,6 +95,7 @@ pub struct GameSessionReport {
     pub pid: u32,
     pub process_created_at: Option<u64>,
     pub compatibility_prefix: Option<PathBuf>,
+    pub compatibility_logs: Option<PathBuf>,
     pub compatibility_fault: Option<CompatibilityFault>,
     pub early_exit: bool,
     pub started_at: DateTime<Utc>,
@@ -225,6 +226,7 @@ impl GameSessionReport {
     pub fn begin(
         task_id: &str, version: &str, game_directory: &Path,
         platform: &str, pid: u32, compatibility_prefix: Option<PathBuf>,
+        compatibility_logs: Option<PathBuf>,
     ) -> Self {
         let report = Self {
             schema_version: GAME_DIAGNOSTICS_SCHEMA,
@@ -241,6 +243,7 @@ impl GameSessionReport {
                 { process_creation_ticks(pid) }
             },
             compatibility_prefix,
+            compatibility_logs,
             compatibility_fault: None,
             early_exit: false,
             started_at: Utc::now(),
@@ -331,8 +334,22 @@ impl GameSessionReport {
         }
         // Freeze evidence only for abnormal sessions. Normal play should not
         // create unnecessary raw log copies or increase persistent disk usage.
-        if self.kind.is_abnormal() {
+        if self.kind.is_abnormal() || self.early_exit {
             snapshot_text_evidence(&self);
+        }
+        // Proton can write large direct logs. Only bounded evidence snapshots
+        // are retained. Never remove arbitrary directories supplied by a
+        // manually edited report JSON.
+        if let Some(logs) = self.compatibility_logs.as_ref()
+            && logs.parent() == Some(root().join("compat-logs").as_path())
+            && logs.file_name().and_then(|name| name.to_str())
+                .is_some_and(|name| Uuid::parse_str(name).is_ok())
+        {
+            if let Err(error) = fs::remove_dir_all(logs)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, session_id=%self.id, "清理临时 Proton 日志失败");
+            }
         }
         tracing::info!(
             session_id = %self.id,
@@ -627,7 +644,7 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
         report.game_directory.join("Minecraft Bedrock/logs"),
         report.game_directory.join("Minecraft Bedrock/CrashLogs"),
         report.game_directory.join("BLoader/logs"),
-        file_ops::logs_dir().join("proton").join(&report.task_id),
+        report.compatibility_logs.clone().unwrap_or_default(),
     ];
     let mut number = 0usize;
     let mut directories = directories.to_vec();
@@ -661,7 +678,7 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             if !matches!(ext.to_ascii_lowercase().as_str(), "log" | "txt" | "json") { continue }
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             let name = name.to_ascii_lowercase();
-            if !dir.ends_with(&report.task_id)
+            if report.compatibility_logs.as_ref() != Some(&dir)
                 && !name.contains("crash")
                 && !name.contains("levilamina")
                 && !name.contains("bloader")
@@ -971,6 +988,7 @@ mod tests {
             pid: 0x112A,
             process_created_at: Some(0xABCD),
             compatibility_prefix: None,
+            compatibility_logs: None,
             compatibility_fault: None,
             early_exit: false,
             started_at: now - chrono::Duration::seconds(8),
