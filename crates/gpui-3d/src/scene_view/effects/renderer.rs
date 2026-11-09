@@ -11,8 +11,8 @@ use super::{
 use anyhow::Context as _;
 use gfx_core::*;
 use gpui::{
-    ExtensionDevice, RendererExtension, RendererExtensionContext, RendererExtensionPass,
-    RendererExtensionRenderer,
+    ExtensionDevice, RendererExtension, RendererExtensionComputePass,
+    RendererExtensionContext, RendererExtensionPass, RendererExtensionRenderer,
 };
 use std::{collections::HashMap, sync::Arc, time::Instant};
 #[cfg(test)]
@@ -31,6 +31,9 @@ pub(in crate::scene_view) struct EffectsRenderer {
     compositor: Compositor,
     scenes: HashMap<SceneViewId, EffectScene>,
     passes: Vec<RendererExtensionPass>,
+    // Mixed work is drained by GPUI's GPU owner between shadow raster and
+    // the screen composite, never dispatched early from render_scene.
+    compute_passes: Vec<RendererExtensionComputePass>,
     epoch: Instant,
     textures: Option<super::textures::Textures>,
     completed: bool,
@@ -153,6 +156,7 @@ impl EffectsRenderer {
                     .unwrap_or_else(|| unreachable!("compositor was constructed")),
                 scenes: HashMap::new(),
                 passes: Vec::new(),
+                compute_passes: Vec::new(),
                 epoch: context.frame_time(),
                 textures: Some(textures),
                 completed: false,
@@ -517,6 +521,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
         let result = self.render_scene(device, &view, &context, steps);
         if result.is_err() {
             self.passes.clear();
+            self.compute_passes.clear();
             for state in self.scenes.values_mut() {
                 state.queued_capture = false;
                 state.queued_ssr_hiz = false;
@@ -528,6 +533,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
     }
     fn drain_render_passes(&mut self, passes: &mut Vec<RendererExtensionPass>) {
         passes.append(&mut self.passes);
+    }
+    fn drain_compute_passes(&mut self, compute: &mut Vec<RendererExtensionComputePass>) {
+        compute.append(&mut self.compute_passes);
     }
     fn needs_gpu_completion(&self) -> bool {
         self.scenes
