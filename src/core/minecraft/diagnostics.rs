@@ -15,6 +15,57 @@ use zip::write::SimpleFileOptions;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug)]
+pub struct CrashExportOptions {
+    pub include_launcher: bool,
+    pub include_game: bool,
+    pub include_extensions: bool,
+    pub include_windows: bool,
+    pub include_dumps: bool,
+    pub redact_text: bool,
+}
+
+impl Default for CrashExportOptions {
+    fn default() -> Self {
+        Self {
+            include_launcher: true,
+            include_game: true,
+            include_extensions: true,
+            include_windows: true,
+            include_dumps: false,
+            redact_text: true,
+        }
+    }
+}
+
+impl CrashExportOptions {
+    pub fn includes_any(self) -> bool {
+        self.include_launcher || self.include_game || self.include_extensions
+            || self.include_windows || self.include_dumps
+    }
+
+    pub fn needs_confirmation(self) -> bool {
+        !self.redact_text || self.include_dumps
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvidenceCategory {
+    Launcher,
+    Game,
+    Extension,
+}
+
+fn evidence_category(name: &str) -> EvidenceCategory {
+    if name == "logs/launch-task.log" {
+        EvidenceCategory::Launcher
+    } else if name == "logs/game.log" {
+        EvidenceCategory::Game
+    } else {
+        EvidenceCategory::Extension
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitKind {
@@ -513,6 +564,16 @@ fn evidence_dir(report: &GameSessionReport) -> PathBuf {
 /// Never store absolute source paths in the exported evidence manifest.
 fn snapshot_text_evidence(report: &GameSessionReport) {
     let directory = evidence_dir(report);
+    // Retain the original bounded evidence locally. Redaction is performed
+    // when exporting; an already-redacted snapshot could never provide a
+    // truthful "raw text" option later. No network upload is performed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if fs::create_dir_all(&directory).is_ok() {
+            let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+        }
+    }
     let mut included = Vec::<String>::new();
     for (name, path) in text_files(report) {
         if name != "logs/launch-task.log" {
@@ -534,8 +595,9 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
         {
             continue;
         }
-        let sanitized = log_privacy::redact_log_text(&contents);
-        if fs::write(&target, sanitized.as_bytes()).is_ok() {
+        // The source is already bounded by MAX_TEXT_BYTES. The raw snapshot
+        // stays in the application's local diagnostics store.
+        if fs::write(&target, contents.as_bytes()).is_ok() {
             included.push(name);
         }
     }
@@ -615,62 +677,106 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
     candidates
 }
 
-/// Export a bounded, redacted ZIP. No upload is ever performed here.
-/// Dumps are excluded by default because they can contain credentials and world data.
-pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<(), String> {
+/// Export the user-selected evidence categories to a local ZIP.
+///
+/// Every text source comes from the immutable per-session snapshot, not from
+/// a rotating global latest.log. The default redact_text=true scrubs on export.
+/// No automatic upload is performed. DMPs are never text-redacted.
+pub fn export_zip_with_options(
+    id: &str,
+    destination: &Path,
+    options: CrashExportOptions,
+) -> Result<(), String> {
+    if !options.includes_any() {
+        return Err("请选择至少一类诊断材料".to_string());
+    }
     let report = read_report(id)?;
     let parent = destination.parent().ok_or("无效的导出目录")?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    if destination.exists() {
+        return Err("目标 ZIP 已存在，请另选文件名以免覆盖现有诊断材料".to_string());
+    }
     let temp = parent.join(format!(".bmcbl-crash-{}.partial", Uuid::new_v4()));
     let result = (|| -> Result<(), String> {
         let file = fs::File::create(&temp).map_err(|error| error.to_string())?;
         let mut writer = zip::ZipWriter::new(file);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let compression = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let text = |value: &str| -> String {
+            if options.redact_text {
+                log_privacy::redact_log_text(value).into_owned()
+            } else {
+                value.to_string()
+            }
+        };
         let summary = format!(
-            "BMCBL 游戏诊断\n会话：{}\n版本：{}\n平台：{}\nPID：{}\n退出状态：{}\n{}\n",
+            "BMCBL 游戏诊断\n会话：{}\n版本：{}\n平台：{}\nPID：{}\n退出状态：{}\n{}\n文本脱敏：{}\n",
             report.id, report.version, report.platform, report.pid,
             report.exit_code.map_or_else(|| "未知".to_string(), |code| format!("0x{code:08X}")),
-            report.summary
+            report.summary,
+            if options.redact_text { "开启" } else { "关闭（用户主动选择）" },
         );
-        writer.start_file("summary.txt", options).map_err(|error| error.to_string())?;
-        writer.write_all(log_privacy::redact_log_text(&summary).as_bytes()).map_err(|error| error.to_string())?;
-        // Never export the raw private game_directory from the on-disk session JSON.
+        writer.start_file("summary.txt", compression).map_err(|error| error.to_string())?;
+        writer.write_all(text(&summary).as_bytes()).map_err(|error| error.to_string())?;
+
+        // Source directory is intentionally never serialized into the ZIP.
         let metadata = serde_json::json!({
             "session_id": report.id, "task_id": report.task_id, "version": report.version,
-            "platform": report.platform, "pid": report.pid, "process_created_at": report.process_created_at, "started_at": report.started_at,
-            "ended_at": report.ended_at, "exit_code": report.exit_code,
-            "exit_signal": report.exit_signal, "kind": report.kind,
-            "wer_fault": report.wer_fault,
+            "platform": report.platform, "pid": report.pid,
+            "process_created_at": report.process_created_at,
+            "started_at": report.started_at, "ended_at": report.ended_at,
+            "exit_code": report.exit_code, "exit_signal": report.exit_signal,
+            "kind": report.kind,
         });
-        writer.start_file("session.json", options).map_err(|error| error.to_string())?;
-        let safe_json = serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?;
-        writer.write_all(log_privacy::redact_log_text(&safe_json).as_bytes())
-            .map_err(|error| error.to_string())?;
-        if let Some(wer) = &report.wer_fault {
-            writer.start_file("windows/application-error.json", options)
-                .map_err(|error| error.to_string())?;
-            let safe = serde_json::to_string_pretty(wer).map_err(|error| error.to_string())?;
-            writer.write_all(log_privacy::redact_log_text(&safe).as_bytes())
-                .map_err(|error| error.to_string())?;
-        }
-        let sources = frozen_text_files(&report);
-        let source_manifest = sources.iter().map(|(name, path)| {
-            serde_json::json!({"archive_path": name, "found": path.is_file()})
-        }).collect::<Vec<_>>();
-        writer.start_file("evidence.json", options).map_err(|error| error.to_string())?;
-        writer.write_all(
-            serde_json::to_string_pretty(&source_manifest).map_err(|error| error.to_string())?.as_bytes()
-        ).map_err(|error| error.to_string())?;
-        for (entry_name, path) in sources {
-            if let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) {
-                writer.start_file(entry_name, options).map_err(|error| error.to_string())?;
-                writer.write_all(log_privacy::redact_log_text(&contents).as_bytes()).map_err(|error| error.to_string())?;
+        writer.start_file("session.json", compression).map_err(|error| error.to_string())?;
+        let json = serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?;
+        writer.write_all(text(&json).as_bytes()).map_err(|error| error.to_string())?;
+
+        if options.include_windows {
+            if let Some(wer) = &report.wer_fault {
+                writer.start_file("windows/application-error.json", compression)
+                    .map_err(|error| error.to_string())?;
+                let raw = serde_json::to_string_pretty(wer).map_err(|error| error.to_string())?;
+                writer.write_all(text(&raw).as_bytes()).map_err(|error| error.to_string())?;
             }
         }
-        if include_dump {
-            // Explicit opt-in only. DMPs cannot be scrubbed with text redaction.
+
+        let sources = frozen_text_files(&report)
+            .into_iter()
+            .filter(|(name, _)| match evidence_category(name) {
+                EvidenceCategory::Launcher => options.include_launcher,
+                EvidenceCategory::Game => options.include_game,
+                EvidenceCategory::Extension => options.include_extensions,
+            })
+            .collect::<Vec<_>>();
+        let mut manifest = Vec::with_capacity(sources.len());
+        for (entry_name, path) in sources {
+            let Some(contents) = tail_bytes(&path, MAX_TEXT_BYTES) else {
+                manifest.push(serde_json::json!({
+                    "archive_path": entry_name, "included": false,
+                    "reason": "会话快照不可读取"
+                }));
+                continue;
+            };
+            writer.start_file(entry_name.as_str(), compression)
+                .map_err(|error| error.to_string())?;
+            writer.write_all(text(&contents).as_bytes()).map_err(|error| error.to_string())?;
+            manifest.push(serde_json::json!({
+                "archive_path": entry_name, "included": true,
+                "text_redacted": options.redact_text
+            }));
+        }
+        writer.start_file("evidence.json", compression).map_err(|error| error.to_string())?;
+        let manifest_text = serde_json::to_string_pretty(&manifest)
+            .map_err(|error| error.to_string())?;
+        writer.write_all(text(&manifest_text).as_bytes())
+            .map_err(|error| error.to_string())?;
+
+        if options.include_dumps {
+            // Dumps may contain secrets and cannot be safely redacted.
+            // UI requires an explicit opt-in and a separate warning.
             for (index, dump) in dump_candidates(&report).iter().enumerate() {
-                writer.start_file(format!("dumps/game-{index}.dmp"), options)
+                writer.start_file(format!("dumps/game-{index}.dmp"), compression)
                     .map_err(|error| error.to_string())?;
                 let mut source = fs::File::open(dump).map_err(|error| error.to_string())?;
                 std::io::copy(&mut source, &mut writer).map_err(|error| error.to_string())?;
@@ -683,11 +789,27 @@ pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<()
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
+    if destination.exists() {
+        let _ = fs::remove_file(&temp);
+        return Err("目标 ZIP 已存在，请另选文件名以免覆盖现有诊断材料".to_string());
+    }
     if let Err(error) = fs::rename(&temp, destination) {
         let _ = fs::remove_file(&temp);
         return Err(error.to_string());
     }
     Ok(())
+}
+
+/// Keep the original API working for existing call sites.
+pub fn export_zip(id: &str, destination: &Path, include_dump: bool) -> Result<(), String> {
+    export_zip_with_options(
+        id,
+        destination,
+        CrashExportOptions {
+            include_dumps: include_dump,
+            ..CrashExportOptions::default()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -732,6 +854,25 @@ mod tests {
         assert!(match_application_error(&event("0x112a", "invalid"), &report).is_none());
         report.process_created_at = None;
         assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_none());
+    }
+
+    #[test]
+    fn export_options_are_private_by_default() {
+        let options = CrashExportOptions::default();
+        assert!(options.redact_text);
+        assert!(!options.include_dumps);
+        assert!(!options.needs_confirmation());
+        assert_eq!(evidence_category("logs/launch-task.log"), EvidenceCategory::Launcher);
+        assert_eq!(evidence_category("logs/game.log"), EvidenceCategory::Game);
+        assert_eq!(evidence_category("logs/provider-00.log"), EvidenceCategory::Extension);
+    }
+
+    #[test]
+    fn risky_export_requires_confirmation() {
+        let options = CrashExportOptions { redact_text: false, ..Default::default() };
+        assert!(options.needs_confirmation());
+        let options = CrashExportOptions { include_dumps: true, ..Default::default() };
+        assert!(options.needs_confirmation());
     }
 
     #[test]
