@@ -155,23 +155,25 @@ struct ExtensionSubmission<'a> {
     frame_resource_index: usize,
 }
 impl ExtensionSubmission<'_> {
-    fn submit<D: PresentationDevice>(self, device: &mut D) -> Result<Option<SubmissionId>> {
-        let passes = self
-            .registry
-            .passes()
-            .iter()
+    /// Submit one contiguous graphics run and retain its native completion
+    /// handle immediately. In a mixed sequence earlier runs may already have
+    /// been submitted when a later Compute/Graphics stage fails.
+    fn submit_graphics<D: PresentationDevice>(
+        &mut self,
+        device: &mut D,
+        range: std::ops::Range<usize>,
+        independent: bool,
+    ) -> Result<Option<SubmissionId>> {
+        if range.is_empty() {
+            return Ok(None);
+        }
+        let selected = &self.registry.passes()[range];
+        let passes = selected.iter()
             .map(crate::RendererExtensionPass::commands)
             .collect::<Vec<_>>();
-        let tags = self.registry.passes().iter()
-            .map(|pass| pass.gpu_work_tag)
-            .collect::<Vec<_>>();
+        let tags = selected.iter().map(|pass| pass.gpu_work_tag).collect::<Vec<_>>();
         let timed = tags.iter().any(Option::is_some);
-        let independent = self.registry.independent_producers_only()
-            && device.independent_graphics_queue_available();
-        let cpu_started = (!passes.is_empty() && sidecar_bridge_trace_enabled()).then(Instant::now);
-        let submission = if passes.is_empty() {
-            None
-        } else if independent && timed {
+        let submission = if independent && timed {
             device.render_to_textures_independent_profiled(&passes, &tags)?
         } else if independent {
             device.render_to_textures_independent(&passes)?
@@ -180,18 +182,6 @@ impl ExtensionSubmission<'_> {
         } else {
             device.render_to_textures(&passes)?
         };
-        if let Some(started) = cpu_started {
-            record_sidecar_bridge_cpu(
-                SidecarBridgeCpuPhase::Producer {
-                    passes: passes.len(),
-                    independent,
-                },
-                started.elapsed(),
-                self.pending.len() + usize::from(submission.is_some()),
-            );
-        }
-        drop(passes);
-        self.registry.render_passes_submitted();
         if let Some(submission) = submission {
             self.pending.push(PendingSubmission {
                 submission,
@@ -201,6 +191,63 @@ impl ExtensionSubmission<'_> {
             });
         }
         Ok(submission)
+    }
+
+    fn submit<D: PresentationDevice + ResourceDevice>(
+        mut self,
+        device: &mut D,
+    ) -> Result<Option<SubmissionId>> {
+        let computes = self.registry.compute_passes().to_vec();
+        let mixed = !computes.is_empty();
+        if mixed && !device.ordered_mixed_graphics_compute_supported() {
+            return Err(gfx_core::Error::Unavailable(
+                "native mixed Graphics/Compute offscreen submission is unsupported".into()
+            ));
+        }
+        let count = self.registry.passes().len();
+        let independent = !mixed
+            && self.registry.independent_producers_only()
+            && device.independent_graphics_queue_available();
+        let cpu_started = (count > 0 && sidecar_bridge_trace_enabled()).then(Instant::now);
+        let mut cursor = 0usize;
+        let mut last = None;
+        for stage in computes {
+            // Every Compute insertion point was checked when the renderer
+            // drained work. Keep the native boundary check fail-closed too.
+            if stage.after_graphics_pass <= cursor
+                || stage.after_graphics_pass >= count
+            {
+                return Err(gfx_core::Error::InvalidInput(
+                    "mixed Compute boundary is not inside the graphics sequence".into()
+                ));
+            }
+            if let Some(submission) =
+                self.submit_graphics(device, cursor..stage.after_graphics_pass, false)?
+            {
+                last = Some(submission);
+            }
+            // Dispatch on the same device/primary graphics queue. The backend
+            // must transition the preceding attachments to shader-readable
+            // states and make any Compute writes visible to the next Graphics
+            // run. No CPU fence wait is permitted between these operations.
+            ResourceDevice::dispatch_compute_bind_group(device, &stage.dispatch)?;
+            cursor = stage.after_graphics_pass;
+        }
+        if let Some(submission) = self.submit_graphics(device, cursor..count, independent)? {
+            last = Some(submission);
+        }
+        if let Some(started) = cpu_started {
+            record_sidecar_bridge_cpu(
+                SidecarBridgeCpuPhase::Producer {
+                    passes: count,
+                    independent,
+                },
+                started.elapsed(),
+                self.pending.len(),
+            );
+        }
+        self.registry.render_passes_submitted();
+        Ok(last)
     }
 }
 fn attach_extension_submission(
@@ -415,7 +462,7 @@ pub(super) fn color_layer_passes(
     passes
 }
 
-fn execute_frame_graph_offscreen<D: PresentationDevice>(
+fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
