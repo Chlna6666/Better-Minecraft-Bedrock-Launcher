@@ -270,13 +270,13 @@ impl EffectsRenderer {
             light.2,
             state.ssr_hiz_levels(),
         )?;
-        if state.tile_camera != Some(view.camera)
+        let tile_updated = state.tile_camera != Some(view.camera)
             || state
                 .tile_scene
                 .as_ref()
                 .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
-            || state.tile_transform != view.scene_transform
-        {
+            || state.tile_transform != view.scene_transform;
+        if tile_updated {
             // A failed dispatch may already have cleared the old tile lists.
             state.tile_camera = None;
             state
@@ -343,6 +343,16 @@ impl EffectsRenderer {
         let groups = state
             .groups
             .ok_or_else(|| anyhow::anyhow!("screen bindings missing"))?;
+        // Validate the actual GPU allocation dependencies before enqueueing
+        // the final graphics consumer. No CPU fence or host-side pixel work:
+        // the compiled graph only verifies producer order and alias hazards.
+        // Native mixed Graphics/Compute submission remains an explicit future
+        // capability; do not pre-dispatch Froxel compute against queued CSM.
+        let _transitions = state.validate_gpu_work_graph(
+            settings.reflections,
+            view.voxel_shading.shadow_strength > 0.0,
+            tile_updated,
+        )?;
         self.passes.push(RendererExtensionPass {
             target: state.targets.resolved.view,
             color_attachments: Arc::from([]),
