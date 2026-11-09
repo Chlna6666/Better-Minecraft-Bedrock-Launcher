@@ -70,8 +70,16 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 - **UI 消费链**：`gpui-3d::scene_view` 的 Sidecar Adapter → `gpui` 视图布局、裁剪和
   颜色视图采样 → Swapchain Present。纹理合成不意味着 3D 命令被绘制成 2D。
 - **资源与同步链**：GPU Owner 负责设备访问合法性、提交顺序和 `SubmissionId`；只有
-  GPU Fence 完成才能释放/复用在途资源。图的逻辑 `GpuTransition` 必须经原生 API
-  Barrier 和队列同步执行后才能当作已满足。不能用 CPU 等待补齐缺失的 GPU 同步。
+  GPU Fence 完成才能释放/复用在途资源。具体到稳定物理 Draw Slot：
+  `SceneView` 每次 Native DrawIndirect Producer 被接受后记录实际 `SubmissionId`；
+  Section 卸载时解除逻辑身份，但将旧 DrawParams/Instance/Bounds 槽位隔离到该
+  Producer 的退休队列。后端没有可靠 Producer ID 时，在默认有序图形队列上以
+  真实 GUI Consumer Fence 作保守上界，或等待 GPU Owner 全部已提交工作完成。
+  GPU 生成的 MeshArena 子分配由 Compute/Graphics 多个提交引用，当前仍需
+  更保守的全局完成证明，不得错用 Sidecar 单次 Consumer Fence。
+  `BaseIdentity` 包含 `Mesh::generation()`，避免同一 MeshId 新几何覆写在途槽位。
+  图的逻辑 `GpuTransition` 必须经原生 API Barrier 和队列同步执行后才能当作已满足。
+  不能用 CPU 等待补齐缺失的 GPU 同步。
 - **可测量边界**：CPU 场景准备、GPU Owner 主机工作、原生离屏提交、原生 GPU
   BufferUpload/GeneratedMesh/DrawIndirect 时间戳、GPUI Consumer 合成、Present、
   Fence 等待分别记录；只用完成的原生计时样本推断 GPU 执行成本。
