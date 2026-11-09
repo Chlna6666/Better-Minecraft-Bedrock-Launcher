@@ -161,38 +161,55 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                         None
                     }
                 };
-                if let Some(mut session) = session {
-                    let pid = *pid;
-                    let monitor_task_id = task_id_for_task.clone();
-                    match crate::tasks::runtime::spawn_io(async move {
-                        let process_exit = wait_for_process_exit(pid);
-                        tokio::pin!(process_exit);
-                        let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
-                        checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                        checkpoint.tick().await;
-                        loop {
-                            tokio::select! {
-                                result = &mut process_exit => {
-                                    if let Err(error) = result {
-                                        append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
-                                    }
-                                    break;
+                // Monitoring must never depend on successful play-time persistence.
+                // Use the launch task only as correlation; the session outlives it.
+                let crash_record = crate::core::minecraft::diagnostics::GameSessionReport::begin(
+                    &task_id_for_task,
+                    request.version.as_ref(),
+                    Path::new(request.package_folder.as_ref()),
+                    if is_win32_version(request.version.as_ref()) { "gdk" } else { "uwp" },
+                    *pid,
+                );
+                let pid = *pid;
+                let monitor_task_id = task_id_for_task.clone();
+                match crate::tasks::runtime::spawn_io(async move {
+                    let process_exit = wait_for_process_exit(pid);
+                    tokio::pin!(process_exit);
+                    let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
+                    checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    checkpoint.tick().await;
+                    let mut session = session;
+                    loop {
+                        tokio::select! {
+                            result = &mut process_exit => {
+                                if let Err(error) = &result {
+                                    append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
                                 }
-                                _ = checkpoint.tick() => {
-                                    if let Err(error) = session.checkpoint().await {
-                                        append_log(&monitor_task_id, format!("定时保存游戏时间失败：{error}"));
-                                    }
+                                let completed = crash_record.finish(result);
+                                if completed.kind.is_abnormal() {
+                                    append_log(&monitor_task_id, completed.summary.clone());
+                                    warn!(session_id = %completed.id, %pid, "游戏异常退出");
+                                }
+                                break;
+                            }
+                            _ = checkpoint.tick() => {
+                                if let Some(session) = session.as_mut()
+                                    && let Err(error) = session.checkpoint().await
+                                {
+                                    append_log(&monitor_task_id, format!("定时保存游戏时间失败：{error}"));
                                 }
                             }
                         }
-                        if let Err(error) = session.finish().await {
-                            append_log(&monitor_task_id, format!("保存游戏时间失败：{error}"));
-                        }
-                    }) {
-                        Ok(handle) => monitor = Some(handle),
-                        Err(error) => {
-                            append_log(&task_id_for_task, format!("无法调度游戏时间统计：{error}"));
-                        }
+                    }
+                    if let Some(session) = session
+                        && let Err(error) = session.finish().await
+                    {
+                        append_log(&monitor_task_id, format!("保存游戏时间失败：{error}"));
+                    }
+                }) {
+                    Ok(handle) => monitor = Some(handle),
+                    Err(error) => {
+                        append_log(&task_id_for_task, format!("无法调度游戏退出监控：{error}"));
                     }
                 }
                 info!(

@@ -6,6 +6,7 @@ pub mod appx_utils;
 pub mod assets;
 pub mod capes;
 pub mod entity_avatar;
+pub mod diagnostics;
 pub mod gdk;
 pub mod import;
 pub mod install;

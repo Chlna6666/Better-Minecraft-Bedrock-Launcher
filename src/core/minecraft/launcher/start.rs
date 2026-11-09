@@ -167,18 +167,26 @@ pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str) -> Op
     None
 }
 
-pub async fn wait_for_process_exit(process_id: u32) -> Result<(), String> {
+/// Wait for the actual game process and preserve its native Windows exit status.
+/// Do not confuse a successful wait with a successful game exit.
+pub async fn wait_for_process_exit(process_id: u32) -> Result<u32, String> {
     crate::tasks::runtime::run_io_blocking(move || unsafe {
-        const SYNCHRONIZE_ACCESS: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
-        let process = OpenProcess(SYNCHRONIZE_ACCESS, false, process_id)
+        use windows::Win32::System::Threading::GetExitCodeProcess;
+        // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        let access = PROCESS_ACCESS_RIGHTS(0x0010_1000);
+        let process = OpenProcess(access, false, process_id)
             .map_err(|error| format!("无法打开游戏进程 {process_id}：{error}"))?;
         let wait_result = WaitForSingleObject(process, INFINITE);
-        CloseHandle(process)
-            .map_err(|error| format!("无法关闭游戏进程句柄 {process_id}：{error}"))?;
-        if wait_result == windows::Win32::Foundation::WAIT_FAILED {
-            return Err(format!("等待游戏进程 {process_id} 退出失败"));
-        }
-        Ok(())
+        let result = if wait_result == windows::Win32::Foundation::WAIT_OBJECT_0 {
+            let mut code = 0u32;
+            GetExitCodeProcess(process, &mut code)
+                .map_err(|error| format!("无法读取游戏退出码 {process_id}：{error}"))
+                .map(|_| code)
+        } else {
+            Err(format!("等待游戏进程 {process_id} 退出失败：{wait_result:?}"))
+        };
+        let _ = CloseHandle(process);
+        result
     })
     .await
     .map_err(|error| format!("等待游戏进程任务失败：{error}"))?

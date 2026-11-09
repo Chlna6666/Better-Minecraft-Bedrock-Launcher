@@ -855,8 +855,18 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     })
     .ok()
     .flatten();
+    let crash_report = crate::core::minecraft::diagnostics::GameSessionReport::begin(
+        task_id, request.version.as_ref(), Path::new(request.package_folder.as_ref()),
+        match runner.kind {
+            RunnerKind::Proton => "proton",
+            RunnerKind::Umu => "umu",
+            RunnerKind::Wine => "wine",
+        },
+        process_id,
+    );
     spawn_process_monitor(
         task_id.to_string(),
+        crash_report,
         child,
         stdout_pump,
         stderr_pump,
@@ -2095,6 +2105,7 @@ fn recent_runner_output(output: &Arc<Mutex<VecDeque<String>>>) -> String {
 
 fn spawn_process_monitor(
     task_id: String,
+    crash_report: crate::core::minecraft::diagnostics::GameSessionReport,
     mut child: tokio::process::Child,
     stdout_pump: Option<tokio::task::JoinHandle<()>>,
     stderr_pump: Option<tokio::task::JoinHandle<()>>,
@@ -2120,6 +2131,13 @@ fn spawn_process_monitor(
                 }
             }
         };
+        let result_for_report = process_status.as_ref()
+            .map(|status| status.code().map_or(u32::MAX, |code| code as u32))
+            .map_err(ToString::to_string);
+        let completed = crash_report.finish(result_for_report);
+        if completed.kind.is_abnormal() {
+            append_task_log(&task_id, completed.summary.clone());
+        }
         match process_status {
             Ok(status) => {
                 finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
