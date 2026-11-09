@@ -233,6 +233,7 @@ mod tests {
             summary: String::new(), acknowledged: false, wer_fault: None,
             findings: Vec::new(),
             forensics: super::super::forensics::ForensicSummary::default(),
+            log_offsets: std::collections::HashMap::new(),
         }
     }
 
