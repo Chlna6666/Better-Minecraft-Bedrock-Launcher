@@ -1142,7 +1142,12 @@ impl TextureDimension {
     #[must_use]
     pub const fn mip_depth(self, mip_level: u32) -> u32 {
         match self {
-            Self::D3 { depth } => (depth >> mip_level).max(1),
+            Self::D3 { depth } => {
+                // Ord::max is not stable in const fn on our pinned Rust toolchain.
+                // Guard oversized shifts so mip queries remain defined.
+                let mip = if mip_level >= u32::BITS { 0 } else { depth >> mip_level };
+                if mip == 0 { 1 } else { mip }
+            },
             Self::D2 | Self::D2Array { .. } => 1,
         }
     }
