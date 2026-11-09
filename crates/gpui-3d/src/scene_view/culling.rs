@@ -1999,13 +1999,23 @@ mod bounds_cache_tests {
         assert_eq!(changed[0].0, original_map[4] as u64 * BOUNDS_STRIDE as u64);
         assert_eq!(changed[0].1.len(), BOUNDS_STRIDE);
         assert!(resident_mapping_patches(&original_map, &next_map).is_empty());
-        // A subsequent add reuses a free physical slot instead of reallocating
-        // every unchanged resident Section.
+        // A removed culling Bounds row must not be rebound while the
+        // previous DrawIndirect GPU read is still in flight.
         next.remove(0);
         let (removed, _) = plan_resident_bounds(&slots, &next, &mut keys).unwrap();
         next.push(draws[0].clone());
-        let (restored, restored_mapping) =
+        let (inflight, unsafe_mapping) =
             plan_resident_bounds(&removed, &next, &mut keys).unwrap();
+        assert!(inflight.high_water() > original_slots.high_water());
+        assert_ne!(unsafe_mapping.last(), original_map.first());
+        // The actual matching consumer fence releases the address; only
+        // then may the next Section insertion reuse the physical Bounds row.
+        let mut completed = removed;
+        let fence = gfx_core::SubmissionId::from_parts(15, 1);
+        completed.submission_accepted(fence);
+        completed.submission_completed(fence);
+        let (restored, restored_mapping) =
+            plan_resident_bounds(&completed, &next, &mut keys).unwrap();
         assert_eq!(restored.high_water(), original_slots.high_water());
         assert_eq!(restored_mapping.last(), original_map.first());
     }
