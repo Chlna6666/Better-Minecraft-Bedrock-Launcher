@@ -804,6 +804,21 @@ pub trait SubmissionDevice {
         ))
     }
 
+    /// Submit actual GPU buffer copies on exactly this native physical
+    /// queue. The returned SubmissionId must fence the GPU operations, NOT
+    /// a checkpoint on a different queue. The caller declares both CopyRead
+    /// and CopyWrite regions for retirement. Backends must perform legal
+    /// native state transitions and queue handoffs without a CPU fence wait.
+    fn submit_buffer_copies_on_queue(
+        &mut self,
+        _queue: crate::GpuQueueId,
+        _copies: &[crate::GpuBufferCopy],
+    ) -> Result<SubmissionId> {
+        Err(Error::Unavailable(
+            "native GPU-to-GPU transfer queue is unsupported".into(),
+        ))
+    }
+
     /// Enqueue an actual device-side wait for a previously accepted producer
     /// submission on a distinct physical queue. This operation must return a
     /// proof only after the backend has successfully encoded the wait on
