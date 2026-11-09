@@ -388,16 +388,16 @@ fn write_image(@builtin(global_invocation_id) id: vec3<u32>) {
 /// Only the final texture readback synchronizes the CPU.
 ///
 /// Writer WGSL:
-/// \`@group(0) @binding(0) var<storage, read_write> values: array<vec4<u32>>;\`
-/// \`@compute @workgroup_size(1) fn write_data() { values[0] = vec4<u32>(0u, 255u, 0u, 255u); }\`
+/// `@group(0) @binding(0) var<storage, read_write> values: array<vec4<u32>>;`
+/// `@compute @workgroup_size(1) fn write_data() { values[0] = vec4<u32>(0u, 255u, 0u, 255u); }`
 ///
 /// Reader WGSL:
-/// \`@group(0) @binding(0) var<storage, read> values: array<vec4<u32>>;\`
-/// \`@group(0) @binding(1) var output_image: texture_storage_2d<rgba8unorm, write>;\`
-/// \`@compute @workgroup_size(1) fn write_image(@builtin(global_invocation_id) id: vec3<u32>) {\`
-/// \`  let color = values[0];\`
-/// \`  textureStore(output_image, vec2<i32>(id.xy), vec4<f32>(f32(color.x) / 255.0, f32(color.y) / 255.0, f32(color.z) / 255.0, f32(color.w) / 255.0));\`
-/// \`}\`
+/// `@group(0) @binding(0) var<storage, read> values: array<vec4<u32>>;`
+/// `@group(0) @binding(1) var output_image: texture_storage_2d<rgba8unorm, write>;`
+/// `@compute @workgroup_size(1) fn write_image(@builtin(global_invocation_id) id: vec3<u32>) {`
+/// `  let color = values[0];`
+/// `  textureStore(output_image, vec2<i32>(id.xy), vec4<f32>(f32(color.x) / 255.0, f32(color.y) / 255.0, f32(color.z) / 255.0, f32(color.w) / 255.0));`
+/// `}`
 ///
 /// # Errors
 /// Returns the first backend error or a pixel mismatch.
@@ -476,8 +476,9 @@ where
             size: Extent2d::new(SIDE, SIDE)?,
             mip_level_count: 1,
             format: Format::Rgba8Unorm,
-            usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC
-                | if sampled { TextureUsage::SAMPLED } else { TextureUsage::empty() },
+            usage: TextureUsage::STORAGE
+                | TextureUsage::COPY_SRC
+                | (if sampled { TextureUsage::SAMPLED } else { TextureUsage::empty() }),
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
             sample_count: 1,
