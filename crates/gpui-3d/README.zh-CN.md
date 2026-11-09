@@ -8,6 +8,10 @@
 颜色纹理合成与窗口 Present，不拥有 3D DrawIndirect 批处理策略。当前 crate
 已将 GPUI 适配模块划入默认开启的 `gpui-sidecar` Cargo feature；
 `--no-default-features` 不再依赖 GPUI。独立应用需要自行提供设备及窗口 Swapchain。
+BMCBL 在根 `Cargo.toml` 显式开启 `gpui-sidecar`，地图 3D 编辑器及预览继续
+默认通过 Sidecar 渲染。Sidecar 的原生 3D Pass 通过 `nova-gfx` 直接提交，
+默认与 GPUI Consumer 共用有序图形队列，避免非必要的跨队列信号和等待；
+独立 3D 应用仍可通过 `OffscreenQueuePreference` 选择其他队列策略。
 Minecraft 世界及
 预览业务策略继续留在应用侧 `src/ui`。
 
