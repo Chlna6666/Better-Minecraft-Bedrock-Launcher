@@ -1097,14 +1097,10 @@ impl VulkanDevice {
     fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc)?;
-        if (texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
-            || texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT))
-            && (desc.base_mip_level != 0 || desc.mip_level_count != 1)
-        {
-            return Err(Error::InvalidInput(
-                "Vulkan attachment views require mip level zero only".to_string(),
-            ));
-        }
+        // Sampled mip-chain views and attachment views share image storage.
+        // The sampled view may span every level, while a render attachment
+        // selects exactly one mip in the ordered render-pass submission.
+        // Do not restrict the sampled range based on the texture's usage.
         let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
             create_image_view_range_with_layers(
                 &self.device,
