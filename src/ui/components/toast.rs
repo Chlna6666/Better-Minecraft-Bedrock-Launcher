@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 const MAX_TOASTS: usize = 4;
 const DEFAULT_DURATION: Duration = Duration::from_secs(3);
+const ERROR_DURATION: Duration = Duration::from_secs(30);
 const TOAST_WAKE_EPSILON: Duration = Duration::from_millis(8);
 // --- 动效参数（建议集中放这里，方便调参）---
 // Web 参考：`.upstream_bmbl_1/src/components/Toast.css`（`--toast-anim-duration`）
@@ -21,13 +22,14 @@ const STAGGER_IN_MS: u64 = 0;
 // 外观几何参数。
 const TOAST_RADIUS_PX: f32 = crate::ui::theme::tokens::radius::MD; // 圆角半径（紧凑浮层统一 12）
 const TOAST_SPACING_PX: f32 = 6.0; // Toast 堆叠间距（垂直）
-const TOAST_MIN_WIDTH_PX: f32 = 120.0;
-const TOAST_MAX_WIDTH_PX: f32 = 240.0;
+const TOAST_MIN_WIDTH_PX: f32 = 180.0;
+const TOAST_MAX_WIDTH_PX: f32 = 400.0;
 const TOAST_SIDE_PADDING_PX: f32 = 24.0;
 const TOAST_CONTENT_GAP_PX: f32 = 8.0;
 const TOAST_ICON_PX: f32 = 16.0;
 const TOAST_BODY_H_PX: f32 = 32.0;
 const TOAST_SLOT_H_PX: f32 = 40.0;
+const ERROR_TOAST_SLOT_H_PX: f32 = 80.0;
 
 // 进入/退出滑动距离（像素）。
 const ENTER_SLIDE_PX: f32 = 56.0; // 入场时从屏外滑入的距离
@@ -192,6 +194,7 @@ struct ToastItem {
     anim_delay: Duration,
     duration: Duration,
     dismissed_at: Option<Instant>,
+    diagnostic_report_id: Option<String>,
 }
 
 pub struct ToastState {
@@ -246,8 +249,13 @@ impl ToastState {
             message,
             created_at: now,
             anim_delay,
-            duration,
+            duration: if kind == ToastKind::Error {
+                duration.max(ERROR_DURATION)
+            } else {
+                duration
+            },
             dismissed_at: None,
+            diagnostic_report_id: None,
         });
 
         // If we exceed the visible limit, start an exit animation for the oldest toast instead of
@@ -312,11 +320,18 @@ impl ToastState {
                 anim_delay: Duration::ZERO,
                 duration: DEFAULT_DURATION,
                 dismissed_at: None,
+                diagnostic_report_id: None,
             });
             id
         };
 
         id
+    }
+
+    fn attach_diagnostic(&mut self, toast_id: ToastId, report_id: String) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == toast_id) {
+            item.diagnostic_report_id = Some(report_id);
+        }
     }
 
     fn fade_from(item: &ToastItem) -> Instant {
@@ -390,7 +405,11 @@ impl ToastState {
             item.message = message;
             item.created_at = now;
             item.anim_delay = Duration::ZERO;
-            item.duration = DEFAULT_DURATION;
+            item.duration = if kind == ToastKind::Error {
+                ERROR_DURATION
+            } else {
+                DEFAULT_DURATION
+            };
             item.dismissed_at = None;
             return;
         }
@@ -400,7 +419,11 @@ impl ToastState {
             item.message = message;
             item.created_at = now;
             item.anim_delay = Duration::ZERO;
-            item.duration = DEFAULT_DURATION;
+            item.duration = if kind == ToastKind::Error {
+                ERROR_DURATION
+            } else {
+                DEFAULT_DURATION
+            };
             item.dismissed_at = None;
         }
     }
@@ -683,6 +706,7 @@ pub fn render_overlay_with_options(
         let exit_slide = ease_in_cubic(disappear_t) * EXIT_SLIDE_PX;
 
         let toast_id = item.id;
+        let diagnostic_report_id = item.diagnostic_report_id.clone();
         let toast_width = toast_width_for_message(item.message.as_ref());
         let shell = toast_shell(colors, item);
 
@@ -694,7 +718,11 @@ pub fn render_overlay_with_options(
             enter_slide,
             exit_slide,
             item_animating,
-            1.0,
+            if item.kind == ToastKind::Error {
+                ERROR_TOAST_SLOT_H_PX / TOAST_SLOT_H_PX
+            } else {
+                1.0
+            },
         ));
     }
 
@@ -735,6 +763,13 @@ pub fn render_overlay_with_options(
             .w(toast_width)
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                if let Some(report_id) = diagnostic_report_id.as_deref() {
+                    cx.update_global(
+                        |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                            state.show_operation_report(report_id);
+                        },
+                    );
+                }
                 cx.update_global(|state: &mut ToastState, _cx| {
                     let now = Instant::now();
                     state.prune_expired(now);
@@ -952,6 +987,23 @@ mod tests {
     }
 
     #[test]
+    fn error_toast_duration_is_longer_and_has_diagnostic_link() {
+        let mut state = ToastState::default();
+        let now = Instant::now();
+        let id = state.push(
+            Some(WindowId::from(1)),
+            ToastKind::Error,
+            SharedString::from("download failed"),
+            DEFAULT_DURATION,
+            now,
+        );
+        state.attach_diagnostic(id, "test-report".to_owned());
+        let toast = state.items.back().unwrap();
+        assert!(toast.duration >= super::ERROR_DURATION);
+        assert_eq!(toast.diagnostic_report_id.as_deref(), Some("test-report"));
+    }
+
+    #[test]
     fn steady_toast_does_not_request_animation_frames() {
         let now = Instant::now();
         let visible_from = now - FADE_IN - Duration::from_millis(1);
@@ -1029,7 +1081,11 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
         .rounded(px(TOAST_RADIUS_PX))
         .px(px(12.))
         .py(px(8.))
-        .min_h(px(TOAST_BODY_H_PX))
+        .min_h(px(if item.kind == ToastKind::Error {
+            ERROR_TOAST_SLOT_H_PX - 8.0
+        } else {
+            TOAST_BODY_H_PX
+        }))
         .hover(|this| {
             this.bg(Hsla {
                 a: 0.98,
@@ -1054,10 +1110,28 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .text_size(px(12.))
-                        .truncate()
-                        .text_color(colors.text_primary)
-                        .child(item.message.clone()),
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(17.))
+                                .max_h(px(if item.kind == ToastKind::Error { 42. } else { 20. }))
+                                .overflow_hidden()
+                                .whitespace_normal()
+                                .text_color(colors.text_primary)
+                                .child(item.message.clone()),
+                        )
+                        .when(item.kind == ToastKind::Error, |body| {
+                            body.child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colors.danger)
+                                    .child("点击查看完整错误 · 复制与导出"),
+                            )
+                        }),
                 ),
         )
 }
