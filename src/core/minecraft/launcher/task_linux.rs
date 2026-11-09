@@ -2131,6 +2131,11 @@ fn spawn_process_monitor(
                 }
             }
         };
+        // Drain all runner output before taking the immutable crash-log snapshot.
+        // Otherwise the final fatal lines may still be in stdout/stderr pumps.
+        if process_status.is_ok() {
+            finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
+        }
         use std::os::unix::process::ExitStatusExt as _;
         let mut crash_report = crash_report;
         crash_report.exit_signal = process_status.as_ref().ok().and_then(|status| status.signal());
@@ -2155,7 +2160,6 @@ fn spawn_process_monitor(
         }
         match process_status {
             Ok(status) => {
-                finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
                 if !status.success() {
                     let output = recent_runner_output(&recent_output);
                     warn!(
