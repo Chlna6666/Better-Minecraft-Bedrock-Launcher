@@ -5641,6 +5641,39 @@ mod platform {
     }
 
     impl SubmissionDevice for Dx12Device {
+        fn enqueue_gpu_queue_wait(
+            &mut self,
+            target_queue: gfx_core::GpuQueueId,
+            producer: SubmissionId,
+        ) -> Result<gfx_core::GpuNativeWaitProof> {
+            // Only the independently allocated DIRECT sidecar queue exists.
+            // There are no separate COPY or COMPUTE command queues yet; a
+            // caller cannot infer them from the stage of its GPU work.
+            if target_queue != (gfx_core::GpuQueueId { family: 0, index: 1 }) {
+                return Err(Error::Unavailable(
+                    "DX12 has no independent native queue at the requested identity".into(),
+                ));
+            }
+            let queue = self.sidecar_queue.as_ref().ok_or_else(|| Error::Unavailable(
+                "DX12 independent DIRECT queue is not available".into(),
+            ))?;
+            let producer_fence = self.submissions.get(producer)?.fence_value;
+            // SAFETY: Both queues and the fence belong to this live D3D12
+            // device. Queue::Wait enqueues a GPU-side dependency on this
+            // physical queue and never stalls the host thread. The fence
+            // itself is device-owned and remains alive across submissions.
+            unsafe { queue.Wait(&self.fence, producer_fence) }
+                .map_err(|error| self.backend_error_with_device_reason(
+                    "DX12 independent queue Wait", &error,
+                ))?;
+            // SAFETY: The native ID3D12CommandQueue::Wait above succeeded on
+            // precisely target_queue, ordering all subsequent sidecar work
+            // behind the registered primary-queue producer fence.
+            Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(
+                producer, target_queue,
+            ) })
+        }
+
         fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
             // The DIRECT queue serializes upload, compute and graphics. A
             // Signal after those commands is an actual native GPU completion
