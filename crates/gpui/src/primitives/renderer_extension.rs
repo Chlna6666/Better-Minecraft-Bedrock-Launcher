@@ -280,6 +280,33 @@ pub trait RendererExtensionRenderer {
         false
     }
 
+    /// Whether this renderer has native offscreen work it will submit itself.
+    ///
+    /// Producers use the generic gfx-core graphics/compute APIs through the
+    /// device owner. GPUI does not translate, sort or batch their 3D commands;
+    /// the host only invokes their submission and tracks the returned fence.
+    fn has_native_offscreen_work(&self) -> bool {
+        false
+    }
+
+    /// Submit prepared offscreen GPU work directly to nova-gfx on the current
+    /// GPU owner, before the UI compositor samples any producer textures.
+    ///
+    /// Only return a SubmissionId for work actually accepted by the native
+    /// queue; returning None is valid for a backend that synchronously queues
+    /// the work without exposing a completion handle. The renderer must not
+    /// wait on a CPU fence or present the window.
+    ///
+    /// The host registers a returned SubmissionId immediately, even when
+    /// subsequent UI rendering fails. Submission acceptance is distinct from
+    /// fence completion and the latter alone authorizes resource retirement.
+    fn submit_native_offscreen(
+        &mut self,
+        _device: &mut dyn ExtensionDevice,
+    ) -> crate::Result<Option<gfx_core::SubmissionId>> {
+        Ok(None)
+    }
+
     /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
     /// This is submission ordering, not a resource-reclamation completion signal.
     fn render_passes_submitted(&mut self) {}
