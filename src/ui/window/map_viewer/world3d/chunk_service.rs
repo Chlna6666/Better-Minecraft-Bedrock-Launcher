@@ -3475,7 +3475,9 @@ impl Worker {
             // Never defer the player's immediate interaction neighbourhood;
             // the raycast, edit and cave transition paths require it loaded.
             .filter(|pos| {
-                (pos.x - center_x).abs().max((pos.z - center_z).abs()) > 3
+                (i64::from(pos.x) - i64::from(center_x))
+                    .abs()
+                    .max((i64::from(pos.z) - i64::from(center_z)).abs()) > 3
             })
             .collect();
         self.index_plan_key = Some(key);
