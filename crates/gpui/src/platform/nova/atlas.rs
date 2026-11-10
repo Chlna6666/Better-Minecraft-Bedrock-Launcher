@@ -19,6 +19,7 @@ pub(super) const NOVA_STARTUP_ATLAS_SIZE: u32 = 512;
 pub(super) const NOVA_DEFAULT_ATLAS_SIZE: u32 = 2048;
 pub(super) const NOVA_LARGE_IMAGE_ATLAS_SIZE: u32 = 4096;
 pub(super) const NOVA_MAX_ATLAS_SIZE: u32 = 16_384;
+#[cfg(test)]
 pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
 pub(super) const fn atlas_texture_format(kind: AtlasTextureKind) -> Format {
@@ -343,6 +344,7 @@ impl NovaAtlas {
         self.publish_state_flags(&state);
     }
 
+    #[cfg(test)]
     pub(super) fn apply_pending_removals(&self) {
         self.apply_pending_removals_except(&FxHashSet::default());
     }
