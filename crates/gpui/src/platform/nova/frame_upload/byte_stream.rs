@@ -120,40 +120,6 @@ impl PackedByteStream {
         self.len += len;
     }
 
-    /// Replace a newly encoded tail with its retained immutable backing.
-    pub(in crate::platform::nova) fn share_tail(
-        &mut self,
-        start: usize,
-        bytes: Arc<Vec<u8>>,
-        byte_hash: u64,
-    ) {
-        let tail_len = self.len.saturating_sub(start);
-        debug_assert_eq!(tail_len, bytes.len());
-        if tail_len == 0 {
-            return;
-        }
-        if let Some(Segment {
-            offset,
-            source: Source::Owned(range),
-        }) = self.segments.last_mut()
-        {
-            let retained_len = start.saturating_sub(*offset);
-            debug_assert!(retained_len <= range.len());
-            let retained_end = range.start + retained_len;
-            self.owned.truncate(retained_end);
-            if retained_len == 0 {
-                self.segments.pop();
-            } else {
-                range.end = retained_end;
-            }
-        } else {
-            debug_assert!(false, "a newly encoded tail must have an owned segment");
-            return;
-        }
-        self.len = start;
-        self.append_shared(bytes, byte_hash);
-    }
-
     pub(in crate::platform::nova) fn segments(
         &self,
     ) -> impl Iterator<Item = (usize, &[u8], Option<u64>)> {
