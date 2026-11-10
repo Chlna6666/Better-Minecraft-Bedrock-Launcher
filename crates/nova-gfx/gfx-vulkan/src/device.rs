@@ -2777,11 +2777,57 @@ impl VulkanDevice {
         let Some(queue) = self.sidecar_queue else {
             if track_native_producer {
                 return Err(Error::Unavailable(
-                    "independent Vulkan Compute queue is unavailable".into(),
+                    "independent Vulkan graphics-family queue is unavailable".into(),
                 ));
             }
             return self.submit_command_encoder_deferred(encoder).map(|_| None);
         };
+        self.submit_command_encoder_native_secondary(
+            encoder, track_native_producer, queue,
+            self.graphics_queue_family_index,
+            gfx_core::GpuQueueId {
+                family: self.graphics_queue_family_index, index: 1,
+            },
+        )
+    }
+
+    /// Dedicated Compute-only families execute only buffer-based dispatch.
+    /// Every bound Storage/Uniform buffer uses CONCURRENT sharing between
+    /// Graphics and this Compute family. EXCLUSIVE textures are rejected.
+    fn submit_command_encoder_dedicated_compute(
+        &mut self,
+        encoder: CommandEncoderId,
+    ) -> Result<Option<SubmissionId>> {
+        let queue = self.dedicated_compute_queue.ok_or_else(|| Error::Unavailable(
+            "Vulkan dedicated compute queue is unavailable".into(),
+        ))?;
+        let family = self.dedicated_compute_family_index.ok_or_else(|| Error::Unavailable(
+            "Vulkan dedicated compute family is unavailable".into(),
+        ))?;
+        let queue_id = self.dedicated_compute_queue_id().ok_or_else(|| Error::Unavailable(
+            "Vulkan dedicated compute queue ID is unavailable".into(),
+        ))?;
+        self.submit_command_encoder_native_secondary(
+            encoder, true, queue, family, queue_id,
+        )
+    }
+
+    /// One native queue handoff implementation for either secondary graphics
+    /// or a buffer-only separate Compute family. GPU-native semaphores order
+    /// uploads -> producer -> graphics consumer without any host Fence wait.
+    fn submit_command_encoder_native_secondary(
+        &mut self,
+        encoder: CommandEncoderId,
+        track_native_producer: bool,
+        queue: vk::Queue,
+        family: u32,
+        queue_id: gfx_core::GpuQueueId,
+    ) -> Result<Option<SubmissionId>> {
+        if self.command_encoders.get(encoder)?.queue_family_index != family {
+            return Err(Error::InvalidInput(
+                "Vulkan native command pool family does not match executing queue".into(),
+            ));
+        }
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let first = unsafe {
             self.device.create_semaphore(&semaphore_info, None)
@@ -2891,10 +2937,7 @@ impl VulkanDevice {
         Ok(producer_fence.map(|native_fence| {
             self.submissions.insert(VulkanSubmission {
                 fence: native_fence,
-                queue: gfx_core::GpuQueueId {
-                    family: self.graphics_queue_family_index,
-                    index: 1,
-                },
+                queue: queue_id,
                 owned_by_submission: true,
             })
         }))
