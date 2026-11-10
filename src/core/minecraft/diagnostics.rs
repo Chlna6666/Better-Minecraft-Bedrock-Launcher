@@ -16,6 +16,7 @@ pub mod analysis;
 pub mod forensics;
 pub use analysis::{CrashFinding, CrashReason, Confidence, EvidenceSource};
 const GAME_DIAGNOSTICS_SCHEMA: u32 = 7;
+const WINDOWS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 const MAX_TEXT_BYTES: u64 = 512 * 1024;
 const MAX_DUMP_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -574,6 +575,11 @@ pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionRep
 pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
     if code == 0 {
         ExitKind::Normal
+    } else if matches!(platform, "gdk" | "uwp" | "win32") && code == WINDOWS_CONTROL_C_EXIT {
+        // STATUS_CONTROL_C_EXIT may originate from a user or host control event.
+        // The exit status alone does not prove an unhandled Minecraft exception.
+        // Keep WER correlation enabled for a later, positively identified fault.
+        ExitKind::Unknown
     } else if platform == "proton" || platform == "wine" || platform == "umu" {
         // Child.wait() observes the runner, not necessarily the Minecraft child.
         ExitKind::RunnerFailure
@@ -585,6 +591,8 @@ pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
 pub fn exit_description(kind: ExitKind, code: u32) -> String {
     match kind {
         ExitKind::Normal => "游戏已正常退出".to_string(),
+        ExitKind::Unknown if code == WINDOWS_CONTROL_C_EXIT =>
+            "Windows 控制事件结束了游戏会话（0xC000013A）；无法仅凭该状态判断游戏崩溃，需以独立故障证据确认".to_string(),
         ExitKind::RunnerFailure => format!("兼容运行器异常退出（状态码 0x{code:08X}）；尚不能确认游戏崩溃"),
         _ => {
             let detail = match code {
@@ -679,6 +687,15 @@ pub fn recent_reports(limit: usize, unacknowledged_only: bool) -> Vec<GameSessio
         let report = decode_report(&bytes).ok()?;
         // Unknown sessions remain inspectable in history but must not
         // trigger an automatic game-crash popup without supporting evidence.
+        // Suppress any pre-fix false-positive report for this control status.
+        // Confirmed PID-matched WER faults still take priority.
+        if unacknowledged_only
+            && matches!(report.platform.as_str(), "gdk" | "uwp" | "win32")
+            && report.exit_code == Some(WINDOWS_CONTROL_C_EXIT)
+            && report.wer_fault.is_none()
+        {
+            return None;
+        }
         if !(report.kind.is_abnormal() || (!unacknowledged_only && report.kind == ExitKind::Unknown))
             || (unacknowledged_only && report.acknowledged)
         {
@@ -1169,6 +1186,10 @@ mod tests {
     fn distinguishes_runner_failures_from_native_game_crashes() {
         assert_eq!(classify_exit("gdk", 0), ExitKind::Normal);
         assert_eq!(classify_exit("gdk", 0xC0000005), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
+        assert_eq!(classify_exit("uwp", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
+        assert_eq!(classify_exit("wine", WINDOWS_CONTROL_C_EXIT), ExitKind::RunnerFailure);
+        assert!(exit_description(ExitKind::Unknown, WINDOWS_CONTROL_C_EXIT).contains("无法仅凭"));
         assert_eq!(classify_exit("proton", 1), ExitKind::RunnerFailure);
     }
 
