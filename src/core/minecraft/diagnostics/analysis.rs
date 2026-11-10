@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn loader_hook_symbol_and_dependency_errors_are_separate() {
-        let report = report("gdk", Some(0xC0000142));
+        let report = report("gdk", None);
         let sources = vec![("logs/launch-task.log".into(),
             "[ERROR] [BLoader] failed to install hook\n\
 [ERROR] [PreLoader] failed to resolve symbol\n\
