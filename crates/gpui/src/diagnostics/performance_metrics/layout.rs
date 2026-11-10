@@ -31,9 +31,6 @@ pub fn record_layout_frame_metrics(metrics: LayoutFrameMetrics) {
     shared_metrics
         .layout_cache_reused_roots
         .store(metrics.cache_reused_roots as u64, Ordering::Relaxed);
-    shared_metrics
-        .layout_cache_saved_roots
-        .store(metrics.cache_saved_roots as u64, Ordering::Relaxed);
 }
 
 /// Records retained layout cache counters for the latest frame.
