@@ -2554,6 +2554,7 @@ fn load_batch_from_world(
     let query_time = started.elapsed();
     let trace = trace_verbose();
     let premesh_started = Instant::now();
+    let mut preflight_masks = HashMap::<ChunkPos, BTreeMap<i8, [u64; 64]>>::new();
     // The first pass only decodes packed block palettes. Its conservative
     // connectivity graph can suppress underground model expansion before the
     // expensive per-state/captured-model and texture stages begin.
@@ -2566,13 +2567,16 @@ fn load_batch_from_world(
             if !data.is_loaded {
                 continue;
             }
-            let visibility = premesh_visibility_masks(data)
-                .into_iter()
+            let masks = premesh_visibility_masks(data);
+            let visibility = masks.iter()
                 .filter(|(_, mask)| mask.iter().any(|&word| word != 0))
-                .map(|(y, mask)| (y, Arc::new(
-                    super::visibility::SectionVisibility::from_solid_bits(mask),
+                .map(|(&y, mask)| (y, Arc::new(
+                    super::visibility::SectionVisibility::from_solid_bits(*mask),
                 )))
                 .collect();
+            // Reuse these decoded masks when collecting a deferred probe or
+            // retaining an omitted Section: never unpack the same palette twice.
+            preflight_masks.insert(data.pos, masks);
             probes.insert(data.pos, Arc::new(World3dChunkProbe {
                 pos: data.pos,
                 min_y: data.pos.y_range(data.version).0,
@@ -2623,13 +2627,14 @@ fn load_batch_from_world(
             (
                 pos,
                 if lazy_view.is_some_and(|view| lazy_mesh_column(pos, view)) {
-                    collect_lazy_probe_chunk(data)
+                    collect_lazy_probe_chunk(data, preflight_masks.get(&pos))
                 } else {
                     let hidden = hidden_before_models.iter()
                         .filter_map(|(candidate, band)| (*candidate == pos).then_some(*band))
                         .collect::<BTreeSet<_>>();
                     collect_cached_chunk(
                         data, models, trace, biome_blend.as_ref(), &hidden,
+                        preflight_masks.get(&pos),
                     )
                 },
             )
@@ -4297,7 +4302,7 @@ impl Worker {
         let biome_blend =
             p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
         let chunk = collect_cached_chunk(
-            data, self.models.as_ref(), trace, Some(&biome_blend), &BTreeSet::new(),
+            data, self.models.as_ref(), trace, Some(&biome_blend), &BTreeSet::new(), None,
         )?;
         if trace {
             eprintln!(
@@ -5420,13 +5425,17 @@ fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBu
 /// biome shading, fluid-face analysis, texture resolution or GPU mesh work.
 /// Once the camera points toward this column, the normal mesher rehydrates it
 /// through the batched world query and replaces this provisional probe.
-fn collect_lazy_probe_chunk(data: ChunkData) -> Result<Option<CachedChunk>, String> {
+fn collect_lazy_probe_chunk(
+    data: ChunkData,
+    preflight_masks: Option<&BTreeMap<i8, [u64; 64]>>,
+) -> Result<Option<CachedChunk>, String> {
     if !data.is_loaded {
         return Ok(None);
     }
     let pos = data.pos;
     let version = data.version;
-    let masks = premesh_visibility_masks(&data);
+    let masks = preflight_masks.cloned()
+        .unwrap_or_else(|| premesh_visibility_masks(&data));
     let probe = Arc::new(build_probe(pos, data, None, masks));
     Ok(Some(CachedChunk {
         blocks: None,
@@ -5447,6 +5456,7 @@ fn collect_cached_chunk(
     trace: bool,
     biome_blend: Option<&p3d::Preview3dBiomeBlendField>,
     hidden_bands: &BTreeSet<i32>,
+    preflight_masks: Option<&BTreeMap<i8, [u64; 64]>>,
 ) -> Result<Option<CachedChunk>, String> {
     if !data.is_loaded {
         return Ok(None);
@@ -5457,8 +5467,9 @@ fn collect_cached_chunk(
     // Preserve the full decoded probe for future navigation and portal
     // promotion. Temporarily omit hidden 16-block slices only while the
     // heavyweight captured-model collector walks this column.
-    let premesh_masks = (!hidden_bands.is_empty())
-        .then(|| premesh_visibility_masks(&data));
+    let premesh_masks = (!hidden_bands.is_empty()).then(|| {
+        preflight_masks.cloned().unwrap_or_else(|| premesh_visibility_masks(&data))
+    });
     let mut omitted = BTreeMap::new();
     if !hidden_bands.is_empty() {
         let mut retained = BTreeMap::new();
