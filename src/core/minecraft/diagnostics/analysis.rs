@@ -9,6 +9,7 @@ pub enum CrashReason {
     VulkanUnavailable, GraphicsDeviceLost, InsufficientMemory, DiskFull,
     PermissionDenied, ModLoadFailure, LoaderFailure, AccessViolation,
     IllegalInstruction, StackOverflow, FastFail, RunnerExited, Unclassified,
+    InitializationFailure, InPageError, ArithmeticFault,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -29,9 +30,16 @@ pub struct CrashFinding {
     pub source: EvidenceSource,
 }
 
+fn rank(confidence: Confidence) -> u8 {
+    match confidence {
+        Confidence::High => 0,
+        Confidence::Medium => 1,
+        Confidence::Low => 2,
+    }
+}
+
 fn add(out: &mut Vec<CrashFinding>, reason: CrashReason, confidence: Confidence, source: EvidenceSource) {
-    // Shared mod/provider logs are not bound to one launch. Their messages
-    // support a troubleshooting hint, never a high-confidence attribution.
+    // A shared log can mention errors from another Minecraft instance.
     let confidence = if source == EvidenceSource::ModLog
         || (source == EvidenceSource::RunnerLog && reason == CrashReason::ModLoadFailure)
     {
@@ -39,9 +47,43 @@ fn add(out: &mut Vec<CrashFinding>, reason: CrashReason, confidence: Confidence,
     } else {
         confidence
     };
-    if !out.iter().any(|f| f.reason == reason) {
+    if let Some(existing) = out.iter_mut().find(|finding| finding.reason == reason) {
+        // Evidence may arrive in stages: a low-confidence log hint must not
+        // mask later definitive WER exception metadata for the same symptom.
+        if rank(confidence) < rank(existing.confidence) {
+            existing.confidence = confidence;
+            existing.source = source;
+        }
+    } else {
         out.push(CrashFinding { reason, confidence, source });
     }
+}
+
+/// Interpret only the documented exception *type*, not a responsible component.
+pub fn reason_from_windows_exception(code: u32) -> Option<CrashReason> {
+    Some(match code {
+        0xC000_0005 => CrashReason::AccessViolation,
+        0xC000_0006 => CrashReason::InPageError,
+        0xC000_0017 => CrashReason::InsufficientMemory,
+        0xC000_001D | 0xC000_0096 => CrashReason::IllegalInstruction,
+        0xC000_0094 => CrashReason::ArithmeticFault,
+        0xC000_00FD => CrashReason::StackOverflow,
+        0xC000_0135 => CrashReason::MissingDependency,
+        0xC000_0142 => CrashReason::InitializationFailure,
+        0xC000_0409 => CrashReason::FastFail,
+        _ => return None,
+    })
+}
+
+fn wer_exception_code(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let value = value.strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(value, 16).ok()
 }
 fn has(text: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|pattern| text.contains(pattern))
@@ -60,7 +102,9 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
         return Vec::new();
     }
     let mut findings = Vec::new();
-    for (name, contents) in sources.iter().take(16) {
+    // analyze_snapshot() captures up to 32 bounded per-session sources.
+    // Limiting this pass to 16 silently discarded later provider errors.
+    for (name, contents) in sources.iter().take(32) {
         let text = contents.to_ascii_lowercase();
         let source = origin(name);
         if has(&text, &["no space left on device", "enospc", "disk is full"]) {
@@ -108,13 +152,18 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
         }
     }
     if let Some(wer) = &report.wer_fault {
-        let module = wer.module.to_ascii_lowercase();
-        if has(&module, &["nvwgf2umx", "nvlddmkm", "atidxx", "amdxx",
-            "igd10", "igc64", "d3d12", "dxgi", "vulkan-1"]) {
-            add(&mut findings, CrashReason::GraphicsDeviceLost, Confidence::Medium, EvidenceSource::WindowsWer);
+        // WER reports the actual exception code separately from the game's
+        // exit status. It may differ, and is the stronger evidence.
+        if let Some(reason) = wer_exception_code(&wer.exception_code)
+            .and_then(reason_from_windows_exception)
+        {
+            add(&mut findings, reason, Confidence::High, EvidenceSource::WindowsWer);
         }
+        // Merely naming d3d12.dll/dxgi.dll as the faulting module does NOT
+        // prove a DXGI_ERROR_DEVICE_REMOVED or GPU device loss.
+        let module = wer.module.to_ascii_lowercase();
         if has(&module, &["bloader", "levilamina", "modloader", "liteloader"]) {
-            add(&mut findings, CrashReason::LoaderFailure, Confidence::Medium, EvidenceSource::WindowsWer);
+            add(&mut findings, CrashReason::LoaderFailure, Confidence::Low, EvidenceSource::WindowsWer);
         }
     }
     if report.compatibility_prefix.is_some() {
@@ -131,15 +180,16 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
             add(&mut findings, CrashReason::RunnerExited, Confidence::Low, EvidenceSource::ExitStatus);
         }
     } else if let Some(code) = report.exit_code {
-        let candidate = match code {
-            0xC0000135 => Some((CrashReason::MissingDependency, Confidence::High)),
-            0xC0000005 => Some((CrashReason::AccessViolation, Confidence::Low)),
-            0xC000001D => Some((CrashReason::IllegalInstruction, Confidence::Medium)),
-            0xC00000FD => Some((CrashReason::StackOverflow, Confidence::Medium)),
-            0xC0000409 => Some((CrashReason::FastFail, Confidence::Low)),
-            _ => None,
-        };
-        if let Some((reason, confidence)) = candidate {
+        if let Some(reason) = reason_from_windows_exception(code) {
+            // An exit status alone cannot prove an exception was unhandled.
+            let confidence = if matches!(reason,
+                CrashReason::AccessViolation | CrashReason::FastFail |
+                CrashReason::InPageError | CrashReason::ArithmeticFault
+            ) {
+                Confidence::Low
+            } else {
+                Confidence::Medium
+            };
             add(&mut findings, reason, confidence, EvidenceSource::ExitStatus);
         }
     }
@@ -219,15 +269,8 @@ pub fn analyze_with_forensics(
                 EvidenceSource::CrashDump,
             );
         }
-        let reason = match dump.exception_code {
-            Some(0xC0000005) => Some((CrashReason::AccessViolation, Confidence::Medium)),
-            Some(0xC000001D) => Some((CrashReason::IllegalInstruction, Confidence::High)),
-            Some(0xC00000FD) => Some((CrashReason::StackOverflow, Confidence::High)),
-            Some(0xC0000409) => Some((CrashReason::FastFail, Confidence::Medium)),
-            _ => None,
-        };
-        if let Some((reason, confidence)) = reason {
-            add_or_promote(reason, confidence, EvidenceSource::CrashDump);
+        if let Some(reason) = dump.exception_code.and_then(reason_from_windows_exception) {
+            add_or_promote(reason, Confidence::High, EvidenceSource::CrashDump);
         }
     }
     if findings.len() > 1 {
@@ -271,6 +314,51 @@ mod tests {
             forensics: super::super::forensics::ForensicSummary::default(),
             log_offsets: std::collections::HashMap::new(),
         }
+    }
+
+    #[test]
+    fn wer_exception_code_outranks_weak_exit_or_mod_log() {
+        let mut report = report("gdk", Some(0xC0000005));
+        report.wer_fault = Some(super::super::WerFault {
+            event_at: Utc::now(),
+            module: "dxgi.dll".into(),
+            exception_code: "c0000005".into(),
+        });
+        let findings = analyze(&report, &[
+            ("logs/mod-provider-00.log".into(), "failed to load mod OldMod".into()),
+        ]);
+        let access = findings.iter().find(|finding|
+            finding.reason == CrashReason::AccessViolation).unwrap();
+        assert_eq!(access.confidence, Confidence::High);
+        assert_eq!(access.source, EvidenceSource::WindowsWer);
+        assert!(!findings.iter().any(|f| f.reason == CrashReason::GraphicsDeviceLost));
+    }
+
+    #[test]
+    fn formerly_unclassified_native_exception_codes_have_specific_reasons() {
+        let cases = [
+            (0xC000_0006, CrashReason::InPageError),
+            (0xC000_0017, CrashReason::InsufficientMemory),
+            (0xC000_0094, CrashReason::ArithmeticFault),
+            (0xC000_0142, CrashReason::InitializationFailure),
+            (0xC000_0096, CrashReason::IllegalInstruction),
+        ];
+        for (code, reason) in cases {
+            assert_eq!(analyze(&report("gdk", Some(code)), &[])[0].reason, reason);
+        }
+        assert_eq!(wer_exception_code("0xC0000142"), Some(0xC0000142));
+        assert_eq!(wer_exception_code("xyz"), None);
+    }
+
+    #[test]
+    fn matches_later_bounded_log_sources() {
+        let mut files = (0..20).map(|index|
+            (format!("logs/mod-provider-{index:02}.log"), "normal start".to_string())
+        ).collect::<Vec<_>>();
+        files.push(("logs/runner-provider-21.log".into(),
+            "vkCreateInstance failed VK_ERROR_INCOMPATIBLE_DRIVER".into()));
+        let findings = analyze(&report("wine", Some(1)), &files);
+        assert!(findings.iter().any(|f| f.reason == CrashReason::VulkanUnavailable));
     }
 
     #[test]
