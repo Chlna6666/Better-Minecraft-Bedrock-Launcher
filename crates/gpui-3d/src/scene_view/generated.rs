@@ -1147,15 +1147,10 @@ fn create_many_impl(
         }
     }
     let dispatch_count = dispatches.len();
-    // Conservative initial admission: a tiny workload costs more in extra
-    // cross-queue submits than it can overlap. Unlike a fixed Section radius,
-    // this uses the actual generated shader workgroup count, including a
-    // complex single Section or many small Sections. Calibrate the initial
-    // limit against native GPU timestamps on real hardware.
-    const MIN_ASYNC_MESH_WORKGROUPS: u64 = 512;
     let tracing_gpu_queue = crate::gpu_submission_trace::enabled();
-    // Do not impose another O(dispatches) traversal on DX11/OpenGL or
-    // on standalone renderers that have no native queue-polling owner.
+    let hardware_timestamps = device.gpu_work_timestamps_supported();
+    // Scan workgroups only on the hardware-queue candidate or diagnostics
+    // path. No extra O(dispatches) pass for ordinary GL/DX11 rendering.
     let workgroups = if available_native_queue.is_some() || tracing_gpu_queue {
         dispatches.iter().fold(0u64, |total, dispatch| {
             total.saturating_add(dispatch.workgroups.iter().fold(1u64, |n, &count| {
@@ -1165,15 +1160,37 @@ fn create_many_impl(
     } else {
         0
     };
-    let native_queue = available_native_queue
-        .filter(|_| workgroups >= MIN_ASYNC_MESH_WORKGROUPS);
+    // Native admission is per physical GPU owner and based on completed
+    // hardware query pairs. At cold start, ordered work calibrates first;
+    // native probes are bounded and never use a fixed Section/radius gate.
+    let native_queue = available_native_queue.filter(|_| {
+        feedback.as_deref_mut().is_some_and(|model| {
+            model.admit_native(true, hardware_timestamps, workgroups)
+        })
+    });
+    let should_tag = if let Some(model) = feedback.as_deref() {
+        model.should_tag(hardware_timestamps)
+    } else {
+        batch_id.is_some() && hardware_timestamps
+    };
+    // A Scene publication may flush several distinct generated batches.
+    // Give each GPU execution one unique hardware tag; don't correlate
+    // multiple real command lists with the same publication ID.
+    let compute_tag = should_tag.then(|| gfx_core::GpuTimestampTag {
+        batch_id: if feedback.is_some() {
+            crate::gpu_submission_trace::next_section_batch()
+        } else {
+            batch_id.unwrap_or_default()
+        },
+        stage: gfx_core::GpuTimestampStage::GeneratedMesh,
+    });
     if tracing_gpu_queue {
+        let rates = feedback.as_deref().map(|f| f.debug_summary());
         log::trace!(
             target: "gpui3d_gpu_queue",
-            "generated_mesh_queue backend={:?} native_queue={:?} workgroups={} dispatches={} meshes={} independent_admitted={}",
-            arena.as_ref().map(|(_, _, _, backend)| *backend),
-            native_queue, workgroups, dispatch_count, meshes.len(),
-            native_queue.is_some(),
+            "generated_mesh_queue publication_id={:?} sample_id={:?} native_queue={:?} workgroups={} dispatches={} meshes={} gpu_rates={:?} timing=completed_native_ticks_only",
+            batch_id, compute_tag.map(|tag| tag.batch_id), native_queue,
+            workgroups, dispatch_count, meshes.len(), rates,
         );
     }
     if dispatch_count != 0 && native_queue.is_none() {
@@ -1209,9 +1226,24 @@ fn create_many_impl(
             if let Some((faces, templates, arguments, _)) = arena.as_mut() {
                 mark_generated_mesh_uses(faces, templates, arguments, &pending, queue)?;
             }
-            let compute = device.submit_compute_batch_on_queue(queue, &dispatches)?;
+            let compute = if let Some(tag) = compute_tag {
+                device.submit_compute_batch_profiled_on_queue(queue, &dispatches, tag)?
+            } else {
+                device.submit_compute_batch_on_queue(queue, &dispatches)?
+            };
             if let Some(records) = accepted.as_deref_mut() {
                 records.push(compute);
+            }
+            if let Some(model) = feedback.as_deref_mut() {
+                // Record immediately after native acceptance: subsequent
+                // Mesh Arena registration can fail without cancelling GPU
+                // work or invalidating this physical producer fence.
+                model.accepted(
+                    compute_tag.map(|tag| tag.batch_id),
+                    super::queue_feedback::ComputePath::Native,
+                    workgroups,
+                    Some(compute),
+                );
             }
             // The physical GPU Page ranges have been conservatively marked
             // on the independent queue BEFORE native submission. Once
@@ -1241,17 +1273,22 @@ fn create_many_impl(
             Ok(())
         })()
     } else {
-        (if let Some(batch_id) = batch_id {
-            device.dispatch_compute_batch_profiled(
-                &dispatches,
-                gfx_core::GpuTimestampTag {
-                    batch_id,
-                    stage: gfx_core::GpuTimestampStage::GeneratedMesh,
-                },
-            )
+        let result = if let Some(tag) = compute_tag {
+            device.dispatch_compute_batch_profiled(&dispatches, tag)
         } else {
             device.dispatch_compute_batch(&dispatches)
-        }).map_err(anyhow::Error::from)
+        }.map_err(anyhow::Error::from);
+        if result.is_ok() {
+            if let Some(model) = feedback.as_deref_mut() {
+                model.accepted(
+                    compute_tag.map(|tag| tag.batch_id),
+                    super::queue_feedback::ComputePath::Ordered,
+                    workgroups,
+                    None,
+                );
+            }
+        }
+        result
     };
     let dispatch_elapsed = dispatch_started.map(|start| start.elapsed()).unwrap_or_default();
     let dispatch_ms = dispatch_elapsed.as_secs_f64() * 1000.0;
