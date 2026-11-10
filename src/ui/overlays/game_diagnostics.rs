@@ -941,17 +941,18 @@ pub fn render_game_diagnostics_overlay(
                                     action("game-diagnostics-dismiss", t!("GameCrash.ui.close"), false, true, colors)
                                         .on_click(move |_, _, cx| {
                                             let id = id_for_acknowledge.clone();
-                                            cx.update_global(|state: &mut GameDiagnosticsState, _| {
-                                                state.pending = None;
-                                                state.awaiting_sensitive_confirmation = false;
-                                                state.export_status = None;
-                                                state.export_location = None;
-                                            });
-                                            let _ = crate::tasks::runtime::spawn_io(async move {
-                                                let _ = crate::tasks::runtime::run_io_blocking(
-                                                    move || diagnostics::acknowledge(&id),
-                                                ).await;
-                                            });
+                                            let dismissed = cx.update_global(
+                                                |state: &mut GameDiagnosticsState, _| {
+                                                    state.dismiss_pending_if_matches(&id)
+                                                },
+                                            );
+                                            if dismissed {
+                                                let _ = crate::tasks::runtime::spawn_io(async move {
+                                                    let _ = crate::tasks::runtime::run_io_blocking(
+                                                        move || diagnostics::acknowledge(&id),
+                                                    ).await;
+                                                });
+                                            }
                                         }),
                                 ),
                         ),
