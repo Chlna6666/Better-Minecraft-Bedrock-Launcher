@@ -66,6 +66,9 @@ fn reason_title(reason: CrashReason) -> SharedString {
         CrashReason::FastFail => t!("GameCrash.reason.FastFail.title"),
         CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.title"),
         CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.title"),
+        CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.title"),
+        CrashReason::InPageError => t!("GameCrash.reason.InPageError.title"),
+        CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.title"),
     }
 }
 
@@ -88,6 +91,9 @@ fn reason_detail(reason: CrashReason) -> SharedString {
         CrashReason::FastFail => t!("GameCrash.reason.FastFail.detail"),
         CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.detail"),
         CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.detail"),
+        CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.detail"),
+        CrashReason::InPageError => t!("GameCrash.reason.InPageError.detail"),
+        CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.detail"),
     }
 }
 
@@ -110,6 +116,9 @@ fn reason_action(reason: CrashReason) -> SharedString {
         CrashReason::FastFail => t!("GameCrash.reason.FastFail.action"),
         CrashReason::RunnerExited => t!("GameCrash.reason.RunnerExited.action"),
         CrashReason::Unclassified => t!("GameCrash.reason.Unclassified.action"),
+        CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.action"),
+        CrashReason::InPageError => t!("GameCrash.reason.InPageError.action"),
+        CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.action"),
     }
 }
 
@@ -376,6 +385,18 @@ fn request_export(cx: &mut App, id: String) {
 fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
     let evidence = &report.forensics;
     let mut lines = Vec::new();
+    if let Some(wer) = &report.wer_fault {
+        // Present an exact exception and faulting module alongside the
+        // interpretation; this describes evidence, not component blame.
+        let module = crate::utils::log_privacy::redact_log_text(&wer.module);
+        lines.push(format!(
+            "{}: {} (0x{})",
+            t!("GameCrash.ui.wer"),
+            module,
+            wer.exception_code.trim_start_matches("0x")
+                .trim_start_matches("0X").to_ascii_uppercase(),
+        ));
+    }
     if !evidence.failed_mods.is_empty() {
         let mods = evidence.failed_mods.iter().map(|m| m.identifier.as_str())
             .collect::<Vec<_>>().join(", ");
