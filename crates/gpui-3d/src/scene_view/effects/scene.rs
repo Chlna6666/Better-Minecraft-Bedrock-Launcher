@@ -765,18 +765,16 @@ impl EffectScene {
         light_count: u32,
         ssr_hiz_levels: u32,
     ) -> gpui::Result<()> {
+        let matrix = view.camera.projection_matrix(
+            self.targets.extent.width() as f32 / self.targets.extent.height() as f32,
+        )? * view.camera.view()?;
+        let inverse = matrix
+            .inverse()
+            .ok_or_else(|| anyhow::anyhow!("singular projection"))?;
+        let mut bytes = Vec::with_capacity(super::FRAME_BYTES as usize);
         for (buffer, context) in [(self.frame, local), (self.composite_frame, host)] {
-            let matrix = view.camera.projection_matrix(
-                self.targets.extent.width() as f32 / self.targets.extent.height() as f32,
-            )? * view.camera.view()?;
-            let mut bytes = Vec::with_capacity(super::FRAME_BYTES as usize);
-            for matrix in [
-                matrix,
-                matrix
-                    .inverse()
-                    .ok_or_else(|| anyhow::anyhow!("singular projection"))?,
-                self.shadow_matrix[0],
-            ] {
+            bytes.clear();
+            for matrix in [matrix, inverse, self.shadow_matrix[0]] {
                 for column in matrix.columns() {
                     for value in column {
                         bytes.extend(value.to_le_bytes());
