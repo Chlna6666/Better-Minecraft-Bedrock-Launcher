@@ -4097,7 +4097,7 @@ fn flush_pending_generated_meshes(
             .iter()
             .map(|(_, mesh)| mesh.as_ref())
             .collect::<Vec<_>>();
-        let created = if let Some(accepted) = accepted {
+        let created = if let Some((accepted, feedback)) = accepted.zip(feedback) {
             super::generated::create_many_pooled_native(
                 device, &inputs, shaders, generated_arena, template_arena,
                 argument_arena, backend, batch_id, accepted, feedback,
