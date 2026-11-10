@@ -148,7 +148,7 @@ fn parse(data: &[u8], expected_revision: u64) -> Option<BTreeMap<ChunkPos, Index
         for _ in 0..count {
             let y = take::<1>(&mut input)?[0] as i8;
             let tag = take::<1>(&mut input)?[0];
-            let mut solid = match tag {
+            let solid = match tag {
                 0 => [0; 64],
                 1 => [u64::MAX; 64],
                 2 => {
@@ -160,7 +160,7 @@ fn parse(data: &[u8], expected_revision: u64) -> Option<BTreeMap<ChunkPos, Index
                 }
                 _ => return None,
             };
-            if masks.insert(y, std::mem::take(&mut solid)).is_some() {
+            if masks.insert(y, solid).is_some() {
                 return None;
             }
         }
@@ -341,6 +341,60 @@ mod tests {
 
     fn pos(x: i32) -> ChunkPos {
         ChunkPos { x, z: -9, dimension: Dimension::Overworld }
+    }
+
+    fn fixture() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let path = std::env::temp_dir().join(format!(
+            "bmcbl-occlusion-index-test-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(path.join("db")).unwrap();
+        fs::write(path.join("level.dat"), b"world-version-1").unwrap();
+        fs::write(path.join("db/CURRENT"), b"MANIFEST-000001\n").unwrap();
+        fs::write(path.join("db/MANIFEST-000001"), b"manifest").unwrap();
+        path
+    }
+
+    #[test]
+    fn source_revision_change_fails_open_without_accessing_subchunk_values() {
+        let world = fixture();
+        let old = source_revision(&world).unwrap();
+        fs::write(world.join("db/000001.ldb"), b"some-new-chunk-data").unwrap();
+        assert_ne!(old, source_revision(&world).unwrap());
+        fs::remove_file(world.join("db/CURRENT")).unwrap();
+        assert_eq!(source_revision(&world), None);
+        fs::remove_dir_all(world).unwrap();
+    }
+
+    #[test]
+    fn edit_invalidation_only_discards_affected_column_in_stable_revision() {
+        let world = fixture();
+        let path = world.join("index.bin");
+        let revision = source_revision(&world);
+        let mut index = VisibilityIndex {
+            world: world.clone(), file: path.clone(), revision,
+            entries: BTreeMap::new(), epoch: 1, dirty: false,
+            last_flush: Instant::now(),
+        };
+        index.upsert(pos(1), BTreeMap::from([(0, [u64::MAX; 64])]));
+        index.upsert(pos(2), BTreeMap::from([(0, [0; 64])]));
+        index.flush();
+        assert_eq!(index.len(), 2);
+        index.invalidate(pos(1));
+        index.flush();
+        let entries = parse(&fs::read(&path).unwrap(), revision.unwrap()).unwrap();
+        assert!(!entries.contains_key(&pos(1)));
+        assert!(entries.contains_key(&pos(2)));
+        // A foreign writer invalidates the complete previous certificate:
+        // no stale wall may be used to skip a future DB lookup.
+        fs::write(world.join("db/000002.log"), b"external edit").unwrap();
+        assert!(index.refresh());
+        assert_eq!(index.len(), 0);
+        assert!(parse(&fs::read(&path).unwrap(), source_revision(&world).unwrap()).is_none());
+        drop(index);
+        fs::remove_dir_all(world).unwrap();
     }
 
     #[test]
