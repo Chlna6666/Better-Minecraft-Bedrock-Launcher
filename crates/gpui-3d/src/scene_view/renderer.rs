@@ -1,6 +1,7 @@
 use super::{
     SceneView, SceneViewId, gpu::MeshArena, resources::RendererResources, scene::SceneResources,
     sidecar_surface::SidecarSurface, projection::FrameProjection,
+    queue_feedback::QueueFeedback,
 };
 use crate::prepare::StructuralDrawDelta;
 use crate::{NativeOffscreenPass, submit_native_offscreen_passes};
@@ -644,6 +645,10 @@ struct SidecarGpuBackend {
     /// Native Compute/Transfer fences created while preparing any SceneView.
     /// GPUI's owner drains these even when a later prepare step fails.
     accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
+    /// Device-local queue cost model; multiple 3D views share one GPU Owner.
+    queue_feedback: Rc<RefCell<QueueFeedback>>,
+    /// Reused hardware probe output avoids per-frame Vec allocation.
+    gpu_timestamp_scratch: Vec<gfx_core::GpuTimestampSample>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
     /// Exact last successful producer input per view. A GUI-only redraw can
@@ -756,6 +761,8 @@ impl SidecarGpuBackend {
                 device.buffer_binding_limits(),
             ))),
             accepted_native_submissions: Rc::new(RefCell::new(Vec::new())),
+            queue_feedback: Rc::new(RefCell::new(QueueFeedback::default())),
+            gpu_timestamp_scratch: Vec::new(),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
             captured_inputs: HashMap::new(),
@@ -1355,6 +1362,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     }
 
     fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        // Host-observed producer Fence latency includes queue scheduling AND
+        // polling delay. The controller never calls this a GPU Wait timestamp.
+        self.queue_feedback.borrow_mut().completed(submission);
         self.generated_arena.borrow_mut().gpu_submission_completed(submission);
         self.template_arena.borrow_mut().gpu_submission_completed(submission);
         self.argument_arena.borrow_mut().gpu_submission_completed(submission);
@@ -1401,10 +1411,31 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let scene_view = extension
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow!("GPUI 3D renderer received an unexpected extension type"))?;
-        if crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported() {
-            let mut samples = Vec::new();
-            device.drain_gpu_work_timestamps(&mut samples)?;
-            crate::gpu_submission_trace::report_gpu_samples(context.backend_kind(), &samples);
+        self.queue_feedback.borrow_mut().observe_frame_cadence(context.frame_time());
+        if device.gpu_work_timestamps_supported() {
+            // Completed native probes are consumed on the owning GPU thread
+            // even in release builds, without waiting for any GPU Fence.
+            self.gpu_timestamp_scratch.clear();
+            device.drain_gpu_work_timestamps(&mut self.gpu_timestamp_scratch)?;
+            {
+                let mut feedback = self.queue_feedback.borrow_mut();
+                for &sample in &self.gpu_timestamp_scratch {
+                    feedback.observe_gpu_sample(sample);
+                }
+            }
+            if crate::gpu_submission_trace::enabled() {
+                crate::gpu_submission_trace::report_gpu_samples(
+                    context.backend_kind(), &self.gpu_timestamp_scratch,
+                );
+            } else {
+                // Preserve the native BufferUpload feedback when tracing is
+                // off; never train the upload model from host API durations.
+                for &sample in &self.gpu_timestamp_scratch {
+                    crate::upload_feedback::observe_completed_gpu_upload(
+                        context.backend_kind(), sample,
+                    );
+                }
+            }
         }
         let scene_view = scene_view.sample_camera(context.frame_time());
         {
@@ -1493,6 +1524,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     Rc::clone(&self.template_arena),
                     Rc::clone(&self.argument_arena),
                     Rc::clone(&self.accepted_native_submissions),
+                    Rc::clone(&self.queue_feedback),
                     true,
                 )?,
             );
