@@ -238,6 +238,10 @@ pub(crate) struct NovaRenderer {
     diagnostics: NovaRenderDiagnostics,
     submission_mode: GpuSubmissionMode,
     pending_submissions: Vec<PendingSubmission>,
+    /// Native extension Compute/Transfer producers are NOT UI frame-slot
+    /// submissions. Track their fences separately to avoid stalling Present
+    /// and to prevent primary-queue completion from retiring async work.
+    auxiliary_submissions: Vec<SubmissionId>,
     submission_retry_pending: bool,
     metrics_started_at: Instant,
     first_frame_reported: bool,
