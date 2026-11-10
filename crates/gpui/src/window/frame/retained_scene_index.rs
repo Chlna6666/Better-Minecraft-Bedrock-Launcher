@@ -12,13 +12,6 @@ impl Entry {
         self.indices.len()
     }
 
-    pub(in crate::window) fn first<'a>(
-        &self,
-        segments: &'a [RetainedSceneSegment],
-    ) -> &'a RetainedSceneSegment {
-        &segments[self.indices[0]]
-    }
-
     pub(in crate::window) fn segments<'a>(
         &'a self,
         segments: &'a [RetainedSceneSegment],
