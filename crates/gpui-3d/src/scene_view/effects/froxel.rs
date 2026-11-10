@@ -306,6 +306,47 @@ struct InjectBindings {
     shadows: [TextureViewId; 3],
 }
 
+/// Inputs read by injection. Exposure, water and geometry-only animation
+/// do not change the volume when its light and shadow inputs stay resident.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct FroxelInputs {
+    camera: crate::Camera,
+    sun_direction: crate::Vec3,
+    sun_color: [f32; 3],
+    sun_intensity: f32,
+    sky_brightness: f32,
+    background: Option<[f32; 3]>,
+    fog_density: f32,
+    origin_y: f32,
+    shadow_strength: f32,
+    shadow_revision: u64,
+    lights: (u64, u32),
+}
+
+impl FroxelInputs {
+    pub(super) fn new(
+        view: &SceneView,
+        settings: ScreenEffects,
+        lights: (u64, u32),
+        shadow_revision: u64,
+    ) -> Self {
+        let shading = view.voxel_shading;
+        Self {
+            camera: view.camera,
+            sun_direction: shading.sun_direction,
+            sun_color: shading.sun_color,
+            sun_intensity: shading.sun_intensity,
+            sky_brightness: shading.sky_brightness,
+            background: settings.background_color,
+            fog_density: settings.fog_density,
+            origin_y: settings.world_origin.y,
+            shadow_strength: shading.shadow_strength,
+            shadow_revision,
+            lights,
+        }
+    }
+}
+
 /// Two independent GPU-native 3D volumes. Integration reads one image and
 /// writes the other, so no sampled/UAV aliasing is ever legal or required.
 pub(super) struct FroxelVolume {
@@ -317,10 +358,7 @@ pub(super) struct FroxelVolume {
     binding_key: Option<InjectBindings>,
     pub valid: bool,
     pub queued: bool,
-    last_view: Option<SceneView>,
-    last_settings: Option<ScreenEffects>,
-    last_scene_version: u64,
-    last_lights: Option<(BufferId, u32)>,
+    last_inputs: Option<FroxelInputs>,
 }
 
 impl FroxelVolume {
@@ -370,26 +408,14 @@ impl FroxelVolume {
             Ok(Self {
                 grid, injection, integrated, injection_group: None,
                 integration_group, binding_key: None,
-                valid: false, queued: false, last_view: None,
-                last_settings: None, last_scene_version: 0, last_lights: None,
+                valid: false, queued: false, last_inputs: None,
             })
         })();
         cleanup.finish(device, result)
     }
 
-    /// A previously submitted volume is reusable only when *all* inputs that
-    /// influence its compute path are unchanged, including the scene revision.
-    /// No reprojection claim is made on a moving camera: recompute instead.
-    pub fn reusable(
-        &self, view: &SceneView, settings: ScreenEffects,
-        lights: (BufferId, u32), tile_updated: bool, shadow_updated: bool,
-    ) -> bool {
-        self.valid && !self.queued && !tile_updated && !shadow_updated
-            && self.last_scene_version == view.scene.version()
-            && self.last_settings == Some(settings)
-            && self.last_lights == Some(lights)
-            && self.last_view.as_ref().is_some_and(|previous|
-                super::renderer::same_capture(previous, view))
+    pub fn is_reusable(&self, inputs: FroxelInputs) -> bool {
+        self.valid && !self.queued && self.last_inputs == Some(inputs)
     }
 
     fn bind_injection(
@@ -449,8 +475,7 @@ impl FroxelVolume {
         queue: &mut Vec<RendererExtensionComputePass>,
         batch_id: u64,
         profiled: bool,
-        view: &SceneView,
-        settings: ScreenEffects,
+        inputs: FroxelInputs,
     ) -> gpui::Result<()> {
         let group = self.bind_injection(device, program, InjectBindings {
             frame, lights: (lights.0, lights.1), tiles, shadows,
@@ -486,10 +511,7 @@ impl FroxelVolume {
         });
         self.queued = true;
         self.valid = false;
-        self.last_view = Some(view.clone());
-        self.last_settings = Some(settings);
-        self.last_scene_version = view.scene.version();
-        self.last_lights = Some((lights.0, lights.2));
+        self.last_inputs = Some(inputs);
         Ok(())
     }
 

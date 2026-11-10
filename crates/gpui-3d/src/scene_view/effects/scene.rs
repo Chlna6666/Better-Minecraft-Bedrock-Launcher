@@ -203,6 +203,7 @@ pub(super) struct EffectScene {
     pub(super) ssr_hiz_unavailable: bool,
     pub(super) shadow_valid: [bool; SHADOW_CASCADE_COUNT],
     pub(super) queued_shadow: [bool; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_revision: u64,
     pub(super) scene: SceneResources,
     pub(super) targets: Targets,
     pub(super) msaa_sample_count: u32,
@@ -612,6 +613,7 @@ impl EffectScene {
                 ssr_hiz_unavailable: false,
                 shadow_valid: [false; SHADOW_CASCADE_COUNT],
                 queued_shadow: [false; SHADOW_CASCADE_COUNT],
+                shadow_revision: 0,
                 scene,
                 targets,
                 msaa_sample_count,
@@ -745,13 +747,16 @@ impl EffectScene {
             ));
             self.queued_shadow[cascade] = true;
         }
+        if self.queued_shadow.iter().any(|&queued| queued) {
+            self.shadow_revision = self.shadow_revision.wrapping_add(1);
+        }
         self.shadow_scene = Some(view.scene.clone());
         self.shadow_transform = view.scene_transform;
         self.shadow_input = Some(view.clone());
         Ok(())
     }
     pub(super) fn write_frames(
-        &self,
+        &mut self,
         device: &mut dyn ExtensionDevice,
         view: &SceneView,
         settings: ScreenEffects,

@@ -5,7 +5,7 @@ use super::super::{
 use super::{
     ScreenEffects,
     compositor::{Compositor, Inputs},
-    froxel::{FroxelGrid, FroxelProgram, FroxelVolume},
+    froxel::{FroxelGrid, FroxelInputs, FroxelProgram, FroxelVolume},
     scene::{EffectScene, SHADOW_MAP_SIZE},
 };
 
@@ -335,11 +335,10 @@ impl EffectsRenderer {
                     }
                 }
                 if let Some(volume) = state.froxel.as_mut() {
-                    let shadow_updated = state.queued_shadow.iter().any(|&changed| changed);
-                    let reusable = volume.reusable(
-                        view, settings, (light.0, light.2),
-                        tile_updated, shadow_updated,
+                    let inputs = FroxelInputs::new(
+                        view, settings, (tile_key.1, light.2), state.shadow_revision,
                     );
+                    let reusable = volume.is_reusable(inputs);
                     if !reusable {
                         let batch_id = crate::gpu_submission_trace::next_section_batch();
                         let profiled = device.gpu_work_timestamps_supported()
@@ -349,7 +348,7 @@ impl EffectsRenderer {
                             (state.tiles.buffer, state.tiles.bytes),
                             std::array::from_fn(|cascade| state.shadow[cascade].view),
                             self.passes.len(), &mut self.compute_passes,
-                            batch_id, profiled, view, settings,
+                            batch_id, profiled, inputs,
                         );
                         if let Err(error) = result {
                             volume.invalidate();
