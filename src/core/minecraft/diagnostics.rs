@@ -455,9 +455,15 @@ impl GameSessionReport {
             "游戏会话结束"
         );
         if let Ok(mut active) = sessions().lock() { active.remove(&self.id); }
-        // Normal exits are events too, so a launcher hidden for crash monitoring
-        // can terminate once its final game session exits.
-        let _ = event_bus().send(self.clone());
+        // Windows may report a matching WER exception shortly after the
+        // process exits. Do not show a premature "unclassified" crash popup
+        // before that evidence has been checked by the launch monitor.
+        // Normal/unknown exits still publish to drive launcher visibility.
+        if !cfg!(target_os = "windows")
+            || !needs_windows_wer_before_popup(self.kind, &self.platform)
+        {
+            let _ = event_bus().send(self.clone());
+        }
         #[cfg(target_os = "linux")]
         if self.compatibility_logs.is_some()
             && (self.kind.is_abnormal() || self.early_exit)
@@ -610,6 +616,27 @@ fn classify_linux_runner_signal(signal: i32) -> ExitKind {
     } else {
         ExitKind::Unknown
     }
+}
+
+/// True for native Windows suspects whose preliminary diagnosis is still
+/// waiting for independent WER correlation.
+fn needs_windows_wer_before_popup(kind: ExitKind, platform: &str) -> bool {
+    kind == ExitKind::SuspectedCrash
+        && matches!(platform, "gdk" | "uwp" | "win32")
+}
+
+/// Publish a final *suspected* incident after bounded WER lookup fails.
+/// WER-confirmed incidents are published by enrich_windows_wer itself.
+#[cfg(target_os = "windows")]
+pub fn publish_unconfirmed_windows_exit(report: &GameSessionReport) {
+    if !needs_windows_wer_before_popup(report.kind, &report.platform) {
+        return;
+    }
+    // Respect an acknowledgement if another UI path dismissed the report.
+    if read_report(&report.id).is_ok_and(|stored| stored.acknowledged) {
+        return;
+    }
+    let _ = event_bus().send(report.clone());
 }
 
 pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
@@ -1268,6 +1295,15 @@ pub fn export_zip_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_suspects_wait_for_wer_before_popup() {
+        assert!(needs_windows_wer_before_popup(ExitKind::SuspectedCrash, "gdk"));
+        assert!(needs_windows_wer_before_popup(ExitKind::SuspectedCrash, "uwp"));
+        assert!(!needs_windows_wer_before_popup(ExitKind::ConfirmedCrash, "gdk"));
+        assert!(!needs_windows_wer_before_popup(ExitKind::Unknown, "gdk"));
+        assert!(!needs_windows_wer_before_popup(ExitKind::RunnerFailure, "proton"));
+    }
 
     #[test]
     fn distinguishes_runner_failures_from_native_game_crashes() {
