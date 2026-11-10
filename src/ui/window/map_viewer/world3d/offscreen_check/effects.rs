@@ -710,10 +710,17 @@ fn streaming_move<D: Device + TextureTransferDevice>(
         );
     }
     if let Ok(Some(memory)) = gpui::process_memory_snapshot() {
+        let stats = device.resource_stats();
         eprintln!(
-            "world3d stream memory private_mib={} working_set_mib={}",
+            "world3d stream memory private_mib={} working_set_mib={} gpu_allocated_bytes={} gpu_reserved_bytes={} backend_cpu_shadow_bytes={} bind_groups={} buffers={} textures={}",
             memory.private_bytes / 1048576,
             memory.working_set_bytes / 1048576,
+            stats.allocated_bytes,
+            stats.reserved_bytes,
+            stats.cpu_shadow_bytes,
+            stats.bind_groups,
+            stats.buffers,
+            stats.textures,
         );
     }
     renderer.destroy(&mut device).unwrap();

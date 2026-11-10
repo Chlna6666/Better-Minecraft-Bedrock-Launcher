@@ -1238,26 +1238,41 @@ impl ChunkScene {
         let mut source_sections = 0usize;
         let mut source_draws = 0usize;
         let mut fused_draws = 0usize;
+        let mut fused_geometry_bytes = 0usize;
         for (id, sources) in self.fused.values() {
             source_sections += sources.len();
             source_draws += sources
                 .iter()
                 .map(|mesh| mesh.mesh.parts().len())
                 .sum::<usize>();
-            fused_draws += scene
-                .node(*id)
-                .and_then(|node| node.mesh.as_ref())
-                .map_or(0, |mesh| mesh.parts().len());
+            if let Some(mesh) = scene.node(*id).and_then(|node| node.mesh.as_ref()) {
+                fused_draws += mesh.parts().len();
+                fused_geometry_bytes += mesh.geometry_storage_bytes();
+            }
         }
         let saved = source_draws.saturating_sub(fused_draws);
+        let source_geometry_bytes = self
+            .nodes
+            .values()
+            .map(|(_, mesh)| mesh.estimated_geometry_cpu_bytes())
+            .sum::<usize>();
+        let cached_geometry_bytes = self
+            .fused_cache
+            .values()
+            .map(|entry| entry.mesh.estimated_geometry_cpu_bytes())
+            .sum::<usize>();
         eprintln!(
-            "world3d fusion_stats groups={} source_sections={} original_draws={} fused_draws={} eliminated_draws={} remaining_section_nodes={}",
+            "world3d fusion_stats groups={} source_sections={} original_draws={} fused_draws={} eliminated_draws={} remaining_section_nodes={} source_geometry_bytes={} active_fused_geometry_bytes={} cached_fused_geometry_bytes={} cached_fused_entries={}",
             self.fused.len(),
             source_sections,
             source_draws,
             fused_draws,
             saved,
             self.nodes.len(),
+            source_geometry_bytes,
+            fused_geometry_bytes,
+            cached_geometry_bytes,
+            self.fused_cache.len(),
         );
     }
 
