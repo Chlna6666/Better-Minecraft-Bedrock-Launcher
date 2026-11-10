@@ -30,6 +30,15 @@ pub struct CrashFinding {
 }
 
 fn add(out: &mut Vec<CrashFinding>, reason: CrashReason, confidence: Confidence, source: EvidenceSource) {
+    // Shared mod/provider logs are not bound to one launch. Their messages
+    // support a troubleshooting hint, never a high-confidence attribution.
+    let confidence = if source == EvidenceSource::ModLog
+        || (source == EvidenceSource::RunnerLog && reason == CrashReason::ModLoadFailure)
+    {
+        Confidence::Low
+    } else {
+        confidence
+    };
     if !out.iter().any(|f| f.reason == reason) {
         out.push(CrashFinding { reason, confidence, source });
     }
@@ -111,7 +120,7 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
     if report.compatibility_prefix.is_some() {
         match report.compatibility_fault {
             Some(CompatibilityFault::WineUnhandledException) =>
-                add(&mut findings, CrashReason::WineGuestException, Confidence::Medium, EvidenceSource::RunnerLog),
+                add(&mut findings, CrashReason::WineGuestException, Confidence::Low, EvidenceSource::RunnerLog),
             Some(CompatibilityFault::WineDependencyFailure) =>
                 add(&mut findings, CrashReason::MissingDependency, Confidence::Low, EvidenceSource::RunnerLog),
             Some(CompatibilityFault::RuntimeFailure) =>
@@ -190,7 +199,8 @@ pub fn analyze_with_forensics(
         add_or_promote(CrashReason::ModLoadFailure, confidence, source);
     }
     if evidence.wine_stack.is_some() {
-        add_or_promote(CrashReason::WineGuestException, Confidence::Medium, EvidenceSource::RunnerLog);
+        // The Wine stack may originate from a helper, not Minecraft itself.
+        add_or_promote(CrashReason::WineGuestException, Confidence::Low, EvidenceSource::RunnerLog);
     }
     for dump in &evidence.minidumps {
         if dump.fault_module.as_deref().is_some_and(|module| {
@@ -313,6 +323,20 @@ mod tests {
         let findings = analyze_with_forensics(&report, &mod_logs, &forensic);
         assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
         assert_eq!(forensic.failed_mods[0].identifier, "BadAddon.dll");
+    }
+
+    #[test]
+    fn unowned_provider_logs_never_claim_high_confidence() {
+        let logs = vec![("logs/mod-provider-00.log".into(),
+            "Failed to load plugin: OldPlugin.dll".into())];
+        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let issue = found.iter().find(|f| f.reason == CrashReason::ModLoadFailure).unwrap();
+        assert_eq!(issue.confidence, Confidence::Low);
+        let logs = vec![("logs/mod-provider-00.log".into(),
+            "Failed to load dll: optional.dll".into())];
+        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let issue = found.iter().find(|f| f.reason == CrashReason::MissingDependency).unwrap();
+        assert_eq!(issue.confidence, Confidence::Low);
     }
 
     #[test]
