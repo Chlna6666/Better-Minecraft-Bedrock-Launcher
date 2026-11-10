@@ -8,6 +8,9 @@ pub struct ForensicSummary {
     #[serde(default)]
     pub log_sources_analyzed: u16,
     pub failed_mods: Vec<ModIssue>,
+    /// Structured loader-originated evidence; no raw messages or user paths.
+    #[serde(default)]
+    pub loader_issues: Vec<LoaderIssue>,
     #[serde(default)]
     pub missing_dependencies: Vec<DependencyIssue>,
     pub wine_stack: Option<WineStack>,
@@ -19,6 +22,31 @@ pub struct ModIssue {
     /// A shared game log does not prove this mod failure belongs to one instance.
     pub session_private: bool,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoaderFamily {
+    BLoader, PreLoader, LeviLamina, LiteLoader, Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoaderIssueKind {
+    NativeException, LoaderLoadFailure, ModLoadFailure,
+    DependencyFailure, SymbolFailure, HookFailure, RuntimeError,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoaderIssue {
+    pub loader: LoaderFamily,
+    pub kind: LoaderIssueKind,
+    /// A sanitized DLL or mod identifier, not a filesystem path.
+    pub module: Option<String>,
+    pub exception_code: Option<u32>,
+    pub win32_error: Option<u32>,
+    /// Only a launch-scoped file/pipe can support elevated confidence.
+    pub session_private: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyIssue {
     /// Sanitized DLL/shared-library basename only, never a source file path.
@@ -60,6 +88,7 @@ fn find_mod(line: &str) -> Option<String> {
         "failed to load mod", "failed to load plugin", "error loading mod",
         "could not load mod", "could not load plugin",
         "mod initialization failed", "plugin initialization failed", "exception in mod",
+        "fail to load plugin", "fail to load mod",
     ] {
         if let Some(index) = lower.find(trigger) {
             let tail = line[index + trigger.len()..]
@@ -97,7 +126,7 @@ fn find_mod(line: &str) -> Option<String> {
 fn find_dependency(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
     if !["not found", "cannot open", "failed to load", "could not load",
-        "import_dll", "unimplemented function"]
+        "can't load", "fail to load", "import_dll", "unimplemented function"]
         .iter().any(|keyword| lower.contains(keyword))
     {
         return None;
@@ -115,6 +144,139 @@ fn find_dependency(line: &str) -> Option<String> {
             && let Some(name) = safe_name(name)
         {
             return Some(name);
+        }
+    }
+    None
+}
+
+
+fn loader_family(line: &str, source: &str) -> Option<LoaderFamily> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("[preloader]") {
+        Some(LoaderFamily::PreLoader)
+    } else if lower.contains("[levilamina]") {
+        Some(LoaderFamily::LeviLamina)
+    } else if lower.contains("[bloader]") {
+        Some(LoaderFamily::BLoader)
+    } else if lower.contains("[liteloader]") || lower.contains("[liteloaderbds]") {
+        Some(LoaderFamily::LiteLoader)
+    } else if lower.contains("[modloader]") {
+        Some(LoaderFamily::Other)
+    } else if source.contains("preloader") {
+        Some(LoaderFamily::PreLoader)
+    } else if source.contains("levilamina") {
+        Some(LoaderFamily::LeviLamina)
+    } else if source.contains("bloader") {
+        Some(LoaderFamily::BLoader)
+    } else if lower.contains("raw seh exception, from <") {
+        Some(LoaderFamily::Other)
+    } else {
+        None
+    }
+}
+
+fn subject_from_loader_line(line: &str) -> Option<String> {
+    // The module in "<...>" on LeviLamina's Raw SEH line is a faulting
+    // module, not automatically the component responsible for the crash.
+    if let Some(start) = line.find('<')
+        && let Some(end) = line[start + 1..].find('>')
+    {
+        return safe_name(&line[start + 1..start + 1 + end]);
+    }
+    for token in line.split_whitespace() {
+        let token = token.trim_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch,
+                ':' | ',' | ';' | '(' | ')' | '[' | ']' | '"' | '\'' | '!' | '=')
+        });
+        let name = token.rsplit(['\\', '/']).next().unwrap_or("");
+        let name = name.trim_matches(|ch: char| {
+            matches!(ch, ':' | ',' | ';' | '(' | ')' | '[' | ']' | '!' )
+        });
+        let lower = name.to_ascii_lowercase();
+        if (lower.ends_with(".dll") || lower.ends_with(".so")
+            || lower.contains(".so."))
+            && let Some(name) = safe_name(name)
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIssue> {
+    let loader = loader_family(line, source)?;
+    let lower = line.to_ascii_lowercase();
+    let kind = if lower.contains("raw seh exception, from <")
+        || lower.contains("unhandled seh exception")
+    {
+        LoaderIssueKind::NativeException
+    } else if [
+        "fail to load plugin", "failed to load plugin", "failed to load mod",
+        "could not load mod", "failed to initialize mod",
+        "mod initialization failed", "plugin initialization failed",
+        "unrecognized mod type", "unrecognized plugin type",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::ModLoadFailure
+    } else if [
+        "dependency version mismatch", "unresolved dependency",
+        "missing dependency", "missing required mod", "dependency cycle",
+        "failed to resolve dependency", "failed to load dependency",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::DependencyFailure
+    } else if [
+        "failed to resolve symbol", "symbol not found", "failed to load pdb",
+        "cannot find symbol", "failed to load symbols",
+        "symbol lookup failed",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::SymbolFailure
+    } else if [
+        "failed to install hook", "failed to hook", "hook initialization failed",
+        "hook registration failed", "failed to register hook",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::HookFailure
+    } else if [
+        "can't load ", "cannot load ", "fail to load ", "failed to load ",
+        "unable to load ", "failed to initialize levilamina",
+        "failed to initialize bloader", "failed to inject bloader",
+        "bloader injection failed",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::LoaderLoadFailure
+    } else if (
+        lower.contains(" error ") || lower.contains("[error]")
+        || lower.contains(" error]") || lower.contains(" fatal:")
+    ) && [
+        "initialization failed", "startup failed", "loader failed",
+        "loading failed", "unable to initialize", "fatal error",
+        "failed to bootstrap",
+    ].iter().any(|pattern| lower.contains(pattern)) {
+        LoaderIssueKind::RuntimeError
+    } else {
+        return None;
+    };
+    Some(LoaderIssue {
+        loader, kind,
+        module: subject_from_loader_line(line),
+        exception_code: if kind == LoaderIssueKind::NativeException {
+            code_from(line)
+        } else {
+            None
+        },
+        win32_error: None,
+        session_private: private,
+    })
+}
+
+fn loader_win32_code(line: &str) -> Option<u32> {
+    // A PreLoader "Error code: 127" is Win32, not NTSTATUS; never
+    // conflate it with the exception code that appears in an SEH report.
+    let lower = line.to_ascii_lowercase();
+    for key in ["error code:", "error: code[", "win32 error ", "windows error "] {
+        if let Some(index) = lower.find(key) {
+            let text = lower[index + key.len()..].trim_start();
+            let digits = text.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+            if !digits.is_empty() {
+                return digits.parse::<u32>().ok();
+            }
         }
     }
     None
@@ -160,6 +322,7 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
         let private = name == "logs/launch-task.log"
             || name == "logs/compatibility-runner.log"
             || name.contains("runner-provider");
+        let mut pending_loader_issue: Option<(usize, usize)> = None;
         let mut exception = false;
         let mut in_stack = false;
         let mut module = None;
@@ -169,6 +332,40 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
             let mut end = unbounded.len().min(4096);
             while !unbounded.is_char_boundary(end) { end -= 1; }
             let line = &unbounded[..end];
+            // PreLoader emits its Win32 error on the line *after* the failing
+            // DLL name. LeviLamina likewise emits NTSTATUS after Raw SEH.
+            if let Some((index, remaining)) = pending_loader_issue.take()
+                && let Some(issue) = out.loader_issues.get_mut(index)
+            {
+                if issue.kind == LoaderIssueKind::NativeException
+                    && issue.exception_code.is_none()
+                    && line.to_ascii_lowercase().contains("ntstatus")
+                {
+                    issue.exception_code = code_from(line);
+                } else if issue.win32_error.is_none() {
+                    issue.win32_error = loader_win32_code(line);
+                }
+                if remaining > 1 && issue.exception_code.is_none()
+                    && issue.win32_error.is_none()
+                {
+                    pending_loader_issue = Some((index, remaining - 1));
+                }
+            }
+            if out.loader_issues.len() < 12
+                && let Some(issue) = loader_line_issue(line, name, private)
+            {
+                let duplicate = out.loader_issues.iter().any(|previous|
+                    previous.loader == issue.loader
+                    && previous.kind == issue.kind
+                    && previous.module == issue.module
+                    && previous.exception_code == issue.exception_code
+                    && previous.win32_error == issue.win32_error
+                );
+                if !duplicate {
+                    out.loader_issues.push(issue);
+                    pending_loader_issue = Some((out.loader_issues.len() - 1, 4));
+                }
+            }
             if is_mod && out.failed_mods.len() < 8 {
                 if let Some(identifier) = find_mod(line)
                     && !out.failed_mods.iter()
@@ -382,6 +579,64 @@ mod tests {
         assert_eq!(evidence.missing_dependencies[0].identifier, "libvulkan.so.1");
         assert_eq!(evidence.log_sources_analyzed, 1);
         assert!(evidence.missing_dependencies[0].session_private);
+    }
+
+
+    #[test]
+    fn preloader_multiline_errors_keep_win32_status_and_plugin_identity() {
+        let log = "11:51:17 ERROR [PreLoader] Can't load LeviLamina.dll\n\
+11:51:17 ERROR [PreLoader] Error code: 1114\n\
+11:51:18 ERROR [PreLoader] Fail to load plugin [BadAddon.dll]\n\
+11:51:18 ERROR [PreLoader] Error: Code[127]\n";
+        let evidence = inspect_text(&[("logs/preloader.log".into(), log.into())]);
+        assert_eq!(evidence.loader_issues.len(), 2);
+        assert_eq!(evidence.loader_issues[0].loader, LoaderFamily::PreLoader);
+        assert_eq!(evidence.loader_issues[0].kind, LoaderIssueKind::LoaderLoadFailure);
+        assert_eq!(evidence.loader_issues[0].module.as_deref(), Some("LeviLamina.dll"));
+        assert_eq!(evidence.loader_issues[0].win32_error, Some(1114));
+        assert_eq!(evidence.loader_issues[1].kind, LoaderIssueKind::ModLoadFailure);
+        assert_eq!(evidence.loader_issues[1].module.as_deref(), Some("BadAddon.dll"));
+        assert_eq!(evidence.loader_issues[1].win32_error, Some(127));
+    }
+
+    #[test]
+    fn levilamina_raw_seh_from_bloader_is_not_named_a_mod_load_failure() {
+        let log = "2026-11-10 19:33:16.095 [info]   |Raw Seh Exception, from <BLoader.dll>:\n\
+2026-11-10 19:33:16.095 [info]   |[0xC0000409:ntstatus] fail fast\n\
+2026-11-10 19:33:16.096 [info]   |Parameter 0: 0x7\n";
+        let evidence = inspect_text(&[("logs/mod-provider-00.log".into(), log.into())]);
+        assert_eq!(evidence.loader_issues.len(), 1);
+        let issue = &evidence.loader_issues[0];
+        assert_eq!(issue.kind, LoaderIssueKind::NativeException);
+        assert_eq!(issue.module.as_deref(), Some("BLoader.dll"));
+        assert_eq!(issue.exception_code, Some(0xC0000409));
+        assert!(!issue.session_private);
+        assert!(evidence.failed_mods.is_empty());
+    }
+
+    #[test]
+    fn normal_loader_metrics_are_not_diagnosed_as_loader_failure() {
+        let log = "[INFO] [BLoader] loaded=12 failed=0\n\
+[INFO] [PreLoader] Loading symbols from pdb...\n\
+[INFO] [LeviLamina] Loaded 10 mods\n\
+[INFO] [LiteLoader] all plugins enabled\n";
+        assert!(inspect_text(&[("logs/bloader.log".into(), log.into())])
+            .loader_issues.is_empty());
+    }
+
+    #[test]
+    fn loader_dependency_hook_and_symbol_failures_are_distinct() {
+        let text = "[ERROR] [LeviLamina] dependency version mismatch\n\
+[ERROR] [BLoader] failed to install hook for x\n\
+[ERROR] [PreLoader] failed to resolve symbol x\n\
+[ERROR] [LiteLoader] unrecognized mod type\n";
+        let issues = inspect_text(&[("logs/launch-task.log".into(), text.into())]).loader_issues;
+        assert_eq!(issues.len(), 4);
+        assert_eq!(issues[0].kind, LoaderIssueKind::DependencyFailure);
+        assert_eq!(issues[1].kind, LoaderIssueKind::HookFailure);
+        assert_eq!(issues[2].kind, LoaderIssueKind::SymbolFailure);
+        assert_eq!(issues[3].kind, LoaderIssueKind::ModLoadFailure);
+        assert!(issues.iter().all(|issue| issue.session_private));
     }
 
     #[test]
