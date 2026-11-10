@@ -790,7 +790,7 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     let mut arguments = MeshArena::generated_arguments(limits);
     let mut resources = create_many_pooled(
         &mut device, &[&meshes[0], &meshes[1]], &shaders,
-        &mut arena, &mut templates, &mut arguments, BackendKind::Dx11,
+        &mut arena, &mut templates, &mut arguments, BackendKind::Dx11, 0,
     ).unwrap();
     assert_eq!(resources[0].generated.as_ref().unwrap().templates,
                resources[1].generated.as_ref().unwrap().templates);
