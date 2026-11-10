@@ -5873,7 +5873,7 @@ fn collect_lazy_probe_chunk(
 }
 
 fn collect_cached_chunk(
-    mut data: ChunkData,
+    data: ChunkData,
     models: &bedrock_block_model::BlockModelRepository,
     trace: bool,
     biome_blend: Option<&p3d::Preview3dBiomeBlendField>,
@@ -5890,53 +5890,50 @@ fn collect_cached_chunk(
             !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64))
         })
     });
-    // Preserve the full decoded probe for future navigation and portal
-    // promotion. Temporarily omit hidden 16-block slices only while the
-    // heavyweight captured-model collector walks this column.
-    let premesh_masks = (!hidden_bands.is_empty()).then(|| {
-        preflight_masks.cloned().unwrap_or_else(|| premesh_visibility_masks(&data))
-    });
-    let mut omitted = BTreeMap::new();
-    if !hidden_bands.is_empty() {
-        let mut retained = BTreeMap::new();
-        for (y, subchunk) in std::mem::take(&mut data.subchunks) {
-            if skip_premesh_subchunk(y, hidden_bands) {
-                omitted.insert(y, subchunk);
-            } else {
-                retained.insert(y, subchunk);
-            }
+    // Keep decoded Sections in place for the probe. The model collector
+    // borrows only the slices that pass the visibility and halo check.
+    let fallback_masks = (!hidden_bands.is_empty() && preflight_masks.is_none())
+        .then(|| premesh_visibility_masks(&data));
+    let mut unexpanded_bands = BTreeSet::new();
+    let mut skipped_subchunks = 0;
+    for &y in data.subchunks.keys() {
+        if skip_premesh_subchunk(y, hidden_bands) {
+            unexpanded_bands.insert(i32::from(y).div_euclid(4));
+            skipped_subchunks += 1;
         }
-        data.subchunks = retained;
     }
-    let blocks = if data.subchunks.is_empty() {
+    let model_input_subchunks = data.subchunks.len() - skipped_subchunks;
+    let blocks = if model_input_subchunks == 0 {
         // A fully occluded column needs only its retained Probe. No block
         // models, materials, geometry, or biome work are needed yet.
         p3d::Preview3dChunkBlocks::default()
     } else {
-        p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
-            .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
+        p3d::preview_3d_collect_chunk_blocks_with_biome_blend(
+            &data, Some(models), biome_blend, |y| !skip_premesh_subchunk(y, hidden_bands),
+        )
+        .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
     };
-    let unexpanded_bands = omitted.keys()
-        .map(|y| i32::from(*y).div_euclid(4))
-        .collect::<BTreeSet<_>>();
-    data.subchunks.append(&mut omitted);
     let bytes = blocks.estimated_cpu_bytes();
     let version = data.version;
     let mut masks = blocks.visibility_solid_masks();
-    if let Some(premesh_masks) = premesh_masks {
-        for (y, mask) in premesh_masks {
+    if !hidden_bands.is_empty()
+        && let Some(premesh_masks) = preflight_masks.or(fallback_masks.as_ref())
+    {
+        for (&y, &mask) in premesh_masks {
             if hidden_bands.contains(&i32::from(y).div_euclid(4)) {
                 masks.insert(y, mask);
             }
         }
     }
-    let probe = Arc::new(build_probe(pos, data, None, masks));
+    let probe = Arc::new(build_probe(pos, data, None, probe_visibility(masks)));
     if trace {
         eprintln!(
-            "world3d worker: collect chunk {},{} bytes={} in {}ms",
+            "world3d worker: collect chunk {},{} bytes={} model_input_subchunks={} skipped_subchunks={} in {}ms",
             pos.x,
             pos.z,
             bytes,
+            model_input_subchunks,
+            skipped_subchunks,
             started.elapsed().as_millis()
         );
     }

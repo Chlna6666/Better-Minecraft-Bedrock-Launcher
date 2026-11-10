@@ -2188,7 +2188,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_block_models(
     chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
 ) -> Result<Preview3dChunkBlocks, String> {
-    preview_3d_collect_chunk_blocks_with_biome_blend(chunk, block_models, None)
+    preview_3d_collect_chunk_blocks_with_biome_blend(chunk, block_models, None, |_| true)
 }
 
 /// Cache the palette classification for one 16^3 subchunk. PackedIndices
@@ -2353,6 +2353,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
     chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
     biome_blend: Option<&Preview3dBiomeBlendField>,
+    include_subchunk: impl Fn(i8) -> bool,
 ) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::builtin_shared();
     let mut color_cache = BlockColorCache::new(&palette);
@@ -2361,6 +2362,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
     let subchunk_palettes = chunk
         .subchunks
         .iter()
+        .filter(|&(&y, _)| include_subchunk(y))
         .map(|(&y, subchunk)| (y, subchunk, Preview3dSubchunkPalette::classify(subchunk)))
         .collect::<Vec<_>>();
     let initial_block_capacity = subchunk_palettes
@@ -6739,6 +6741,43 @@ mod tests {
             column_samples: None,
             version: bedrock_world::ChunkVersion::New,
         }
+    }
+
+    #[test]
+    fn model_collection_borrows_only_selected_subchunks() {
+        let subchunks = [-1, 0]
+            .into_iter()
+            .map(|y| {
+                let mut indices = vec![0; 4096];
+                indices[0] = 1;
+                let storage = ::bedrock_world::block::BlockPalette::with_unpacked_indices(
+                    vec![
+                        test_block_state("minecraft:air"),
+                        test_block_state("minecraft:stone"),
+                    ],
+                    indices,
+                    None,
+                );
+                (
+                    y,
+                    bedrock_world::SubChunk {
+                        y,
+                        format: bedrock_world::SubChunkFormat::Paletted {
+                            version: 9,
+                            storages: vec![storage],
+                        },
+                    },
+                )
+            })
+            .collect();
+        let chunk = test_render_chunk_with_subchunks(subchunks);
+        let blocks = preview_3d_collect_chunk_blocks_with_biome_blend(&chunk, None, None, |y| y < 0)
+            .expect("selected subchunk should be collected");
+        assert_eq!(
+            blocks.occupied,
+            HashSet::from_iter([BlockKey { x: 0, y: -16, z: 0 }]),
+        );
+        assert_eq!(chunk.subchunks.len(), 2);
     }
 
     fn test_mesh(mesh: &Preview3dMesh) -> &Mesh {
