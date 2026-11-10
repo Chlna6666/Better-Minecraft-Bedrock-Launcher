@@ -289,85 +289,6 @@ impl DispatchTree {
         }
     }
 
-    /// Returns the parent of a previously committed dispatch node by frame-local index.
-    pub(crate) fn node_parent_at_index(&self, index: usize) -> Option<DispatchNodeId> {
-        self.nodes.get(index)?.parent
-    }
-
-    /// Returns the frame-local ID for a previously committed dispatch node.
-    pub(crate) fn node_id_at_index(&self, index: usize) -> Option<DispatchNodeId> {
-        (index < self.nodes.len()).then_some(DispatchNodeId(index))
-    }
-
-    /// Returns whether one committed node is the plain lifecycle boundary emitted by AnyView.
-    ///
-    /// Selective view reconciliation recreates this one node rather than replaying stale view
-    /// listeners. Any additional context/focus/listener state makes the optimization conservative
-    /// and falls back to the normal ancestor traversal.
-    pub(crate) fn node_is_plain_view_boundary(&self, index: usize, view_id: EntityId) -> bool {
-        self.nodes.get(index).is_some_and(|node| {
-            node.view_id == Some(view_id)
-                && node.context.is_none()
-                && node.focus_id.is_none()
-                && node.key_listeners.is_empty()
-                && node.action_listeners.is_empty()
-                && node.modifiers_changed_listeners.is_empty()
-        })
-    }
-
-    /// Replays an arbitrary committed dispatch fragment while preserving source-parent identity.
-    ///
-    /// node_map contains already replayed source nodes and their current-frame replacements. A
-    /// fragment may end with source ancestors still logically open; unlike reuse_subtree, this
-    /// method therefore does not require the range itself to be a closed subtree.
-    pub(crate) fn reuse_fragment(
-        &mut self,
-        old_range: Range<usize>,
-        source: &mut Self,
-        focus: Option<FocusId>,
-        node_map: &mut FxHashMap<DispatchNodeId, DispatchNodeId>,
-        restore_parent: DispatchNodeId,
-    ) -> Option<bool> {
-        if old_range.start > old_range.end || old_range.end > source.nodes.len() {
-            return None;
-        }
-
-        // Validate every parent before moving listener payloads out of the committed frame. A
-        // parent may be supplied by an earlier fragment, or occur earlier in this same fragment.
-        for index in old_range.clone() {
-            let parent = source.nodes.get(index)?.parent?;
-            let parent_precedes_in_fragment = parent.0 >= old_range.start && parent.0 < index;
-            if !node_map.contains_key(&parent) && !parent_precedes_in_fragment {
-                return None;
-            }
-        }
-
-        let mut contains_focus = false;
-        for index in old_range {
-            let old_id = DispatchNodeId(index);
-            let parent = source.nodes[index]
-                .parent
-                .expect("dispatch fragment parent was validated");
-            let new_parent = *node_map
-                .get(&parent)
-                .expect("dispatch fragment parent mapping was validated");
-            self.set_active_node(new_parent);
-
-            if source.nodes[index].focus_id.is_some() && source.nodes[index].focus_id == focus {
-                contains_focus = true;
-            }
-            let source_node = &source.nodes[index];
-            self.replay_node(source_node);
-            let new_id = self
-                .active_node_id()
-                .expect("moving a dispatch node must leave it active");
-            node_map.insert(old_id, new_id);
-        }
-
-        self.set_active_node(restore_parent);
-        Some(contains_focus)
-    }
-
     pub fn truncate(&mut self, index: usize) {
         for node in &self.nodes[index..] {
             if let Some(focus_id) = node.focus_id {
@@ -459,15 +380,6 @@ impl DispatchTree {
         view_path
     }
 
-    /// Iterates every view that participated in the committed dispatch tree.
-    ///
-    /// This is used by retained-view invalidation to precompute the nearest cached traversal
-    /// boundary for non-cached descendant views. The iterator intentionally exposes entity ids
-    /// only; callers still resolve ancestry through `view_path`.
-    pub(crate) fn view_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.view_node_ids.keys().copied()
-    }
-
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
         &self.nodes[node_id.0]
     }
@@ -490,9 +402,6 @@ impl DispatchTree {
         self.node_stack.last().copied()
     }
 
-    pub(crate) fn view_node_id(&self, view_id: EntityId) -> Option<DispatchNodeId> {
-        self.view_node_ids.get(&view_id).copied()
-    }
 }
 
 #[cfg(test)]
@@ -527,27 +436,4 @@ mod retained_dispatch_replay_tests {
         assert_eq!(committed.nodes[0].key_listeners.len(), 1);
     }
 
-    #[test]
-    fn retained_dispatch_fragment_replay_preserves_source_on_aborted_candidate() {
-        let keymap = Rc::new(RefCell::new(Keymap::default()));
-        let actions = Rc::new(ActionRegistry::default());
-        let mut committed = DispatchTree::new(keymap.clone(), actions.clone());
-        let mut candidate = DispatchTree::new(keymap, actions);
-        committed.push_node();
-        committed.push_node();
-        committed.on_key_event(Rc::new(|_, _, _, _| {}));
-        committed.pop_node();
-        committed.pop_node();
-        candidate.push_node();
-        let mut map = FxHashMap::default();
-        map.insert(DispatchNodeId(0), DispatchNodeId(0));
-        assert_eq!(
-            candidate.reuse_fragment(1..2, &mut committed, None, &mut map, DispatchNodeId(0)),
-            Some(false)
-        );
-        assert_eq!(committed.nodes[1].key_listeners.len(), 1);
-        assert_eq!(candidate.nodes[1].key_listeners.len(), 1);
-        candidate.clear();
-        assert_eq!(committed.nodes[1].key_listeners.len(), 1);
-    }
 }
