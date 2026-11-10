@@ -33,11 +33,13 @@ const fn border_mask() -> [u64; SOLID_WORDS] {
     mask
 }
 const BORDER_CELLS: [u64; SOLID_WORDS] = border_mask();
-// Keep a camera-voxel transition bounded even for the supported 256-chunk
-// radius. Large scenes keep the existing GPU frustum/Hi-Z path unchanged.
-const MAX_COLUMNS: usize = 1_024;
+// Bound graph traversals on extreme view distances, but cover ordinary wide
+// editor scenes: the previous 1,024-column cap disabled ALL underground
+// pre-mesh culling as soon as a 32-chunk view loaded a few thousand columns.
+// If an even larger scene exceeds the budget, fail open and retain GPU Hi-Z.
+const MAX_COLUMNS: usize = 8_192;
 const MAX_HEIGHT_SECTIONS: usize = 48;
-const MAX_VISITED_SECTIONS: usize = 32_768;
+const MAX_VISITED_SECTIONS: usize = 262_144;
 // Canonical face order: -X, +X, -Y, +Y, -Z, +Z.
 const NEIGHBORS: [(i32, i32, i32); SIDE_COUNT] = [
     (-1, 0, 0), (1, 0, 0), (0, -1, 0),
@@ -324,19 +326,33 @@ fn cell_neighbours(index: usize) -> [Option<usize>; SIDE_COUNT] {
 
 type CellSection = (ChunkPos, i32);
 
-/// Visit one Section through a certified entry face. A section with no air
-/// still becomes visible: its opaque exterior wall is seen from its neighbor.
+/// A visited Section can receive several entry faces, but only newly reached
+/// exit faces need to propagate. In open terrain six entries usually reach the
+/// same six exits; avoid visiting the same six neighbours six times.
+#[derive(Default)]
+struct PortalVisit {
+    incoming: u8,
+    propagated: u8,
+    queued: bool,
+}
+
+/// A solid Section is still considered visible when reached from one side:
+/// its exterior wall may be visible even if no portal continues through it.
 fn enqueue(
-    queue: &mut VecDeque<(CellSection, usize)>,
-    entries: &mut HashMap<CellSection, u8>,
+    queue: &mut VecDeque<CellSection>,
+    entries: &mut HashMap<CellSection, PortalVisit>,
     section: CellSection,
     entry: usize,
 ) {
-    let bit = 1 << entry;
-    let flags = entries.entry(section).or_default();
-    if *flags & bit == 0 {
-        *flags |= bit;
-        queue.push_back((section, entry));
+    let bit = 1u8 << entry;
+    let visit = entries.entry(section).or_default();
+    if visit.incoming & bit != 0 {
+        return;
+    }
+    visit.incoming |= bit;
+    if !visit.queued {
+        visit.queued = true;
+        queue.push_back(section);
     }
 }
 
@@ -473,11 +489,11 @@ pub(super) fn hidden_render_band_keys(
     };
 
     let mut queue = VecDeque::new();
-    let mut entries = HashMap::<CellSection, u8>::new();
+    let mut entries = HashMap::<CellSection, PortalVisit>::new();
     // Begin with the actual camera air component, not all components in the
     // current Section. A camera teleported between disconnected pockets must
     // change the visible set even without crossing a Section boundary.
-    entries.insert(camera_section, 0);
+    entries.insert(camera_section, PortalVisit::default());
     for face in 0..SIDE_COUNT {
         if camera_exits & (1 << face) != 0
             && let Some(neighbor) = adjacent(camera_section, face)
@@ -509,7 +525,7 @@ pub(super) fn hidden_render_band_keys(
             }
         }
     }
-    while let Some((section, entry)) = queue.pop_front() {
+    while let Some(section) = queue.pop_front() {
         if entries.len() > MAX_VISITED_SECTIONS {
             return empty;
         }
@@ -521,9 +537,20 @@ pub(super) fn hidden_render_band_keys(
             .and_then(|y| probe.visibility.get(&y))
             .map(Arc::as_ref)
             .unwrap_or(&SectionVisibility::OPEN);
-        let exits = graph.exits(entry);
+        let Some(visit) = entries.get_mut(&section) else {
+            continue;
+        };
+        visit.queued = false;
+        let mut exits = 0u8;
         for face in 0..SIDE_COUNT {
-            if exits & (1 << face) == 0 {
+            if visit.incoming & (1 << face) != 0 {
+                exits |= graph.exits(face);
+            }
+        }
+        let newly_reachable = exits & !visit.propagated;
+        visit.propagated |= newly_reachable;
+        for face in 0..SIDE_COUNT {
+            if newly_reachable & (1 << face) == 0 {
                 continue;
             }
             if let Some(neighbor) = adjacent(section, face)
@@ -801,6 +828,40 @@ mod tests {
             &probes, &meshes, dimension, [56, 168, 8], 5,
         );
         assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn large_loaded_scene_still_skips_sealed_underground_caves() {
+        let dimension = Dimension::Overworld;
+        let solid = Arc::new(SectionVisibility::from_solid_bits([u64::MAX; SOLID_WORDS]));
+        let cave = Arc::new(SectionVisibility::from_solid_bits(bits_except_air(&[(8, 8, 8)])));
+        let center = ChunkPos { x: 0, z: 0, dimension };
+        let mut probes = BTreeMap::new();
+        for x in -16..=16 {
+            for z in -16..=16 {
+                let pos = ChunkPos { x, z, dimension };
+                let graph = if pos == center { cave.clone() } else { solid.clone() };
+                probes.insert(pos, Arc::new(World3dChunkProbe {
+                    pos,
+                    min_y: 0,
+                    subchunks: BTreeMap::new(),
+                    visibility: BTreeMap::from([(6, graph)]),
+                    state_version: None,
+                    storage_bytes: 0,
+                }));
+            }
+        }
+        assert!(probes.len() > 1_024);
+        let underground = BTreeSet::from([(center, 1)]);
+        let hidden = hidden_render_band_keys(
+            &probes, &underground, dimension, [8, 168, 8], 32,
+        );
+        assert!(hidden.contains(&(center, 1)), "large scenes must not disable cave pruning");
+        // A camera teleport into the cave must restore the original Section.
+        let inside = hidden_render_band_keys(
+            &probes, &underground, dimension, [8, 104, 8], 32,
+        );
+        assert!(!inside.contains(&(center, 1)));
     }
 
     #[test]
