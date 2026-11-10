@@ -641,6 +641,9 @@ struct SidecarGpuBackend {
     generated_arena: Rc<RefCell<MeshArena>>,
     template_arena: Rc<RefCell<MeshArena>>,
     argument_arena: Rc<RefCell<MeshArena>>,
+    /// Native Compute/Transfer fences created while preparing any SceneView.
+    /// GPUI's owner drains these even when a later prepare step fails.
+    accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
     scenes: HashMap<SceneViewId, SceneResources>,
     command_cache: HashMap<SceneViewId, CachedCommands>,
     /// Exact last successful producer input per view. A GUI-only redraw can
@@ -752,6 +755,7 @@ impl SidecarGpuBackend {
             argument_arena: Rc::new(RefCell::new(MeshArena::generated_arguments(
                 device.buffer_binding_limits(),
             ))),
+            accepted_native_submissions: Rc::new(RefCell::new(Vec::new())),
             scenes: HashMap::new(),
             command_cache: HashMap::new(),
             captured_inputs: HashMap::new(),
@@ -1231,6 +1235,14 @@ impl RendererExtensionRenderer for Renderer {
 }
 
 impl RendererExtensionRenderer for SidecarGpuBackend {
+    fn drain_accepted_native_submissions(
+        &mut self, submissions: &mut Vec<gfx_core::SubmissionId>,
+    ) {
+        // Take every accepted native producer, independent of whether
+        // render() succeeded. No UI-side CPU fence polling or submission.
+        submissions.append(&mut self.accepted_native_submissions.borrow_mut());
+    }
+
     fn has_native_offscreen_work(&self) -> bool {
         !self.pending_passes.is_empty()
     }
@@ -1480,6 +1492,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     Rc::clone(&self.generated_arena),
                     Rc::clone(&self.template_arena),
                     Rc::clone(&self.argument_arena),
+                    Rc::clone(&self.accepted_native_submissions),
                 )?,
             );
         }
