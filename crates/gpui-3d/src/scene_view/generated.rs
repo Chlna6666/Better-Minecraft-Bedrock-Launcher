@@ -1168,7 +1168,12 @@ fn create_many_impl(
             model.admit_native(true, hardware_timestamps, workgroups)
         })
     });
-    let should_tag = if let Some(model) = feedback.as_deref() {
+    let should_tag = if available_native_queue.is_none() {
+        // No queue decision is possible: do not turn on permanent native
+        // timestamp probes just because this SceneView owns a controller.
+        // Preserve the existing explicitly requested debug trace.
+        batch_id.is_some() && hardware_timestamps
+    } else if let Some(model) = feedback.as_deref() {
         model.should_tag(hardware_timestamps)
     } else {
         batch_id.is_some() && hardware_timestamps
