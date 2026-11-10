@@ -485,7 +485,7 @@ impl GameSessionReport {
         // before that evidence has been checked by the launch monitor.
         // Normal/unknown exits still publish to drive launcher visibility.
         if !cfg!(target_os = "windows")
-            || !needs_windows_wer_before_popup(self.kind, &self.platform)
+            || !needs_windows_wer_before_popup(&self)
         {
             let _ = event_bus().send(self.clone());
         }
@@ -645,16 +645,19 @@ fn classify_linux_runner_signal(signal: i32) -> ExitKind {
 
 /// True for native Windows suspects whose preliminary diagnosis is still
 /// waiting for independent WER correlation.
-fn needs_windows_wer_before_popup(kind: ExitKind, platform: &str) -> bool {
-    kind == ExitKind::SuspectedCrash
-        && matches!(platform, "gdk" | "uwp" | "win32")
+fn needs_windows_wer_before_popup(report: &GameSessionReport) -> bool {
+    matches!(report.kind, ExitKind::SuspectedCrash | ExitKind::Unknown)
+        && matches!(report.platform.as_str(), "gdk" | "uwp" | "win32")
+        && report.exit_code.is_some_and(|code|
+            code != 0 && code != WINDOWS_CONTROL_C_EXIT
+        )
 }
 
 /// Publish a final *suspected* incident after bounded WER lookup fails.
 /// WER-confirmed incidents are published by enrich_windows_wer itself.
 #[cfg(target_os = "windows")]
 pub fn publish_unconfirmed_windows_exit(report: &GameSessionReport) {
-    if !needs_windows_wer_before_popup(report.kind, &report.platform) {
+    if !needs_windows_wer_before_popup(report) {
         return;
     }
     // Respect an acknowledgement if another UI path dismissed the report.
@@ -1322,12 +1325,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_suspects_wait_for_wer_before_popup() {
-        assert!(needs_windows_wer_before_popup(ExitKind::SuspectedCrash, "gdk"));
-        assert!(needs_windows_wer_before_popup(ExitKind::SuspectedCrash, "uwp"));
-        assert!(!needs_windows_wer_before_popup(ExitKind::ConfirmedCrash, "gdk"));
-        assert!(!needs_windows_wer_before_popup(ExitKind::Unknown, "gdk"));
-        assert!(!needs_windows_wer_before_popup(ExitKind::RunnerFailure, "proton"));
+    fn native_nonzero_exits_wait_for_wer_before_publishing() {
+        let report = GameSessionReport {
+            schema_version: GAME_DIAGNOSTICS_SCHEMA,
+            id: Uuid::new_v4().to_string(),
+            task_id: "test".into(), version: "dev".into(),
+            game_directory: PathBuf::new(), platform: "gdk".into(),
+            pid: 1, process_created_at: None,
+            compatibility_prefix: None, compatibility_logs: None,
+            compatibility_fault: None, early_exit: false,
+            started_at: Utc::now(), ended_at: Some(Utc::now()),
+            exit_code: Some(0xC0000005), exit_signal: None,
+            kind: ExitKind::SuspectedCrash, summary: String::new(),
+            acknowledged: false, wer_fault: None,
+            findings: Vec::new(), forensics: forensics::ForensicSummary::default(),
+            log_offsets: HashMap::new(),
+        };
+        assert!(needs_windows_wer_before_popup(&report));
+        assert!(needs_windows_wer_before_popup(&GameSessionReport {
+            kind: ExitKind::Unknown, exit_code: Some(1), ..report.clone()
+        }));
+        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+            kind: ExitKind::Normal, exit_code: Some(0), ..report.clone()
+        }));
+        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+            kind: ExitKind::Unknown, exit_code: Some(WINDOWS_CONTROL_C_EXIT), ..report.clone()
+        }));
+        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+            platform: "proton".into(), ..report
+        }));
     }
 
     #[test]
