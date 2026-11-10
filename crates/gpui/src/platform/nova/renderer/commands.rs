@@ -175,12 +175,19 @@ impl NovaRenderer {
             frame_time,
         );
         let mut backend = lock_backend(&self.backend);
-        let (registry, steps) = (
+        let (registry, steps, auxiliary) = (
             &mut self.renderer_registry,
             &mut self.frame_upload.renderer_extension_steps[index],
+            &mut self.auxiliary_submissions,
         );
         backend.with_extension_device(|device| {
-            registry.prepare(extension.extension.as_ref(), device, context, steps)
+            registry.prepare(extension.extension.as_ref(), device, context, steps, |id| {
+                // Register as soon as the resource preparation returns, even
+                // if its render failed after native work was accepted.
+                if !auxiliary.contains(&id) {
+                    auxiliary.push(id);
+                }
+            })
         })?;
         apply_scissor_to_steps(steps, scissor);
         Ok(())
