@@ -439,7 +439,7 @@ pub(super) fn hidden_render_band_keys(
     radius: i32,
 ) -> BTreeSet<(ChunkPos, i32)> {
     let empty = BTreeSet::new();
-    if probes.is_empty() || keys.is_empty() || probes.len() > MAX_COLUMNS {
+    if probes.is_empty() || keys.is_empty() {
         return empty;
     }
     let Some((camera_pos, camera_y, _component, camera_exits)) =
@@ -483,6 +483,11 @@ pub(super) fn hidden_render_band_keys(
         .filter(|(pos, _)| inside(**pos))
         .map(|(pos, probe)| (*pos, probe.as_ref()))
         .collect::<HashMap<_, _>>();
+    // Cache hysteresis retains old columns outside the active view. Only
+    // graph nodes in this camera's radius consume the traversal budget.
+    if columns.len() > MAX_COLUMNS {
+        return empty;
+    }
     let is_known = |section: CellSection| {
         (min_y..=max_y).contains(&section.1)
             && columns.contains_key(&section.0)
