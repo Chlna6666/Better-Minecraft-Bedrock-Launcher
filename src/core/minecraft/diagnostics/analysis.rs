@@ -246,6 +246,20 @@ pub fn analyze_with_forensics(
             findings.push(CrashFinding { reason, confidence, source });
         }
     };
+    if !evidence.missing_dependencies.is_empty() {
+        let private = evidence.missing_dependencies.iter().any(|item| item.session_private);
+        add_or_promote(
+            CrashReason::MissingDependency,
+            if private { Confidence::Medium } else { Confidence::Low },
+            if report.compatibility_prefix.is_some() {
+                EvidenceSource::RunnerLog
+            } else if private {
+                EvidenceSource::LauncherLog
+            } else {
+                EvidenceSource::ModLog
+            },
+        );
+    }
     if !evidence.failed_mods.is_empty() {
         let own_log = evidence.failed_mods.iter().any(|item| item.session_private);
         let confidence = if own_log { Confidence::Medium } else { Confidence::Low };
@@ -454,6 +468,7 @@ mod tests {
         let report = report("wine", Some(1));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            missing_dependencies: vec![],
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 2,
@@ -471,6 +486,7 @@ mod tests {
         let report = report("gdk", Some(0xC0000005));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            missing_dependencies: vec![],
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 2,
@@ -491,6 +507,7 @@ mod tests {
         let report = report("gdk", Some(0xC0000005));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            missing_dependencies: vec![],
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 1,
