@@ -468,15 +468,6 @@ impl FilterRegistry {
             .filter(|version| version.0 != 0)
     }
 
-    pub(super) fn completed_layer_content_version(
-        &self,
-        index: u32,
-    ) -> Option<TextureContentVersion> {
-        self.source_at(index)
-            .map(|source| source.completed_version)
-            .filter(|version| version.0 != 0)
-    }
-
     pub(super) fn complete_submission(&mut self, index: u32, version: TextureContentVersion) {
         if let Ok(position) = self
             .element_blur_inputs
