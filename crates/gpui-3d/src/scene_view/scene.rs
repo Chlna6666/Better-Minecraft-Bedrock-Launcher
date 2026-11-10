@@ -3936,10 +3936,7 @@ impl SceneResources {
         let draws_len = self.prepared.draws.len();
         let blend_order = self.prepared.blended_order();
         let tail_start = draws_len.checked_sub(blend_order.len()).filter(|_| {
-            blend_order
-                .iter()
-                .enumerate()
-                .all(|(_, &index)| index < blend_order.len())
+            blend_order.iter().all(|&index| index < blend_order.len())
         });
         let push_command = |index: usize, steps: &mut Vec<RenderCommand>| -> gpui::Result<()> {
             let draw = &self.prepared.draws[index];
