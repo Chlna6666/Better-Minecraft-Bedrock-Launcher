@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn preloader_placement_is_redirected_to_mod_directory() {
+fn preloader_placement_is_isolated_from_runtime_mod_directory() {
     let mut variant = super::super::lip::PackageVariant {
         assets: vec![super::super::lip::PackageAsset {
             kind: AssetKind::Zip,
@@ -19,7 +19,7 @@ fn preloader_placement_is_redirected_to_mod_directory() {
 
     assert_eq!(
         variant.assets[0].placements[0].destination,
-        "mods/PreLoader/PreLoader.dll"
+        "BLoader/PreLoader/PreLoader.dll"
     );
 }
 
