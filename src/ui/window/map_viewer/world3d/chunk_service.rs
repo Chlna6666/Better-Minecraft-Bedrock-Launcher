@@ -3418,8 +3418,13 @@ impl Worker {
     /// value lookup. The graph is recomputed when the camera changes its
     /// voxel/height, when the index changes, or when the source DB revision
     /// differs. In-flight source changes fail open rather than hiding terrain.
-    fn refresh_index_plan(&mut self) {
-        if self.visibility_index.refresh() {
+    fn refresh_index_plan(&mut self, verify_before_db_skip: bool) {
+        let changed = if verify_before_db_skip {
+            self.visibility_index.refresh()
+        } else {
+            self.visibility_index.refresh_if_due()
+        };
+        if changed {
             self.index_hidden_columns.clear();
             self.index_plan_key = None;
             // External writers may change any column without issuing editor
@@ -3502,7 +3507,7 @@ impl Worker {
                 *pos, self.view.dimension, center_x, center_z, self.view.radius,
             )
         });
-        self.refresh_index_plan();
+        self.refresh_index_plan(false);
         let newly_visible = self.deferred_db_reads.iter().copied()
             .filter(|&pos| {
                 !lazy_mesh_column(pos, self.view)
@@ -3521,7 +3526,7 @@ impl Worker {
     }
 
     fn next_batch(&mut self, center_x: i32, center_z: i32) -> Vec<ChunkPos> {
-        self.refresh_index_plan();
+        self.refresh_index_plan(self.visibility_index.len() > 0);
         let mut batch = Vec::with_capacity(LOAD_BATCH_CHUNKS);
         let urgent = take_visible_urgent_chunks(
             &mut self.urgent_chunks,
