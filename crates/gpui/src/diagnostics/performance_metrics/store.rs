@@ -145,7 +145,6 @@ pub(super) struct SharedMetrics {
     pub(super) layout_cache_hits: AtomicU64,
     pub(super) layout_cache_misses: AtomicU64,
     pub(super) layout_cache_reused_roots: AtomicU64,
-    pub(super) layout_cache_saved_roots: AtomicU64,
     pub(super) text_layout_hits: AtomicU64,
     pub(super) text_layout_reuses: AtomicU64,
     pub(super) text_layout_misses: AtomicU64,
