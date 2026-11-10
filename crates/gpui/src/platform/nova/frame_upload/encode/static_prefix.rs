@@ -17,15 +17,6 @@ impl FrameUpload {
     /// FilterRegistry compares this source's packed content fingerprint; no
     /// Background or Foreground Scene is retained for automatic capture.
     /// Reject any unsorted or unsupported batch topology before mutation.
-    pub(in crate::platform::nova) fn capture_encoded_static_prefix(
-        &mut self,
-        prefix: &StaticPrefix,
-        drawable_size: DrawableSize,
-        summary: &mut FrameUploadSummary,
-    ) -> bool {
-        self.capture_static_prefix(prefix, drawable_size, summary)
-    }
-
     pub(in crate::platform::nova) fn capture_static_prefix(
         &mut self,
         prefix: &StaticPrefix,
