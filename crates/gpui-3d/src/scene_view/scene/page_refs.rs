@@ -195,14 +195,11 @@ mod tests {
         generated.generated = Some(crate::scene_view::generated::GeneratedMesh {
             templates: BufferId::from_parts(9, 1),
             arguments: BufferId::from_parts(10, 1),
-            template_bytes: 0,
             template_allocation: None,
             template_base: 0,
-            template_offset: 0,
             template_page_bytes: 0,
             argument_allocation: None,
             argument_base: 0,
-            argument_offset: 0,
             argument_page_bytes: 0,
         });
         refs.insert(&generated, true);
