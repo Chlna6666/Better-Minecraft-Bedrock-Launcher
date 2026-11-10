@@ -1515,8 +1515,6 @@ fn encode_batch_draws_into(
     prepared: &PreparedScene,
     bytes: &mut Vec<u8>,
 ) -> Result<(), RenderError> {
-    let light_count = u32::try_from(prepared.lights.len())
-        .map_err(|_| RenderError::Preparation("GPUI 3D light count exceeds u32".into()))?;
     let start_len = bytes.len();
     for batch in prepared.draw_batches() {
         let Some(draw) = batch.draws().first() else {
