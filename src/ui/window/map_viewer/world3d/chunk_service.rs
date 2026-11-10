@@ -5230,7 +5230,7 @@ fn premesh_opaque_terrain(name: &str) -> bool {
 /// a waterlogged/custom overlay fully occludes any side.
 fn premesh_visibility_masks(data: &ChunkData) -> BTreeMap<i8, [u64; 64]> {
     let mut masks = BTreeMap::new();
-    for &(y, ref subchunk) in &data.subchunks {
+    for (&y, subchunk) in &data.subchunks {
         let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
             continue;
         };
@@ -5459,14 +5459,14 @@ fn collect_cached_chunk(
     // heavyweight captured-model collector walks this column.
     let premesh_masks = (!hidden_bands.is_empty())
         .then(|| premesh_visibility_masks(&data));
-    let mut omitted = Vec::new();
+    let mut omitted = BTreeMap::new();
     if !hidden_bands.is_empty() {
-        let mut retained = Vec::with_capacity(data.subchunks.len());
+        let mut retained = BTreeMap::new();
         for (y, subchunk) in std::mem::take(&mut data.subchunks) {
             if skip_premesh_subchunk(y, hidden_bands) {
-                omitted.push((y, subchunk));
+                omitted.insert(y, subchunk);
             } else {
-                retained.push((y, subchunk));
+                retained.insert(y, subchunk);
             }
         }
         data.subchunks = retained;
@@ -5479,8 +5479,8 @@ fn collect_cached_chunk(
         p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
             .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
     };
-    let unexpanded_bands = omitted.iter()
-        .map(|(y, _)| i32::from(*y).div_euclid(4))
+    let unexpanded_bands = omitted.keys()
+        .map(|y| i32::from(*y).div_euclid(4))
         .collect::<BTreeSet<_>>();
     data.subchunks.append(&mut omitted);
     let bytes = blocks.estimated_cpu_bytes();
