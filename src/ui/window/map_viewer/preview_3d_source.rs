@@ -4089,12 +4089,25 @@ fn preview_3d_resolved_detail_shape_for_block(
     {
         return Some(shape);
     }
-    if is_engine_block_entity_model_block(&state.name)
-        && let Some(shape) = model_shape_for_block_state(&query)
+    if is_engine_block_entity_model_block(&state.name) {
+        // Beds resolve from the pack's own `geometry.bed` entity model so the shape and UVs
+        // follow the installation instead of a built-in table; the procedural fallback only
+        // covers packs that ship no geometry.
+        let shaped = if preview_3d_is_bed_state(&state.name) {
+            repository
+                .geometry(bedrock_block_model::BED_GEOMETRY_IDENTIFIER)
+                .and_then(|geometry| {
+                    bedrock_block_model::bed_shape_from_geometry(geometry, &query)
+                })
+        } else {
+            model_shape_for_block_state(&query)
+        };
+        if let Some(shape) = shaped
             .map(preview_3d_detail_shape_from_model_shape)
             .filter(|shape| !shape.is_empty())
-    {
-        return Some(shape);
+        {
+            return Some(shape);
+        }
     }
     let resolved = repository.resolve_block(&query);
     if resolved
@@ -4128,6 +4141,11 @@ fn preview_3d_shape_from_named_geometry(
         preview_3d_normalize_shulker_geometry_shape(&mut shape);
     }
     Some(shape).filter(|shape| !shape.is_empty())
+}
+
+fn preview_3d_is_bed_state(name: &str) -> bool {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    name == "bed" || name.ends_with("_bed")
 }
 
 fn preview_3d_uses_full_inventory_texture_uv(state: &BlockState) -> bool {

@@ -106,13 +106,23 @@ impl PackResources {
             archived: BTreeMap::new(),
             loose: None,
         };
-        // Texture lookups probe many candidates across version overlays. Index loose paths once.
+        // Texture lookups probe many candidates across version overlays. Index loose paths once,
+        // limited to the directories this consumer can ever read: a vanilla pack spends most of
+        // its inode budget on `sounds/` (thousands of files) which block models never touch.
         {
             let mut loose = BTreeMap::new();
             let mut complete = true;
-            let entries = WalkDir::new(root)
-                .into_iter()
-                .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != "__brarchive");
+            let entries = WalkDir::new(root).into_iter().filter_entry(|entry| {
+                if entry.depth() != 1 {
+                    return true;
+                }
+                if !entry.file_type().is_dir() {
+                    // Root-level JSON (blocks.json, terrain_texture.json, ...) always counts.
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy();
+                name != "__brarchive" && is_model_resource_dir(&name)
+            });
             for entry in entries {
                 let Ok(entry) = entry else {
                     complete = false;
@@ -276,6 +286,23 @@ mod tests {
         assert!(pack.get(Path::new("blocks.json")).is_some());
         assert!(pack.get(Path::new("textures/missing.png")).is_none());
     }
+}
+
+/// Top-level directories that can hold block models, textures or definitions.
+///
+/// A vanilla pack spends most of its inode budget on `sounds/` (thousands of files) and other
+/// content this consumer never reads, so the loose index is limited to these.
+fn is_model_resource_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "textures"
+            | "models"
+            | "blocks"
+            | "definitions"
+            | "entity"
+            | "materials"
+            | "local_lighting"
+    )
 }
 
 fn relevant_archive(path: &Path) -> bool {

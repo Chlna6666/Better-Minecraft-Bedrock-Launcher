@@ -246,8 +246,15 @@ impl RuntimeCaptureCatalog {
             return Err("current BedrockSceneCapture binary geometry pool required".to_owned());
         }
         let binary = if packed.is_some() {
-            Some(read_catalog_entry(root, packed.as_ref(), "geometry_pool.bin", 512 * 1024 * 1024)
-                .ok_or_else(|| "geometry_pool.bin missing or too large".to_owned())?)
+            Some(
+                read_catalog_entry(
+                    root,
+                    packed.as_ref(),
+                    "geometry_pool.bin",
+                    512 * 1024 * 1024,
+                )
+                .ok_or_else(|| "geometry_pool.bin missing or too large".to_owned())?,
+            )
         } else {
             None
         };
@@ -297,7 +304,8 @@ impl RuntimeCaptureCatalog {
             let aliases = if let Some(cached) = material_cache.get(&material_ref) {
                 cached.clone()
             } else {
-                let Some(table) = pool.read(2, material_ref)
+                let Some(table) = pool
+                    .read(2, material_ref)
                     .and_then(|bytes| serde_json::from_slice::<CaptureMaterialTable>(&bytes).ok())
                 else {
                     continue;
@@ -305,21 +313,27 @@ impl RuntimeCaptureCatalog {
                 if table.schema != 2 {
                     continue;
                 }
-                let aliases: Arc<HashMap<usize, CaptureMaterialSlot>> = Arc::new(table
-                    .texture_bindings
-                    .into_iter()
-                    .filter(|t| !t.resource_alias.is_empty())
-                    .map(|t| {
-                        let variants = t.atlas_variants
-                            .into_iter()
-                            .map(|v| ((v.variant, v.frame), v.atlas_uv))
-                            .collect();
-                        (t.slot, CaptureMaterialSlot {
-                            alias: t.resource_alias,
-                            atlas_variants: variants,
+                let aliases: Arc<HashMap<usize, CaptureMaterialSlot>> = Arc::new(
+                    table
+                        .texture_bindings
+                        .into_iter()
+                        .filter(|t| !t.resource_alias.is_empty())
+                        .map(|t| {
+                            let variants = t
+                                .atlas_variants
+                                .into_iter()
+                                .map(|v| ((v.variant, v.frame), v.atlas_uv))
+                                .collect();
+                            (
+                                t.slot,
+                                CaptureMaterialSlot {
+                                    alias: t.resource_alias,
+                                    atlas_variants: variants,
+                                },
+                            )
                         })
-                    })
-                    .collect());
+                        .collect(),
+                );
                 material_cache.insert(material_ref, Arc::clone(&aliases));
                 aliases
             };
@@ -327,12 +341,18 @@ impl RuntimeCaptureCatalog {
                 // All observed native samples for one exact state must agree.
                 // A difference means the mesh depends on surroundings or
                 // randomization and cannot safely be used as a static recipe.
-                let samples: Vec<_> = block.variants.iter()
-                    .filter(|v| v.neighborhood == "native_scene"
-                        && !v.position_variant_candidate
-                        && !v.shared_geometry_refs.is_empty())
+                let samples: Vec<_> = block
+                    .variants
+                    .iter()
+                    .filter(|v| {
+                        v.neighborhood == "native_scene"
+                            && !v.position_variant_candidate
+                            && !v.shared_geometry_refs.is_empty()
+                    })
                     .collect();
-                let Some(first) = samples.first() else { continue };
+                let Some(first) = samples.first() else {
+                    continue;
+                };
                 if samples.iter().any(|sample| {
                     sample.shared_geometry_refs != first.shared_geometry_refs
                         || sample.shared_appearance_refs != first.shared_appearance_refs
@@ -341,9 +361,13 @@ impl RuntimeCaptureCatalog {
                 }
                 (*first).clone()
             } else {
-                let Some(sample) = block.variants.iter()
+                let Some(sample) = block
+                    .variants
+                    .iter()
                     .find(|v| v.neighborhood == "registry_visual_bounds")
-                else { continue };
+                else {
+                    continue;
+                };
                 sample.clone()
             };
             if variant.shared_geometry_refs.len() != variant.shared_appearance_refs.len() {
@@ -451,7 +475,9 @@ impl RuntimeCaptureCatalog {
         if let Some(value) = cache.get(id) {
             return value.clone();
         }
-        let result = self.pool.read(0, *id)
+        let result = self
+            .pool
+            .read(0, *id)
             .and_then(|bytes| CaptureGeometry::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
@@ -462,7 +488,9 @@ impl RuntimeCaptureCatalog {
         if let Some(value) = cache.get(id) {
             return value.clone();
         }
-        let result = self.pool.read(1, *id)
+        let result = self
+            .pool
+            .read(1, *id)
             .and_then(|bytes| CaptureAppearance::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
@@ -556,7 +584,8 @@ fn native_atlas_to_local(uv: [f32; 2], rect: [f32; 4]) -> Option<[f32; 2]> {
     let dv = rect[3] - rect[1];
     if !rect.iter().all(|v| v.is_finite())
         || !uv.iter().all(|v| v.is_finite())
-        || du.abs() <= 1e-7 || dv.abs() <= 1e-7
+        || du.abs() <= 1e-7
+        || dv.abs() <= 1e-7
     {
         return None;
     }
@@ -605,9 +634,10 @@ fn shared_mesh_planes(
             return None;
         }
         for edge in 0..3 {
-            half_edges.entry((
-                triangle[edge], triangle[(edge + 1) % 3], slots[j],
-            )).or_default().push((j, edge));
+            half_edges
+                .entry((triangle[edge], triangle[(edge + 1) % 3], slots[j]))
+                .or_default()
+                .push((j, edge));
         }
     }
     let mut used = vec![false; count];
@@ -626,7 +656,9 @@ fn shared_mesh_planes(
             let key = (a[ra], a[(ra + 2) % 3], slots[i]);
             if let Some(mates) = half_edges.get(&key) {
                 candidates.extend(
-                    mates.iter().copied()
+                    mates
+                        .iter()
+                        .copied()
                         .filter(|(j, _)| *j > i && !used[*j])
                         .map(|(j, rb)| (j, ra, rb)),
                 );
@@ -639,97 +671,104 @@ fn shared_mesh_planes(
             let b = geometry.triangles[j];
             let ai = [ra % 3, (ra + 1) % 3, (ra + 2) % 3];
             let bj = [rb % 3, (rb + 1) % 3, (rb + 2) % 3];
-                    if a[ai[0]] != b[bj[0]] || a[ai[2]] != b[bj[1]] || a[ai[1]] == b[bj[2]] {
-                        continue;
-                    }
-                    let left = &attr[3 * i + ai[0]];
-                    let right = &attr[3 * j + bj[0]];
-                    let left2 = &attr[3 * i + ai[2]];
-                    let right2 = &attr[3 * j + bj[1]];
-                    if left != right || left2 != right2 {
-                        continue;
-                    }
-                    let rows = [
-                        &attr[3 * i + ai[0]],
-                        &attr[3 * i + ai[1]],
-                        &attr[3 * i + ai[2]],
-                        &attr[3 * j + bj[2]],
-                    ];
-                    if appearance.source_kind == 2
-                        && appearance.variant_frames[i] != appearance.variant_frames[j]
-                    {
-                        continue;
-                    }
-                    if rows.iter().any(|row| row.normal != rows[0].normal) {
-                        continue;
-                    }
-                    let corners = [
-                        points[a[ai[0]]],
-                        points[a[ai[1]]],
-                        points[a[ai[2]]],
-                        points[b[bj[2]]],
-                    ];
-                    let uvs = if appearance.source_kind == 2 {
-                        let Some(slot) = slots[i] else { continue };
-                        let Some(material) = aliases.get(&slot) else { continue };
-                        let Some(variant) = appearance.variant_frames[i] else { continue };
-                        let Some(rect) = material.atlas_variants.get(&variant) else { continue };
-                        let local: Option<Vec<[f32; 2]>> = rows.iter()
-                            .map(|row| native_atlas_to_local(row.uv, *rect))
-                            .collect();
-                        let Some(local) = local else { continue };
-                        [local[0], local[1], local[2], local[3]]
-                    } else {
-                        rows.map(|row| row.uv)
-                    };
-                    if !corners
-                        .iter()
-                        .flatten()
-                        .chain(uvs.iter().flatten())
-                        .all(|v| v.is_finite())
-                    {
-                        continue;
-                    }
-                    let normal = [
-                        rows[0].normal[0].round() as i32,
-                        rows[0].normal[1].round() as i32,
-                        rows[0].normal[2].round() as i32,
-                    ];
-                    // The previous reader also supported diagonal cross
-                    // planes (flowers, grasses). Do not restrict normals to
-                    // coordinate axes, but verify the four positions are
-                    // coplanar before reconstructing a native quad.
-                    let ab = [
-                        corners[1][0] - corners[0][0],
-                        corners[1][1] - corners[0][1],
-                        corners[1][2] - corners[0][2],
-                    ];
-                    let ac = [
-                        corners[2][0] - corners[0][0],
-                        corners[2][1] - corners[0][1],
-                        corners[2][2] - corners[0][2],
-                    ];
-                    let ad = [
-                        corners[3][0] - corners[0][0],
-                        corners[3][1] - corners[0][1],
-                        corners[3][2] - corners[0][2],
-                    ];
-                    let cross = [
-                        ab[1] * ac[2] - ab[2] * ac[1],
-                        ab[2] * ac[0] - ab[0] * ac[2],
-                        ab[0] * ac[1] - ab[1] * ac[0],
-                    ];
-                    let norm_sq = cross.iter().map(|v| v * v).sum::<f32>();
-                    if norm_sq < 1e-12 {
-                        continue;
-                    }
-                    let deviation = (cross[0] * ad[0] + cross[1] * ad[1] + cross[2] * ad[2]).abs();
-                    if deviation > 1e-4 * norm_sq.sqrt() {
-                        continue;
-                    }
-                    let plane = ModelPlane::new(corners, normal).with_uv(uvs).front_only();
-                    selected = Some((j, plane));
-                    break 'candidate;
+            if a[ai[0]] != b[bj[0]] || a[ai[2]] != b[bj[1]] || a[ai[1]] == b[bj[2]] {
+                continue;
+            }
+            let left = &attr[3 * i + ai[0]];
+            let right = &attr[3 * j + bj[0]];
+            let left2 = &attr[3 * i + ai[2]];
+            let right2 = &attr[3 * j + bj[1]];
+            if left != right || left2 != right2 {
+                continue;
+            }
+            let rows = [
+                &attr[3 * i + ai[0]],
+                &attr[3 * i + ai[1]],
+                &attr[3 * i + ai[2]],
+                &attr[3 * j + bj[2]],
+            ];
+            if appearance.source_kind == 2
+                && appearance.variant_frames[i] != appearance.variant_frames[j]
+            {
+                continue;
+            }
+            if rows.iter().any(|row| row.normal != rows[0].normal) {
+                continue;
+            }
+            let corners = [
+                points[a[ai[0]]],
+                points[a[ai[1]]],
+                points[a[ai[2]]],
+                points[b[bj[2]]],
+            ];
+            let uvs = if appearance.source_kind == 2 {
+                let Some(slot) = slots[i] else { continue };
+                let Some(material) = aliases.get(&slot) else {
+                    continue;
+                };
+                let Some(variant) = appearance.variant_frames[i] else {
+                    continue;
+                };
+                let Some(rect) = material.atlas_variants.get(&variant) else {
+                    continue;
+                };
+                let local: Option<Vec<[f32; 2]>> = rows
+                    .iter()
+                    .map(|row| native_atlas_to_local(row.uv, *rect))
+                    .collect();
+                let Some(local) = local else { continue };
+                [local[0], local[1], local[2], local[3]]
+            } else {
+                rows.map(|row| row.uv)
+            };
+            if !corners
+                .iter()
+                .flatten()
+                .chain(uvs.iter().flatten())
+                .all(|v| v.is_finite())
+            {
+                continue;
+            }
+            let normal = [
+                rows[0].normal[0].round() as i32,
+                rows[0].normal[1].round() as i32,
+                rows[0].normal[2].round() as i32,
+            ];
+            // The previous reader also supported diagonal cross
+            // planes (flowers, grasses). Do not restrict normals to
+            // coordinate axes, but verify the four positions are
+            // coplanar before reconstructing a native quad.
+            let ab = [
+                corners[1][0] - corners[0][0],
+                corners[1][1] - corners[0][1],
+                corners[1][2] - corners[0][2],
+            ];
+            let ac = [
+                corners[2][0] - corners[0][0],
+                corners[2][1] - corners[0][1],
+                corners[2][2] - corners[0][2],
+            ];
+            let ad = [
+                corners[3][0] - corners[0][0],
+                corners[3][1] - corners[0][1],
+                corners[3][2] - corners[0][2],
+            ];
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let norm_sq = cross.iter().map(|v| v * v).sum::<f32>();
+            if norm_sq < 1e-12 {
+                continue;
+            }
+            let deviation = (cross[0] * ad[0] + cross[1] * ad[1] + cross[2] * ad[2]).abs();
+            if deviation > 1e-4 * norm_sq.sqrt() {
+                continue;
+            }
+            let plane = ModelPlane::new(corners, normal).with_uv(uvs).front_only();
+            selected = Some((j, plane));
+            break 'candidate;
         }
         let (j, mut plane) = selected?;
         if let Some(alias) = slots[i].and_then(|id| aliases.get(&id)) {
@@ -746,13 +785,13 @@ fn shared_mesh_planes(
 mod tests {
     use super::*;
     use bedrock_world::NbtWriter;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::io::Write;
 
     fn u32bytes(values: &[u32]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
-    fn pool_bytes(groups: &[Vec<Vec<u8>>;4]) -> Vec<u8> {
+    fn pool_bytes(groups: &[Vec<Vec<u8>>; 4]) -> Vec<u8> {
         let total: usize = groups.iter().map(Vec::len).sum();
         let mut out = b"BSCPOOL3".to_vec();
         out.extend(3u32.to_le_bytes());
@@ -775,26 +814,26 @@ mod tests {
         out
     }
     fn example_geometry() -> Vec<u8> {
-        let mut bytes = u32bytes(&[4,2]);
-        for point in [[0f32,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]] {
+        let mut bytes = u32bytes(&[4, 2]);
+        for point in [[0f32, 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]] {
             for coord in point {
                 bytes.extend(coord.to_le_bytes());
             }
         }
-        bytes.extend(u32bytes(&[0,2,3,0,1,2]));
+        bytes.extend(u32bytes(&[0, 2, 3, 0, 1, 2]));
         bytes
     }
     fn example_appearance() -> Vec<u8> {
-        let mut bytes = u32bytes(&[0,0,0,1,2]);
-        let uv = [[0.,0.],[1.,1.],[0.,1.],[0.,0.],[1.,0.],[1.,1.]];
-        for [u,v] in uv {
-            for value in [0f32,0.,-1.,u,v] {
+        let mut bytes = u32bytes(&[0, 0, 0, 1, 2]);
+        let uv = [[0., 0.], [1., 1.], [0., 1.], [0., 0.], [1., 0.], [1., 1.]];
+        for [u, v] in uv {
+            for value in [0f32, 0., -1., u, v] {
                 bytes.extend(value.to_le_bytes());
             }
             bytes.extend(u32::MAX.to_le_bytes());
         }
         for _ in 0..2 {
-            bytes.extend(u32bytes(&[2,u32::MAX,u32::MAX]));
+            bytes.extend(u32bytes(&[2, u32::MAX, u32::MAX]));
         }
         bytes
     }
@@ -803,27 +842,58 @@ mod tests {
     }
     fn state_nbt(note: i32, alias: bool) -> String {
         let mut root = BTreeMap::new();
-        root.insert("name".to_owned(),
-            NbtTag::String(if alias {"minecraft:noteblock"} else {"minecraft:oak_stairs"}.into()));
-        root.insert("states".to_owned(), NbtTag::Compound(
-            BTreeMap::from([((if alias {"note"} else {"weirdo_direction"}).to_owned(),
-                NbtTag::Int(note))]).into_iter().collect()));
-        NbtWriter::write_root(&NbtTag::Compound(root.into_iter().collect())).unwrap()
-            .iter().map(|b| format!("{b:02x}")).collect()
+        root.insert(
+            "name".to_owned(),
+            NbtTag::String(
+                if alias {
+                    "minecraft:noteblock"
+                } else {
+                    "minecraft:oak_stairs"
+                }
+                .into(),
+            ),
+        );
+        root.insert(
+            "states".to_owned(),
+            NbtTag::Compound(
+                BTreeMap::from([(
+                    (if alias { "note" } else { "weirdo_direction" }).to_owned(),
+                    NbtTag::Int(note),
+                )])
+                .into_iter()
+                .collect(),
+            ),
+        );
+        NbtWriter::write_root(&NbtTag::Compound(root.into_iter().collect()))
+            .unwrap()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
     fn fixture(root: &Path, alias: bool) {
         let groups = [
             vec![example_geometry()],
             vec![example_appearance()],
-            vec![serde_json::to_vec(&json!({"schema":2,
-                "texture_bindings":[{"slot":2,"resource_alias":"grass_side"}]})).unwrap()],
-            vec![]
+            vec![
+                serde_json::to_vec(&json!({"schema":2,
+                "texture_bindings":[{"slot":2,"resource_alias":"grass_side"}]}))
+                .unwrap(),
+            ],
+            vec![],
         ];
         fs::write(root.join("geometry_pool.bin"), pool_bytes(&groups)).unwrap();
-        write(root, "manifest.json", &json!({"registry_only":true,
+        write(
+            root,
+            "manifest.json",
+            &json!({"registry_only":true,
             "format":"BedrockSceneCaptureModelLibrary",
-            "target_game_version":"1.26.60.5", "shared_geometry_pool_schema":3}));
-        let name = if alias { "minecraft:noteblock" } else { "minecraft:oak_stairs" };
+            "target_game_version":"1.26.60.5", "shared_geometry_pool_schema":3}),
+        );
+        let name = if alias {
+            "minecraft:noteblock"
+        } else {
+            "minecraft:oak_stairs"
+        };
         let mut blocks = vec![json!({"name":name,"network_id":12,
             "state_nbt_hex":state_nbt(2,alias),"status":"partial",
             "geometry_context":"none","shared_material_ref":0,
@@ -841,17 +911,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
-        assert_eq!(catalog.state_count(),1);
-        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
-        let first = catalog.shape_for_state_shared(&state).expect("current quad");
-        assert_eq!(first.planes.len(),1);
-        assert_eq!(first.planes[0].material_slot.as_deref(),
-            Some(capture_texture_slot("grass_side").as_str()));
+        assert_eq!(catalog.state_count(), 1);
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
+        let first = catalog
+            .shape_for_state_shared(&state)
+            .expect("current quad");
+        assert_eq!(first.planes.len(), 1);
+        assert_eq!(
+            first.planes[0].material_slot.as_deref(),
+            Some(capture_texture_slot("grass_side").as_str())
+        );
         assert!(first.planes[0].uv.is_some());
         let second = catalog.shape_for_state_shared(&state).unwrap();
-        assert!(Arc::ptr_eq(&first,&second));
-        assert!(catalog.shape_for_state(&BlockStateQuery::new("oak_stairs")
-            .with_state("weirdo_direction",3)).is_none());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(
+            catalog
+                .shape_for_state(
+                    &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 3)
+                )
+                .is_none()
+        );
     }
     #[test]
     fn capture_rejects_unsupported_schema_missing_manifest_fields_and_corrupt_pool() {
@@ -872,8 +951,11 @@ mod tests {
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
         manifest["format"] = format;
 
-        let schema = manifest.as_object_mut().unwrap()
-            .remove("shared_geometry_pool_schema").unwrap();
+        let schema = manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("shared_geometry_pool_schema")
+            .unwrap();
         write(dir.path(), "manifest.json", &manifest);
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
         manifest["shared_geometry_pool_schema"] = schema;
@@ -889,8 +971,7 @@ mod tests {
         // Two triangles of one quad; exactly the current binary layout emitted
         // by BedrockSceneCapture for a native terrain-atlas model.
         let mut bytes = u32bytes(&[0, 0, 2, 1, 2]);
-        for [u, v] in [[0., 0.], [1., 1.], [0., 1.],
-                       [0., 0.], [1., 0.], [1., 1.]] {
+        for [u, v] in [[0., 0.], [1., 1.], [0., 1.], [0., 0.], [1., 0.], [1., 1.]] {
             for value in [0f32, 0., -1., 0.25 + u * 0.25, 0.5 + v * 0.25] {
                 bytes.extend(value.to_le_bytes());
             }
@@ -924,22 +1005,24 @@ mod tests {
         let groups = [
             vec![example_geometry()],
             vec![native_appearance_with_atlas()],
-            vec![serde_json::to_vec(&json!({
-                "schema": 2,
-                "texture_bindings": [{
-                    "slot": 2,
-                    "resource_alias": "torch",
-                    "atlas_variants": [
-                        {"variant": 3, "frame": 0, "atlas_uv": [0.25, 0.5, 0.5, 0.75]}
-                    ]
-                }]
-            })).unwrap()],
+            vec![
+                serde_json::to_vec(&json!({
+                    "schema": 2,
+                    "texture_bindings": [{
+                        "slot": 2,
+                        "resource_alias": "torch",
+                        "atlas_variants": [
+                            {"variant": 3, "frame": 0, "atlas_uv": [0.25, 0.5, 0.5, 0.75]}
+                        ]
+                    }]
+                }))
+                .unwrap(),
+            ],
             vec![],
         ];
         fs::write(dir.path().join("geometry_pool.bin"), pool_bytes(&groups)).unwrap();
-        let mut index: Value = serde_json::from_slice(
-            &fs::read(dir.path().join("blocks.json")).unwrap()
-        ).unwrap();
+        let mut index: Value =
+            serde_json::from_slice(&fs::read(dir.path().join("blocks.json")).unwrap()).unwrap();
         index["blocks"][0]["status"] = json!("dynamic");
         index["blocks"][0]["geometry_context"] = json!("torch_mount_and_native_uv");
         index["blocks"][0]["variants"][0]["neighborhood"] = json!("native_scene");
@@ -947,14 +1030,20 @@ mod tests {
         write(dir.path(), "blocks.json", &index);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        let shape = catalog.shape_for_state(&state).expect("native mesh with atlas UV");
+        let shape = catalog
+            .shape_for_state(&state)
+            .expect("native mesh with atlas UV");
         assert_eq!(shape.planes.len(), 1);
         let plane = &shape.planes[0];
-        assert_eq!(plane.material_slot.as_deref(),
-            Some(capture_texture_slot("torch").as_str()));
+        assert_eq!(
+            plane.material_slot.as_deref(),
+            Some(capture_texture_slot("torch").as_str())
+        );
         let uvs = plane.uv.expect("local UVs");
-        assert!(uvs.iter().all(|uv|
-            uv.iter().all(|c| (-0.0001..=1.0001).contains(c))));
+        assert!(
+            uvs.iter()
+                .all(|uv| uv.iter().all(|c| (-0.0001..=1.0001).contains(c)))
+        );
         assert!(uvs.iter().any(|uv| *uv == [0., 0.]));
         assert!(uvs.iter().any(|uv| *uv == [1., 1.]));
 
@@ -964,8 +1053,13 @@ mod tests {
             "schema":2, "texture_bindings":[{"slot":2, "resource_alias":"torch",
                 "atlas_variants":[{"variant":3,"frame":1,
                     "atlas_uv":[0.25,0.5,0.5,0.75]}]}]
-        })).unwrap();
-        fs::write(dir.path().join("geometry_pool.bin"), pool_bytes(&mismatched)).unwrap();
+        }))
+        .unwrap();
+        fs::write(
+            dir.path().join("geometry_pool.bin"),
+            pool_bytes(&mismatched),
+        )
+        .unwrap();
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         assert!(catalog.shape_for_state(&state).is_none());
     }
@@ -974,9 +1068,8 @@ mod tests {
     fn capture_native_scene_rejects_inconsistent_neighbor_variants() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
-        let mut index: Value = serde_json::from_slice(
-            &fs::read(dir.path().join("blocks.json")).unwrap()
-        ).unwrap();
+        let mut index: Value =
+            serde_json::from_slice(&fs::read(dir.path().join("blocks.json")).unwrap()).unwrap();
         index["blocks"][0]["status"] = json!("dynamic");
         index["blocks"][0]["geometry_context"] = json!("lantern_hanging_and_native_uv");
         index["blocks"][0]["variants"] = json!([
@@ -987,32 +1080,35 @@ mod tests {
         ]);
         write(dir.path(), "blocks.json", &index);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
-        assert_eq!(catalog.state_count(), 0,
-            "neighbor-dependent geometry cannot become one static template");
+        assert_eq!(
+            catalog.state_count(),
+            0,
+            "neighbor-dependent geometry cannot become one static template"
+        );
     }
 
     #[test]
     fn capture_invalid_resource_is_negative_cached() {
         let dir = tempfile::tempdir().unwrap();
-        fixture(dir.path(),false);
-        let mut index: Value=serde_json::from_slice(
-            &fs::read(dir.path().join("blocks.json")).unwrap()).unwrap();
-        index["blocks"][0]["variants"][0]["shared_geometry_refs"]=json!([0,1]);
-        index["blocks"][0]["variants"][0]["shared_appearance_refs"]=json!([0,1]);
-        write(dir.path(),"blocks.json",&index);
-        let catalog=RuntimeCaptureCatalog::open(dir.path()).unwrap();
-        let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
+        fixture(dir.path(), false);
+        let mut index: Value =
+            serde_json::from_slice(&fs::read(dir.path().join("blocks.json")).unwrap()).unwrap();
+        index["blocks"][0]["variants"][0]["shared_geometry_refs"] = json!([0, 1]);
+        index["blocks"][0]["variants"][0]["shared_appearance_refs"] = json!([0, 1]);
+        write(dir.path(), "blocks.json", &index);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
         assert!(catalog.shape_for_state_shared(&state).is_none());
     }
     #[test]
     fn capture_note_states_reuse_exact_recipe() {
-        let dir=tempfile::tempdir().unwrap();
-        fixture(dir.path(),true);
-        let catalog=RuntimeCaptureCatalog::open(dir.path()).unwrap();
-        assert_eq!(catalog.state_count(),2);
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(), true);
+        let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.state_count(), 2);
         assert_eq!(
-            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note",2)),
-            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note",24))
+            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 2)),
+            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 24))
         );
     }
     #[test]
@@ -1032,23 +1128,34 @@ mod tests {
 
     #[test]
     fn capture_embedded_zip_reads_indexed_binary_pool() {
-        let dir=tempfile::tempdir().unwrap();
-        fixture(dir.path(),false);
-        let mut writer=zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let opts=zip::write::SimpleFileOptions::default();
-        for name in ["manifest.json","blocks.json","geometry_pool.bin"] {
-            writer.start_file(name,opts).unwrap();
-            writer.write_all(&fs::read(dir.path().join(name)).unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path(), false);
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        for name in ["manifest.json", "blocks.json", "geometry_pool.bin"] {
+            writer.start_file(name, opts).unwrap();
+            writer
+                .write_all(&fs::read(dir.path().join(name)).unwrap())
+                .unwrap();
         }
-        let bytes=writer.finish().unwrap().into_inner();
-        let leaked: &'static [u8]=Box::leak(bytes.into_boxed_slice());
-        let catalog=RuntimeCaptureCatalog::open_with_source(Path::new("<embedded>"),Some(leaked)).unwrap();
-        let state=BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
-        assert_eq!(catalog.shape_for_state_shared(&state).unwrap().planes.len(),1);
+        let bytes = writer.finish().unwrap().into_inner();
+        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let catalog =
+            RuntimeCaptureCatalog::open_with_source(Path::new("<embedded>"), Some(leaked)).unwrap();
+        let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
+        assert_eq!(
+            catalog.shape_for_state_shared(&state).unwrap().planes.len(),
+            1
+        );
     }
     #[test]
     fn real_embedded_capture_resolves_at_least_one_complete_renderable_recipe() {
-        let catalog = RuntimeCaptureCatalog::open_embedded().expect("real embedded current");
+        // The model library is read from the installation's resource packs at runtime; an
+        // embedded archive is optional, so this test only guards builds that ship one.
+        let Ok(catalog) = RuntimeCaptureCatalog::open_embedded() else {
+            eprintln!("skip: no embedded BSC model library");
+            return;
+        };
         let mut resolved = false;
         for recipe in catalog.states.values() {
             if recipe.meshes.is_empty() {
@@ -1066,7 +1173,10 @@ mod tests {
                     break;
                 };
                 let Some(planes) = shared_mesh_planes(
-                    &geometry, &appearance, geometry_id, &recipe.texture_aliases
+                    &geometry,
+                    &appearance,
+                    geometry_id,
+                    &recipe.texture_aliases,
                 ) else {
                     complete = false;
                     break;
@@ -1086,26 +1196,45 @@ mod tests {
 
     #[test]
     fn capture_diagonal_cross_uv_preserved() {
-        let geometry=CaptureGeometry {
-            vertices:vec![[0.,0.,0.],[1.,0.,1.],[1.,1.,1.],[0.,1.,0.]],
-            triangles:vec![[0,2,3],[0,1,2]],
+        let geometry = CaptureGeometry {
+            vertices: vec![[0., 0., 0.], [1., 0., 1.], [1., 1., 1.], [0., 1., 0.]],
+            triangles: vec![[0, 2, 3], [0, 1, 2]],
         };
-        let corner=|u:f32,v:f32| pool::Corner {
-            normal:[-0.70710677,0.,0.70710677],uv:[u,v],abgr:u32::MAX
+        let corner = |u: f32, v: f32| pool::Corner {
+            normal: [-0.70710677, 0., 0.70710677],
+            uv: [u, v],
+            abgr: u32::MAX,
         };
-        let appearance=CaptureAppearance {
-            geometry_id:0,source_kind:1,uv_complete:true,
-            corners:vec![corner(0.,0.),corner(1.,1.),corner(0.,1.),
-                         corner(0.,0.),corner(1.,0.),corner(1.,1.)],
-            slots:vec![Some(1),Some(1)],
-            variant_frames:vec![None,None],
+        let appearance = CaptureAppearance {
+            geometry_id: 0,
+            source_kind: 1,
+            uv_complete: true,
+            corners: vec![
+                corner(0., 0.),
+                corner(1., 1.),
+                corner(0., 1.),
+                corner(0., 0.),
+                corner(1., 0.),
+                corner(1., 1.),
+            ],
+            slots: vec![Some(1), Some(1)],
+            variant_frames: vec![None, None],
         };
-        let result=shared_mesh_planes(&geometry,&appearance,&0,
-            &HashMap::from([(1,CaptureMaterialSlot {
-                alias:"grass".into(),atlas_variants:HashMap::new()
-            })])).expect("diagonal cross");
-        assert_eq!(result.len(),1);
-        assert_eq!(result[0].normal,[-1,0,1]);
+        let result = shared_mesh_planes(
+            &geometry,
+            &appearance,
+            &0,
+            &HashMap::from([(
+                1,
+                CaptureMaterialSlot {
+                    alias: "grass".into(),
+                    atlas_variants: HashMap::new(),
+                },
+            )]),
+        )
+        .expect("diagonal cross");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].normal, [-1, 0, 1]);
     }
     #[test]
     fn capture_same_path_reexport_has_distinct_catalog_identity() {
@@ -1113,13 +1242,19 @@ mod tests {
         fixture(dir.path(), false);
         let first = RuntimeCaptureCatalog::open(dir.path()).expect("first revision");
         let identical = RuntimeCaptureCatalog::open(dir.path()).expect("identical revision");
-        assert_eq!(first, identical, "unchanged current capture must retain catalog identity");
+        assert_eq!(
+            first, identical,
+            "unchanged current capture must retain catalog identity"
+        );
         let path = dir.path().join("manifest.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         manifest["capture_revision"] = json!(1_748_945_317_123_456_789u64);
         write(dir.path(), "manifest.json", &manifest);
         let second = RuntimeCaptureCatalog::open(dir.path()).expect("second revision");
-        assert_ne!(first, second, "numeric ids must not be reused across F8 exports");
+        assert_ne!(
+            first, second,
+            "numeric ids must not be reused across F8 exports"
+        );
         assert_eq!(first.game_version(), second.game_version());
         assert_eq!(first.state_count(), second.state_count());
     }

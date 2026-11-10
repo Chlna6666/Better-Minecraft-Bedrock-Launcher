@@ -789,6 +789,21 @@ impl ObjTextureResolver {
         }
         if is_bed_texture_block(block) {
             let slot = slot?;
+            if slot == "bed" {
+                // The bed now comes from the official `geometry.bed` entity model, whose art is
+                // the 64x64 `textures/entity/bed/<colour>` sprite bound by bed.entity.json.
+                let colour = bed_colour(block);
+                for texture_key in [
+                    format!("textures/entity/bed/{colour}"),
+                    "textures/entity/bed/white".to_owned(),
+                ] {
+                    if let Some((pack, source_path)) = self.texture_path_for_key(&texture_key) {
+                        return Some(
+                            pack.resolved_texture(&self.texture_directory_name, source_path),
+                        );
+                    }
+                }
+            }
             if slot.starts_with("head_") || slot.starts_with("feet_") {
                 let texture_key = format!("textures/blocks/bed_{slot}");
                 if let Some((pack, source_path)) = self.texture_path_for_key(&texture_key) {
@@ -4500,6 +4515,14 @@ fn is_sign_texture_block(block: &str) -> bool {
 
 fn is_bed_texture_block(block: &str) -> bool {
     block == "bed" || block.ends_with("_bed")
+}
+
+/// Bed colour from the block name, matching bed.entity.json's texture keys.
+fn bed_colour(block: &str) -> &str {
+    block
+        .strip_suffix("_bed")
+        .filter(|colour| !colour.is_empty())
+        .unwrap_or("white")
 }
 
 /// Maps a skull block to its real texture key.

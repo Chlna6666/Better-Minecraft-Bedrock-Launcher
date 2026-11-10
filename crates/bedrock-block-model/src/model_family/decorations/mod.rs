@@ -1,3 +1,4 @@
+pub(super) mod bed;
 pub(super) mod campfires;
 pub(super) mod copper_golem;
 pub(super) mod furniture;

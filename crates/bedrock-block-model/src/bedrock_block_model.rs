@@ -32,9 +32,10 @@ pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
 };
 pub use model_family::{
-    ModelCuboid, ModelFamily, ModelPlane, ModelShape, canonical_block_name_for_state,
-    detail_cuboid_with_local_uv, detail_material_block_name_for_state, is_full_opaque_block,
-    model_family_for_block_name, model_family_has_detail_shape,
+    BED_GEOMETRY_IDENTIFIER, ModelCuboid, ModelFamily, ModelPlane, ModelShape,
+    bed_shape_from_geometry, canonical_block_name_for_state, detail_cuboid_with_local_uv,
+    detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
+    model_family_has_detail_shape,
 };
 pub use neighbor::{
     DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,

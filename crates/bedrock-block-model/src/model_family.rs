@@ -12,6 +12,11 @@ use crate::state::{BlockStateQuery, BlockStateValue};
 
 pub use shape::{ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv};
 
+/// The official `geometry.bed` identifier, resolved from the active pack at runtime.
+pub use decorations::bed::BED_GEOMETRY_IDENTIFIER;
+/// Converts the pack's `geometry.bed` entity model into bed block geometry.
+pub use decorations::bed::bed_shape_from_geometry;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFamily {
     FullBlock,
@@ -187,7 +192,7 @@ pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape
         ModelFamily::ShulkerBox => Some(utility::containers::shulker_box_shape()),
         ModelFamily::Stonecutter => Some(utility::stations::stonecutter_shape(state)),
         ModelFamily::Hopper => Some(utility::stations::hopper_shape(state)),
-        ModelFamily::Bed => Some(decorations::furniture::bed_shape(state)),
+        ModelFamily::Bed => Some(decorations::bed::bed_shape(state)),
         ModelFamily::Banner => Some(decorations::furniture::banner_shape(name, state)),
         ModelFamily::Campfire => Some(decorations::campfires::shape(state)),
         ModelFamily::Grindstone => Some(utility::stations::grindstone_shape(state)),
@@ -1632,7 +1637,11 @@ mod tests {
         ] {
             let shape = model_shape_for_block_state(&BlockStateQuery::new(block))
                 .unwrap_or_else(|| panic!("missing shape for {block}"));
-            assert!(!shape.cuboids.is_empty(), "cuboids empty for {block}");
+            // Beds come from the official entity model, so they emit textured quads only.
+            assert!(
+                !shape.cuboids.is_empty() || !shape.planes.is_empty(),
+                "empty shape for {block}"
+            );
         }
     }
 
