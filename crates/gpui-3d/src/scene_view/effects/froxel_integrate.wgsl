@@ -14,11 +14,12 @@ fn cs_froxel_integrate(@builtin(global_invocation_id) id:vec3<u32>){
     var radiance = vec3<f32>(0.0);
     let ln_near = log(FROXEL_NEAR);
     let ln_far = log(FROXEL_FAR);
+    var previous_depth = exp(ln_near);
     for(var slice=0u; slice<dimensions.z; slice++){
-        let z0 = f32(slice)/f32(dimensions.z);
         let z1 = f32(slice+1u)/f32(dimensions.z);
-        let segment_length = exp(mix(ln_near,ln_far,z1)) -
-                             exp(mix(ln_near,ln_far,z0));
+        let depth = exp(mix(ln_near,ln_far,z1));
+        let segment_length = depth - previous_depth;
+        previous_depth = depth;
         let source = textureLoad(injected,vec3<i32>(vec2<i32>(id.xy),i32(slice)),0);
         let extinction = exp(-max(source.a,0.0)*segment_length);
         radiance += transmittance*(1.0-extinction)*source.rgb;
