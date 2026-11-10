@@ -1668,6 +1668,14 @@ fn emit_task_update(snapshot: TaskSnapshot) {
     let snapshot = Arc::new(snapshot);
     {
         let mut map = TASK_SNAPSHOTS.write().unwrap();
+        // Task ownership and UI publication may happen on separate threads.
+        // Never let a late, older creation event overwrite a newer child/terminal state.
+        if map
+            .get(snapshot.id.as_ref())
+            .is_some_and(|current| current.sequence > snapshot.sequence)
+        {
+            return;
+        }
         map.insert(snapshot.id.clone(), snapshot.clone());
     }
 
@@ -2020,6 +2028,39 @@ mod tests {
             stage
         );
         assert!(remove_task(&task_id));
+    }
+
+    #[test]
+    fn workflow_parentage_is_recorded_before_child_is_visible() {
+        let root = create_task_with_details_in_workflow(
+            None, "安装 Minecraft", None, "installing_game", Some(100), false,
+            None, TaskType::Workflow,
+        ).expect("root task");
+        let child = create_task_with_details_in_workflow(
+            None, "安装 LeviLamina", None, "resolving_levilamina", None, false,
+            Some(&root), TaskType::Workflow,
+        ).expect("child task");
+        let root_snapshot = get_snapshot_arc(&root).expect("root snapshot");
+        let child_snapshot = get_snapshot_arc(&child).expect("child snapshot");
+        assert_eq!(root_snapshot.parent_id, None);
+        assert_eq!(child_snapshot.parent_id.as_deref(), Some(root.as_str()));
+        assert_eq!(child_snapshot.task_type, TaskType::Workflow);
+        let visible = render_snapshots_limited(usize::MAX, usize::MAX, usize::MAX);
+        assert!(visible.active.iter().any(|snapshot| snapshot.id.as_ref() == root));
+        assert!(!visible.active.iter().any(|snapshot| snapshot.id.as_ref() == child));
+        finish_task(&child, "completed", None);
+        finish_task(&root, "completed", None);
+        remove_task(&child);
+        remove_task(&root);
+    }
+
+    #[test]
+    fn nested_task_rejects_missing_parent_without_publishing_a_root_card() {
+        let result = create_task_with_details_in_workflow(
+            None, "安装 LeviLamina", None, "resolving_levilamina", None,
+            false, Some("nonexistent-workflow"), TaskType::Workflow,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
