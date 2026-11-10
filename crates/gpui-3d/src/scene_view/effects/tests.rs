@@ -1,5 +1,7 @@
 #[path = "tests/indirect.rs"]
 mod indirect;
+#[path = "tests/light_tiles.rs"]
+mod light_tiles;
 #[path = "tests/materials.rs"]
 mod materials;
 #[path = "tests/reflections.rs"]
@@ -271,7 +273,7 @@ fn verify_partial_light_tiles<D: Device + TextureTransferDevice>(device: &mut D)
                 .with_materials([Arc::new(Material::new())]),
         )
         .unwrap();
-    scene
+    let light = scene
         .insert(
             None,
             Node::new().with_light(Light::Point {
@@ -292,6 +294,7 @@ fn verify_partial_light_tiles<D: Device + TextureTransferDevice>(device: &mut D)
         .unwrap()
         .with_screen_effects(Some(settings))
         .unwrap();
+    let view = light_tiles::animate_light(view, light);
     let mut renderer = EffectsRenderer::new(device, context.clone(), settings).unwrap();
     assert!(renderer.msaa_sample_count > 1, "test requires MSAA targets");
     let pixels = draw(device, &mut renderer, &context, &view, &target, &depth);
@@ -302,6 +305,7 @@ fn verify_partial_light_tiles<D: Device + TextureTransferDevice>(device: &mut D)
         i16::from(lit[0]) - i16::from(lit[1]) > 40,
         "local light missing in pixel 14: {lit:?}"
     );
+    light_tiles::verify_animated_light(device, &mut renderer, &context, &view, &target, &depth);
     renderer.destroy(device).unwrap();
     target.destroy(device).unwrap();
     depth.destroy(device).unwrap();
@@ -446,6 +450,17 @@ fn queue_draw<D: Device>(
     renderer
         .render(view, device, context.clone(), &mut steps)
         .unwrap();
+    submit_draw(device, renderer, context, target, depth, &steps)
+}
+
+fn submit_draw<D: Device>(
+    device: &mut D,
+    renderer: &mut dyn RendererExtensionRenderer,
+    context: &RendererExtensionContext,
+    target: &Target,
+    depth: &Target,
+    steps: &[RenderCommand],
+) -> Option<SubmissionId> {
     let mut owned = Vec::new();
     renderer.drain_render_passes(&mut owned);
     let mut passes = owned
@@ -455,7 +470,7 @@ fn queue_draw<D: Device>(
     passes.push(RenderPassCommands {
         color_attachments: std::slice::from_ref(&target.view),
         render_pass: context.render_pass(),
-        commands: &steps,
+        commands: steps,
         color_load_op: LoadOp::Clear(ClearColor::default()),
         depth_attachment: Some(DepthAttachment {
             target: depth.view,
