@@ -472,14 +472,13 @@ pub async fn download_resource_to_cache(
     let safe_name = sanitize_filename(&file_name);
     let dest = cache_dir.join(&safe_name);
 
-    let task_id = create_task_with_details(
-        None,
-        "下载缓存文件",
-        Some(task_target_name(&safe_name)),
-        "ready",
-        None,
-        true,
-    );
+    let task_id = create_task(
+        TaskOptions::new("下载缓存文件", "ready")
+            .detail(task_target_name(&safe_name))
+            .pausable(true)
+            .kind(TaskType::Transfer)
+            .in_current_scope(),
+    )?;
 
     let manager = DownloaderManager::with_client(client);
     let dest_clone = dest.clone();
