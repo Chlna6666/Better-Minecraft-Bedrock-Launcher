@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
-use crate::tasks::task_manager::{self, TaskSnapshot, TaskType};
+use crate::tasks::task_manager::{self, TaskOptions, TaskScope, TaskSnapshot, TaskType};
 
 static NEXT_GAME_INSTALL_ID: AtomicU64 = AtomicU64::new(1);
 const INSTALL_PROGRESS_TOTAL: u64 = 10_000;
@@ -31,15 +31,14 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
         "game-install-{}",
         NEXT_GAME_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
-    task_manager::create_task_with_details(
-        Some(operation_id.to_string()),
-        "安装 Minecraft",
-        Some(request.version_label.clone()),
-        "preparing_game_install",
-        Some(INSTALL_PROGRESS_TOTAL),
-        false,
-    );
-    task_manager::set_task_type(&operation_id, TaskType::Workflow);
+    task_manager::create_task(
+        TaskOptions::new("安装 Minecraft", "preparing_game_install")
+            .id(operation_id.to_string())
+            .detail(request.version_label.clone())
+            .total(INSTALL_PROGRESS_TOTAL)
+            .kind(TaskType::Workflow),
+    )?;
+    let scope = TaskScope::new(&operation_id)?;
     task_manager::set_task_message(&operation_id, Some("正在准备安装".to_string()));
     task_manager::register_task_cooperative_cancel(operation_id.to_string());
 
@@ -55,7 +54,9 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
     let worker_operation_id = Arc::clone(&operation_id);
     let worker_child_task = Arc::clone(&active_child_task);
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        let outcome = run_game_install(&request, &worker_operation_id, &worker_child_task).await;
+        let outcome = scope.run(run_game_install(
+            &request, &worker_operation_id, &worker_child_task,
+        )).await;
         match outcome {
             Ok(local_path) => {
                 // A successful return means every child transaction crossed its commit point.
@@ -130,8 +131,7 @@ async fn run_game_install(
     };
     check_cancelled(operation_id)?;
     let extract_task_id = start_extract(request, &package_path).await?;
-    task_manager::set_task_parent(&extract_task_id, operation_id);
-    task_manager::set_task_type(&extract_task_id, TaskType::Stage);
+    // Archive task inherits the game workflow scope before publishing its first event.
     set_active_child_task(active_child_task, Some(extract_task_id.clone()));
     set_game_install_stage(
         operation_id,
@@ -223,8 +223,7 @@ async fn download_package(
             "download task disappeared before labels were applied"
         );
     }
-    task_manager::set_task_parent(&task_id, operation_id);
-    task_manager::set_task_type(&task_id, TaskType::Transfer);
+    // Download task is created inside the game workflow scope.
     set_active_child_task(active_child_task, Some(task_id.clone()));
 
     let snapshot = wait_for_child_progress(

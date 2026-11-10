@@ -7,7 +7,9 @@ use crate::core::minecraft::appx_utils::{get_manifest_identity, patch_manifest};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
 use crate::tasks::runtime::spawn_archive_task;
-use crate::tasks::task_manager::{create_task_with_details, finish_task, update_progress};
+use crate::tasks::task_manager::{
+    create_task, finish_task, update_progress, TaskOptions, TaskType,
+};
 use crate::utils::file_ops;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,8 +54,12 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
         .as_deref()
         .map(|name| task_target_name(name, "导入安装包"))
         .unwrap_or_else(|| task_target_name(&source_path, "导入安装包"));
-    let task_id =
-        create_task_with_details(None, "导入安装包", Some(task_label), "queued", None, false);
+    let task_id = create_task(
+        TaskOptions::new("导入安装包", "queued")
+            .detail(task_label)
+            .kind(TaskType::Stage)
+            .in_current_scope(),
+    )?;
 
     if let Err(error) = spawn_archive_task(task_id.clone(), {
         let task_id = task_id.clone();
@@ -160,8 +166,12 @@ pub async fn extract_zip_appx(
     );
 
     let task_target = task_target_name(&file_name, "游戏版本");
-    let task_id =
-        create_task_with_details(None, "安装游戏", Some(task_target), "queued", None, false);
+    let task_id = create_task(
+        TaskOptions::new("安装游戏", "queued")
+            .detail(task_target)
+            .kind(TaskType::Stage)
+            .in_current_scope(),
+    )?;
 
     if let Err(error) = spawn_archive_task(task_id.clone(), {
         let task_id = task_id.clone();

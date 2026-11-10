@@ -1,7 +1,7 @@
 use crate::core::minecraft::gdk::stream::MsiXVDStream;
 use crate::tasks::runtime::{run_archive_blocking, spawn_archive_task};
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, update_progress,
+    create_task, finish_task, is_cancelled, update_progress, TaskOptions, TaskType,
 };
 use crate::utils::file_ops;
 use std::path::PathBuf;
@@ -11,14 +11,12 @@ pub fn start_unpack_gdk_task(
     input_path: impl Into<PathBuf>,
     folder_name: &str,
 ) -> Result<String, String> {
-    let task_id = create_task_with_details(
-        None,
-        "安装 GDK 游戏",
-        Some(folder_name.to_string()),
-        "initializing",
-        None,
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new("安装 GDK 游戏", "initializing")
+            .detail(folder_name.to_string())
+            .kind(TaskType::Stage)
+            .in_current_scope(),
+    )?;
 
     let input_path_buf = input_path.into();
     let version_dir = file_ops::bmcbl_subdir("versions").join(folder_name);

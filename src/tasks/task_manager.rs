@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use std::future::Future;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -721,103 +722,135 @@ fn record_operation_event(snapshot: &TaskSnapshot, event: &str) {
     }
 }
 
-pub fn create_task(id_opt: Option<String>, initial_stage: &str, total: Option<u64>) -> String {
-    create_task_with_options(id_opt, initial_stage, total, false)
+/// Data-only task configuration, matching a JS/TS-style createTask(options) API.
+/// A task is a root by default. Parent assignment is opt-in and immutable at creation.
+#[derive(Clone, Debug)]
+pub struct TaskOptions {
+    pub id: Option<String>,
+    pub title: String,
+    pub detail: Option<String>,
+    pub stage: String,
+    pub total: Option<u64>,
+    pub supports_pause: bool,
+    pub visibility: TaskVisibility,
+    pub kind: TaskType,
+    pub parent_id: Option<String>,
 }
 
-pub fn create_task_with_details(
-    id_opt: Option<String>,
-    title: impl Into<String>,
-    detail: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-) -> String {
-    create_task_with_details_and_visibility(
-        id_opt,
-        title,
-        detail,
-        initial_stage,
-        total,
-        supports_pause,
-        TaskVisibility::Visible,
-    )
+impl TaskOptions {
+    pub fn new(title: impl Into<String>, stage: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            title: title.into(),
+            detail: None,
+            stage: stage.into(),
+            total: None,
+            supports_pause: false,
+            visibility: TaskVisibility::Visible,
+            kind: TaskType::Operation,
+            parent_id: None,
+        }
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn total(mut self, total: u64) -> Self {
+        self.total = Some(total);
+        self
+    }
+
+    pub fn pausable(mut self, supports_pause: bool) -> Self {
+        self.supports_pause = supports_pause;
+        self
+    }
+
+    pub fn visibility(mut self, visibility: TaskVisibility) -> Self {
+        self.visibility = visibility;
+        self
+    }
+
+    pub fn kind(mut self, kind: TaskType) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn parent(mut self, id: impl Into<String>) -> Self {
+        self.parent_id = Some(id.into());
+        self
+    }
+
+    /// Explicitly inherit only the currently entered scope, never unrelated tasks.
+    /// Tokio task-local context survives awaits but does not leak into spawned jobs.
+    pub fn in_current_scope(mut self) -> Self {
+        if let Ok(parent_id) = ACTIVE_TASK_SCOPE.try_with(Arc::clone) {
+            self.parent_id = Some(parent_id.to_string());
+        }
+        self
+    }
 }
 
-pub fn create_task_with_details_and_visibility(
-    id_opt: Option<String>,
-    title: impl Into<String>,
-    detail: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-    visibility: TaskVisibility,
-) -> String {
-    let id = id_opt.unwrap_or_else(|| {
-        let id_num = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("task-{}-{}", id_num, unix_now_seconds())
-    });
-    let id_arc: Arc<str> = Arc::from(id.as_str());
-
-    let task = Task::new(
-        id_arc,
-        Arc::from(title.into()),
-        detail.map(Arc::<str>::from),
-        initial_stage,
-        total,
-        supports_pause,
-        visibility,
-    );
-    let mut task = task;
-    task.touch();
-    let snapshot = task.snapshot();
-
-    let mut map = TASKS.lock().unwrap();
-    map.insert(id.clone(), task);
-    drop(map);
-
-    register_task_control(id.clone(), Arc::new(TaskControl::new()));
-
-    debug!("task_manager: created task {}", id);
-    record_operation_event(&snapshot, "started");
-    emit_task_update(snapshot);
-    id
+tokio::task_local! {
+    static ACTIVE_TASK_SCOPE: Arc<str>;
 }
 
-/// Atomically allocate an operation as either a top-level workflow or a nested task.
-/// Parent membership and task kind are stored before emitting the first snapshot,
-/// so the UI cannot briefly render a child as a separate top-level card.
-pub fn create_task_with_details_in_workflow(
-    id_opt: Option<String>,
-    title: impl Into<String>,
-    detail: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-    parent_id: Option<&str>,
-    task_type: TaskType,
-) -> Result<String, String> {
-    let id = id_opt.unwrap_or_else(|| {
+/// An explicit parent context. The scope is active only while `run` is awaited.
+#[derive(Clone, Debug)]
+pub struct TaskScope {
+    parent_id: Arc<str>,
+}
+
+impl TaskScope {
+    pub fn new(parent_id: &str) -> Result<Self, String> {
+        let parent = get_snapshot_arc(parent_id)
+            .ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
+        if parent.cancel_requested || parent.is_terminal() {
+            return Err(format!("父任务已结束或正在取消: {parent_id}"));
+        }
+        Ok(Self { parent_id: parent.id.clone() })
+    }
+
+    pub fn create_task(&self, options: TaskOptions) -> Result<String, String> {
+        if options.parent_id.is_some() {
+            return Err("TaskScope 不接受已指定 parent_id 的任务选项".to_owned());
+        }
+        create_task(options.parent(self.parent_id.to_string()))
+    }
+
+    pub async fn run<F: Future>(&self, operation: F) -> F::Output {
+        ACTIVE_TASK_SCOPE.scope(self.parent_id.clone(), operation).await
+    }
+}
+
+/// Single allocation path: the first observable snapshot already has the final kind,
+/// visibility and parent relationship. Duplicate IDs and invalid parents are errors.
+pub fn create_task(options: TaskOptions) -> Result<String, String> {
+    let TaskOptions {
+        id, title, detail, stage, total, supports_pause,
+        visibility, kind, parent_id,
+    } = options;
+    let id = id.unwrap_or_else(|| {
         let number = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("task-{number}-{}", unix_now_seconds())
     });
-
     let mut task = Task::new(
-        Arc::from(id.as_str()),
-        Arc::from(title.into()),
-        detail.map(Arc::<str>::from),
-        initial_stage,
-        total,
-        supports_pause,
-        TaskVisibility::Visible,
+        Arc::from(id.as_str()), Arc::from(title),
+        detail.map(Arc::<str>::from), &stage, total, supports_pause, visibility,
     );
-    task.task_type = task_type;
+    task.task_type = kind;
     let snapshot = {
         let mut tasks = TASKS.lock().unwrap();
         if tasks.contains_key(&id) {
             return Err(format!("任务 ID 已存在: {id}"));
         }
-        if let Some(parent_id) = parent_id {
+        if let Some(parent_id) = parent_id.as_deref() {
             if parent_id == id {
                 return Err("任务不能成为自身的子任务".to_owned());
             }
@@ -831,15 +864,46 @@ pub fn create_task_with_details_in_workflow(
         task.touch();
         let snapshot = task.snapshot();
         tasks.insert(id.clone(), task);
-        // Make control observable before allowing a concurrent parent cancellation.
         register_task_control(id.clone(), Arc::new(TaskControl::new()));
         snapshot
     };
 
-    debug!(task_id = %id, ?task_type, parent_id, "task_manager: created workflow task");
+    debug!(task_id = %id, ?kind, parent_id, "task_manager: created task");
     record_operation_event(&snapshot, "started");
     emit_task_update(snapshot);
     Ok(id)
+}
+
+/// Simple root task. Existing entry points delegate to the common options path.
+pub fn create_task_with_details(
+    id_opt: Option<String>,
+    title: impl Into<String>,
+    detail: Option<String>,
+    initial_stage: &str,
+    total: Option<u64>,
+    supports_pause: bool,
+) -> String {
+    create_task_with_details_and_visibility(
+        id_opt, title, detail, initial_stage, total, supports_pause, TaskVisibility::Visible,
+    )
+}
+
+pub fn create_task_with_details_and_visibility(
+    id_opt: Option<String>,
+    title: impl Into<String>,
+    detail: Option<String>,
+    initial_stage: &str,
+    total: Option<u64>,
+    supports_pause: bool,
+    visibility: TaskVisibility,
+) -> String {
+    let mut options = TaskOptions::new(title, initial_stage)
+        .pausable(supports_pause)
+        .visibility(visibility);
+    if let Some(id) = id_opt { options.id = Some(id); }
+    options.detail = detail;
+    options.total = total;
+    create_task(options).expect("legacy root task creation must use a unique task ID")
 }
 
 pub fn create_task_with_options(
@@ -2032,13 +2096,14 @@ mod tests {
 
     #[test]
     fn workflow_parentage_is_recorded_before_child_is_visible() {
-        let root = create_task_with_details_in_workflow(
-            None, "安装 Minecraft", None, "installing_game", Some(100), false,
-            None, TaskType::Workflow,
+        let root = create_task(
+            TaskOptions::new("安装 Minecraft", "installing_game")
+                .kind(TaskType::Workflow).total(100),
         ).expect("root task");
-        let child = create_task_with_details_in_workflow(
-            None, "安装 LeviLamina", None, "resolving_levilamina", None, false,
-            Some(&root), TaskType::Workflow,
+        let scope = TaskScope::new(&root).expect("root scope");
+        let child = scope.create_task(
+            TaskOptions::new("安装 LeviLamina", "resolving_levilamina")
+                .kind(TaskType::Workflow),
         ).expect("child task");
         let root_snapshot = get_snapshot_arc(&root).expect("root snapshot");
         let child_snapshot = get_snapshot_arc(&child).expect("child snapshot");
@@ -2056,9 +2121,9 @@ mod tests {
 
     #[test]
     fn nested_task_rejects_missing_parent_without_publishing_a_root_card() {
-        let result = create_task_with_details_in_workflow(
-            None, "安装 LeviLamina", None, "resolving_levilamina", None,
-            false, Some("nonexistent-workflow"), TaskType::Workflow,
+        let result = create_task(
+            TaskOptions::new("安装 LeviLamina", "resolving_levilamina")
+                .kind(TaskType::Workflow).parent("nonexistent-workflow"),
         );
         assert!(result.is_err());
     }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::tasks::task_manager::{self, TaskSnapshot, TaskType};
+use crate::tasks::task_manager::{self, TaskOptions, TaskScope, TaskSnapshot, TaskType};
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
 use super::installation_state::{
@@ -173,23 +173,22 @@ where
         "levilamina-install-{}",
         NEXT_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
-    task_manager::create_task_with_details_in_workflow(
-        Some(operation_id.to_string()),
-        title,
-        detail,
-        "resolving_levilamina",
-        None,
-        false,
-        parent_id,
-        TaskType::Workflow,
-    )?;
+    let mut options = TaskOptions::new(title, "resolving_levilamina")
+        .id(operation_id.to_string())
+        .kind(TaskType::Workflow);
+    options.detail = detail;
+    if let Some(parent_id) = parent_id {
+        options = options.parent(parent_id);
+    }
+    task_manager::create_task(options)?;
+    let scope = TaskScope::new(&operation_id)?;
     let (updates, receiver) = watch::channel(LeviLaminaInstallSnapshot {
         operation_id: Arc::clone(&operation_id),
         stage: LeviLaminaInstallStage::Resolving,
     });
     let monitor_updates = updates.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        let stage = operation(updates.clone()).await.unwrap_or_else(|message| {
+        let stage = scope.run(operation(updates.clone())).await.unwrap_or_else(|message| {
             LeviLaminaInstallStage::Failed {
                 message: Arc::from(message),
             }
@@ -489,10 +488,7 @@ async fn download_asset(
         package.manifest.info.name.as_str(),
         Some(package.manifest.version.clone()),
     );
-    task_manager::set_task_type(&task_id, TaskType::Transfer);
-    if let Some(updates) = updates {
-        task_manager::set_task_parent(&task_id, &updates.borrow().operation_id);
-    }
+    // The download factory inherits the active LeviLamina scope at creation.
     if let Some(updates) = updates {
         publish_stage(
             updates,

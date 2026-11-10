@@ -8,8 +8,8 @@ use crate::downloads::wu_client::client::WuClient;
 use crate::http::proxy::get_download_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, register_task_abort_handle,
-    update_progress,
+    create_task, finish_task, is_cancelled, register_task_abort_handle,
+    update_progress, TaskOptions, TaskType,
 };
 use crate::utils::file_ops;
 
@@ -157,14 +157,13 @@ pub async fn download_appx(
 
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
-        let task_id = create_task_with_details(
-            None,
-            "下载游戏包",
-            Some(task_target_name(&safe_name)),
-            "ready",
-            None,
-            true,
-        );
+        let task_id = create_task(
+            TaskOptions::new("下载游戏包", "ready")
+                .detail(task_target_name(&safe_name))
+                .pausable(true)
+                .kind(TaskType::Transfer)
+                .in_current_scope(),
+        )?;
         let dest_str = dest.to_string_lossy().to_string();
         finish_task(&task_id, "completed", Some(dest_str));
         return Ok(task_id);
@@ -174,14 +173,13 @@ pub async fn download_appx(
         remove_download_temp(&dest);
     }
 
-    let task_id = create_task_with_details(
-        None,
-        "下载游戏包",
-        Some(task_target_name(&safe_name)),
-        "ready",
-        None,
-        true,
-    );
+    let task_id = create_task(
+        TaskOptions::new("下载游戏包", "ready")
+            .detail(task_target_name(&safe_name))
+            .pausable(true)
+            .kind(TaskType::Transfer)
+            .in_current_scope(),
+    )?;
 
     let update_id = update_id.to_string();
     let revision = revision.to_string();
@@ -337,14 +335,13 @@ async fn download_resource_to_dir(
 
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
-        let task_id = create_task_with_details(
-            None,
-            "下载资源文件",
-            Some(task_target_name(&safe_name)),
-            "ready",
-            None,
-            true,
-        );
+        let task_id = create_task(
+            TaskOptions::new("下载资源文件", "ready")
+                .detail(task_target_name(&safe_name))
+                .pausable(true)
+                .kind(TaskType::Transfer)
+                .in_current_scope(),
+        )?;
         let dest_str = dest.to_string_lossy().to_string();
         finish_task(&task_id, "completed", Some(dest_str));
         return Ok(task_id);
@@ -354,14 +351,13 @@ async fn download_resource_to_dir(
         remove_download_temp(&dest);
     }
 
-    let task_id = create_task_with_details(
-        None,
-        "下载资源文件",
-        Some(task_target_name(&safe_name)),
-        "ready",
-        None,
-        true,
-    );
+    let task_id = create_task(
+        TaskOptions::new("下载资源文件", "ready")
+            .detail(task_target_name(&safe_name))
+            .pausable(true)
+            .kind(TaskType::Transfer)
+            .in_current_scope(),
+    )?;
 
     let manager = DownloaderManager::with_client(client);
     let dest_clone = dest.clone();
