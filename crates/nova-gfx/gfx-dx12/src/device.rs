@@ -2038,6 +2038,7 @@ mod platform {
                 timestamps,
                 frame_probe: false,
                 gpu_work_tag: None,
+                gpu_work_frequency_hz: None,
                 gpu_draw_queries: Vec::new(),
                 submitted: false,
                 swapchain: None,
@@ -2085,6 +2086,7 @@ mod platform {
                 timestamps: None,
                 frame_probe: false,
                 gpu_work_tag: None,
+                gpu_work_frequency_hz: None,
                 gpu_draw_queries: Vec::new(),
                 submitted: false,
                 swapchain: None,
@@ -3206,7 +3208,7 @@ mod platform {
                 if let (Some(tag), Some(queries), Some(frequency)) = (
                     pending._encoder.gpu_work_tag.take(),
                     pending._encoder.timestamps.as_ref(),
-                    timestamp_frequency,
+                    pending._encoder.gpu_work_frequency_hz.or(timestamp_frequency),
                 ) && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback) {
                     gpu_work_samples.push(gfx_core::GpuTimestampSample {
                         tag,
@@ -3226,6 +3228,15 @@ mod platform {
                     if gpu_draw_query_pool.len() < command_encoder_pool_capacity.saturating_mul(4) {
                         gpu_draw_query_pool.push(queries);
                     }
+                }
+                // Typed COMPUTE lists are not recycled as DIRECT lists,
+                // but their GPU-complete two-slot timestamp query resources
+                // can safely join the existing bounded reusable query pool.
+                if pending._encoder.command_type == D3D12_COMMAND_LIST_TYPE_COMPUTE
+                    && let Some(queries) = pending._encoder.timestamps.take()
+                    && gpu_draw_query_pool.len() < command_encoder_pool_capacity.saturating_mul(4)
+                {
+                    gpu_draw_query_pool.push(queries);
                 }
                 for resources in pending._encoder.compute_resources.drain(..) {
                     resources.release(resource_heap);
@@ -3248,6 +3259,7 @@ mod platform {
                         timestamps: pending._encoder.timestamps.take(),
                         frame_probe: false,
                         gpu_work_tag: None,
+                        gpu_work_frequency_hz: None,
                         gpu_draw_queries: Vec::new(),
                         submitted: false,
                         swapchain: None,
@@ -6190,6 +6202,26 @@ mod platform {
                 ))
         }
 
+        fn submit_compute_batch_profiled_on_queue(
+            &mut self,
+            queue: gfx_core::GpuQueueId,
+            dispatches: &[gfx_core::ComputeDispatch<'_>],
+            tag: gfx_core::GpuTimestampTag,
+        ) -> Result<SubmissionId> {
+            if queue != gfx_core::GpuQueueId::PRIMARY
+                && queue != (gfx_core::GpuQueueId { family: 0, index: 1 })
+                && queue != (gfx_core::GpuQueueId { family: 0, index: 2 })
+            {
+                return Err(Error::Unavailable(
+                    "DX12 tagged Compute queue is not supported".into(),
+                ));
+            }
+            self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
+                .ok_or_else(|| Error::Unavailable(
+                    "DX12 tagged Compute submit has no native producer fence".into(),
+                ))
+        }
+
         fn submit_buffer_copies_on_queue(
             &mut self,
             queue: gfx_core::GpuQueueId,
@@ -8204,6 +8236,9 @@ mod platform {
         /// presented frame. Prevents publishing offscreen work.
         frame_probe: bool,
         gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
+        /// Timestamp tick frequency of the queue which actually executes
+        /// this encoder (not automatically the primary graphics queue).
+        gpu_work_frequency_hz: Option<u64>,
         gpu_draw_queries: Vec<(gfx_core::GpuTimestampTag, Dx12TimestampQueries)>,
         submitted: bool,
         swapchain: Option<(SwapchainId, u64)>,
