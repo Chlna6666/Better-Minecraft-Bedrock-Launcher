@@ -34,8 +34,6 @@ pub struct LayoutFrameMetrics {
     pub bounds_cache_misses: usize,
     /// Reused retained roots.
     pub cache_reused_roots: usize,
-    /// Child roots saved by reuse.
-    pub cache_saved_roots: usize,
 }
 
 /// Per-frame scene counters.
