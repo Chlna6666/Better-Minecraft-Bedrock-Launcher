@@ -8996,7 +8996,7 @@ impl Preview3dMeshBuilder {
                 }
                 let mut faces = Vec::new();
                 self.push_stream_cube_faces(blocks, &mut faces, selections.get(pos), true, *pos, hidden);
-                self.push_stream_detail_faces(blocks, &mut faces);
+                self.push_stream_detail_faces(blocks, &mut faces, *pos, hidden);
                 self.push_stream_fluid_faces(blocks, &mut faces, *pos, hidden);
                 (!faces.is_empty()).then_some(Preview3dStreamChunkFaces {
                     pos: ChunkPos {
@@ -9257,6 +9257,8 @@ impl Preview3dMeshBuilder {
         &self,
         blocks: &Preview3dChunkBlocks,
         output: &mut Vec<Preview3dStreamFace>,
+        pos: ChunkPos,
+        hidden: &BTreeSet<(ChunkPos, i32)>,
     ) {
         let mut faces = Vec::new();
         // Neighbor-derived models (fences, panes, walls, stairs, redstone)
@@ -9273,6 +9275,21 @@ impl Preview3dMeshBuilder {
             ),
         ] {
             for block in detail_blocks {
+                // Do not resolve neighbor-dependent models or tessellate
+                // vertices for an unreachable/offscreen Section. Detail
+                // meshes can overhang their cell, so retain two blocks of
+                // vertical halo. Unknown custom namespaces fail open.
+                if (block.normalized_name.starts_with("minecraft:")
+                    || !block.normalized_name.contains(':'))
+                    && (-2_i32..=2).all(|dy| {
+                        hidden.contains(&(
+                            pos,
+                            block.key.y.saturating_add(dy).div_euclid(64),
+                        ))
+                    })
+                {
+                    continue;
+                }
                 let shape = if let Some(query) = self.preview_3d_detail_shape_query(block) {
                     shared_shapes
                         .entry(gpu_models::QueryKey(query))
