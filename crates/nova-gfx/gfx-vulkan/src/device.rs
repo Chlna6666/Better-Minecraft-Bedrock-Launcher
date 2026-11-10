@@ -142,9 +142,13 @@ pub struct VulkanDevice {
     copy_offset_alignment: u64,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
-    /// Optional independent queue index in the SAME graphics family. Using
-    /// a different family would require explicit image ownership transfers.
+    /// Secondary graphics-family queue can execute all stages with no
+    /// family ownership transfer.
     sidecar_queue: Option<vk::Queue>,
+    /// Compute-only family, when present. Only concurrent-shared buffer
+    /// dispatches are permitted; images remain graphics-family owned.
+    dedicated_compute_queue: Option<vk::Queue>,
+    dedicated_compute_family_index: Option<u32>,
     present_queue: vk::Queue,
     graphics_queue_family_index: u32,
     present_queue_family_index: u32,
@@ -347,6 +351,7 @@ impl VulkanDevice {
             device,
             graphics_queue,
             sidecar_queue,
+            dedicated_compute_queue,
             present_queue,
             incremental_presentation,
             supports_sampler_anisotropy,
@@ -454,6 +459,8 @@ impl VulkanDevice {
             device,
             graphics_queue,
             sidecar_queue,
+            dedicated_compute_queue,
+            dedicated_compute_family_index: queue_families.compute,
             present_queue,
             graphics_queue_family_index: queue_families.graphics,
             present_queue_family_index: queue_families.present,
@@ -739,14 +746,35 @@ impl VulkanDevice {
     /// Returns [`Error`] when validation or Vulkan allocation fails.
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         desc.validate()?;
-        let create_info = vk::BufferCreateInfo::default()
+        // A compute-only family may access generic storage/uniform buffers
+        // concurrently with the graphics family. Such resources MUST be
+        // CONCURRENT; EXCLUSIVE resources would need matched native
+        // release/acquire Queue Family Ownership Transfer barriers.
+        //
+        // Restrict sharing to Compute-compatible buffers. Render targets,
+        // images and unrelated upload/transfer allocations remain EXCLUSIVE.
+        // This avoids per-Section cross-family ownership ping-pong and its
+        // extra command buffers when the camera streams new chunks.
+        let share_compute = self.dedicated_compute_family_index.is_some()
+            && desc.usage.intersects(BufferUsage::STORAGE | BufferUsage::UNIFORM);
+        let families = [
+            self.graphics_queue_family_index,
+            self.dedicated_compute_family_index.unwrap_or(self.graphics_queue_family_index),
+        ];
+        let mut create_info = vk::BufferCreateInfo::default()
             .size(desc.size)
             .usage(
                 buffer_usage_to_vk(desc.usage)
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | vk::BufferUsageFlags::TRANSFER_DST,
-            )
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            );
+        if share_compute {
+            create_info = create_info
+                .sharing_mode(vk::SharingMode::CONCURRENT)
+                .queue_family_indices(&families);
+        } else {
+            create_info = create_info.sharing_mode(vk::SharingMode::EXCLUSIVE);
+        }
         // SAFETY: Device is valid and create info is self-contained.
         let buffer =
             unsafe { self.device.create_buffer(&create_info, None) }.map_err(VulkanError::from)?;
@@ -5436,6 +5464,10 @@ impl VulkanTriangle {
 struct QueueFamilyIndices {
     graphics: u32,
     present: u32,
+    /// A distinct COMPUTE-capable, non-GRAPHICS family. Never used for
+    /// resource access unless buffer sharing and producer/consumer sync
+    /// are explicitly established.
+    compute: Option<u32>,
 }
 
 struct SwapchainSupport {
@@ -6127,16 +6159,24 @@ fn queue_family_indices_without_surface(
         .ok_or_else(|| VulkanError::Unavailable("no graphics queue family".to_string()))?;
     let graphics = u32::try_from(graphics)
         .map_err(|error| Error::Backend(format!("queue family index overflow: {error}")))?;
+    let compute = families.iter().enumerate().find_map(|(index, family)| {
+        (family.queue_count > 0
+            && family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+            && !family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .then(|| u32::try_from(index).ok())
+            .flatten()
+    });
     Ok(QueueFamilyIndices {
         graphics,
         present: graphics,
+        compute,
     })
 }
 
-/// Exactly two queues are requested only if the graphics family owns
-/// multiple real native queues. Having distinct Present/Compute families
-/// does NOT qualify: sharing resources between them requires ownership
-/// transfer barriers that this sidecar does not yet need to implement.
+/// The second graphics-family queue is only requested if the physical
+/// adapter exposes it. Distinct compute-family queues are requested
+/// separately; their shared storage buffers use CONCURRENT mode and native
+/// semaphores, never undefined EXCLUSIVE ownership transitions.
 fn independent_graphics_queue_enabled(available: u32) -> bool {
     available >= 2
 }
@@ -6147,12 +6187,11 @@ fn create_device(
     indices: QueueFamilyIndices,
     properties2_supported: bool,
     entry: &Entry,
-) -> Result<(ash::Device, vk::Queue, Option<vk::Queue>, vk::Queue, bool, bool, bool, bool)> {
+) -> Result<(ash::Device, vk::Queue, Option<vk::Queue>, Option<vk::Queue>, vk::Queue, bool, bool, bool, bool)> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
-    // More than one queue in the same graphics family is the only valid
-    // queue-topology optimization until native ownership-transfer protocols
-    // exist. Never request index 1 on a one-queue adapter.
+    // Never request index 1 on a one-queue adapter. A separate Compute
+    // family has its own index-0 queue and uses concurrent-shared buffers.
     let queue_families = unsafe {
         instance.get_physical_device_queue_family_properties(physical_device)
     };
@@ -6166,6 +6205,11 @@ fn create_device(
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
         unique_families.push(indices.present);
+    }
+    if let Some(compute) = indices.compute
+        && !unique_families.contains(&compute)
+    {
+        unique_families.push(compute);
     }
     let queue_infos = unique_families
         .iter()
@@ -6260,12 +6304,20 @@ fn create_device(
     if dedicated {
         log::info!("nova-gfx Vulkan second graphics queue enabled in family {}", indices.graphics);
     }
+    let dedicated_compute_queue = indices.compute.map(|family| {
+        // SAFETY: The compute-family index-zero queue was requested above.
+        unsafe { device.get_device_queue(family, 0) }
+    });
+    if let Some(family) = indices.compute {
+        log::info!("nova-gfx Vulkan separate compute queue available family={} graphics_family={}", family, indices.graphics);
+    }
     // SAFETY: Queue family index and queue index are valid per device creation.
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
     Ok((
         device,
         graphics_queue,
         sidecar_queue,
+        dedicated_compute_queue,
         present_queue,
         incremental_presentation,
         supports_sampler_anisotropy,
