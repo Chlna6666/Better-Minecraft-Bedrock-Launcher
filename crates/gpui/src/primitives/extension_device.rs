@@ -63,6 +63,18 @@ pub trait ExtensionDevice {
         ))
     }
 
+    /// Native buffer-only Compute with hardware timestamp correlation. The
+    /// backend must record the tag in the exact producer command list; a
+    /// missing hardware clock does not permit inventing a sample.
+    fn submit_compute_batch_profiled_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        _tag: GpuTimestampTag,
+    ) -> Result<gfx_core::SubmissionId> {
+        self.submit_compute_batch_on_queue(queue, dispatches)
+    }
+
     /// Execute GPU->GPU buffer relocation on a real native Transfer queue.
     /// Returned fence is scoped to that physical queue; the caller must
     /// preserve read/write retirement dependencies until GPU completion.
@@ -438,6 +450,17 @@ where
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<gfx_core::SubmissionId> {
         gfx_core::SubmissionDevice::submit_compute_batch_on_queue(self, queue, dispatches)
+    }
+
+    fn submit_compute_batch_profiled_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tag: GpuTimestampTag,
+    ) -> Result<gfx_core::SubmissionId> {
+        gfx_core::SubmissionDevice::submit_compute_batch_profiled_on_queue(
+            self, queue, dispatches, tag,
+        )
     }
 
     fn submit_buffer_copies_on_queue(
