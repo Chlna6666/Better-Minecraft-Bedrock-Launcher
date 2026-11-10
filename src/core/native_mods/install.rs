@@ -196,7 +196,7 @@ async fn install(
         .filter(|name| !name.is_empty())
         .ok_or_else(|| format!("无效的原生 Mod 文件名：{}", request.file_name))?;
     let mod_folder = sanitize_component(&request.mod_entry.id);
-    let mods_dir = request.game_directory.join("mods");
+    let mods_dir = request.game_directory.join("BLoader").join("mods");
     tokio::fs::create_dir_all(&mods_dir)
         .await
         .map_err(|error| format!("创建原生 Mod 根目录失败：{error}"))?;
@@ -216,7 +216,7 @@ async fn install(
         return Err(format!("复制原生 Mod 文件失败：{error}"));
     }
     let manifest_type = match file.file_type.as_str() {
-        "native.dll" => "preload-native",
+        "native.dll" => "mod-native",
         "delay.dll" => "hot-inject",
         other => {
             let _ = tokio::fs::remove_dir_all(&staging).await;
@@ -280,6 +280,7 @@ async fn install(
 async fn import_local_mods(request: NativeModImportRequest, task_id: &str) -> Result<(), String> {
     let mods_dir = crate::utils::file_ops::bmcbl_subdir("versions")
         .join(&request.version_folder)
+        .join("BLoader")
         .join("mods");
     let total = request.items.len();
     let mut names = HashSet::with_capacity(total);
@@ -409,7 +410,7 @@ async fn import_local_mods(request: NativeModImportRequest, task_id: &str) -> Re
 
 fn validate_import_mod_type(mod_type: &str) -> Result<(), String> {
     match mod_type.trim() {
-        "preload-native" | "hot-inject" | "native" | "lse-quickjs" => Ok(()),
+        "mod-native" | "mod-preload" | "hot-native" | "hot-inject" => Ok(()),
         other => Err(format!("不支持的 Mod 类型: {other}")),
     }
 }
