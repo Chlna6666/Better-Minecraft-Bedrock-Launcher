@@ -180,8 +180,17 @@ pub(super) fn validated_preloader_version(game_directory: &Path) -> Result<Optio
     }
     let raw = std::fs::read(&path)
         .map_err(|error| format!("读取 PreLoader 元数据失败 {}: {error}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|error| format!("解析 PreLoader 元数据失败 {}: {error}", path.display()))?;
+    let value: serde_json::Value = match serde_json::from_slice(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "PreLoader 元数据损坏，安装器将重新下载而非误判依赖已安装"
+            );
+            return Ok(None);
+        }
+    };
     let valid = value.get("type").and_then(serde_json::Value::as_str)
         == Some("preloader-bootstrap")
         && value.get("entry").and_then(serde_json::Value::as_str)
@@ -209,8 +218,17 @@ fn repair_preloader_manifest_type(game_directory: &Path) -> Result<(), String> {
     }
     let raw = std::fs::read(&path)
         .map_err(|error| format!("读取已有 PreLoader Manifest 失败 {}: {error}", path.display()))?;
-    let mut value: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|error| format!("解析已有 PreLoader Manifest 失败 {}: {error}", path.display()))?;
+    let mut value: serde_json::Value = match serde_json::from_slice(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "跳过损坏的旧 PreLoader Manifest，保留现有 DLL 并重新安装依赖"
+            );
+            return Ok(());
+        }
+    };
     let is_previous_bmcbl_layout = matches!(
         value.get("name").and_then(serde_json::Value::as_str),
         Some("LeviLamina PreLoader" | "PreLoader")
