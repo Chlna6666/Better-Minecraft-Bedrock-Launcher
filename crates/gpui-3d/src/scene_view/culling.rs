@@ -10,7 +10,9 @@ use gfx_core::{
 use gpui::ExtensionDevice;
 use super::scene::stable_slots::StableDrawSlots;
 use crate::prepare::StructuralDrawDelta;
-use std::{collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher}, hash::{Hash, Hasher}};
+use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(test)]
+use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 const BOUNDS_STRIDE: usize = 48;
 /// The eighth u32 in the existing Bounds ABI is 0.0 (normal) or 1.0
@@ -70,6 +72,7 @@ impl BoundsRecordKey {
         ])
     }
 
+    #[cfg(test)]
     fn fingerprint(&self) -> u64 {
         let mut hash = DefaultHasher::new();
         self.hash(&mut hash);
@@ -79,6 +82,7 @@ impl BoundsRecordKey {
 
 /// Use previously encoded records after section insertion/removal, while
 /// preserving the original culling shader's exact packed record layout.
+#[cfg(test)]
 fn encode_bounds_cached(
     draws: &[PreparedDraw],
     previous_keys: &[BoundsRecordKey],
@@ -1473,6 +1477,7 @@ fn encode_bounds(draws: &[PreparedDraw]) -> Vec<u8> {
     bytes
 }
 
+#[cfg(test)]
 fn encode_bounds_into(draws: &[PreparedDraw], bounds: &mut Vec<u8>) {
     bounds.clear();
     bounds.reserve(draws.len() * BOUNDS_STRIDE);

@@ -624,6 +624,8 @@ impl Entry {
             self.ready_poll_required = true;
             return Ok(false);
         }
+        // Count only native pacing preflight rejections, never resize or resource deferrals.
+        crate::diagnostics::performance_metrics::record_present_preflight_deferred(self.id);
         if !self
             .renderer
             .surface_capabilities()

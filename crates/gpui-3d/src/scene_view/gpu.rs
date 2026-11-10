@@ -2332,6 +2332,7 @@ impl DrawRecordCache {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn encode_draws_into(scene: &PreparedScene, bytes: &mut Vec<u8>) -> gpui::Result<()> {
     encode_draw_records_into(&scene.draws, bytes)
 }
@@ -2345,6 +2346,7 @@ pub(super) fn encode_draw_records(
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn encode_draw_records_into(
     draws: &[crate::PreparedDraw],
     bytes: &mut Vec<u8>,

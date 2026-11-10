@@ -539,6 +539,7 @@ impl StableDrawSlots {
     ///
     /// Malformed or overlapping edits return None, allowing the established
     /// full transactional planner to handle mixed or reordered layouts.
+    #[cfg(test)]
     pub(in crate::scene_view) fn plan_structural(
         &self,
         draws: &[PreparedDraw],
