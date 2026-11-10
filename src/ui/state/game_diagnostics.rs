@@ -75,3 +75,69 @@ impl GameDiagnosticsState {
 }
 
 impl Global for GameDiagnosticsState {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::minecraft::diagnostics::{ExitKind, forensics::ForensicSummary};
+    use chrono::Utc;
+    use std::{collections::HashMap, path::PathBuf};
+
+    fn report(id: &str) -> GameSessionReport {
+        GameSessionReport {
+            schema_version: 7,
+            id: id.into(),
+            task_id: format!("task-{id}"),
+            version: "dev".into(),
+            game_directory: PathBuf::new(),
+            platform: "gdk".into(),
+            pid: 42,
+            process_created_at: None,
+            compatibility_prefix: None,
+            compatibility_logs: None,
+            compatibility_fault: None,
+            early_exit: false,
+            started_at: Utc::now(),
+            ended_at: Some(Utc::now()),
+            exit_code: Some(0xC0000005),
+            exit_signal: None,
+            kind: ExitKind::SuspectedCrash,
+            summary: "test".into(),
+            acknowledged: false,
+            wer_fault: None,
+            findings: Vec::new(),
+            forensics: ForensicSummary::default(),
+            log_offsets: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn concurrent_crashes_do_not_replace_the_open_dialog() {
+        let mut state = GameDiagnosticsState::default();
+        state.receive_report(report("first"));
+        state.show_technical = true;
+        state.receive_report(report("second"));
+        state.receive_report(report("second"));
+        assert_eq!(state.pending.as_ref().unwrap().id, "first");
+        assert!(state.show_technical);
+        assert_eq!(state.queued.len(), 1);
+        assert!(state.dismiss_pending_if_matches("first"));
+        assert_eq!(state.pending.as_ref().unwrap().id, "second");
+        assert!(!state.show_technical);
+        assert!(state.queued.is_empty());
+        assert!(!state.dismiss_pending_if_matches("first"));
+        state.receive_report(report("first"));
+        assert_eq!(state.pending.as_ref().unwrap().id, "second");
+        assert!(state.dismiss_pending_if_matches("second"));
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn acknowledged_late_wer_does_not_open_another_dialog() {
+        let mut state = GameDiagnosticsState::default();
+        let mut incident = report("acknowledged");
+        incident.acknowledged = true;
+        state.receive_report(incident);
+        assert!(state.pending.is_none());
+    }
+}
