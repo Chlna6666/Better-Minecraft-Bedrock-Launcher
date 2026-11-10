@@ -5,6 +5,8 @@ use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForensicSummary {
     pub failed_mods: Vec<ModIssue>,
+    #[serde(default)]
+    pub missing_dependencies: Vec<DependencyIssue>,
     pub wine_stack: Option<WineStack>,
     pub minidumps: Vec<MiniDump>,
 }
@@ -12,6 +14,12 @@ pub struct ForensicSummary {
 pub struct ModIssue {
     pub identifier: String,
     /// A shared game log does not prove this mod failure belongs to one instance.
+    pub session_private: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyIssue {
+    /// Sanitized DLL/shared-library basename only, never a source file path.
+    pub identifier: String,
     pub session_private: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +89,34 @@ fn find_mod(line: &str) -> Option<String> {
     None
 }
 
+/// Recover only an allowlisted library basename from explicit load failures.
+/// Do not persist paths or arbitrary log contents in the report.
+fn find_dependency(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    if !["not found", "cannot open", "failed to load", "could not load",
+        "import_dll", "unimplemented function"]
+        .iter().any(|keyword| lower.contains(keyword))
+    {
+        return None;
+    }
+    for token in line.split_whitespace() {
+        let candidate = token.trim_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch,
+                ':' | ',' | ';' | '(' | ')' | '[' | ']' | '"' | '\'' | '=')
+        });
+        let name = candidate.rsplit(['\\', '/']).next().unwrap_or("");
+        let name = name.trim_matches(|ch: char| matches!(ch, ':' | ',' | ';' | ')' | '('));
+        let lower = name.to_ascii_lowercase();
+        if (lower.ends_with(".dll") || lower.ends_with(".so")
+            || lower.contains(".so."))
+            && let Some(name) = safe_name(name)
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn code_from(line: &str) -> Option<u32> {
     let input = line.to_ascii_lowercase();
     for word in input.split(|c: char| !(c.is_ascii_hexdigit() || c == 'x')) {
@@ -134,6 +170,16 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
                 {
                     out.failed_mods.push(ModIssue { identifier, session_private: private });
                 }
+            }
+            if out.missing_dependencies.len() < 8
+                && let Some(identifier) = find_dependency(line)
+                && !out.missing_dependencies.iter().any(|existing|
+                    existing.identifier.eq_ignore_ascii_case(&identifier))
+            {
+                out.missing_dependencies.push(DependencyIssue {
+                    identifier,
+                    session_private: private,
+                });
             }
             if !is_runner { continue; }
             let lower = line.to_ascii_lowercase();
@@ -318,6 +364,19 @@ mod tests {
         assert!(inspect_text(&[("logs/runner-provider-00.log".into(), UMU.into())])
             .failed_mods.is_empty());
     }
+    #[test]
+    fn missing_dependency_is_sanitized_and_requires_a_failure() {
+        assert_eq!(find_dependency("err:module:import_dll Library C:\\private\\BLoader.dll not found"),
+            Some("BLoader.dll".to_string()));
+        assert_eq!(find_dependency("libvulkan.so.1: cannot open shared object file"),
+            Some("libvulkan.so.1".to_string()));
+        assert_eq!(find_dependency("BLoader.dll loaded successfully"), None);
+        let evidence = inspect_text(&[("logs/compatibility-runner.log".into(),
+            "libvulkan.so.1: cannot open shared object file".into())]);
+        assert_eq!(evidence.missing_dependencies[0].identifier, "libvulkan.so.1");
+        assert!(evidence.missing_dependencies[0].session_private);
+    }
+
     #[test]
     fn never_claim_mod_failure_from_discovery_count() {
         assert!(inspect_text(&[
