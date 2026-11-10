@@ -35,7 +35,7 @@ fn preloader_validity_requires_bootstrap_manifest_and_dll() {
         super::super::installation_state::validated_preloader_version(&root).unwrap(),
         None
     );
-    std::fs::write(dir.join("manifest.json"), br#"{"name":"PreLoader","entry":"PreLoader.dll","type":"preloader-bootstrap","version":"1.16.8"}"#).unwrap();
+    std::fs::write(dir.join("bloader.json"), br#"{"name":"PreLoader","entry":"PreLoader.dll","type":"preloader-bootstrap","version":"1.16.8"}"#).unwrap();
     assert_eq!(
         super::super::installation_state::validated_preloader_version(&root).unwrap(),
         Some("1.16.8".to_string())
@@ -64,13 +64,15 @@ fn manifest_type_is_repaired_in_place_without_touching_preloader_dll() {
     ).unwrap();
 
     super::super::installation_state::repair_preloader_manifest_type(&root).unwrap();
+    assert!(!dir.join("manifest.json").exists());
     let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(dir.join("manifest.json")).unwrap()
+        &std::fs::read(dir.join("bloader.json")).unwrap()
     ).unwrap();
     assert_eq!(manifest["name"], "PreLoader");
     assert_eq!(manifest["type"], "preloader-bootstrap");
     assert_eq!(manifest["version"], "1.16.8");
     assert_eq!(std::fs::read(&dll).unwrap(), dll_bytes);
+    assert!(!dir.join("manifest.json").exists());
     assert!(!root.join("BLoader").join("PreLoader").exists());
     super::super::installation_state::repair_preloader_manifest_type(&root).unwrap();
     assert_eq!(std::fs::read(&dll).unwrap(), dll_bytes);

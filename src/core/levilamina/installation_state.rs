@@ -55,7 +55,7 @@ pub(super) async fn write_preloader_manifest(
     let game_directory = game_directory.to_path_buf();
     let version = version.to_string();
     crate::tasks::runtime::run_archive_blocking(move || {
-        let path = game_directory.join("mods/PreLoader/manifest.json");
+        let path = game_directory.join("mods/PreLoader/bloader.json");
         let parent = path
             .parent()
             .ok_or_else(|| "PreLoader 目录无效".to_string())?;
@@ -76,7 +76,12 @@ pub(super) async fn write_preloader_manifest(
         let bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| format!("序列化 PreLoader 清单失败: {error}"))?;
         std::fs::write(&path, bytes)
-            .map_err(|error| format!("写入 PreLoader 清单失败: {error}"))?;
+            .map_err(|error| format!("写入 PreLoader 引导清单失败: {error}"))?;
+        repair_preloader_manifest_type(&game_directory)?;
+        tracing::info!(
+            path = %path.display(),
+            "PreLoader 引导元数据写入 bloader.json；DLL 位置未改变"
+        );
         Ok(path)
     })
     .await?
@@ -174,7 +179,7 @@ pub(super) fn validated_preloader_version(game_directory: &Path) -> Result<Optio
     if !dir.join("PreLoader.dll").is_file() {
         return Ok(None);
     }
-    let path = dir.join("manifest.json");
+    let path = dir.join("bloader.json");
     if !path.is_file() {
         return Ok(None);
     }
@@ -204,53 +209,56 @@ pub(super) fn validated_preloader_version(game_directory: &Path) -> Result<Optio
         .map(str::to_owned))
 }
 
-/// Repair only BMCBL's historical PreLoader manifest in its existing
-/// directory, during an explicit installer operation. This does not move,
-/// delete or reload PreLoader.dll and never runs on the game launch path.
-fn repair_preloader_manifest_type(game_directory: &Path) -> Result<(), String> {
+/// LeviLamina scans manifest.json under mods/, including PreLoader itself.
+/// BLoader metadata must therefore use bloader.json. Only BMCBL-owned
+/// metadata is renamed; PreLoader.dll and directories are never touched.
+pub(super) fn repair_preloader_manifest_type(game_directory: &Path) -> Result<(), String> {
     let dir = game_directory.join("mods").join("PreLoader");
     if !dir.join("PreLoader.dll").is_file() {
         return Ok(());
     }
-    let path = dir.join("manifest.json");
-    if !path.is_file() {
+    let legacy = dir.join("manifest.json");
+    if !legacy.is_file() {
         return Ok(());
     }
-    let raw = std::fs::read(&path)
-        .map_err(|error| format!("读取已有 PreLoader Manifest 失败 {}: {error}", path.display()))?;
+    let raw = std::fs::read(&legacy)
+        .map_err(|e| format!("读取旧 PreLoader 元数据失败 {}: {e}", legacy.display()))?;
     let mut value: serde_json::Value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                %error,
-                "跳过损坏的旧 PreLoader Manifest，保留现有 DLL 并重新安装依赖"
-            );
+            tracing::warn!(path = %legacy.display(), %error, "跳过损坏的 PreLoader 元数据");
             return Ok(());
         }
     };
-    let is_previous_bmcbl_layout = matches!(
+    let owned = matches!(
         value.get("name").and_then(serde_json::Value::as_str),
-        Some("LeviLamina PreLoader" | "PreLoader")
+        Some("PreLoader" | "LeviLamina PreLoader")
     ) && value.get("entry").and_then(serde_json::Value::as_str) == Some("PreLoader.dll")
         && matches!(
             value.get("type").and_then(serde_json::Value::as_str),
-            Some("preload" | "preload-native")
+            Some("preload" | "preload-native" | "preloader-bootstrap")
         );
-    if !is_previous_bmcbl_layout {
+    if !owned {
         return Ok(());
     }
-    let object = value.as_object_mut().ok_or_else(|| "无效的 PreLoader Manifest".to_string())?;
-    object.insert("name".to_string(), serde_json::json!("PreLoader"));
+    let object = value.as_object_mut()
+        .ok_or_else(|| "PreLoader Manifest 必须为 JSON 对象".to_string())?;
     object.insert("type".to_string(), serde_json::json!("preloader-bootstrap"));
-    let content = serde_json::to_vec_pretty(&value)
-        .map_err(|error| format!("序列化 PreLoader Manifest 失败: {error}"))?;
-    // Preserve the DLL entirely; rewriting metadata must not disrupt startup.
-    std::fs::write(&path, content)
-        .map_err(|error| format!("更新 PreLoader Manifest 类型失败 {}: {error}", path.display()))?;
+    object.insert("name".to_string(), serde_json::json!("PreLoader"));
+    let sidecar = dir.join("bloader.json");
+    if !sidecar.exists() {
+        let data = serde_json::to_vec_pretty(&value)
+            .map_err(|e| format!("序列化 PreLoader 元数据失败: {e}"))?;
+        std::fs::write(&sidecar, data)
+            .map_err(|e| format!("写入 PreLoader 引导元数据失败 {}: {e}", sidecar.display()))?;
+    }
+    // Remove only the known BLoader-owned legacy JSON after the new
+    // descriptor is durably present; never change DLL or package files.
+    std::fs::remove_file(&legacy)
+        .map_err(|e| format!("清理重复 PreLoader Manifest 失败 {}: {e}", legacy.display()))?;
     tracing::info!(
-        path = %path.display(),
-        "已在原目录修复 PreLoader Manifest 类型为 preloader-bootstrap；DLL 未移动或删除"
+        path = %sidecar.display(),
+        "PreLoader 使用独立 bloader.json，不再被 LeviLamina 识别为普通 Mod"
     );
     Ok(())
 }
