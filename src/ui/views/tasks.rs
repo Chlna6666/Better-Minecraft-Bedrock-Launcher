@@ -290,9 +290,11 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
             .visualization
             .as_ref()
             .and_then(|visualization| visualization.worker_active),
-        speed_text: (snapshot.speed_bytes_per_sec > 0.0)
+        speed_text: (snapshot.task_type != task_manager::TaskType::Workflow
+            && snapshot.speed_bytes_per_sec > 0.0)
             .then(|| format_task_speed(snapshot.speed_bytes_per_sec)),
-        eta_text: (snapshot.eta.as_ref() != "unknown").then(|| snapshot.eta.clone()),
+        eta_text: (snapshot.task_type != task_manager::TaskType::Workflow
+            && snapshot.eta.as_ref() != "unknown").then(|| snapshot.eta.clone()),
         message: non_empty_arc(snapshot.message.as_ref()),
         percent_basis_points: snapshot
             .percent

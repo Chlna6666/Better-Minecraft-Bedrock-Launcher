@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
-use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::tasks::task_manager::{self, TaskSnapshot, TaskType};
 
 static NEXT_GAME_INSTALL_ID: AtomicU64 = AtomicU64::new(1);
+const INSTALL_PROGRESS_TOTAL: u64 = 10_000;
 
 #[derive(Clone, Debug)]
 pub enum GamePackageSource {
@@ -35,9 +36,10 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
         "安装 Minecraft",
         Some(request.version_label.clone()),
         "preparing_game_install",
-        None,
+        Some(INSTALL_PROGRESS_TOTAL),
         false,
     );
+    task_manager::set_task_type(&operation_id, TaskType::Workflow);
     task_manager::set_task_message(&operation_id, Some("正在准备安装".to_string()));
     task_manager::register_task_cooperative_cancel(operation_id.to_string());
 
@@ -117,11 +119,19 @@ async fn run_game_install(
             .await?
     };
 
+    let download_weight = if request.levilamina_version.is_some() { 6_500 } else { 7_500 };
+    let extract_weight = 2_500;
     let package_path = match local_path {
-        Some(path) => path,
-        None => download_package(request, operation_id, active_child_task).await?,
+        Some(path) => {
+            set_game_install_progress(operation_id, download_weight, "downloading_game");
+            path
+        }
+        None => download_package(request, operation_id, active_child_task, download_weight).await?,
     };
+    check_cancelled(operation_id)?;
     let extract_task_id = start_extract(request, &package_path).await?;
+    task_manager::set_task_parent(&extract_task_id, operation_id);
+    task_manager::set_task_type(&extract_task_id, TaskType::Stage);
     set_active_child_task(active_child_task, Some(extract_task_id.clone()));
     set_game_install_stage(
         operation_id,
@@ -129,9 +139,12 @@ async fn run_game_install(
         "正在解压并安装游戏".to_string(),
     );
 
-    let extract_snapshot = task_manager::wait_for_task_terminal(&extract_task_id).await?;
+    let extract_snapshot = wait_for_child_progress(
+        &extract_task_id, operation_id, download_weight, extract_weight, "installing_game",
+    ).await?;
     set_active_child_task(active_child_task, None);
     require_completed(&extract_snapshot, "安装")?;
+    check_cancelled(operation_id)?;
     if let Some(loader_version) = &request.levilamina_version {
         set_game_install_stage(
             operation_id,
@@ -147,8 +160,16 @@ async fn run_game_install(
                 loader_version: loader_version.clone(),
             },
         )?;
+        task_manager::set_task_parent(handle.task_id.as_ref(), operation_id);
+        task_manager::set_task_type(handle.task_id.as_ref(), TaskType::Workflow);
         set_active_child_task(active_child_task, Some(handle.task_id.to_string()));
-        let loader_snapshot = task_manager::wait_for_task_terminal(handle.task_id.as_ref()).await?;
+        let loader_snapshot = wait_for_child_progress(
+            handle.task_id.as_ref(),
+            operation_id,
+            download_weight + extract_weight,
+            INSTALL_PROGRESS_TOTAL - download_weight - extract_weight,
+            "installing_levilamina",
+        ).await?;
         set_active_child_task(active_child_task, None);
         require_completed(&loader_snapshot, "LeviLamina 安装")?;
     }
@@ -163,6 +184,7 @@ async fn download_package(
     request: &GameInstallRequest,
     operation_id: &str,
     active_child_task: &Arc<Mutex<Option<String>>>,
+    download_weight: u64,
 ) -> Result<String, String> {
     set_game_install_stage(
         operation_id,
@@ -202,9 +224,13 @@ async fn download_package(
             "download task disappeared before labels were applied"
         );
     }
+    task_manager::set_task_parent(&task_id, operation_id);
+    task_manager::set_task_type(&task_id, TaskType::Transfer);
     set_active_child_task(active_child_task, Some(task_id.clone()));
 
-    let snapshot = task_manager::wait_for_task_terminal(&task_id).await?;
+    let snapshot = wait_for_child_progress(
+        &task_id, operation_id, 0, download_weight, "downloading_game",
+    ).await?;
     set_active_child_task(active_child_task, None);
     require_completed(&snapshot, "下载")?;
     snapshot
@@ -252,6 +278,56 @@ fn require_completed(snapshot: &TaskSnapshot, operation: &str) -> Result<(), Str
 }
 
 fn set_game_install_stage(operation_id: &str, stage: &'static str, message: String) {
-    task_manager::reset_progress(operation_id, None, Some(stage));
+    // Cumulative workflow progress must survive every phase transition.
+    task_manager::update_progress(operation_id, 0, Some(INSTALL_PROGRESS_TOTAL), Some(stage));
     task_manager::set_task_message(operation_id, Some(message));
+}
+
+fn set_game_install_progress(operation_id: &str, target: u64, stage: &'static str) {
+    if let Some(current) = task_manager::get_snapshot_arc(operation_id) {
+        let delta = target.min(INSTALL_PROGRESS_TOTAL).saturating_sub(current.done);
+        task_manager::update_progress(operation_id, delta, Some(INSTALL_PROGRESS_TOTAL), Some(stage));
+    }
+}
+
+fn check_cancelled(operation_id: &str) -> Result<(), String> {
+    if task_manager::is_cancelled(operation_id) {
+        Err("安装已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// A phase with no known byte total advances only after its child reports success.
+async fn wait_for_child_progress(
+    child_id: &str,
+    operation_id: &str,
+    offset: u64,
+    weight: u64,
+    stage: &'static str,
+) -> Result<Arc<TaskSnapshot>, String> {
+    let mut events = task_manager::subscribe_task_events();
+    loop {
+        let snapshot = task_manager::get_snapshot_arc(child_id)
+            .ok_or_else(|| format!("子任务已不存在: {child_id}"))?;
+        let ratio = if snapshot.status.as_ref() == "completed" {
+            1.0
+        } else {
+            snapshot.percent.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0
+        };
+        set_game_install_progress(operation_id, offset + (ratio * weight as f64) as u64, stage);
+        if snapshot.is_terminal() {
+            return Ok(snapshot);
+        }
+        check_cancelled(operation_id)?;
+        match events.recv().await {
+            Ok(task_manager::TaskEvent::Removed(id)) if id.as_ref() == child_id => {
+                return Err(format!("子任务已移除: {child_id}"));
+            }
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Err("任务事件通道意外关闭".to_string());
+            }
+        }
+    }
 }

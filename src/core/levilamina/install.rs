@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::tasks::task_manager::{self, TaskSnapshot, TaskType};
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
 use super::installation_state::{
@@ -162,6 +162,7 @@ where
         None,
         false,
     );
+    task_manager::set_task_type(&operation_id, TaskType::Workflow);
     let (updates, receiver) = watch::channel(LeviLaminaInstallSnapshot {
         operation_id: Arc::clone(&operation_id),
         stage: LeviLaminaInstallStage::Resolving,
@@ -225,8 +226,14 @@ async fn run_install(
         None
     };
     let ordered = installation_order(&plan)?;
+    if let Some(updates) = updates {
+        task_manager::set_total(&updates.borrow().operation_id, Some(ordered.len() as u64));
+    }
     for package in ordered {
         if package.disposition == PackageDisposition::Reuse {
+            if let Some(updates) = updates {
+                task_manager::update_progress(&updates.borrow().operation_id, 1, None, None);
+            }
             info!(
                 package = %package.id.display(),
                 version = %package.manifest.version,
@@ -248,6 +255,9 @@ async fn run_install(
             );
         }
         install_package(&game_directory, package, updates).await?;
+        if let Some(updates) = updates {
+            task_manager::update_progress(&updates.borrow().operation_id, 1, None, None);
+        }
         info!(
             package = %package.id.display(),
             version = %package.manifest.version,
@@ -459,6 +469,10 @@ async fn download_asset(
         package.manifest.info.name.as_str(),
         Some(package.manifest.version.clone()),
     );
+    task_manager::set_task_type(&task_id, TaskType::Transfer);
+    if let Some(updates) = updates {
+        task_manager::set_task_parent(&task_id, &updates.borrow().operation_id);
+    }
     if let Some(updates) = updates {
         publish_stage(
             updates,
