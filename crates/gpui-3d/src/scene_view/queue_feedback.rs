@@ -8,18 +8,39 @@
 //! No CPU waits, global locks, shader policy or cross-device training.
 
 use gfx_core::{GpuTimestampSample, GpuTimestampStage, SubmissionId};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 const MIN_TRAINING_SAMPLES: u32 = 6;
 const MAX_INFLIGHT_NATIVE: usize = 3;
 const MAX_PENDING_TIMESTAMPS: usize = 128;
 const MAX_PENDING_AGE: Duration = Duration::from_secs(10);
+const GRAPHICS_WINDOW: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ComputePath {
     Ordered,
     Native,
+}
+
+/// Update a bounded 95th-percentile cache, once every 16 measurements.
+/// Hot-path admission reads cached scalars; it never sorts a frame window.
+fn record_graphics_window(
+    window: &mut VecDeque<u64>,
+    ns: u64,
+    p95: &mut u64,
+    count: u32,
+) {
+    if window.len() == GRAPHICS_WINDOW {
+        window.pop_front();
+    }
+    window.push_back(ns);
+    if count <= 16 || count.is_multiple_of(16) {
+        let mut sorted = window.iter().copied().collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let rank = sorted.len().saturating_mul(95).div_ceil(100).saturating_sub(1);
+        *p95 = sorted[rank.min(sorted.len().saturating_sub(1))];
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -86,8 +107,12 @@ pub(super) struct QueueFeedback {
     observed_handoff_pressure_ns: u64,
     handoff_samples: u32,
     graphics_draw_ns: u64,
+    graphics_draw_p95_ns: u64,
+    graphics_window: VecDeque<u64>,
     graphics_samples: u32,
     frame_cadence_ns: u64,
+    frame_p95_ns: u64,
+    frame_window: VecDeque<u64>,
     frame_samples: u32,
     last_frame: Option<Instant>,
     decisions: u64,
@@ -112,6 +137,10 @@ impl QueueFeedback {
                 smooth(self.frame_cadence_ns, ns)
             };
             self.frame_samples = self.frame_samples.saturating_add(1);
+            record_graphics_window(
+                &mut self.frame_window, ns,
+                &mut self.frame_p95_ns, self.frame_samples,
+            );
         }
         self.last_frame = Some(frame_time);
     }
@@ -154,10 +183,10 @@ impl QueueFeedback {
         // Draw time is GPU execution (but not the full frame). Cadence is
         // presentation scheduling, not a GPU metric. Together they only
         // indicate whether moving Compute off Graphics might be worthwhile.
-        let graphics_pressure = self.graphics_samples >= 4
-            && self.graphics_draw_ns >= 2_000_000;
-        let slow_present_cadence = self.frame_samples >= 8
-            && self.frame_cadence_ns >= 20_000_000;
+        let graphics_pressure = self.graphics_samples >= 8
+            && self.graphics_draw_p95_ns >= 2_000_000;
+        let slow_present_cadence = self.frame_samples >= 16
+            && self.frame_p95_ns >= 20_000_000;
         let can_overlap = (graphics_pressure || slow_present_cadence)
             && native_ns.saturating_add(handoff_ns)
                 < ordered_ns.saturating_mul(5) / 4;
@@ -252,6 +281,10 @@ impl QueueFeedback {
                     smooth(self.graphics_draw_ns, ns)
                 };
                 self.graphics_samples = self.graphics_samples.saturating_add(1);
+                record_graphics_window(
+                    &mut self.graphics_window, ns,
+                    &mut self.graphics_draw_p95_ns, self.graphics_samples,
+                );
             }
             _ => {}
         }
