@@ -1255,8 +1255,12 @@ pub trait PresentationDevice {
 /// visibility through native synchronization.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OffscreenQueuePreference {
+    /// Execute offscreen passes on the primary ordered graphics queue.
     #[default]
     OrderedGraphics,
+    /// Use a separate native graphics queue only when the backend can
+    /// guarantee GPU-side producer/consumer synchronization; otherwise
+    /// transparently fall back to the ordered primary graphics queue.
     IndependentGraphicsIfAvailable,
 }
 
@@ -1416,21 +1420,6 @@ mod offscreen_submission_tests {
             Err(Error::InvalidInput(_)),
         ));
     }
-}
-
-/// A two-timestamp window is eligible only for a nonempty, purely indirect
-/// command sequence: regular draws would contaminate the native measurement.
-#[must_use]
-pub fn eligible_indirect_timestamp_tag(
-    commands: &[crate::RenderCommand],
-    tag: Option<GpuTimestampTag>,
-) -> Option<GpuTimestampTag> {
-    tag.filter(|_| {
-        !commands.is_empty() && commands.iter().all(|command| {
-            matches!(command, crate::RenderCommand::DrawIndirect(_)
-                | crate::RenderCommand::DrawIndexedIndirect(_))
-        })
-    })
 }
 
 /// GPU timestamp range of one submitted frame's render work.
