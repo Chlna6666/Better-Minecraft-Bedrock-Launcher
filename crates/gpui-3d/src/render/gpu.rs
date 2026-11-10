@@ -213,7 +213,7 @@ pub(crate) struct GpuState {
     texture_cache_hits: u64,
     texture_cache_misses: u64,
     evictions: u64,
-    /// True when a submitted frame has not been observed through a readback yet.
+    /// True until a fence or readback confirms completion of the submitted frame.
     ///
     /// The compatibility submission API does not expose a completion handle, so the renderer
     /// drains the previous frame with the post-pass readback before it overwrites buffers or
@@ -695,8 +695,10 @@ impl GpuState {
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         if let Some(submission) = self.pending_submission.take() {
             device.wait_submission(submission)?;
+            self.submission_unobserved = false;
         }
         let readback = device.read_texture(targets.post_color)?;
+        self.submission_unobserved = false;
         let expected_row = self.width as usize * POST_COLOR_FORMAT.bytes_per_pixel() as usize;
         if readback.size != Extent2d::new(self.width, self.height)?
             || readback.bytes_per_row as usize != expected_row
@@ -709,7 +711,6 @@ impl GpuState {
                 readback.bytes_per_row
             )));
         }
-        self.submission_unobserved = false;
         Ok(CapturedImage {
             width: self.width,
             height: self.height,
@@ -1042,15 +1043,12 @@ impl GpuState {
         if !self.submission_unobserved {
             return Ok(());
         }
-        self.submission_unobserved = false;
         if let Some(submission) = self.pending_submission.take() {
             device.wait_submission(submission)?;
-            return Ok(());
+        } else if let Some(targets) = self.targets.as_ref() {
+            device.read_texture(targets.post_color)?;
         }
-        let Some(targets) = self.targets.as_ref() else {
-            return Ok(());
-        };
-        device.read_texture(targets.post_color)?;
+        self.submission_unobserved = false;
         Ok(())
     }
 
@@ -1071,6 +1069,7 @@ impl GpuState {
             SubmissionStatus::Pending => Ok(Some(false)),
             SubmissionStatus::Complete => {
                 self.pending_submission = None;
+                self.submission_unobserved = false;
                 Ok(Some(true))
             }
             SubmissionStatus::Failed(message) => {
@@ -1511,6 +1510,36 @@ impl GpuState {
 /// The scene-view extension still writes one slot per draw because the host pass has no instanced
 /// batch contract. The offscreen renderer owns batching, so its draw buffer is sized by batch count
 /// and a 200k-instance field keeps a single 512-byte slot instead of 102 MiB of duplicated slots.
+#[cfg(all(test, target_os = "windows"))]
+#[test]
+#[ignore = "requires a native DX12 deferred submission"]
+fn completed_fence_disarms_implicit_readback() {
+    use super::OffscreenRenderer;
+
+    let mut device = gfx_dx12::Dx12Device::new(&gfx_core::DeviceDescriptor::default()).unwrap();
+    let mut renderer = OffscreenRenderer::new(&mut device, 32, 32).unwrap();
+    let camera = Camera::perspective(Vec3::Z, Vec3::ZERO, Vec3::Y, 1., 0.1, 10.);
+    renderer
+        .render(
+            &mut device,
+            &crate::Scene::new(),
+            &HashMap::new(),
+            camera,
+            &RenderOptions::default(),
+        )
+        .unwrap();
+    assert!(renderer.gpu.submission_unobserved);
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while renderer.poll_render(&mut device).unwrap() == Some(false) {
+        assert!(Instant::now() < deadline, "DX12 fence did not complete");
+        std::thread::yield_now();
+    }
+    assert!(!renderer.gpu.submission_unobserved);
+    let image = renderer.capture(&mut device).unwrap();
+    assert_eq!((image.width(), image.height()), (32, 32));
+    renderer.destroy(&mut device).unwrap();
+}
+
 fn encode_batch_draws_into(
     prepared: &PreparedScene,
     bytes: &mut Vec<u8>,
