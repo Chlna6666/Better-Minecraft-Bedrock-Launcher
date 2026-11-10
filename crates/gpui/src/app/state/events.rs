@@ -16,20 +16,6 @@ impl App {
         })
     }
 
-    pub(crate) fn detect_accessed_entities<R>(
-        &mut self,
-        callback: impl FnOnce(&mut App) -> R,
-    ) -> (R, FxHashSet<EntityId>) {
-        // Isolate this render scope instead of cloning the growing frame-wide set twice.
-        // Restoring the previous set also makes nested scopes contribute to their parent.
-        let previous = std::mem::take(self.entities.accessed_entities.get_mut());
-        let result = callback(self);
-        let frame_accesses = self.entities.accessed_entities.get_mut();
-        let scope_accesses = std::mem::replace(frame_accesses, previous);
-        frame_accesses.extend(scope_accesses.iter().copied());
-        (result, scope_accesses)
-    }
-
     pub(crate) fn record_entities_accessed(
         &mut self,
         window_handle: AnyWindowHandle,
