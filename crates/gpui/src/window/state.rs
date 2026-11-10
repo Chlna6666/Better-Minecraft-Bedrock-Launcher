@@ -463,21 +463,6 @@ impl PresentationState {
         self.pending_values.clear();
         self.pending_values.extend(values);
     }
-    pub(crate) fn active_layout_extent(&self) -> Option<(u32, u32)> {
-        self.active
-            .as_ref()
-            .and_then(|paint| paint.geometry.layout_extent)
-    }
-    pub(crate) fn active_layout_epoch(&self) -> u64 {
-        self.active
-            .as_ref()
-            .map_or(0, |paint| paint.geometry.layout_epoch)
-    }
-    pub(crate) fn active_layout_scale_factor(&self) -> Option<f32> {
-        self.active
-            .as_ref()
-            .map(|paint| paint.geometry.scale_factor)
-    }
     pub(crate) fn activate_pending(&mut self) -> bool {
         let Some(pending) = self.pending.take() else {
             return false;
@@ -725,10 +710,6 @@ pub struct Window {
 impl Window {
     pub(crate) fn record_list_measured_items(&mut self, count: usize) {
         self.pending_list_measured_items = self.pending_list_measured_items.saturating_add(count);
-    }
-
-    pub(crate) fn recovering_degraded_draw(&self) -> bool {
-        self.recovering_degraded_draw
     }
 
     /// Returns true if the window is in inspector mode.
