@@ -132,9 +132,14 @@ fn find_mod(line: &str) -> Option<String> {
 /// Do not persist paths or arbitrary log contents in the report.
 fn find_dependency(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
-    if !["not found", "cannot open", "failed to load", "could not load",
-        "can't load", "fail to load", "import_dll", "unimplemented function"]
+    // "Can't load LeviLamina.dll" may be Win32 1114 (DLL init failed),
+    // not a missing dependency; PreLoader's following code decides.
+    // "Failed to load plugin" likewise proves a mod load failure only.
+    if ["failed to load plugin", "failed to load mod", "fail to load plugin"]
         .iter().any(|keyword| lower.contains(keyword))
+        || !["not found", "cannot open", "failed to load dll",
+            "could not load dll", "import_dll", "unimplemented function"]
+            .iter().any(|keyword| lower.contains(keyword))
     {
         return None;
     }
@@ -178,7 +183,9 @@ fn loader_family(line: &str, source: &str) -> Option<LoaderFamily> {
         Some(LoaderFamily::PreLoader)
     } else if source.contains("levilamina") {
         Some(LoaderFamily::LeviLamina)
-    } else if source.contains("bloader") {
+    } else if source.contains("bloader")
+        || source.contains("mod-owned-provider")
+    {
         Some(LoaderFamily::BLoader)
     } else if lower.contains("raw seh exception, from <") {
         Some(LoaderFamily::Other)
@@ -229,6 +236,18 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
         || lower.contains("crash_report.captured phase=")
     {
         LoaderIssueKind::NativeException
+    } else if source.contains("mod-owned-provider")
+        && lower.contains("load failed:")
+    {
+        LoaderIssueKind::ModLoadFailure
+    } else if source.contains("mod-owned-provider")
+        && lower.contains("crashed:")
+    {
+        LoaderIssueKind::RuntimeError
+    } else if source.contains("bloader")
+        && lower.contains("load failed:")
+    {
+        LoaderIssueKind::ModLoadFailure
     } else if lower.contains("native-load result phase=")
         && lower.contains("state=failed")
     {
@@ -692,6 +711,8 @@ mod tests {
         assert_eq!(find_dependency("libvulkan.so.1: cannot open shared object file"),
             Some("libvulkan.so.1".to_string()));
         assert_eq!(find_dependency("BLoader.dll loaded successfully"), None);
+        assert_eq!(find_dependency("Can't load LeviLamina.dll"), None);
+        assert_eq!(find_dependency("Failed to load plugin BadAddon.dll"), None);
         let evidence = inspect_text(&[("logs/compatibility-runner.log".into(),
             "libvulkan.so.1: cannot open shared object file".into())]);
         assert_eq!(evidence.missing_dependencies[0].identifier, "libvulkan.so.1");
@@ -768,6 +789,16 @@ mod tests {
         assert!(inspect_bloader_crash_json(&sources, 44184, start, None, false).is_empty());
         assert!(inspect_bloader_crash_json(&sources, 44184,
             start + chrono::Duration::minutes(10), None, true).is_empty());
+    }
+
+    #[test]
+    fn bloader_mod_scoped_failure_log_is_not_lost() {
+        let sources = vec![("logs/mod-owned-provider-00.log".into(),
+            "[2026-11-10] [tid=1] [stream=stderr] Load failed: missing runtime".into())];
+        let issues = inspect_text(&sources).loader_issues;
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, LoaderIssueKind::ModLoadFailure);
+        assert!(!issues[0].session_private);
     }
 
     #[test]
