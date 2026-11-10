@@ -316,7 +316,15 @@ impl NovaRenderer {
     /// presentation frame; a CPU fence wait would stall all GPUI windows.
     pub(super) fn wait_auxiliary_submissions(&mut self) -> Result<()> {
         while let Some(&id) = self.auxiliary_submissions.last() {
-            if let Err(error) = lock_backend(&self.backend).wait_submission(id) {
+            // Drop the native backend MutexGuard before mutating the GPU
+            // owner's failure state. The guard temporary in an if-let
+            // condition otherwise extends through the entire conditional
+            // body and causes E0502 (and may unnecessarily retain the lock).
+            let result = {
+                let mut backend = lock_backend(&self.backend);
+                backend.wait_submission(id)
+            };
+            if let Err(error) = result {
                 self.invalidate_failed_gpu_submission();
                 return Err(error.into());
             }
