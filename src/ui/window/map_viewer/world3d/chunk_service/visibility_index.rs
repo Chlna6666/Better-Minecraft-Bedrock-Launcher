@@ -302,8 +302,8 @@ impl VisibilityIndex {
         &self, dimension: Dimension, center_x: i32, center_z: i32, radius: i32,
     ) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + '_ {
         self.entries.iter()
-            .filter(move |(&pos, _)| {
-                super::inside_view(pos, dimension, center_x, center_z, radius)
+            .filter(move |entry| {
+                super::inside_view(*entry.0, dimension, center_x, center_z, radius)
             })
             .map(|(&pos, value)| (pos, value.probe(pos)))
     }
