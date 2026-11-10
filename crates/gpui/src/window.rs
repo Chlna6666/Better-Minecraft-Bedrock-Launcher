@@ -156,7 +156,7 @@ use state::{
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{
-    DispatchEventResult, DrawPhase, ElementStateBox, SelectiveSpliceMissReason, ViewBoundsFrame,
+    DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame,
     ViewDirtyScope,
 };
 pub(crate) use tab_stop::*;

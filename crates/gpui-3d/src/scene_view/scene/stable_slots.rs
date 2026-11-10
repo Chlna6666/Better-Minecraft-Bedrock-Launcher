@@ -160,7 +160,7 @@ impl StableDrawSlots {
                 // DrawIndirect reader merely because it shares BufferId.
                 // Register an ordering-only queue submission in the generic
                 // graph; per-slot Graphics readers remain in in_flight_draws.
-                if self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord::new(
+                if self.register_native_access(gfx_core::GpuSubmissionRecord::new(
                     submission, gfx_core::GpuQueueId::PRIMARY,
                     gfx_core::GpuWorkStage::Graphics, Vec::new(),
                 )).is_err() {

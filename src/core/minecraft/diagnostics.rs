@@ -177,12 +177,18 @@ pub fn subscribe() -> broadcast::Receiver<GameSessionReport> {
 }
 
 #[cfg(target_os = "windows")]
+#[expect(
+    unsafe_code,
+    reason = "Win32 OpenProcess/GetProcessTimes/CloseHandle are unsafe FFI; the HANDLE is checked and closed in this function"
+)]
 fn process_creation_filetime(pid: u32) -> Option<u64> {
     use windows::Win32::Foundation::{CloseHandle, FILETIME};
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    // SAFETY: The handle belongs to the current process and is closed on all paths.
+    // SAFETY: OpenProcess yields a valid owned HANDLE or an error. GetProcessTimes
+    // receives initialized FILETIME storage, and the HANDLE is closed on both
+    // success and error paths. PID reuse is checked by the caller using this timestamp.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut created = FILETIME::default();

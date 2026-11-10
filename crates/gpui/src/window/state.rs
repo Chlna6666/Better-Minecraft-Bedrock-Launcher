@@ -55,9 +55,6 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) view_dirty: usize,
     pub(super) direct_dirty_views: usize,
     pub(super) traversal_ancestor_views: usize,
-    pub(super) selective_splice_attempts: usize,
-    pub(super) selective_splice_hits: usize,
-    pub(super) selective_splice_misses: [usize; SelectiveSpliceMissReason::COUNT],
     pub(super) rendered_views: usize,
     pub(super) rendered_traversal_ancestors: usize,
     pub(super) rendered_view_types: [(&'static str, usize); 8],
@@ -69,44 +66,6 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) first_view_dirty_entity: Option<EntityId>,
     pub(super) first_rendered_entity: Option<EntityId>,
     pub(super) first_notify_entity: Option<EntityId>,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(usize)]
-pub(crate) enum SelectiveSpliceMissReason {
-    UnstableCacheKey,
-    ForcedRefresh,
-    DegradedRecovery,
-    NoUniqueTarget,
-    TargetNotDirect,
-    InvalidRetainedRange,
-    TargetStateUnavailable,
-    UnsafeFragment,
-    ContextMismatch,
-    ReplayUnavailable,
-    ReplayFailed,
-    DispatchBoundaryChanged,
-}
-
-impl SelectiveSpliceMissReason {
-    const COUNT: usize = 12;
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::UnstableCacheKey => "unstable_cache_key",
-            Self::ForcedRefresh => "forced_refresh",
-            Self::DegradedRecovery => "degraded_recovery",
-            Self::NoUniqueTarget => "no_unique_target",
-            Self::TargetNotDirect => "target_not_direct",
-            Self::InvalidRetainedRange => "invalid_retained_range",
-            Self::TargetStateUnavailable => "target_state_unavailable",
-            Self::UnsafeFragment => "unsafe_fragment",
-            Self::ContextMismatch => "context_mismatch",
-            Self::ReplayUnavailable => "replay_unavailable",
-            Self::ReplayFailed => "replay_failed",
-            Self::DispatchBoundaryChanged => "dispatch_boundary_changed",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,19 +124,6 @@ impl DirtyFrameDiagnostics {
         self.traversal_ancestor_views = ancestors;
     }
 
-    pub(super) fn record_selective_splice_attempt(&mut self) {
-        self.selective_splice_attempts = self.selective_splice_attempts.saturating_add(1);
-    }
-
-    pub(super) fn record_selective_splice_hit(&mut self) {
-        self.selective_splice_hits = self.selective_splice_hits.saturating_add(1);
-    }
-
-    pub(super) fn record_selective_splice_miss(&mut self, reason: SelectiveSpliceMissReason) {
-        let count = &mut self.selective_splice_misses[reason as usize];
-        *count = count.saturating_add(1);
-    }
-
     pub(super) fn record_rendered_view(&mut self, entity_id: EntityId, type_name: &'static str) {
         self.rendered_views = self.rendered_views.saturating_add(1);
         self.first_rendered_entity.get_or_insert(entity_id);
@@ -196,31 +142,6 @@ impl DirtyFrameDiagnostics {
 
     pub(super) fn record_rendered_traversal_ancestor(&mut self) {
         self.rendered_traversal_ancestors = self.rendered_traversal_ancestors.saturating_add(1);
-    }
-
-    pub(super) fn selective_splice_miss_reasons(
-        &self,
-    ) -> [(&'static str, usize); SelectiveSpliceMissReason::COUNT] {
-        [
-            SelectiveSpliceMissReason::UnstableCacheKey,
-            SelectiveSpliceMissReason::ForcedRefresh,
-            SelectiveSpliceMissReason::DegradedRecovery,
-            SelectiveSpliceMissReason::NoUniqueTarget,
-            SelectiveSpliceMissReason::TargetNotDirect,
-            SelectiveSpliceMissReason::InvalidRetainedRange,
-            SelectiveSpliceMissReason::TargetStateUnavailable,
-            SelectiveSpliceMissReason::UnsafeFragment,
-            SelectiveSpliceMissReason::ContextMismatch,
-            SelectiveSpliceMissReason::ReplayUnavailable,
-            SelectiveSpliceMissReason::ReplayFailed,
-            SelectiveSpliceMissReason::DispatchBoundaryChanged,
-        ]
-        .map(|reason| {
-            (
-                reason.label(),
-                self.selective_splice_misses[reason as usize],
-            )
-        })
     }
 
     pub(super) fn record_notify_invalidation(&mut self, entity_id: EntityId) {

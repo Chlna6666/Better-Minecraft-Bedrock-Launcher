@@ -6,7 +6,7 @@ use super::{
     VOXEL_VERTEX_STRIDE,
 };
 use crate::{
-    Camera, Mat4, MaterialId, Mesh, PreparedDraw, PreparedScene, TextureAsset,
+    Camera, Mat4, MaterialId, Mesh, PreparedDraw, TextureAsset,
     TextureColorSpace,
 };
 use anyhow::{Context as _, anyhow};
@@ -24,7 +24,7 @@ pub(crate) use crate::gpu_encoding::{
     encode_mesh, write_matrix, write_vec4,
 };
 #[cfg(test)]
-use crate::PreparedLight;
+use crate::{PreparedLight, PreparedScene};
 #[cfg(test)]
 pub(crate) use crate::gpu_encoding::{encode_instances_into, transpose};
 use gpui::ExtensionDevice;
@@ -745,12 +745,7 @@ impl MeshArena {
                 return Err(error);
             }
         }
-        if let Err(error) = self.native_work.register(record) {
-            for access in uses {
-                self.native_work.register_untracked(queue, access);
-            }
-            return Err(error);
-        }
+        self.register_native_access(record)?;
         self.seal_native_queue_submission(queue, submission)
     }
 
@@ -783,6 +778,7 @@ impl MeshArena {
     /// returns its native producer ID. The renderer GPU owner must also poll
     /// that ID and deliver gpu_submission_completed. A lost/invalid dependency
     /// fails closed by registering unknown work rather than freeing bytes.
+    #[cfg(test)]
     pub(super) fn register_native_buffer_copies(
         &mut self,
         submission: gfx_core::SubmissionId,
