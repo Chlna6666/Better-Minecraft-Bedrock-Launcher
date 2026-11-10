@@ -157,7 +157,8 @@ impl NovaRenderer {
     /// older native GPU submissions. Poll those fences without emitting a
     /// synthetic Scene/Present or scheduling UI work.
     pub(crate) fn has_pollable_offscreen_retirements(&self) -> bool {
-        !self.retired_offscreen_targets.is_empty() && !self.pending_submissions.is_empty()
+        !self.auxiliary_submissions.is_empty()
+            || (!self.retired_offscreen_targets.is_empty() && !self.pending_submissions.is_empty())
     }
 
     pub(crate) fn poll_offscreen_retirements(&mut self) -> Result<()> {
@@ -169,6 +170,9 @@ impl NovaRenderer {
 
     pub(super) fn prepare_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
+            // Even a synchronous UI compositor must poll independent native
+            // GPU producers without blocking on their Compute/COPY fences.
+            self.poll_auxiliary_submissions()?;
             let had_pending_submissions = !self.pending_submissions.is_empty();
             let wait_started_at = Instant::now();
             self.wait_pending_submissions()?;
@@ -272,13 +276,52 @@ impl NovaRenderer {
                 }
             }
         }
-        // The completed tail submission proves that all earlier extension reads on this
-        // renderer's ordered queue have finished. Reuse suballocated mesh ranges without
-        // forcing a queue-idle wait during normal chunk streaming.
+        // Auxiliary Compute/Transfer producers own different native fences.
+        // Poll each explicitly; primary completion does not imply they finished.
+        self.poll_auxiliary_submissions()?;
+        // Only a fully completed primary tail AND no independent in-flight
+        // submissions permits the legacy global-idle reclamation shortcut.
         if extension_ranges_can_be_reclaimed(pending_before, self.pending_submissions.len())
+            && self.auxiliary_submissions.is_empty()
             && self.renderer_registry.needs_gpu_completion()
         {
             self.renderer_registry.gpu_work_completed();
+        }
+        Ok(())
+    }
+
+    /// Poll exact native Compute/COPY producer fences. This queue is not
+    /// counted toward presentation frame-slot limits, and no CPU wait occurs.
+    fn poll_auxiliary_submissions(&mut self) -> Result<()> {
+        let mut index = 0;
+        while index < self.auxiliary_submissions.len() {
+            let id = self.auxiliary_submissions[index];
+            let status = lock_backend(&self.backend).poll_submission(id)?;
+            match status {
+                SubmissionStatus::Pending => index += 1,
+                SubmissionStatus::Complete => {
+                    self.auxiliary_submissions.swap_remove(index);
+                    self.renderer_registry.gpu_submission_completed(id);
+                }
+                SubmissionStatus::Failed(error) => {
+                    self.invalidate_failed_gpu_submission();
+                    return Err(gfx_core::Error::Backend(error).into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Explicit teardown/trim slow path only. Never called from a normal
+    /// presentation frame; a CPU fence wait would stall all GPUI windows.
+    pub(super) fn wait_auxiliary_submissions(&mut self) -> Result<()> {
+        while let Some(&id) = self.auxiliary_submissions.last() {
+            if let Err(error) = lock_backend(&self.backend).wait_submission(id) {
+                self.invalidate_failed_gpu_submission();
+                return Err(error.into());
+            }
+            self.auxiliary_submissions.pop();
+            self.renderer_registry.gpu_submission_completed(id);
         }
         Ok(())
     }
@@ -343,6 +386,7 @@ impl NovaRenderer {
         // later polling frame, which may never arrive after a resize.
         // Never reclaim after a failed or partially drained submission.
         if extension_ranges_can_be_reclaimed(pending_before, self.pending_submissions.len())
+            && self.auxiliary_submissions.is_empty()
             && self.renderer_registry.needs_gpu_completion()
         {
             self.renderer_registry.gpu_work_completed();
