@@ -203,6 +203,12 @@ pub fn analyze_with_forensics(
         add_or_promote(CrashReason::WineGuestException, Confidence::Low, EvidenceSource::RunnerLog);
     }
     for dump in &evidence.minidumps {
+        // A Wine/Proton report directory belongs to a launcher session, not
+        // necessarily to the Minecraft guest. Without the guest PID/executable
+        // identity, auxiliary-process dumps must not establish the game's cause.
+        if report.compatibility_prefix.is_some() {
+            continue;
+        }
         if dump.fault_module.as_deref().is_some_and(|module| {
             let name = module.to_ascii_lowercase();
             name.contains("bloader") || name.contains("levilamina")
@@ -349,6 +355,23 @@ mod tests {
         let mod_finding = findings.iter()
             .find(|f| f.reason == CrashReason::ModLoadFailure).unwrap();
         assert_eq!(mod_finding.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn wine_helper_dump_cannot_prove_minecraft_guest_crash() {
+        let report = report("wine", Some(1));
+        let evidence = super::super::forensics::ForensicSummary {
+            failed_mods: vec![],
+            wine_stack: None,
+            minidumps: vec![super::super::forensics::MiniDump {
+                streams: 2,
+                exception_code: Some(0xC0000005),
+                fault_module: Some("bloader.dll".into()),
+            }],
+        };
+        let findings = analyze_with_forensics(&report, &[], &evidence);
+        assert!(!findings.iter().any(|finding|
+            matches!(finding.reason, CrashReason::AccessViolation | CrashReason::LoaderFailure)));
     }
 
     #[test]
