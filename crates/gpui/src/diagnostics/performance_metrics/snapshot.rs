@@ -308,8 +308,6 @@ pub struct PerformanceMetricsSnapshot {
     pub layout_cache_misses: usize,
     /// Number of retained layout roots directly reused in the latest profiled frame.
     pub layout_cache_reused_roots: usize,
-    /// Number of layout roots whose retained traversal avoided rebuilding child roots.
-    pub layout_cache_saved_roots: usize,
     /// Number of same-frame text layout cache hits in the latest profiled frame.
     pub text_layout_hits: usize,
     /// Number of previous-frame text layouts reused in the latest profiled frame.
