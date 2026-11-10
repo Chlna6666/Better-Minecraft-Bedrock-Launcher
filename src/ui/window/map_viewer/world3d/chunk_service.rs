@@ -2749,7 +2749,11 @@ fn load_batch_from_world(
     // Bedrock fades grass/foliage colors over the block and its eight neighbors. Build the
     // blended column tints once per batch so parallel chunk collection only reads them.
     let need_mesh_data = chunks.iter().any(|data| {
-        data.is_loaded && !lazy_view.is_some_and(|view| lazy_mesh_column(data.pos, view))
+        data.is_loaded
+            && !lazy_view.is_some_and(|view| lazy_mesh_column(data.pos, view))
+            && data.subchunks.keys().any(|&y| {
+                !hidden_before_models.contains(&(data.pos, i32::from(y).div_euclid(4)))
+            })
     });
     // A batch containing only deferred rear columns never touches expensive
     // biome/model collection. When any foreground column is present, keep
@@ -5850,7 +5854,18 @@ fn collect_cached_chunk(
     }
     let pos = data.pos;
     let started = Instant::now();
-    let frame_displays = FrameDisplay::collect(&data);
+    let mut frame_displays = FrameDisplay::collect(&data);
+    if !hidden_bands.is_empty() {
+        // Frames and maps are independent of ordinary block-model records.
+        // Drop their distant hidden geometry now, not after generating a
+        // separate face and allocating/materializing its texture.
+        frame_displays.retain(|display| {
+            let y = display.position()[1];
+            (-2_i32..=2).any(|offset| {
+                !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64))
+            })
+        });
+    }
     // Preserve the full decoded probe for future navigation and portal
     // promotion. Temporarily omit hidden 16-block slices only while the
     // heavyweight captured-model collector walks this column.
