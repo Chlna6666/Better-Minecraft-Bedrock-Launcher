@@ -133,13 +133,11 @@ pub(crate) struct PolychromeSprite {
     pub tile: AtlasTile,
 }
 
-/// The backing content for a painted surface.
+/// The native backing content for a macOS painted surface.
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 pub(crate) enum SurfaceContent {
-    #[cfg(target_os = "macos")]
     CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
-    #[cfg(not(target_os = "macos"))]
-    Unsupported,
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +145,7 @@ pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    #[cfg(target_os = "macos")]
     pub content: SurfaceContent,
 }
 

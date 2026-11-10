@@ -16,7 +16,6 @@ pub(crate) enum Phase {
     GeneratedComputeIssue,
     IndirectMapUpload,
     IndirectMapComputeIssue,
-    CullComputeIssue,
     DrawIndirectEncode,
     OffscreenEnqueue,
     DrawTableUpload,
@@ -116,7 +115,7 @@ fn record_hardware_quantile(
     }
 }
 
-const PHASES: usize = 10;
+const PHASES: usize = 9;
 const BACKENDS: usize = 6;
 struct Accumulator {
     samples: AtomicU64,
@@ -155,11 +154,10 @@ const fn phase_name(index: usize) -> &'static str {
         1 => "generated_compute_issue",
         2 => "indirect_map_upload",
         3 => "indirect_map_compute_issue",
-        4 => "cull_compute_issue",
-        5 => "draw_indirect_encode",
-        6 => "offscreen_enqueue",
-        7 => "draw_table_upload",
-        8 => "bind_group_sync",
+        4 => "draw_indirect_encode",
+        5 => "offscreen_enqueue",
+        6 => "draw_table_upload",
+        7 => "bind_group_sync",
         _ => "offscreen_native_submit",
     }
 }

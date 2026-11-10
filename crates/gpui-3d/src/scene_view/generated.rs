@@ -17,9 +17,6 @@ mod lighting_tests;
 pub(super) struct GeneratedMesh {
     pub templates: BufferId,
     pub arguments: BufferId,
-    pub template_bytes: u64,
-    /// Aligned suballocation within one shared GPU template storage page.
-    pub template_offset: u64,
     pub template_allocation: Option<ArenaAllocation>,
     /// Absolute index of the first 112-byte header record in the shared page.
     pub template_base: u32,
@@ -27,7 +24,6 @@ pub(super) struct GeneratedMesh {
     /// Resident material-count buffer shared by other generated Sections.
     pub argument_allocation: Option<ArenaAllocation>,
     pub argument_base: u32,
-    pub argument_offset: u64,
     pub argument_page_bytes: u64,
 }
 pub(super) struct Shaders(pub [ShaderModuleId; 9]);
@@ -365,18 +361,14 @@ struct PendingGenerated {
     bindings: Vec<ComputeBufferBinding>,
     stages: Vec<(usize, [u32; 3])>,
     generation: u64,
-    output_bytes: usize,
-    template_bytes: u64,
     // A generated section occupies an independently retired slice of a
     // page shared with other Section outputs. Legacy GPU tests use None.
     allocation: Option<ArenaAllocation>,
     template_allocation: Option<ArenaAllocation>,
-    template_offset: u64,
     template_base: u32,
     template_page_bytes: u64,
     argument_allocation: Option<ArenaAllocation>,
     argument_base: u32,
-    argument_offset: u64,
     argument_page_bytes: u64,
     vertex_base: u32,
     vertex_binding_bytes: usize,
@@ -413,14 +405,11 @@ impl PendingGenerated {
             generated: Some(GeneratedMesh {
                 templates: self.buffers[1],
                 arguments: self.buffers[3],
-                template_bytes: self.template_bytes,
-                template_offset: self.template_offset,
                 template_allocation: self.template_allocation,
                 template_base: self.template_base,
                 template_page_bytes: self.template_page_bytes,
                 argument_allocation: self.argument_allocation,
                 argument_base: self.argument_base,
-                argument_offset: self.argument_offset,
                 argument_page_bytes: self.argument_page_bytes,
             }),
         }
@@ -874,20 +863,16 @@ fn prepare_generated(
         bindings,
         stages,
         generation: mesh.generation(),
-        output_bytes,
-        template_bytes: templates.len() as u64,
         vertex_base: (pooled_offset / 16) as u32,
         vertex_binding_bytes: pooled_capacity,
         staging,
         shared_scratch,
         allocation: pooled_allocation,
         template_allocation,
-        template_offset,
         template_base,
         template_page_bytes,
         argument_allocation,
         argument_base,
-        argument_offset,
         argument_page_bytes,
     })
 }
@@ -895,6 +880,7 @@ fn prepare_generated(
 /// Prepare independent changed Sections, then submit all meshing stages through
 /// the common cross-backend ordered ComputeDispatch API. Per-Section output
 /// buffers remain stable and are not recreated for unchanged Scene snapshots.
+#[cfg(test)]
 pub(super) fn create_many(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
@@ -1361,6 +1347,7 @@ fn create_many_impl(
     Ok(pending.into_iter().map(PendingGenerated::into_resources).collect())
 }
 
+#[cfg(test)]
 pub(super) fn create(
     device: &mut dyn ExtensionDevice,
     mesh: &Mesh,

@@ -194,11 +194,6 @@ impl EffectsRenderer {
         }
         cleanup.finish(device, result)
     }
-    /// Sample count chosen for the geometry passes: 4 when the device reports
-    /// multisample support, otherwise 1. Exposed for capability-gating tests.
-    pub(super) fn msaa_sample_count(&self) -> u32 {
-        self.msaa_sample_count
-    }
     fn render_scene(
         &mut self,
         device: &mut dyn ExtensionDevice,

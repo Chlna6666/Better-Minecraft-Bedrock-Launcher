@@ -1,6 +1,7 @@
 use super::*;
 
 impl PreparedScene {
+    #[cfg(test)]
     pub(crate) fn occluder_bounds(
         &self,
         range: Option<Aabb>,

@@ -71,6 +71,7 @@ pub(super) fn group_voxel_batches(
 /// every opaque draw. Group compatible quad resources by their actual GPU
 /// texture bindings and raster state, not by their logical MaterialId.
 /// Opaque and masked draws keep distinct per-instance material parameters.
+#[cfg(test)]
 pub(super) fn group_voxel_batches_into(
     draws: &mut [PreparedDraw],
     meshes: &HashMap<(MeshId, bool), MeshResources>,

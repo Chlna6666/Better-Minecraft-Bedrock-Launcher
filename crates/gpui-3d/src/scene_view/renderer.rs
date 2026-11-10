@@ -169,18 +169,6 @@ impl CachedCommands {
         Ok(())
     }
 
-    fn append(
-        &mut self,
-        revision: u64,
-        blended_batch_start: Option<usize>,
-        steps: &mut Vec<RenderCommand>,
-        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
-    ) -> gpui::Result<()> {
-        self.rebuild(revision, blended_batch_start, build)?;
-        self.publish(steps);
-        Ok(())
-    }
-
     /// Update the stable canonical Section layout without creating or
     /// copying a second render-command Vec for the offscreen producer.
     fn refresh_spliced(
