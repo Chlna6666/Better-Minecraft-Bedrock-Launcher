@@ -688,6 +688,10 @@ pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
     // nonzero exit (such as 1) must not automatically become a game crash.
     if matches!(code,
         0xC0000005 | // STATUS_ACCESS_VIOLATION
+        0xC000007B | // STATUS_INVALID_IMAGE_FORMAT
+        0xC0000139 | // STATUS_ENTRYPOINT_NOT_FOUND
+        0xC0000374 | // STATUS_HEAP_CORRUPTION
+        0xE06D7363 | // MSVC C++ exception, only suspected without WER
         0xC0000006 | // STATUS_IN_PAGE_ERROR
         0xC0000017 | // STATUS_NO_MEMORY
         0xC000001D | // STATUS_ILLEGAL_INSTRUCTION
@@ -718,6 +722,14 @@ pub fn exit_description(kind: ExitKind, code: u32) -> String {
         _ => {
             let detail = match code {
                 0xC0000005 => "访问冲突",
+                0xC0000006 => "内存页 I/O 错误",
+                0xC0000017 => "内存分配不足",
+                0xC000007B => "程序或 DLL 映像格式无效",
+                0xC0000094 => "整数除零",
+                0xC0000139 => "DLL 入口点未找到",
+                0xC0000142 => "DLL 初始化失败",
+                0xC0000374 => "堆内存损坏",
+                0xE06D7363 => "C++ 异常",
                 0xC000001D => "非法指令",
                 0xC0000094 => "整数除零",
                 0xC00000FD => "栈溢出",
@@ -1363,6 +1375,10 @@ mod tests {
         assert_eq!(classify_exit("gdk", 1), ExitKind::Unknown);
         assert_eq!(classify_exit("gdk", 0xffff_ffff), ExitKind::Unknown);
         assert_eq!(classify_exit("gdk", 0xC0000142), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", 0xC0000374), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", 0xE06D7363), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", 0xC000007B), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", 0xC0000139), ExitKind::SuspectedCrash);
         assert_eq!(classify_exit("unknown", 1), ExitKind::Unknown);
         assert_eq!(classify_exit("wine", 143), ExitKind::Unknown);
         assert_eq!(classify_exit("wine", 130), ExitKind::Unknown);
