@@ -34,6 +34,9 @@ use std::{
 
 pub(super) struct SceneResources {
     backend: BackendKind,
+    /// Native producer fences shared across the owner's SceneViews; drained
+    /// at the GPUI boundary even if the Scene preparation returns an error.
+    accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
     /// Per-publication ID shared by hardware compute and upload probes.
     pub(super) gpu_batch_id: u64,
     culling: Option<CullResources>,
@@ -642,7 +645,10 @@ impl SceneResources {
         let faces = Rc::new(RefCell::new(MeshArena::generated_output(limits)));
         let templates = Rc::new(RefCell::new(MeshArena::generated_templates(limits)));
         let arguments = Rc::new(RefCell::new(MeshArena::generated_arguments(limits)));
-        Self::new_shared(device, backend, faces, templates, arguments)
+        Self::new_shared(
+            device, backend, faces, templates, arguments,
+            Rc::new(RefCell::new(Vec::new())),
+        )
     }
 
     pub(super) fn new_shared(
@@ -651,6 +657,7 @@ impl SceneResources {
         shared_generated_arena: Rc<RefCell<MeshArena>>,
         shared_template_arena: Rc<RefCell<MeshArena>>,
         shared_argument_arena: Rc<RefCell<MeshArena>>,
+        accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
     ) -> gpui::Result<Self> {
         let draw_capacity = 1;
         let light_capacity = 1;
@@ -718,6 +725,7 @@ impl SceneResources {
         };
         Ok(Self {
             backend,
+            accepted_native_submissions,
             culling: None,
             mesh_shader: None,
             mesh_draw_shader: None,
