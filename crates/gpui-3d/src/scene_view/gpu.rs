@@ -2455,7 +2455,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_draw_records_match_full_encoder_across_light_counts() {
+    fn cached_draw_records_match_full_encoder_across_repeated_encodes() {
         let mut scene = Scene::new();
         scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
         let prepared = PreparedScene::new(
@@ -2467,7 +2467,7 @@ mod tests {
         let mut cache = super::DrawRecordCache::default();
         let mut bytes = Vec::new();
         let mut keys = Vec::new();
-        for _iteration in 0..5 {
+        for _ in 0..5 {
             cache.encode(&repeated, &mut bytes, &mut keys).unwrap();
             assert_eq!(bytes, super::encode_draw_records(&repeated).unwrap());
             assert_eq!(keys.len(), repeated.len());
@@ -2577,7 +2577,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_cache_keys_survive_light_count_changes_for_identical_material_snapshots() {
+    fn draw_cache_keys_remain_stable_for_identical_material_snapshots() {
         let mut scene = Scene::new();
         scene.insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube()))).unwrap();
         let prepared = PreparedScene::new(
@@ -2593,8 +2593,9 @@ mod tests {
         let first = keys[0];
         cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
-        // Light count is a frame uniform; a streaming light delta must not
-        // re-encode or re-upload the whole resident DrawParams table.
+        // DrawParams are a function of the material snapshot and UV mode.
+        // Scene light counts live in frame data, so repeated material encoding
+        // must preserve stable GPU records without a redundant light parameter.
         cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
         assert_eq!(bytes, super::encode_draw_records(&draws).unwrap());
