@@ -860,6 +860,11 @@ pub fn capture_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
         ("logs/preloader.log", game_dir.join("logs/PreLoader.log")),
         ("logs/loader-latest.log", game_dir.join("LeviLamina/logs/latest.log")),
         ("logs/bloader-latest.log", game_dir.join("BLoader/logs/latest.log")),
+        // BLoader's real owned log: src/platform/logging/backend.rs writes
+        // logs/bloader/latest.log, truncating it at each native startup.
+        ("logs/bloader-runtime.log", game_dir.join("logs/bloader/latest.log")),
+        ("logs/redirected-bloader-runtime.log",
+            game_dir.join("Minecraft Bedrock/logs/bloader/latest.log")),
         ("logs/redirected-preloader.log", game_dir.join("Minecraft Bedrock/logs/PreLoader.log")),
         ("logs/redirected-game.log", game_dir.join("Minecraft Bedrock/logs/latest.log")),
         ("logs/redirected-levilamina.log", game_dir.join("Minecraft Bedrock/logs/LeviLamina.log")),
@@ -869,6 +874,13 @@ pub fn capture_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
             && meta.file_type().is_file()
         {
             offsets.insert(name.to_string(), meta.len());
+            if matches!(name, "logs/bloader-runtime.log" | "logs/redirected-bloader-runtime.log")
+                && let Some(timestamp) = meta.modified().ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            {
+                offsets.insert(format!("{name}@mtime_ns"), timestamp);
+            }
         }
     }
     offsets
@@ -924,6 +936,10 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             report.game_directory.join("LeviLamina/logs/latest.log")),
         ("logs/bloader-latest.log".to_string(),
             report.game_directory.join("BLoader/logs/latest.log")),
+        ("logs/bloader-runtime.log".to_string(),
+            report.game_directory.join("logs/bloader/latest.log")),
+        ("logs/redirected-bloader-runtime.log".to_string(),
+            report.game_directory.join("Minecraft Bedrock/logs/bloader/latest.log")),
         ("logs/redirected-preloader.log".to_string(),
             report.game_directory.join("Minecraft Bedrock/logs/PreLoader.log")),
         // BLoader redirects instance data under the package's Minecraft Bedrock
@@ -938,7 +954,12 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
     ];
     let directories = [
         report.game_directory.join("logs"),
+        report.game_directory.join("logs/crash-reports"),
+        report.game_directory.join("logs/mods"),
+        report.game_directory.join("Minecraft Bedrock/logs/crash-reports"),
+        report.game_directory.join("Minecraft Bedrock/logs/mods"),
         report.game_directory.join("PreLoader/logs"),
+        report.game_directory.join("logs/bloader"),
         report.game_directory.join("crash-logs"),
         report.game_directory.join("logs/crash"),
         report.game_directory.join("LeviLamina/logs"),
@@ -1046,9 +1067,29 @@ fn snapshot_text_evidence(report: &GameSessionReport) {
                 continue;
             }
         }
-        let contents = match report.log_offsets.get(&name) {
-            Some(baseline) => tail_after_baseline(&path, *baseline, MAX_TEXT_BYTES),
-            None => tail_bytes(&path, MAX_TEXT_BYTES),
+        let contents = if matches!(name.as_str(),
+            "logs/bloader-runtime.log" | "logs/redirected-bloader-runtime.log"
+        ) {
+            // BLoader truncates this file at process start. Its new contents
+            // may grow past the previous size before we snapshot the exit:
+            // tail_after_baseline would silently omit the first error lines.
+            // Compare prelaunch modification identity before taking the full
+            // new-session tail; an untouched old log must never be reused.
+            let before = report.log_offsets.get(&format!("{name}@mtime_ns")).copied();
+            let current = fs::symlink_metadata(&path).ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|duration| u64::try_from(duration.as_nanos()).ok());
+            if current.is_some() && current != before {
+                tail_bytes(&path, MAX_TEXT_BYTES)
+            } else {
+                None
+            }
+        } else {
+            match report.log_offsets.get(&name) {
+                Some(baseline) => tail_after_baseline(&path, *baseline, MAX_TEXT_BYTES),
+                None => tail_bytes(&path, MAX_TEXT_BYTES),
+            }
         };
         let Some(contents) = contents else { continue };
         let target = directory.join(&name);
