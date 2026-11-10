@@ -900,7 +900,7 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, None, None, None)
+    create_many_impl(device, meshes, shaders, None, None, None, None)
 }
 
 /// Production GPU meshing suballocates output descriptors into shared writable
@@ -915,6 +915,43 @@ pub(super) fn create_many_pooled(
     backend: BackendKind,
     batch_id: u64,
 ) -> gpui::Result<Vec<MeshResources>> {
+    create_many_pooled_impl(
+        device, meshes, shaders, arena, template_arena, argument_arena,
+        backend, batch_id, None,
+    )
+}
+
+/// Sidecar native-owner path. Reports the REAL submission IDs before any
+/// later renderer error can discard prepared scene state. On backends without
+/// a verified independent Compute queue, keeps the original ordered path.
+pub(super) fn create_many_pooled_native(
+    device: &mut dyn ExtensionDevice,
+    meshes: &[&Mesh],
+    shaders: &Shaders,
+    arena: &mut MeshArena,
+    template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
+    backend: BackendKind,
+    batch_id: u64,
+    accepted: &mut Vec<gfx_core::SubmissionId>,
+) -> gpui::Result<Vec<MeshResources>> {
+    create_many_pooled_impl(
+        device, meshes, shaders, arena, template_arena, argument_arena,
+        backend, batch_id, Some(accepted),
+    )
+}
+
+fn create_many_pooled_impl(
+    device: &mut dyn ExtensionDevice,
+    meshes: &[&Mesh],
+    shaders: &Shaders,
+    arena: &mut MeshArena,
+    template_arena: &mut MeshArena,
+    argument_arena: &mut MeshArena,
+    backend: BackendKind,
+    batch_id: u64,
+    accepted: Option<&mut Vec<gfx_core::SubmissionId>>,
+) -> gpui::Result<Vec<MeshResources>> {
     // One batch scratch pool serves every Section's cells/params/jobs input
     // buffers: three native buffer creations per batch instead of per Section.
     let mut scratch = crate::scene_view::gpu::BatchScratch::new(device.buffer_binding_limits());
@@ -925,6 +962,7 @@ pub(super) fn create_many_pooled(
         Some((arena, template_arena, argument_arena, backend)),
         Some(&mut scratch),
         profile.then_some(batch_id),
+        accepted,
     );
     match result {
         Ok(resources) => scratch.destroy(device).map(|_| resources).map_err(anyhow::Error::from),
@@ -942,10 +980,29 @@ fn create_many_impl(
     mut arena: Option<(&mut MeshArena, &mut MeshArena, &mut MeshArena, BackendKind)>,
     mut scratch: Option<&mut crate::scene_view::gpu::BatchScratch>,
     batch_id: Option<u64>,
+    mut accepted: Option<&mut Vec<gfx_core::SubmissionId>>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
+    // The Vulkan backend currently exposes a verified second physical queue
+    // only within the SAME Graphics Queue Family. Its native submit joins
+    // uploads -> Compute -> Graphics with GPU semaphores (no CPU Fence wait).
+    // DX12 typed COMPUTE is not selected for these meshing shaders yet:
+    // the batch has a GPU-only uniform buffer, which its COMPUTE-only
+    // command-list state validator intentionally rejects. Keep the ordered
+    // DX12 path until that CBV ABI is made legal on a typed queue.
+    //
+    // Retain profiled ordered dispatch when GPU timestamps are requested:
+    // the independent SubmissionDevice API currently has no tag parameter.
+    let native_queue = if accepted.is_some() && batch_id.is_none()
+        && arena.as_ref().is_some_and(|(_, _, _, backend)| *backend == BackendKind::Vulkan)
+    {
+        device.native_queue_for(gfx_core::GpuWorkStage::Compute)
+    } else {
+        None
+    };
+
     // Trace only when explicitly enabled; no per-Section clock reads in the
     // hot path unless performance profiling was requested.
     let trace_started = super::renderer::trace_timings().then(Instant::now);
@@ -1065,18 +1122,21 @@ fn create_many_impl(
             // not the whole shared arena on every frame.
             for mesh in &pending {
                 if let Some(allocation) = mesh.allocation {
-                    faces.mark_untracked_access(
+                    faces.mark_untracked_access_on_queue(
                         allocation, gfx_core::GpuAccess::StorageWrite,
+                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
                     )?;
                 }
                 if let Some(allocation) = mesh.template_allocation {
-                    templates.mark_untracked_access(
+                    templates.mark_untracked_access_on_queue(
                         allocation, gfx_core::GpuAccess::ReadBuffer,
+                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
                     )?;
                 }
                 if let Some(allocation) = mesh.argument_allocation {
-                    arguments.mark_untracked_access(
+                    arguments.mark_untracked_access_on_queue(
                         allocation, gfx_core::GpuAccess::StorageReadWrite,
+                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
                     )?;
                 }
             }
@@ -1084,8 +1144,55 @@ fn create_many_impl(
     }
     let dispatch_started = (trace_started.is_some() || crate::gpu_submission_trace::enabled())
         .then(Instant::now);
-    let submitted = if dispatches.is_empty() {
+    let submitted: anyhow::Result<()> = if dispatches.is_empty() {
         Ok(())
+    } else if let Some(queue) = native_queue {
+        (|| -> anyhow::Result<()> {
+            // Signal AFTER all primary uploads, before any native Compute
+            // commands. Report the accepted fence even on later failures.
+            let checkpoint = device.checkpoint_gpu_queue(gfx_core::GpuQueueId::PRIMARY)?;
+            if let Some(records) = accepted.as_deref_mut() {
+                records.push(checkpoint);
+            }
+            if let Some((faces, templates, arguments, _)) = arena.as_mut() {
+                for pool in [&mut **faces, &mut **templates, &mut **arguments] {
+                    pool.register_native_primary_checkpoint(checkpoint)?;
+                }
+            }
+            // Native backend queues a real device-side wait of the upload
+            // checkpoint on precisely the selected Compute queue.
+            let wait = device.enqueue_gpu_queue_wait(queue, checkpoint)?;
+            let compute = device.submit_compute_batch_on_queue(queue, &dispatches)?;
+            if let Some(records) = accepted.as_deref_mut() {
+                records.push(compute);
+            }
+            // The physical GPU Page ranges have been conservatively marked
+            // on the independent queue BEFORE native submission. Once
+            // accepted, bind those declarations to its exact producer fence.
+            let writes = pending.iter().filter_map(|mesh| mesh.allocation.map(|allocation|
+                (allocation, gfx_core::GpuAccess::StorageWrite)
+            )).collect::<Vec<_>>();
+            let reads = pending.iter().filter_map(|mesh| mesh.template_allocation.map(|allocation|
+                (allocation, gfx_core::GpuAccess::ReadBuffer)
+            )).collect::<Vec<_>>();
+            let arguments_used = pending.iter().filter_map(|mesh| mesh.argument_allocation.map(|allocation|
+                (allocation, gfx_core::GpuAccess::StorageReadWrite)
+            )).collect::<Vec<_>>();
+            if let Some((faces, templates, arguments, _)) = arena.as_mut() {
+                if !writes.is_empty() {
+                    faces.register_native_compute_allocations(compute, queue, &writes, &[wait])?;
+                }
+                if !reads.is_empty() {
+                    templates.register_native_compute_allocations(compute, queue, &reads, &[wait])?;
+                }
+                if !arguments_used.is_empty() {
+                    arguments.register_native_compute_allocations(
+                        compute, queue, &arguments_used, &[wait],
+                    )?;
+                }
+            }
+            Ok(())
+        })()
     } else {
         (if let Some(batch_id) = batch_id {
             device.dispatch_compute_batch_profiled(
