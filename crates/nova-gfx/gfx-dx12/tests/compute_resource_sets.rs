@@ -148,14 +148,27 @@ fn native_typed_compute_accepts_upload_heap_cbv_without_graphics_only_state() {
         },
     ];
     let jobs = [ComputeDispatch { shader, bindings: &bindings, workgroups: [1, 1, 1] }];
-    let producer = device.submit_compute_batch_on_queue(dedicated, &jobs)
-        .expect("typed Compute must not transition upload-heap CBV out of GENERIC_READ");
+    let tag = gfx_core::GpuTimestampTag {
+        batch_id: 0xD123,
+        stage: gfx_core::GpuTimestampStage::GeneratedMesh,
+    };
+    let producer = device.submit_compute_batch_profiled_on_queue(dedicated, &jobs, tag)
+        .expect("typed Compute with native GPU timestamp must keep upload CBV GENERIC_READ");
     let joined = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
         .expect("primary join checkpoint");
     // This is an explicitly ignored HARDWARE test: CPU fence waits are for
     // correctness validation, never the normal SceneView streaming path.
     device.wait_submission(producer).expect("dedicated producer completion");
     device.wait_submission(joined).expect("graphics consumer join completion");
+    let mut completed = Vec::new();
+    ResourceDevice::drain_gpu_work_timestamps(&mut device, &mut completed)
+        .expect("nonblocking completed timestamp drain");
+    if let Some(sample) = completed.iter().find(|sample| sample.tag == tag) {
+        assert!(sample.duration().is_some());
+        assert!(sample.frequency_hz > 0);
+    } else {
+        eprintln!("NOVA_GFX_SKIP=compute-only queue has no valid timestamp clock/query");
+    }
     device.destroy_buffer(output).expect("output retirement");
     device.destroy_buffer(constants).expect("CBV retirement");
     device.destroy_shader_module(shader).expect("shader retirement");
