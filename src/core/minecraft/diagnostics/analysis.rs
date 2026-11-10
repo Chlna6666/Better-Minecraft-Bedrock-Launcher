@@ -21,7 +21,7 @@ pub enum Confidence { High, Medium, Low }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceSource {
-    GameLog, ModLog, RunnerLog, LauncherLog, WindowsWer, CrashDump, ExitStatus,
+    GameLog, ModLog, RunnerLog, LauncherLog, LoaderLog, WindowsWer, CrashDump, ExitStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -211,7 +211,8 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
             Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
         };
         let source = match finding.source {
-            EvidenceSource::GameLog | EvidenceSource::ModLog | EvidenceSource::RunnerLog => 0,
+            EvidenceSource::GameLog | EvidenceSource::ModLog
+            | EvidenceSource::RunnerLog | EvidenceSource::LoaderLog => 0,
             EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1, EvidenceSource::LauncherLog => 2,
             EvidenceSource::ExitStatus => 3,
         };
@@ -277,9 +278,9 @@ pub fn analyze_with_forensics(
     // cause. A logged SEH fault can originate from a helper or injected DLL;
     // it does not identify a responsible mod without stronger evidence.
     for issue in &evidence.loader_issues {
-        use super::forensics::LoaderIssueKind as Kind;
+        use super::forensics::{LoaderIssueKind as Kind, NativeExceptionPhase};
         let source = if issue.session_private {
-            EvidenceSource::LauncherLog
+            EvidenceSource::LoaderLog
         } else {
             EvidenceSource::ModLog
         };
@@ -314,10 +315,16 @@ pub fn analyze_with_forensics(
                 add_or_promote(CrashReason::LoaderFailure, Confidence::Low, source);
             }
             Kind::NativeException => {
+                // VEH can capture first-chance exceptions subsequently handled.
+                let exception_confidence = if issue.phase == Some(NativeExceptionPhase::Veh) {
+                    Confidence::Low
+                } else {
+                    confidence
+                };
                 if let Some(code) = issue.exception_code
                     && let Some(reason) = reason_from_windows_exception(code)
                 {
-                    add_or_promote(reason, confidence, source);
+                    add_or_promote(reason, exception_confidence, source);
                 }
                 if issue.module.as_deref().is_some_and(|module| {
                     let module = module.to_ascii_lowercase();
@@ -369,7 +376,8 @@ pub fn analyze_with_forensics(
             Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
         };
         let source = match f.source {
-            EvidenceSource::GameLog | EvidenceSource::ModLog | EvidenceSource::RunnerLog => 0,
+            EvidenceSource::GameLog | EvidenceSource::ModLog
+            | EvidenceSource::RunnerLog | EvidenceSource::LoaderLog => 0,
             EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1,
             EvidenceSource::LauncherLog => 2, EvidenceSource::ExitStatus => 3,
         };
@@ -465,6 +473,7 @@ mod tests {
         let finding = findings.iter().find(|finding|
             finding.reason == CrashReason::LoaderInitializationFailure).unwrap();
         assert_eq!(finding.confidence, Confidence::Medium);
+        assert_eq!(finding.source, EvidenceSource::LoaderLog);
         let sources = vec![("logs/mod-provider-00.log".into(),
             "[ERROR] [PreLoader] Fail to load plugin [OldMod.dll]\n\
 [ERROR] [PreLoader] Error: Code[127]".into())];
