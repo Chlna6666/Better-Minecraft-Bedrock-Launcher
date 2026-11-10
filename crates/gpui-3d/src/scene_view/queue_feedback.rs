@@ -199,7 +199,12 @@ impl QueueFeedback {
             && self.graphics_draw_p95_ns >= 2_000_000;
         let slow_present_cadence = self.frame_samples >= 16
             && self.frame_p95_ns >= 20_000_000;
-        let can_overlap = (graphics_pressure || slow_present_cadence)
+        // A slow presentation interval alone can be caused by UI/CPU
+        // scheduling or VSync; never treat it as proof of GPU congestion.
+        // Only allow a slower native compute path when real DrawIndirect
+        // GPU timestamps ALSO show graphics execution pressure.
+        let can_overlap = graphics_pressure
+            && (slow_present_cadence || self.graphics_draw_p95_ns >= 4_000_000)
             && native_ns.saturating_add(handoff_ns)
                 < ordered_ns.saturating_mul(5) / 4;
         let genuinely_faster = native_ns.saturating_add(handoff_ns)
