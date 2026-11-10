@@ -2076,9 +2076,9 @@ where
             {
                 let mut found = first_fault
                     .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if found.is_none()
-                    || kind == crate::core::minecraft::diagnostics::CompatibilityFault::WineUnhandledException
-                {
+                if found.is_none_or(|previous|
+                    kind.diagnostic_priority() > previous.diagnostic_priority()
+                ) {
                     *found = Some(kind);
                 }
             }
