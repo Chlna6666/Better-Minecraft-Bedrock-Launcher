@@ -15,9 +15,10 @@
     }
     if(clipped){lo=vec2<f32>(-1.0);hi=vec2<f32>(1.0);}
     if(any(lo>vec2<f32>(1.0)) || any(hi<vec2<f32>(-1.0))){return;}
-    let dims=vec2<f32>(f32(frame.light_meta.y),f32(frame.light_meta.z));
-    let lower=vec2<u32>(clamp(vec2<f32>(lo.x,-hi.y)*0.5+0.5,vec2<f32>(0.0),vec2<f32>(0.99999))*dims);
-    let upper=vec2<u32>(clamp(vec2<f32>(hi.x,-lo.y)*0.5+0.5,vec2<f32>(0.0),vec2<f32>(0.99999))*dims);
+    // Both consumers address fixed 16-pixel tiles. Only the last tile on
+    // each axis can be partial, so do not scale UVs by the tile count.
+    let lower=light_tile(vec2<f32>(lo.x,-hi.y)*0.5+0.5,frame.display_target.xy,frame.light_meta.yz);
+    let upper=light_tile(vec2<f32>(hi.x,-lo.y)*0.5+0.5,frame.display_target.xy,frame.light_meta.yz);
     for(var y=lower.y;y<=upper.y;y++){for(var x=lower.x;x<=upper.x;x++){
         let base=(y*frame.light_meta.y+x)*65u;let index=atomicAdd(&tiles[base],1u);if(index<64u){atomicStore(&tiles[base+1u+index],id.x);}
     }}

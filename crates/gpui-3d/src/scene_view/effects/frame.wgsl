@@ -5,3 +5,8 @@ struct EffectFrame {
     light_matrix_middle:mat4x4<f32>,light_matrix_far:mat4x4<f32>,cascade_splits:vec4<f32>,
 };
 struct EffectLight {kind:u32,position:vec3<f32>,range:f32,direction:vec3<f32>,color:vec3<f32>,intensity:f32,outer_cone_cosine:f32,inner_cone_cosine:f32};
+
+fn light_tile(uv:vec2<f32>,extent:vec2<f32>,grid:vec2<u32>)->vec2<u32> {
+    let pixel=vec2<u32>(clamp(uv,vec2<f32>(0.0),vec2<f32>(1.0))*extent);
+    return min(pixel/16u,grid-vec2<u32>(1u));
+}

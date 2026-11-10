@@ -345,7 +345,8 @@ fn local_visibility(p:vec3<f32>,light:vec3<f32>,radius:f32)->f32{
     return 1.0;
 }
 fn local_lighting(uv:vec2<f32>,p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32>,metallic:f32,roughness:f32)->vec3<f32>{
-    let tile=vec2<u32>(pixel(uv))/16u;let at=(tile.y*frame.light_meta.y+tile.x)*65u;var radiance=vec3<f32>(0.0);
+    if(frame.light_meta.x==0u){return vec3<f32>(0.0);}
+    let tile=light_tile(uv,frame.display_target.xy,frame.light_meta.yz);let at=(tile.y*frame.light_meta.y+tile.x)*65u;var radiance=vec3<f32>(0.0);
     let overflow=tiles[at]>64u;let count=select(tiles[at],frame.light_meta.x,overflow);
     for(var i=0u;i<count;i++){var light_id=i;if(!overflow){light_id=tiles[at+1u+i];}let light=lights[light_id];if(light.kind!=2u && light.kind!=3u && light.kind!=4u && light.kind!=5u){continue;}let delta=light.position-p;let distance=length(delta);if(distance>=light.range || distance<0.001 || dot(n,delta)<=0.0){continue;}
         let fade=max(1.0-distance/light.range,0.0);

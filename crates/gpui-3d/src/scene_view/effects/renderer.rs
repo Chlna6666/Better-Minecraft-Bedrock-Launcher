@@ -289,13 +289,18 @@ impl EffectsRenderer {
             light.2,
             state.ssr_hiz_levels(),
         )?;
-        let tile_updated = state.tile_camera != Some(view.camera)
-            || state
-                .tile_scene
-                .as_ref()
-                .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
-            || state.tile_transform != view.scene_transform;
-        if tile_updated {
+        let tile_updated = light.2 != 0
+            && (state.tile_camera != Some(view.camera)
+                || state
+                    .tile_scene
+                    .as_ref()
+                    .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
+                || state.tile_transform != view.scene_transform);
+        if light.2 == 0 {
+            // Neither shader reads the tile lists without lights. Dropping the
+            // cached scene also forces a rebuild when lights return.
+            state.tile_scene = None;
+        } else if tile_updated {
             // A failed dispatch may already have cleared the old tile lists.
             state.tile_camera = None;
             state

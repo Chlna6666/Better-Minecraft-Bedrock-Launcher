@@ -49,8 +49,7 @@ fn shadow_visibility(p:vec3<f32>, distance:f32)->f32 {
 }
 fn local_scattering(p:vec3<f32>, screen_uv:vec2<f32>)->vec3<f32> {
     if (frame.light_meta.x == 0u) { return vec3<f32>(0.0); }
-    let screen_pixel = vec2<u32>(screen_uv * frame.display_target.xy);
-    let tile_xy = min(screen_pixel / 16u, frame.light_meta.yz - vec2<u32>(1u));
+    let tile_xy = light_tile(screen_uv,frame.display_target.xy,frame.light_meta.yz);
     let base = (tile_xy.y * frame.light_meta.y + tile_xy.x) * 65u;
     let overflow = tiles[base] > 64u;
     let count = min(select(tiles[base], frame.light_meta.x, overflow),64u);

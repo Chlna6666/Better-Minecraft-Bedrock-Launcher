@@ -248,6 +248,66 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
 }
 
+fn verify_partial_light_tiles<D: Device + TextureTransferDevice>(device: &mut D) {
+    let extent = Extent2d::new(65, 65).unwrap();
+    let target = Target::create(device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(device, extent, Format::Depth32Float, true, 1).unwrap();
+    let pass = test_render_pass(device);
+    let context =
+        RendererExtensionContext::for_target(D::BACKEND_KIND, pass, Format::Rgba8Unorm, extent);
+    let settings = ScreenEffects {
+        resolution_scale: 1.,
+        reflections: false,
+        water: false,
+        volumetric_fog: false,
+        ..ScreenEffects::default()
+    };
+    let mut scene = Scene::new();
+    scene
+        .insert(
+            None,
+            Node::new()
+                .with_mesh(Arc::new(Mesh::plane(65., 65.).unwrap()))
+                .with_materials([Arc::new(Material::new())]),
+        )
+        .unwrap();
+    scene
+        .insert(
+            None,
+            Node::new().with_light(Light::Point {
+                position: Vec3::new(-18., 0.25, 0.),
+                color: [1., 0., 0.],
+                intensity: 16.,
+                range: 0.75,
+            }),
+        )
+        .unwrap();
+    let camera = Camera::orthographic(Vec3::Y * 5., Vec3::ZERO, -Vec3::Z, 65., 0.1, 100.);
+    let view = SceneView::new(Arc::new(scene), camera)
+        .with_voxel_shading(VoxelShading {
+            illumination: VoxelIllumination::Sunlight,
+            sky_brightness: 0.,
+            ..VoxelShading::default()
+        })
+        .unwrap()
+        .with_screen_effects(Some(settings))
+        .unwrap();
+    let mut renderer = EffectsRenderer::new(device, context.clone(), settings).unwrap();
+    assert!(renderer.msaa_sample_count > 1, "test requires MSAA targets");
+    let pixels = draw(device, &mut renderer, &context, &view, &target, &depth);
+    // The light projects to x=14.5 with a 0.75 pixel radius. Normalized
+    // binning by ceil(65/16) puts it in tile 1, but pixel 14 reads tile 0.
+    let lit = &pixels[(32 * 65 + 14) * 4..][..4];
+    assert!(
+        i16::from(lit[0]) - i16::from(lit[1]) > 40,
+        "local light missing in pixel 14: {lit:?}"
+    );
+    renderer.destroy(device).unwrap();
+    target.destroy(device).unwrap();
+    depth.destroy(device).unwrap();
+    PipelineDevice::destroy_render_pass(device, pass).unwrap();
+}
+
 /// Per-backend render equivalence against the original two independent
 /// attribute passes. Both sides use the same native scene commands, single-
 /// sample format and depth state; only the fragment MRT output differs.
@@ -416,6 +476,24 @@ fn queue_draw<D: Device>(
 #[ignore = "requires D3D11; production screen pass color/depth and colored local lighting"]
 fn effects_dx11() {
     verify(gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "requires D3D11 and native MSAA effect targets"]
+fn partial_light_tiles_dx11() {
+    verify_partial_light_tiles(
+        &mut gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap(),
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "requires D3D12 and native MSAA effect targets"]
+fn partial_light_tiles_dx12() {
+    verify_partial_light_tiles(
+        &mut gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap(),
+    );
 }
 #[cfg(target_os = "windows")]
 #[test]
