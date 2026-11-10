@@ -408,22 +408,28 @@ pub(crate) fn render_task_card(
                                     ))
                                     .when(is_error, |row| {
                                         row.child(
-                                            div().w_full().text_size(px(11.))
+                                            div()
+                                                .id((
+                                                    "task-child-error",
+                                                    stable_task_id(error_id.as_ref()),
+                                                ))
+                                                .w_full()
+                                                .text_size(px(11.))
                                                 .text_color(colors.danger)
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .whitespace_nowrap()
+                                                .cursor_pointer()
                                                 .child(error_message.clone())
+                                                .on_click(cx.listener(move |view, _, _, cx| {
+                                                    view.open_error_dialog(
+                                                        error_id.clone(),
+                                                        error_title.clone(),
+                                                        error_message.clone(),
+                                                        cx,
+                                                    );
+                                                })),
                                         )
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |view, _, _, cx| {
-                                            view.open_error_dialog(
-                                                error_id.clone(),
-                                                error_title.clone(),
-                                                error_message.clone(),
-                                                cx,
-                                            );
-                                        }))
                                     })
                             })),
                     )
