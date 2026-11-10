@@ -244,11 +244,14 @@ fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> 
 
 fn manifest_paths(version_folder: &str, mod_id: &str) -> Result<(PathBuf, PathBuf), String> {
     let dir = mod_directory(version_folder, mod_id)?;
-    let base = if mod_id.starts_with("bloader-shared:") {
-        "bloader.json"
-    } else if mod_id.starts_with("bloader:") && dir.join("bloader.json").is_file() {
+    let has_sidecar = dir.join("bloader.json").is_file()
+        || dir.join(".bloader.json").is_file();
+    let base = if (mod_id.starts_with("bloader-shared:")
+        || mod_id.starts_with("bloader:")) && has_sidecar {
         "bloader.json"
     } else {
+        // Older BLoader Mod packages may still have manifest.json before
+        // the native loader's one-time metadata normalization.
         "manifest.json"
     };
     let disabled = format!(".{base}");
