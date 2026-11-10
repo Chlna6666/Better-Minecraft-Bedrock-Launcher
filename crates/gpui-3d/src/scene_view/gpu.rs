@@ -591,25 +591,26 @@ impl MeshArena {
     ) {
         let Some(submission) = submission else { return };
         if !self.native_work.contains_submission(submission) {
-            let uses: Vec<gfx_core::GpuSubmissionAccess> = self.pages.iter()
-                .flatten()
-                .filter(|page| page.live != 0)
-                .map(|page| gfx_core::GpuSubmissionAccess {
-                    span: gfx_core::GpuResourceSpan::WholeBuffer(page.buffer),
-                    access: gfx_core::GpuAccess::ReadBuffer,
-                })
-                .collect();
-            let pending = uses.clone();
+            let resident_reads = || {
+                self.pages
+                    .iter()
+                    .flatten()
+                    .filter(|page| page.live != 0)
+                    .map(|page| gfx_core::GpuSubmissionAccess {
+                        span: gfx_core::GpuResourceSpan::WholeBuffer(page.buffer),
+                        access: gfx_core::GpuAccess::ReadBuffer,
+                    })
+            };
             if self.native_work.register(gfx_core::GpuSubmissionRecord::new(
                 submission, gfx_core::GpuQueueId::PRIMARY,
-                gfx_core::GpuWorkStage::Graphics, uses,
+                gfx_core::GpuWorkStage::Graphics, resident_reads().collect(),
             )).is_err() {
                 // A native DrawIndirect batch has ALREADY been accepted by
                 // the backend. Missing cross-queue wait proof cannot make its
                 // accesses disappear. Quarantine every resident buffer on
                 // the actual primary queue until a same-queue checkpoint;
                 // independent producers retain their own fence obligations.
-                for access in pending {
+                for access in resident_reads() {
                     self.native_work.register_untracked(
                         gfx_core::GpuQueueId::PRIMARY, access,
                     );
