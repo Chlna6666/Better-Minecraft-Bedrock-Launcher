@@ -710,7 +710,6 @@ impl PreparedScene {
                         .filter(|draw| draw.material.alpha_mode != crate::AlphaMode::Blend)
                         .cloned(),
                 );
-                let blended_start = self.draws.len();
                 self.draws.extend(
                     self.next_visible_candidates
                         .iter()
