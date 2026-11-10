@@ -182,6 +182,7 @@ fn shadow_visibility(p:vec3<f32>,n:vec3<f32>)->f32 {
     let distance=length(p-frame.eye.xyz);
     let splits=frame.cascade_splits;
     let fade=splits.w;
+    if(distance>=splits.z+fade*2.0){return 1.0;}
     var value=1.0;
     if(distance<splits.x-fade){
         value=shadow_cascade_visibility(p,n,0u);
