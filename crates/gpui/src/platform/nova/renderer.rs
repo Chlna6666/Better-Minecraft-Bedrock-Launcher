@@ -1364,7 +1364,10 @@ impl NovaRenderer {
 
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
         let submissions_drained = if !matches!(level, GpuiMemoryTrimLevel::Light) {
-            match self.wait_pending_submissions() {
+            // Memory compaction can destroy native buffers used by an
+            // independent Compute/COPY producer. Trim is a slow path: drain
+            // both exact fence sets before reclaiming their allocations.
+            match self.wait_pending_submissions().and_then(|_| self.wait_auxiliary_submissions()) {
                 Ok(()) => true,
                 Err(error) => {
                     log::debug!("failed to drain nova-gfx submissions before memory trim: {error}");
@@ -1479,6 +1482,12 @@ impl NovaRenderer {
         let destroy_started_at = Instant::now();
         if let Err(error) = self.wait_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
+        }
+        // Renderer extensions retain GPU Resident buffers that may still be
+        // referenced by actual independent native Compute/Transfer queues.
+        // Teardown is the only place that must wait for those native fences.
+        if let Err(error) = self.wait_auxiliary_submissions() {
+            log::error!("failed to drain native extension submissions during renderer destroy: {error}");
         }
         let submission_wait = destroy_started_at.elapsed();
         log::debug!(target: "gpui_gpu_shutdown", "renderer submissions drained backend={}", self.backend_info.label());
