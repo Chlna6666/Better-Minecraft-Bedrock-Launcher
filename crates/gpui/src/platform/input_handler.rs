@@ -136,6 +136,7 @@ impl PlatformInputHandler {
     ///
     /// A pending multi-stroke binding always wins temporarily: the next printable key may complete
     /// a chord whose prefix already bypassed the IME.
+    #[cfg(any(test, target_os = "macos"))]
     pub fn prefers_ime_printable_keys(&mut self) -> bool {
         self.cx
             .update(|window, cx| {
