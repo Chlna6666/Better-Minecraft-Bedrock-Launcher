@@ -1411,7 +1411,6 @@ mod tests {
         let encoded = cache
             .encode_stable(
                 &original,
-                0,
                 &first_map,
                 slots.high_water(),
                 &[],
@@ -1425,7 +1424,7 @@ mod tests {
         let mut baseline = Vec::new();
         let mut baseline_keys = Vec::new();
         DrawRecordCache::default()
-            .encode(&original, 0, &mut baseline, &mut baseline_keys)
+            .encode(&original, &mut baseline, &mut baseline_keys)
             .unwrap();
         for (logical, &physical) in first_map.iter().enumerate() {
             let stride = DRAW_PARAMS_STRIDE as usize;
@@ -1444,7 +1443,6 @@ mod tests {
         let unchanged = cache
             .encode_stable(
                 &reordered,
-                0,
                 &remap,
                 next_slots.high_water(),
                 &keys,
@@ -1468,7 +1466,6 @@ mod tests {
         let dirty = cache
             .encode_stable(
                 &reordered,
-                0,
                 &last_map,
                 last_slots.high_water(),
                 &keys,
@@ -1511,7 +1508,6 @@ mod tests {
         cache
             .encode_stable(
                 &original,
-                0,
                 &map,
                 slots.high_water(),
                 &[],
@@ -1526,12 +1522,12 @@ mod tests {
         let (_next_slots, next_map) = slots.plan(&next).unwrap();
         assert_eq!(next_map[32], 32);
         let patches = cache
-            .encode_resident_delta(&next, 0, &next_map, &[32], &keys, &bytes, &mut scratch)
+            .encode_resident_delta(&next, &next_map, &[32], &keys, &bytes, &mut scratch)
             .unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, 32);
         let canonical =
-            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&next[32]), 0)
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&next[32]))
                 .unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
     }
@@ -1547,7 +1543,6 @@ mod tests {
         cache
             .encode_stable(
                 &original,
-                0,
                 &mapping,
                 slots.high_water(),
                 &[],
@@ -1559,20 +1554,20 @@ mod tests {
             .unwrap();
         assert!(
             cache
-                .encode_resident_delta(&original, 0, &mapping, &[], &keys, &baseline, &mut scratch,)
+                .encode_resident_delta(&original, &mapping, &[], &keys, &baseline, &mut scratch,)
                 .unwrap()
                 .is_empty()
         );
         let mut changed = original.clone();
         Arc::make_mut(&mut changed[8].material).base_color = [0.2, 0.4, 0.6, 1.0];
         let patches = cache
-            .encode_resident_delta(&changed, 0, &mapping, &[8], &keys, &baseline, &mut scratch)
+            .encode_resident_delta(&changed, &mapping, &[8], &keys, &baseline, &mut scratch)
             .unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, mapping[8] as usize);
         assert_ne!(patches[0].1, keys[mapping[8] as usize]);
         let canonical =
-            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&changed[8]), 0)
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&changed[8]))
                 .unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
         let mut patched = baseline.clone();
@@ -1583,7 +1578,6 @@ mod tests {
         DrawRecordCache::default()
             .encode_stable(
                 &changed,
-                0,
                 &mapping,
                 slots.high_water(),
                 &keys,
