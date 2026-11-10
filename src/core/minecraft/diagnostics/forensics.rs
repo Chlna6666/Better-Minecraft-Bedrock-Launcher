@@ -326,6 +326,18 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
     })
 }
 
+fn loader_issue_priority(issue: &LoaderIssue) -> (u8, u8) {
+    let severity = match issue.kind {
+        LoaderIssueKind::NativeException => 0,
+        LoaderIssueKind::LoaderLoadFailure => 1,
+        LoaderIssueKind::SymbolFailure | LoaderIssueKind::HookFailure => 2,
+        LoaderIssueKind::DependencyFailure => 3,
+        LoaderIssueKind::ModLoadFailure => 4,
+        LoaderIssueKind::RuntimeError => 5,
+    };
+    (severity, if issue.session_private { 0 } else { 1 })
+}
+
 fn loader_win32_code(line: &str) -> Option<u32> {
     // A PreLoader "Error code: 127" is Win32, not NTSTATUS.
     // BLoader's LoadLibraryW failures instead include an HRESULT such as
@@ -424,9 +436,7 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
                     pending_loader_issue = Some((index, remaining - 1));
                 }
             }
-            if out.loader_issues.len() < 12
-                && let Some(issue) = loader_line_issue(line, name, private)
-            {
+            if let Some(issue) = loader_line_issue(line, name, private) {
                 let duplicate = out.loader_issues.iter().any(|previous|
                     previous.loader == issue.loader
                     && previous.kind == issue.kind
@@ -435,8 +445,27 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
                     && previous.win32_error == issue.win32_error
                 );
                 if !duplicate {
-                    out.loader_issues.push(issue);
-                    pending_loader_issue = Some((out.loader_issues.len() - 1, 4));
+                    let index = if out.loader_issues.len() < 12 {
+                        out.loader_issues.push(issue);
+                        Some(out.loader_issues.len() - 1)
+                    } else {
+                        // Keep late native crashes rather than allowing repeated
+                        // non-fatal mod errors to exhaust the evidence budget.
+                        let worst = out.loader_issues.iter().enumerate()
+                            .max_by_key(|(_, item)| loader_issue_priority(item))
+                            .map(|(index, item)| (index, loader_issue_priority(item)));
+                        if let Some((index, rank)) = worst
+                            && loader_issue_priority(&issue) < rank
+                        {
+                            out.loader_issues[index] = issue;
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(index) = index {
+                        pending_loader_issue = Some((index, 4));
+                    }
                 }
             }
             if is_mod && out.failed_mods.len() < 8 {
@@ -799,6 +828,21 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].kind, LoaderIssueKind::ModLoadFailure);
         assert!(!issues[0].session_private);
+    }
+
+    #[test]
+    fn late_native_exception_survives_mod_error_budget() {
+        let mut text = String::new();
+        for i in 0..30 {
+            text.push_str(&format!("[ERROR] [PreLoader] fail to load plugin [bad_{i}.dll]\n"));
+        }
+        text.push_str("Raw Seh Exception, from <BLoader.dll>:\n[0xC0000409:ntstatus]\n");
+        let issues = inspect_text(&[("logs/mod-provider-00.log".into(), text)])
+            .loader_issues;
+        assert_eq!(issues.len(), 12);
+        assert!(issues.iter().any(|issue|
+            issue.kind == LoaderIssueKind::NativeException
+                && issue.exception_code == Some(0xC0000409)));
     }
 
     #[test]
