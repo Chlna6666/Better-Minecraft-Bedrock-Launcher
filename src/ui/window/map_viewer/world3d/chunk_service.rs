@@ -2688,7 +2688,7 @@ fn load_batch_from_world(
     // The first pass only decodes packed block palettes. Its conservative
     // connectivity graph can suppress underground model expansion before the
     // expensive per-state/captured-model and texture stages begin.
-    let hidden_before_models = if let Some(view) = lazy_view
+    let mut hidden_before_models = if let Some(view) = lazy_view
         && !portal_culling_disabled()
     {
         let mut probes = cached_probes.unwrap_or_default();
@@ -2727,6 +2727,16 @@ fn load_batch_from_world(
     } else {
         BTreeSet::new()
     };
+    if let Some(view) = lazy_view {
+        let candidates = chunks.iter().filter(|chunk| chunk.is_loaded)
+            .flat_map(|chunk| chunk.subchunks.keys().map(move |&y| {
+                (chunk.pos, i32::from(y).div_euclid(4))
+            }))
+            .collect::<BTreeSet<_>>();
+        // Camera Section rejection is independent of cave connectivity:
+        // discard distant off-screen models even for open sky and water.
+        hidden_before_models.extend(frustum_hidden_bands(&candidates, view));
+    }
     if trace && !hidden_before_models.is_empty() {
         eprintln!(
             "world3d premesh_skip ts={} columns={} hidden_bands={} preflight_ms={:.2}",
@@ -3542,9 +3552,10 @@ impl Worker {
                 )
             })
             .collect::<BTreeSet<_>>();
-        let hidden = super::visibility::hidden_render_band_keys(
+        let mut hidden = super::visibility::hidden_render_band_keys(
             &probes, &candidates, self.view.dimension, camera, self.view.radius,
         );
+        hidden.extend(frustum_hidden_bands(&candidates, self.view));
         self.index_hidden_columns = fully_hidden_mesh_columns(&candidates, &hidden)
             .into_iter()
             // Never defer the player's immediate interaction neighbourhood;
@@ -3729,6 +3740,18 @@ impl Worker {
         )
     }
 
+    /// Merge conservative camera-cone rejection with connected-air Portal
+    /// visibility. Both decisions must run before geometry expansion; either
+    /// may defer a band until the camera or source metadata changes.
+    fn hidden_mesh_bands(
+        &self,
+        candidates: &BTreeSet<(ChunkPos, i32)>,
+    ) -> BTreeSet<(ChunkPos, i32)> {
+        let mut hidden = frustum_hidden_bands(candidates, self.view);
+        hidden.extend(self.portal_hidden_bands(candidates));
+        hidden
+    }
+
     /// A skipped GPU band is not a discarded or finished Section. Promote it
     /// as soon as the camera crosses into a different air-connected region,
     /// or an adjacent decoded column reveals a previously unknown opening.
@@ -3736,7 +3759,7 @@ impl Worker {
         if self.deferred_bands.is_empty() {
             return;
         }
-        let still_hidden = self.portal_hidden_bands(&self.deferred_bands);
+        let still_hidden = self.hidden_mesh_bands(&self.deferred_bands);
         let visible = self
             .deferred_bands
             .difference(&still_hidden)
@@ -3792,7 +3815,7 @@ impl Worker {
         }).flat_map(|(&pos, probe)| {
             probe.subchunks.keys().map(move |&y| (pos, i32::from(y).div_euclid(4)))
         }).collect::<BTreeSet<_>>();
-        let early_hidden = self.portal_hidden_bands(&early_candidates)
+        let early_hidden = self.hidden_mesh_bands(&early_candidates)
             .into_iter()
             .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
             .collect::<BTreeSet<_>>();
@@ -3982,7 +4005,7 @@ impl Worker {
             early_hidden.intersection(&prospective_bands).copied().collect()
         } else {
             // Newly hydrated Probes may certify additional wall cells.
-            self.portal_hidden_bands(&prospective_bands)
+            self.hidden_mesh_bands(&prospective_bands)
                 .into_iter()
                 .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
                 .collect::<BTreeSet<_>>()
@@ -6186,6 +6209,7 @@ fn run_worker(
                     worker.deferred_columns.remove(&pos);
                     worker.dirty_meshes.insert(pos);
                 }
+                worker.index_plan_key = None;
                 worker.promote_deferred_db_reads();
                 worker.promote_visible_bands();
                 if old_center != new_center || old_radius != worker.view.radius {
