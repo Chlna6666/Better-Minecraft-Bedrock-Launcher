@@ -255,6 +255,7 @@ impl GameSessionReport {
         task_id: &str, version: &str, game_directory: &Path,
         platform: &str, pid: u32, compatibility_prefix: Option<PathBuf>,
         compatibility_logs: Option<PathBuf>,
+        log_offsets: HashMap<String, u64>,
     ) -> Self {
         let report = Self {
             schema_version: GAME_DIAGNOSTICS_SCHEMA,
@@ -284,7 +285,7 @@ impl GameSessionReport {
             wer_fault: None,
             findings: Vec::new(),
             forensics: forensics::ForensicSummary::default(),
-            log_offsets: initial_log_offsets(game_directory),
+            log_offsets,
         };
         if let Err(error) = save(&report) {
             tracing::warn!(%error, session_id = %report.id, "无法保存游戏会话");
@@ -780,15 +781,18 @@ pub fn acknowledge(id: &str) -> Result<(), String> {
     save_locked(&report)
 }
 
-/// Capture only known hot log file lengths at launch. These are cheap metadata
-/// checks, not a recursive prefix scan. The baseline prevents stale entries
-/// from earlier sessions being classified as a fresh crash.
-fn initial_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
+/// Capture log lengths BEFORE spawning the game or runner. Capturing after
+/// obtaining PID discards startup failures already written to the logs.
+/// Only fixed known paths are inspected: no recursive mod/world directory IO.
+pub fn capture_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
     let mut offsets = HashMap::new();
     for (name, path) in [
         ("logs/game.log", game_dir.join("logs/latest.log")),
         ("logs/levilamina.log", game_dir.join("logs/LeviLamina.log")),
         ("logs/bloader.log", game_dir.join("logs/BLoader.log")),
+        ("logs/redirected-game.log", game_dir.join("Minecraft Bedrock/logs/latest.log")),
+        ("logs/redirected-levilamina.log", game_dir.join("Minecraft Bedrock/logs/LeviLamina.log")),
+        ("logs/redirected-bloader.log", game_dir.join("Minecraft Bedrock/logs/BLoader.log")),
     ] {
         if let Ok(meta) = fs::symlink_metadata(path)
             && meta.file_type().is_file()
@@ -844,6 +848,15 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             root().join(format!("{}.runner.log", report.id))),
         ("logs/levilamina.log".to_string(), report.game_directory.join("logs/LeviLamina.log")),
         ("logs/bloader.log".to_string(), report.game_directory.join("logs/BLoader.log")),
+        // BLoader redirects instance data under the package's Minecraft Bedrock
+        // directory. Ordinary latest.log was previously excluded by directory
+        // discovery because its name contains neither "crash" nor "bloader".
+        ("logs/redirected-game.log".to_string(),
+            report.game_directory.join("Minecraft Bedrock/logs/latest.log")),
+        ("logs/redirected-levilamina.log".to_string(),
+            report.game_directory.join("Minecraft Bedrock/logs/LeviLamina.log")),
+        ("logs/redirected-bloader.log".to_string(),
+            report.game_directory.join("Minecraft Bedrock/logs/BLoader.log")),
     ];
     let directories = [
         report.game_directory.join("crash-logs"),
@@ -1444,6 +1457,23 @@ mod tests {
         obsolete["schema_version"] = serde_json::json!(GAME_DIAGNOSTICS_SCHEMA - 1);
         let obsolete = serde_json::to_vec(&obsolete).unwrap();
         assert!(decode_report(&obsolete).is_err());
+    }
+
+    #[test]
+    fn redirected_logs_are_baselined_before_launch() {
+        let root = std::env::temp_dir()
+            .join(format!("bmcbl-capture-offsets-{}", Uuid::new_v4()));
+        let path = root.join("Minecraft Bedrock/logs/latest.log");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"previous game session\n").unwrap();
+        let offsets = capture_log_offsets(&root);
+        let baseline = offsets["logs/redirected-game.log"];
+        fs::OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"failed to initialize minecraft\n").unwrap();
+        let delta = tail_after_baseline(&path, baseline, MAX_TEXT_BYTES).unwrap();
+        assert!(delta.contains("failed to initialize minecraft"));
+        assert!(!delta.contains("previous game session"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
