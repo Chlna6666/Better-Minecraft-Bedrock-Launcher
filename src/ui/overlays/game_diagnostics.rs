@@ -385,6 +385,12 @@ fn request_export(cx: &mut App, id: String) {
 fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
     let evidence = &report.forensics;
     let mut lines = Vec::new();
+    if !evidence.missing_dependencies.is_empty() {
+        let libraries = evidence.missing_dependencies.iter()
+            .map(|issue| issue.identifier.as_str())
+            .collect::<Vec<_>>().join(", ");
+        lines.push(t!("GameCrash.forensics.libraries", libraries = libraries).to_string());
+    }
     if let Some(wer) = &report.wer_fault {
         // Present an exact exception and faulting module alongside the
         // interpretation; this describes evidence, not component blame.
