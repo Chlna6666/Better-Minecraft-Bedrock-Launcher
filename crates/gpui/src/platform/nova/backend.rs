@@ -57,11 +57,6 @@ impl NovaBackendInfo {
         &self.adapter_name
     }
 
-    /// Returns whether this backend renders through Vulkan.
-    pub(super) fn is_vulkan(&self) -> bool {
-        self.kind == Some(gfx_core::BackendKind::Vulkan)
-    }
-
     /// Returns the `gfx-core` backend kind.
     ///
     /// # Errors
