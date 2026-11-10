@@ -954,7 +954,9 @@ fn create_many_pooled_impl(
 ) -> gpui::Result<Vec<MeshResources>> {
     // One batch scratch pool serves every Section's cells/params/jobs input
     // buffers: three native buffer creations per batch instead of per Section.
-    let mut scratch = crate::scene_view::gpu::BatchScratch::new(device.buffer_binding_limits());
+    let mut scratch = crate::scene_view::gpu::BatchScratch::new(
+        device.buffer_binding_limits(), backend,
+    );
     let profile = crate::gpu_submission_trace::enabled()
         && device.gpu_work_timestamps_supported();
     let result = create_many_impl(
@@ -1016,19 +1018,15 @@ fn create_many_impl(
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
-    // The Vulkan backend currently exposes a verified second physical queue
-    // only within the SAME Graphics Queue Family. Its native submit joins
-    // uploads -> Compute -> Graphics with GPU semaphores (no CPU Fence wait).
-    // DX12 typed COMPUTE is not selected for these meshing shaders yet:
-    // the batch has a GPU-only uniform buffer, which its COMPUTE-only
-    // command-list state validator intentionally rejects. Keep the ordered
-    // DX12 path until that CBV ABI is made legal on a typed queue.
-    //
-    // Keep one execution path in normal and tracing builds so diagnostics
-    // do not silently change which physical GPU queue executes meshing.
-    // The native SubmissionDevice timestamp-tag API is still to be extended.
+    // Vulkan currently uses the second queue of its graphics family with
+    // native GPU semaphore waits; this never crosses Queue Family ownership.
+    // DX12 dedicated COMPUTE has a type-matched command list and uses the
+    // small Upload-heap CBV page (GENERIC_READ) produced by BatchScratch.
+    // Both paths retain GPU-local Cells, Jobs, Faces and Draw arguments.
+    // No CPU Fence waits are added to normal streaming.
     let native_queue = if accepted.is_some()
-        && arena.as_ref().is_some_and(|(_, _, _, backend)| *backend == BackendKind::Vulkan)
+        && arena.as_ref().is_some_and(|(_, _, _, backend)|
+            matches!(backend, BackendKind::Vulkan | BackendKind::Dx12))
     {
         device.native_queue_for(gfx_core::GpuWorkStage::Compute)
     } else {
