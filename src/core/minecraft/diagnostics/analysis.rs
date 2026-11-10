@@ -10,7 +10,8 @@ pub enum CrashReason {
     PermissionDenied, ModLoadFailure, LoaderFailure, AccessViolation,
     IllegalInstruction, StackOverflow, FastFail, RunnerExited, Unclassified,
     InitializationFailure, InPageError, ArithmeticFault, HeapCorruption,
-    UnhandledCppException,
+    UnhandledCppException, LoaderInitializationFailure,
+    ModDependencyFailure, LoaderSymbolFailure, LoaderHookFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -232,6 +233,12 @@ pub fn analyze_with_forensics(
         return Vec::new();
     }
     let mut add_or_promote = |reason: CrashReason, confidence: Confidence, source: EvidenceSource| {
+        // Shared loader files can belong to another Minecraft instance.
+        let confidence = if source == EvidenceSource::ModLog {
+            Confidence::Low
+        } else {
+            confidence
+        };
         if let Some(found) = findings.iter_mut().find(|f| f.reason == reason) {
             let rank = |c: Confidence| match c {
                 Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
@@ -264,6 +271,64 @@ pub fn analyze_with_forensics(
                 EvidenceSource::ModLog
             },
         );
+    }
+
+    // Keep loader symptom identity separate from the eventual game crash
+    // cause. A logged SEH fault can originate from a helper or injected DLL;
+    // it does not identify a responsible mod without stronger evidence.
+    for issue in &evidence.loader_issues {
+        use super::forensics::LoaderIssueKind as Kind;
+        let source = if issue.session_private {
+            EvidenceSource::LauncherLog
+        } else {
+            EvidenceSource::ModLog
+        };
+        let confidence = if issue.session_private {
+            Confidence::Medium
+        } else {
+            Confidence::Low
+        };
+        match issue.kind {
+            Kind::LoaderLoadFailure => {
+                let reason = match issue.win32_error {
+                    Some(126) => CrashReason::MissingDependency,
+                    Some(127) => CrashReason::LoaderSymbolFailure,
+                    Some(193 | 1114) => CrashReason::LoaderInitializationFailure,
+                    _ => CrashReason::LoaderInitializationFailure,
+                };
+                add_or_promote(reason, confidence, source);
+            }
+            Kind::ModLoadFailure => {
+                add_or_promote(CrashReason::ModLoadFailure, confidence, source);
+            }
+            Kind::DependencyFailure => {
+                add_or_promote(CrashReason::ModDependencyFailure, confidence, source);
+            }
+            Kind::SymbolFailure => {
+                add_or_promote(CrashReason::LoaderSymbolFailure, confidence, source);
+            }
+            Kind::HookFailure => {
+                add_or_promote(CrashReason::LoaderHookFailure, confidence, source);
+            }
+            Kind::RuntimeError => {
+                add_or_promote(CrashReason::LoaderFailure, Confidence::Low, source);
+            }
+            Kind::NativeException => {
+                if let Some(code) = issue.exception_code
+                    && let Some(reason) = reason_from_windows_exception(code)
+                {
+                    add_or_promote(reason, confidence, source);
+                }
+                if issue.module.as_deref().is_some_and(|module| {
+                    let module = module.to_ascii_lowercase();
+                    ["bloader.dll", "preloader.dll", "levilamina.dll",
+                        "liteloader.dll"].contains(&module.as_str())
+                }) {
+                    // At the exception site, not a causal determination.
+                    add_or_promote(CrashReason::LoaderFailure, Confidence::Low, source);
+                }
+            }
+        }
     }
     if !evidence.failed_mods.is_empty() {
         let own_log = evidence.failed_mods.iter().any(|item| item.session_private);
@@ -388,6 +453,54 @@ mod tests {
         assert!(findings.iter().any(|f| f.reason == CrashReason::VulkanUnavailable));
     }
 
+
+    #[test]
+    fn preloader_errors_result_in_specific_reasons_without_blame() {
+        let report = report("gdk", Some(0xC0000142));
+        let sources = vec![("logs/launch-task.log".into(),
+            "[ERROR] [PreLoader] Can't load LeviLamina.dll\n\
+[ERROR] [PreLoader] Error code: 1114\n".into())];
+        let evidence = super::super::forensics::inspect_text(&sources);
+        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        let finding = findings.iter().find(|finding|
+            finding.reason == CrashReason::LoaderInitializationFailure).unwrap();
+        assert_eq!(finding.confidence, Confidence::Medium);
+        let sources = vec![("logs/mod-provider-00.log".into(),
+            "[ERROR] [PreLoader] Fail to load plugin [OldMod.dll]\n\
+[ERROR] [PreLoader] Error: Code[127]".into())];
+        let evidence = super::super::forensics::inspect_text(&sources);
+        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure
+            && f.confidence == Confidence::Low));
+    }
+
+    #[test]
+    fn raw_seh_bloader_is_a_symptom_not_proof_of_mod_loading_failure() {
+        let report = report("gdk", Some(0xC0000409));
+        let sources = vec![("logs/mod-provider-00.log".into(),
+            "Raw Seh Exception, from <BLoader.dll>:\n\
+[0xC0000409:ntstatus]\n".into())];
+        let evidence = super::super::forensics::inspect_text(&sources);
+        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        assert!(findings.iter().any(|f| f.reason == CrashReason::FastFail));
+        assert!(!findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
+        assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderFailure
+            && f.confidence == Confidence::Low));
+    }
+
+    #[test]
+    fn loader_hook_symbol_and_dependency_errors_are_separate() {
+        let report = report("gdk", Some(0xC0000142));
+        let sources = vec![("logs/launch-task.log".into(),
+            "[ERROR] [BLoader] failed to install hook\n\
+[ERROR] [PreLoader] failed to resolve symbol\n\
+[ERROR] [LeviLamina] dependency version mismatch".into())];
+        let evidence = super::super::forensics::inspect_text(&sources);
+        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderHookFailure));
+        assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderSymbolFailure));
+        assert!(findings.iter().any(|f| f.reason == CrashReason::ModDependencyFailure));
+    }
     #[test]
     fn access_violation_without_logs_does_not_blame_mods() {
         let found = analyze(&report("gdk", Some(0xC0000005)), &[]);
@@ -477,6 +590,7 @@ mod tests {
         let report = report("wine", Some(1));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            loader_issues: vec![],
             missing_dependencies: vec![],
             log_sources_analyzed: 0,
             wine_stack: None,
@@ -496,6 +610,7 @@ mod tests {
         let report = report("gdk", Some(0xC0000005));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            loader_issues: vec![],
             missing_dependencies: vec![],
             log_sources_analyzed: 0,
             wine_stack: None,
@@ -518,6 +633,7 @@ mod tests {
         let report = report("gdk", Some(0xC0000005));
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
+            loader_issues: vec![],
             missing_dependencies: vec![],
             log_sources_analyzed: 0,
             wine_stack: None,
