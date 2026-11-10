@@ -401,7 +401,15 @@ impl Preview3dMeshBuilder {
         {
             return Some(Vec::new());
         }
-        let plan = super::gpu_models::ModelPlan::new(self, blocks);
+        // Filter cells before ModelPlan resolves captured/state-dependent
+        // geometry. The old path built every face template and per-cell model
+        // record first, then dropped the hidden bands afterward.
+        let plan = super::gpu_models::ModelPlan::new(self, blocks, |y, detail| {
+            let halo = if detail { 2_i32 } else { 1_i32 };
+            (-halo..=halo).all(|dy| {
+                hidden.contains(&y.saturating_add(dy).div_euclid(64))
+            })
+        });
         let mut bands = std::collections::BTreeMap::<i32, Vec<_>>::new();
         for record in &plan.records {
             let (min, max) = plan.band_range(record);
