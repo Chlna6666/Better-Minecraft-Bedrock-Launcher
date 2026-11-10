@@ -1501,6 +1501,7 @@ impl PresentationPacket {
             .is_none_or(|(interval, last_presented_at)| now >= last_presented_at + interval)
     }
 
+    #[cfg(any(test, not(target_os = "windows")))]
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
         self.frame_interval
             .zip(self.last_presented_at)
