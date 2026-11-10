@@ -355,6 +355,21 @@ fn mesh_direction_distance_priority(
     (!ahead, distance_sq)
 }
 
+/// Only a column whose *every known render band* is certified unreachable
+/// may skip the entire expensive neighbor hydration/model/mesh wave. An empty
+/// candidate set must never be considered hidden (unknown geometry is open).
+fn fully_hidden_mesh_columns(
+    candidates: &BTreeSet<(ChunkPos, i32)>,
+    hidden: &BTreeSet<(ChunkPos, i32)>,
+) -> HashSet<ChunkPos> {
+    let mut all_hidden = HashMap::<ChunkPos, bool>::new();
+    for &(pos, band) in candidates {
+        let value = all_hidden.entry(pos).or_insert(true);
+        *value &= hidden.contains(&(pos, band));
+    }
+    all_hidden.into_iter().filter_map(|(pos, skip)| skip.then_some(pos)).collect()
+}
+
 fn mesh_target_priority(
     pos: ChunkPos,
     loaded: &std::collections::HashSet<ChunkPos>,
@@ -803,7 +818,8 @@ mod view_tests {
         chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
         face_band_y, face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
         inside_cache_hysteresis, inside_view, intern_face_materials,
-        needs_unexpanded_rehydration, premesh_opaque_terrain, skip_premesh_subchunk,
+        fully_hidden_mesh_columns, needs_unexpanded_rehydration,
+        premesh_opaque_terrain, skip_premesh_subchunk,
         is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
         mipmapped_texture, p3d,
         partition_section_faces, same_chunk_render_geometry, section_priority,
@@ -822,6 +838,24 @@ mod view_tests {
     use std::sync::Mutex;
     use std::sync::mpsc::{channel, sync_channel};
     use std::time::Duration;
+
+    #[test]
+    fn sealed_columns_skip_db_rehydration_but_partial_or_unknown_do_not() {
+        let pos = |x| ChunkPos {
+            x, z: 0, dimension: Dimension::Overworld,
+        };
+        let candidates = BTreeSet::from([
+            (pos(0), 0), (pos(0), 1),
+            (pos(1), 0), (pos(1), 1),
+            (pos(2), 0),
+        ]);
+        let hidden = BTreeSet::from([
+            (pos(0), 0), (pos(0), 1), (pos(1), 1),
+        ]);
+        assert_eq!(fully_hidden_mesh_columns(&candidates, &hidden), HashSet::from([pos(0)]));
+        assert!(!fully_hidden_mesh_columns(&candidates, &hidden).contains(&pos(3)));
+        assert!(fully_hidden_mesh_columns(&candidates, &BTreeSet::new()).is_empty());
+    }
 
     #[test]
     fn packed_palette_premesh_only_certifies_known_opaque_terrain() {
@@ -3571,6 +3605,33 @@ impl Worker {
                 self.view.forward_xz,
             )
         });
+        // Preflight against already decoded Probe visibility BEFORE reading
+        // discarded Sections back from LevelDB. In particular, a fully sealed
+        // underground column does not need any DB rehydration, texture lookup,
+        // biome work or GPU mesh until its portal becomes reachable.
+        let early_candidates = targets.iter().filter_map(|pos| {
+            self.cache.get(pos).map(|chunk| (pos, &chunk.probe))
+        }).flat_map(|(&pos, probe)| {
+            probe.subchunks.keys().map(move |&y| (pos, i32::from(y).div_euclid(4)))
+        }).collect::<BTreeSet<_>>();
+        let early_hidden = self.portal_hidden_bands(&early_candidates)
+            .into_iter()
+            .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
+            .collect::<BTreeSet<_>>();
+        let fully_hidden = fully_hidden_mesh_columns(&early_candidates, &early_hidden);
+        if !fully_hidden.is_empty() {
+            self.deferred_bands.extend(early_hidden.iter().copied());
+            targets.retain(|pos| !fully_hidden.contains(pos));
+            if trace {
+                eprintln!(
+                    "world3d db_rehydrate_skip gen={} fully_hidden_columns={} pending_bands={}",
+                    self.view.generation, fully_hidden.len(), self.deferred_bands.len(),
+                );
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
         let dimension = self.view.dimension;
         let mut local_positions = BTreeSet::new();
         for pos in &targets {
@@ -3737,11 +3798,17 @@ impl Worker {
                 }
             }
         }
-        let hidden_bands = self
-            .portal_hidden_bands(&prospective_bands)
-            .into_iter()
-            .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
-            .collect::<BTreeSet<_>>();
+        let hidden_bands = if rehydrate_positions.is_empty() {
+            // All Probes were already authoritative when the preflight ran.
+            // Do not traverse the same large portal graph twice in one wave.
+            early_hidden.intersection(&prospective_bands).copied().collect()
+        } else {
+            // Newly hydrated Probes may certify additional wall cells.
+            self.portal_hidden_bands(&prospective_bands)
+                .into_iter()
+                .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
+                .collect::<BTreeSet<_>>()
+        };
         // Record the full plan, not just Sections that survived face
         // generation. Otherwise a fully skipped GPU band could never be
         // promoted when its cave portal becomes reachable.
