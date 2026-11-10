@@ -117,6 +117,7 @@ pub(super) struct QueueFeedback {
     frame_samples: u32,
     last_frame: Option<Instant>,
     decisions: u64,
+    native_disabled: bool,
     /// Stop repeated expensive independent submissions if this queue family
     /// never yields valid hardware timestamp results (driver/family limits).
     unobserved_native_probes: u32,
@@ -162,6 +163,7 @@ impl QueueFeedback {
         workgroups: u64,
     ) -> bool {
         if !available || !has_gpu_timestamps || workgroups == 0
+            || self.native_disabled
             || self.in_flight.len() >= MAX_INFLIGHT_NATIVE
         {
             return false;
@@ -211,6 +213,14 @@ impl QueueFeedback {
             < ordered_ns.saturating_mul(4) / 5;
         can_overlap || genuinely_faster
             || self.decisions.is_multiple_of(32) // bounded re-evaluation
+    }
+
+    /// A native encoder/queue submission failed after preflight. Disable
+    /// further speculative async work on this device for this session.
+    /// The current error still propagates and existing untracked Mesh Arena
+    /// hazards remain quarantined until their native completion is proven.
+    pub(super) fn native_failed(&mut self) {
+        self.native_disabled = true;
     }
 
     /// Keep query/Resolve overhead bounded once enough real native samples
@@ -382,6 +392,19 @@ mod tests {
             );
         }
         assert!(!model.admit_native(true, true, 1024));
+    }
+
+    #[test]
+    fn native_backend_failure_keeps_subsequent_mesh_work_ordered() {
+        let mut model = QueueFeedback::default();
+        for id in 1..=6 {
+            model.accepted(Some(id), ComputePath::Ordered, 1024, None);
+            model.observe_gpu_sample(gpu(id, 1_900));
+        }
+        model.native_failed();
+        for _ in 0..64 {
+            assert!(!model.admit_native(true, true, 1024));
+        }
     }
 
     #[test]
