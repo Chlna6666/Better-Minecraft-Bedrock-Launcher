@@ -180,6 +180,9 @@ pub struct VulkanDevice {
     upload_pages: Vec<Option<VulkanBuffer>>,
     upload_command_pool: Vec<VulkanUploadCommands>,
     timestamp_clock: Option<VulkanTimestampClock>,
+    /// Native Compute Queue Families may report different timestampValidBits
+    /// or zero. The graphics clock must never decode an unrelated family.
+    dedicated_compute_timestamp_clock: Option<VulkanTimestampClock>,
     /// Opt-in hardware timestamps for main/offscreen draw, not CPU command encoding.
     gpu_trace_enabled: bool,
     gpu_trace_totals: VulkanGpuTraceTotals,
@@ -364,6 +367,17 @@ impl VulkanDevice {
             properties2_supported,
             &entry,
         )?;
+        let dedicated_compute_timestamp_clock = if dedicated_compute_queue.is_some() {
+            queue_families.compute
+                .and_then(|family| queue_properties.get(family as usize))
+                .filter(|properties| properties.timestamp_valid_bits > 0)
+                .map(|properties| VulkanTimestampClock {
+                    period_ns: f64::from(adapter_properties.limits.timestamp_period),
+                    valid_bits: properties.timestamp_valid_bits,
+                })
+        } else {
+            None
+        };
         let swapchain_maintenance = native_pixel_presentation;
         let native_pixel_presentation = native_pixel_presentation
             .then(|| khr::get_surface_capabilities2::Instance::new(&entry, &instance));
@@ -494,6 +508,7 @@ impl VulkanDevice {
             upload_pages: Vec::new(),
             upload_command_pool: Vec::with_capacity(upload_command_pool_capacity),
             timestamp_clock,
+            dedicated_compute_timestamp_clock,
             gpu_trace_enabled: timestamp_clock.is_some()
                 && log::log_enabled!(target: "gfx_vulkan::gpu", log::Level::Trace),
             gpu_trace_totals: VulkanGpuTraceTotals::default(),
@@ -1691,10 +1706,16 @@ impl VulkanDevice {
                     return Err(error);
                 }
             };
-        // Frame probes need the same two timestamp slots even when trace logging
-        // is disabled, so allocate the pool whenever the queue can timestamp.
-        let gpu_trace_query_pool = if family == self.graphics_queue_family_index
-            && self.timestamp_clock.is_some() {
+        // Timestamp query support belongs to the executing physical family.
+        // No valid bits means no queries, not a fabricated zero-duration sample.
+        let gpu_work_clock = if family == self.graphics_queue_family_index {
+            self.timestamp_clock
+        } else if Some(family) == self.dedicated_compute_family_index {
+            self.dedicated_compute_timestamp_clock
+        } else {
+            None
+        };
+        let gpu_trace_query_pool = if gpu_work_clock.is_some() {
             let query_count = buffer_count.checked_mul(2).ok_or_else(|| {
                 Error::InvalidInput("Vulkan GPU trace query count overflow".into())
             })?;
@@ -1719,6 +1740,7 @@ impl VulkanDevice {
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
             gpu_draw_tags: vec![None; command_buffers.len()],
             gpu_work_tag: None,
+            gpu_work_clock,
             command_buffers,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
@@ -4326,7 +4348,7 @@ impl VulkanDevice {
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
         if let (Some(tag), Some(pool), Some(clock)) = (
-            encoder.gpu_work_tag.take(), encoder.gpu_trace_query_pool, self.timestamp_clock,
+            encoder.gpu_work_tag.take(), encoder.gpu_trace_query_pool, encoder.gpu_work_clock,
         ) {
             let mut ticks = [0_u64; 2];
             // SAFETY: The encoder's submission fence completed, and these two
@@ -5864,6 +5886,7 @@ struct VulkanCommandEncoder {
     /// formerly unused by frame tracing. One tag per native command buffer.
     gpu_draw_tags: Vec<Option<gfx_core::GpuTimestampTag>>,
     gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
+    gpu_work_clock: Option<VulkanTimestampClock>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
