@@ -98,6 +98,41 @@ mod tests {
         assert!(!source.contains("space"));
     }
     #[test]
+    fn froxel_compute_writes_3d_storage_image_through_uav_slot_six() {
+        // Mirrors the binding layout used by cs_froxel_inject. RWTexture3D
+        // belongs to the Compute UAV (u) namespace, not SRV t6.
+        let module = WgslModule::parse(r#"
+            @group(0) @binding(0) var<uniform> params: vec4<f32>;
+            @group(0) @binding(3) var shadow: texture_2d<f32>;
+            @group(0) @binding(6) var injected: texture_storage_3d<rgba16float, write>;
+            @compute @workgroup_size(8, 8, 4)
+            fn cs_froxel_inject(@builtin(global_invocation_id) id: vec3<u32>) {
+                if (any(id >= textureDimensions(injected))) { return; }
+                let depth = textureLoad(shadow, vec2<i32>(id.xy), 0).r;
+                textureStore(injected, vec3<i32>(id), vec4<f32>(depth + params.x));
+            }
+        "#).expect("valid froxel image WGSL");
+        let ShaderCode::Hlsl(source) = module
+            .compile_hlsl_dx11(ShaderStage::Compute, "cs_froxel_inject")
+            .expect("SM5.0 supports writable 3D texture u6").code
+        else { panic!("expected HLSL"); };
+        assert!(source.contains("RWTexture3D"), "{source}");
+        assert!(source.contains("register(u6)"), "{source}");
+        assert!(source.contains("register(t3)"), "{source}");
+        assert!(!source.contains(", space"), "{source}");
+    }
+
+    #[test]
+    fn compute_storage_images_outside_uav_slots_remain_rejected() {
+        let module = WgslModule::parse(r#"
+            @group(0) @binding(8) var volume: texture_storage_3d<rgba16float, write>;
+            @compute @workgroup_size(1)
+            fn cs() { textureStore(volume, vec3<i32>(0), vec4<f32>(1.0)); }
+        "#).expect("valid WGSL");
+        assert!(module.compile_hlsl_dx11(ShaderStage::Compute, "cs").is_err());
+    }
+
+    #[test]
     fn reserved_constant_slot_is_rejected() {
         let module = WgslModule::parse("@group(0) @binding(13) var<uniform> v: vec4<f32>; @fragment fn fs() -> @location(0) vec4<f32> { return v; }").expect("valid WGSL");
         assert!(
