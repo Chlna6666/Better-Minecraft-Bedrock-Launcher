@@ -9440,6 +9440,66 @@ mod streaming_fluid_level_tests {
     }
 
     #[test]
+    fn unloaded_water_seam_waits_for_verified_neighbor_air() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let neighbor = ChunkPos { x: 1, z: 0, ..pos };
+        let mut water = liquid(15, 1.0);
+        water.key.y = 80;
+        let mut blocks = Preview3dChunkBlocks::default();
+        blocks.water.insert(water.key);
+        blocks.water_blocks.push(water.clone());
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 1,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, blocks);
+        let east = FACE_DEFINITIONS.into_iter()
+            .find(|face| face.normal == [1, 0, 0]).unwrap();
+        // Unknown is neither air nor solid: don't allocate a fake water wall.
+        assert_eq!(
+            builder.exposed_fluid_face_bottom(&water, east, Preview3dBlockClass::Water),
+            None,
+        );
+        builder.insert_stream_chunk(neighbor, Preview3dChunkBlocks::default());
+        // Once the empty neighbor column is decoded, the real exposed wall is restored.
+        assert_eq!(
+            builder.exposed_fluid_face_bottom(&water, east, Preview3dBlockClass::Water),
+            Some(0.0),
+        );
+    }
+
+    #[test]
+    fn hidden_detail_sections_skip_tessellation_before_cpu_faces_exist() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let mut blocks = Preview3dChunkBlocks::default();
+        blocks.detail_blocks.push(Preview3dDetailBlock {
+            key: BlockKey { x: 8, y: 90, z: 8 },
+            normalized_name: Arc::from("minecraft:oak_fence"),
+            neighbor_model: Preview3dNeighborModel::None,
+            stair_state: None,
+            shape: Arc::new(Preview3dDetailShape::from_cuboids(vec![
+                Preview3dCuboid::new([0.25, 0.0, 0.25], [0.75, 1.0, 0.75]),
+            ])),
+            color: [1.0; 4],
+            material: Arc::from("minecraft:oak_fence"),
+        });
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, blocks);
+        assert!(!builder.build_stream_faces(&[pos]).is_empty());
+        let hidden = BTreeSet::from([(pos, 1)]);
+        assert!(
+            builder.build_stream_faces_with_gpu_cubes_skipping(
+                &[pos], &std::collections::HashMap::new(),
+                &std::collections::HashSet::new(), &hidden,
+            ).is_empty(),
+            "hidden detailed models must not generate CPU quad vertices",
+        );
+    }
+
+    #[test]
     fn adjacent_partial_water_keeps_only_the_exposed_upper_strip() {
         let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
         let mut blocks = Preview3dChunkBlocks::default();
