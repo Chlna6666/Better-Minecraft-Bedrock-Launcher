@@ -162,7 +162,6 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_layout_cache_hits: usize,
     pub gpui_layout_cache_misses: usize,
     pub gpui_layout_cache_reused_roots: usize,
-    pub gpui_layout_cache_saved_roots: usize,
     pub gpui_text_layout_hits: usize,
     pub gpui_text_layout_reuses: usize,
     pub gpui_text_layout_misses: usize,
@@ -604,7 +603,6 @@ pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
     snapshot.gpui_layout_cache_hits = gpui_metrics.layout_cache_hits;
     snapshot.gpui_layout_cache_misses = gpui_metrics.layout_cache_misses;
     snapshot.gpui_layout_cache_reused_roots = gpui_metrics.layout_cache_reused_roots;
-    snapshot.gpui_layout_cache_saved_roots = gpui_metrics.layout_cache_saved_roots;
     snapshot.gpui_text_layout_hits = gpui_metrics.text_layout_hits;
     snapshot.gpui_text_layout_reuses = gpui_metrics.text_layout_reuses;
     snapshot.gpui_text_layout_misses = gpui_metrics.text_layout_misses;
