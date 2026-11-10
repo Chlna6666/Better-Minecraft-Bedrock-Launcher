@@ -30,11 +30,13 @@ fn compute_uav_to_srv_to_storage_image_roundtrip() {
 }
 
 
-/// Exercise REAL buffer Compute on queue index 1, then a semaphore-backed
-/// queue-1 -> queue-0 GPU wait. The graphics checkpoint must cover the native
-/// producer without waiting for it on the CPU during the submission path.
+/// Exercise real buffer Compute on either the second graphics-family queue
+/// or a dedicated COMPUTE-only queue family. The latter uses CONCURRENT
+/// buffer sharing and queue-family-typed command pools, not invalid
+/// graphics-family command buffers or EXCLUSIVE image ownership transfers.
+/// Native semaphores order the producer before the graphics checkpoint.
 #[test]
-#[ignore = "requires a physical Vulkan device with two same-family graphics/compute queues"]
+#[ignore = "requires native Vulkan hardware with a same-family secondary or compute-only queue"]
 fn native_compute_submission_and_reverse_gpu_queue_wait() {
     use gfx_core::{
         BufferBinding, BufferDescriptor, BufferUsage, ComputeBufferAccess,
@@ -47,7 +49,7 @@ fn native_compute_submission_and_reverse_gpu_queue_wait() {
         Err(error) => panic!("Vulkan device initialization: {error}"),
     };
     let Some(secondary) = device.independent_queue(GpuWorkStage::Compute) else {
-        eprintln!("Vulkan device has no second graphics-family queue; skipping");
+        eprintln!("Vulkan device has no independent buffer-compute queue; skipping");
         return;
     };
     let shader = gfx_shader::WgslModule::parse(
