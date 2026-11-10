@@ -15,19 +15,6 @@ pub(super) enum AvailableSpaceKey {
     MaxContent,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct RetainedLayoutNode {
-    pub(super) bounds: crate::Bounds<Pixels>,
-    pub(super) measure_input: Option<(Size<Option<Pixels>>, Size<AvailableSpace>)>,
-}
-
-/// Exact computed geometry for a reactive subtree whose layout semantics are unchanged.
-#[derive(Clone)]
-pub(crate) struct RetainedViewLayout {
-    pub(super) fingerprint: u64,
-    pub(super) nodes: std::sync::Arc<[RetainedLayoutNode]>,
-}
-
 impl From<AvailableSpace> for AvailableSpaceKey {
     fn from(value: AvailableSpace) -> Self {
         match value {
