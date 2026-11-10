@@ -221,6 +221,7 @@ fn save_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut file = File::create(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
+        drop(file); // Release the handle before rename, especially on Windows.
         // Windows cannot rename over an existing file. An absent cache during
         // replacement simply falls back to normal world decoding on restart.
         if cfg!(windows) && path.exists() {
