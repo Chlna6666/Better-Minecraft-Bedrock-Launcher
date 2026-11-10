@@ -1493,6 +1493,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     Rc::clone(&self.template_arena),
                     Rc::clone(&self.argument_arena),
                     Rc::clone(&self.accepted_native_submissions),
+                    true,
                 )?,
             );
         }
