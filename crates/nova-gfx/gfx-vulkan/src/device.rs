@@ -4984,6 +4984,25 @@ impl SubmissionDevice for VulkanDevice {
             ))
     }
 
+    fn submit_compute_batch_profiled_on_queue(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tag: gfx_core::GpuTimestampTag,
+    ) -> Result<SubmissionId> {
+        if queue != gfx_core::GpuQueueId::PRIMARY
+            && self.independent_queue(gfx_core::GpuWorkStage::Compute) != Some(queue)
+        {
+            return Err(Error::Unavailable(
+                "Vulkan tagged Compute queue is not available".into(),
+            ));
+        }
+        self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
+            .ok_or_else(|| Error::Unavailable(
+                "tagged Vulkan native Compute submit has no producer fence".into(),
+            ))
+    }
+
     fn submit_buffer_copies_on_queue(
         &mut self,
         queue: gfx_core::GpuQueueId,
