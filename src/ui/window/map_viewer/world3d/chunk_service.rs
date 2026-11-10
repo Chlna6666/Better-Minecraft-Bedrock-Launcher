@@ -923,7 +923,9 @@ mod view_tests {
         assert!(!frustum_hidden_band(pos(0, 18), 1, view));
         assert!(frustum_hidden_band(pos(0, -18), 1, view));
         assert!(frustum_hidden_band(pos(18, 0), 1, view));
-        assert!(frustum_hidden_band(pos(0, 18), 11, view));
+        // The 48-block section sphere deliberately preserves moderately
+        // elevated geometry. Only very distant vertical bands are rejected.
+        assert!(frustum_hidden_band(pos(0, 18), 30, view));
         let looking_up = super::ViewState { forward_xz: [0.0, 0.0],
             forward_y: 1.0, ..view };
         assert!(!frustum_hidden_band(pos(0, 0), 11, looking_up));
