@@ -469,6 +469,7 @@ mod tests {
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
             missing_dependencies: vec![],
+            log_sources_analyzed: 0,
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 2,
@@ -487,6 +488,7 @@ mod tests {
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
             missing_dependencies: vec![],
+            log_sources_analyzed: 0,
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 2,
@@ -508,6 +510,7 @@ mod tests {
         let evidence = super::super::forensics::ForensicSummary {
             failed_mods: vec![],
             missing_dependencies: vec![],
+            log_sources_analyzed: 0,
             wine_stack: None,
             minidumps: vec![super::super::forensics::MiniDump {
                 streams: 1,
