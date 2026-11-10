@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn preloader_placement_is_isolated_from_runtime_mod_directory() {
+fn preloader_placement_preserves_original_mod_directory() {
     let mut variant = super::super::lip::PackageVariant {
         assets: vec![super::super::lip::PackageAsset {
             kind: AssetKind::Zip,
@@ -19,8 +19,33 @@ fn preloader_placement_is_isolated_from_runtime_mod_directory() {
 
     assert_eq!(
         variant.assets[0].placements[0].destination,
-        "BLoader/PreLoader/PreLoader.dll"
+        "mods/PreLoader/PreLoader.dll"
     );
+}
+
+#[test]
+fn preloader_validity_requires_bootstrap_manifest_and_dll() {
+    let root = std::env::temp_dir().join(format!(
+        "bmcbl-preloader-test-{}", std::process::id()
+    ));
+    let dir = root.join("mods").join("PreLoader");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PreLoader.dll"), b"test").unwrap();
+    assert_eq!(
+        super::super::installation_state::validated_preloader_version(&root).unwrap(),
+        None
+    );
+    std::fs::write(dir.join("manifest.json"), br#"{"name":"PreLoader","entry":"PreLoader.dll","type":"preloader-bootstrap","version":"1.16.8"}"#).unwrap();
+    assert_eq!(
+        super::super::installation_state::validated_preloader_version(&root).unwrap(),
+        Some("1.16.8".to_string())
+    );
+    std::fs::remove_file(dir.join("PreLoader.dll")).unwrap();
+    assert_eq!(
+        super::super::installation_state::validated_preloader_version(&root).unwrap(),
+        None
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

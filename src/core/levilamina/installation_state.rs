@@ -55,12 +55,18 @@ pub(super) async fn write_preloader_manifest(
     let game_directory = game_directory.to_path_buf();
     let version = version.to_string();
     crate::tasks::runtime::run_archive_blocking(move || {
-        let path = game_directory.join("BLoader/PreLoader/manifest.json");
+        let path = game_directory.join("mods/PreLoader/manifest.json");
         let parent = path
             .parent()
             .ok_or_else(|| "PreLoader 目录无效".to_string())?;
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("创建 PreLoader 目录失败: {error}"))?;
+        if !parent.join("PreLoader.dll").is_file() {
+            return Err(format!(
+                "PreLoader.dll 尚未安装: {}，请检查 Lip 资产下载及解压步骤",
+                parent.join("PreLoader.dll").display()
+            ));
+        }
         let manifest = serde_json::json!({
             "name": "PreLoader",
             "entry": "PreLoader.dll",
@@ -152,12 +158,7 @@ fn inspect_installation_sync(game_directory: &Path) -> Result<LeviLaminaInstalla
     // Status inspection must be read-only: no DLL moves while the user
     // selects a game version or opens the manage page.
     let loader_version = read_mod_manifest_version(&game_directory.join("mods/LeviLamina"))?;
-    let preloader_dir = game_directory.join("BLoader/PreLoader");
-    let preloader_version = if preloader_dir.join("PreLoader.dll").is_file() {
-        read_mod_manifest_version(&preloader_dir)?
-    } else {
-        None
-    };
+    let preloader_version = validated_preloader_version(game_directory)?;
     Ok(LeviLaminaInstallation {
         loader_version,
         preloader_version,
@@ -165,66 +166,33 @@ fn inspect_installation_sync(game_directory: &Path) -> Result<LeviLaminaInstalla
     })
 }
 
-/// Migrate only BMCBL's identifiable legacy PreLoader layout.
-/// PreLoader must not reside under the mod root which it scans for
-/// preload-native modules. Its own manifest could otherwise cause recursive
-/// LoadLibraryW while PreLoader's DllMain is still initializing.
-pub(super) fn migrate_legacy_preloader_layout(game_directory: &Path) -> Result<(), String> {
-    let old = game_directory.join("mods").join("PreLoader");
-    let old_manifest = old.join("manifest.json");
-    if !old_manifest.is_file() {
-        return Ok(());
+/// Read-only installation validation. A lock record is insufficient: older
+/// BMCBL builds could record a bootstrap DLL at the wrong path and then
+/// report it as installed even though the runtime could not discover it.
+pub(super) fn validated_preloader_version(game_directory: &Path) -> Result<Option<String>, String> {
+    let dir = game_directory.join("mods").join("PreLoader");
+    if !dir.join("PreLoader.dll").is_file() {
+        return Ok(None);
     }
-    let raw = std::fs::read(&old_manifest)
-        .map_err(|e| format!("读取旧 PreLoader Manifest 失败: {e}"))?;
-    let mut metadata: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|e| format!("解析旧 PreLoader Manifest 失败: {e}"))?;
-    let original_name = metadata.get("name").and_then(serde_json::Value::as_str);
-    let original_entry = metadata.get("entry").and_then(serde_json::Value::as_str);
-    let original_type = metadata.get("type").and_then(serde_json::Value::as_str);
-    let is_bmcbl_install = matches!(original_name, Some("PreLoader" | "LeviLamina PreLoader"))
-        && original_entry == Some("PreLoader.dll")
-        && matches!(original_type, Some("preload" | "preload-native"));
-    if !is_bmcbl_install {
-        return Err(format!(
-            "拒绝迁移未知 PreLoader 安装: {}，以免覆盖第三方文件",
-            old_manifest.display()
-        ));
+    let path = dir.join("manifest.json");
+    if !path.is_file() {
+        return Ok(None);
     }
-    let target = game_directory.join("BLoader").join("PreLoader");
-    if !target.is_dir() {
-        if !old.join("PreLoader.dll").is_file() {
-            return Err(format!("旧 PreLoader.dll 不存在: {}", old.display()));
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 PreLoader 引导目录失败: {e}"))?;
-        }
-        std::fs::rename(&old, &target)
-            .map_err(|e| format!("迁移 PreLoader 引导目录失败: {e}"))?;
-    } else {
-        if !target.join("PreLoader.dll").is_file() {
-            std::fs::rename(old.join("PreLoader.dll"), target.join("PreLoader.dll"))
-                .map_err(|e| format!("迁移 PreLoader.dll 失败: {e}"))?;
-        }
-        std::fs::remove_file(&old_manifest)
-            .map_err(|e| format!("禁用旧 PreLoader Manifest 失败: {e}"))?;
+    let raw = std::fs::read(&path)
+        .map_err(|error| format!("读取 PreLoader 元数据失败 {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|error| format!("解析 PreLoader 元数据失败 {}: {error}", path.display()))?;
+    let valid = value.get("type").and_then(serde_json::Value::as_str)
+        == Some("preloader-bootstrap")
+        && value.get("entry").and_then(serde_json::Value::as_str)
+            == Some("PreLoader.dll");
+    if !valid {
+        return Ok(None);
     }
-    if let Some(object) = metadata.as_object_mut() {
-        object.insert("name".to_string(), serde_json::json!("PreLoader"));
-        object.insert("type".to_string(), serde_json::json!("preloader-bootstrap"));
-        object.insert("entry".to_string(), serde_json::json!("PreLoader.dll"));
-    }
-    let normalized = serde_json::to_vec_pretty(&metadata)
-        .map_err(|e| format!("序列化 PreLoader 引导元数据失败: {e}"))?;
-    std::fs::write(target.join("manifest.json"), normalized)
-        .map_err(|e| format!("写入 PreLoader 引导元数据失败: {e}"))?;
-    tracing::info!(
-        source = %old.display(),
-        destination = %target.display(),
-        "PreLoader 已移出 LeviLamina Mod 目录，避免自身重复预加载"
-    );
-    Ok(())
+    Ok(value.get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.trim().is_empty())
+        .map(str::to_owned))
 }
 
 fn read_mod_manifest_version(directory: &Path) -> Result<Option<String>, String> {
@@ -265,12 +233,23 @@ fn read_lock(game_directory: &Path) -> Result<InstallLock, String> {
 }
 
 fn read_installed_packages_sync(game_directory: &Path) -> Result<Vec<InstalledPackage>, String> {
-    migrate_legacy_preloader_layout(game_directory)?;
     let lock = read_lock(game_directory)?;
     let mut installed = Vec::with_capacity(lock.packages.len());
     for package in lock.packages {
         if package.files.is_empty() {
             continue;
+        }
+        if package.package_id.eq_ignore_ascii_case(PRELOADER_PACKAGE) {
+            let valid_version = validated_preloader_version(game_directory)?;
+            if valid_version.as_deref() != Some(package.version.as_str()) {
+                tracing::info!(
+                    package = %package.package_id,
+                    expected = %package.version,
+                    installed = ?valid_version,
+                    "PreLoader 缺失或元数据不匹配，将重新安装而非复用旧锁记录"
+                );
+                continue;
+            }
         }
         let mut files_present = true;
         for relative_path in &package.files {
@@ -343,7 +322,7 @@ pub(super) fn safe_locked_path(game_directory: &Path, relative: &str) -> Result<
 }
 
 fn remove_known_loader_paths(game_directory: &Path) -> Result<(), String> {
-    for directory in ["mods/LeviLamina", "mods/PreLoader", "BLoader/PreLoader"] {
+    for directory in ["mods/LeviLamina", "mods/PreLoader"] {
         let path = game_directory.join(directory);
         if path.exists() {
             std::fs::remove_dir_all(&path)

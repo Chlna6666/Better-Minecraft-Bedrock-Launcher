@@ -273,7 +273,7 @@ pub(super) fn redirect_preloader(variant: &mut PackageVariant) {
     for asset in &mut variant.assets {
         for placement in &mut asset.placements {
             if placement.kind == PlacementKind::File && placement.src.ends_with("PreLoader.dll") {
-                placement.destination = "BLoader/PreLoader/PreLoader.dll".to_string();
+                placement.destination = "mods/PreLoader/PreLoader.dll".to_string();
             }
         }
     }
