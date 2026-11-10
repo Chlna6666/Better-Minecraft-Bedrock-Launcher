@@ -1638,6 +1638,16 @@ impl VulkanDevice {
         &mut self,
         buffer_count: usize,
     ) -> Result<CommandEncoderId> {
+        self.create_command_encoder_with_family(buffer_count, self.graphics_queue_family_index)
+    }
+
+    /// Command pools are queue-family typed. A buffer allocated from the
+    /// graphics family CANNOT be submitted on a dedicated Compute family.
+    fn create_command_encoder_with_family(
+        &mut self,
+        buffer_count: usize,
+        family: u32,
+    ) -> Result<CommandEncoderId> {
         let buffer_count = u32::try_from(buffer_count).map_err(|error| {
             Error::InvalidInput(format!("command buffer count overflow: {error}"))
         })?;
@@ -1652,14 +1662,15 @@ impl VulkanDevice {
         if let Some(index) = self
             .free_command_encoders
             .iter()
-            .position(|encoder| encoder.command_buffers.len() == buffer_count as usize)
+            .position(|encoder| encoder.command_buffers.len() == buffer_count as usize
+                && encoder.queue_family_index == family)
         {
             return Ok(self
                 .command_encoders
                 .insert(self.free_command_encoders.swap_remove(index)));
         }
 
-        let command_pool = create_command_pool(&self.device, self.graphics_queue_family_index)?;
+        let command_pool = create_command_pool(&self.device, family)?;
         let command_buffers =
             match allocate_command_buffers(&self.device, command_pool, buffer_count) {
                 Ok(command_buffers) => command_buffers,
@@ -1671,7 +1682,8 @@ impl VulkanDevice {
             };
         // Frame probes need the same two timestamp slots even when trace logging
         // is disabled, so allocate the pool whenever the queue can timestamp.
-        let gpu_trace_query_pool = if self.timestamp_clock.is_some() {
+        let gpu_trace_query_pool = if family == self.graphics_queue_family_index
+            && self.timestamp_clock.is_some() {
             let query_count = buffer_count.checked_mul(2).ok_or_else(|| {
                 Error::InvalidInput("Vulkan GPU trace query count overflow".into())
             })?;
@@ -1692,6 +1704,7 @@ impl VulkanDevice {
         };
         Ok(self.command_encoders.insert(VulkanCommandEncoder {
             command_pool,
+            queue_family_index: family,
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
             gpu_draw_tags: vec![None; command_buffers.len()],
             gpu_work_tag: None,
@@ -5748,6 +5761,7 @@ struct VulkanRenderPipeline {
 struct VulkanCommandEncoder {
     compute_resources: Vec<Arc<compute::Call>>,
     command_pool: vk::CommandPool,
+    queue_family_index: u32,
     command_buffers: Vec<vk::CommandBuffer>,
     transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
