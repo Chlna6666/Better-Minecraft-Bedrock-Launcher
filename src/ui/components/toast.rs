@@ -774,6 +774,7 @@ pub fn render_overlay_with_options(
 
         layout_items.push((
             toast_id,
+            diagnostic_report_id,
             toast_width,
             shell,
             opacity,
@@ -790,7 +791,7 @@ pub fn render_overlay_with_options(
 
     let occupied_sizes: Vec<f32> = layout_items
         .iter()
-        .map(|(_, _, _, _, _, _, _, slot_factor)| {
+        .map(|(_, _, _, _, _, _, _, _, slot_factor)| {
             (TOAST_SLOT_H_PX + TOAST_SPACING_PX) * *slot_factor
         })
         .collect();
@@ -816,7 +817,7 @@ pub fn render_overlay_with_options(
 
     let mut lane = div().relative().w(px(TOAST_MAX_WIDTH_PX)).h_full();
     for (index, layout_item) in layout_items.into_iter().enumerate() {
-        let (toast_id, toast_width, shell, opacity, enter_slide, exit_slide, item_animating, _) =
+        let (toast_id, diagnostic_report_id, toast_width, shell, opacity, enter_slide, exit_slide, item_animating, _) =
             layout_item;
         let offset = offsets[index];
         let mut toast = div()

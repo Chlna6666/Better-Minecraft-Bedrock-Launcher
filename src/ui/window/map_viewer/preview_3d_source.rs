@@ -7,7 +7,7 @@ use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
     ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, canonical_block_name_for_state, detail_cuboid_with_local_uv,
+    block_face_for_normal, canonical_block_name_for_state,
     detail_material_block_name_for_state,
     is_engine_block_entity_model_block, model_family_for_block_name, model_family_has_detail_shape,
     model_shape_for_block_state, shape_from_geometry,

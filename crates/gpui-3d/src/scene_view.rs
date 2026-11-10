@@ -22,7 +22,7 @@ pub(crate) const SHADER: &str = concat!(
 );
 // The shader ABI belongs to the reusable 3D core, not the optional UI adapter.
 pub(crate) use crate::gpu_encoding::{
-    PACKED_VERTEX_STRIDE, VOXEL_VERTEX_STRIDE, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, VERTEX_BINDING, DRAW_BINDING, LIGHT_BINDING, ALBEDO_BINDING, SAMPLER_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, TANGENT_BINDING, INSTANCE_BINDING, FRAME_BINDING, METALLIC_ROUGHNESS_BINDING, VISIBLE_INSTANCE_BINDING
+    PACKED_VERTEX_STRIDE, VOXEL_VERTEX_STRIDE, DRAW_PARAMS_STRIDE, FRAME_PARAMS_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, VERTEX_BINDING, DRAW_BINDING, LIGHT_BINDING, ALBEDO_BINDING, SAMPLER_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, TANGENT_BINDING, INSTANCE_BINDING, FRAME_BINDING, METALLIC_ROUGHNESS_BINDING, VISIBLE_INSTANCE_BINDING
 };
 
 static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
@@ -81,7 +81,7 @@ pub struct SceneView {
     pub(super) hidden_nodes: Arc<HashSet<NodeId>>,
     /// Per-view, lock-local immutable preparation handoff. Clone preserves
     /// identity; dropping the last SceneView releases CPU snapshots directly.
-    pub(super) sidecar: Arc<sidecar::Mailbox>,
+    sidecar: Arc<sidecar::Mailbox>,
 }
 
 #[derive(Clone)]

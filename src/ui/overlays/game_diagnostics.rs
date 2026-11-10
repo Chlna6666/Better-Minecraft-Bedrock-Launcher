@@ -533,7 +533,6 @@ pub fn render_game_diagnostics_overlay(
     let history = state.history.clone();
     let confirmation = state.awaiting_sensitive_confirmation;
 
-    let copy_path = export_location.clone();
     let id_for_export = report.id.clone();
     let id_for_confirm = report.id.clone();
     let id_for_acknowledge = report.id.clone();

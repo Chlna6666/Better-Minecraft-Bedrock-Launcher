@@ -318,8 +318,6 @@ enum PipelineMode {
 pub(super) enum PassKind {
     Color,
     Hdr,
-    Surface,
-    Albedo,
     AttributesMrt,
     Shadow,
 }
@@ -328,14 +326,12 @@ impl PassKind {
         match self {
             Self::Color => ["fs_main", "fs_voxel"],
             Self::Hdr => ["fs_hdr", "fs_voxel_capture"],
-            Self::Surface => ["fs_scene_surface", "fs_voxel_surface"],
-            Self::Albedo => ["fs_scene_albedo", "fs_voxel_albedo"],
             Self::AttributesMrt => ["fs_scene_attributes_mrt", "fs_voxel_attributes_mrt"],
             Self::Shadow => ["fs_scene_shadow", "fs_voxel_shadow"],
         }
     }
     fn is_attribute(self) -> bool {
-        matches!(self, Self::Surface | Self::Albedo | Self::AttributesMrt | Self::Shadow)
+        matches!(self, Self::AttributesMrt | Self::Shadow)
     }
 }
 

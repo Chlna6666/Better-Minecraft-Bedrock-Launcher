@@ -69,19 +69,31 @@ const fn backend_at(index: usize) -> BackendKind {
     }
 }
 
+/// Per-backend GPU upload cost samples and a predictive admission model.
+///
+/// Host-side API submission metrics and hardware-completed GPU timings are
+/// independent measurements; the former must never stand in for the latter.
 #[derive(Clone, Copy, Debug)]
 pub struct GpuUploadCostEstimate {
+    /// Backend on which the samples were collected.
     pub backend: BackendKind,
+    /// Number of host-side upload submissions sampled.
     pub samples: u64,
+    /// Total bytes submitted by the sampled host-side uploads.
     pub measured_bytes: u64,
+    /// Number of individual buffer writes in those submissions.
     pub measured_writes: u64,
+    /// Accumulated host-side upload submission time in microseconds.
     pub measured_submit_us: u64,
+    /// Estimated host submission cost per mebibyte, in nanoseconds.
     pub ns_per_mib: u64,
+    /// Estimated host submission cost per buffer write, in nanoseconds.
     pub ns_per_write: u64,
-    /// Completed, batch-correlated native GPU upload samples. These are
-    /// separate from the GPU-owner/CPU submission samples above.
+    /// Number of batch-correlated, hardware-completed upload samples.
     pub hardware_samples: u64,
+    /// Accumulated hardware-completed upload time in microseconds.
     pub measured_hardware_upload_us: u64,
+    /// Estimated hardware upload cost per mebibyte, in nanoseconds.
     pub hardware_ns_per_mib: u64,
 }
 

@@ -1,4 +1,4 @@
-use super::{PreparedRetainedChunks, RetainedChunkId, RetainedPaint};
+use super::{RetainedChunkId, RetainedPaint};
 use crate::paint::retention::{RetainedChunkPlanner, RetainedChunkProof};
 use crate::{GlobalElementId, Scene};
 use std::ops::Range;

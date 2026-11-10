@@ -769,7 +769,10 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             .map(|logs| logs.join("crash-reports")).unwrap_or_default(),
     ];
     let mut number = 0usize;
+    #[cfg(target_os = "linux")]
     let mut directories = directories.to_vec();
+    #[cfg(not(target_os = "linux"))]
+    let directories = directories;
     #[cfg(target_os = "linux")]
     if let Some(prefix) = &report.compatibility_prefix {
         if let Ok(users) = fs::read_dir(prefix.join("drive_c/users")) {

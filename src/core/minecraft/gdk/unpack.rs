@@ -21,8 +21,7 @@ pub fn start_unpack_gdk_task(
     );
 
     let input_path_buf = input_path.into();
-    let folder_name = folder_name.to_string();
-    let version_dir = file_ops::bmcbl_subdir("versions").join(&folder_name);
+    let version_dir = file_ops::bmcbl_subdir("versions").join(folder_name);
     info!(
         target: "bmcbl::operation",
         task_id = %task_id,
@@ -35,7 +34,7 @@ pub fn start_unpack_gdk_task(
         async move {
             let task_id_for_error = task_id.clone();
             if let Err(error) = run_archive_blocking(move || {
-                run_unpack_gdk_task(task_id, input_path_buf, folder_name, version_dir);
+                run_unpack_gdk_task(task_id, input_path_buf, version_dir);
             })
             .await
             {
@@ -54,7 +53,6 @@ pub fn start_unpack_gdk_task(
 fn run_unpack_gdk_task(
     task_id: String,
     input_path: PathBuf,
-    folder_name: String,
     version_dir: PathBuf,
 ) {
     update_progress(&task_id, 0, None, Some("initializing"));

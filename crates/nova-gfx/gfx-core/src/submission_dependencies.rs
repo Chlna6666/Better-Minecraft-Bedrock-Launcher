@@ -239,7 +239,6 @@ pub struct GpuSubmissionCompletion {
 }
 
 impl GpuSubmissionCompletion {
-    #[must_use]
     /// Exact native submission IDs whose completion is proven by this report.
     #[must_use]
     pub fn finished(&self) -> &HashSet<SubmissionId> { &self.finished }
@@ -381,7 +380,6 @@ impl GpuSubmissionDependencyGraph {
         }
     }
 
-    #[must_use]
     /// Whether any admitted native GPU access lacks a trustworthy completion
     /// fence and must therefore prohibit physical range retirement.
     #[must_use]

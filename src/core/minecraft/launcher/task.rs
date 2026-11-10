@@ -232,7 +232,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                 }
                 info!(
                     task_id = %task_id_for_task,
-                    pid = *pid,
+                    pid,
                     "游戏启动任务执行完成，已获得进程 PID"
                 );
                 append_log(&task_id_for_task, format!("游戏已启动，PID {pid}"));

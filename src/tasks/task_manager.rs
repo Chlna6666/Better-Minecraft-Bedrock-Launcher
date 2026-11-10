@@ -643,7 +643,7 @@ fn task_chunk_count(detail: Option<&str>) -> Option<u64> {
     }
 }
 
-fn record_operation_event(snapshot: &TaskSnapshot, event: &'static str) {
+fn record_operation_event(snapshot: &TaskSnapshot, event: &str) {
     if snapshot.visibility == TaskVisibility::Hidden {
         return;
     }
