@@ -180,32 +180,7 @@ impl VulkanDevice {
             program
         };
 
-        // Only the dedicated-family buffer path can use a queue-family
-        // typed command pool here. Every bound resource must be in a
-        // CONCURRENT-shared Storage/Uniform buffer. An EXCLUSIVE image or
-        // graphics command would need an explicit release/acquire protocol.
-        let dedicated = native_queue.is_some()
-            && native_queue == self.dedicated_compute_queue_id();
-        let family = if dedicated {
-            for (index, _) in &calls {
-                for binding in dispatches[*index].bindings {
-                    let resource = self.buffers.get(binding.buffer.buffer)?;
-                    if !resource.desc.usage.intersects(
-                        BufferUsage::STORAGE | BufferUsage::UNIFORM,
-                    ) {
-                        return Err(Error::Unavailable(
-                            "Vulkan dedicated Compute requires concurrent-shared buffers".into(),
-                        ));
-                    }
-                }
-            }
-            self.dedicated_compute_family_index.ok_or_else(|| Error::Unavailable(
-                "Vulkan dedicated Compute Queue Family not configured".into(),
-            ))?
-        } else {
-            self.graphics_queue_family_index
-        };
-        let encoder = self.create_command_encoder_with_family(1, family)?;
+        let encoder = self.create_command_encoder_with_buffer_count(1)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
         let query = self.command_encoders.get(encoder)?
             .gpu_trace_query_pool.filter(|_| tag.is_some());
@@ -497,7 +472,32 @@ impl VulkanDevice {
                 Ok(None)
             };
         }
-        let encoder = self.create_command_encoder_with_buffer_count(1)?;
+        // Only the dedicated-family buffer path can use a queue-family
+        // typed command pool here. Every bound resource must be in a
+        // CONCURRENT-shared Storage/Uniform buffer. An EXCLUSIVE image or
+        // graphics command would need an explicit release/acquire protocol.
+        let dedicated = native_queue.is_some()
+            && native_queue == self.dedicated_compute_queue_id();
+        let family = if dedicated {
+            for (index, _) in &calls {
+                for binding in dispatches[*index].bindings {
+                    let resource = self.buffers.get(binding.buffer.buffer)?;
+                    if !resource.desc.usage.intersects(
+                        BufferUsage::STORAGE | BufferUsage::UNIFORM,
+                    ) {
+                        return Err(Error::Unavailable(
+                            "Vulkan dedicated Compute requires concurrent-shared buffers".into(),
+                        ));
+                    }
+                }
+            }
+            self.dedicated_compute_family_index.ok_or_else(|| Error::Unavailable(
+                "Vulkan dedicated Compute Queue Family not configured".into(),
+            ))?
+        } else {
+            self.graphics_queue_family_index
+        };
+        let encoder = self.create_command_encoder_with_family(1, family)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
         let query = self.command_encoders.get(encoder)?
             .gpu_trace_query_pool.filter(|_| tag.is_some());
