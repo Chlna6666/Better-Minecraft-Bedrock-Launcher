@@ -122,7 +122,7 @@ impl BlockModelRepository {
     }
 
     /// Load a BedrockSceneCapture export found beside the local game installation.
-    /// Numeric v3 resources are read lazily and cached by per-export u32 IDs.
+    /// Numeric geometry pool resources are read lazily and cached by per-export u32 IDs.
     pub fn load_capture_catalog(&mut self, root: &Path) -> std::result::Result<usize, String> {
         let catalog = RuntimeCaptureCatalog::open(root)?;
         let count = catalog.state_count();
