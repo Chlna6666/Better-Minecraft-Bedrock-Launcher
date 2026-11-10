@@ -17,7 +17,6 @@ mod placement_tests;
 pub use builders::{absolute_fill, center, h_stack, relative_fill, v_stack};
 pub(crate) use convert::snap_logical_to_device_pixel;
 pub use engine::TaffyLayoutEngine;
-pub(crate) use metrics::RetainedViewLayout;
 pub use metrics::{AvailableSpace, LayoutId};
 
 impl TaffyLayoutEngine {
