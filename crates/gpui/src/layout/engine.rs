@@ -94,7 +94,6 @@ pub struct TaffyLayoutEngine {
     pub(super) layout_cache_hits: usize,
     pub(super) layout_cache_misses: usize,
     pub(super) layout_cache_reused_roots: usize,
-    pub(super) layout_cache_saved_roots: usize,
     layout_time: Duration,
 }
 
@@ -150,7 +149,6 @@ impl TaffyLayoutEngine {
             layout_cache_hits: 0,
             layout_cache_misses: 0,
             layout_cache_reused_roots: 0,
-            layout_cache_saved_roots: 0,
             layout_time: Duration::ZERO,
         }
     }
@@ -283,7 +281,6 @@ impl TaffyLayoutEngine {
         self.layout_cache_hits = 0;
         self.layout_cache_misses = 0;
         self.layout_cache_reused_roots = 0;
-        self.layout_cache_saved_roots = 0;
         self.layout_time = Duration::ZERO;
     }
 
