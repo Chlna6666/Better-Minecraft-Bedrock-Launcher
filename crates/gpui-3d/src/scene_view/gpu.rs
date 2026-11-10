@@ -1,13 +1,13 @@
 use super::{
-    ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_BINDING,
+    ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, FRAME_BINDING,
     FRAME_PARAMS_STRIDE, INSTANCE_BINDING, INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE,
     METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE,
     SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING, VISIBLE_INSTANCE_BINDING,
     VOXEL_VERTEX_STRIDE,
 };
 use crate::{
-    AlphaMode, Camera, Mat4, MaterialId, Mesh, NodeId, PreparedDraw, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
-    TextureColorSpace, TriangleEdgeMask, Vertex,
+    Camera, Mat4, MaterialId, Mesh, PreparedDraw, PreparedScene, TextureAsset,
+    TextureColorSpace,
 };
 use anyhow::{Context as _, anyhow};
 use gfx_core::{
@@ -20,10 +20,13 @@ use gfx_core::{
 use gpui::Bounds;
 // The Sidecar reuses the standalone 3D data encoders without duplicating shader ABI.
 pub(crate) use crate::gpu_encoding::{
-    EncodedMesh, alpha_mode_value, encode_draw_slot, encode_draw_record,
-    encode_instance_records, encode_instances_into, encode_lights_into,
-    encode_mesh, transpose, write_f32, write_matrix, write_u32, write_vec2, write_vec4,
+    EncodedMesh, encode_draw_record, encode_instance_records, encode_lights_into,
+    encode_mesh, write_matrix, write_vec4,
 };
+#[cfg(test)]
+use crate::PreparedLight;
+#[cfg(test)]
+pub(crate) use crate::gpu_encoding::{encode_instances_into, transpose};
 use gpui::ExtensionDevice;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
