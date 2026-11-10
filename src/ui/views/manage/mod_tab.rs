@@ -31,6 +31,13 @@ impl ManagePageView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if asset.folder_name.as_ref().starts_with("levilamina:") {
+            toast::error(
+                cx,
+                SharedString::from("LeviLamina Mod 的加载类型由 LeviLamina 管理，不能改成 BLoader 类型"),
+            );
+            return;
+        }
         let (version, selected_mod_type) = {
             let state = cx.global::<ManagePageState>();
             let Some(version) = self.selected_version(state).cloned() else {
@@ -42,7 +49,7 @@ impl ManagePageView {
                 .iter()
                 .find(|entry| entry.key == asset_key)
                 .and_then(|entry| entry.mod_type.clone())
-                .unwrap_or_else(|| SharedString::from("preload-native"));
+                .unwrap_or_else(|| SharedString::from("mod-native"));
             (version, selected_mod_type)
         };
         let delay_value = asset.inject_delay_ms.unwrap_or(0).to_string();

@@ -852,18 +852,21 @@ pub(super) fn scroll_event_delta_y(event: &ScrollWheelEvent) -> Pixels {
 
 pub(super) fn mod_type_label(raw: &str, i18n: &crate::ui::state::i18n::I18n) -> SharedString {
     match raw.trim() {
-        "preload-native" => i18n
-            .lookup("AssetManager.mod_type_preload_native")
-            .unwrap_or_else(|| SharedString::from("Native Load")),
+        "mod-native" => i18n
+            .lookup("AssetManager.mod_type_mod_native")
+            .unwrap_or_else(|| SharedString::from("BLoader Native")),
+        "mod-preload" => i18n
+            .lookup("AssetManager.mod_type_mod_preload")
+            .unwrap_or_else(|| SharedString::from("BLoader Preload")),
+        "hot-native" => i18n
+            .lookup("AssetManager.mod_type_hot_native")
+            .unwrap_or_else(|| SharedString::from("BLoader Window-Ready")),
         "hot-inject" => i18n
             .lookup("AssetManager.mod_type_hot_inject")
-            .unwrap_or_else(|| SharedString::from("Delayed Load")),
-        "native" => i18n
-            .lookup("AssetManager.mod_type_native")
-            .unwrap_or_else(|| SharedString::from("Native")),
-        "lse-quickjs" => i18n
-            .lookup("AssetManager.mod_type_lse_quickjs")
-            .unwrap_or_else(|| SharedString::from("LSE QuickJS")),
+            .unwrap_or_else(|| SharedString::from("BLoader Delayed Load")),
+        "preload-native" => SharedString::from("PreLoader (preload-native)"),
+        "native" => SharedString::from("LeviLamina (native)"),
+        "lse-quickjs" => SharedString::from("LeviLamina (lse-quickjs)"),
         value if !value.is_empty() => SharedString::from(value.to_string()),
         _ => SharedString::from("Unknown"),
     }

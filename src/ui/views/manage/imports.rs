@@ -251,7 +251,7 @@ impl ManagePageView {
                         current: index + 1,
                         total,
                     },
-                    selected_mod_type: SharedString::from("preload-native"),
+                    selected_mod_type: SharedString::from("mod-native"),
                     delay_input,
                     pending: false,
                 });

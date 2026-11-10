@@ -566,20 +566,20 @@ pub(super) fn render_mod_type_dialog(
 
     let options = vec![
         (
-            SharedString::from("preload-native"),
-            DropdownOption::from(t!("AssetManager.mod_type_preload_native")),
+            SharedString::from("mod-native"),
+            DropdownOption::from(t!("AssetManager.mod_type_mod_native")),
+        ),
+        (
+            SharedString::from("mod-preload"),
+            DropdownOption::from(t!("AssetManager.mod_type_mod_preload")),
+        ),
+        (
+            SharedString::from("hot-native"),
+            DropdownOption::from(t!("AssetManager.mod_type_hot_native")),
         ),
         (
             SharedString::from("hot-inject"),
             DropdownOption::from(t!("AssetManager.mod_type_hot_inject")),
-        ),
-        (
-            SharedString::from("native"),
-            DropdownOption::from(t!("AssetManager.mod_type_native")),
-        ),
-        (
-            SharedString::from("lse-quickjs"),
-            DropdownOption::from(t!("AssetManager.mod_type_lse_quickjs")),
         ),
     ];
     let selected_index = options
@@ -589,7 +589,7 @@ pub(super) fn render_mod_type_dialog(
     let label = options
         .get(selected_index)
         .map(|(_, option)| option.label.clone())
-        .unwrap_or_else(|| t!("AssetManager.mod_type_preload_native"));
+        .unwrap_or_else(|| t!("AssetManager.mod_type_mod_native"));
 
     let dropdown = Dropdown::new(
         SharedString::from("manage-mod-type-dropdown"),
@@ -612,7 +612,7 @@ pub(super) fn render_mod_type_dialog(
                 let selected = values
                     .get(index)
                     .cloned()
-                    .unwrap_or_else(|| SharedString::from("preload-native"));
+                    .unwrap_or_else(|| SharedString::from("mod-native"));
                 let _ = view_handle.update(cx, |this, cx| {
                     this.set_mod_type_selection(selected, cx);
                 });
