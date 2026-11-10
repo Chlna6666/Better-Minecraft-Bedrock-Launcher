@@ -142,6 +142,8 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
 
     let mut shape = ModelShape::from_cuboids(cuboids);
     if lit {
+        // The flame art is the campfire's `up` material (`campfire_fire`, a flipbook); it has no
+        // material key of its own, so a sheet asking for `fire` fell back to the log side tile.
         let reach = 0.5_f32 * std::f32::consts::FRAC_1_SQRT_2;
         let (lo, hi) = (0.5 - reach, 0.5 + reach);
         shape.planes.extend([
@@ -154,7 +156,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
                 ],
                 [-1, 0, 1],
             )
-            .with_material_slot("fire")
+            .with_material_slot("up")
             .with_uv(upright_full_texture_uv()),
             ModelPlane::new(
                 [
@@ -165,7 +167,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
                 ],
                 [1, 0, 1],
             )
-            .with_material_slot("fire")
+            .with_material_slot("up")
             .with_uv(upright_full_texture_uv()),
         ]);
     }
