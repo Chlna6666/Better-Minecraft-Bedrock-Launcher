@@ -5471,9 +5471,14 @@ fn collect_cached_chunk(
         }
         data.subchunks = retained;
     }
-    let blocks =
+    let blocks = if data.subchunks.is_empty() {
+        // A fully occluded column needs only its retained Probe. No block
+        // models, materials, geometry, or biome work are needed yet.
+        p3d::Preview3dChunkBlocks::default()
+    } else {
         p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
-            .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
+            .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
+    };
     let unexpanded_bands = omitted.iter()
         .map(|(y, _)| i32::from(*y).div_euclid(4))
         .collect::<BTreeSet<_>>();
