@@ -3814,7 +3814,7 @@ impl Worker {
                 .filter(|pos| {
                     self.probe_stash
                         .get(pos)
-                        .is_some_and(|(_, _, _, _, frames)| frames.is_empty())
+                        .is_some_and(|(_, _, _, _, frames, _)| frames.is_empty())
                 })
                 .collect::<HashSet<_>>();
             let mut gpu_bands = HashMap::new();
