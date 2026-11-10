@@ -497,7 +497,7 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
         regex.captures(block).map(|c| c[1].to_string())
     };
     let event_time = Regex::new(r#"TimeCreated[^>]*SystemTime="([^"]+)""#).ok()?;
-    let event_id = Regex::new(r"<EventID(?:\\s[^>]*)?>1000</EventID>").ok()?;
+    let event_id = Regex::new(r"<EventID(?:\s[^>]*)?>1000</EventID>").ok()?;
     for found in events.find_iter(xml) {
         let block = found.as_str();
         if !event_id.is_match(block) { continue; }
