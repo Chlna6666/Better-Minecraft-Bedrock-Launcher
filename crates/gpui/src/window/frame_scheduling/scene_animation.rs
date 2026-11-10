@@ -281,12 +281,6 @@ impl Window {
         }
     }
 
-    pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {
-        self.animation_engine
-            .borrow()
-            .scene_animation_is_active(animation_id)
-    }
-
     pub(crate) fn scene_animation_is_bound(&self, animation_id: SceneAnimationId) -> bool {
         self.animation_engine
             .borrow()
