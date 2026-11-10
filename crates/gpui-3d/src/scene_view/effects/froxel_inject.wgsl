@@ -51,18 +51,23 @@ fn local_scattering(p:vec3<f32>, screen_uv:vec2<f32>)->vec3<f32> {
     if (frame.light_meta.x == 0u) { return vec3<f32>(0.0); }
     let tile_xy = light_tile(screen_uv,frame.display_target.xy,frame.light_meta.yz);
     let base = (tile_xy.y * frame.light_meta.y + tile_xy.x) * 65u;
-    let overflow = tiles[base] > 64u;
-    let count = min(select(tiles[base], frame.light_meta.x, overflow),64u);
+    let tile_count = tiles[base];
+    let overflow = tile_count > 64u;
+    // The stored list is incomplete on overflow. Test the full light set
+    // against the froxel so relevant lights beyond the prefix still contribute.
+    let count = select(tile_count, frame.light_meta.x, overflow);
     var radiance = vec3<f32>(0.0);
     for(var i=0u; i<count; i++){
-        let light_id = select(tiles[base+1u+i],i,overflow);
+        var light_id = i;
+        if (!overflow) { light_id = tiles[base+1u+i]; }
         let light = lights[light_id];
         if(light.kind != 2u && light.kind != 3u && light.kind != 4u && light.kind != 5u){continue;}
         let delta = light.position - p;
-        let distance = length(delta);
-        if(distance < 0.001 || distance >= light.range){continue;}
+        let distance_squared = dot(delta,delta);
+        if(distance_squared < 0.000001 || distance_squared >= light.range*light.range){continue;}
+        let distance = sqrt(distance_squared);
         let fade = max(1.0 - distance / light.range,0.0);
-        var attenuation = fade*fade / max(distance*distance,0.04);
+        var attenuation = fade*fade / max(distance_squared,0.04);
         if(light.kind == 3u){
             attenuation *= smoothstep(
                 light.outer_cone_cosine, light.inner_cone_cosine,
