@@ -1,6 +1,6 @@
-use swash::text::Script;
+use swash::text::{Codepoint, Script};
 #[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
-use swash::text::{BidiClass, Codepoint};
+use swash::text::BidiClass;
 
 /// Unicode script metadata attached to shaped text.
 ///
