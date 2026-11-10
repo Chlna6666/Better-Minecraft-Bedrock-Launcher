@@ -782,6 +782,37 @@ impl Dx12Device {
             .get_mut(encoder)?
             .compute_resources
             .extend(prepared);
+        if tag.is_some() {
+            // Each native Command Queue may report a different timestamp
+            // frequency. Never decode dedicated COMPUTE ticks using the
+            // graphics queue's clock. Unsupported query clocks simply
+            // produce no sample; they do not prevent GPU execution.
+            let frequency = if dedicated_compute {
+                self.async_compute.as_ref().and_then(|q| {
+                    // SAFETY: Querying the live native queue's frequency
+                    // does not stall or synchronize a command list.
+                    unsafe { q.queue.GetTimestampFrequency() }.ok()
+                })
+            } else if native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 1 }) {
+                self.sidecar_queue.as_ref().and_then(|q| {
+                    unsafe { q.GetTimestampFrequency() }.ok()
+                })
+            } else {
+                self.timestamp_frequency
+            }.filter(|hz| *hz > 0);
+            if dedicated_compute && frequency.is_some() {
+                // An independent COMPUTE encoder is deliberately not allowed
+                // in the DIRECT allocator pool. Reuse completed timestamp
+                // probes instead of allocating a Query Heap per Section.
+                let probe = self.gpu_draw_query_pool.pop().or_else(|| {
+                    create_dx12_timestamp_queries(
+                        &self.device, "nova-gfx native COMPUTE timestamps",
+                    ).ok()
+                });
+                self.command_encoders.get_mut(encoder)?.timestamps = probe;
+            }
+            self.command_encoders.get_mut(encoder)?.gpu_work_frequency_hz = frequency;
+        }
         if dedicated_compute {
             // A partial typed-queue Signal failure may outlive the logical
             // buffer registry. Preserve every D3D12 resource referenced by
@@ -820,7 +851,8 @@ impl Dx12Device {
             if let Some((heap, _)) = &queries {
                 let command = self.command_encoders.get(encoder)?.command_list
                     .as_ref().ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
-                // SAFETY: The encoder is recording on the graphics queue and query slot zero is valid.
+                // SAFETY: The timestamp query is from the executing native
+                // queue's own command list and its two slots are exclusive.
                 unsafe { command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
             }
             for (call_index, &index) in indices.iter().enumerate() {
