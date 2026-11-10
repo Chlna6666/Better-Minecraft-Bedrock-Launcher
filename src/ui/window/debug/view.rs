@@ -2575,11 +2575,10 @@ impl Render for DebugView {
                                 (
                                     SharedString::from("保留布局"),
                                     SharedString::from(format!(
-                                        "{} hits / {} misses / {} reused / {} saved",
+                                        "{} hits / {} misses / {} reused",
                                         runtime.gpui_layout_cache_hits,
                                         runtime.gpui_layout_cache_misses,
-                                        runtime.gpui_layout_cache_reused_roots,
-                                        runtime.gpui_layout_cache_saved_roots
+                                        runtime.gpui_layout_cache_reused_roots
                                     )),
                                 ),
                                 (
