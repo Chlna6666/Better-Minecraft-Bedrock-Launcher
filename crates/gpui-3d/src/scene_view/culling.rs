@@ -21,6 +21,15 @@ const PORTAL_HIDDEN_WORD: u32 = 2.0f32.to_bits();
 const PORTAL_WORD_OFFSET: u64 = 7 * 4;
 pub(super) const ARGUMENT_STRIDE: u64 = 16;
 
+// A physical-slot plan may need more backing storage than the live dense
+// Draw count. Return an explicit growth request rather than failing frame
+// preparation after the stable-slot planner has already run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputWriteOutcome {
+    Committed,
+    NeedsCapacity(usize),
+}
+
 
 // The shader-compiled workgroup width is an ABI property, not a guessed
 // per-GPU limit. Batches are stable in logical order; a contiguous trailing
@@ -505,11 +514,26 @@ impl CullResources {
             &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
         >,
     ) -> gpui::Result<Self> {
+        Self::create_with_minimum_instance_capacity(
+            device, draws, batches, backend, meshes, draws.len(),
+        )
+    }
+
+    fn create_with_minimum_instance_capacity(
+        device: &mut dyn ExtensionDevice,
+        draws: &[PreparedDraw],
+        batches: &[DrawBatchRange],
+        backend: BackendKind,
+        meshes: Option<
+            &std::collections::HashMap<(crate::MeshId, bool), super::gpu::MeshResources>,
+        >,
+        minimum_instance_capacity: usize,
+    ) -> gpui::Result<Self> {
         // Keep the indirect-argument and visible-instance buffers on the
         // same DX11 growth policy as scene draw/instance buffers. Otherwise a
         // culling-buffer relocation would still invalidate every draw bind
         // group at 32K/64K, defeating the scene-buffer headroom.
-        let instance_capacity = dx11_streaming_headroom(backend, draws.len())
+        let instance_capacity = dx11_streaming_headroom(backend, draws.len().max(minimum_instance_capacity))
             .max(64)
             .checked_next_power_of_two()
             .context("GPU instance capacity overflow")?;
@@ -565,11 +589,19 @@ impl CullResources {
             instance_capacity,
             batch_capacity,
         };
-        if let Err(error) = resources.write_inputs(device, draws, batches, meshes, false, None) {
-            resources.destroy(device)?;
-            return Err(error);
+        match resources.write_inputs(device, draws, batches, meshes, false, None) {
+            Ok(InputWriteOutcome::Committed) => Ok(resources),
+            Ok(InputWriteOutcome::NeedsCapacity(required)) => {
+                resources.destroy(device)?;
+                Err(anyhow!(
+                    "fresh GPU culling allocation has {instance_capacity} slots but requires {required}"
+                ).into())
+            }
+            Err(error) => {
+                resources.destroy(device)?;
+                Err(error)
+            }
         }
-        Ok(resources)
     }
 
     pub(super) fn update(
@@ -598,13 +630,27 @@ impl CullResources {
         generated_singletons: bool,
         structural: Option<&StructuralDrawDelta>,
     ) -> gpui::Result<()> {
+        let mut required_instance_capacity = draws.len();
         if draws.len() <= self.instance_capacity
             && self.resident_slots.high_water() <= self.instance_capacity
-            && batches.len() <= self.batch_capacity {
-            self.write_inputs(device, draws, batches, meshes, generated_singletons, structural)?;
-            return Ok(());
+            && batches.len() <= self.batch_capacity
+        {
+            match self.write_inputs(
+                device, draws, batches, meshes, generated_singletons, structural,
+            ) {
+                Ok(InputWriteOutcome::Committed) => return Ok(()),
+                Ok(InputWriteOutcome::NeedsCapacity(required)) => {
+                    // A Section splice can increase the physical high-water
+                    // mark while retired slots still have native GPU readers.
+                    // Allocate new storage; never recycle uncompleted slots.
+                    required_instance_capacity = required;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        let mut next = Self::create(device, draws, batches, self.backend, meshes)?;
+        let mut next = Self::create_with_minimum_instance_capacity(
+            device, draws, batches, self.backend, meshes, required_instance_capacity,
+        )?;
         next.mark_generated_singletons(generated_singletons);
         let previous = std::mem::replace(self, next);
         previous.destroy(device)?;
@@ -683,7 +729,7 @@ impl CullResources {
         >,
         generated_singletons: bool,
         structural: Option<&StructuralDrawDelta>,
-    ) -> gpui::Result<()> {
+    ) -> gpui::Result<InputWriteOutcome> {
         // The shared stable-slot identity is (Node, Mesh, Material, Part,
         // occurrence). A Section deletion retires only its corresponding slot;
         // surviving bounds stay resident at their previous GPU addresses.
@@ -715,7 +761,12 @@ impl CullResources {
             |plan| plan.high_water,
         );
         if next_high_water > self.instance_capacity {
-            return Err(anyhow!("GPU culling physical slot capacity exceeded").into());
+            // The stable-slot transaction has not committed any GPU writes.
+            // Preserve scratch allocations for a possible retry if creating
+            // the replacement resources fails.
+            self.scratch_bounds_keys = next_bounds_keys;
+            self.scratch_slot_map = logical_to_physical;
+            return Ok(InputWriteOutcome::NeedsCapacity(next_high_water));
         }
         let mut next_batch_keys = std::mem::take(&mut self.scratch_batch_keys);
         let [mut bounds_scratch, mut batch_bytes] = std::mem::take(&mut self.scratch_inputs);
@@ -961,7 +1012,7 @@ impl CullResources {
             batches.iter().rposition(|batch| batch.instance_count > 1)
                 .map_or(0, |index| index + 1)
         };
-        Ok(())
+        Ok(InputWriteOutcome::Committed)
     }
 
     /// Update per-Node occlusion using four-byte sparse writes to the
