@@ -1461,6 +1461,7 @@ mod tests {
 
     #[test]
     fn redirected_logs_are_baselined_before_launch() {
+        use std::io::Write as _;
         let root = std::env::temp_dir()
             .join(format!("bmcbl-capture-offsets-{}", Uuid::new_v4()));
         let path = root.join("Minecraft Bedrock/logs/latest.log");
