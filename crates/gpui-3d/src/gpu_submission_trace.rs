@@ -115,7 +115,7 @@ fn record_hardware_quantile(
     }
 }
 
-const PHASES: usize = 9;
+const PHASES: usize = Phase::BindGroupSync as usize + 1;
 const BACKENDS: usize = 6;
 struct Accumulator {
     samples: AtomicU64,
@@ -157,8 +157,9 @@ const fn phase_name(index: usize) -> &'static str {
         4 => "draw_indirect_encode",
         5 => "offscreen_enqueue",
         6 => "draw_table_upload",
-        7 => "bind_group_sync",
-        _ => "offscreen_native_submit",
+        7 => "offscreen_native_submit",
+        8 => "bind_group_sync",
+        _ => "unknown",
     }
 }
 
@@ -228,6 +229,15 @@ mod tests {
             assert!(names.insert(phase_name(index)));
         }
         assert_eq!(names.len(), PHASES);
+        assert_eq!(phase_name(Phase::GeneratedInputUpload as usize), "generated_input_upload");
+        assert_eq!(phase_name(Phase::GeneratedComputeIssue as usize), "generated_compute_issue");
+        assert_eq!(phase_name(Phase::IndirectMapUpload as usize), "indirect_map_upload");
+        assert_eq!(phase_name(Phase::IndirectMapComputeIssue as usize), "indirect_map_compute_issue");
+        assert_eq!(phase_name(Phase::DrawIndirectEncode as usize), "draw_indirect_encode");
+        assert_eq!(phase_name(Phase::OffscreenEnqueue as usize), "offscreen_enqueue");
+        assert_eq!(phase_name(Phase::DrawTableUpload as usize), "draw_table_upload");
+        assert_eq!(phase_name(Phase::OffscreenSubmit as usize), "offscreen_native_submit");
+        assert_eq!(phase_name(Phase::BindGroupSync as usize), "bind_group_sync");
     }
     #[test]
     fn counters_are_isolated_by_backend() {
