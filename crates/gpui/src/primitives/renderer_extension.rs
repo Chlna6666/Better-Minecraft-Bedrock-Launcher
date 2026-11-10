@@ -307,6 +307,18 @@ pub trait RendererExtensionRenderer {
         Ok(None)
     }
 
+    /// Drain native Compute/Transfer submissions accepted while preparing
+    /// this renderer's resources (e.g. a GPU-generated mesh batch).
+    ///
+    /// Called even when render() reports an error: already accepted GPU work
+    /// must still be polled on its exact queue and cannot be discarded with
+    /// the failed frame. Producers must report each native SubmissionId once.
+    /// The GPU owner never manufactures a Fence or waits on the CPU here.
+    fn drain_accepted_native_submissions(
+        &mut self,
+        _submissions: &mut Vec<gfx_core::SubmissionId>,
+    ) {}
+
     /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
     /// This is submission ordering, not a resource-reclamation completion signal.
     fn render_passes_submitted(&mut self) {}
