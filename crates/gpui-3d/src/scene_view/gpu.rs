@@ -609,6 +609,19 @@ impl MeshArena {
         allocation: ArenaAllocation,
         access: gfx_core::GpuAccess,
     ) -> gfx_core::Result<()> {
+        self.mark_untracked_access_on_queue(
+            allocation, access, gfx_core::GpuQueueId::PRIMARY,
+        )
+    }
+
+    /// Conservative physical queue tracking BEFORE native submit, including
+    /// partially accepted native command-list failure paths.
+    pub(super) fn mark_untracked_access_on_queue(
+        &mut self,
+        allocation: ArenaAllocation,
+        access: gfx_core::GpuAccess,
+        queue: gfx_core::GpuQueueId,
+    ) -> gfx_core::Result<()> {
         let page = self.pages.get(allocation.page)
             .and_then(Option::as_ref)
             .ok_or_else(|| gfx_core::Error::InvalidInput(
@@ -625,9 +638,40 @@ impl MeshArena {
             ));
         }
         self.native_work.register_untracked(
-            gfx_core::GpuQueueId::PRIMARY,
+            queue,
             gfx_core::GpuSubmissionAccess { span, access },
         );
+        Ok(())
+    }
+
+    /// Register an actual primary native checkpoint after staged buffer
+    /// uploads. The accepted fence is made available to Compute/Transfer
+    /// registrations as a genuine GPU-side wait predecessor; never infer
+    /// a dependency from CPU submission order.
+    pub(super) fn register_native_primary_checkpoint(
+        &mut self, submission: gfx_core::SubmissionId,
+    ) -> gfx_core::Result<()> {
+        if !self.native_work.contains_submission(submission) {
+            self.native_work.register(gfx_core::GpuSubmissionRecord::new(
+                submission, gfx_core::GpuQueueId::PRIMARY,
+                gfx_core::GpuWorkStage::Transfer, Vec::new(),
+            ))?;
+        }
+        self.gpu_submission_accepted(submission);
+        Ok(())
+    }
+
+    /// Once an independent native submission is accepted, convert the
+    /// conservatively marked in-flight queue accesses to the REAL fence.
+    /// Only this same physical queue can seal untracked operations.
+    fn seal_native_queue_submission(
+        &mut self, queue: gfx_core::GpuQueueId,
+        submission: gfx_core::SubmissionId,
+    ) -> gfx_core::Result<()> {
+        self.native_work.seal_untracked_queue(queue, submission)?;
+        for range in &mut self.retirements {
+            range.dependencies.seal_ordered_queue(&self.native_work, queue, submission)?;
+        }
         Ok(())
     }
 
@@ -687,7 +731,7 @@ impl MeshArena {
             }
             return Err(error);
         }
-        Ok(())
+        self.seal_native_queue_submission(queue, submission)
     }
 
     /// Register actual Compute/Transfer/Graphics resource access by its
@@ -784,7 +828,7 @@ impl MeshArena {
             }
             return Err(error);
         }
-        Ok(())
+        self.seal_native_queue_submission(queue, submission)
     }
 
     /// Attach unfenced primary-queue writes/reads to a real ordered producer
