@@ -387,6 +387,12 @@ pub(crate) fn render_task_card(
                                         })
                                     }
                                 };
+                                let is_error = child.status.as_ref() == "error";
+                                let error_id = child.id.clone();
+                                let error_title = SharedString::from(child.title.clone());
+                                let error_message = child.message.as_ref()
+                                    .map(|message| SharedString::from(message.clone()))
+                                    .unwrap_or_else(|| t!("Tasks.status.error"));
                                 div().w_full().pl(px(child.depth as f32 * 12.))
                                     .flex().flex_col().gap(px(3.))
                                     .child(div().w_full().flex().items_center().justify_between()
@@ -400,6 +406,25 @@ pub(crate) fn render_task_card(
                                         child.id.as_ref(), kind, colors,
                                         child.status.as_ref(), child.percent, None, &[],
                                     ))
+                                    .when(is_error, |row| {
+                                        row.child(
+                                            div().w_full().text_size(px(11.))
+                                                .text_color(colors.danger)
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(error_message.clone())
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.open_error_dialog(
+                                                error_id.clone(),
+                                                error_title.clone(),
+                                                error_message.clone(),
+                                                cx,
+                                            );
+                                        }))
+                                    })
                             })),
                     )
                 })
