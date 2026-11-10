@@ -61,6 +61,7 @@ pub(super) struct BatchScratch {
     params: Option<ScratchPage>,
     jobs: Option<ScratchPage>,
     limits: gfx_core::BufferBindingLimits,
+    backend: BackendKind,
 }
 
 struct ScratchPage {
@@ -87,13 +88,14 @@ impl ScratchPage {
 }
 
 impl BatchScratch {
-    pub(super) fn new(limits: gfx_core::BufferBindingLimits) -> Self {
+    pub(super) fn new(limits: gfx_core::BufferBindingLimits, backend: BackendKind) -> Self {
         Self {
             buffers: Vec::new(),
             cells: None,
             params: None,
             jobs: None,
             limits,
+            backend,
         }
     }
 
@@ -102,6 +104,7 @@ impl BatchScratch {
         buffers: &mut Vec<BufferId>,
         page: &mut Option<ScratchPage>,
         usage: BufferUsage,
+        memory_location: MemoryLocation,
         bytes: u64,
         alignment: u64,
         page_capacity: u64,
@@ -122,7 +125,7 @@ impl BatchScratch {
             label: Some("gpui-3d mesher batch scratch".into()),
             size: capacity,
             usage,
-            memory_location: MemoryLocation::GpuOnly,
+            memory_location,
         })?;
         let mut created = ScratchPage {
             buffer,
@@ -150,6 +153,7 @@ impl BatchScratch {
             &mut self.buffers,
             &mut self.cells,
             BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            MemoryLocation::GpuOnly,
             bytes,
             alignment,
             VOXEL_ARENA_PAGE_BYTES,
@@ -168,6 +172,16 @@ impl BatchScratch {
             &mut self.buffers,
             &mut self.params,
             BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            // DX12 COMPUTE-only command lists cannot transition DEFAULT
+            // heap CBVs to VERTEX_AND_CONSTANT_BUFFER. A small immutable
+            // Upload-heap CBV remains GENERIC_READ and may be used by either
+            // direct or dedicated Compute without a resource-state barrier.
+            // All larger Cells/Jobs/Output buffers stay in GPU-local memory.
+            if self.backend == BackendKind::Dx12 {
+                MemoryLocation::CpuToGpu
+            } else {
+                MemoryLocation::GpuOnly
+            },
             bytes,
             self.limits.uniform_offset_alignment,
             64 * 1024,
@@ -187,6 +201,7 @@ impl BatchScratch {
             &mut self.buffers,
             &mut self.jobs,
             BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
+            MemoryLocation::GpuOnly,
             bytes,
             alignment,
             VOXEL_ARENA_PAGE_BYTES,
