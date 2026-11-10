@@ -211,6 +211,7 @@ pub(super) struct EffectScene {
     cached_graph: Option<(EffectGraphKey, usize)>,
     pub(super) frame: BufferId,
     pub(super) composite_frame: BufferId,
+    composite_placement: Option<(gpui::Bounds<gpui::ScaledPixels>, Extent2d)>,
     pub(super) tiles: LightTiles,
     pub(super) groups: Option<[BindGroupId; 2]>,
     pub(super) group_key: Option<(
@@ -621,6 +622,7 @@ impl EffectScene {
                 cached_graph: None,
                 frame,
                 composite_frame,
+                composite_placement: None,
                 tiles,
                 groups: None,
                 group_key: None,
@@ -774,6 +776,13 @@ impl EffectScene {
             .ok_or_else(|| anyhow::anyhow!("singular projection"))?;
         let mut bytes = Vec::with_capacity(super::FRAME_BYTES as usize);
         for (buffer, context) in [(self.frame, local), (self.composite_frame, host)] {
+            let bounds = context.bounds();
+            let extent = context.viewport();
+            // The host composite shader reads only placement from this uniform.
+            let composite = buffer == self.composite_frame;
+            if composite && self.composite_placement == Some((bounds, extent)) {
+                continue;
+            }
             bytes.clear();
             for matrix in [matrix, inverse, self.shadow_matrix[0]] {
                 for column in matrix.columns() {
@@ -783,8 +792,6 @@ impl EffectScene {
                 }
             }
             let shading = view.voxel_shading;
-            let bounds = context.bounds();
-            let extent = context.viewport();
             for values in [
                 [view.camera.eye.x, view.camera.eye.y, view.camera.eye.z, 1.],
                 [
@@ -880,7 +887,13 @@ impl EffectScene {
                 bytes.extend(value.to_le_bytes());
             }
             debug_assert_eq!(bytes.len(), super::FRAME_BYTES as usize);
+            if composite {
+                self.composite_placement = None;
+            }
             device.write_buffer(buffer, 0, &bytes)?;
+            if composite {
+                self.composite_placement = Some((bounds, extent));
+            }
         }
         Ok(())
     }
