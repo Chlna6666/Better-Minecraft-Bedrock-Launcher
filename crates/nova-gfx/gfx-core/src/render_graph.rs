@@ -15,18 +15,25 @@ use crate::{BufferId, Error, Result, SubmissionId, TextureId};
 /// Complete allocation identity. A mip view cannot escape an aliasing hazard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum GpuResource {
+    /// Complete buffer allocation, including its suballocated byte ranges.
     Buffer(BufferId),
+    /// Complete texture allocation, covering all views and mip levels.
     Texture(TextureId),
 }
 
 /// Native command domain. These are execution stages, not implicit queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuWorkStage {
+    /// Raster and graphics-pipeline operations.
     Graphics,
+    /// Compute-pipeline dispatch operations.
     Compute,
+    /// Buffer or image copy operations.
     Transfer,
 }
 
+/// Logical GPU read/write access used to derive pass-order hazards.
+/// The native backend remains responsible for encoding the actual barriers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuAccess {
     /// Shader read without writes.
@@ -50,6 +57,8 @@ pub enum GpuAccess {
 }
 
 impl GpuAccess {
+    /// Whether this access consumes prior contents and requires a visible producer.
+    #[must_use]
     pub const fn reads(self) -> bool {
         matches!(
             self,
@@ -57,6 +66,8 @@ impl GpuAccess {
                 | Self::StorageReadWrite | Self::CopyRead
         )
     }
+    /// Whether this access modifies contents and can introduce a write hazard.
+    #[must_use]
     pub const fn writes(self) -> bool {
         matches!(
             self,
@@ -69,15 +80,20 @@ impl GpuAccess {
 /// Resource use in an ordered pass; whole-texture aliasing is intentional.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpuResourceUse {
+    /// Whole allocation referenced by the ordered GPU work pass.
     pub resource: GpuResource,
+    /// Logical access mode to apply to that allocation.
     pub access: GpuAccess,
 }
 
 /// One ordered render or compute pass.
 #[derive(Clone, Debug)]
 pub struct GpuWorkPass {
+    /// Human-readable diagnostic label for the pass.
     pub label: String,
+    /// Command domain in which the pass executes.
     pub stage: GpuWorkStage,
+    /// Exact logical allocation accesses declared by the pass.
     pub resources: Vec<GpuResourceUse>,
 }
 
@@ -85,21 +101,32 @@ pub struct GpuWorkPass {
 /// into API-specific barriers; the planner does not claim to insert them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpuTransition {
+    /// Allocation shared by the producer and consumer passes.
     pub resource: GpuResource,
+    /// Index of the preceding producer or last conflicting access.
     pub from_pass: usize,
+    /// Index of the pass that must observe the barrier.
     pub to_pass: usize,
+    /// Command domain of the earlier access.
     pub from_stage: GpuWorkStage,
+    /// Command domain of the later access.
     pub to_stage: GpuWorkStage,
+    /// Earlier access requiring visibility or write ordering.
     pub before: GpuAccess,
+    /// Later access requiring visibility or write ordering.
     pub after: GpuAccess,
 }
 
+/// Mutable builder for an ordered, backend-neutral GPU dependency graph.
+/// Call `compile` before native submission to validate producer/consumer hazards.
 #[derive(Default, Debug)]
 pub struct GpuWorkGraph {
     imports: HashSet<GpuResource>,
     passes: Vec<GpuWorkPass>,
 }
 
+/// Immutable validated pass schedule and resource-transition obligations.
+/// Backends may not skip the barriers described by this plan.
 #[derive(Debug)]
 pub struct GpuWorkPlan {
     // The compiled plan must be immutable from outside gfx-core. Letting a
@@ -292,6 +319,8 @@ impl GpuWorkPlan {
 }
 
 impl GpuWorkGraph {
+    /// Create an empty work graph with no imported resources or passes.
+    #[must_use]
     pub fn new() -> Self { Self::default() }
 
     /// Import data produced by an earlier frame or an external producer.
