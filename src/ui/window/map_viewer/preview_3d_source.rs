@@ -1759,6 +1759,18 @@ impl Preview3dMeshBuilder {
         fluid: Preview3dBlockClass,
     ) -> Option<f32> {
         let neighbour = block.key.neighbor(face);
+        // A horizontal face at a not-yet-loaded Chunk seam has no proof of
+        // adjacent air. Defer its liquid wall rather than producing a full
+        // height blue curtain against unknown world data. The normal neighbor
+        // reconciliation rebuilds this face after the adjacent Chunk arrives.
+        let neighbour_column = ChunkKey::from_block(neighbour);
+        if face.normal[1] == 0
+            && neighbour_column != ChunkKey::from_block(block.key)
+            && !self.block_chunks.contains_key(&neighbour_column)
+            && !self.boundary_chunks.contains_key(&neighbour_column)
+        {
+            return None;
+        }
         match self.block_class_at(neighbour) {
             Some(Preview3dBlockClass::Opaque) => None,
             Some(kind) if kind == fluid => {
