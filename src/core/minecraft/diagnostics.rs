@@ -393,8 +393,18 @@ impl GameSessionReport {
         }
         // Freeze evidence only for abnormal sessions. Normal play should not
         // create unnecessary raw log copies or increase persistent disk usage.
-        if self.kind.is_abnormal() || self.early_exit {
+        let needs_evidence = self.kind.is_abnormal() || self.early_exit;
+        let may_need_late_wer = self.kind == ExitKind::Unknown
+            && matches!(self.platform.as_str(), "gdk" | "uwp" | "win32")
+            && self.exit_code.is_some_and(|code|
+                code != 0 && code != WINDOWS_CONTROL_C_EXIT
+            );
+        if needs_evidence || may_need_late_wer {
+            // Preserve launch-scoped logs before a delayed WER confirmation.
+            // Do not create large snapshots for ordinary control-event exits.
             snapshot_text_evidence(&self);
+        }
+        if needs_evidence {
             let (findings, evidence) = analyze_snapshot(&self);
             self.findings = findings;
             self.forensics = evidence;
@@ -487,9 +497,10 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
         regex.captures(block).map(|c| c[1].to_string())
     };
     let event_time = Regex::new(r#"TimeCreated[^>]*SystemTime="([^"]+)""#).ok()?;
+    let event_id = Regex::new(r"<EventID(?:\\s[^>]*)?>1000</EventID>").ok()?;
     for found in events.find_iter(xml) {
         let block = found.as_str();
-        if !block.contains("<EventID>1000</EventID>") { continue; }
+        if !event_id.is_match(block) { continue; }
         let Some(pid_text) = data(block, "ProcessId") else { continue };
         let actual_pid = if pid_text.starts_with("0x") || pid_text.starts_with("0X") {
             u32::from_str_radix(&pid_text[2..], 16).ok()
@@ -1301,6 +1312,9 @@ mod tests {
             now.to_rfc3339()
         );
         assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_some());
+        let qualified = event("0x112a", "0xabcd")
+            .replace("<EventID>1000</EventID>", "<EventID Qualifiers=\"0\">1000</EventID>");
+        assert!(match_application_error(&qualified, &report).is_some());
         assert!(match_application_error(&event("0x112b", "0xabcd"), &report).is_none());
         assert!(match_application_error(&event("0x112a", "0xff00"), &report).is_none());
         assert!(match_application_error(&event("0x112a", "invalid"), &report).is_none());
