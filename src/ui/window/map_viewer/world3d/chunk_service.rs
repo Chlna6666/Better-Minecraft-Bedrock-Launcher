@@ -3623,12 +3623,9 @@ impl Worker {
     /// mesh exists. Cached metadata-only columns are deliberately represented
     /// as open space; they can never make another Section falsely invisible.
     fn portal_probe_snapshot(&self) -> BTreeMap<ChunkPos, Arc<World3dChunkProbe>> {
-        let mut probes = self.visibility_index.probes()
+        let mut probes = self.cache.iter()
+            .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
             .collect::<BTreeMap<_, _>>();
-        probes.extend(
-            self.cache.iter()
-                .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe))),
-        );
         probes.extend(
             self.probe_stash.iter()
                 .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
