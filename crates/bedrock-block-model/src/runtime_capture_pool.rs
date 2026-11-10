@@ -47,7 +47,10 @@ impl GeometryPool {
             if bytes.len() as u64 > MAX_POOL {
                 return Err("oversize geometry pool".into());
             }
-            let header = bytes.get(..28).ok_or("truncated geometry pool header")?.to_vec();
+            let header = bytes
+                .get(..28)
+                .ok_or("truncated geometry pool header")?
+                .to_vec();
             let len = bytes.len() as u64;
             (Source::Embedded(Arc::from(bytes)), len, header)
         } else {
@@ -72,20 +75,27 @@ impl GeometryPool {
         for count in &mut counts {
             *count = u32_at(&header, &mut at).ok_or("invalid pool count")? as usize;
         }
-        let total = counts.iter().try_fold(0usize, |n, c| n.checked_add(*c))
+        let total = counts
+            .iter()
+            .try_fold(0usize, |n, c| n.checked_add(*c))
             .ok_or("pool count overflow")?;
         if total > MAX_COUNT {
             return Err("pool count exceeds limit".into());
         }
         let dir_len = total.checked_mul(12).ok_or("pool directory overflow")?;
-        let begin = 28usize.checked_add(dir_len).ok_or("pool directory overflow")?;
+        let begin = 28usize
+            .checked_add(dir_len)
+            .ok_or("pool directory overflow")?;
         if begin as u64 > len {
             return Err("truncated pool directory".into());
         }
         let mut directory = vec![0u8; dir_len];
         match &source {
-            Source::File(file) => file.lock().map_err(|e| e.to_string())?
-                .read_exact(&mut directory).map_err(|e| e.to_string())?,
+            Source::File(file) => file
+                .lock()
+                .map_err(|e| e.to_string())?
+                .read_exact(&mut directory)
+                .map_err(|e| e.to_string())?,
             Source::Embedded(bytes) => directory.copy_from_slice(&bytes[28..begin]),
         }
         let mut entries: [Vec<Entry>; 4] = std::array::from_fn(|_| Vec::new());
@@ -99,11 +109,16 @@ impl GeometryPool {
                 if offset != next || entry_len as usize > MAX_ENTRY {
                     return Err("noncanonical pool offset/length".into());
                 }
-                next = offset.checked_add(u64::from(entry_len)).ok_or("pool offset overflow")?;
+                next = offset
+                    .checked_add(u64::from(entry_len))
+                    .ok_or("pool offset overflow")?;
                 if next > len {
                     return Err("pool entry outside file".into());
                 }
-                entries[kind].push(Entry { offset, len: entry_len });
+                entries[kind].push(Entry {
+                    offset,
+                    len: entry_len,
+                });
             }
         }
         if next != len {
@@ -139,15 +154,23 @@ impl Geometry {
         let mut at = 0;
         let n = u32_at(bytes, &mut at)? as usize;
         let t = u32_at(bytes, &mut at)? as usize;
-        if n > MAX_COUNT || t == 0 || t > MAX_COUNT ||
-            8usize.checked_add(n.checked_mul(12)?)?
-                .checked_add(t.checked_mul(12)?)? != bytes.len() {
+        if n > MAX_COUNT
+            || t == 0
+            || t > MAX_COUNT
+            || 8usize
+                .checked_add(n.checked_mul(12)?)?
+                .checked_add(t.checked_mul(12)?)?
+                != bytes.len()
+        {
             return None;
         }
         let mut vertices = Vec::with_capacity(n);
         for _ in 0..n {
-            let point = [f32_at(bytes, &mut at)?, f32_at(bytes, &mut at)?,
-                         f32_at(bytes, &mut at)?];
+            let point = [
+                f32_at(bytes, &mut at)?,
+                f32_at(bytes, &mut at)?,
+                f32_at(bytes, &mut at)?,
+            ];
             if !point.iter().all(|v| v.is_finite() && v.abs() <= 4096.) {
                 return None;
             }
@@ -155,15 +178,20 @@ impl Geometry {
         }
         let mut triangles = Vec::with_capacity(t);
         for _ in 0..t {
-            let indices = [u32_at(bytes, &mut at)? as usize,
-                           u32_at(bytes, &mut at)? as usize,
-                           u32_at(bytes, &mut at)? as usize];
+            let indices = [
+                u32_at(bytes, &mut at)? as usize,
+                u32_at(bytes, &mut at)? as usize,
+                u32_at(bytes, &mut at)? as usize,
+            ];
             if indices.iter().any(|&v| v >= n) {
                 return None;
             }
             triangles.push(indices);
         }
-        Some(Self { vertices, triangles })
+        Some(Self {
+            vertices,
+            triangles,
+        })
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,14 +219,21 @@ impl Appearance {
         let source_kind = u32_at(bytes, &mut at)?;
         let flags = u32_at(bytes, &mut at)?;
         let t = u32_at(bytes, &mut at)? as usize;
-        if source_kind > 2 || flags & !3 != 0 || t == 0 || t > MAX_COUNT ||
-            20usize.checked_add(t.checked_mul(84)?)? != bytes.len() {
+        if source_kind > 2
+            || flags & !3 != 0
+            || t == 0
+            || t > MAX_COUNT
+            || 20usize.checked_add(t.checked_mul(84)?)? != bytes.len()
+        {
             return None;
         }
         let mut corners = Vec::with_capacity(t * 3);
         for _ in 0..t * 3 {
-            let normal = [f32_at(bytes, &mut at)?, f32_at(bytes, &mut at)?,
-                          f32_at(bytes, &mut at)?];
+            let normal = [
+                f32_at(bytes, &mut at)?,
+                f32_at(bytes, &mut at)?,
+                f32_at(bytes, &mut at)?,
+            ];
             let uv = [f32_at(bytes, &mut at)?, f32_at(bytes, &mut at)?];
             let abgr = u32_at(bytes, &mut at)?;
             if !normal.iter().chain(uv.iter()).all(|v| v.is_finite()) {
@@ -222,6 +257,13 @@ impl Appearance {
         if !uv_complete && slots.iter().any(Option::is_some) {
             return None;
         }
-        Some(Self { geometry_id, source_kind, uv_complete, corners, slots, variant_frames })
+        Some(Self {
+            geometry_id,
+            source_kind,
+            uv_complete,
+            corners,
+            slots,
+            variant_frames,
+        })
     }
 }

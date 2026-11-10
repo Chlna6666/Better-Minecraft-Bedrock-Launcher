@@ -277,4 +277,3 @@ pub(crate) fn portal_shape(state: &BlockStateQuery) -> ModelShape {
     };
     ModelShape::from_cuboids([cuboid])
 }
-
