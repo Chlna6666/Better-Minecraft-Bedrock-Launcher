@@ -763,9 +763,11 @@ impl VulkanDevice {
         // when a cheaper second graphics-family queue is already usable.
         // The dedicated compute family is selected only when no such queue
         // exists, and only native buffer compute may execute there.
-        let share_compute = self.sidecar_queue.is_none()
-            && self.dedicated_compute_family_index.is_some()
-            && desc.usage.intersects(BufferUsage::STORAGE | BufferUsage::UNIFORM);
+        let share_compute = needs_concurrent_compute_sharing(
+            self.sidecar_queue.is_some(),
+            self.dedicated_compute_family_index,
+            desc.usage,
+        );
         let families = [
             self.graphics_queue_family_index,
             self.dedicated_compute_family_index.unwrap_or(self.graphics_queue_family_index),
@@ -6217,6 +6219,32 @@ fn physical_device_preference_rank(
     }
 }
 
+/// Select a real non-graphics COMPUTE family, never a family advertising
+/// COMPUTE without any allocatable queues. Do not silently assume every
+/// physical adapter has a dedicated compute queue.
+fn select_compute_only_family(families: &[vk::QueueFamilyProperties]) -> Option<u32> {
+    families.iter().enumerate().find_map(|(index, family)| {
+        (family.queue_count > 0
+            && family.queue_flags.contains(vk::QueueFlags::COMPUTE)
+            && !family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .then(|| u32::try_from(index).ok())
+            .flatten()
+    })
+}
+
+/// Concurrent sharing is a correctness requirement when two queue families
+/// access the same buffer. Avoid its potential cache overhead when a second
+/// same-family queue suffices. EXCLUSIVE images are never handed to compute.
+fn needs_concurrent_compute_sharing(
+    sidecar_graphics_queue: bool,
+    compute_family: Option<u32>,
+    usage: BufferUsage,
+) -> bool {
+    !sidecar_graphics_queue
+        && compute_family.is_some()
+        && usage.intersects(BufferUsage::STORAGE | BufferUsage::UNIFORM)
+}
+
 fn queue_family_indices_without_surface(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
@@ -6240,13 +6268,7 @@ fn queue_family_indices_without_surface(
         .ok_or_else(|| VulkanError::Unavailable("no graphics queue family".to_string()))?;
     let graphics = u32::try_from(graphics)
         .map_err(|error| Error::Backend(format!("queue family index overflow: {error}")))?;
-    let compute = families.iter().enumerate().find_map(|(index, family)| {
-        (family.queue_count > 0
-            && family.queue_flags.contains(vk::QueueFlags::COMPUTE)
-            && !family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .then(|| u32::try_from(index).ok())
-            .flatten()
-    });
+    let compute = select_compute_only_family(&families);
     Ok(QueueFamilyIndices {
         graphics,
         present: graphics,
@@ -8222,6 +8244,41 @@ enum PendingDescriptorWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_compute_family_selection_skips_zero_queue_and_graphics_families() {
+        let with = |queue_count, queue_flags| vk::QueueFamilyProperties {
+            queue_count, queue_flags, ..Default::default()
+        };
+        let families = [
+            with(1, vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE),
+            with(0, vk::QueueFlags::COMPUTE),
+            with(1, vk::QueueFlags::TRANSFER),
+            with(1, vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER),
+        ];
+        assert_eq!(select_compute_only_family(&families), Some(3));
+        assert_eq!(select_compute_only_family(&families[..3]), None);
+    }
+
+    #[test]
+    fn cross_family_buffer_sharing_is_restricted_to_compute_buffer_abi() {
+        let compute = Some(2);
+        assert!(needs_concurrent_compute_sharing(
+            false, compute, BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        ));
+        assert!(needs_concurrent_compute_sharing(
+            false, compute, BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+        ));
+        assert!(!needs_concurrent_compute_sharing(
+            false, compute, BufferUsage::COPY_DST,
+        ));
+        assert!(!needs_concurrent_compute_sharing(
+            true, compute, BufferUsage::STORAGE,
+        ));
+        assert!(!needs_concurrent_compute_sharing(
+            false, None, BufferUsage::STORAGE,
+        ));
+    }
 
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
