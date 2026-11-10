@@ -9,7 +9,9 @@
     let center=frame.view_projection*vec4<f32>(light.position,1.0);
     let reach=light.range*(abs(frame.view_projection[0].w)+abs(frame.view_projection[1].w)+abs(frame.view_projection[2].w));
     if(center.w+reach<=0.001){return;}
-    var lo=vec2<f32>(1.0);var hi=vec2<f32>(-1.0);var clipped=false;
+    // Start outside the viewport so wholly offscreen lights can be rejected
+    // before they consume edge-tile entries or cause a false overflow.
+    var lo=vec2<f32>(2.0);var hi=vec2<f32>(-2.0);var clipped=false;
     for(var corner=0u;corner<8u;corner++){let offset=select(vec3<f32>(-light.range),vec3<f32>(light.range),vec3<bool>((corner&1u)!=0u,(corner&2u)!=0u,(corner&4u)!=0u));let p=light.position+offset;
         let clip=frame.view_projection*vec4<f32>(p,1.0);if(clip.w<=0.001){clipped=true;continue;}let ndc=clip.xy/clip.w;lo=min(lo,ndc);hi=max(hi,ndc);
     }
