@@ -182,7 +182,6 @@ impl TaffyLayoutEngine {
             bounds_cache_hits: self.bounds_cache_hits,
             bounds_cache_misses: self.bounds_cache_misses,
             cache_reused_roots: self.layout_cache_reused_roots,
-            cache_saved_roots: self.layout_cache_saved_roots,
         }
     }
 
