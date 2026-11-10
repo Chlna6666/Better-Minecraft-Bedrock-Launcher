@@ -92,3 +92,71 @@ fn native_independent_direct_queue_compute_and_gpu_wait() {
     device.destroy_buffer(buffer).expect("destroy output");
     device.destroy_shader_module(shader).expect("destroy shader");
 }
+
+#[test]
+#[ignore = "requires a physical DX12 dedicated COMPUTE queue; --features shader-compiler -- --ignored"]
+fn native_typed_compute_accepts_upload_heap_cbv_without_graphics_only_state() {
+    use gfx_core::{
+        BufferBinding, BufferDescriptor, BufferUsage, ComputeBufferAccess,
+        ComputeBufferBinding, ComputeDispatch, GpuQueueId, MemoryLocation,
+        PipelineDevice, ShaderModuleDescriptor, SubmissionDevice,
+    };
+    let mut device = match Dx12Device::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(_)) => return,
+        Err(error) => panic!("DX12 init failed: {error}"),
+    };
+    let dedicated = GpuQueueId { family: 0, index: 2 };
+    if device.independent_queue(gfx_core::GpuWorkStage::Compute) != Some(dedicated) {
+        eprintln!("DX12 dedicated COMPUTE not available");
+        return;
+    }
+    let module = gfx_shader::WgslModule::parse(
+        "struct Params { value: u32, pad0: u32, pad1: u32, pad2: u32, }
+         @group(0) @binding(0) var<uniform> params: Params;
+         @group(0) @binding(1) var<storage, read_write> output: array<u32>;
+         @compute @workgroup_size(1)
+         fn cs() { output[0] = params.value; }",
+    ).expect("CBV shader");
+    let shader = device.create_shader_module(&ShaderModuleDescriptor {
+        label: Some("typed COMPUTE upload heap CBV".into()),
+        binary: module.compile_hlsl(ShaderStage::Compute, "cs").expect("HLSL"),
+    }).expect("shader");
+    let constants = device.create_buffer(&BufferDescriptor {
+        label: Some("upload-heap constant data".into()),
+        size: 256,
+        usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    }).expect("CPU to GPU CBV");
+    let output = device.create_buffer(&BufferDescriptor {
+        label: Some("GPU-only compute result".into()),
+        size: 16,
+        usage: BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE,
+        memory_location: MemoryLocation::GpuOnly,
+    }).expect("storage output");
+    device.write_buffer(constants, 0, &123u32.to_le_bytes()).expect("mapped constant write");
+    let bindings = [
+        ComputeBufferBinding {
+            binding: 0,
+            buffer: BufferBinding { buffer: constants, offset: 0, size: 16, stride: None },
+            access: ComputeBufferAccess::Uniform,
+        },
+        ComputeBufferBinding {
+            binding: 1,
+            buffer: BufferBinding { buffer: output, offset: 0, size: 16, stride: None },
+            access: ComputeBufferAccess::ReadWrite,
+        },
+    ];
+    let jobs = [ComputeDispatch { shader, bindings: &bindings, workgroups: [1, 1, 1] }];
+    let producer = device.submit_compute_batch_on_queue(dedicated, &jobs)
+        .expect("typed Compute must not transition upload-heap CBV out of GENERIC_READ");
+    let joined = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
+        .expect("primary join checkpoint");
+    // This is an explicitly ignored HARDWARE test: CPU fence waits are for
+    // correctness validation, never the normal SceneView streaming path.
+    device.wait_submission(producer).expect("dedicated producer completion");
+    device.wait_submission(joined).expect("graphics consumer join completion");
+    device.destroy_buffer(output).expect("output retirement");
+    device.destroy_buffer(constants).expect("CBV retirement");
+    device.destroy_shader_module(shader).expect("shader retirement");
+}
