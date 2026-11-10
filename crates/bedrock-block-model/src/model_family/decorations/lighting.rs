@@ -278,11 +278,3 @@ pub(crate) fn portal_shape(state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids([cuboid])
 }
 
-fn wall_torch_cuboid(direction: CardinalDirection) -> ModelCuboid {
-    match direction {
-        CardinalDirection::North => ModelCuboid::new([0.40625, 0.25, 0.0], [0.59375, 0.875, 0.5]),
-        CardinalDirection::South => ModelCuboid::new([0.40625, 0.25, 0.5], [0.59375, 0.875, 1.0]),
-        CardinalDirection::East => ModelCuboid::new([0.5, 0.25, 0.40625], [1.0, 0.875, 0.59375]),
-        CardinalDirection::West => ModelCuboid::new([0.0, 0.25, 0.40625], [0.5, 0.875, 0.59375]),
-    }
-}
