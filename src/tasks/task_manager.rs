@@ -790,7 +790,10 @@ impl TaskOptions {
     /// Explicitly inherit only the currently entered scope, never unrelated tasks.
     /// Tokio task-local context survives awaits but does not leak into spawned jobs.
     pub fn in_current_scope(mut self) -> Self {
-        if let Ok(parent_id) = ACTIVE_TASK_SCOPE.try_with(Arc::clone) {
+        // An explicit parent always wins over the surrounding async context.
+        if self.parent_id.is_none()
+            && let Ok(parent_id) = ACTIVE_TASK_SCOPE.try_with(Arc::clone)
+        {
             self.parent_id = Some(parent_id.to_string());
         }
         self
@@ -931,49 +934,6 @@ pub fn create_task_with_options(
         total,
         supports_pause,
     )
-}
-
-/// Attach a task to a visible workflow without merging its independent lifecycle.
-pub fn set_task_parent(task_id: &str, parent_id: &str) -> bool {
-    let snapshot = {
-        let mut tasks = TASKS.lock().unwrap();
-        if task_id == parent_id || !tasks.contains_key(task_id) || !tasks.contains_key(parent_id) {
-            return false;
-        }
-        let mut ancestor = Some(parent_id.to_string());
-        while let Some(id) = ancestor {
-            if id == task_id {
-                return false;
-            }
-            ancestor = tasks.get(&id).and_then(|task| task.parent_id.as_ref().map(ToString::to_string));
-        }
-        let task = tasks.get_mut(task_id).expect("task existence checked");
-        if task.parent_id.as_deref() == Some(parent_id) {
-            return true;
-        }
-        task.parent_id = Some(Arc::from(parent_id));
-        task.touch();
-        task.snapshot()
-    };
-    emit_task_update(snapshot);
-    true
-}
-
-pub fn set_task_type(task_id: &str, task_type: TaskType) -> bool {
-    let snapshot = {
-        let mut tasks = TASKS.lock().unwrap();
-        let Some(task) = tasks.get_mut(task_id) else {
-            return false;
-        };
-        if task.task_type == task_type {
-            return true;
-        }
-        task.task_type = task_type;
-        task.touch();
-        task.snapshot()
-    };
-    emit_task_update(snapshot);
-    true
 }
 
 pub fn set_task_labels(task_id: &str, title: impl Into<String>, detail: Option<String>) -> bool {
