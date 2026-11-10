@@ -857,6 +857,10 @@ pub fn capture_log_offsets(game_dir: &Path) -> HashMap<String, u64> {
         ("logs/game.log", game_dir.join("logs/latest.log")),
         ("logs/levilamina.log", game_dir.join("logs/LeviLamina.log")),
         ("logs/bloader.log", game_dir.join("logs/BLoader.log")),
+        ("logs/preloader.log", game_dir.join("logs/PreLoader.log")),
+        ("logs/loader-latest.log", game_dir.join("LeviLamina/logs/latest.log")),
+        ("logs/bloader-latest.log", game_dir.join("BLoader/logs/latest.log")),
+        ("logs/redirected-preloader.log", game_dir.join("Minecraft Bedrock/logs/PreLoader.log")),
         ("logs/redirected-game.log", game_dir.join("Minecraft Bedrock/logs/latest.log")),
         ("logs/redirected-levilamina.log", game_dir.join("Minecraft Bedrock/logs/LeviLamina.log")),
         ("logs/redirected-bloader.log", game_dir.join("Minecraft Bedrock/logs/BLoader.log")),
@@ -915,6 +919,13 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             root().join(format!("{}.runner.log", report.id))),
         ("logs/levilamina.log".to_string(), report.game_directory.join("logs/LeviLamina.log")),
         ("logs/bloader.log".to_string(), report.game_directory.join("logs/BLoader.log")),
+        ("logs/preloader.log".to_string(), report.game_directory.join("logs/PreLoader.log")),
+        ("logs/loader-latest.log".to_string(),
+            report.game_directory.join("LeviLamina/logs/latest.log")),
+        ("logs/bloader-latest.log".to_string(),
+            report.game_directory.join("BLoader/logs/latest.log")),
+        ("logs/redirected-preloader.log".to_string(),
+            report.game_directory.join("Minecraft Bedrock/logs/PreLoader.log")),
         // BLoader redirects instance data under the package's Minecraft Bedrock
         // directory. Ordinary latest.log was previously excluded by directory
         // discovery because its name contains neither "crash" nor "bloader".
@@ -926,6 +937,8 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             report.game_directory.join("Minecraft Bedrock/logs/BLoader.log")),
     ];
     let directories = [
+        report.game_directory.join("logs"),
+        report.game_directory.join("PreLoader/logs"),
         report.game_directory.join("crash-logs"),
         report.game_directory.join("logs/crash"),
         report.game_directory.join("LeviLamina/logs"),
@@ -976,6 +989,9 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
                 && !name.contains("crash")
                 && !name.contains("levilamina")
                 && !name.contains("bloader")
+                && !name.contains("preloader")
+                && !name.contains("liteloader")
+                && !name.starts_with("trace_")
             {
                 continue;
             }
