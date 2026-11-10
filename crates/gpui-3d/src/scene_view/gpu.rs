@@ -588,7 +588,9 @@ impl MeshArena {
     ) {
         let Some(submission) = submission else { return };
         if !self.native_work.contains_submission(submission) {
-            let uses = self.pages.iter().flatten().filter(|p| p.live != 0)
+            let uses: Vec<gfx_core::GpuSubmissionAccess> = self.pages.iter()
+                .flatten()
+                .filter(|page| page.live != 0)
                 .map(|page| gfx_core::GpuSubmissionAccess {
                     span: gfx_core::GpuResourceSpan::WholeBuffer(page.buffer),
                     access: gfx_core::GpuAccess::ReadBuffer,
