@@ -320,6 +320,12 @@ pub(super) enum PassKind {
     Hdr,
     AttributesMrt,
     Shadow,
+    // Offline MRT-vs-single-target regression references. Shader entries
+    // already exist but these passes are never created by production code.
+    #[cfg(test)]
+    Surface,
+    #[cfg(test)]
+    Albedo,
 }
 impl PassKind {
     fn entries(self) -> [&'static str; 2] {
@@ -328,10 +334,20 @@ impl PassKind {
             Self::Hdr => ["fs_hdr", "fs_voxel_capture"],
             Self::AttributesMrt => ["fs_scene_attributes_mrt", "fs_voxel_attributes_mrt"],
             Self::Shadow => ["fs_scene_shadow", "fs_voxel_shadow"],
+            #[cfg(test)]
+            Self::Surface => ["fs_scene_surface", "fs_voxel_surface"],
+            #[cfg(test)]
+            Self::Albedo => ["fs_scene_albedo", "fs_voxel_albedo"],
         }
     }
     fn is_attribute(self) -> bool {
         matches!(self, Self::AttributesMrt | Self::Shadow)
+            || {
+                #[cfg(test)]
+                { matches!(self, Self::Surface | Self::Albedo) }
+                #[cfg(not(test))]
+                { false }
+            }
     }
 }
 
