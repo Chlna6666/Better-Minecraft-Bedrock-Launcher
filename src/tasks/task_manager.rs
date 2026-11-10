@@ -182,6 +182,16 @@ impl TaskControl {
     }
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskType {
+    #[default]
+    Operation,
+    Workflow,
+    Transfer,
+    Stage,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSnapshot {
@@ -206,6 +216,10 @@ pub struct TaskSnapshot {
     pub sequence: u64,
     #[serde(default)]
     pub visibility: TaskVisibility,
+    #[serde(default)]
+    pub parent_id: Option<Arc<str>>,
+    #[serde(default)]
+    pub task_type: TaskType,
 }
 
 impl TaskSnapshot {
@@ -288,6 +302,8 @@ struct Task {
     last_emit_instant: Instant,
     sequence: u64,
     visibility: TaskVisibility,
+    parent_id: Option<Arc<str>>,
+    task_type: TaskType,
 }
 
 impl Task {
@@ -321,6 +337,8 @@ impl Task {
             last_emit_instant: now,
             sequence: 0,
             visibility,
+            parent_id: None,
+            task_type: TaskType::Operation,
         }
     }
 
@@ -374,6 +392,8 @@ impl Task {
             last_update_unix: now_unix,
             sequence: self.sequence,
             visibility: self.visibility,
+            parent_id: self.parent_id.clone(),
+            task_type: self.task_type,
         }
     }
 
@@ -778,6 +798,49 @@ pub fn create_task_with_options(
         total,
         supports_pause,
     )
+}
+
+/// Attach a task to a visible workflow without merging its independent lifecycle.
+pub fn set_task_parent(task_id: &str, parent_id: &str) -> bool {
+    let snapshot = {
+        let mut tasks = TASKS.lock().unwrap();
+        if task_id == parent_id || !tasks.contains_key(task_id) || !tasks.contains_key(parent_id) {
+            return false;
+        }
+        let mut ancestor = Some(parent_id.to_string());
+        while let Some(id) = ancestor {
+            if id == task_id {
+                return false;
+            }
+            ancestor = tasks.get(&id).and_then(|task| task.parent_id.as_ref().map(ToString::to_string));
+        }
+        let task = tasks.get_mut(task_id).expect("task existence checked");
+        if task.parent_id.as_deref() == Some(parent_id) {
+            return true;
+        }
+        task.parent_id = Some(Arc::from(parent_id));
+        task.touch();
+        task.snapshot()
+    };
+    emit_task_update(snapshot);
+    true
+}
+
+pub fn set_task_type(task_id: &str, task_type: TaskType) -> bool {
+    let snapshot = {
+        let mut tasks = TASKS.lock().unwrap();
+        let Some(task) = tasks.get_mut(task_id) else {
+            return false;
+        };
+        if task.task_type == task_type {
+            return true;
+        }
+        task.task_type = task_type;
+        task.touch();
+        task.snapshot()
+    };
+    emit_task_update(snapshot);
+    true
 }
 
 pub fn set_task_labels(task_id: &str, title: impl Into<String>, detail: Option<String>) -> bool {
@@ -1227,6 +1290,17 @@ pub fn cancel_task(task_id: &str) {
     if let Some(control) = task_control(task_id) {
         control.cancel();
     }
+    // Cancellation propagates down the entire workflow tree.
+    let children: Vec<String> = {
+        let tasks = TASKS.lock().unwrap();
+        tasks.values()
+            .filter(|task| task.parent_id.as_deref() == Some(task_id))
+            .map(|task| task.id.to_string())
+            .collect()
+    };
+    for child in children {
+        cancel_task(&child);
+    }
     run_task_cancel_hook(task_id);
 
     if !cooperative {
@@ -1433,7 +1507,7 @@ fn collect_render_snapshots_limited<'a>(
     let mut finished_total = 0;
 
     for snapshot in snapshots {
-        if snapshot.visibility == TaskVisibility::Hidden {
+        if snapshot.visibility == TaskVisibility::Hidden || snapshot.parent_id.is_some() {
             continue;
         }
         if snapshot.is_terminal() {
@@ -1598,6 +1672,8 @@ mod tests {
             last_update_unix: 0,
             sequence,
             visibility: TaskVisibility::Visible,
+            parent_id: None,
+            task_type: TaskType::Operation,
         })
     }
 

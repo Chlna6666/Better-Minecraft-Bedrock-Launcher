@@ -122,6 +122,19 @@ pub(super) struct TaskCardViewModel {
     pub(super) downloaded_segments: Option<Vec<DownloadedRangeSegment>>,
     /// Per-worker-thread progress segments; empty when the task has no thread breakdown.
     pub(super) thread_segments: Vec<ThreadSegment>,
+    pub(super) task_type: task_manager::TaskType,
+    pub(super) children: Vec<TaskChildViewModel>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct TaskChildViewModel {
+    pub(super) id: Arc<str>,
+    pub(super) title: Arc<str>,
+    pub(super) stage: Arc<str>,
+    pub(super) status: Arc<str>,
+    pub(super) message: Option<Arc<str>>,
+    pub(super) percent: Option<f64>,
+    pub(super) depth: usize,
 }
 
 #[derive(Clone)]
@@ -302,6 +315,8 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
         speed_bytes_per_sec: snapshot.speed_bytes_per_sec,
         downloaded_segments,
         thread_segments,
+        task_type: snapshot.task_type,
+        children: Vec::new(),
     }
 }
 
@@ -357,6 +372,17 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
         }
         None => false.hash(hasher),
     }
+    model.task_type.hash(hasher);
+    model.children.len().hash(hasher);
+    for child in &model.children {
+        child.id.hash(hasher);
+        child.title.hash(hasher);
+        child.stage.hash(hasher);
+        child.status.hash(hasher);
+        hash_optional_text(hasher, child.message.as_ref());
+        hash_optional_f64(hasher, child.percent);
+        child.depth.hash(hasher);
+    }
     model.thread_segments.len().hash(hasher);
     for seg in &model.thread_segments {
         seg.active.hash(hasher);
@@ -391,56 +417,41 @@ fn compute_render_model_signature(
 }
 
 pub(super) fn build_render_model() -> TasksPageRenderModel {
-    let snapshot_lists = task_manager::render_snapshots_limited(
-        MAX_RENDER_ACTIVE_TASKS,
-        MAX_FINISHED_TASKS_IN_LIST,
-        MAX_RENDER_FINISHED_TASKS,
-    );
+    build_render_model_from_snapshots(task_manager::snapshot_arcs())
+}
 
-    let active_total = snapshot_lists.active_total;
-    let finished_total = snapshot_lists.finished_total;
-    let thread_total = snapshot_lists
-        .active
-        .iter()
-        .filter_map(|snapshot| snapshot.visualization.as_ref())
-        .map(|visualization| visualization.worker_total.unwrap_or(0) as usize)
-        .sum();
-    let active: Vec<_> = snapshot_lists
-        .active
-        .iter()
-        .map(|snapshot| build_task_card_model(snapshot))
-        .collect();
-    let finished: Vec<_> = snapshot_lists
-        .finished
-        .iter()
-        .map(|snapshot| build_task_card_model(snapshot))
-        .collect();
-    let signature = compute_render_model_signature(
-        false,
-        active_total,
-        finished_total,
-        thread_total,
-        &active,
-        &finished,
-    );
-
-    TasksPageRenderModel {
-        loading: false,
-        signature,
-        total_count: active_total + finished_total,
-        active_total,
-        finished_total,
-        thread_total,
-        active,
-        finished,
+fn append_child_models(
+    parent_id: &str,
+    depth: usize,
+    by_parent: &HashMap<Arc<str>, Vec<&Arc<TaskSnapshot>>>,
+    visited: &mut HashSet<Arc<str>>,
+    output: &mut Vec<TaskChildViewModel>,
+) {
+    if let Some(children) = by_parent.get(parent_id) {
+        for child in children {
+            if !visited.insert(child.id.clone()) {
+                continue;
+            }
+            output.push(TaskChildViewModel {
+                id: child.id.clone(),
+                title: child.title.clone(),
+                stage: child.stage.clone(),
+                status: child.status.clone(),
+                message: non_empty_arc(child.message.as_ref()),
+                percent: child.percent,
+                depth,
+            });
+            append_child_models(child.id.as_ref(), depth + 1, by_parent, visited, output);
+        }
     }
 }
 
 pub(super) fn build_render_model_from_snapshots(
     snapshots: impl IntoIterator<Item = Arc<TaskSnapshot>>,
 ) -> TasksPageRenderModel {
+    let snapshots: Vec<Arc<TaskSnapshot>> = snapshots.into_iter().collect();
     let snapshot_lists = task_manager::render_snapshots_from(
-        snapshots,
+        snapshots.iter().cloned(),
         MAX_RENDER_ACTIVE_TASKS,
         MAX_FINISHED_TASKS_IN_LIST,
         MAX_RENDER_FINISHED_TASKS,
@@ -454,16 +465,26 @@ pub(super) fn build_render_model_from_snapshots(
         .filter_map(|snapshot| snapshot.visualization.as_ref())
         .map(|visualization| visualization.worker_total.unwrap_or(0) as usize)
         .sum();
-    let active: Vec<_> = snapshot_lists
-        .active
-        .iter()
-        .map(|snapshot| build_task_card_model(snapshot))
-        .collect();
-    let finished: Vec<_> = snapshot_lists
-        .finished
-        .iter()
-        .map(|snapshot| build_task_card_model(snapshot))
-        .collect();
+    let mut by_parent: HashMap<Arc<str>, Vec<&Arc<TaskSnapshot>>> = HashMap::new();
+    for snapshot in &snapshots {
+        if snapshot.visibility == task_manager::TaskVisibility::Visible {
+            if let Some(parent_id) = snapshot.parent_id.as_ref() {
+                by_parent.entry(parent_id.clone()).or_default().push(snapshot);
+            }
+        }
+    }
+    for children in by_parent.values_mut() {
+        children.sort_by(|left, right| {
+            left.started_at_unix.cmp(&right.started_at_unix).then_with(|| left.id.cmp(&right.id))
+        });
+    }
+    let make_model = |snapshot: &Arc<TaskSnapshot>| {
+        let mut model = build_task_card_model(snapshot);
+        append_child_models(snapshot.id.as_ref(), 0, &by_parent, &mut HashSet::new(), &mut model.children);
+        model
+    };
+    let active: Vec<_> = snapshot_lists.active.iter().map(make_model).collect();
+    let finished: Vec<_> = snapshot_lists.finished.iter().map(make_model).collect();
     let signature = compute_render_model_signature(
         false,
         active_total,
@@ -598,7 +619,7 @@ impl TasksPageView {
             return false;
         }
 
-        let affects_render_model = current.is_none_or(|current| {
+        let affects_render_model = snapshot.parent_id.is_some() || current.is_none_or(|current| {
             is_terminal_task_status(current.status.as_ref())
                 != is_terminal_task_status(snapshot.status.as_ref())
                 || self.render_model_contains_task(&snapshot.id)
@@ -617,7 +638,8 @@ impl TasksPageView {
             .active
             .iter()
             .chain(&self.render_model.finished)
-            .any(|task| task.id.as_ref() == task_id)
+            .any(|task| task.id.as_ref() == task_id ||
+                task.children.iter().any(|child| child.id.as_ref() == task_id))
             || self.transition_cards.contains_key(task_id)
     }
 
@@ -954,6 +976,8 @@ mod tests {
             speed_bytes_per_sec: 0.0,
             downloaded_segments: None,
             thread_segments: Vec::new(),
+            task_type: task_manager::TaskType::Operation,
+            children: Vec::new(),
         }
     }
 

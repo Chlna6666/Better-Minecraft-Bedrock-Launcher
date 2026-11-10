@@ -5,6 +5,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
+use crate::tasks::task_manager;
 use gpui::AnimationExt;
 use gpui::render_fingerprint;
 
@@ -75,6 +76,9 @@ fn task_amount_text(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
             |total| SharedString::from(format!("{} / {total}", model.done)),
         );
     }
+    if model.task_type == task_manager::TaskType::Workflow {
+        return SharedString::from(format!("{:.1}%", model.percent.unwrap_or(0.0)));
+    }
     let done = crate::utils::format_bytes::format_bytes_compact(model.done);
     match model.total {
         Some(total) => SharedString::from(format!(
@@ -133,6 +137,9 @@ fn header_right_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
         return status_label(i18n, model);
     }
 
+    if model.task_type == task_manager::TaskType::Workflow {
+        return status_label(i18n, model);
+    }
     model
         .speed_text
         .as_ref()
@@ -357,6 +364,36 @@ pub(crate) fn render_task_card(
                     &model.thread_segments,
                 )))
                 .children(message_line)
+                .when(!model.children.is_empty(), |this| {
+                    this.child(
+                        div().w_full().mt(px(5.)).flex().flex_col().gap(px(9.))
+                            .children(model.children.iter().map(|child| {
+                                let kind = task_visual_kind(child.stage.as_ref(), child.status.as_ref());
+                                let color = task_status_accent(child.status.as_ref(), kind, colors);
+                                let label = match child.status.as_ref() {
+                                    "completed" => "已完成".to_string(),
+                                    "error" => "失败".to_string(),
+                                    "cancelled" => "已取消".to_string(),
+                                    "cancelling" => "正在取消".to_string(),
+                                    _ => child.percent.map(|percent| format!("{percent:.1}%"))
+                                        .unwrap_or_else(|| "进行中".to_string()),
+                                };
+                                div().w_full().pl(px(child.depth as f32 * 12.))
+                                    .flex().flex_col().gap(px(3.))
+                                    .child(div().w_full().flex().items_center().justify_between()
+                                        .gap(px(8.))
+                                        .child(div().flex_1().min_w(px(0.)).text_size(px(11.))
+                                            .text_color(task_text_secondary(colors))
+                                            .child(SharedString::from(child.title.clone())))
+                                        .child(div().flex_none().text_size(px(11.))
+                                            .text_color(color).child(label)))
+                                    .child(progress_panel(
+                                        child.id.as_ref(), kind, colors,
+                                        child.status.as_ref(), child.percent, None, &[],
+                                    ))
+                            })),
+                    )
+                })
                 .child(metrics),
         )
         .when(
