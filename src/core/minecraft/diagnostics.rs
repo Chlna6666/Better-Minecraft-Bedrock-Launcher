@@ -351,27 +351,25 @@ impl GameSessionReport {
                     if self.exit_signal.is_none() && self.exit_code == Some(0) {
                         self.kind = ExitKind::Unknown;
                         self.summary = "兼容运行器已成功退出，但日志曾出现未处理异常；尚未确认异常进程及 Minecraft 的退出状态".to_string();
-                    } else if self.exit_signal.is_none() && self.exit_code.is_some() {
-                        self.kind = ExitKind::RunnerFailure;
+                    } else if self.exit_signal.is_none()
+                        && self.kind == ExitKind::RunnerFailure
+                    {
                         self.summary = "兼容运行器非零退出且日志出现未处理异常；尚不能确认 Minecraft 子进程崩溃".to_string();
                     }
                 }
                 CompatibilityFault::WineDependencyFailure => {
                     // Wine can log optional DLL failures even during a healthy
                     // session. Do not elevate a zero-exit runner to a crash.
-                    if self.exit_code.is_some_and(|code| code != 0)
+                    if self.early_exit
+                        && self.kind == ExitKind::RunnerFailure
                         && self.exit_signal.is_none()
                     {
-                        self.kind = ExitKind::RunnerFailure;
-                        self.summary = "Wine/Proton 报告依赖库或未实现函数错误".to_string();
+                        self.summary = "兼容运行器启动期非零退出，并报告依赖库或未实现函数错误；尚不能确认具体责任组件".to_string();
                     }
                 }
                 CompatibilityFault::RuntimeFailure => {
-                    if self.exit_code.is_some_and(|code| code != 0)
-                        && self.exit_signal.is_none()
-                    {
-                        self.kind = ExitKind::RunnerFailure;
-                        self.summary = "Proton/UMU/Wine 运行环境发生错误".to_string();
+                    if self.kind == ExitKind::RunnerFailure && self.exit_signal.is_none() {
+                        self.summary = "Proton/UMU/Wine 运行器报告运行环境错误，尚未确认 Minecraft 子进程的退出原因".to_string();
                     }
                 }
             }
@@ -604,17 +602,40 @@ fn classify_linux_runner_signal(signal: i32) -> ExitKind {
 
 pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
     if code == 0 {
-        ExitKind::Normal
-    } else if matches!(platform, "gdk" | "uwp" | "win32") && code == WINDOWS_CONTROL_C_EXIT {
-        // STATUS_CONTROL_C_EXIT may originate from a user or host control event.
-        // The exit status alone does not prove an unhandled Minecraft exception.
-        // Keep WER correlation enabled for a later, positively identified fault.
-        ExitKind::Unknown
-    } else if platform == "proton" || platform == "wine" || platform == "umu" {
-        // Child.wait() observes the runner, not necessarily the Minecraft child.
-        ExitKind::RunnerFailure
-    } else {
+        return ExitKind::Normal;
+    }
+    if matches!(platform, "proton" | "wine" | "umu") {
+        // A shell runner often returns 128 + signal instead of a signal status.
+        // This still does not identify an actual Minecraft guest crash.
+        return if matches!(code, 129 | 130 | 131 | 137 | 143) {
+            ExitKind::Unknown
+        } else {
+            ExitKind::RunnerFailure
+        };
+    }
+    if !matches!(platform, "gdk" | "uwp" | "win32") || code == WINDOWS_CONTROL_C_EXIT {
+        return ExitKind::Unknown;
+    }
+    // Only well-known Windows failure/exception statuses provide enough
+    // evidence to show a *suspected* native incident. An application-defined
+    // nonzero exit (such as 1) must not automatically become a game crash.
+    if matches!(code,
+        0xC0000005 | // STATUS_ACCESS_VIOLATION
+        0xC0000006 | // STATUS_IN_PAGE_ERROR
+        0xC0000017 | // STATUS_NO_MEMORY
+        0xC000001D | // STATUS_ILLEGAL_INSTRUCTION
+        0xC0000094 | // STATUS_INTEGER_DIVIDE_BY_ZERO
+        0xC0000096 | // STATUS_PRIVILEGED_INSTRUCTION
+        0xC00000FD | // STATUS_STACK_OVERFLOW
+        0xC0000135 | // STATUS_DLL_NOT_FOUND
+        0xC0000142 | // STATUS_DLL_INIT_FAILED
+        0xC0000409   // STATUS_STACK_BUFFER_OVERRUN / fast fail
+    ) {
         ExitKind::SuspectedCrash
+    } else {
+        // WER can still confirm a genuine exception with a matched process
+        // generation. Unknown outcomes are recorded, not auto-popuped.
+        ExitKind::Unknown
     }
 }
 
@@ -623,6 +644,9 @@ pub fn exit_description(kind: ExitKind, code: u32) -> String {
         ExitKind::Normal => "游戏已正常退出".to_string(),
         ExitKind::Unknown if code == WINDOWS_CONTROL_C_EXIT =>
             "Windows 控制事件结束了游戏会话（0xC000013A）；无法仅凭该状态判断游戏崩溃，需以独立故障证据确认".to_string(),
+        ExitKind::Unknown => format!(
+            "退出状态 0x{code:08X} 无法单独证明 Minecraft 崩溃；会话已记录，可结合独立证据检查"
+        ),
         ExitKind::RunnerFailure => format!("兼容运行器异常退出（状态码 0x{code:08X}）；尚不能确认游戏崩溃"),
         _ => {
             let detail = match code {
@@ -1225,6 +1249,12 @@ mod tests {
     fn distinguishes_runner_failures_from_native_game_crashes() {
         assert_eq!(classify_exit("gdk", 0), ExitKind::Normal);
         assert_eq!(classify_exit("gdk", 0xC0000005), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("gdk", 1), ExitKind::Unknown);
+        assert_eq!(classify_exit("gdk", 0xffff_ffff), ExitKind::Unknown);
+        assert_eq!(classify_exit("gdk", 0xC0000142), ExitKind::SuspectedCrash);
+        assert_eq!(classify_exit("unknown", 1), ExitKind::Unknown);
+        assert_eq!(classify_exit("wine", 143), ExitKind::Unknown);
+        assert_eq!(classify_exit("wine", 130), ExitKind::Unknown);
         assert_eq!(classify_exit("gdk", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
         assert_eq!(classify_exit("uwp", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
         assert_eq!(classify_exit("wine", WINDOWS_CONTROL_C_EXIT), ExitKind::RunnerFailure);
