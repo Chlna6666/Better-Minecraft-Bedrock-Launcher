@@ -621,7 +621,13 @@ mod tests {
         }
         assert_eq!(scene.node(ids[65]).unwrap().transform.translation.x, 0.);
         assert!(scene.node(ids[3]).is_some());
-        assert!(next.fork().changed_nodes(&scene).is_none());
+        let mut expected = changed.into_owned();
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(
+            next.fork().changed_nodes(&scene).unwrap().as_ref(),
+            expected
+        );
     }
 
     #[test]

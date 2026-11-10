@@ -120,7 +120,7 @@ mod tests {
             .unwrap()
             .with_ambient_occlusion(24)
         };
-        for source in [source(), source().with_y_range(0., 0.5).unwrap()] {
+        for (source, clipped) in [(source(), false), (source().with_y_range(0., 0.5).unwrap(), true)] {
             let compact = source.compact_mesh().unwrap();
             assert!(
                 source.fallback.get().is_none(),
@@ -135,7 +135,9 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(compact.vertices(), expected.as_slice());
             assert_eq!(compact.index_count(), expected.len() / 4 * 6);
-            assert!(compact.vertex_count() < source.capacity() * 4);
+            // Capacity already excludes hidden faces. Clipping is what leaves
+            // empty slots in this fixture's padded fallback.
+            assert_eq!(compact.vertex_count() < source.capacity() * 4, clipped);
         }
     }
 }
