@@ -15,6 +15,7 @@ const MIN_TRAINING_SAMPLES: u32 = 6;
 const MAX_INFLIGHT_NATIVE: usize = 3;
 const MAX_PENDING_TIMESTAMPS: usize = 128;
 const MAX_PENDING_AGE: Duration = Duration::from_secs(10);
+const MAX_UNOBSERVED_NATIVE_PROBES: u32 = 8;
 const GRAPHICS_WINDOW: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +117,9 @@ pub(super) struct QueueFeedback {
     frame_samples: u32,
     last_frame: Option<Instant>,
     decisions: u64,
+    /// Stop repeated expensive independent submissions if this queue family
+    /// never yields valid hardware timestamp results (driver/family limits).
+    unobserved_native_probes: u32,
     pending_gpu: HashMap<u64, PendingGpu>,
     in_flight: HashMap<SubmissionId, PendingFence>,
 }
@@ -173,7 +177,8 @@ impl QueueFeedback {
             return false;
         }
         let Some(native_ns) = self.native.predict(workgroups) else {
-            return self.decisions.is_multiple_of(6);
+            return self.unobserved_native_probes < MAX_UNOBSERVED_NATIVE_PROBES
+                && self.decisions.is_multiple_of(6);
         };
         if self.handoff_samples >= 4
             && self.observed_handoff_pressure_ns > ordered_ns.saturating_mul(2)
@@ -213,6 +218,9 @@ impl QueueFeedback {
         submission: Option<SubmissionId>,
     ) {
         let now = Instant::now();
+        if path == ComputePath::Native && tag.is_some() {
+            self.unobserved_native_probes = self.unobserved_native_probes.saturating_add(1);
+        }
         if let Some(tag) = tag {
             if self.pending_gpu.len() >= MAX_PENDING_TIMESTAMPS {
                 self.pending_gpu.retain(|_, pending| {
@@ -262,6 +270,7 @@ impl QueueFeedback {
                 match pending.path {
                     ComputePath::Ordered => self.ordered.observe(pending.workgroups, ns),
                     ComputePath::Native => {
+                        self.unobserved_native_probes = 0;
                         self.native.observe(pending.workgroups, ns);
                         if let Some(fence_ns) = pending.observed_fence_ns {
                             let pressure = fence_ns.saturating_sub(ns);
@@ -361,6 +370,21 @@ mod tests {
             );
         }
         assert!(!model.admit_native(true, true, 1024));
+    }
+
+    #[test]
+    fn driver_without_native_timestamp_query_stops_probing() {
+        let mut model = QueueFeedback::default();
+        for id in 1..=6 {
+            model.accepted(Some(id), ComputePath::Ordered, 1024, None);
+            model.observe_gpu_sample(gpu(id, 2_000));
+        }
+        for id in 20..20 + MAX_UNOBSERVED_NATIVE_PROBES {
+            model.accepted(Some(u64::from(id)), ComputePath::Native, 1024, None);
+        }
+        for _ in 0..64 {
+            assert!(!model.admit_native(true, true, 1024));
+        }
     }
 
     #[test]
