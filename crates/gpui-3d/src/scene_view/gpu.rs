@@ -1017,6 +1017,47 @@ mod sparse_arena_retirement_tests {
     }
 
     #[test]
+    fn generated_native_queue_checkpoint_keeps_uploaded_mesh_bytes_until_compute_finishes() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1720, 1);
+        let range = ArenaAllocation { page: 0, offset: 128, bytes: 64 };
+        let span = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        let primary = gfx_core::SubmissionId::from_parts(1721, 1);
+        let native = gfx_core::SubmissionId::from_parts(1722, 1);
+        let queue = GpuQueueId { family: 4, index: 1 };
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer, capacity: 512, used: 256, live: 1, live_bytes: 128,
+            free_ranges: Vec::new(), retired_ranges: Vec::new(),
+        }));
+
+        // The upload is on the PRIMARY queue. Its accepted checkpoint proves
+        // CopyWrite availability, not independent Compute completion.
+        arena.mark_untracked_access(range, GpuAccess::CopyWrite).unwrap();
+        arena.register_native_primary_checkpoint(primary).unwrap();
+        assert!(!arena.native_work.has_untracked_work());
+
+        // SAFETY: Only a unit-test model of an already enqueued native GPU
+        // Wait; production proofs are returned by the Vulkan/DX12 backend.
+        let wait = unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(primary, queue) };
+        arena.mark_untracked_access_on_queue(
+            range, GpuAccess::StorageWrite, queue,
+        ).unwrap();
+        arena.register_native_compute_allocations(
+            native, queue, &[(range, GpuAccess::StorageWrite)], &[wait],
+        ).unwrap();
+        assert!(!arena.native_work.has_untracked_work());
+        let dependencies = arena.native_work.retirement(&[span.clone()]);
+        assert!(dependencies.pending().contains(&primary));
+        assert!(dependencies.pending().contains(&native));
+
+        arena.gpu_submission_completed(primary);
+        assert!(arena.native_work.retirement(&[span.clone()]).pending().contains(&native));
+        arena.gpu_submission_completed(native);
+        assert!(arena.native_work.retirement(&[span]).safe_to_reuse());
+    }
+
+    #[test]
     fn native_compute_reads_and_writes_retire_by_its_own_physical_queue_fence() {
         use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan};
         let buffer = BufferId::from_parts(1300, 1);
