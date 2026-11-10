@@ -611,9 +611,18 @@ impl ObjTextureResolver {
             .as_deref()
             .map(BlockFace::parse)
             .filter(|face| !matches!(face, BlockFace::Default | BlockFace::All));
-        let block_face = slot_face
+        let requested_face = slot_face
             .or_else(|| obj_material_block_face(material))
             .unwrap_or_else(|| obj_block_face_for_normal(normal));
+        // A material named `_side` covers four faces. Blocks such as the lectern and the bell
+        // give north/south/east/west different art (front, sides, base, wooden support), so an
+        // aggregate material must not overwrite the face the caller asked for. Per-face lookups
+        // still fall back to `side`/`*` through `obj_texture_faces_for_block_face`.
+        let block_face = if matches!(requested_face, BlockFace::Side) {
+            obj_block_face_for_normal(normal)
+        } else {
+            requested_face
+        };
         let lookup_normal = obj_normal_for_block_face(block_face);
 
         if let Some(resolved) =
@@ -653,6 +662,15 @@ impl ObjTextureResolver {
         }
 
         if let Some(texture_key) = self.resolved_texture_key_for(&lookup_block, block_face)
+            && let Some((pack, source_path)) = self.texture_path_for_key(&texture_key)
+        {
+            return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+        }
+        // A per-face material may name a texture the pack does not ship (`bell_stone` is listed
+        // in `blocks.json` but absent). Fall back to the block's shared side material before the
+        // generic fallbacks, so one missing per-face file does not repaint a whole face.
+        if !matches!(block_face, BlockFace::Side)
+            && let Some(texture_key) = self.resolved_texture_key_for(&lookup_block, BlockFace::Side)
             && let Some((pack, source_path)) = self.texture_path_for_key(&texture_key)
         {
             return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
