@@ -15,7 +15,11 @@ use std::sync::Arc;
 /// The device is responsible for resource transitions and GPU-side visibility.
 #[derive(Clone, Copy, Debug)]
 pub struct RendererExtensionComputePass {
+    /// Boundary after which the host GPU owner schedules this compute dispatch.
+    /// Zero is before the first graphics pass; N is after pass N - 1.
     pub after_graphics_pass: usize,
+    /// Backend-neutral shader, resource bind group and workgroup dimensions.
+    /// The host records and submits the command with the necessary GPU barriers.
     pub dispatch: ComputeBindGroupDispatch,
     /// Optional native GPU timer. No CPU-side substitute is generated.
     pub gpu_work_tag: Option<GpuTimestampTag>,
