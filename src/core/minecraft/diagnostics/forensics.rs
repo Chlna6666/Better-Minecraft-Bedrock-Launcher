@@ -4,6 +4,9 @@ use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForensicSummary {
+    /// Number of bounded, session-frozen text log sources actually inspected.
+    #[serde(default)]
+    pub log_sources_analyzed: u16,
     pub failed_mods: Vec<ModIssue>,
     #[serde(default)]
     pub missing_dependencies: Vec<DependencyIssue>,
@@ -146,7 +149,10 @@ fn stack_module(line: &str) -> Option<String> {
 /// Analyze only frozen bounded session logs. Never store stack addresses,
 /// arbitrary text, real paths, account IDs, or environment variables.
 pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
-    let mut out = ForensicSummary::default();
+    let mut out = ForensicSummary {
+        log_sources_analyzed: sources.len().min(32) as u16,
+        ..ForensicSummary::default()
+    };
     for (name, content) in sources.iter().take(32) {
         let is_mod = ["mod", "bloader", "levilamina", "launch-task"]
             .iter().any(|tag| name.contains(tag));
@@ -374,6 +380,7 @@ mod tests {
         let evidence = inspect_text(&[("logs/compatibility-runner.log".into(),
             "libvulkan.so.1: cannot open shared object file".into())]);
         assert_eq!(evidence.missing_dependencies[0].identifier, "libvulkan.so.1");
+        assert_eq!(evidence.log_sources_analyzed, 1);
         assert!(evidence.missing_dependencies[0].session_private);
     }
 
