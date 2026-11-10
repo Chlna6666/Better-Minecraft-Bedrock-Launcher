@@ -4848,20 +4848,33 @@ impl CommandDevice for VulkanDevice {
     }
 }
 
+impl VulkanDevice {
+    /// GpuQueueId::PRIMARY reserves (0,0) even when the real Vulkan graphics
+    /// family isn't zero. Namespace dedicated-family IDs by adding one to
+    /// the physical family index, avoiding accidental alias with PRIMARY.
+    fn dedicated_compute_queue_id(&self) -> Option<gfx_core::GpuQueueId> {
+        self.dedicated_compute_queue?;
+        Some(gfx_core::GpuQueueId {
+            family: self.dedicated_compute_family_index?.checked_add(1)?,
+            index: 0,
+        })
+    }
+}
+
 impl SubmissionDevice for VulkanDevice {
     fn independent_queue(&self, stage: gfx_core::GpuWorkStage) -> Option<gfx_core::GpuQueueId> {
-        // The optional second GRAPHICS-family queue supports graphics,
-        // compute and transfer. No distinct-family queues are exposed until
-        // ownership transfer barriers exist for resident resources.
+        let same_family = self.sidecar_queue.map(|_| gfx_core::GpuQueueId {
+            family: self.graphics_queue_family_index,
+            index: 1,
+        });
         match stage {
-            gfx_core::GpuWorkStage::Graphics
-            | gfx_core::GpuWorkStage::Compute
-            | gfx_core::GpuWorkStage::Transfer => self.sidecar_queue.map(|_| {
-                gfx_core::GpuQueueId {
-                    family: self.graphics_queue_family_index,
-                    index: 1,
-                }
-            }),
+            gfx_core::GpuWorkStage::Graphics | gfx_core::GpuWorkStage::Transfer => same_family,
+            // Same-family queue is cheaper: no cross-family ownership or
+            // concurrent-sharing cost and no additional pipeline barriers.
+            // With only one graphics queue, use the dedicated compute family
+            // for buffer-only submissions. Textures/images stay on graphics.
+            gfx_core::GpuWorkStage::Compute =>
+                same_family.or_else(|| self.dedicated_compute_queue_id()),
         }
     }
 
@@ -4869,14 +4882,15 @@ impl SubmissionDevice for VulkanDevice {
         if queue == gfx_core::GpuQueueId::PRIMARY {
             return self.checkpoint_ordered_queue(gfx_core::GpuWorkStage::Graphics);
         }
-        if self.independent_queue(gfx_core::GpuWorkStage::Graphics) != Some(queue) {
+        let secondary = if self.independent_queue(gfx_core::GpuWorkStage::Graphics) == Some(queue) {
+            self.sidecar_queue.expect("matched available graphics-family queue")
+        } else if self.dedicated_compute_queue_id() == Some(queue) {
+            self.dedicated_compute_queue.expect("matched dedicated compute queue")
+        } else {
             return Err(Error::Unavailable(
                 "Vulkan checkpoint target is not an active native queue".into(),
             ));
-        }
-        let secondary = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
-            "Vulkan secondary queue is not available".into(),
-        ))?;
+        };
         let fence = create_fence(&self.device, false)?;
         let submits = [vk::SubmitInfo::default()];
         // SAFETY: The secondary queue belongs to this Vulkan device. This
@@ -4899,9 +4913,10 @@ impl SubmissionDevice for VulkanDevice {
         queue: gfx_core::GpuQueueId,
         dispatches: &[gfx_core::ComputeDispatch<'_>],
     ) -> Result<SubmissionId> {
-        // Queue index 1 shares the native graphics family and all current
-        // command/descriptor pools. A separate-family compute queue would
-        // need explicit buffer/image ownership release/acquire barriers.
+        // Same-family compute uses the secondary graphics queue. Dedicated
+        // compute uses queue-family-typed command pools and CONCURRENT-shared
+        // storage/uniform buffers, so no EXCLUSIVE ownership transfer occurs.
+        // Image compute is never submitted to this buffer-only path.
         if queue != gfx_core::GpuQueueId::PRIMARY
             && self.independent_queue(gfx_core::GpuWorkStage::Compute) != Some(queue)
         {
@@ -4928,38 +4943,38 @@ impl SubmissionDevice for VulkanDevice {
         target_queue: gfx_core::GpuQueueId,
         producer: SubmissionId,
     ) -> Result<gfx_core::GpuNativeWaitProof> {
-        // Both native queues belong to the SAME graphics queue family.
-        // Queue-family ownership transfers are not needed here, but resource
-        // layout/access barriers remain the command encoder's responsibility.
-        // Dedicated COMPUTE/TRANSFER families are not exposed until full
-        // release/acquire ownership barriers exist.
-        let secondary = gfx_core::GpuQueueId {
-            family: self.graphics_queue_family_index,
-            index: 1,
+        // A native semaphore provides queue execution/memory ordering.
+        // Dedicated-family Compute is legal only for CONCURRENT-shared
+        // buffers; EXCLUSIVE textures/images are not admitted here.
+        let secondary = self.sidecar_queue.map(|queue| (
+            gfx_core::GpuQueueId { family: self.graphics_queue_family_index, index: 1 },
+            queue,
+        ));
+        let dedicated = self.dedicated_compute_queue_id()
+            .zip(self.dedicated_compute_queue);
+        let lookup = |id| {
+            if id == gfx_core::GpuQueueId::PRIMARY {
+                Some(self.graphics_queue)
+            } else if secondary.is_some_and(|(q, _)| q == id) {
+                secondary.map(|(_, queue)| queue)
+            } else if dedicated.is_some_and(|(q, _)| q == id) {
+                dedicated.map(|(_, queue)| queue)
+            } else {
+                None
+            }
         };
-        let sidecar = self.sidecar_queue.ok_or_else(|| Error::Unavailable(
-            "Vulkan has no second GPU queue in its graphics family".into(),
+        let target = lookup(target_queue).ok_or_else(|| Error::Unavailable(
+            "Vulkan requested GPU wait target queue is unavailable".into(),
         ))?;
-        let target = match target_queue {
-            q if q == gfx_core::GpuQueueId::PRIMARY => self.graphics_queue,
-            q if q == secondary => sidecar,
-            _ => return Err(Error::Unavailable(
-                "Vulkan requested queue needs unsupported family ownership transfers".into(),
-            )),
-        };
         let source = self.submissions.get(producer)?;
         if source.queue == target_queue {
             return Err(Error::InvalidInput(
                 "Vulkan cross-queue GPU wait cannot target the producer queue".into(),
             ));
         }
-        let source_queue = match source.queue {
-            q if q == gfx_core::GpuQueueId::PRIMARY => self.graphics_queue,
-            q if q == secondary => sidecar,
-            _ => return Err(Error::Unavailable(
-                "Vulkan producer is not on a supported native queue".into(),
-            )),
-        };
+        let source_queue = lookup(source.queue).ok_or_else(|| Error::Unavailable(
+            "Vulkan producer has no matching native queue".into(),
+        ))?;
 
         let info = vk::SemaphoreCreateInfo::default();
         // SAFETY: Binary semaphore is allocated on this live logical device.
@@ -4987,9 +5002,9 @@ impl SubmissionDevice for VulkanDevice {
             let acquire = vk::SubmitInfo::default()
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&stages);
-            // SAFETY: The target queue shares this graphics family with the
-            // producer, and consumes the same binary semaphore exactly once.
-            // Future target-queue work follows this native GPU-side wait.
+            // SAFETY: The producer and target queues belong to this device.
+            // Buffer-only separate-family work uses CONCURRENT sharing, and
+            // this binary GPU wait orders all future target-queue accesses.
             unsafe {
                 self.device.queue_submit(target, &[acquire], fence)
             }.map_err(VulkanError::from)?;
