@@ -560,7 +560,9 @@ pub(super) fn same_capture(a: &SceneView, b: &SceneView) -> bool {
         && a.sampling == b.sampling
         && a.anisotropy_enabled == b.anisotropy_enabled
         && a.blend_edge_feather == b.blend_edge_feather
+        && a.fog == b.fog
         && a.culling_bounds == b.culling_bounds
+        && a.hidden_nodes == b.hidden_nodes
         && a.projection_region == b.projection_region
         && a.inset_max_pixels == b.inset_max_pixels
         && a.inset_fraction == b.inset_fraction

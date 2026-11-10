@@ -259,14 +259,14 @@ impl EffectScene {
         attributes_pass: RenderPassId,
         passes: &mut Vec<RendererExtensionPass>,
     ) -> gpui::Result<()> {
+        let mut shading = view.voxel_shading;
+        shading.shadow_strength = 0.;
+        let capture = view.with_voxel_shader().with_voxel_shading(shading)?;
         let capture_changed = !self.targets_valid
             || self
                 .capture
                 .as_ref()
-                .is_none_or(|old| !super::renderer::same_capture(old, view));
-        let mut shading = view.voxel_shading;
-        shading.shadow_strength = 0.;
-        let capture = view.with_voxel_shader().with_voxel_shading(shading)?;
+                .is_none_or(|old| !super::renderer::same_capture(old, &capture));
         if capture_changed {
             self.targets_valid = false;
             self.scene

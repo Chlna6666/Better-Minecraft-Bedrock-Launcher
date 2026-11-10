@@ -14,12 +14,23 @@ use crate::{AlphaMode, Light, Material, Mesh, Node, VoxelIllumination, VoxelShad
 use crate::{Camera, Scene, Vec3};
 use materials::{verify_shadow_retry, verify_shadows, verify_sky_transmission};
 
-fn verify<D: Device + TextureTransferDevice>(mut device: D) {
-    let extent = Extent2d::new(64, 64).unwrap();
-    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false, 1).unwrap();
-    let depth = Target::create(&mut device, extent, Format::Depth32Float, true, 1).unwrap();
-    let pass_id = PipelineDevice::create_render_pass(
-        &mut device,
+#[test]
+fn capture_reuse_respects_visibility_and_fog() {
+    let mut scene = Scene::new();
+    let node = scene.insert(None, Node::new()).unwrap();
+    let camera = Camera::perspective(Vec3::Z, Vec3::ZERO, Vec3::Y, 1., 0.1, 10.);
+    let view = SceneView::new(Arc::new(scene), camera);
+    let hidden = view.with_hidden_nodes(Arc::new([node].into_iter().collect()));
+    let same_hidden = view.with_hidden_nodes(Arc::new([node].into_iter().collect()));
+    assert!(!same_capture(&view, &hidden));
+    assert!(same_capture(&hidden, &same_hidden));
+    let fogged = view.with_fog(crate::DistanceFog::new([1.; 3], 1., 5.));
+    assert!(!same_capture(&view, &fogged));
+}
+
+fn test_render_pass<D: Device>(device: &mut D) -> RenderPassId {
+    PipelineDevice::create_render_pass(
+        device,
         &RenderPassDescriptor {
             label: None,
             color_attachments: vec![ColorAttachmentDescriptor {
@@ -35,7 +46,14 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             resolve_target: None,
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn verify<D: Device + TextureTransferDevice>(mut device: D) {
+    let extent = Extent2d::new(64, 64).unwrap();
+    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(&mut device, extent, Format::Depth32Float, true, 1).unwrap();
+    let pass_id = test_render_pass(&mut device);
     let context =
         RendererExtensionContext::for_target(D::BACKEND_KIND, pass_id, Format::Rgba8Unorm, extent);
     let mut scene = Scene::new();
