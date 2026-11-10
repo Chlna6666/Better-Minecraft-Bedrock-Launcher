@@ -125,6 +125,18 @@ pub enum CompatibilityFault {
     RuntimeFailure,
 }
 
+impl CompatibilityFault {
+    /// Prefer explicit runner initialization failure over an optional
+    /// dependency probe, without overriding a recorded unhandled exception.
+    pub const fn diagnostic_priority(self) -> u8 {
+        match self {
+            Self::WineDependencyFailure => 1,
+            Self::RuntimeFailure => 2,
+            Self::WineUnhandledException => 3,
+        }
+    }
+}
+
 pub fn classify_compatibility_output(text: &str) -> Option<CompatibilityFault> {
     // Analyze individual lines. A harmless "unhandled exception handler"
     // message must not suppress a real exception on a later line; likewise
