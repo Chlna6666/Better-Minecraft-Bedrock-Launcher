@@ -11,9 +11,9 @@ use bedrock_world::{NbtReader, NbtTag};
 use serde::Deserialize;
 
 use crate::{BlockFace, BlockStateQuery, BlockStateValue, ModelCuboid, ModelPlane, ModelShape};
-#[path = "runtime_capture_pool_v3.rs"]
-mod pool_v3;
-use pool_v3::{Appearance as CaptureAppearanceV3, Geometry as CaptureGeometryV3, PoolV3};
+#[path = "runtime_capture_pool.rs"]
+mod pool;
+use pool::{Appearance as CaptureAppearance, Geometry as CaptureGeometry, GeometryPool};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum StateValueKey {
@@ -88,15 +88,12 @@ fn capture_key(block: &CaptureBlock) -> Option<StateKey> {
 
 #[derive(Debug, Deserialize)]
 struct CaptureManifest {
+    format: String,
     target_game_version: String,
     #[serde(default)]
     capture_revision: u64,
-    #[serde(default)]
     registry_only: bool,
-    #[serde(default)]
     shared_geometry_pool_schema: u32,
-    #[serde(default)]
-    legacy_meshes_retained: bool,
 }
 #[derive(Debug, Deserialize)]
 struct CaptureIndex {
@@ -194,13 +191,13 @@ fn read_catalog_entry(
 #[derive(Debug)]
 pub struct RuntimeCaptureCatalog {
     root: PathBuf,
-    pool: PoolV3,
+    pool: GeometryPool,
     version: String,
     capture_revision: u64,
     states: HashMap<StateKey, StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
-    geometries: Mutex<HashMap<u32, Option<Arc<CaptureGeometryV3>>>>,
-    appearances: Mutex<HashMap<u32, Option<Arc<CaptureAppearanceV3>>>>,
+    geometries: Mutex<HashMap<u32, Option<Arc<CaptureGeometry>>>>,
+    appearances: Mutex<HashMap<u32, Option<Arc<CaptureAppearance>>>>,
     shapes: Mutex<HashMap<StateKey, Option<Arc<ModelShape>>>>,
 }
 impl PartialEq for RuntimeCaptureCatalog {
@@ -239,11 +236,14 @@ impl RuntimeCaptureCatalog {
                 .ok_or_else(|| "manifest.json: missing or too large".to_owned())?,
         )
         .map_err(|e| format!("manifest.json: {e}"))?;
-        if !manifest.registry_only {
-            return Err("capture is not registry-only".to_owned());
-        }
-        if manifest.shared_geometry_pool_schema != 3 || manifest.legacy_meshes_retained {
-            return Err("Geometry Pool v3 binary export required".to_owned());
+        // Development format has a single supported on-disk schema.
+        // Reject incompatible exports; never reinterpret legacy JSON or
+        // SHA-addressed model files as the current numeric geometry pool.
+        if manifest.format != "BedrockSceneCaptureModelLibrary"
+            || !manifest.registry_only
+            || manifest.shared_geometry_pool_schema != 3
+        {
+            return Err("current BedrockSceneCapture binary geometry pool required".to_owned());
         }
         let binary = if packed.is_some() {
             Some(read_catalog_entry(root, packed.as_ref(), "geometry_pool.bin", 512 * 1024 * 1024)
@@ -251,7 +251,7 @@ impl RuntimeCaptureCatalog {
         } else {
             None
         };
-        let pool = PoolV3::open(root, binary)?;
+        let pool = GeometryPool::open(root, binary)?;
         let index: CaptureIndex = serde_json::from_slice(
             &read_catalog_entry(root, packed.as_ref(), "blocks.json", 64 * 1024 * 1024)
                 .ok_or_else(|| "blocks.json: missing or too large".to_owned())?,
@@ -446,24 +446,24 @@ impl RuntimeCaptureCatalog {
         }
         result
     }
-    fn shared_geometry(&self, id: &u32) -> Option<Arc<CaptureGeometryV3>> {
+    fn shared_geometry(&self, id: &u32) -> Option<Arc<CaptureGeometry>> {
         let mut cache = self.geometries.lock().ok()?;
         if let Some(value) = cache.get(id) {
             return value.clone();
         }
         let result = self.pool.read(0, *id)
-            .and_then(|bytes| CaptureGeometryV3::parse(&bytes))
+            .and_then(|bytes| CaptureGeometry::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
         result
     }
-    fn shared_appearance(&self, id: &u32) -> Option<Arc<CaptureAppearanceV3>> {
+    fn shared_appearance(&self, id: &u32) -> Option<Arc<CaptureAppearance>> {
         let mut cache = self.appearances.lock().ok()?;
         if let Some(value) = cache.get(id) {
             return value.clone();
         }
         let result = self.pool.read(1, *id)
-            .and_then(|bytes| CaptureAppearanceV3::parse(&bytes))
+            .and_then(|bytes| CaptureAppearance::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
         result
@@ -569,8 +569,8 @@ fn native_atlas_to_local(uv: [f32; 2], rect: [f32; 4]) -> Option<[f32; 2]> {
     }
 }
 fn shared_mesh_planes(
-    geometry: &CaptureGeometryV3,
-    appearance: &CaptureAppearanceV3,
+    geometry: &CaptureGeometry,
+    appearance: &CaptureAppearance,
     geometry_id: &u32,
     aliases: &HashMap<usize, CaptureMaterialSlot>,
 ) -> Option<Vec<ModelPlane>> {
@@ -821,8 +821,8 @@ mod tests {
         ];
         fs::write(root.join("geometry_pool.bin"), pool_bytes(&groups)).unwrap();
         write(root, "manifest.json", &json!({"registry_only":true,
-            "target_game_version":"1.26.60.5", "shared_geometry_pool_schema":3,
-            "legacy_meshes_retained":false}));
+            "format":"BedrockSceneCaptureModelLibrary",
+            "target_game_version":"1.26.60.5", "shared_geometry_pool_schema":3}));
         let name = if alias { "minecraft:noteblock" } else { "minecraft:oak_stairs" };
         let mut blocks = vec![json!({"name":name,"network_id":12,
             "state_nbt_hex":state_nbt(2,alias),"status":"partial",
@@ -837,13 +837,13 @@ mod tests {
         write(root, "blocks.json", &json!({"blocks":blocks}));
     }
     #[test]
-    fn v3_binary_geometry_uv_material_roundtrip() {
+    fn capture_binary_geometry_uv_material_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         assert_eq!(catalog.state_count(),1);
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction",2);
-        let first = catalog.shape_for_state_shared(&state).expect("v3 quad");
+        let first = catalog.shape_for_state_shared(&state).expect("current quad");
         assert_eq!(first.planes.len(),1);
         assert_eq!(first.planes[0].material_slot.as_deref(),
             Some(capture_texture_slot("grass_side").as_str()));
@@ -854,7 +854,7 @@ mod tests {
             .with_state("weirdo_direction",3)).is_none());
     }
     #[test]
-    fn v3_rejects_v2_hashes_and_incomplete_pool() {
+    fn capture_rejects_v2_hashes_and_incomplete_pool() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(),false);
         let mut manifest: Value = serde_json::from_slice(
@@ -871,7 +871,7 @@ mod tests {
     }
 
     fn native_appearance_with_atlas() -> Vec<u8> {
-        // Two triangles of one quad; exactly the v3 binary layout emitted
+        // Two triangles of one quad; exactly the current binary layout emitted
         // by BedrockSceneCapture for a native terrain-atlas model.
         let mut bytes = u32bytes(&[0, 0, 2, 1, 2]);
         for [u, v] in [[0., 0.], [1., 1.], [0., 1.],
@@ -903,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_native_scene_uses_recorded_variant_frame_and_remaps_uv() {
+    fn capture_native_scene_uses_recorded_variant_frame_and_remaps_uv() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
         let groups = [
@@ -956,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_native_scene_rejects_inconsistent_neighbor_variants() {
+    fn capture_native_scene_rejects_inconsistent_neighbor_variants() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), false);
         let mut index: Value = serde_json::from_slice(
@@ -977,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_invalid_resource_is_negative_cached() {
+    fn capture_invalid_resource_is_negative_cached() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(),false);
         let mut index: Value=serde_json::from_slice(
@@ -990,7 +990,7 @@ mod tests {
         assert!(catalog.shape_for_state_shared(&state).is_none());
     }
     #[test]
-    fn v3_note_states_reuse_exact_recipe() {
+    fn capture_note_states_reuse_exact_recipe() {
         let dir=tempfile::tempdir().unwrap();
         fixture(dir.path(),true);
         let catalog=RuntimeCaptureCatalog::open(dir.path()).unwrap();
@@ -1001,8 +1001,8 @@ mod tests {
         );
     }
     #[test]
-    fn v3_shared_material_aliases_reuse_arc_not_cloned_tables() {
-        let dir = tempfile::tempdir().expect("temporary v3 material library");
+    fn capture_shared_material_aliases_reuse_arc_not_cloned_tables() {
+        let dir = tempfile::tempdir().expect("temporary current material library");
         fixture(dir.path(), true);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).expect("catalog");
         let first = query_key(&BlockStateQuery::new("noteblock").with_state("note", 2));
@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_embedded_zip_reads_indexed_binary_pool() {
+    fn capture_embedded_zip_reads_indexed_binary_pool() {
         let dir=tempfile::tempdir().unwrap();
         fixture(dir.path(),false);
         let mut writer=zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -1032,8 +1032,8 @@ mod tests {
         assert_eq!(catalog.shape_for_state_shared(&state).unwrap().planes.len(),1);
     }
     #[test]
-    fn real_embedded_v3_resolves_at_least_one_complete_renderable_recipe() {
-        let catalog = RuntimeCaptureCatalog::open_embedded().expect("real embedded v3");
+    fn real_embedded_capture_resolves_at_least_one_complete_renderable_recipe() {
+        let catalog = RuntimeCaptureCatalog::open_embedded().expect("real embedded current");
         let mut resolved = false;
         for recipe in catalog.states.values() {
             if recipe.meshes.is_empty() {
@@ -1065,20 +1065,20 @@ mod tests {
         }
         assert!(
             resolved,
-            "real embedded v3 pool must restore a complete model, not just parse an index"
+            "real embedded current pool must restore a complete model, not just parse an index"
         );
     }
 
     #[test]
-    fn v3_diagonal_cross_uv_preserved() {
-        let geometry=CaptureGeometryV3 {
+    fn capture_diagonal_cross_uv_preserved() {
+        let geometry=CaptureGeometry {
             vertices:vec![[0.,0.,0.],[1.,0.,1.],[1.,1.,1.],[0.,1.,0.]],
             triangles:vec![[0,2,3],[0,1,2]],
         };
-        let corner=|u:f32,v:f32| pool_v3::Corner {
+        let corner=|u:f32,v:f32| pool::Corner {
             normal:[-0.70710677,0.,0.70710677],uv:[u,v],abgr:u32::MAX
         };
-        let appearance=CaptureAppearanceV3 {
+        let appearance=CaptureAppearance {
             geometry_id:0,source_kind:1,uv_complete:true,
             corners:vec![corner(0.,0.),corner(1.,1.),corner(0.,1.),
                          corner(0.,0.),corner(1.,0.),corner(1.,1.)],
@@ -1093,12 +1093,12 @@ mod tests {
         assert_eq!(result[0].normal,[-1,0,1]);
     }
     #[test]
-    fn v3_same_path_reexport_has_distinct_catalog_identity() {
-        let dir = tempfile::tempdir().expect("temporary v3 capture");
+    fn capture_same_path_reexport_has_distinct_catalog_identity() {
+        let dir = tempfile::tempdir().expect("temporary current capture");
         fixture(dir.path(), false);
         let first = RuntimeCaptureCatalog::open(dir.path()).expect("first revision");
         let identical = RuntimeCaptureCatalog::open(dir.path()).expect("identical revision");
-        assert_eq!(first, identical, "unchanged v3 capture must retain catalog identity");
+        assert_eq!(first, identical, "unchanged current capture must retain catalog identity");
         let path = dir.path().join("manifest.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         manifest["capture_revision"] = json!(1_748_945_317_123_456_789u64);
