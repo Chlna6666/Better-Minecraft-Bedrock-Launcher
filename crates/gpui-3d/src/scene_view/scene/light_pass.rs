@@ -19,6 +19,10 @@ impl LightPass {
     }
 }
 impl SceneResources {
+    pub(in crate::scene_view) fn light_revision(&self) -> u64 {
+        self.light_revision
+    }
+
     pub(in crate::scene_view) fn light_resources(&self) -> (BufferId, u64, u32) {
         (
             self.light_buffer,

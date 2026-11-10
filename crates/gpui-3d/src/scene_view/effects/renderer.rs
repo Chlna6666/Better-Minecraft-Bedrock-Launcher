@@ -289,27 +289,18 @@ impl EffectsRenderer {
             light.2,
             state.ssr_hiz_levels(),
         )?;
-        let tile_updated = light.2 != 0
-            && (state.tile_camera != Some(view.camera)
-                || state
-                    .tile_scene
-                    .as_ref()
-                    .is_none_or(|old| !Arc::ptr_eq(old, &view.scene))
-                || state.tile_transform != view.scene_transform);
+        let tile_key = (view.camera, state.scene.light_revision());
+        let tile_updated = light.2 != 0 && state.tile_key != Some(tile_key);
         if light.2 == 0 {
-            // Neither shader reads the tile lists without lights. Dropping the
-            // cached scene also forces a rebuild when lights return.
-            state.tile_scene = None;
+            state.tile_key = None;
         } else if tile_updated {
             // A failed dispatch may already have cleared the old tile lists.
-            state.tile_camera = None;
+            state.tile_key = None;
             state
                 .tiles
                 .update(device, state.frame, light)
                 .context("screen light binning")?;
-            state.tile_camera = Some(view.camera);
-            state.tile_transform = view.scene_transform;
-            state.tile_scene = Some(view.scene.clone());
+            state.tile_key = Some(tile_key);
         }
         // GPU-owner ordered sequence: native shadow/geometry producers have
         // already been queued as Graphics passes. Insert injection and
@@ -602,6 +593,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
             self.passes.clear();
             self.compute_passes.clear();
             for state in self.scenes.values_mut() {
+                state.tile_key = None;
                 if let Some(volume) = state.froxel.as_mut() {
                     volume.invalidate();
                 }

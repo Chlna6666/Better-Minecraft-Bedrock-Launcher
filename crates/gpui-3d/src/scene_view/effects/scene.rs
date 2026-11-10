@@ -223,9 +223,7 @@ pub(super) struct EffectScene {
     pub(super) shadow_scene: Option<Arc<Scene>>,
     pub(super) shadow_transform: Mat4,
     pub(super) shadow_matrix: [Mat4; SHADOW_CASCADE_COUNT],
-    pub(super) tile_transform: Mat4,
-    pub(super) tile_camera: Option<Camera>,
-    pub(super) tile_scene: Option<Arc<Scene>>,
+    pub(super) tile_key: Option<(Camera, u64)>,
     pub(super) retired: Vec<RetiredTargets>,
     pub(super) submitted_retirements: usize,
 }
@@ -631,9 +629,7 @@ impl EffectScene {
                 shadow_scene: None,
                 shadow_transform: Mat4::IDENTITY,
                 shadow_matrix: [Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
-                tile_transform: Mat4::IDENTITY,
-                tile_camera: None,
-                tile_scene: None,
+                tile_key: None,
                 retired: Vec::new(),
                 submitted_retirements: 0,
             })
@@ -665,7 +661,7 @@ impl EffectScene {
             ssr_hiz: self.ssr_hiz.take(),
             froxel: self.froxel.take(),
         });
-        self.tile_camera = None;
+        self.tile_key = None;
         self.group_key = None;
         self.ssr_hiz_valid = false;
         self.queued_ssr_hiz = false;

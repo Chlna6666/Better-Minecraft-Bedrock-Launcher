@@ -98,6 +98,8 @@ pub(super) struct SceneResources {
     instance_buffer: BufferId,
     instance_capacity: usize,
     light_buffer: BufferId,
+    // Published GPU-visible light table revision for consumers such as tiled effects.
+    light_revision: u64,
     light_capacity: usize,
     frame_buffer: BufferId,
     // Last committed GPU frame uniform bytes. Section updates often preserve
@@ -780,6 +782,7 @@ impl SceneResources {
             instance_buffer,
             instance_capacity,
             light_buffer,
+            light_revision: 0,
             light_capacity,
             frame_buffer,
             uploaded_frame_params: Vec::new(),
@@ -2123,6 +2126,7 @@ impl SceneResources {
         // bindings and generated mappings succeeded.
         if !light_ranges.is_empty() {
             self.uploaded_tables[2] = light_bytes;
+            self.light_revision = self.light_revision.wrapping_add(1);
         }
         // Canonical singleton DrawIndirect offsets are a function of their
         // current logical index, independent of which Section owns the slot.
@@ -2499,6 +2503,8 @@ impl SceneResources {
                 data: &slot_bytes[range],
             });
         }
+        let lights_changed = self.uploaded_tables[2].len() != light_bytes.len()
+            || writes.iter().any(|write| write.descriptor.buffer == light_buffer);
         let uploaded_bytes = writes.iter().map(|write| write.data.len()).sum::<usize>();
         let write_count = writes.len();
         let encoded_bytes =
@@ -2698,6 +2704,9 @@ impl SceneResources {
             instance_bytes = std::mem::take(&mut previous_tables[1]);
         }
         self.uploaded_tables = [draw_bytes, instance_bytes, light_bytes];
+        if lights_changed {
+            self.light_revision = self.light_revision.wrapping_add(1);
+        }
         for table in &mut previous_tables {
             table.clear();
         }
