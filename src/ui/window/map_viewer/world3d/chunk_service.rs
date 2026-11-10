@@ -2625,6 +2625,7 @@ pub(super) fn trace_timestamp_ms() -> u128 {
 
 struct LoadedChunkBatch {
     chunks: Vec<(ChunkPos, Result<Option<CachedChunk>, String>)>,
+    preflight_masks: HashMap<ChunkPos, BTreeMap<i8, [u64; 64]>>,
     stats: ChunkLoadStats,
     query_time: Duration,
     collect_time: Duration,
@@ -2659,6 +2660,7 @@ fn load_batch_from_world(
     if positions.is_empty() {
         return LoadedChunkBatch {
             chunks: Vec::new(),
+            preflight_masks: HashMap::new(),
             stats: ChunkLoadStats::default(),
             query_time: Duration::ZERO,
             collect_time: Duration::ZERO,
@@ -2677,6 +2679,7 @@ fn load_batch_from_world(
                         .iter()
                         .map(|pos| (*pos, Err(message.clone())))
                         .collect(),
+                    preflight_masks: HashMap::new(),
                     stats: ChunkLoadStats::default(),
                     query_time: started.elapsed(),
                     collect_time: Duration::ZERO,
@@ -2687,6 +2690,14 @@ fn load_batch_from_world(
     let trace = trace_verbose();
     let premesh_started = Instant::now();
     let mut preflight_masks = HashMap::<ChunkPos, BTreeMap<i8, [u64; 64]>>::new();
+    let mut lazy_visibility = vec![None; chunks.len()];
+    let candidates = lazy_view
+        .map(|_| {
+            chunks.iter().filter(|data| data.is_loaded).flat_map(|data| {
+                data.subchunks.keys().map(move |&y| (data.pos, i32::from(y).div_euclid(4)))
+            }).collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     // The first pass only decodes packed block palettes. Its conservative
     // connectivity graph can suppress underground model expansion before the
     // expensive per-state/captured-model and texture stages begin.
@@ -2694,18 +2705,12 @@ fn load_batch_from_world(
         && !portal_culling_disabled()
     {
         let mut probes = cached_probes.unwrap_or_default();
-        let mut candidates = BTreeSet::new();
         for data in &chunks {
             if !data.is_loaded {
                 continue;
             }
             let masks = premesh_visibility_masks(data);
-            let visibility = masks.iter()
-                .filter(|(_, mask)| mask.iter().any(|&word| word != 0))
-                .map(|(&y, mask)| (y, Arc::new(
-                    super::visibility::SectionVisibility::from_solid_bits(*mask),
-                )))
-                .collect();
+            let visibility = probe_visibility(masks.iter().map(|(&y, &mask)| (y, mask)));
             // Reuse these decoded masks when collecting a deferred probe or
             // retaining an omitted Section: never unpack the same palette twice.
             preflight_masks.insert(data.pos, masks);
@@ -2717,24 +2722,24 @@ fn load_batch_from_world(
                 state_version: None,
                 storage_bytes: 0,
             }));
-            candidates.extend(data.subchunks.iter().map(|(y, _)| {
-                (data.pos, i32::from(*y).div_euclid(4))
-            }));
         }
-        super::visibility::hidden_render_band_keys(
+        let hidden = super::visibility::hidden_render_band_keys(
             &probes, &candidates, view.dimension,
             view.camera.map(|coordinate| coordinate.floor() as i32),
             view.radius,
-        )
+        );
+        for (data, visibility) in chunks.iter().zip(&mut lazy_visibility) {
+            if data.is_loaded && lazy_mesh_column(data.pos, view)
+                && let Some(probe) = probes.remove(&data.pos).and_then(Arc::into_inner)
+            {
+                *visibility = Some(probe.visibility);
+            }
+        }
+        hidden
     } else {
         BTreeSet::new()
     };
     if let Some(view) = lazy_view {
-        let candidates = chunks.iter().filter(|chunk| chunk.is_loaded)
-            .flat_map(|chunk| chunk.subchunks.keys().map(move |&y| {
-                (chunk.pos, i32::from(y).div_euclid(4))
-            }))
-            .collect::<BTreeSet<_>>();
         // Camera Section rejection is independent of cave connectivity:
         // discard distant off-screen models even for open sky and water.
         hidden_before_models.extend(frustum_hidden_bands(&candidates, view));
@@ -2765,7 +2770,8 @@ fn load_batch_from_world(
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
-        .map(|data| {
+        .zip(lazy_visibility)
+        .map(|(data, visibility)| {
             let pos = data.pos;
             if cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
                 return (pos, Err("区块预读已取消".to_string()));
@@ -2773,10 +2779,10 @@ fn load_batch_from_world(
             (
                 pos,
                 if lazy_view.is_some_and(|view| lazy_mesh_column(pos, view)) {
-                    collect_lazy_probe_chunk(data, preflight_masks.get(&pos))
+                    collect_lazy_probe_chunk(data, visibility, preflight_masks.get(&pos))
                 } else {
-                    let hidden = hidden_before_models.iter()
-                        .filter_map(|(candidate, band)| (*candidate == pos).then_some(*band))
+                    let hidden = hidden_before_models.range((pos, i32::MIN)..=(pos, i32::MAX))
+                        .map(|&(_, band)| band)
                         .collect::<BTreeSet<_>>();
                     collect_cached_chunk(
                         data, models, trace, biome_blend.as_ref(), &hidden,
@@ -2796,6 +2802,7 @@ fn load_batch_from_world(
     }
     LoadedChunkBatch {
         chunks: processed,
+        preflight_masks,
         stats,
         query_time,
         collect_time,
@@ -3327,12 +3334,21 @@ impl Worker {
                 u64::try_from(loaded.collect_time.as_millis()).unwrap_or(u64::MAX);
             self.last_load_stats = loaded.stats;
             let mut newly_loaded = Vec::new();
+            let mut preflight_masks = loaded.preflight_masks;
+            let mut reused_index_masks = 0usize;
             for (pos, result) in loaded.chunks {
                 match result {
                     Ok(Some(chunk)) => {
-                        self.visibility_index.upsert(
-                            pos, premesh_visibility_masks_from_probe(&chunk.probe),
-                        );
+                        if self.visibility_index.enabled() {
+                            let masks = match preflight_masks.remove(&pos) {
+                                Some(masks) => {
+                                    reused_index_masks += 1;
+                                    index_masks(chunk.probe.subchunks.keys().copied(), masks)
+                                }
+                                None => premesh_visibility_masks_from_probe(&chunk.probe),
+                            };
+                            self.visibility_index.upsert(pos, masks);
+                        }
                         let deferred = chunk.blocks.is_none();
                         self.deferred_bands.extend(
                             chunk.unexpanded_bands.iter().map(|&band| (pos, band)),
@@ -3557,6 +3573,7 @@ impl Worker {
         let (center_x, center_z) = self.view_center_chunk();
         let mut probes = self.visibility_index.probes_in_view(
             self.view.dimension, center_x, center_z, self.view.radius,
+            |pos| !self.cache.contains_key(&pos) && !self.probe_stash.contains_key(&pos),
         ).collect::<BTreeMap<_, _>>();
         // Live decoded geometry is more precise than the conservative disk
         // snapshot. Its solid masks always come from authoritative models.
@@ -5615,10 +5632,17 @@ fn premesh_visibility_masks(data: &ChunkData) -> BTreeMap<i8, [u64; 64]> {
 fn premesh_visibility_masks_from_probe(
     probe: &World3dChunkProbe,
 ) -> BTreeMap<i8, [u64; 64]> {
-    let mut masks = premesh_visibility_masks_for_sections(
+    let masks = premesh_visibility_masks_for_sections(
         probe.subchunks.iter().map(|(&y, section)| (y, &section.subchunk)),
     );
-    for &y in probe.subchunks.keys() {
+    index_masks(probe.subchunks.keys().copied(), masks)
+}
+
+fn index_masks(
+    sections: impl Iterator<Item = i8>,
+    mut masks: BTreeMap<i8, [u64; 64]>,
+) -> BTreeMap<i8, [u64; 64]> {
+    for y in sections {
         masks.entry(y).or_insert([0; 64]);
     }
     masks
@@ -5681,7 +5705,7 @@ fn build_probe(
     pos: ChunkPos,
     data: ChunkData,
     state_version: Option<i32>,
-    solid_masks: BTreeMap<i8, [u64; 64]>,
+    visibility: BTreeMap<i8, Arc<super::visibility::SectionVisibility>>,
 ) -> World3dChunkProbe {
     let mut subchunks = BTreeMap::new();
     let (min_y, _) = pos.y_range(data.version);
@@ -5698,16 +5722,6 @@ fn build_probe(
         }
         subchunks.insert(y, ProbingSubChunk { subchunk, flags });
     }
-    // Certified full-cube cells were collected with the rendered block model,
-    // not inferred from probe's generic "non-air" flag (which includes fluids,
-    // glass, fences and other non-occluding geometry).
-    let visibility = solid_masks
-        .into_iter()
-        .filter(|(_, solid)| solid.iter().any(|&word| word != 0))
-        .map(|(y, solid)| {
-            (y, Arc::new(super::visibility::SectionVisibility::from_solid_bits(solid)))
-        })
-        .collect::<BTreeMap<_, _>>();
     let storage_bytes = subchunks.values().fold(
         std::mem::size_of::<World3dChunkProbe>(),
         |bytes, subchunk| {
@@ -5729,6 +5743,18 @@ fn build_probe(
         state_version,
         storage_bytes,
     }
+}
+
+fn probe_visibility(
+    solid_masks: impl IntoIterator<Item = (i8, [u64; 64])>,
+) -> BTreeMap<i8, Arc<super::visibility::SectionVisibility>> {
+    solid_masks
+        .into_iter()
+        .filter(|(_, solid)| solid.iter().any(|&word| word != 0))
+        .map(|(y, solid)| {
+            (y, Arc::new(super::visibility::SectionVisibility::from_solid_bits(solid)))
+        })
+        .collect()
 }
 
 /// Match the full BSC game version to a selected installation's version
@@ -5820,6 +5846,7 @@ fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBu
 /// through the batched world query and replaces this provisional probe.
 fn collect_lazy_probe_chunk(
     data: ChunkData,
+    visibility: Option<BTreeMap<i8, Arc<super::visibility::SectionVisibility>>>,
     preflight_masks: Option<&BTreeMap<i8, [u64; 64]>>,
 ) -> Result<Option<CachedChunk>, String> {
     if !data.is_loaded {
@@ -5827,9 +5854,11 @@ fn collect_lazy_probe_chunk(
     }
     let pos = data.pos;
     let version = data.version;
-    let masks = preflight_masks.cloned()
-        .unwrap_or_else(|| premesh_visibility_masks(&data));
-    let probe = Arc::new(build_probe(pos, data, None, masks));
+    let visibility = visibility.unwrap_or_else(|| match preflight_masks {
+        Some(masks) => probe_visibility(masks.iter().map(|(&y, &mask)| (y, mask))),
+        None => probe_visibility(premesh_visibility_masks(&data)),
+    });
+    let probe = Arc::new(build_probe(pos, data, None, visibility));
     Ok(Some(CachedChunk {
         blocks: None,
         boundary: None,

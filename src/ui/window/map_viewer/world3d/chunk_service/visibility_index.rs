@@ -298,12 +298,14 @@ impl VisibilityIndex {
     /// Filter by the active circular view *before* reconstructing the
     /// expensive 16³ portal graphs from their persistent compact masks.
     /// Off-screen index entries remain only a few raw words on disk/in RAM.
-    pub(super) fn probes_in_view(
-        &self, dimension: Dimension, center_x: i32, center_z: i32, radius: i32,
-    ) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + '_ {
+    pub(super) fn probes_in_view<'a>(
+        &'a self, dimension: Dimension, center_x: i32, center_z: i32, radius: i32,
+        needs_probe: impl Fn(ChunkPos) -> bool + 'a,
+    ) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + 'a {
         self.entries.iter()
             .filter(move |entry| {
                 super::inside_view(*entry.0, dimension, center_x, center_z, radius)
+                    && needs_probe(*entry.0)
             })
             .map(|(&pos, value)| (pos, value.probe(pos)))
     }
@@ -427,6 +429,26 @@ mod tests {
         assert!(parse(&fs::read(&path).unwrap(), source_revision(&world).unwrap()).is_none());
         drop(index);
         fs::remove_dir_all(world).unwrap();
+    }
+
+    #[test]
+    fn live_column_does_not_materialize_a_second_index_graph() {
+        let mut index = VisibilityIndex {
+            world: PathBuf::new(), file: PathBuf::new(), revision: Some(1),
+            entries: BTreeMap::new(), epoch: 1, dirty: false,
+            last_flush: Instant::now(), last_checked: Instant::now(),
+        };
+        let live = pos(1);
+        let indexed = pos(2);
+        for column in [live, indexed] {
+            index.upsert(column, BTreeMap::from([(0, [u64::MAX; 64])]));
+        }
+        let probes = index.probes_in_view(Dimension::Overworld, 1, -9, 2, |column| column != live)
+            .collect::<Vec<_>>();
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].0, indexed);
+        assert!(index.entries[&live].probe.get().is_none());
+        assert!(index.entries[&indexed].probe.get().is_some());
     }
 
     #[test]

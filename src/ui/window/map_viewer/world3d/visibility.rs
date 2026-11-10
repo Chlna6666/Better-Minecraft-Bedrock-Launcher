@@ -565,10 +565,6 @@ pub(super) fn hidden_render_band_keys(
             }
         }
     }
-    let reachable = entries
-        .keys()
-        .map(|(pos, section_y)| (*pos, section_y.div_euclid(4)))
-        .collect::<std::collections::HashSet<_>>();
     keys
         .iter()
         .filter(|(pos, band)| {
@@ -577,7 +573,7 @@ pub(super) fn hidden_render_band_keys(
                 && probes.contains_key(pos)
                 && *band >= min_y.div_euclid(4)
                 && *band <= max_y.div_euclid(4)
-                && !reachable.contains(&(*pos, *band))
+                && !(0..4).any(|offset| entries.contains_key(&(*pos, *band * 4 + offset)))
         })
         .copied()
         .collect()

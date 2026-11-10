@@ -83,6 +83,7 @@ mod tests {
             .send((
                 LoadedChunkBatch {
                     chunks: Vec::new(),
+                    preflight_masks: Default::default(),
                     stats: Default::default(),
                     query_time: Duration::ZERO,
                     collect_time: Duration::ZERO,
