@@ -531,6 +531,7 @@ GDKUserSelect.switch_user=切换存档用户
 GDKUserSelect.user_n=用户 {{index}}
 GameCrash.forensics.dump=发现 {{count}} 份有效 Mini Dump，异常码 {{code}}
 GameCrash.forensics.dumpWarning=转储异常码来自候选文件，仅能描述异常类型，不能独立确认责任模组。
+GameCrash.forensics.libraries=检测到加载失败的组件：{{libraries}}（只显示文件名，不代表已确定根因）
 GameCrash.forensics.mods=加载失败的模组：{{mods}}
 GameCrash.forensics.module=Mini Dump 故障模块：{{module}}（不等于已确定根因）
 GameCrash.forensics.private=此加载错误来自启动任务独立保存的日志，但不一定是导致崩溃的最终原因。
