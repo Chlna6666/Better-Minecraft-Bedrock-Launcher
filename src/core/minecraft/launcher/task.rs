@@ -646,31 +646,32 @@ async fn launch_game(
     }
 
     check_cancelled(task_id)?;
-    let mut startup_mods_relative_paths = Vec::new();
-    let mut startup_mods_direct_paths = Vec::new();
-    let mut delayed_mods = Vec::new();
-    if request.auto_start
-        && !version_config.disable_mod_loading
-        && let Ok(mods) = load_mods_config(&mods_dir).await
-    {
-        for (path_buf, delay) in mods {
-            let Some(path_string) = path_buf.to_str().map(ToString::to_string) else {
-                continue;
-            };
-            if !is_win32 {
-                let _ = grant_all_application_packages_access(&path_buf);
-            }
+    // Migrate any old BMCBL PreLoader install before launching. Otherwise a
+    // legacy mods/PreLoader/manifest.json may register PreLoader as its own
+    // preload-native Mod, conflicting with its bootstrap initialization.
+    if request.auto_start {
+        crate::core::levilamina::migrate_preloader_layout(PathBuf::from(package_folder))
+            .await
+            .map_err(|error| format!("修复旧 PreLoader 引导目录失败: {error}"))?;
+    }
 
-            if delay == 0 {
-                if legacy_uwp_runtime_injection_only {
-                    startup_mods_direct_paths.push(path_string);
-                } else if let Some(file_name) = path_buf.file_name().and_then(|name| name.to_str())
-                {
-                    startup_mods_relative_paths.push(format!("mods/{file_name}"));
-                }
-            } else {
-                delayed_mods.push((path_string, delay));
-            }
+    // Modern GDK/UWP: BLoader owns BLoader/PreLoader and BLoader/mods.
+    // PreLoader owns preload-native and LeviLamina owns native in mods/.
+    // None of these DLLs belongs in BMCBL's launcher-side injection list.
+    let startup_mods_relative_paths: Vec<String> = Vec::new();
+    let mut startup_mods_direct_paths = Vec::new();
+    let delayed_mods: Vec<(String, u64)> = Vec::new();
+    if request.auto_start
+        && legacy_uwp_runtime_injection_only
+        && !version_config.disable_mod_loading
+    {
+        for (path, _) in load_mods_config(&mods_dir)
+            .await
+            .map_err(|error| format!("获取旧版 UWP PreLoader 启动路径失败: {error}"))?
+        {
+            let path_string = path.to_string_lossy().into_owned();
+            let _ = grant_all_application_packages_access(&path);
+            startup_mods_direct_paths.push(path_string);
         }
     }
     debug!(
