@@ -953,10 +953,12 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             report.game_directory.join("Minecraft Bedrock/logs/BLoader.log")),
     ];
     let directories = [
-        report.game_directory.join("logs"),
+        // Prioritize BLoader's per-crash JSON over rotating general logs so
+        // a busy mod directory cannot consume the bounded evidence budget.
         report.game_directory.join("logs/crash-reports"),
-        report.game_directory.join("logs/mods"),
         report.game_directory.join("Minecraft Bedrock/logs/crash-reports"),
+        report.game_directory.join("logs"),
+        report.game_directory.join("logs/mods"),
         report.game_directory.join("Minecraft Bedrock/logs/mods"),
         report.game_directory.join("PreLoader/logs"),
         report.game_directory.join("logs/bloader"),
@@ -998,7 +1000,14 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             continue;
         }
         let Ok(entries) = fs::read_dir(&dir) else { continue };
-        for entry in entries.take(128).flatten() {
+        let mut entries = entries.flatten().take(128).collect::<Vec<_>>();
+        // Newest evidence first. DirEntry order is otherwise filesystem
+        // dependent and could hide a current crash behind dozens of old logs.
+        entries.sort_by_key(|entry| std::cmp::Reverse(
+            fs::symlink_metadata(entry.path()).ok()
+                .and_then(|meta| meta.modified().ok())
+        ));
+        for entry in entries {
             if number >= 48 { return files; }
             let path = entry.path();
             let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else { continue };
