@@ -460,7 +460,11 @@ impl VulkanDevice {
             graphics_queue,
             sidecar_queue,
             dedicated_compute_queue,
-            dedicated_compute_family_index: queue_families.compute,
+            // Prefer the second queue in the same graphics family. The
+            // compute-only family is requested only if the graphics family
+            // has no spare queue, so do not advertise an unused queue.
+            dedicated_compute_family_index: queue_families.compute
+                .filter(|_| sidecar_queue.is_none()),
             present_queue,
             graphics_queue_family_index: queue_families.graphics,
             present_queue_family_index: queue_families.present,
@@ -6279,11 +6283,15 @@ fn create_device(
     // capable adapter. One-queue devices retain the ordered submission
     // path without requiring a flag or separate queue-family transfers.
     let dedicated = independent_graphics_queue_enabled(graphics_queue_count);
+    // On adapters providing both, avoid requesting and maintaining a third
+    // queue needlessly. Same-family execution has lower synchronization
+    // overhead and does not require CONCURRENT buffer allocations.
+    let selected_compute = if dedicated { None } else { indices.compute };
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
         unique_families.push(indices.present);
     }
-    if let Some(compute) = indices.compute
+    if let Some(compute) = selected_compute
         && !unique_families.contains(&compute)
     {
         unique_families.push(compute);
@@ -6381,12 +6389,12 @@ fn create_device(
     if dedicated {
         log::info!("nova-gfx Vulkan second graphics queue enabled in family {}", indices.graphics);
     }
-    let dedicated_compute_queue = indices.compute.map(|family| {
+    let dedicated_compute_queue = selected_compute.map(|family| {
         // SAFETY: The compute-family index-zero queue was requested above.
         unsafe { device.get_device_queue(family, 0) }
     });
-    if let Some(family) = indices.compute {
-        log::info!("nova-gfx Vulkan separate compute queue available family={} graphics_family={}", family, indices.graphics);
+    if let Some(family) = selected_compute {
+        log::info!("nova-gfx Vulkan separate compute queue enabled family={} graphics_family={}", family, indices.graphics);
     }
     // SAFETY: Queue family index and queue index are valid per device creation.
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
