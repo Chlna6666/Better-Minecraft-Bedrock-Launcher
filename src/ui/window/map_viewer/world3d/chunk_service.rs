@@ -3442,7 +3442,7 @@ impl Worker {
             let mesh_time = mesh_started.elapsed();
             if trace_timings() {
                 eprintln!(
-                    "world3d batch ts={} gen={} id={} prefetched={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} lazy_pending={} cache_mib={:.1}",
+                    "world3d batch ts={} gen={} id={} prefetched={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} db_get_batches={} db_prefix_scans={} decoded_subchunks={} reused_index_masks={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} lazy_pending={} cache_mib={:.1}",
                     trace_timestamp_ms(),
                     self.view.generation,
                     batch_number,
@@ -3454,6 +3454,10 @@ impl Worker {
                     self.last_query_ms,
                     self.last_load_stats.db_read_ms,
                     self.last_load_stats.decode_ms,
+                    self.last_load_stats.exact_get_batches,
+                    self.last_load_stats.prefix_scans,
+                    self.last_load_stats.subchunks_decoded,
+                    reused_index_masks,
                     self.last_collect_ms,
                     schedule_time.as_millis(),
                     mesh_time.as_millis(),
