@@ -214,11 +214,25 @@ impl VulkanDevice {
             let bytes_per_texel = u64::from(texture.desc.format.bytes_per_pixel()).max(1);
             let row_pitch =
                 gfx_core::texture_copy_row_pitch(copy.size.width(), texture.desc.format, limits);
+            let tight_pitch = u64::from(copy.size.width()) * bytes_per_texel;
+            // Vulkan bufferRowLength counts TEXELS, not bytes. A zero value
+            // means tightly packed rows. Preserve the backend's actual pitch
+            // if its advertised copy limits ever require padded rows.
+            let buffer_row_length = if row_pitch == tight_pitch {
+                0
+            } else {
+                if row_pitch % bytes_per_texel != 0 {
+                    return Err(Error::InvalidInput(
+                        "Vulkan texture copy row pitch is not a whole number of texels".into(),
+                    ));
+                }
+                u32::try_from(row_pitch / bytes_per_texel).map_err(|_| {
+                    Error::InvalidInput("Vulkan copy row length exceeds u32 texels".into())
+                })?
+            };
             let region = vk::BufferImageCopy::default()
                 .buffer_offset(copy.buffer_offset)
-                // 0 means tightly packed to imageExtent.width; the buffer is sized with the
-                // same device pitch, so Vulkan needs no explicit row length.
-                .buffer_row_length(0)
+                .buffer_row_length(buffer_row_length)
                 .buffer_image_height(0)
                 .image_subresource(
                     vk::ImageSubresourceLayers::default()
