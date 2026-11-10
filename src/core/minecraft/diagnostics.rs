@@ -1230,6 +1230,28 @@ fn dump_matches_session(report: &GameSessionReport, path: &Path) -> bool {
         // dumps cannot be correlated safely by timestamp alone.
         return false;
     }
+    let is_bloader_crash_report = path.parent().is_some_and(|parent|
+        parent == report.game_directory.join("logs/crash-reports")
+        || parent == report.game_directory.join("Minecraft Bedrock/logs/crash-reports")
+    );
+    if is_bloader_crash_report {
+        // BLoader names its crash-SEH dumps after an owner and timestamp, not
+        // the game PID. Its sibling JSON has process_id, timestamp and phase.
+        // Never accept an orphan dump or a first-chance (VEH) capture as an
+        // unhandled game crash.
+        let sibling = path.with_extension("json");
+        let Some(size) = fs::symlink_metadata(&sibling).ok()
+            .filter(|meta| meta.file_type().is_file() && meta.len() <= 1024 * 1024)
+            .map(|meta| meta.len())
+        else { return false; };
+        let _ = size;
+        let Ok(json) = fs::read_to_string(&sibling) else { return false; };
+        return forensics::inspect_bloader_crash_json(
+            &[("logs/bloader-crash.json".to_string(), json)],
+            report.pid, report.started_at, report.ended_at, true,
+        ).iter().any(|issue|
+            issue.phase == Some(forensics::NativeExceptionPhase::Seh));
+    }
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -1242,6 +1264,8 @@ fn dump_matches_session(report: &GameSessionReport, path: &Path) -> bool {
 fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut dirs = vec![
+        report.game_directory.join("logs/crash-reports"),
+        report.game_directory.join("Minecraft Bedrock/logs/crash-reports"),
         report.game_directory.clone(),
         report.game_directory.join("crash-logs"),
         report.game_directory.join("logs"),
