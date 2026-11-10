@@ -2462,6 +2462,7 @@ fn load_batch_from_world(
     positions: &[ChunkPos],
     options: ChunkLoadOptions,
     lazy_view: Option<ViewState>,
+    cached_probes: Option<BTreeMap<ChunkPos, Arc<World3dChunkProbe>>>,
 ) -> LoadedChunkBatch {
     if positions.is_empty() {
         return LoadedChunkBatch {
@@ -2492,6 +2493,45 @@ fn load_batch_from_world(
         };
     let query_time = started.elapsed();
     let trace = trace_verbose();
+    // The first pass only decodes packed block palettes. Its conservative
+    // connectivity graph can suppress underground model expansion before the
+    // expensive per-state/captured-model and texture stages begin.
+    let hidden_before_models = if let Some(view) = lazy_view
+        && !portal_culling_disabled()
+    {
+        let mut probes = cached_probes.unwrap_or_default();
+        let mut candidates = BTreeSet::new();
+        for data in &chunks {
+            if !data.is_loaded {
+                continue;
+            }
+            let visibility = premesh_visibility_masks(data)
+                .into_iter()
+                .filter(|(_, mask)| mask.iter().any(|&word| word != 0))
+                .map(|(y, mask)| (y, Arc::new(
+                    super::visibility::SectionVisibility::from_solid_bits(mask),
+                )))
+                .collect();
+            probes.insert(data.pos, Arc::new(World3dChunkProbe {
+                pos: data.pos,
+                min_y: data.pos.y_range(data.version).0,
+                subchunks: BTreeMap::new(),
+                visibility,
+                state_version: None,
+                storage_bytes: 0,
+            }));
+            candidates.extend(data.subchunks.iter().map(|(y, _)| {
+                (data.pos, i32::from(*y).div_euclid(4))
+            }));
+        }
+        super::visibility::hidden_render_band_keys(
+            &probes, &candidates, view.dimension,
+            view.camera.map(|coordinate| coordinate.floor() as i32),
+            view.radius,
+        )
+    } else {
+        BTreeSet::new()
+    };
     // Bedrock fades grass/foliage colors over the block and its eight neighbors. Build the
     // blended column tints once per batch so parallel chunk collection only reads them.
     let need_mesh_data = chunks.iter().any(|data| {
@@ -2515,7 +2555,12 @@ fn load_batch_from_world(
                 if lazy_view.is_some_and(|view| lazy_mesh_column(pos, view)) {
                     collect_lazy_probe_chunk(data)
                 } else {
-                    collect_cached_chunk(data, models, trace, biome_blend.as_ref())
+                    let hidden = hidden_before_models.iter()
+                        .filter_map(|(candidate, band)| (*candidate == pos).then_some(*band))
+                        .collect::<BTreeSet<_>>();
+                    collect_cached_chunk(
+                        data, models, trace, biome_blend.as_ref(), &hidden,
+                    )
                 },
             )
         })
@@ -3257,9 +3302,12 @@ impl Worker {
         let (sender, receiver) = sync_channel(1);
         let requested = positions.clone();
         let view = self.view;
+        let probes = self.portal_probe_snapshot();
         rayon::spawn(move || {
             let started = Instant::now();
-            let loaded = load_batch_from_world(&world, &models, &positions, options, Some(view));
+            let loaded = load_batch_from_world(
+                &world, &models, &positions, options, Some(view), Some(probes),
+            );
             let _ = sender.send((loaded, started.elapsed()));
         });
         PendingChunkBatch {
@@ -3283,6 +3331,17 @@ impl Worker {
     /// Reuse the UI's conservative 6-face portal graph before any Section
     /// mesh exists. Cached metadata-only columns are deliberately represented
     /// as open space; they can never make another Section falsely invisible.
+    fn portal_probe_snapshot(&self) -> BTreeMap<ChunkPos, Arc<World3dChunkProbe>> {
+        let mut probes = self.cache.iter()
+            .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
+            .collect::<BTreeMap<_, _>>();
+        probes.extend(
+            self.probe_stash.iter()
+                .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
+        );
+        probes
+    }
+
     fn portal_hidden_bands(
         &self,
         candidates: &BTreeSet<(ChunkPos, i32)>,
@@ -3292,16 +3351,7 @@ impl Worker {
         {
             return BTreeSet::new();
         }
-        let mut probes = self
-            .cache
-            .iter()
-            .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
-            .collect::<BTreeMap<_, _>>();
-        probes.extend(
-            self.probe_stash
-                .iter()
-                .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
-        );
+        let probes = self.portal_probe_snapshot();
         super::visibility::hidden_render_band_keys(
             &probes,
             candidates,
@@ -4127,6 +4177,7 @@ impl Worker {
             positions,
             self.batch_load_options(positions.len()),
             None,
+            None,
         )
     }
 
@@ -4137,6 +4188,7 @@ impl Worker {
             positions,
             self.batch_load_options(positions.len()),
             Some(self.view),
+            Some(self.portal_probe_snapshot()),
         )
     }
 
@@ -4149,7 +4201,9 @@ impl Worker {
         let trace = trace_verbose();
         let biome_blend =
             p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
-        let chunk = collect_cached_chunk(data, self.models.as_ref(), trace, Some(&biome_blend))?;
+        let chunk = collect_cached_chunk(
+            data, self.models.as_ref(), trace, Some(&biome_blend), &BTreeSet::new(),
+        )?;
         if trace {
             eprintln!(
                 "world3d worker: load_chunk {},{} total_ms={}",
@@ -5053,6 +5107,83 @@ fn probe_flags_for_state(state: &BlockState) -> u8 {
     flags
 }
 
+/// Only unambiguously opaque vanilla terrain blocks may certify a
+/// pre-model Portal wall. The ordinary model resolver can handle custom
+/// geometry and texture alpha later; ambiguous states must remain open here.
+fn premesh_opaque_terrain(name: &str) -> bool {
+    let Some(name) = name.strip_prefix("minecraft:") else {
+        return false;
+    };
+    matches!(
+        name,
+        "stone" | "deepslate" | "cobbled_deepslate" | "cobblestone"
+            | "bedrock" | "dirt" | "coarse_dirt" | "rooted_dirt"
+            | "grass" | "grass_block" | "sand" | "red_sand"
+            | "sandstone" | "red_sandstone" | "smooth_sandstone"
+            | "smooth_red_sandstone" | "gravel" | "clay"
+            | "granite" | "polished_granite" | "diorite" | "polished_diorite"
+            | "andesite" | "polished_andesite" | "tuff" | "calcite"
+            | "dripstone_block" | "netherrack" | "end_stone"
+            | "blackstone" | "basalt" | "smooth_basalt"
+            | "magma" | "magma_block" | "obsidian" | "crying_obsidian"
+    ) || name.ends_with("_ore")
+}
+
+/// Build conservative 16³ opaque connectivity from packed palette indices,
+/// before expanding captured block geometry, textures or biome-tinted faces.
+/// Secondary storage layers are left passable rather than guessing whether
+/// a waterlogged/custom overlay fully occludes any side.
+fn premesh_visibility_masks(data: &ChunkData) -> BTreeMap<i8, [u64; 64]> {
+    let mut masks = BTreeMap::new();
+    for &(y, ref subchunk) in &data.subchunks {
+        let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
+            continue;
+        };
+        let [storage] = storages.as_slice() else {
+            continue;
+        };
+        let opaque = storage.states.iter()
+            .map(|state| premesh_opaque_terrain(&state.name))
+            .collect::<Vec<_>>();
+        if !opaque.iter().any(|&opaque| opaque) {
+            continue;
+        }
+        if opaque.iter().all(|&opaque| opaque) {
+            masks.insert(y, [u64::MAX; 64]);
+            continue;
+        }
+        let mut mask = [0u64; 64];
+        for local_y in 0u8..16 {
+            for local_z in 0u8..16 {
+                for local_x in 0u8..16 {
+                    let opaque_cell = storage.palette_index_at(local_x, local_y, local_z)
+                        .and_then(|index| opaque.get(usize::from(index)))
+                        .copied().unwrap_or(false);
+                    if opaque_cell {
+                        let cell = usize::from(local_y) * 256
+                            + usize::from(local_z) * 16 + usize::from(local_x);
+                        mask[cell / 64] |= 1u64 << (cell % 64);
+                    }
+                }
+            }
+        }
+        masks.insert(y, mask);
+    }
+    masks
+}
+
+/// Retain one subchunk of neighbor occupancy at the edge of a visible band,
+/// while omitting deeper certified-hidden subchunks from model expansion.
+fn skip_premesh_subchunk(y: i8, hidden: &BTreeSet<i32>) -> bool {
+    let band = i32::from(y).div_euclid(4);
+    if !hidden.contains(&band) {
+        return false;
+    }
+    let local = i32::from(y).rem_euclid(4);
+    !((local == 0 && !hidden.contains(&(band - 1)))
+        || (local == 3 && !hidden.contains(&(band + 1))))
+}
+
 fn build_probe(
     pos: ChunkPos,
     data: ChunkData,
@@ -5200,7 +5331,8 @@ fn collect_lazy_probe_chunk(data: ChunkData) -> Result<Option<CachedChunk>, Stri
     }
     let pos = data.pos;
     let version = data.version;
-    let probe = Arc::new(build_probe(pos, data, None, BTreeMap::new()));
+    let masks = premesh_visibility_masks(&data);
+    let probe = Arc::new(build_probe(pos, data, None, masks));
     Ok(Some(CachedChunk {
         blocks: None,
         boundary: None,
@@ -5214,10 +5346,11 @@ fn collect_lazy_probe_chunk(data: ChunkData) -> Result<Option<CachedChunk>, Stri
 }
 
 fn collect_cached_chunk(
-    data: ChunkData,
+    mut data: ChunkData,
     models: &bedrock_block_model::BlockModelRepository,
     trace: bool,
     biome_blend: Option<&p3d::Preview3dBiomeBlendField>,
+    hidden_bands: &BTreeSet<i32>,
 ) -> Result<Option<CachedChunk>, String> {
     if !data.is_loaded {
         return Ok(None);
@@ -5225,12 +5358,38 @@ fn collect_cached_chunk(
     let pos = data.pos;
     let started = Instant::now();
     let frame_displays = FrameDisplay::collect(&data);
+    // Preserve the full decoded probe for future navigation and portal
+    // promotion. Temporarily omit hidden 16-block slices only while the
+    // heavyweight captured-model collector walks this column.
+    let premesh_masks = (!hidden_bands.is_empty())
+        .then(|| premesh_visibility_masks(&data));
+    let mut omitted = Vec::new();
+    if !hidden_bands.is_empty() {
+        let mut retained = Vec::with_capacity(data.subchunks.len());
+        for (y, subchunk) in std::mem::take(&mut data.subchunks) {
+            if skip_premesh_subchunk(y, hidden_bands) {
+                omitted.push((y, subchunk));
+            } else {
+                retained.push((y, subchunk));
+            }
+        }
+        data.subchunks = retained;
+    }
     let blocks =
         p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
             .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
+    data.subchunks.append(&mut omitted);
     let bytes = blocks.estimated_cpu_bytes();
     let version = data.version;
-    let probe = Arc::new(build_probe(pos, data, None, blocks.visibility_solid_masks()));
+    let mut masks = blocks.visibility_solid_masks();
+    if let Some(premesh_masks) = premesh_masks {
+        for (y, mask) in premesh_masks {
+            if hidden_bands.contains(&i32::from(y).div_euclid(4)) {
+                masks.insert(y, mask);
+            }
+        }
+    }
+    let probe = Arc::new(build_probe(pos, data, None, masks));
     if trace {
         eprintln!(
             "world3d worker: collect chunk {},{} bytes={} in {}ms",
