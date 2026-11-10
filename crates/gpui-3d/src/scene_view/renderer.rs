@@ -885,7 +885,7 @@ mod tests {
         let mut output = Vec::new();
         for revision in [1, 1, 2] {
             cache
-                .append(revision, None, &mut output, |steps| {
+                .rebuild(revision, None, |steps| {
                     builds += 1;
                     steps.push(RenderCommand::Draw(DrawCommand {
                         pipeline: RenderPipelineId::from_parts(revision as u32, 1),
@@ -899,6 +899,7 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
+            cache.publish(&mut output);
         }
         assert_eq!(builds, 2);
         assert_eq!(
