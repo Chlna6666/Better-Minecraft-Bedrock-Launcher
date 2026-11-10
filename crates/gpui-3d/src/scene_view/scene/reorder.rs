@@ -166,7 +166,7 @@ mod tests {
         );
         let mut prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
         assert_eq!(prepared.draws.len(), 3);
-        let original_draws = encode_draw_records(&prepared.draws, 0).unwrap();
+        let original_draws = encode_draw_records(&prepared.draws).unwrap();
         let mut original_instances = Vec::new();
         encode_instance_records(&prepared.draws, &mut original_instances).unwrap();
         let resident = prepared.draws[1..]
@@ -175,8 +175,8 @@ mod tests {
             .map(|(index, draw)| (draw_identity(draw), resident_binding(draw, index + 1)))
             .collect::<Vec<_>>();
         prepared.draws.swap(1, 2);
-        let full_draws = encode_draw_records(&prepared.draws, 0).unwrap();
-        let suffix_draws = encode_draw_records(&prepared.draws[1..], 0).unwrap();
+        let full_draws = encode_draw_records(&prepared.draws).unwrap();
+        let suffix_draws = encode_draw_records(&prepared.draws[1..]).unwrap();
         assert_eq!(
             &full_draws[..DRAW_PARAMS_STRIDE as usize],
             &original_draws[..DRAW_PARAMS_STRIDE as usize]
@@ -215,7 +215,7 @@ mod tests {
             let offset = binding.2.first_instance * DRAW_PARAMS_STRIDE as usize;
             assert_eq!(
                 &original_draws[offset..offset + DRAW_PARAMS_STRIDE as usize],
-                encode_draw_records(std::slice::from_ref(draw), 0).unwrap()
+                encode_draw_records(std::slice::from_ref(draw)).unwrap()
             );
             assert_eq!(
                 binding.2.arguments_offset,
@@ -305,7 +305,7 @@ mod tests {
             .collect::<Vec<_>>();
         let start = Instant::now();
         for _ in 0..20 {
-            black_box(encode_draw_records(&prepared.draws, 0).unwrap());
+            black_box(encode_draw_records(&prepared.draws).unwrap());
             let mut bytes = Vec::new();
             encode_instance_records(&prepared.draws, &mut bytes).unwrap();
             black_box(bytes);
