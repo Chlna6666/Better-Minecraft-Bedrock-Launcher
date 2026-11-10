@@ -900,7 +900,7 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, None, None, None, None)
+    create_many_impl(device, meshes, shaders, None, None, None, None, None)
 }
 
 /// Production GPU meshing suballocates output descriptors into shared writable
@@ -917,7 +917,7 @@ pub(super) fn create_many_pooled(
 ) -> gpui::Result<Vec<MeshResources>> {
     create_many_pooled_impl(
         device, meshes, shaders, arena, template_arena, argument_arena,
-        backend, batch_id, None,
+        backend, batch_id, None, None,
     )
 }
 
@@ -934,10 +934,11 @@ pub(super) fn create_many_pooled_native(
     backend: BackendKind,
     batch_id: u64,
     accepted: &mut Vec<gfx_core::SubmissionId>,
+    feedback: &mut super::queue_feedback::QueueFeedback,
 ) -> gpui::Result<Vec<MeshResources>> {
     create_many_pooled_impl(
         device, meshes, shaders, arena, template_arena, argument_arena,
-        backend, batch_id, Some(accepted),
+        backend, batch_id, Some(accepted), Some(feedback),
     )
 }
 
@@ -951,6 +952,7 @@ fn create_many_pooled_impl(
     backend: BackendKind,
     batch_id: u64,
     accepted: Option<&mut Vec<gfx_core::SubmissionId>>,
+    feedback: Option<&mut super::queue_feedback::QueueFeedback>,
 ) -> gpui::Result<Vec<MeshResources>> {
     // One batch scratch pool serves every Section's cells/params/jobs input
     // buffers: three native buffer creations per batch instead of per Section.
@@ -965,6 +967,7 @@ fn create_many_pooled_impl(
         Some(&mut scratch),
         profile.then_some(batch_id),
         accepted,
+        feedback,
     );
     match result {
         Ok(resources) => scratch.destroy(device).map(|_| resources).map_err(anyhow::Error::from),
@@ -1014,6 +1017,7 @@ fn create_many_impl(
     mut scratch: Option<&mut crate::scene_view::gpu::BatchScratch>,
     batch_id: Option<u64>,
     mut accepted: Option<&mut Vec<gfx_core::SubmissionId>>,
+    mut feedback: Option<&mut super::queue_feedback::QueueFeedback>,
 ) -> gpui::Result<Vec<MeshResources>> {
     if meshes.is_empty() {
         return Ok(Vec::new());
