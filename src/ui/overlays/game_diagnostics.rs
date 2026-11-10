@@ -153,6 +153,7 @@ fn evidence_label(value: EvidenceSource) -> SharedString {
         EvidenceSource::ModLog => t!("GameCrash.ui.source.mod"),
         EvidenceSource::RunnerLog => t!("GameCrash.ui.source.runner"),
         EvidenceSource::LauncherLog => t!("GameCrash.ui.source.launcher"),
+        EvidenceSource::LoaderLog => t!("GameCrash.ui.source.loader"),
         EvidenceSource::WindowsWer => t!("GameCrash.ui.source.wer"),
         EvidenceSource::CrashDump => t!("GameCrash.ui.source.dump"),
         EvidenceSource::ExitStatus => t!("GameCrash.ui.source.exit"),
@@ -423,7 +424,7 @@ fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
         lines.push(t!("GameCrash.forensics.noLogEvidence").to_string());
     }
     if !evidence.loader_issues.is_empty() {
-        use crate::core::minecraft::diagnostics::forensics::LoaderFamily;
+        use crate::core::minecraft::diagnostics::forensics::{LoaderFamily, NativeExceptionPhase};
         for issue in &evidence.loader_issues {
             let loader: String = match issue.loader {
                 LoaderFamily::BLoader => "BLoader",
@@ -435,6 +436,12 @@ fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
             let mut details = Vec::<String>::new();
             if let Some(module) = &issue.module {
                 details.push(module.clone());
+            }
+            if let Some(phase) = issue.phase {
+                details.push(match phase {
+                    NativeExceptionPhase::Seh => "SEH",
+                    NativeExceptionPhase::Veh => "VEH",
+                }.to_string());
             }
             if let Some(code) = issue.exception_code {
                 details.push(format!("NTSTATUS 0x{code:08X}"));
@@ -451,10 +458,15 @@ fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
                 "GameCrash.forensics.loaderIssue",
                 loader = loader,
                 kind = loader_kind_label(issue.kind),
-                detail = suffix,
+                detail = suffix
             ).to_string());
         }
         lines.push(t!("GameCrash.forensics.loaderWarning").to_string());
+        if evidence.loader_issues.iter().any(|issue|
+            issue.phase == Some(NativeExceptionPhase::Veh))
+        {
+            lines.push(t!("GameCrash.forensics.vehWarning").to_string());
+        }
         if evidence.loader_issues.iter().any(|issue| !issue.session_private) {
             lines.push(t!("GameCrash.forensics.shared").to_string());
         }
