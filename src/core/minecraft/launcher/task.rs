@@ -147,6 +147,11 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
         );
         // The manifest identity is the single source of truth for UWP vs GDK.
         // The user-selected display version may be renamed or contain aliases.
+        // Capture the original log sizes before launch_game can start or
+        // inject the client; otherwise the earliest failure lines are lost.
+        let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(
+            Path::new(request.package_folder.as_ref()),
+        );
         let mut detected_platform = "unknown";
         let result = launch_game(&request, &task_id_for_task, &mut detected_platform).await;
         let mut monitor = None;
@@ -162,6 +167,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     *pid,
                     None,
                     None,
+                    log_offsets,
                 );
                 let session = crate::core::version::game_info::GameSession::start(
                     PathBuf::from(request.package_folder.as_ref()),
