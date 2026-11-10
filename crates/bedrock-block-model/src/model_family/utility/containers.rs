@@ -242,34 +242,6 @@ fn left_right_faces(direction: CardinalDirection) -> (BlockFace, BlockFace) {
     }
 }
 
-fn face_centered_cuboid(
-    direction: CardinalDirection,
-    width: f32,
-    thickness: f32,
-    min_y: f32,
-    max_y: f32,
-) -> ModelCuboid {
-    let half_width = width * 0.5;
-    match direction {
-        CardinalDirection::North => ModelCuboid::new(
-            [0.5 - half_width, min_y, 0.0],
-            [0.5 + half_width, max_y, thickness],
-        ),
-        CardinalDirection::South => ModelCuboid::new(
-            [0.5 - half_width, min_y, 1.0 - thickness],
-            [0.5 + half_width, max_y, 1.0],
-        ),
-        CardinalDirection::East => ModelCuboid::new(
-            [1.0 - thickness, min_y, 0.5 - half_width],
-            [1.0, max_y, 0.5 + half_width],
-        ),
-        CardinalDirection::West => ModelCuboid::new(
-            [0.0, min_y, 0.5 - half_width],
-            [thickness, max_y, 0.5 + half_width],
-        ),
-    }
-}
-
 fn chest_box_uv(cuboid: ModelCuboid) -> ModelCuboid {
     // Bedrock chest art ships one 16x16 texture per face (`chest_top` / `chest_side` /
     // `chest_front`), not a Java-style 64x64 unwrapped sheet. Sampling a uv64 sub-rect from a
@@ -278,10 +250,6 @@ fn chest_box_uv(cuboid: ModelCuboid) -> ModelCuboid {
 }
 
 fn chest_lid_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid).with_full_texture_uv()
-}
-
-fn chest_latch_uv(cuboid: ModelCuboid) -> ModelCuboid {
     detail_cuboid_with_local_uv(cuboid).with_full_texture_uv()
 }
 
@@ -310,6 +278,3 @@ const fn px(value: f32) -> f32 {
     value / 16.0
 }
 
-fn uv64(u: f32, v: f32, width: f32, height: f32) -> [[f32; 2]; 4] {
-    rect_uv(u / 64.0, v / 64.0, (u + width) / 64.0, (v + height) / 64.0)
-}
