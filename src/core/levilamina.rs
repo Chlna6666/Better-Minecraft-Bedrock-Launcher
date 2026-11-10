@@ -21,16 +21,6 @@ pub use support::{
     LeviLaminaSupportDatabase, clear_cache as clear_support_cache, support_database,
 };
 
-/// Migrate BMCBL's legacy PreLoader bootstrap out of the directory scanned
-/// by PreLoader and LeviLamina. Run once during game launch, too, because a
-/// previously installed version may never open the LeviLamina installer UI.
-pub async fn migrate_preloader_layout(game_directory: PathBuf) -> Result<(), String> {
-    crate::tasks::runtime::run_archive_blocking(move || {
-        installation_state::migrate_legacy_preloader_layout(&game_directory)
-    })
-    .await?
-}
-
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";
 const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 static INDEX_CACHE: Lazy<Mutex<Option<LeviLaminaIndexResult>>> = Lazy::new(|| Mutex::new(None));

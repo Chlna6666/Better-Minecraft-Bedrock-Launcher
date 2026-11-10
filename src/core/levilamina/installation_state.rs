@@ -149,9 +149,15 @@ pub(super) async fn uninstall_loader(game_directory: &Path) -> Result<(), String
 }
 
 fn inspect_installation_sync(game_directory: &Path) -> Result<LeviLaminaInstallation, String> {
-    migrate_legacy_preloader_layout(game_directory)?;
+    // Status inspection must be read-only: no DLL moves while the user
+    // selects a game version or opens the manage page.
     let loader_version = read_mod_manifest_version(&game_directory.join("mods/LeviLamina"))?;
-    let preloader_version = read_mod_manifest_version(&game_directory.join("BLoader/PreLoader"))?;
+    let preloader_dir = game_directory.join("BLoader/PreLoader");
+    let preloader_version = if preloader_dir.join("PreLoader.dll").is_file() {
+        read_mod_manifest_version(&preloader_dir)?
+    } else {
+        None
+    };
     Ok(LeviLaminaInstallation {
         loader_version,
         preloader_version,

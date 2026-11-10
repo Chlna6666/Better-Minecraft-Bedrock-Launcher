@@ -646,15 +646,9 @@ async fn launch_game(
     }
 
     check_cancelled(task_id)?;
-    // Migrate any old BMCBL PreLoader install before launching. Otherwise a
-    // legacy mods/PreLoader/manifest.json may register PreLoader as its own
-    // preload-native Mod, conflicting with its bootstrap initialization.
-    if request.auto_start {
-        crate::core::levilamina::migrate_preloader_layout(PathBuf::from(package_folder))
-            .await
-            .map_err(|error| format!("修复旧 PreLoader 引导目录失败: {error}"))?;
-    }
-
+    // Never move/delete PreLoader files during game startup. Installation
+    // repair runs as an explicit, logged installer operation instead. A
+    // launch must not mutate third-party Mod directories.
     // Modern GDK/UWP: BLoader owns BLoader/PreLoader and BLoader/mods.
     // PreLoader owns preload-native and LeviLamina owns native in mods/.
     // None of these DLLs belongs in BMCBL's launcher-side injection list.
