@@ -513,9 +513,6 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         layout_cache_reused_roots: shared_metrics()
             .layout_cache_reused_roots
             .load(Ordering::Relaxed) as usize,
-        layout_cache_saved_roots: shared_metrics()
-            .layout_cache_saved_roots
-            .load(Ordering::Relaxed) as usize,
         text_layout_hits: shared_metrics().text_layout_hits.load(Ordering::Relaxed) as usize,
         text_layout_reuses: shared_metrics().text_layout_reuses.load(Ordering::Relaxed) as usize,
         text_layout_misses: shared_metrics().text_layout_misses.load(Ordering::Relaxed) as usize,
