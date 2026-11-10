@@ -531,6 +531,7 @@ GDKUserSelect.switch_user=저장 사용자 전환
 GDKUserSelect.user_n=사용자 {{index}}
 GameCrash.forensics.dump=유효한 미니덤프 {{count}}개, 예외 코드 {{code}}
 GameCrash.forensics.dumpWarning=덤프 예외 코드만으로 원인 모드나 세션 소유를 확정할 수 없습니다.
+GameCrash.forensics.libraries=로드 실패에 언급된 라이브러리: {{libraries}} (파일 이름만 표시하며 근본 원인 확정 아님)
 GameCrash.forensics.mods=로드에 실패한 모드: {{mods}}
 GameCrash.forensics.module=미니덤프 오류 모듈: {{module}} (근본 원인 확정 아님)
 GameCrash.forensics.private=현재 시작 작업 로그에 기록된 오류이나 최종 충돌 원인으로 확정할 수 없습니다.
