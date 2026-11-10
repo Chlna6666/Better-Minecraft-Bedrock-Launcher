@@ -125,6 +125,47 @@ pub(crate) mod tests {
         assert_eq!(visible(&packed), 0);
     }
     #[test]
+    fn fused_cube_only_section_occludes_adjacent_model_instance() {
+        let templates = source().templates.to_vec();
+        let mut cells = vec![0u32; 27];
+        cells[13] = 1;
+        let solid = VoxelMeshSource::new([3, 3, 3], Vec3::ZERO, cells, templates.clone())
+            .unwrap();
+        let detail = VoxelMeshSource::new(
+            [3, 3, 3], Vec3::new(1.0, 0.0, 0.0), vec![0; 27], vec![],
+        )
+        .unwrap()
+        .with_instances(
+            vec![0; 27],
+            templates,
+            vec![VoxelMeshInstance {
+                position: [1, 1, 1],
+                faces: 0..6,
+                height: 1.0,
+                occlusion_mask: 1,
+            }],
+        )
+        .unwrap();
+        assert_eq!(visible(&detail), 6);
+        let fused = VoxelMeshSource::fuse_sections(&[
+            VoxelFusionInput {
+                source: &solid, offset: [0; 3], translation: [0; 3],
+                material_slots: &[0],
+            },
+            VoxelFusionInput {
+                source: &detail, offset: [1, 0, 0], translation: [0; 3],
+                material_slots: &[0],
+            },
+        ])
+        .unwrap();
+        let classes = &fused.instances.as_ref().unwrap().classes;
+        // The formerly cube-only source must be represented in the new
+        // instance occlusion grid at the shared face.
+        assert_ne!(classes.cell(17) & 1, 0);
+        assert_eq!(visible(&fused), 11);
+    }
+
+    #[test]
     fn rejects_emitting_halo_and_invalid_cell_models() {
         let valid = source();
         let mut cells = valid.cells.to_vec();
@@ -283,24 +324,23 @@ impl VoxelMeshSource {
             .ok_or(MeshError::TooLarge)?;
         if count > i32::MAX as usize { return Err(MeshError::TooLarge); }
 
-        // Mark authoritative emitting volumes before importing any halos.
-        // Otherwise a later neighbour's occluder halo could accidentally
-        // replace an earlier Section's air cell on a shared seam.
-        let mut interior_mask = vec![false; count];
-        for input in inputs {
-            let src = input.source.size;
-            let dst_xy = size[0] as usize * size[1] as usize;
-            for z in 1..src[2] - 1 {
-                for y in 1..src[1] - 1 {
-                    for x in 1..src[0] - 1 {
-                        let target = (z + input.offset[2]) as usize * dst_xy
-                            + (y + input.offset[1]) as usize * size[0] as usize
-                            + (x + input.offset[0]) as usize;
-                        if interior_mask[target] {
-                            return Err(MeshError::InvalidParts);
-                        }
-                        interior_mask[target] = true;
-                    }
+        // Fusion tiles contain only a handful of Section boxes. Validate their
+        // authoritative interiors by interval overlap instead of writing one
+        // boolean per interior voxel, then check ownership only for halo cells.
+        // This avoids a whole-volume scan and the full-size ownership bitmap.
+        let interiors = inputs.iter().map(|input| {
+            let start = std::array::from_fn(|axis| input.offset[axis] as usize + 1);
+            let end = std::array::from_fn(|axis| {
+                input.offset[axis] as usize + input.source.size[axis] as usize - 1
+            });
+            (start, end)
+        }).collect::<Vec<([usize; 3], [usize; 3])>>();
+        for (index, (start, end)) in interiors.iter().enumerate() {
+            for (other_start, other_end) in &interiors[..index] {
+                if (0..3).all(|axis| {
+                    start[axis] < other_end[axis] && other_start[axis] < end[axis]
+                }) {
+                    return Err(MeshError::InvalidParts);
                 }
             }
         }
@@ -317,7 +357,7 @@ impl VoxelMeshSource {
         let mut levels = base.lighting.as_ref().map(|_| vec![0u8; count]);
         let mut class_offset = 0u32;
         let mut instance_face_offset = 0u32;
-        for input in inputs {
+        for (input_index, input) in inputs.iter().enumerate() {
             let source = input.source;
             let remap = |slot: u32| -> Result<u32, MeshError> {
                 input.material_slots.get(slot as usize).copied().ok_or(MeshError::InvalidParts)
@@ -363,10 +403,9 @@ impl VoxelMeshSource {
             }
             let source_xy = (source.size[0] as usize) * (source.size[1] as usize);
             let merged_xy = (size[0] as usize) * (size[1] as usize);
-            // The ownership mask is already complete for all source
-            // interiors. One linear pass per Section is sufficient: halos
-            // can never override authoritative voxels, even if those are air.
-            // This halves the hot path's source-grid traversal.
+            // Authoritative cells are copied in one linear pass. Only halo
+            // cells need to test other Section interior boxes; the common
+            // interior path has no extra ownership lookup or bitmap write.
             let source_volume = source.size.into_iter()
                 .map(|extent| extent as usize).product::<usize>();
             for index in 0..source_volume {
@@ -388,15 +427,32 @@ impl VoxelMeshSource {
                 let gy = y + input.offset[1] as usize;
                 let gz = z + input.offset[2] as usize;
                 let destination = gz * merged_xy + gy * size[0] as usize + gx;
-                if !interior && interior_mask[destination] { continue }
+                if !interior && interiors.iter().enumerate().any(|(other_index, (start, end))| {
+                    other_index != input_index
+                        && [gx, gy, gz].into_iter().enumerate().all(|(axis, value)| {
+                            value >= start[axis] && value < end[axis]
+                        })
+                }) {
+                    continue;
+                }
                 let kind = if source_kind == 0 || source_kind == VOXEL_OCCLUDER {
                     source_kind
                 } else {
                     class_offset.checked_add(source_kind).ok_or(MeshError::TooLarge)?
                 };
                 if interior || cells[destination] == 0 { cells[destination] = kind; }
-                if let (Some(data), Some(classes)) = (&source.instances, &mut classes) {
-                    let value = data.classes.cell(index);
+                if let Some(classes) = &mut classes {
+                    // Cube-only inputs have no instance class grid. Their
+                    // opaque cube/halo occupancy must still occlude faces of
+                    // adjacent model instances after Section fusion; otherwise
+                    // an interior wall becomes visible only in the fused mesh.
+                    let value = if let Some(data) = &source.instances {
+                        data.classes.cell(index)
+                    } else if source_kind != 0 {
+                        1 | (source.ambient_occlusion & 16)
+                    } else {
+                        0
+                    };
                     if interior || classes[destination] == 0 { classes[destination] = value; }
                 }
                 if let (Some(light), Some(levels)) = (&source.lighting, &mut levels) {
