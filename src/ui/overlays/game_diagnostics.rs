@@ -69,6 +69,8 @@ fn reason_title(reason: CrashReason) -> SharedString {
         CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.title"),
         CrashReason::InPageError => t!("GameCrash.reason.InPageError.title"),
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.title"),
+        CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.title"),
+        CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.title"),
     }
 }
 
@@ -94,6 +96,8 @@ fn reason_detail(reason: CrashReason) -> SharedString {
         CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.detail"),
         CrashReason::InPageError => t!("GameCrash.reason.InPageError.detail"),
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.detail"),
+        CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.detail"),
+        CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.detail"),
     }
 }
 
@@ -119,6 +123,8 @@ fn reason_action(reason: CrashReason) -> SharedString {
         CrashReason::InitializationFailure => t!("GameCrash.reason.InitializationFailure.action"),
         CrashReason::InPageError => t!("GameCrash.reason.InPageError.action"),
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.action"),
+        CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.action"),
+        CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.action"),
     }
 }
 
