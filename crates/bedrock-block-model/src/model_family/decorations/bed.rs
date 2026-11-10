@@ -2,7 +2,7 @@ use crate::geometry::BlockGeometry;
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction, state_bool};
-use crate::model_family::shape::{ModelPlane, ModelShape};
+use crate::model_family::shape::{ModelPlane, ModelShape, box_unwrap_uv};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -212,32 +212,7 @@ fn model_uv(
     max: [f32; 3],
     point: [f32; 3],
 ) -> [f32; 2] {
-    let [u0, v0] = uv;
-    let [x0, _, z0] = min;
-    let [x1, y1, z1] = max;
-    let width = x1 - x0;
-    let depth = z1 - z0;
-    let (u, v) = match face {
-        // +Y end cap: u across X, v across Z.
-        BlockFace::Up => (u0 + depth + (point[0] - x0), v0 + (point[2] - z0)),
-        // -Y end cap, mirrored in Z.
-        BlockFace::Down => (u0 + depth + width + (point[0] - x0), v0 + (z1 - point[2])),
-        // -Z long face: u across X, v along the length measured from the far end.
-        BlockFace::North => (u0 + depth + (point[0] - x0), v0 + depth + (y1 - point[1])),
-        // +Z long face: u mirrored in X.
-        BlockFace::South => (
-            u0 + depth + width + depth + (x1 - point[0]),
-            v0 + depth + (y1 - point[1]),
-        ),
-        // +X long face: u runs from the bed's underside up to the mattress top, matching the
-        // sprite's wood frame at the bottom edge.
-        BlockFace::East => (
-            u0 + depth + width + (point[2] - z0),
-            v0 + depth + (y1 - point[1]),
-        ),
-        // -X long face: same direction as the east side.
-        _ => (u0 + (z1 - point[2]), v0 + depth + (y1 - point[1])),
-    };
+    let [u, v] = box_unwrap_uv(face, uv, min, max, point);
     [u / BED_TEXTURE_SPAN, v / BED_TEXTURE_SPAN]
 }
 

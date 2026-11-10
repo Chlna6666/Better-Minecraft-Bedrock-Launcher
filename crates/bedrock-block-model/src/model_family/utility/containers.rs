@@ -3,7 +3,9 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, state_i64, state_string,
 };
-use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv, rect_uv};
+use crate::model_family::shape::{
+    ModelCuboid, ModelShape, box_face_corners, box_unwrap_uv, detail_cuboid_with_local_uv, rect_uv,
+};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -78,45 +80,28 @@ pub(crate) fn shulker_box_shape() -> ModelShape {
 }
 
 /// Unwraps an axis-aligned box onto the 64x64 entity skin with the standard box layout.
+///
+/// The top face samples the separate 16x16 `shulker_top_<color>` tile, so it keeps whole-tile UVs
+/// while the sides and bottom read their own regions of the 64x64 skin.
 fn box_uv_cuboid(cuboid: ModelCuboid, origin_u: f32, origin_v: f32) -> ModelCuboid {
-    let width = (cuboid.max[0] - cuboid.min[0]) * 16.0;
-    let height = (cuboid.max[1] - cuboid.min[1]) * 16.0;
-    let depth = (cuboid.max[2] - cuboid.min[2]) * 16.0;
-    let rect =
-        |u0: f32, v0: f32, u1: f32, v1: f32| rect_uv(u0 / 64.0, v0 / 64.0, u1 / 64.0, v1 / 64.0);
-    let side_top = origin_v + depth;
-    let east = rect(origin_u, side_top, origin_u + depth, side_top + height);
-    let north = rect(
-        origin_u + depth,
-        side_top,
-        origin_u + depth + width,
-        side_top + height,
-    );
-    let west = rect(
-        origin_u + depth + width,
-        side_top,
-        origin_u + depth + width + depth,
-        side_top + height,
-    );
-    let south = rect(
-        origin_u + depth + width + depth,
-        side_top,
-        origin_u + depth + width + depth + width,
-        side_top + height,
-    );
-    let down = rect(
-        origin_u + depth + width,
-        origin_v,
-        origin_u + depth + width + width,
-        origin_v + depth,
-    );
-    cuboid
-        .with_face_uv(BlockFace::Up, rect_uv(0.0, 0.0, 1.0, 1.0))
-        .with_face_uv(BlockFace::Down, down)
-        .with_face_uv(BlockFace::North, north)
-        .with_face_uv(BlockFace::South, south)
-        .with_face_uv(BlockFace::East, east)
-        .with_face_uv(BlockFace::West, west)
+    let min = cuboid.min.map(|value| value * 16.0);
+    let max = cuboid.max.map(|value| value * 16.0);
+    let mut textured = cuboid;
+    for face in [
+        BlockFace::Up,
+        BlockFace::Down,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ] {
+        let uv = box_face_corners(min, max, face).map(|point| {
+            let [u, v] = box_unwrap_uv(face, [origin_u, origin_v], min, max, point);
+            [u / 64.0, v / 64.0]
+        });
+        textured = textured.with_face_uv(face, uv);
+    }
+    textured.with_face_uv(BlockFace::Up, rect_uv(0.0, 0.0, 1.0, 1.0))
 }
 
 pub(crate) fn chiseled_bookshelf_shape(state: &BlockStateQuery) -> ModelShape {
@@ -278,3 +263,37 @@ const fn px(value: f32) -> f32 {
     value / 16.0
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shulker_sides_use_their_own_skin_regions() {
+        // `geometry.shulker.v1.8`: base 16x8x16 at uv (0,28), lid 16x12x16 at uv (0,0), 64x64.
+        // The standard box unwrap puts west at u0..u0+d, north at u0+d..u0+d+w, east after
+        // north and south after east; the four sides share the band below the top cap.
+        let shape = shulker_box_shape();
+        let base = &shape.cuboids[0];
+        let region = |face: BlockFace| {
+            let uv = base.face_uvs[&face];
+            [
+                (uv[0][0] * 64.0).round(),
+                (uv[0][1] * 64.0).round(),
+                (uv[2][0] * 64.0).round(),
+                (uv[2][1] * 64.0).round(),
+            ]
+        };
+        assert_eq!(region(BlockFace::West), [0.0, 52.0, 16.0, 44.0]);
+        assert_eq!(region(BlockFace::North), [16.0, 52.0, 32.0, 44.0]);
+        assert_eq!(region(BlockFace::East), [32.0, 52.0, 48.0, 44.0]);
+        assert_eq!(region(BlockFace::South), [48.0, 52.0, 64.0, 44.0]);
+    }
+
+    #[test]
+    fn shulker_top_face_samples_the_separate_tile() {
+        // The top face's material is `shulker_top_<color>`, a 16x16 tile, not the skin.
+        let shape = shulker_box_shape();
+        let uv = shape.cuboids[0].face_uvs[&BlockFace::Up];
+        assert_eq!(uv, rect_uv(0.0, 0.0, 1.0, 1.0));
+    }
+}

@@ -178,7 +178,7 @@ pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape
         ModelFamily::InsetBlock => Some(decorations::objects::inset_block_shape(name)),
         ModelFamily::DragonEgg => Some(decorations::objects::dragon_egg_shape()),
         ModelFamily::ItemFrame => Some(decorations::objects::item_frame_shape(state)),
-        ModelFamily::Head => Some(decorations::objects::head_shape(name, state)),
+        ModelFamily::Head => Some(decorations::skulls::head_shape(name, state)),
         ModelFamily::Container => utility::containers::container_shape(name, state),
         ModelFamily::ChiseledBookshelf => {
             Some(utility::containers::chiseled_bookshelf_shape(state))

@@ -181,6 +181,69 @@ pub fn upright_full_texture_uv() -> [[f32; 2]; 4] {
     [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
 }
 
+/// The four corners of one authored box face, in this renderer's face order.
+///
+/// Corner 0 is the bottom-left of the face as seen from outside, which is why unwrapped V grows
+/// downward: `box_unwrap_uv` maps corner 0 to the lower skin row.
+#[must_use]
+pub fn box_face_corners(min: [f32; 3], max: [f32; 3], face: BlockFace) -> [[f32; 3]; 4] {
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    match face {
+        BlockFace::Up => [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
+        BlockFace::Down => [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
+        BlockFace::North => [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
+        BlockFace::South => [[x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1]],
+        BlockFace::East => [[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]],
+        BlockFace::West => [[x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]],
+        // Aggregate selectors never name one geometric face.
+        _ => [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
+    }
+}
+
+/// The texture point an authored Bedrock cube samples at `point` on `face`.
+///
+/// Every Bedrock cube unwraps as one strip of four side faces with the two caps above the front
+/// face, so side faces share a `depth + height` band. `origin` is the cube's `uv` in authoring
+/// pixels; the result is in authoring pixels too, and a caller reading a `64x64` skin divides by
+/// 64.
+#[must_use]
+pub fn box_unwrap_uv(
+    face: BlockFace,
+    origin: [f32; 2],
+    min: [f32; 3],
+    max: [f32; 3],
+    point: [f32; 3],
+) -> [f32; 2] {
+    let [u0, v0] = origin;
+    let [x0, _, z0] = min;
+    let [x1, y1, z1] = max;
+    let width = x1 - x0;
+    let depth = z1 - z0;
+    match face {
+        // +Y cap: u across X, v across Z.
+        BlockFace::Up => [u0 + depth + (point[0] - x0), v0 + (point[2] - z0)],
+        // -Y cap, mirrored in Z.
+        BlockFace::Down => [u0 + depth + width + (point[0] - x0), v0 + (z1 - point[2])],
+        // -Z face: u across X, v up from the cube's base.
+        BlockFace::North => [u0 + depth + (point[0] - x0), v0 + depth + (y1 - point[1])],
+        // +Z face: u mirrored in X.
+        BlockFace::South => [
+            u0 + depth + width + depth + (x1 - point[0]),
+            v0 + depth + (y1 - point[1]),
+        ],
+        // +X face: u across Z.
+        BlockFace::East => [
+            u0 + depth + width + (point[2] - z0),
+            v0 + depth + (y1 - point[1]),
+        ],
+        // -X face: u mirrored in Z.
+        BlockFace::West => [u0 + (z1 - point[2]), v0 + depth + (y1 - point[1])],
+        // Aggregate selectors never name one geometric face; the cube origin keeps this total.
+        _ => [u0, v0],
+    }
+}
+
 /// Derives per-face UVs for a cuboid from its block-space bounds.
 ///
 /// The renderer builds each face from outside the block with a fixed corner order. These UVs

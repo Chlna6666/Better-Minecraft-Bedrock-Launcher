@@ -375,65 +375,6 @@ fn item_frame_cuboid_uv(cuboid: ModelCuboid) -> ModelCuboid {
     cuboid
 }
 
-pub(crate) fn head_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
-    let facing = facing_from_state(state);
-    let size = if name == "dragon_head" { 12.0 } else { 8.0 };
-    let standing = ModelCuboid::new(
-        [px((16.0 - size) * 0.5), 0.0, px((16.0 - size) * 0.5)],
-        [px((16.0 + size) * 0.5), px(size), px((16.0 + size) * 0.5)],
-    );
-    let cuboid = match facing {
-        Facing::Up => standing,
-        Facing::Down => ModelCuboid::new(
-            [
-                px((16.0 - size) * 0.5),
-                px(16.0 - size),
-                px((16.0 - size) * 0.5),
-            ],
-            [px((16.0 + size) * 0.5), 1.0, px((16.0 + size) * 0.5)],
-        ),
-        _ => {
-            let direction = cardinal_for_facing(facing).unwrap_or(CardinalDirection::South);
-            rotate_cuboid_from_south(
-                ModelCuboid::new(
-                    [px((16.0 - size) * 0.5), px(4.0), px(16.0 - size)],
-                    [px((16.0 + size) * 0.5), px(4.0 + size), 1.0],
-                ),
-                direction,
-            )
-        }
-    };
-    // Skull blocks sample the 64x32 entity skin layout, not a 16x16 block tile. Mapping the
-    // whole skin onto every face produced the noise-coloured boxes seen in the world view.
-    let cuboid = if name == "dragon_head" || name == "piglin_head" {
-        cuboid
-    } else {
-        apply_skull_skin_uv(cuboid)
-    };
-    ModelShape::from_cuboids([cuboid])
-}
-
-/// Per-face UV rectangles of the vanilla 64x32 skull skin.
-fn apply_skull_skin_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    let rect = |u0: f32, v0: f32, u1: f32, v1: f32| {
-        [
-            [u0 / 64.0, v0 / 32.0],
-            [u1 / 64.0, v0 / 32.0],
-            [u1 / 64.0, v1 / 32.0],
-            [u0 / 64.0, v1 / 32.0],
-        ]
-    };
-    // Head cube at skin coordinates (8x8 px): top [8,0], front [8,8], right [0,8],
-    // left [16,8], back [24,8], bottom [16,0].
-    cuboid
-        .with_face_uv(BlockFace::Up, rect(8.0, 0.0, 16.0, 8.0))
-        .with_face_uv(BlockFace::Down, rect(16.0, 0.0, 24.0, 8.0))
-        .with_face_uv(BlockFace::North, rect(8.0, 8.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::South, rect(24.0, 8.0, 32.0, 16.0))
-        .with_face_uv(BlockFace::East, rect(16.0, 8.0, 24.0, 16.0))
-        .with_face_uv(BlockFace::West, rect(0.0, 8.0, 8.0, 16.0))
-}
-
 fn cake_body_cuboid(bites: i64) -> ModelCuboid {
     let bite_width = match bites {
         0 => 0.0,
@@ -494,7 +435,7 @@ fn local_item_frame_cuboids() -> Vec<ModelCuboid> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Facing {
+pub(super) enum Facing {
     Down,
     Up,
     North,
@@ -503,7 +444,7 @@ enum Facing {
     East,
 }
 
-fn facing_from_state(state: &BlockStateQuery) -> Facing {
+pub(super) fn facing_from_state(state: &BlockStateQuery) -> Facing {
     if let Some(value) = state_i64(state, "facing_direction")
         .or_else(|| state_i64(state, "minecraft:facing_direction"))
     {
@@ -528,7 +469,7 @@ fn facing_from_cardinal(direction: CardinalDirection) -> Facing {
     }
 }
 
-fn cardinal_for_facing(facing: Facing) -> Option<CardinalDirection> {
+pub(super) fn cardinal_for_facing(facing: Facing) -> Option<CardinalDirection> {
     match facing {
         Facing::North => Some(CardinalDirection::North),
         Facing::South => Some(CardinalDirection::South),

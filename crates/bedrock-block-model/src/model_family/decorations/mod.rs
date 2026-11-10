@@ -4,6 +4,7 @@ pub(super) mod copper_golem;
 pub(super) mod furniture;
 pub(super) mod lighting;
 pub(super) mod objects;
+pub(super) mod skulls;
 
 use crate::model_family::ModelFamily;
 

@@ -4536,7 +4536,9 @@ fn skull_entity_texture_key(block: &str) -> Option<&'static str> {
         "wither_skeleton_skull" => Some("textures/entity/skulls/wither_skeleton"),
         "zombie_head" => Some("textures/entity/skulls/zombie"),
         "creeper_head" => Some("textures/entity/skulls/creeper"),
-        "player_head" => Some("textures/entity/char"),
+        // `entity/skull.entity.json` binds the `default`/`steve` skull variant to this 64x64
+        // player skin. `textures/entity/char` is the legacy 16x16 humanoid sheet, not a head.
+        "player_head" => Some("textures/entity/steve"),
         "dragon_head" => Some("textures/entity/dragon/dragon"),
         "piglin_head" => Some("textures/entity/piglin/piglin"),
         _ => None,
