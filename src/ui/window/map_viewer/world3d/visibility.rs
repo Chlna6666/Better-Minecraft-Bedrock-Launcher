@@ -840,12 +840,23 @@ mod tests {
         for x in -16..=16 {
             for z in -16..=16 {
                 let pos = ChunkPos { x, z, dimension };
-                let graph = if pos == center { cave.clone() } else { solid.clone() };
+                // Solid roof/floor layers isolate the cave. The camera starts
+                // in a known sky pocket above them, not inside an opaque cell.
+                let visibility = (0..=12i8).map(|y| {
+                    let graph = if pos == center && y == 6 {
+                        cave.clone()
+                    } else if pos == center && y == 10 {
+                        Arc::new(SectionVisibility::OPEN)
+                    } else {
+                        solid.clone()
+                    };
+                    (y, graph)
+                }).collect();
                 probes.insert(pos, Arc::new(World3dChunkProbe {
                     pos,
                     min_y: 0,
                     subchunks: BTreeMap::new(),
-                    visibility: BTreeMap::from([(6, graph)]),
+                    visibility,
                     state_version: None,
                     storage_bytes: 0,
                 }));
