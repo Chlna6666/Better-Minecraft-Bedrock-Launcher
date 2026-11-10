@@ -1191,9 +1191,10 @@ fn create_many_impl(
     });
     if tracing_gpu_queue {
         let rates = feedback.as_deref().map(|f| f.debug_summary());
-        log::trace!(
-            target: "gpui3d_gpu_queue",
-            "generated_mesh_queue publication_id={:?} sample_id={:?} native_queue={:?} workgroups={} dispatches={} meshes={} gpu_rates={:?} timing=completed_native_ticks_only",
+        // Reuse the 3D GPU diagnostics' existing opt-in stderr sink.
+        // The scene renderer intentionally has no dependency on the log crate.
+        eprintln!(
+            "gpui3d generated_mesh_queue publication_id={:?} sample_id={:?} native_queue={:?} workgroups={} dispatches={} meshes={} gpu_rates={:?} timing=completed_native_ticks_only",
             batch_id, compute_tag.map(|tag| tag.batch_id), native_queue,
             workgroups, dispatch_count, meshes.len(), rates,
         );
