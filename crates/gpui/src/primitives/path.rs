@@ -1,15 +1,15 @@
 use crate::{
     Background, Bounds, ContentMask, Pixels, Point, ScaledPixels, SceneAnimationId, point,
 };
+#[cfg(any(test, feature = "bench-support"))]
 use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 use std::{
     fmt::Debug,
     ops::{Add, Sub},
-    sync::{
-        LazyLock,
-        atomic::{AtomicUsize, Ordering::SeqCst},
-    },
+    sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
+#[cfg(any(test, feature = "bench-support"))]
+use std::sync::LazyLock;
 
 use super::DrawOrder;
 
@@ -19,6 +19,11 @@ pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
 type PathVerticesTransformFn =
     fn(&[PathVertex<Pixels>], f32, f32, Point<ScaledPixels>) -> Vec<PathVertex<ScaledPixels>>;
 
+// SIMD path is retained for an explicit opt-in benchmark and equivalence
+// tests. The production renderer currently chooses scalar after the
+// previous gather/scatter implementation showed no demonstrated GPU/CPU
+// frame benefit. Do not add per-path runtime dispatch without hardware data.
+#[cfg(any(test, feature = "bench-support"))]
 static PATH_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
 
 #[inline(always)]
@@ -52,6 +57,7 @@ fn transform_path_vertices_scalar(
         .collect()
 }
 
+#[cfg(any(test, feature = "bench-support"))]
 fn transform_path_vertices_selected(
     vertices: &[PathVertex<Pixels>],
     device_scale: f32,
@@ -91,6 +97,7 @@ fn transform_path_vertices_selected(
 }
 
 #[inline(always)]
+#[cfg(any(test, feature = "bench-support"))]
 fn transform_path_vertices_simd<S: Simd>(
     simd: S,
     vertices: &[PathVertex<Pixels>],
@@ -389,6 +396,7 @@ impl Path<Pixels> {
 }
 
 impl Path<ScaledPixels> {
+    #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn transform_uniform(
         mut self,
         scale: f32,
@@ -487,12 +495,3 @@ pub(crate) struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub(crate) content_mask: u8,
 }
 
-impl PathVertex<Pixels> {
-    pub fn scale(&self, factor: f32) -> PathVertex<ScaledPixels> {
-        PathVertex {
-            xy_position: self.xy_position.scale(factor),
-            st_position: self.st_position,
-            content_mask: self.content_mask,
-        }
-    }
-}
