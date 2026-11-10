@@ -40,6 +40,21 @@ fn rank(confidence: Confidence) -> u8 {
     }
 }
 
+/// When symptoms have equal confidence, keep native WER/DMP and
+/// PID-correlated loader reports ahead of shared rotating log hints.
+fn evidence_rank(source: EvidenceSource) -> u8 {
+    match source {
+        EvidenceSource::WindowsWer => 0,
+        EvidenceSource::CrashDump => 1,
+        EvidenceSource::LoaderLog => 2,
+        EvidenceSource::GameLog => 3,
+        EvidenceSource::RunnerLog => 4,
+        EvidenceSource::LauncherLog => 5,
+        EvidenceSource::ModLog => 6,
+        EvidenceSource::ExitStatus => 7,
+    }
+}
+
 fn add(out: &mut Vec<CrashFinding>, reason: CrashReason, confidence: Confidence, source: EvidenceSource) {
     // A shared log can mention errors from another Minecraft instance.
     let confidence = if source == EvidenceSource::ModLog
@@ -210,13 +225,7 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
         let confidence = match finding.confidence {
             Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
         };
-        let source = match finding.source {
-            EvidenceSource::GameLog | EvidenceSource::ModLog
-            | EvidenceSource::RunnerLog | EvidenceSource::LoaderLog => 0,
-            EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1, EvidenceSource::LauncherLog => 2,
-            EvidenceSource::ExitStatus => 3,
-        };
-        (confidence, source)
+        (confidence, evidence_rank(finding.source))
     });
     findings.truncate(3);
     findings
@@ -375,13 +384,7 @@ pub fn analyze_with_forensics(
         let confidence = match f.confidence {
             Confidence::High => 0, Confidence::Medium => 1, Confidence::Low => 2,
         };
-        let source = match f.source {
-            EvidenceSource::GameLog | EvidenceSource::ModLog
-            | EvidenceSource::RunnerLog | EvidenceSource::LoaderLog => 0,
-            EvidenceSource::WindowsWer | EvidenceSource::CrashDump => 1,
-            EvidenceSource::LauncherLog => 2, EvidenceSource::ExitStatus => 3,
-        };
-        (confidence, source)
+        (confidence, evidence_rank(f.source))
     });
     findings.truncate(3);
     findings
