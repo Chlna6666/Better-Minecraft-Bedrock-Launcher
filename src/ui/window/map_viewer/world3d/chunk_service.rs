@@ -3414,6 +3414,82 @@ impl Worker {
         None
     }
 
+    /// Reuse persistent palette-certified connectivity before *any* LevelDB
+    /// value lookup. The graph is recomputed when the camera changes its
+    /// voxel/height, when the index changes, or when the source DB revision
+    /// differs. In-flight source changes fail open rather than hiding terrain.
+    fn refresh_index_plan(&mut self) {
+        if self.visibility_index.refresh() {
+            self.index_hidden_columns.clear();
+            self.index_plan_key = None;
+            // External writers may change any column without issuing editor
+            // invalidations. Rebuild stale resident data on the next mesh wave.
+            let stale = self.cache.keys().copied().collect::<Vec<_>>();
+            if !stale.is_empty() {
+                self.invalidate(&stale);
+            }
+        }
+        if !self.visibility_index.enabled() || self.visibility_index.len() == 0
+            || portal_culling_disabled()
+        {
+            self.index_hidden_columns.clear();
+            self.index_plan_key = None;
+            return;
+        }
+        let camera = self.view.camera.map(|value| value.floor() as i32);
+        let key = (
+            self.view.dimension, camera[0], camera[1], camera[2], self.view.radius,
+        );
+        let epoch = self.visibility_index.epoch();
+        if self.index_plan_key == Some(key) {
+            if self.index_plan_epoch == epoch
+                || self.index_plan_at.elapsed() < Duration::from_millis(750)
+            {
+                return;
+            }
+        }
+        let mut probes = self.visibility_index.probes().collect::<BTreeMap<_, _>>();
+        // Live decoded geometry is more precise than the conservative disk
+        // snapshot. Its solid masks always come from authoritative models.
+        probes.extend(
+            self.cache.iter()
+                .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe))),
+        );
+        probes.extend(
+            self.probe_stash.iter()
+                .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
+        );
+        let (center_x, center_z) = self.view_center_chunk();
+        let candidates = self.visibility_index.candidate_bands()
+            .filter(|(pos, _)| {
+                inside_view(
+                    *pos, self.view.dimension, center_x, center_z, self.view.radius,
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let hidden = super::visibility::hidden_render_band_keys(
+            &probes, &candidates, self.view.dimension, camera, self.view.radius,
+        );
+        self.index_hidden_columns = fully_hidden_mesh_columns(&candidates, &hidden)
+            .into_iter()
+            // Never defer the player's immediate interaction neighbourhood;
+            // the raycast, edit and cave transition paths require it loaded.
+            .filter(|pos| {
+                (pos.x - center_x).abs().max((pos.z - center_z).abs()) > 3
+            })
+            .collect();
+        self.index_plan_key = Some(key);
+        self.index_plan_epoch = epoch;
+        self.index_plan_at = Instant::now();
+        if trace_verbose() {
+            eprintln!(
+                "world3d index_probe gen={} indexed_columns={} hidden_columns={} candidate_bands={}",
+                self.view.generation, self.visibility_index.len(),
+                self.index_hidden_columns.len(), candidates.len(),
+            );
+        }
+    }
+
     /// Schedule delayed DB reads only when the camera can see them again.
     /// The main ring cursor may already have passed these positions, so
     /// reinsert promoted positions into the existing urgent read queue.
@@ -3424,8 +3500,12 @@ impl Worker {
                 *pos, self.view.dimension, center_x, center_z, self.view.radius,
             )
         });
+        self.refresh_index_plan();
         let newly_visible = self.deferred_db_reads.iter().copied()
-            .filter(|&pos| !lazy_mesh_column(pos, self.view))
+            .filter(|&pos| {
+                !lazy_mesh_column(pos, self.view)
+                    && !self.index_hidden_columns.contains(&pos)
+            })
             .collect::<Vec<_>>();
         for pos in newly_visible {
             self.deferred_db_reads.remove(&pos);
@@ -3439,6 +3519,7 @@ impl Worker {
     }
 
     fn next_batch(&mut self, center_x: i32, center_z: i32) -> Vec<ChunkPos> {
+        self.refresh_index_plan();
         let mut batch = Vec::with_capacity(LOAD_BATCH_CHUNKS);
         let urgent = take_visible_urgent_chunks(
             &mut self.urgent_chunks,
@@ -3481,7 +3562,9 @@ impl Worker {
             // expansion. Do not issue a LevelDB query solely to construct a
             // Probe that cannot contribute to the current view. A later view
             // transition promotes this key without restarting the cursor.
-            if lazy_mesh_column(pos, self.view) {
+            if lazy_mesh_column(pos, self.view)
+                || self.index_hidden_columns.contains(&pos)
+            {
                 self.deferred_db_reads.insert(pos);
                 deferred_this_wave += 1;
                 continue;
@@ -3540,9 +3623,12 @@ impl Worker {
     /// mesh exists. Cached metadata-only columns are deliberately represented
     /// as open space; they can never make another Section falsely invisible.
     fn portal_probe_snapshot(&self) -> BTreeMap<ChunkPos, Arc<World3dChunkProbe>> {
-        let mut probes = self.cache.iter()
-            .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
+        let mut probes = self.visibility_index.probes()
             .collect::<BTreeMap<_, _>>();
+        probes.extend(
+            self.cache.iter()
+                .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe))),
+        );
         probes.extend(
             self.probe_stash.iter()
                 .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
