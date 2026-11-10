@@ -649,8 +649,9 @@ async fn launch_game(
     // Never move/delete PreLoader files during game startup. Installation
     // repair runs as an explicit, logged installer operation instead. A
     // launch must not mutate third-party Mod directories.
-    // Modern GDK/UWP: BLoader owns BLoader/PreLoader and BLoader/mods.
-    // PreLoader owns preload-native and LeviLamina owns native in mods/.
+    // Modern GDK/UWP: BLoader boots mods/PreLoader (preloader-bootstrap)
+    // and owns its independent BLoader/mods runtime. PreLoader manages
+    // preload-native, and LeviLamina manages native in mods/.
     // None of these DLLs belongs in BMCBL's launcher-side injection list.
     let startup_mods_relative_paths: Vec<String> = Vec::new();
     let mut startup_mods_direct_paths = Vec::new();

@@ -9,7 +9,7 @@ use tokio::fs;
 pub async fn load_mods_config(mods_dir: &Path) -> Result<Vec<(PathBuf, u64)>> {
     let game_dir = mods_dir.parent().context("Invalid Minecraft mods root")?;
     let bootstrap = game_dir
-        .join("BLoader")
+        .join("mods")
         .join("PreLoader")
         .join("PreLoader.dll");
     if !bootstrap.is_file() {
