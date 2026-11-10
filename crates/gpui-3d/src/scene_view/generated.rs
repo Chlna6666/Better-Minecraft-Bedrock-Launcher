@@ -973,6 +973,37 @@ fn create_many_pooled_impl(
     }
 }
 
+/// Record GPU Resident suballocation uses on their exact physical queue
+/// immediately before dispatch. The owner may fail before actual native
+/// execution; do not quarantine an independent queue if its preflight
+/// checkpoint or GPU wait was never accepted.
+fn mark_generated_mesh_uses(
+    faces: &mut MeshArena,
+    templates: &mut MeshArena,
+    arguments: &mut MeshArena,
+    pending: &[PendingGenerated],
+    queue: gfx_core::GpuQueueId,
+) -> gfx_core::Result<()> {
+    for mesh in pending {
+        if let Some(allocation) = mesh.allocation {
+            faces.mark_untracked_access_on_queue(
+                allocation, gfx_core::GpuAccess::StorageWrite, queue,
+            )?;
+        }
+        if let Some(allocation) = mesh.template_allocation {
+            templates.mark_untracked_access_on_queue(
+                allocation, gfx_core::GpuAccess::ReadBuffer, queue,
+            )?;
+        }
+        if let Some(allocation) = mesh.argument_allocation {
+            arguments.mark_untracked_access_on_queue(
+                allocation, gfx_core::GpuAccess::StorageReadWrite, queue,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn create_many_impl(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
@@ -993,9 +1024,10 @@ fn create_many_impl(
     // command-list state validator intentionally rejects. Keep the ordered
     // DX12 path until that CBV ABI is made legal on a typed queue.
     //
-    // Retain profiled ordered dispatch when GPU timestamps are requested:
-    // the independent SubmissionDevice API currently has no tag parameter.
-    let native_queue = if accepted.is_some() && batch_id.is_none()
+    // Keep one execution path in normal and tracing builds so diagnostics
+    // do not silently change which physical GPU queue executes meshing.
+    // The native SubmissionDevice timestamp-tag API is still to be extended.
+    let native_queue = if accepted.is_some()
         && arena.as_ref().is_some_and(|(_, _, _, backend)| *backend == BackendKind::Vulkan)
     {
         device.native_queue_for(gfx_core::GpuWorkStage::Compute)
@@ -1115,31 +1147,11 @@ fn create_many_impl(
         }
     }
     let dispatch_count = dispatches.len();
-    if dispatch_count != 0 {
+    if dispatch_count != 0 && native_queue.is_none() {
         if let Some((faces, templates, arguments, _)) = arena.as_mut() {
-            // Compute reads templates and writes generated face/indirect
-            // argument slices. This records the *actual* changed Sections,
-            // not the whole shared arena on every frame.
-            for mesh in &pending {
-                if let Some(allocation) = mesh.allocation {
-                    faces.mark_untracked_access_on_queue(
-                        allocation, gfx_core::GpuAccess::StorageWrite,
-                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
-                    )?;
-                }
-                if let Some(allocation) = mesh.template_allocation {
-                    templates.mark_untracked_access_on_queue(
-                        allocation, gfx_core::GpuAccess::ReadBuffer,
-                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
-                    )?;
-                }
-                if let Some(allocation) = mesh.argument_allocation {
-                    arguments.mark_untracked_access_on_queue(
-                        allocation, gfx_core::GpuAccess::StorageReadWrite,
-                        native_queue.unwrap_or(gfx_core::GpuQueueId::PRIMARY),
-                    )?;
-                }
-            }
+            mark_generated_mesh_uses(
+                faces, templates, arguments, &pending, gfx_core::GpuQueueId::PRIMARY,
+            )?;
         }
     }
     let dispatch_started = (trace_started.is_some() || crate::gpu_submission_trace::enabled())
@@ -1162,6 +1174,12 @@ fn create_many_impl(
             // Native backend queues a real device-side wait of the upload
             // checkpoint on precisely the selected Compute queue.
             let wait = device.enqueue_gpu_queue_wait(queue, checkpoint)?;
+            // Preflight is complete. Mark potentially in-flight native work
+            // immediately before Execute/queueSubmit, including partial error
+            // paths where no reliable SubmissionId can be returned.
+            if let Some((faces, templates, arguments, _)) = arena.as_mut() {
+                mark_generated_mesh_uses(faces, templates, arguments, &pending, queue)?;
+            }
             let compute = device.submit_compute_batch_on_queue(queue, &dispatches)?;
             if let Some(records) = accepted.as_deref_mut() {
                 records.push(compute);
