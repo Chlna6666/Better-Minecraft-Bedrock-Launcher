@@ -126,23 +126,34 @@ pub enum CompatibilityFault {
 }
 
 pub fn classify_compatibility_output(text: &str) -> Option<CompatibilityFault> {
-    let text = text.to_ascii_lowercase();
-    // Mentions of exception handlers are not evidence of an exception.
-    if ["unhandled page fault", "unhandled exception:", "unhandled exception in",
-        "unhandled exception at", "wine: unhandled", "wine: assertion failed"]
-        .iter().any(|term| text.contains(term))
-        && !["no unhandled exception", "ignoring unhandled exception",
+    // Analyze individual lines. A harmless "unhandled exception handler"
+    // message must not suppress a real exception on a later line; likewise
+    // an optional DLL probe must not hide a fatal runner initialization error.
+    let mut dependency = false;
+    let mut runtime = false;
+    for line in text.lines().take(8192) {
+        let lower = line.to_ascii_lowercase();
+        let unhandled = ["unhandled page fault", "unhandled exception:",
+            "unhandled exception in", "unhandled exception at",
+            "wine: unhandled", "wine: assertion failed"]
+            .iter().any(|term| lower.contains(term));
+        let negated = ["no unhandled exception", "ignoring unhandled exception",
             "unhandled exception handler", "unhandled exception filter"]
-            .iter().any(|term| text.contains(term))
-    {
-        Some(CompatibilityFault::WineUnhandledException)
-    } else if ["err:module:import_dll", "unimplemented function",
-        "library not found", "module not found"].iter().any(|term| text.contains(term)) {
-        Some(CompatibilityFault::WineDependencyFailure)
-    } else if ["wineserver: failed", "failed to initialize wine",
-        "proton: fatal", "pressure-vessel-wrap: error"]
-        .iter().any(|term| text.contains(term)) {
+            .iter().any(|term| lower.contains(term));
+        if unhandled && !negated {
+            return Some(CompatibilityFault::WineUnhandledException);
+        }
+        runtime |= ["wineserver: failed", "failed to initialize wine",
+            "proton: fatal", "pressure-vessel-wrap: error"]
+            .iter().any(|term| lower.contains(term));
+        dependency |= ["err:module:import_dll", "unimplemented function",
+            "library not found", "module not found"]
+            .iter().any(|term| lower.contains(term));
+    }
+    if runtime {
         Some(CompatibilityFault::RuntimeFailure)
+    } else if dependency {
+        Some(CompatibilityFault::WineDependencyFailure)
     } else {
         None
     }
@@ -405,7 +416,9 @@ impl GameSessionReport {
             // Do not create large snapshots for ordinary control-event exits.
             snapshot_text_evidence(&self);
         }
-        if needs_evidence {
+        if needs_evidence || may_need_late_wer {
+            // Keep precise, searchable findings in manual history even when
+            // a nonzero exit status is insufficient for an automatic popup.
             let (findings, evidence) = analyze_snapshot(&self);
             self.findings = findings;
             self.forensics = evidence;
@@ -1442,6 +1455,14 @@ mod tests {
         assert_eq!(classify_compatibility_output("exited with code 1"), None);
         assert_eq!(classify_compatibility_output("unhandled exception handler installed"), None);
         assert_eq!(classify_compatibility_output("no unhandled exception occurred"), None);
+        assert_eq!(
+            classify_compatibility_output("no unhandled exception occurred\nwine: unhandled exception in guest"),
+            Some(CompatibilityFault::WineUnhandledException)
+        );
+        assert_eq!(
+            classify_compatibility_output("err:module:import_dll Library optional.dll not found\nfailed to initialize wine"),
+            Some(CompatibilityFault::RuntimeFailure)
+        );
     }
 
     #[test]
