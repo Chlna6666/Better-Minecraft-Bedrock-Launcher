@@ -163,7 +163,7 @@ impl Mailbox {
             let next_pending = state.pending.is_some();
             drop(state);
             if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
-                eprintln!(
+                log::info!(
                     "gpui3d sidecar_cpu_prepared revision={} current={} draws={} elapsed_ms={:.2} next_pending={}",
                     request.revision,
                     current,

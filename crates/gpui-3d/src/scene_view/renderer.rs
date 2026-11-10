@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 const SCENE_MEMORY_TRIM_IDLE: Duration = Duration::from_secs(1);
@@ -50,7 +50,7 @@ impl OffscreenTrace {
             return;
         }
         let total = self.captured + self.reused + self.retained;
-        eprintln!(
+        log::info!(
             "gpui3d offscreen_sidecar frames={} capture={} reuse={} pending_hold={} capture_ratio={:.3}",
             total,
             self.captured,
@@ -189,7 +189,7 @@ impl CachedCommands {
             && let Some(next) = self.splice_generated(delta, count, &mut build_range)?
         {
             if trace_timings() {
-                eprintln!(
+                log::info!(
                     "gpui3d native_command_delta previous={} current={} edits={} commands={}",
                     delta.previous_count,
                     count,
@@ -523,13 +523,8 @@ impl RendererTimingTrace {
         {
             return;
         }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        eprintln!(
-            "gpui3d render ts={} samples={} prepare_avg_ms={:.2} prepare_max_ms={:.2} commands_avg_ms={:.2} commands_max_ms={:.2} draw_calls_max={} gpu_cull_batches_max={} gpu_resident_draws_max={}",
-            timestamp,
+        log::info!(
+            "gpui3d render samples={} prepare_avg_ms={:.2} prepare_max_ms={:.2} commands_avg_ms={:.2} commands_max_ms={:.2} draw_calls_max={} gpu_cull_batches_max={} gpu_resident_draws_max={}",
             self.samples,
             self.prepare_total_us as f64 / self.samples as f64 / 1000.0,
             self.prepare_max_us as f64 / 1000.0,
@@ -690,7 +685,7 @@ impl SidecarGpuBackend {
             let arrays = device.texture_array_capabilities();
             let buffers = device.buffer_binding_limits();
             let compute = device.compute_capabilities();
-            eprintln!(
+            log::info!(
                 "gpui3d backend_caps backend={:?} array_max_dimension={} array_max_layers={} array_resources={} layer_uploads={} indexed_sampling={} storage_alignment={} storage_max_binding_bytes={} compute_max_group_invocations={} indirect_draw={}",
                 context.backend_kind(),
                 arrays.max_dimension_2d,
@@ -711,7 +706,7 @@ impl SidecarGpuBackend {
         let mut offscreen = match SidecarSurface::new(device, &context) {
             Ok(surface) => Some(surface),
             Err(error) => {
-                eprintln!(
+                log::warn!(
                     "gpui3d offscreen_sidecar_unavailable backend={:?} error={error}",
                     context.backend_kind()
                 );
@@ -731,7 +726,7 @@ impl SidecarGpuBackend {
             }
         };
         if offscreen.is_some() && trace_timings() {
-            eprintln!("gpui3d offscreen_sidecar_enabled backend={:?}", context.backend_kind());
+            log::info!("gpui3d offscreen_sidecar_enabled backend={:?}", context.backend_kind());
         }
         Ok(Self {
             backend: context.backend_kind(),

@@ -767,7 +767,7 @@ impl SceneResources {
             }
         }
         if partial && super::super::renderer::trace_timings() {
-            eprintln!(
+            log::info!(
                 "gpui3d generated_page_delta touched_pages={} changed_pages={} uploaded_bytes={} compute_dispatches={} output_capacity={}",
                 touched_pages,
                 updates.len(),

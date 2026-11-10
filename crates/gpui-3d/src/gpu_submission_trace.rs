@@ -45,7 +45,7 @@ pub(crate) fn report_gpu_samples(
         crate::upload_feedback::observe_completed_gpu_upload(backend, *sample);
         let Some(elapsed) = sample.duration() else { continue; };
         record_hardware_quantile(backend, sample.tag.stage, elapsed);
-        eprintln!(
+        log::trace!(
             "gpui3d gpu_hardware_phase backend={:?} batch_id={} stage={:?} gpu_us={} gpu_ticks={} frequency_hz={} timing=completed_gpu_timestamp",
             backend, sample.tag.batch_id, sample.tag.stage,
             elapsed.as_micros(), sample.duration_ticks, sample.frequency_hz,
@@ -104,7 +104,7 @@ fn record_hardware_quantile(
     {
         let mut sorted = window.durations_us.iter().copied().collect::<Vec<_>>();
         sorted.sort_unstable();
-        eprintln!(
+        log::debug!(
             "gpui3d gpu_hardware_percentiles backend={:?} stage={:?} samples={} p50_us={} p95_us={} p99_us={} timing=native_gpu_ticks",
             backend, stage, sorted.len(),
             hardware_percentile_us(&sorted, 50),
@@ -202,7 +202,7 @@ pub(crate) fn report(backend: BackendKind) {
         let bytes = entry.bytes.swap(0, Ordering::Relaxed);
         let us = entry.total_us.swap(0, Ordering::Relaxed);
         let max = entry.max_us.swap(0, Ordering::Relaxed);
-        eprintln!(
+        log::debug!(
             "gpui3d gpu_owner_phase backend={:?} phase={} samples={} items={} bytes={} host_avg_us={} host_max_us={} timing=host_api_not_gpu_execution",
             backend, phase_name(index), samples, items, bytes, us / samples, max,
         );

@@ -775,7 +775,7 @@ impl SidecarSurface {
             });
         let idle_placements: usize = self.targets.values()
             .map(|target| target.recycled_placements.len()).sum();
-        eprintln!(
+        log::info!(
             "gpui3d sidecar_targets active={} created={} moved_without_recreate={} captured={} retired_targets={} retired_bindings={} recycled_bindings={} placement_new={} placement_reused={} placement_update_us={} retired_pipelines={} cropped_bytes={} full_window_equivalent_bytes={} retired_bytes={} estimated_saved_percent={:.1} consumer_fence_completed={} consumer_fence_host_avg_us={} consumer_fence_host_max_us={} conservative_global_retires={} timing=host_fence_observation_not_gpu_execution",
             self.targets.len(), self.trace.allocated, self.trace.relocated, self.trace.captured,
             self.awaiting_gpu.len() + self.ready_to_release.len() + fenced_targets,

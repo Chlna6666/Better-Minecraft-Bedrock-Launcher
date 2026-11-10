@@ -1177,9 +1177,8 @@ fn create_many_impl(
     });
     if tracing_gpu_queue {
         let rates = feedback.as_deref().map(|f| f.debug_summary());
-        // Reuse the 3D GPU diagnostics' existing opt-in stderr sink.
-        // The scene renderer intentionally has no dependency on the log crate.
-        eprintln!(
+        // Route opt-in GPU queue diagnostics through the host logging facade.
+        log::info!(
             "gpui3d generated_mesh_queue publication_id={:?} sample_id={:?} native_queue={:?} workgroups={} dispatches={} meshes={} gpu_rates={:?} timing=completed_native_ticks_only",
             batch_id, compute_tag.map(|tag| tag.batch_id), native_queue,
             workgroups, dispatch_count, meshes.len(), rates,
@@ -1331,7 +1330,7 @@ fn create_many_impl(
     if let Some(started) = trace_started {
         let total_ms = started.elapsed().as_secs_f64() * 1000.0;
         if total_ms >= 16.0 {
-            eprintln!(
+            log::info!(
                 "gpui3d generated_batch backend={:?} meshes={} dispatches={} scratch_buffers={} prepare_ms={:.2} dispatch_ms={:.2} retire_ms={:.2} total_ms={:.2}",
                 arena.as_ref().map(|(_, _, _, backend)| *backend),
                 meshes.len(),
