@@ -2270,9 +2270,8 @@ mod platform {
             })?;
             unsafe { queue.Signal(&fence, producer_output) }
                 .map_err(|error| Error::Backend(format!("DX12 sidecar queue signal: {error}")))?;
-            // Queue-side dependency: the next GPUI render pass cannot sample
-            // the 3D target until sidecar's write and attachment transitions
-            // finish. No CPU-side stall or second graphics context is used.
+            // The primary queue waits on the GPU for offscreen writes and
+            // attachment transitions before consuming the result.
             unsafe { self.graphics_queue.Wait(&fence, producer_output) }
                 .map_err(|error| Error::Backend(format!("DX12 GUI queue wait: {error}")))?;
             let fence_value = self.signal_frame()?;

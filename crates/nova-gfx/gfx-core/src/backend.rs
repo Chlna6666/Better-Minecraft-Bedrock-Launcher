@@ -1266,7 +1266,7 @@ pub enum OffscreenQueuePreference {
 
 /// General-purpose offscreen Graphics submission API, independent of any GUI
 /// framework or 3D scene library. This small capability sits above backend
-/// command recording and below engines such as gpui-3d.
+/// command recording and below rendering engines.
 ///
 /// The input commands reference existing native GPU buffers, pipelines and
 /// render targets. They are not converted to GUI primitives. Return values

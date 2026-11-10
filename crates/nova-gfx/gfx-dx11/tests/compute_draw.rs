@@ -426,8 +426,7 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
 }
 
 
-/// Native hardware gate for mixed resource-set compute. The GPUI extension
-/// path uses exactly this API; no CPU emulation or staging draw is involved.
+/// Native hardware gate for compute that writes storage images and buffers.
 #[test]
 #[ignore = "requires Windows D3D11 hardware and a native texture readback"]
 fn compute_resource_set_writes_storage_image_and_buffer() {

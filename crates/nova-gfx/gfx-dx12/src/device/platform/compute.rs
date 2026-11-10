@@ -326,8 +326,8 @@ impl Dx12Device {
                     command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
                 }
             }
-            // Writable UAV images must leave the UAV state before GPUI
-            // samples them. Sampled-only images can remain GENERIC_READ,
+            // Writable UAV images must leave the UAV state before a later
+            // shader samples them. Sampled-only images can remain GENERIC_READ,
             // which already includes both pixel and non-pixel shader reads.
             // Avoid forcing every compute sample through a redundant
             // GENERIC_READ -> PIXEL_SHADER_RESOURCE round trip.
