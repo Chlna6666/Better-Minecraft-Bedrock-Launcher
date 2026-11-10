@@ -109,11 +109,6 @@ mod platform {
                 D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
                 D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
                 D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID,
-                D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT,
-                D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
-                D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-                D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
-                D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR,
                 D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
                 D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
                 D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
@@ -1949,7 +1944,6 @@ mod platform {
                 fragment_shader,
                 &desc.color_targets,
                 render_pass.depth_format,
-                render_pass.stencil_format.is_some(),
                 render_pass.sample_count,
                 desc.depth_state,
                 desc.raster,
@@ -5245,7 +5239,6 @@ mod platform {
         fragment_shader: &Dx12ShaderModule,
         color_targets: &[ColorTargetState],
         depth_format: Option<Format>,
-        stencil_enabled: bool,
         sample_count: u32,
         depth_state: Option<DepthState>,
         raster: gfx_core::RasterState,
@@ -5396,9 +5389,15 @@ mod platform {
             ))
         })?;
 
+        // Only pipeline construction (not the 3D frame/DrawIndirect path)
+        // reaches here. Persist the driver-produced PSO blob so a later
+        // launch avoids recompilation; failures do not affect rendering.
         if (cached_blob.is_none() || rejected_cached_blob)
             && let Some(cache_path) = cache_path.as_deref()
         {
+            persist_pipeline_cache_blob(
+                cache_path, &pipeline_state, pipeline_cache_limit_bytes,
+            );
         }
 
         Ok(pipeline_state)
@@ -8458,7 +8457,10 @@ mod platform {
                 lod_bias: 0.0,
             });
 
-            assert_eq!(desc.Filter, D3D12_FILTER_ANISOTROPIC);
+            assert_eq!(
+                desc.Filter,
+                windows::Win32::Graphics::Direct3D12::D3D12_FILTER_ANISOTROPIC,
+            );
             assert_eq!(desc.MaxAnisotropy, 16);
         }
 
@@ -8479,7 +8481,10 @@ mod platform {
                 lod_bias: 0.0,
             });
 
-            assert_eq!(desc.Filter, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+            assert_eq!(
+                desc.Filter,
+                windows::Win32::Graphics::Direct3D12::D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            );
             assert_eq!(desc.MaxAnisotropy, 1);
         }
 
