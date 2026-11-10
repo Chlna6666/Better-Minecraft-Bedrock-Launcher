@@ -295,8 +295,17 @@ impl VisibilityIndex {
     pub(super) fn epoch(&self) -> u64 { self.epoch }
     pub(super) fn len(&self) -> usize { self.entries.len() }
 
-    pub(super) fn probes(&self) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + '_ {
-        self.entries.iter().map(|(&pos, value)| (pos, value.probe(pos)))
+    /// Filter by the active circular view *before* reconstructing the
+    /// expensive 16³ portal graphs from their persistent compact masks.
+    /// Off-screen index entries remain only a few raw words on disk/in RAM.
+    pub(super) fn probes_in_view(
+        &self, dimension: Dimension, center_x: i32, center_z: i32, radius: i32,
+    ) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + '_ {
+        self.entries.iter()
+            .filter(move |(&pos, _)| {
+                super::inside_view(pos, dimension, center_x, center_z, radius)
+            })
+            .map(|(&pos, value)| (pos, value.probe(pos)))
     }
 
     pub(super) fn candidate_bands(&self) -> impl Iterator<Item = (ChunkPos, i32)> + '_ {
