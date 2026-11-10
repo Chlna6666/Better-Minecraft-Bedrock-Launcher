@@ -131,6 +131,68 @@ mod tests {
         assert_eq!(actual, expected);
     }
     #[test]
+    fn gpu_model_plan_filters_hidden_instances_before_face_templates() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let mut blocks = Preview3dChunkBlocks::default();
+        for y in [90, 150] {
+            let key = BlockKey { x: 8, y, z: 8 };
+            blocks.water.insert(key);
+            blocks.water_blocks.push(Preview3dFluidBlock {
+                key, color: [0.4, 0.6, 0.8, 0.5],
+                material: Arc::from("minecraft:water"),
+                surface_only: false, height: 1.0,
+            });
+        }
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, blocks);
+        let stored = builder.block_chunks.get(&ChunkKey::from_pos(pos)).unwrap();
+        let full = super::gpu_models::ModelPlan::new(&builder, stored, |_, _| false);
+        let reduced = super::gpu_models::ModelPlan::new(&builder, stored, |y, _| y == 90);
+        assert_eq!(full.records.len(), 2);
+        assert_eq!(reduced.records.len(), 1);
+        assert_eq!(reduced.records[0].key.y, 150);
+        assert!(reduced.faces.len() <= full.faces.len());
+        let bands = builder.gpu_cube_bands_skipping(
+            pos, None, &std::collections::BTreeSet::from([1]),
+        ).unwrap();
+        assert!(!bands.iter().any(|band| band.section_y == 1));
+        assert!(bands.iter().any(|band| band.section_y == 2));
+    }
+
+    #[test]
+    fn gpu_fluid_halo_defers_unknown_seams_but_retains_known_air() {
+        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let neighbor = ChunkPos { x: 1, z: 0, ..pos };
+        let mut blocks = Preview3dChunkBlocks::default();
+        let key = BlockKey { x: 15, y: 88, z: 8 };
+        blocks.water.insert(key);
+        blocks.water_blocks.push(Preview3dFluidBlock {
+            key, color: [0.4, 0.6, 0.8, 0.5],
+            material: Arc::from("minecraft:water"),
+            surface_only: false, height: 1.0,
+        });
+        let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 1,
+            min_chunk_z: 0, max_chunk_z: 0,
+        });
+        builder.insert_stream_chunk(pos, blocks);
+        let halo_class = |builder: &Preview3dMeshBuilder| {
+            let band = builder.gpu_cube_bands(pos, None).unwrap()
+                .into_iter().find(|band| band.section_y == 1).unwrap();
+            let x = (16 - band.origin.x as i32) as usize;
+            let y = (88 - band.origin.y as i32) as usize;
+            let z = (8 - band.origin.z as i32) as usize;
+            band.classes[(z * band.size[1] as usize + y) * band.size[0] as usize + x]
+        };
+        assert_eq!(halo_class(&builder) & 12, 12);
+        builder.insert_stream_chunk(neighbor, Preview3dChunkBlocks::default());
+        assert_eq!(halo_class(&builder) & 12, 0);
+    }
+
+    #[test]
     fn completely_hidden_plain_cube_column_never_expands_model_templates() {
         let pos = ChunkPos {
             x: 0,
