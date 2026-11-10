@@ -1521,10 +1521,6 @@ impl VulkanDevice {
         let depth_format_vk = depth_format.map(format_to_vk);
         let mut created = Vec::with_capacity(if depth_format.is_some() { 6 } else { 3 });
         let sample_count = desc.sample_count;
-        let stencil_format = desc
-            .depth_attachment
-            .as_ref()
-            .and_then(|attachment| attachment.stencil_format);
         let result = (|| {
             let mut create = |config| -> Result<vk::RenderPass> {
                 let render_pass = create_native_render_pass(
@@ -1568,7 +1564,6 @@ impl VulkanDevice {
                     .collect(),
                 depth_format,
                 sample_count,
-                stencil_format,
             })
         })();
         if result.is_err() {
@@ -2198,7 +2193,6 @@ impl VulkanDevice {
         }
         let depth_view =
             self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
-        let mut transient_framebuffer = None;
         let mut transitions = Vec::with_capacity(color_views.len());
         let mut render_target_textures = Vec::with_capacity(color_views.len());
         let mut extent = vk::Extent2D {
@@ -2234,15 +2228,6 @@ impl VulkanDevice {
             depth_samples,
             resolve_samples,
         )?;
-        let mut viewport_extent = vk::Extent2D {
-            width: 1,
-            height: 1,
-        };
-        let mut viewport_origin = gfx_core::SignedOrigin2d::ZERO;
-        let mut scissor_extent = vk::Extent2D {
-            width: 1,
-            height: 1,
-        };
         let mut image_views = Vec::with_capacity(color_views.len());
         for (index, texture_view_id) in color_views.iter().enumerate() {
             let texture_view = self.texture_views.get(*texture_view_id)?;
@@ -2292,7 +2277,7 @@ impl VulkanDevice {
         let native_render_pass =
             render_pass_record.offscreen_render_pass(color_load, depth_load)?;
         let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
-        viewport_extent = viewport
+        let viewport_extent = viewport
             .map(|viewport| {
                 viewport.for_target(target_size).map(|extent| vk::Extent2D {
                     width: extent.width(),
@@ -2301,11 +2286,11 @@ impl VulkanDevice {
             })
             .transpose()?
             .unwrap_or(extent);
-        viewport_origin = viewport
+        let viewport_origin = viewport
             .map(|viewport| viewport.mapped_origin(target_size))
             .transpose()?
             .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
-        scissor_extent = viewport
+        let scissor_extent = viewport
             .map(|viewport| viewport.mapped_scissor_extent(target_size))
             .transpose()?
             .map(|extent| vk::Extent2D {
@@ -2320,7 +2305,7 @@ impl VulkanDevice {
             depth_view.map(|(view, _)| view),
             extent,
         )?;
-        transient_framebuffer = Some(framebuffer);
+        let transient_framebuffer = Some(framebuffer);
         let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
         let clear_region = match (viewport, clear_region) {
             (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, target_size)?),
@@ -5771,7 +5756,6 @@ struct VulkanRenderPass {
     color_formats: Vec<Format>,
     depth_format: Option<Format>,
     sample_count: u32,
-    stencil_format: Option<Format>,
 }
 
 impl VulkanRenderPass {
