@@ -1757,7 +1757,6 @@ impl SceneResources {
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
             &self.prepared.draws,
-            self.prepared.lights.len(),
             mapping,
             &dirty,
             &self.draw_slot_keys,
@@ -1959,7 +1958,6 @@ impl SceneResources {
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
         let draw_result = self.draw_record_cache.encode_resident_delta(
             &self.prepared.draws,
-            self.prepared.lights.len(),
             mapping,
             &dirty,
             &self.draw_slot_keys,
@@ -2227,7 +2225,6 @@ impl SceneResources {
             // copy are needed for the common streaming Section update.
             self.draw_record_cache.encode_stable(
                 &self.prepared.draws,
-                self.prepared.lights.len(),
                 mapping,
                 high_water,
                 &self.draw_slot_keys,
@@ -2248,7 +2245,6 @@ impl SceneResources {
         } else {
             self.draw_record_cache.encode(
                 &self.prepared.draws,
-                self.prepared.lights.len(),
                 &mut draw_bytes,
                 &mut next_draw_keys,
             )?;
