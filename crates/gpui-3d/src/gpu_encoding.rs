@@ -1,7 +1,7 @@
 //! Shared GPU binary encodings and 3D shader ABI for standalone and Sidecar renderers.
 //! No GPUI or device-owner dependency is permitted here.
 
-use crate::{AlphaMode, Mat4, Mesh, NodeId, PreparedDraw, PreparedLight, PreparedScene, ShadingModel, TriangleEdgeMask, Vertex};
+use crate::{AlphaMode, Mat4, Mesh, NodeId, PreparedLight, PreparedScene, ShadingModel, TriangleEdgeMask, Vertex};
 use anyhow::{anyhow, Context as _};
 use gfx_core::IndexFormat;
 use std::collections::HashMap;
