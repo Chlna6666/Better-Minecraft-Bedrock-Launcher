@@ -854,19 +854,34 @@ mod tests {
             .with_state("weirdo_direction",3)).is_none());
     }
     #[test]
-    fn capture_rejects_v2_hashes_and_incomplete_pool() {
+    fn capture_rejects_unsupported_schema_missing_manifest_fields_and_corrupt_pool() {
         let dir = tempfile::tempdir().unwrap();
-        fixture(dir.path(),false);
-        let mut manifest: Value = serde_json::from_slice(
-            &fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
-        manifest["shared_geometry_pool_schema"]=json!(2);
-        write(dir.path(),"manifest.json",&manifest);
+        fixture(dir.path(), false);
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["shared_geometry_pool_schema"] = json!(2);
+        write(dir.path(), "manifest.json", &manifest);
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
-        manifest["shared_geometry_pool_schema"]=json!(3);
-        write(dir.path(),"manifest.json",&manifest);
-        let mut bytes=fs::read(dir.path().join("geometry_pool.bin")).unwrap();
-        bytes[28]=255;
-        fs::write(dir.path().join("geometry_pool.bin"),bytes).unwrap();
+
+        // Dev builds implement one strict reader; missing export identity or
+        // numeric pool schema cannot fall back to an older model library.
+        manifest["shared_geometry_pool_schema"] = json!(3);
+        let format = manifest.as_object_mut().unwrap().remove("format").unwrap();
+        write(dir.path(), "manifest.json", &manifest);
+        assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
+        manifest["format"] = format;
+
+        let schema = manifest.as_object_mut().unwrap()
+            .remove("shared_geometry_pool_schema").unwrap();
+        write(dir.path(), "manifest.json", &manifest);
+        assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
+        manifest["shared_geometry_pool_schema"] = schema;
+
+        write(dir.path(), "manifest.json", &manifest);
+        let mut bytes = fs::read(dir.path().join("geometry_pool.bin")).unwrap();
+        bytes[28] = 255;
+        fs::write(dir.path().join("geometry_pool.bin"), bytes).unwrap();
         assert!(RuntimeCaptureCatalog::open(dir.path()).is_err());
     }
 
