@@ -1018,13 +1018,11 @@ fn create_many_impl(
     if meshes.is_empty() {
         return Ok(Vec::new());
     }
-    // Vulkan currently uses the second queue of its graphics family with
-    // native GPU semaphore waits; this never crosses Queue Family ownership.
-    // DX12 dedicated COMPUTE has a type-matched command list and uses the
-    // small Upload-heap CBV page (GENERIC_READ) produced by BatchScratch.
-    // Both paths retain GPU-local Cells, Jobs, Faces and Draw arguments.
-    // No CPU Fence waits are added to normal streaming.
-    let native_queue = if accepted.is_some()
+    // The device chooses an actual native COMPUTE queue only when its
+    // resource/command-list ABI is supported. Queue admission happens below
+    // after workgroups are known: small batches stay on the ordered Graphics
+    // path to avoid multiple semaphore/fence submissions per one-off Section.
+    let available_native_queue = if accepted.is_some()
         && arena.as_ref().is_some_and(|(_, _, _, backend)|
             matches!(backend, BackendKind::Vulkan | BackendKind::Dx12))
     {
@@ -1145,6 +1143,28 @@ fn create_many_impl(
         }
     }
     let dispatch_count = dispatches.len();
+    // Conservative initial admission: a tiny workload costs more in extra
+    // cross-queue submits than it can overlap. Unlike a fixed Section radius,
+    // this uses the actual generated shader workgroup count, including a
+    // complex single Section or many small Sections. Calibrate the initial
+    // limit against native GPU timestamps on real hardware.
+    const MIN_ASYNC_MESH_WORKGROUPS: u64 = 512;
+    let workgroups = dispatches.iter().fold(0u64, |total, dispatch| {
+        total.saturating_add(dispatch.workgroups.iter().fold(1u64, |n, &count| {
+            n.saturating_mul(u64::from(count))
+        }))
+    });
+    let native_queue = available_native_queue
+        .filter(|_| workgroups >= MIN_ASYNC_MESH_WORKGROUPS);
+    if crate::gpu_submission_trace::enabled() {
+        log::trace!(
+            target: "gpui3d_gpu_queue",
+            "generated_mesh_queue backend={:?} native_queue={:?} workgroups={} dispatches={} meshes={} independent_admitted={}",
+            arena.as_ref().map(|(_, _, _, backend)| *backend),
+            native_queue, workgroups, dispatch_count, meshes.len(),
+            native_queue.is_some(),
+        );
+    }
     if dispatch_count != 0 && native_queue.is_none() {
         if let Some((faces, templates, arguments, _)) = arena.as_mut() {
             mark_generated_mesh_uses(
