@@ -53,10 +53,10 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
 
     let worker_operation_id = Arc::clone(&operation_id);
     let worker_child_task = Arc::clone(&active_child_task);
-    let workflow = match crate::tasks::runtime::spawn_io(async move {
-        let outcome = scope.run(run_game_install(
+    let workflow = match scope.spawn_io(async move {
+        let outcome = run_game_install(
             &request, &worker_operation_id, &worker_child_task,
-        )).await;
+        ).await;
         match outcome {
             Ok(local_path) => {
                 // A successful return means every child transaction crossed its commit point.

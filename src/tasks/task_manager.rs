@@ -827,6 +827,17 @@ impl TaskScope {
     pub async fn run<F: Future>(&self, operation: F) -> F::Output {
         ACTIVE_TASK_SCOPE.scope(self.parent_id.clone(), operation).await
     }
+
+    /// Spawn on the shared IO runtime while explicitly carrying parent context.
+    /// Plain Tokio spawns do not inherit task-local state across task boundaries.
+    pub fn spawn_io<F>(&self, operation: F) -> Result<tokio::task::JoinHandle<F::Output>, String>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let scope = self.clone();
+        crate::tasks::runtime::spawn_io(async move { scope.run(operation).await })
+    }
 }
 
 /// Single allocation path: the first observable snapshot already has the final kind,
@@ -2117,6 +2128,67 @@ mod tests {
         finish_task(&root, "completed", None);
         remove_task(&child);
         remove_task(&root);
+    }
+
+    #[tokio::test]
+    async fn task_scope_is_explicit_and_does_not_change_root_creation() {
+        let parent = create_task(
+            TaskOptions::new("parent", "running").kind(TaskType::Workflow),
+        ).expect("parent");
+        let scope = TaskScope::new(&parent).expect("scope");
+        let (nested, unrelated) = scope.run(async {
+            let nested = create_task(
+                TaskOptions::new("child", "running").in_current_scope(),
+            ).expect("nested");
+            let unrelated = create_task(TaskOptions::new("unrelated", "running"))
+                .expect("independent root");
+            (nested, unrelated)
+        }).await;
+        assert_eq!(
+            get_snapshot_arc(&nested).unwrap().parent_id.as_deref(),
+            Some(parent.as_str()),
+        );
+        assert_eq!(get_snapshot_arc(&unrelated).unwrap().parent_id, None);
+        finish_task(&nested, "completed", None);
+        finish_task(&unrelated, "completed", None);
+        finish_task(&parent, "completed", None);
+        assert!(remove_task(&nested));
+        assert!(remove_task(&unrelated));
+        assert!(remove_task(&parent));
+    }
+
+    #[tokio::test]
+    async fn nested_scope_restores_outer_parent_after_return() {
+        let parent = create_task(
+            TaskOptions::new("parent", "running").kind(TaskType::Workflow),
+        ).expect("parent");
+        let scope = TaskScope::new(&parent).expect("outer scope");
+        let (middle, inner, sibling) = scope.run(async {
+            let middle = create_task(
+                TaskOptions::new("middle", "running")
+                    .kind(TaskType::Workflow)
+                    .in_current_scope(),
+            ).expect("middle");
+            let inner_scope = TaskScope::new(&middle).expect("inner scope");
+            let inner = inner_scope.run(async {
+                create_task(
+                    TaskOptions::new("inner", "running").in_current_scope(),
+                ).expect("inner")
+            }).await;
+            let sibling = create_task(
+                TaskOptions::new("sibling", "running").in_current_scope(),
+            ).expect("sibling");
+            (middle, inner, sibling)
+        }).await;
+        assert_eq!(get_snapshot_arc(&middle).unwrap().parent_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(get_snapshot_arc(&inner).unwrap().parent_id.as_deref(), Some(middle.as_str()));
+        assert_eq!(get_snapshot_arc(&sibling).unwrap().parent_id.as_deref(), Some(parent.as_str()));
+        for id in [&inner, &sibling, &middle, &parent] {
+            finish_task(id, "completed", None);
+        }
+        for id in [&inner, &sibling, &middle, &parent] {
+            assert!(remove_task(id));
+        }
     }
 
     #[test]

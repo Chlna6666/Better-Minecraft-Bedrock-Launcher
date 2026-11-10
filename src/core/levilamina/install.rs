@@ -187,8 +187,8 @@ where
         stage: LeviLaminaInstallStage::Resolving,
     });
     let monitor_updates = updates.clone();
-    let workflow = match crate::tasks::runtime::spawn_io(async move {
-        let stage = scope.run(operation(updates.clone())).await.unwrap_or_else(|message| {
+    let workflow = match scope.spawn_io(async move {
+        let stage = operation(updates.clone()).await.unwrap_or_else(|message| {
             LeviLaminaInstallStage::Failed {
                 message: Arc::from(message),
             }
