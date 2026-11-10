@@ -34,7 +34,12 @@ impl Default for GpuQueueId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GpuResourceSpan {
     /// Only these physical buffer bytes can be used by a submission.
-    Buffer { id: BufferId, bytes: Range<u64> },
+    Buffer {
+        /// Physical buffer allocation containing the accessed range.
+        id: BufferId,
+        /// Half-open byte interval within the allocation.
+        bytes: Range<u64>,
+    },
     /// All bytes of a buffer, for indirect access without a proven bound.
     WholeBuffer(BufferId),
     /// A complete texture allocation, including all views and mip levels.
@@ -80,7 +85,9 @@ impl GpuResourceSpan {
 /// destinations. Any access can block allocation retirement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GpuSubmissionAccess {
+    /// Precise byte span or complete texture accessed by this operation.
     pub span: GpuResourceSpan,
+    /// Read/write mode used to infer the native synchronization hazard.
     pub access: GpuAccess,
 }
 
@@ -104,6 +111,9 @@ impl GpuNativeWaitProof {
     /// validate the producer's real queue completion primitive, and have
     /// successfully enqueued a *device-side* wait that is ordered before the
     /// consumer submission. Incorrect use permits premature resource reuse.
+    // A real GPU-side wait is not constructible through a safe API:
+    // consumers must explicitly uphold the backend proof obligations.
+    #[allow(unsafe_code, reason = "native GPU wait proof is an intentional unsafe trust boundary")]
     pub unsafe fn after_native_wait(
         producer: SubmissionId,
         target_queue: GpuQueueId,
@@ -124,14 +134,20 @@ impl GpuNativeWaitProof {
 /// Unverified GPU waits cannot be constructed through public record fields.
 #[derive(Clone, Debug)]
 pub struct GpuSubmissionRecord {
+    /// Submission ID returned from the actual accepted native GPU submit.
     pub id: SubmissionId,
+    /// Physical GPU queue that accepted this work.
     pub queue: GpuQueueId,
+    /// Hardware command domain executed by this submission.
     pub stage: GpuWorkStage,
+    /// Resources accessed while this native submission remains in flight.
     pub uses: Vec<GpuSubmissionAccess>,
     gpu_waits: Vec<GpuNativeWaitProof>,
 }
 
 impl GpuSubmissionRecord {
+    /// Describe one accepted native GPU submission without claiming any
+    /// unverified cross-queue wait; add explicit native wait proofs separately.
     #[must_use]
     pub fn new(
         id: SubmissionId, queue: GpuQueueId, stage: GpuWorkStage,
@@ -223,6 +239,8 @@ pub struct GpuSubmissionCompletion {
 }
 
 impl GpuSubmissionCompletion {
+    #[must_use]
+    /// Exact native submission IDs whose completion is proven by this report.
     #[must_use]
     pub fn finished(&self) -> &HashSet<SubmissionId> { &self.finished }
 }
@@ -363,6 +381,9 @@ impl GpuSubmissionDependencyGraph {
         }
     }
 
+    #[must_use]
+    /// Whether any admitted native GPU access lacks a trustworthy completion
+    /// fence and must therefore prohibit physical range retirement.
     #[must_use]
     pub fn has_untracked_work(&self) -> bool { !self.unknown.is_empty() }
 
