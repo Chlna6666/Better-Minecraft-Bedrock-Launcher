@@ -1149,14 +1149,21 @@ fn create_many_impl(
     // complex single Section or many small Sections. Calibrate the initial
     // limit against native GPU timestamps on real hardware.
     const MIN_ASYNC_MESH_WORKGROUPS: u64 = 512;
-    let workgroups = dispatches.iter().fold(0u64, |total, dispatch| {
-        total.saturating_add(dispatch.workgroups.iter().fold(1u64, |n, &count| {
-            n.saturating_mul(u64::from(count))
-        }))
-    });
+    let tracing_gpu_queue = crate::gpu_submission_trace::enabled();
+    // Do not impose another O(dispatches) traversal on DX11/OpenGL or
+    // on standalone renderers that have no native queue-polling owner.
+    let workgroups = if available_native_queue.is_some() || tracing_gpu_queue {
+        dispatches.iter().fold(0u64, |total, dispatch| {
+            total.saturating_add(dispatch.workgroups.iter().fold(1u64, |n, &count| {
+                n.saturating_mul(u64::from(count))
+            }))
+        })
+    } else {
+        0
+    };
     let native_queue = available_native_queue
         .filter(|_| workgroups >= MIN_ASYNC_MESH_WORKGROUPS);
-    if crate::gpu_submission_trace::enabled() {
+    if tracing_gpu_queue {
         log::trace!(
             target: "gpui3d_gpu_queue",
             "generated_mesh_queue backend={:?} native_queue={:?} workgroups={} dispatches={} meshes={} independent_admitted={}",
