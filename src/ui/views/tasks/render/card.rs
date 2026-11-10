@@ -371,12 +371,21 @@ pub(crate) fn render_task_card(
                                 let kind = task_visual_kind(child.stage.as_ref(), child.status.as_ref());
                                 let color = task_status_accent(child.status.as_ref(), kind, colors);
                                 let label = match child.status.as_ref() {
-                                    "completed" => "已完成".to_string(),
-                                    "error" => "失败".to_string(),
-                                    "cancelled" => "已取消".to_string(),
-                                    "cancelling" => "正在取消".to_string(),
-                                    _ => child.percent.map(|percent| format!("{percent:.1}%"))
-                                        .unwrap_or_else(|| "进行中".to_string()),
+                                    "completed" => t!("Tasks.status.completed"),
+                                    "error" => t!("Tasks.status.error"),
+                                    "cancelled" => t!("Tasks.status.cancelled"),
+                                    "cancelling" => t!("Tasks.status.cancelling"),
+                                    _ => {
+                                        let progress = child.percent.map(|percent| format!("{percent:.1}%"));
+                                        let rate = child.speed_text.as_ref()
+                                            .map(|rate| rate.to_string());
+                                        SharedString::from(match (progress, rate) {
+                                            (Some(progress), Some(rate)) => format!("{progress} · {rate}"),
+                                            (Some(progress), None) => progress,
+                                            (None, Some(rate)) => rate,
+                                            (None, None) => t!("Tasks.status.running").to_string(),
+                                        })
+                                    }
                                 };
                                 div().w_full().pl(px(child.depth as f32 * 12.))
                                     .flex().flex_col().gap(px(3.))

@@ -134,6 +134,7 @@ pub(super) struct TaskChildViewModel {
     pub(super) status: Arc<str>,
     pub(super) message: Option<Arc<str>>,
     pub(super) percent: Option<f64>,
+    pub(super) speed_text: Option<Arc<str>>,
     pub(super) depth: usize,
 }
 
@@ -383,6 +384,7 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
         child.status.hash(hasher);
         hash_optional_text(hasher, child.message.as_ref());
         hash_optional_f64(hasher, child.percent);
+        hash_optional_text(hasher, child.speed_text.as_ref());
         child.depth.hash(hasher);
     }
     model.thread_segments.len().hash(hasher);
@@ -441,6 +443,8 @@ fn append_child_models(
                 status: child.status.clone(),
                 message: non_empty_arc(child.message.as_ref()),
                 percent: child.percent,
+                speed_text: (child.speed_bytes_per_sec > 0.0)
+                    .then(|| format_task_speed(child.speed_bytes_per_sec)),
                 depth,
             });
             append_child_models(child.id.as_ref(), depth + 1, by_parent, visited, output);
@@ -461,9 +465,12 @@ pub(super) fn build_render_model_from_snapshots(
 
     let active_total = snapshot_lists.active_total;
     let finished_total = snapshot_lists.finished_total;
-    let thread_total = snapshot_lists
-        .active
+    // Worker threads belong to leaf tasks (downloads etc.), not top-level cards.
+    // Count active descendants too, without counting finished task worker pools.
+    let thread_total = snapshots
         .iter()
+        .filter(|snapshot| snapshot.visibility == task_manager::TaskVisibility::Visible
+            && !snapshot.is_terminal())
         .filter_map(|snapshot| snapshot.visualization.as_ref())
         .map(|visualization| visualization.worker_total.unwrap_or(0) as usize)
         .sum();

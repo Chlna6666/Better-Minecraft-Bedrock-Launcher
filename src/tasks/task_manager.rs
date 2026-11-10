@@ -1508,29 +1508,54 @@ pub fn resume_task(task_id: &str) -> bool {
     changed
 }
 
+/// Remove a completed workflow with its descendant snapshots and log buffers.
+/// Active children prevent removal so ongoing cleanup can never become orphaned.
 pub fn remove_task(task_id: &str) -> bool {
-    clear_task_abort_handle(task_id);
-    clear_task_cancel_hook(task_id);
-    clear_task_cooperative_cancel(task_id);
-    let removed_snapshot = TASK_SNAPSHOTS.write().unwrap().remove(task_id);
-    TASK_LOGS.lock().unwrap().remove(task_id);
-    let _ = TASK_CONTROLS
-        .write()
-        .ok()
-        .and_then(|mut map| map.remove(task_id));
-    let mut map = TASKS.lock().unwrap();
-    let removed = map.remove(task_id).is_some();
-    drop(map);
+    let removal_order = {
+        let tasks = TASKS.lock().unwrap();
+        if !tasks.contains_key(task_id) {
+            return false;
+        }
+        let mut ids = vec![task_id.to_string()];
+        let mut cursor = 0;
+        while cursor < ids.len() {
+            let parent = ids[cursor].as_str();
+            for task in tasks.values() {
+                if task.parent_id.as_deref() == Some(parent) {
+                    ids.push(task.id.to_string());
+                }
+            }
+            cursor += 1;
+        }
+        if ids.iter().skip(1).any(|id| {
+            tasks.get(id).is_some_and(|task| !is_terminal_status(task.status.as_ref()))
+        }) {
+            return false;
+        }
+        ids
+    };
 
-    if removed_snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.visibility == TaskVisibility::Visible)
-        && TASK_EVENTS.receiver_count() > 0
-    {
-        let _ = TASK_EVENTS.send(TaskEvent::Removed(Arc::from(task_id)));
+    // Children first, root last. Release task locks before broadcasting events.
+    let mut removed_root = false;
+    for id in removal_order.into_iter().rev() {
+        clear_task_abort_handle(&id);
+        clear_task_cancel_hook(&id);
+        clear_task_cooperative_cancel(&id);
+        let removed_snapshot = TASK_SNAPSHOTS.write().unwrap().remove(id.as_str());
+        TASK_LOGS.lock().unwrap().remove(id.as_str());
+        let _ = TASK_CONTROLS.write().ok()
+            .and_then(|mut controls| controls.remove(id.as_str()));
+        let removed = TASKS.lock().unwrap().remove(id.as_str()).is_some();
+        if id == task_id {
+            removed_root = removed;
+        }
+        if removed_snapshot.as_ref().is_some_and(|snapshot| snapshot.visibility == TaskVisibility::Visible)
+            && TASK_EVENTS.receiver_count() > 0
+        {
+            let _ = TASK_EVENTS.send(TaskEvent::Removed(Arc::from(id.as_str())));
+        }
     }
-
-    removed
+    removed_root
 }
 
 pub async fn wait_until_active(task_id: &str) -> bool {
@@ -2189,6 +2214,25 @@ mod tests {
         for id in [&inner, &sibling, &middle, &parent] {
             assert!(remove_task(id));
         }
+    }
+
+    #[test]
+    fn removing_workflow_cleans_descendants_and_logs() {
+        let root = create_task(
+            TaskOptions::new("root", "running").kind(TaskType::Workflow),
+        ).expect("root");
+        let child = create_task(
+            TaskOptions::new("child", "running").parent(&root),
+        ).expect("child");
+        append_task_log(&child, "child-log");
+        finish_task(&root, "completed", None);
+        assert!(!remove_task(&root), "active child must block removing the workflow");
+        assert!(get_snapshot_arc(&child).is_some());
+        finish_task(&child, "completed", None);
+        assert!(remove_task(&root));
+        assert!(get_snapshot_arc(&root).is_none());
+        assert!(get_snapshot_arc(&child).is_none());
+        assert!(task_logs(&child).is_empty());
     }
 
     #[test]
