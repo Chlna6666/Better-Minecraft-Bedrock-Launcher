@@ -153,15 +153,14 @@ async fn run_game_install(
         );
         let game_directory =
             crate::utils::file_ops::bmcbl_subdir("versions").join(&request.install_folder);
-        let handle = crate::core::levilamina::start_install(
+        let handle = crate::core::levilamina::start_install_under_parent(
             crate::core::levilamina::LeviLaminaInstallRequest::Loader {
                 game_directory,
                 game_version: request.version_label.clone(),
                 loader_version: loader_version.clone(),
             },
+            operation_id,
         )?;
-        task_manager::set_task_parent(handle.task_id.as_ref(), operation_id);
-        task_manager::set_task_type(handle.task_id.as_ref(), TaskType::Workflow);
         set_active_child_task(active_child_task, Some(handle.task_id.to_string()));
         let loader_snapshot = wait_for_child_progress(
             handle.task_id.as_ref(),

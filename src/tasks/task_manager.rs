@@ -784,6 +784,64 @@ pub fn create_task_with_details_and_visibility(
     id
 }
 
+/// Atomically allocate an operation as either a top-level workflow or a nested task.
+/// Parent membership and task kind are stored before emitting the first snapshot,
+/// so the UI cannot briefly render a child as a separate top-level card.
+pub fn create_task_with_details_in_workflow(
+    id_opt: Option<String>,
+    title: impl Into<String>,
+    detail: Option<String>,
+    initial_stage: &str,
+    total: Option<u64>,
+    supports_pause: bool,
+    parent_id: Option<&str>,
+    task_type: TaskType,
+) -> Result<String, String> {
+    let id = id_opt.unwrap_or_else(|| {
+        let number = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("task-{number}-{}", unix_now_seconds())
+    });
+
+    let mut task = Task::new(
+        Arc::from(id.as_str()),
+        Arc::from(title.into()),
+        detail.map(Arc::<str>::from),
+        initial_stage,
+        total,
+        supports_pause,
+        TaskVisibility::Visible,
+    );
+    task.task_type = task_type;
+    let snapshot = {
+        let mut tasks = TASKS.lock().unwrap();
+        if tasks.contains_key(&id) {
+            return Err(format!("任务 ID 已存在: {id}"));
+        }
+        if let Some(parent_id) = parent_id {
+            if parent_id == id {
+                return Err("任务不能成为自身的子任务".to_owned());
+            }
+            let parent = tasks.get(parent_id)
+                .ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
+            if parent.cancel_requested || is_terminal_status(parent.status.as_ref()) {
+                return Err(format!("父任务已结束或正在取消: {parent_id}"));
+            }
+            task.parent_id = Some(Arc::from(parent_id));
+        }
+        task.touch();
+        let snapshot = task.snapshot();
+        tasks.insert(id.clone(), task);
+        // Make control observable before allowing a concurrent parent cancellation.
+        register_task_control(id.clone(), Arc::new(TaskControl::new()));
+        snapshot
+    };
+
+    debug!(task_id = %id, ?task_type, parent_id, "task_manager: created workflow task");
+    record_operation_event(&snapshot, "started");
+    emit_task_update(snapshot);
+    Ok(id)
+}
+
 pub fn create_task_with_options(
     id_opt: Option<String>,
     initial_stage: &str,

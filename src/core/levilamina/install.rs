@@ -83,6 +83,23 @@ pub struct LeviLaminaInstallation {
 }
 
 pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInstallHandle, String> {
+    start_install_with_parent(request, None)
+}
+
+/// Use this entry point only when the loader installation belongs to an already
+/// running operation (for example, Minecraft + LeviLamina in one install plan).
+/// Standalone installations call `start_install` and stay visible as root tasks.
+pub fn start_install_under_parent(
+    request: LeviLaminaInstallRequest,
+    parent_id: &str,
+) -> Result<LeviLaminaInstallHandle, String> {
+    start_install_with_parent(request, Some(parent_id))
+}
+
+fn start_install_with_parent(
+    request: LeviLaminaInstallRequest,
+    parent_id: Option<&str>,
+) -> Result<LeviLaminaInstallHandle, String> {
     let (title, detail) = match &request {
         LeviLaminaInstallRequest::Loader { loader_version, .. } => {
             ("安装 LeviLamina".to_string(), Some(loader_version.clone()))
@@ -96,7 +113,7 @@ pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInst
             Some(format!("{package_id} · {version}")),
         ),
     };
-    start_operation(title, detail, move |updates| async move {
+    start_operation(title, detail, parent_id, move |updates| async move {
         run_install(request, Some(&updates))
             .await
             .map(|_| LeviLaminaInstallStage::Completed {
@@ -108,6 +125,7 @@ pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInst
 pub fn start_uninstall(game_directory: PathBuf) -> Result<LeviLaminaInstallHandle, String> {
     start_operation(
         "删除 LeviLamina".to_string(),
+        None,
         None,
         move |_updates| async move {
             uninstall_loader(&game_directory).await?;
@@ -144,6 +162,7 @@ pub async fn inspect_installation(
 fn start_operation<F, Fut>(
     title: String,
     detail: Option<String>,
+    parent_id: Option<&str>,
     operation: F,
 ) -> Result<LeviLaminaInstallHandle, String>
 where
@@ -154,15 +173,16 @@ where
         "levilamina-install-{}",
         NEXT_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
-    task_manager::create_task_with_details(
+    task_manager::create_task_with_details_in_workflow(
         Some(operation_id.to_string()),
         title,
         detail,
         "resolving_levilamina",
         None,
         false,
-    );
-    task_manager::set_task_type(&operation_id, TaskType::Workflow);
+        parent_id,
+        TaskType::Workflow,
+    )?;
     let (updates, receiver) = watch::channel(LeviLaminaInstallSnapshot {
         operation_id: Arc::clone(&operation_id),
         stage: LeviLaminaInstallStage::Resolving,

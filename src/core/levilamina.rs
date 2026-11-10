@@ -15,7 +15,8 @@ mod support;
 
 pub use install::{
     LeviLaminaInstallHandle, LeviLaminaInstallRequest, LeviLaminaInstallStage,
-    LeviLaminaInstallation, inspect_installation, start_install, start_uninstall,
+    LeviLaminaInstallation, inspect_installation, start_install, start_install_under_parent,
+    start_uninstall,
 };
 pub use support::{
     LeviLaminaSupportDatabase, clear_cache as clear_support_cache, support_database,
