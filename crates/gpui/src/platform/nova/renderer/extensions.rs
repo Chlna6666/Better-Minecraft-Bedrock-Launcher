@@ -45,6 +45,9 @@ pub(super) struct RendererRegistry {
     /// Native producers in scene traversal order. GPUI does not build or
     /// batch their gfx-core passes; it only invokes them on the GPU owner.
     native_producers: Vec<TypeId>,
+    /// Reusable owner-thread scratch for native Compute/Transfer IDs. Avoid a
+    /// Vec allocation every time one of many SceneViews prepares a batch.
+    accepted_native_submissions: Vec<gfx_core::SubmissionId>,
     /// True only when every producer in the current frame explicitly opts
     /// into a native secondary graphics queue. No role mixing across one
     /// shared render-to-textures submission.
@@ -70,6 +73,7 @@ impl RendererRegistry {
         // Do not carry its pending acknowledgements to an unrelated frame.
         self.submitted_types.clear();
         self.native_producers.clear();
+        self.accepted_native_submissions.clear();
     }
     pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
         &self.passes
@@ -165,9 +169,9 @@ impl RendererRegistry {
         // A generated Compute/Transfer submit can succeed before a later
         // scene allocation fails. Drain those native producer IDs even on
         // error so the GPU owner's nonblocking poll never loses their fences.
-        let mut accepted = Vec::new();
-        renderer.drain_accepted_native_submissions(&mut accepted);
-        for submission in accepted {
+        self.accepted_native_submissions.clear();
+        renderer.drain_accepted_native_submissions(&mut self.accepted_native_submissions);
+        for submission in self.accepted_native_submissions.drain(..) {
             register(submission);
         }
         result?;
