@@ -225,6 +225,18 @@ impl WgslModule {
                         class: naga::ImageClass::Sampled { .. } | naga::ImageClass::Depth { .. },
                         ..
                     } => 128,
+                    // D3D11 Compute supports UAV slots u0..u7, including
+                    // writable 3D volume textures (RWTexture3D). Keep the
+                    // storage image in the UAV namespace rather than
+                    // misclassifying its logical binding as an SRV or buffer.
+                    // Graphics-stage writable images are not enabled by
+                    // this SM5.0 fixed-register ABI.
+                    naga::TypeInner::Image {
+                        dim: naga::ImageDimension::D2 | naga::ImageDimension::D3,
+                        class: naga::ImageClass::Storage { access, .. },
+                        ..
+                    } if stage == ShaderStage::Compute
+                        && access.contains(naga::StorageAccess::STORE) => 8,
                     _ => 0,
                 },
                 _ => 0,
