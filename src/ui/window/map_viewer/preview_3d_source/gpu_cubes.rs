@@ -245,6 +245,10 @@ mod tests {
                         } | if builder.ambient_occludes_at(key) { 16 } else { 0 };
                         let index = ((z * band.size[1] + y) * band.size[0] + x) as usize;
                         assert_eq!(band.classes[index], expected, "cell {key:?}");
+                        // Opaque cells either contain a model index or the
+                        // non-emitting occluder sentinel; other classes do not
+                        // create cube geometry.
+                        assert_eq!(band.cells[index] != 0, expected & 1 != 0);
                     }
                 }
             }
@@ -447,6 +451,7 @@ impl Preview3dMeshBuilder {
                 return None;
             }
             let mut classes = vec![0; count];
+            let mut cells = vec![0; count];
             for z in 0..size[2] {
                 for y in 0..size[1] {
                     for x in 0..size[0] {
@@ -477,8 +482,12 @@ impl Preview3dMeshBuilder {
                             Some(Preview3dBlockClass::Lava) => 8,
                             _ => 0,
                         };
-                        classes[((z * size[1] + y) * size[0] + x) as usize] =
-                            class | if ao { 16 } else { 0 };
+                        let index = ((z * size[1] + y) * size[0] + x) as usize;
+                        classes[index] = class | if ao { 16 } else { 0 };
+                        // Populate cube occupancy alongside the class halo.
+                        // The old second volume-sized pass allocated and
+                        // scanned the same padded grid again per Section.
+                        cells[index] = if class & 1 != 0 { u32::MAX } else { 0 };
                     }
                 }
             }
@@ -489,10 +498,6 @@ impl Preview3dMeshBuilder {
             // the opaque cell mesh. GPU cs_mesh checks these cells before it
             // writes a GeneratedFace, skipping the instance count/scan/emit
             // stages entirely for ordinary terrain.
-            let mut cells = classes
-                .iter()
-                .map(|&class| if class & 1 != 0 { u32::MAX } else { 0 })
-                .collect::<Vec<u32>>();
             let mut cube_faces = Vec::new();
             let mut cube_neighbours = Vec::new();
             let mut instance_faces = Vec::new();
