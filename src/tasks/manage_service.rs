@@ -136,58 +136,74 @@ pub async fn load_external_servers(
     .await
 }
 
+fn is_bloader_mod_type(kind: &str) -> bool {
+    matches!(kind, "mod-preload" | "mod-native" | "hot-native" | "hot-inject")
+}
+
 fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, String> {
     let game_dir = crate::utils::file_ops::bmcbl_subdir("versions").join(version_folder);
     let mut mods = Vec::new();
-    // Preserve native LeviLamina mod management, but do not mix its root with
-    // BLoader-owned mod-native/mod-preload packages.
     for (owner, root) in [
         ("bloader", game_dir.join("BLoader").join("mods")),
-        ("levilamina", game_dir.join("mods")),
+        ("shared", game_dir.join("mods")),
     ] {
         if !root.is_dir() {
             continue;
         }
-        let entries =
-            fs::read_dir(&root).map_err(|error| format!("读取 Mod 目录失败: {error}"))?;
+        let entries = fs::read_dir(&root)
+            .map_err(|error| format!("读取 Mod 目录失败: {error}"))?;
         for entry in entries.filter_map(Result::ok) {
             let folder_path = entry.path();
-            if !folder_path.is_dir() {
-                continue;
-            }
-            let enabled_path = folder_path.join("manifest.json");
-            let disabled_path = folder_path.join(".manifest.json");
-            let (enabled, manifest_path) = if enabled_path.exists() {
-                (true, enabled_path)
-            } else if disabled_path.exists() {
-                (false, disabled_path)
-            } else {
-                continue;
-            };
-            let manifest = match fs::read_to_string(&manifest_path)
-                .map_err(|error| error.to_string())
-                .and_then(|content| {
-                    serde_json::from_str::<ModManifest>(&content).map_err(|error| error.to_string())
-                }) {
-                Ok(manifest) => manifest,
-                Err(error) => {
-                    warn!(path = %manifest_path.display(), %error, "mod manifest skipped");
+            if !folder_path.is_dir() { continue }
+            // A BLoader-specific descriptor is never registered with
+            // LeviLamina's scanner. Its files stay in their original folder.
+            let candidates = [
+                ("bloader.json", true),
+                (".bloader.json", false),
+                ("manifest.json", true),
+                (".manifest.json", false),
+            ];
+            let mut selected = None;
+            for (name, enabled) in candidates {
+                let path = folder_path.join(name);
+                if !path.is_file() { continue }
+                let manifest = match fs::read_to_string(&path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|content| serde_json::from_str::<ModManifest>(&content)
+                        .map_err(|error| error.to_string()))
+                {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        warn!(path = %path.display(), %error, "mod manifest skipped");
+                        continue;
+                    }
+                };
+                let bloader = is_bloader_mod_type(&manifest.mod_type);
+                // A bootstrap is not a user Mod and is shown in the
+                // LeviLamina installation/version page instead.
+                if manifest.mod_type == "preloader-bootstrap" {
+                    selected = None;
+                    break;
+                }
+                if owner == "bloader" && !bloader {
+                    warn!(path = %path.display(), "foreign Mod type under BLoader root");
                     continue;
                 }
-            };
-            // The official PreLoader owns preload-native and LeviLamina owns
-            // native. The BLoader directory may contain only BLoader types.
-            if owner == "bloader"
-                && !matches!(
-                    manifest.mod_type.as_str(),
-                    "mod-native" | "mod-preload" | "hot-native" | "hot-inject"
-                )
-            {
-                warn!(path = %manifest_path.display(), "foreign Mod type under BLoader root");
-                continue;
+                if owner == "shared" && name.contains("bloader") && !bloader {
+                    warn!(path = %path.display(), "unsupported BLoader descriptor");
+                    continue;
+                }
+                let mod_owner = if bloader {
+                    if owner == "shared" { "bloader-shared" } else { "bloader" }
+                } else {
+                    "levilamina"
+                };
+                selected = Some((enabled, manifest, mod_owner));
+                break;
             }
+            let Some((enabled, manifest, mod_owner)) = selected else { continue };
             mods.push(ManagedModInfo {
-                folder_name: format!("{owner}:{}", entry.file_name().to_string_lossy()),
+                folder_name: format!("{mod_owner}:{}", entry.file_name().to_string_lossy()),
                 file_path: folder_path.join(&manifest.entry),
                 folder_path,
                 enabled,
@@ -217,7 +233,7 @@ fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> 
     let game_dir = crate::utils::file_ops::bmcbl_subdir("versions").join(version_folder);
     let directory = match owner {
         "bloader" => game_dir.join("BLoader").join("mods").join(folder),
-        "levilamina" => game_dir.join("mods").join(folder),
+        "bloader-shared" | "levilamina" => game_dir.join("mods").join(folder),
         _ => return Err("未知 Mod 加载器".to_string()),
     };
     if !directory.is_dir() {
@@ -226,17 +242,24 @@ fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> 
     Ok(directory)
 }
 
+fn manifest_paths(version_folder: &str, mod_id: &str) -> Result<(PathBuf, PathBuf), String> {
+    let dir = mod_directory(version_folder, mod_id)?;
+    let base = if mod_id.starts_with("bloader-shared:") {
+        "bloader.json"
+    } else if mod_id.starts_with("bloader:") && dir.join("bloader.json").is_file() {
+        "bloader.json"
+    } else {
+        "manifest.json"
+    };
+    let disabled = format!(".{base}");
+    Ok((dir.join(base), dir.join(disabled)))
+}
+
 fn editable_manifest_path_blocking(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
-    let mod_dir = mod_directory(version_folder, mod_id)?;
-    let enabled = mod_dir.join("manifest.json");
-    if enabled.is_file() {
-        return Ok(enabled);
-    }
-    let disabled = mod_dir.join(".manifest.json");
-    if disabled.is_file() {
-        return Ok(disabled);
-    }
-    Err("未找到 manifest.json 或 .manifest.json".to_string())
+    let (enabled, disabled) = manifest_paths(version_folder, mod_id)?;
+    if enabled.is_file() { return Ok(enabled) }
+    if disabled.is_file() { return Ok(disabled) }
+    Err(format!("未找到对应 Mod 的启用或禁用清单: {mod_id}"))
 }
 
 fn task_path_token(task_id: &str) -> String {
@@ -455,9 +478,7 @@ pub fn start_set_mod_enabled(
         detail,
         "updating_mod_state",
         move |task_id| {
-            let mod_dir = mod_directory(&version_folder, &mod_id)?;
-            let enabled_path = mod_dir.join("manifest.json");
-            let disabled_path = mod_dir.join(".manifest.json");
+            let (enabled_path, disabled_path) = manifest_paths(&version_folder, &mod_id)?;
 
             if enabled {
                 if enabled_path.exists() {
@@ -503,7 +524,7 @@ pub fn start_update_mod_settings(
     mod_type: String,
     inject_delay_ms: Option<u64>,
 ) -> Result<String, String> {
-    if !mod_id.starts_with("bloader:") {
+    if !mod_id.starts_with("bloader:") && !mod_id.starts_with("bloader-shared:") {
         return Err("LeviLamina Mod 的类型由 LeviLamina 管理，不能改写为 BLoader 类型".to_string());
     }
     if !matches!(
