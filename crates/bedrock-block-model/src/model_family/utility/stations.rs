@@ -194,24 +194,18 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
         .or_else(|| crate::model_family::direction::state_bool(state, "has_book"))
         .unwrap_or(false);
 
-    // Java Edition `block/lectern`: a full-footprint 2 px base, a 8x13 px post, and a
-    // 16x4 px board tilted -22.5 degrees about X. The previous shape used an inset base and
-    // a full-footprint slab as the board, which is why lecterns looked like a low table.
-    let base = crate::model_family::shape::detail_cuboid_with_local_uv(
-        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0])
-            .with_face_material_slot(BlockFace::Up, "base")
-            .with_face_material_slot(BlockFace::Down, "bottom")
-            .with_face_material_slot(BlockFace::Side, "base"),
-    );
-    let post = crate::model_family::shape::detail_cuboid_with_local_uv(
-        ModelCuboid::new([0.25, 0.125, 0.25], [0.75, 0.9375, 0.75])
-            .with_face_material_slot(BlockFace::North, "front")
-            .with_face_material_slot(BlockFace::South, "front")
-            .with_face_material_slot(BlockFace::East, "sides")
-            .with_face_material_slot(BlockFace::West, "sides")
-            .with_face_material_slot(BlockFace::Up, "top")
-            .with_face_material_slot(BlockFace::Down, "bottom"),
-    );
+    // A full-footprint 2 px base, a 8x13 px post, and a 16x4 px board tilted -22.5 degrees
+    // about X. `blocks.json` gives the lectern one material per face (up=lectern_top,
+    // down=lectern_bottom, north=lectern_front, south/west=lectern_sides, east=lectern_base), so
+    // both boxes keep the face-driven materials instead of naming parts the pack does not have.
+    let base = crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+        [0.0, 0.0, 0.0],
+        [1.0, 0.125, 1.0],
+    ));
+    let post = crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
+        [0.25, 0.125, 0.25],
+        [0.75, 0.9375, 0.75],
+    ));
     let mut shape = oriented_xz_shape(along_x, &[base, post]);
     // Board: vanilla `LECTERN_BOARD` (x ±7.9 px, y 11..15 px, z -6..7 px) tilted -22.5 degrees
     // about the pivot (0, 7, -1) px and offset by (0, 1.05, 1.0) px. Sampling the tilted top
@@ -235,7 +229,7 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
                 [0.1875, 0.78125, 0.3125],
                 [0.8125, 0.90625, 0.875],
             ))
-            .with_material_slot("front"),
+            .with_material_slot("north"),
         );
     }
 
