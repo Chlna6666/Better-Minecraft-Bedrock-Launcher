@@ -115,6 +115,7 @@ impl NovaRenderer {
             diagnostics: NovaRenderDiagnostics::new(false),
             submission_mode,
             pending_submissions: Vec::new(),
+            auxiliary_submissions: Vec::new(),
             submission_retry_pending: false,
             metrics_started_at,
             first_frame_reported: false,
