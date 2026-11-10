@@ -46,7 +46,9 @@ mod gpu_cubes;
 mod lighting;
 mod occluders;
 mod prefetch;
+mod visibility_index;
 use prefetch::{BatchWait, PendingChunkBatch};
+use visibility_index::VisibilityIndex;
 
 const LOAD_BATCH_CHUNKS: usize = 16;
 // Keep wide LevelDB read batches, but publish CPU mesh/texture work in small
@@ -2798,6 +2800,11 @@ struct Worker {
     info: ChunkServiceInfo,
     last_status_at: Option<Instant>,
     last_material_index_flush_at: Option<Instant>,
+    visibility_index: VisibilityIndex,
+    index_hidden_columns: HashSet<ChunkPos>,
+    index_plan_key: Option<(Dimension, i32, i32, i32, i32)>,
+    index_plan_epoch: u64,
+    index_plan_at: Instant,
 }
 
 impl Worker {
@@ -2809,6 +2816,7 @@ impl Worker {
                 roots.len()
             );
         }
+        let visibility_index = VisibilityIndex::open(&config.world_path);
         let resolver = ObjTextureResolver::with_pack_roots(&roots, "textures");
         if let Some(revision) = resolver.material_index_revision() {
             resolver.open_material_index(
@@ -2922,6 +2930,11 @@ impl Worker {
             info,
             last_status_at: None,
             last_material_index_flush_at: None,
+            visibility_index,
+            index_hidden_columns: HashSet::new(),
+            index_plan_key: None,
+            index_plan_epoch: 0,
+            index_plan_at: Instant::now(),
         }
     }
 
@@ -3017,6 +3030,7 @@ impl Worker {
             self.resolver.flush_material_index();
             self.last_material_index_flush_at = Some(now);
         }
+        self.visibility_index.flush_if_due();
         self.mesh_assets.prune();
         self.textures_by_path
             .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));
@@ -3230,6 +3244,9 @@ impl Worker {
             for (pos, result) in loaded.chunks {
                 match result {
                     Ok(Some(chunk)) => {
+                        self.visibility_index.upsert(
+                            pos, premesh_visibility_masks_from_probe(&chunk.probe),
+                        );
                         let deferred = chunk.blocks.is_none();
                         self.deferred_bands.extend(
                             chunk.unexpanded_bands.iter().map(|&band| (pos, band)),
@@ -3245,6 +3262,7 @@ impl Worker {
                         }
                     }
                     Ok(None) => {
+                        self.visibility_index.invalidate(pos);
                         self.failed_positions.remove(&pos);
                         self.missing.insert(pos);
                         self.light_fields.remove(&pos);
@@ -5152,6 +5170,9 @@ impl Worker {
 
     fn invalidate(&mut self, chunks: &[ChunkPos]) {
         for pos in chunks {
+            self.visibility_index.invalidate(*pos);
+            self.index_hidden_columns.remove(pos);
+            self.index_plan_key = None;
             forget_boundary_pairs(&mut self.boundary_pairs, *pos);
             if self.cache.remove(pos).is_some() {
                 self.retained_invalidated.insert(*pos);
@@ -5379,8 +5400,29 @@ fn premesh_opaque_terrain(name: &str) -> bool {
 /// Secondary storage layers are left passable rather than guessing whether
 /// a waterlogged/custom overlay fully occludes any side.
 fn premesh_visibility_masks(data: &ChunkData) -> BTreeMap<i8, [u64; 64]> {
+    premesh_visibility_masks_for_sections(data.subchunks.iter().map(|(&y, section)| (y, section)))
+}
+
+/// Persist only conservative block-state masks, never texture/model-dependent
+/// occupancy. Every decoded section key is retained, including all-air ones,
+/// so the disk directory distinguishes "known open" from "not indexed".
+fn premesh_visibility_masks_from_probe(
+    probe: &World3dChunkProbe,
+) -> BTreeMap<i8, [u64; 64]> {
+    let mut masks = premesh_visibility_masks_for_sections(
+        probe.subchunks.iter().map(|(&y, section)| (y, &section.subchunk)),
+    );
+    for &y in probe.subchunks.keys() {
+        masks.entry(y).or_insert([0; 64]);
+    }
+    masks
+}
+
+fn premesh_visibility_masks_for_sections<'a>(
+    sections: impl IntoIterator<Item = (i8, &'a bedrock_world::chunk::SubChunk)>,
+) -> BTreeMap<i8, [u64; 64]> {
     let mut masks = BTreeMap::new();
-    for (&y, subchunk) in &data.subchunks {
+    for (y, subchunk) in sections {
         let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
             continue;
         };
