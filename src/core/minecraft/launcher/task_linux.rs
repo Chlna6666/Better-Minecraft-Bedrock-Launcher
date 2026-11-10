@@ -806,6 +806,11 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         prefix = %prefix_path.display(),
         "starting Minecraft through Linux compatibility runner"
     );
+    // Preserve startup-only error lines written by the game immediately
+    // after the compatibility runner creates its Windows child.
+    let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(
+        Path::new(request.package_folder.as_ref()),
+    );
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动兼容环境 {}：{error}", runner.executable.display()))?;
@@ -831,6 +836,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }),
         matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu)
             .then_some(compat_logs),
+        log_offsets,
     );
 
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
