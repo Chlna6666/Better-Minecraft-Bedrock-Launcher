@@ -2886,6 +2886,7 @@ impl SceneResources {
                     &mut *self.argument_arena.borrow_mut(),
                     backend,
                     self.gpu_batch_id,
+                    &mut self.accepted_native_submissions.borrow_mut(),
                 );
                 if let Err(error) = flushed {
                     discard_pending_meshes(
@@ -2917,6 +2918,7 @@ impl SceneResources {
             &mut *self.argument_arena.borrow_mut(),
             backend,
             self.gpu_batch_id,
+            &mut self.accepted_native_submissions.borrow_mut(),
         );
         if let Err(error) = flushed {
             discard_pending_meshes(
@@ -4060,6 +4062,7 @@ fn flush_pending_generated_meshes(
     argument_arena: &mut MeshArena,
     backend: BackendKind,
     batch_id: u64,
+    accepted: &mut Vec<gfx_core::SubmissionId>,
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
         let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
@@ -4067,7 +4070,7 @@ fn flush_pending_generated_meshes(
             .iter()
             .map(|(_, mesh)| mesh.as_ref())
             .collect::<Vec<_>>();
-        let created = super::generated::create_many_pooled(
+        let created = super::generated::create_many_pooled_native(
             device,
             &inputs,
             shaders,
@@ -4076,6 +4079,7 @@ fn flush_pending_generated_meshes(
             argument_arena,
             backend,
             batch_id,
+            accepted,
         )?;
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             if let Some(generated) = &resource.generated {
