@@ -127,8 +127,14 @@ pub enum CompatibilityFault {
 
 pub fn classify_compatibility_output(text: &str) -> Option<CompatibilityFault> {
     let text = text.to_ascii_lowercase();
-    if ["unhandled page fault", "unhandled exception", "wine: unhandled",
-        "wine: assertion failed"].iter().any(|term| text.contains(term)) {
+    // Mentions of exception handlers are not evidence of an exception.
+    if ["unhandled page fault", "unhandled exception:", "unhandled exception in",
+        "unhandled exception at", "wine: unhandled", "wine: assertion failed"]
+        .iter().any(|term| text.contains(term))
+        && !["no unhandled exception", "ignoring unhandled exception",
+            "unhandled exception handler", "unhandled exception filter"]
+            .iter().any(|term| text.contains(term))
+    {
         Some(CompatibilityFault::WineUnhandledException)
     } else if ["err:module:import_dll", "unimplemented function",
         "library not found", "module not found"].iter().any(|term| text.contains(term)) {
@@ -330,27 +336,40 @@ impl GameSessionReport {
             }
         }
         if let Some(signal) = self.exit_signal {
-            self.kind = ExitKind::RunnerFailure;
-            self.summary = format!(
-                "Linux 兼容运行器收到信号 {signal} 后退出，不能据此确认 Minecraft 本体崩溃"
-            );
+            self.kind = classify_linux_runner_signal(signal);
+            self.summary = if self.kind == ExitKind::RunnerFailure {
+                format!("Linux 兼容运行器收到致命信号 {signal}，运行器可能发生故障；不能据此确认 Minecraft 本体崩溃")
+            } else {
+                format!("Linux 兼容运行器收到终止信号 {signal}；无法区分用户关闭、外部停止与系统终止")
+            };
         }
         if let Some(fault) = self.compatibility_fault {
             match fault {
                 CompatibilityFault::WineUnhandledException => {
-                    self.kind = ExitKind::SuspectedCrash;
-                    self.summary = "Wine 记录了未处理异常，疑似游戏或兼容层子进程崩溃，尚未确认具体进程".to_string();
+                    // Wine errors can originate from auxiliary processes. Never
+                    // classify a successful runner as a Minecraft crash.
+                    if self.exit_signal.is_none() && self.exit_code == Some(0) {
+                        self.kind = ExitKind::Unknown;
+                        self.summary = "兼容运行器已成功退出，但日志曾出现未处理异常；尚未确认异常进程及 Minecraft 的退出状态".to_string();
+                    } else if self.exit_signal.is_none() && self.exit_code.is_some() {
+                        self.kind = ExitKind::RunnerFailure;
+                        self.summary = "兼容运行器非零退出且日志出现未处理异常；尚不能确认 Minecraft 子进程崩溃".to_string();
+                    }
                 }
                 CompatibilityFault::WineDependencyFailure => {
                     // Wine can log optional DLL failures even during a healthy
                     // session. Do not elevate a zero-exit runner to a crash.
-                    if self.exit_code != Some(0) || self.early_exit {
+                    if self.exit_code.is_some_and(|code| code != 0)
+                        && self.exit_signal.is_none()
+                    {
                         self.kind = ExitKind::RunnerFailure;
                         self.summary = "Wine/Proton 报告依赖库或未实现函数错误".to_string();
                     }
                 }
                 CompatibilityFault::RuntimeFailure => {
-                    if self.exit_code != Some(0) || self.early_exit {
+                    if self.exit_code.is_some_and(|code| code != 0)
+                        && self.exit_signal.is_none()
+                    {
                         self.kind = ExitKind::RunnerFailure;
                         self.summary = "Proton/UMU/Wine 运行环境发生错误".to_string();
                     }
@@ -481,24 +500,24 @@ fn match_application_error(xml: &str, report: &GameSessionReport) -> Option<WerF
         };
         let Some(actual_pid) = actual_pid else { continue };
         if actual_pid != report.pid { continue; }
-        // An abandoned session can be confirmed only by exact process
-        // generation, not by PID/time proximity. Windows may reuse PIDs.
-        match (report.process_created_at, data(block, "AppStartTime")) {
-            (Some(expected), Some(app_start)) => {
-                let parsed = if app_start.starts_with("0x") || app_start.starts_with("0X") {
-                    u64::from_str_radix(&app_start[2..], 16).ok()
-                } else {
-                    app_start.parse::<u64>().ok()
-                };
-                if parsed != Some(expected) { continue; }
-            }
-            (None, _) | (Some(_), None) if report.kind == ExitKind::Unknown => {
-                continue;
-            }
-            _ => {}
+        // All WER confirmations must match the exact process generation.
+        // A PID alone is insufficient even for suspected (not only recovered) sessions.
+        let (Some(expected), Some(app_start)) =
+            (report.process_created_at, data(block, "AppStartTime")) else {
+            continue;
+        };
+        let parsed = if app_start.starts_with("0x") || app_start.starts_with("0X") {
+            u64::from_str_radix(&app_start[2..], 16).ok()
+        } else {
+            app_start.parse::<u64>().ok()
+        };
+        if parsed != Some(expected) { continue; }
+        let app_name = data(block, "AppName").unwrap_or_default().to_ascii_lowercase();
+        if !matches!(app_name.rsplit(['\\', '/']).next(),
+            Some("minecraft.windows.exe" | "minecraftpreview.exe"))
+        {
+            continue;
         }
-        let app_name = data(block, "AppName").unwrap_or_default().to_lowercase();
-        if !app_name.contains("minecraft") { continue; }
         let Some(timestamp) = event_time.captures(block)
             .and_then(|c| DateTime::parse_from_rfc3339(&c[1]).ok())
             .map(|value| value.with_timezone(&Utc)) else {
@@ -570,6 +589,17 @@ pub async fn enrich_windows_wer(mut report: GameSessionReport) -> GameSessionRep
         }
     }
     report
+}
+
+/// The native runner's signal says nothing about the Windows guest's PID.
+fn classify_linux_runner_signal(signal: i32) -> ExitKind {
+    // Linux SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV.
+    // SIGINT, SIGTERM, SIGHUP and SIGKILL may be user or host initiated.
+    if matches!(signal, 4 | 5 | 6 | 7 | 8 | 11) {
+        ExitKind::RunnerFailure
+    } else {
+        ExitKind::Unknown
+    }
 }
 
 pub fn classify_exit(platform: &str, code: u32) -> ExitKind {
@@ -978,6 +1008,28 @@ fn frozen_text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
     Vec::new()
 }
 
+/// A dump in a shared directory must carry the native game's exact PID.
+fn dump_matches_session(report: &GameSessionReport, path: &Path) -> bool {
+    if report.compatibility_logs.as_ref().is_some_and(|logs| {
+        path.parent() == Some(logs.join("crash-reports").as_path())
+    }) {
+        // This crash-report directory was created specifically for one launch.
+        return true;
+    }
+    if report.compatibility_prefix.is_some() {
+        // A Wine runner PID is not the Windows guest PID. Shared-prefix
+        // dumps cannot be correlated safely by timestamp alone.
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    let pid_suffix = format!(".{}.", report.pid);
+    ["minecraft.windows.exe", "minecraftpreview.exe"].iter()
+        .any(|exe| name.starts_with(&format!("{exe}{pid_suffix}")))
+}
+
 fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut dirs = vec![
@@ -1019,6 +1071,7 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries.take(128).flatten() {
             let path = entry.path();
+            if !dump_matches_session(report, &path) { continue; }
             if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext|
                 ext.eq_ignore_ascii_case("dmp") || ext.eq_ignore_ascii_case("mdmp")) { continue }
             let Ok(meta) = fs::symlink_metadata(&path) else { continue };
@@ -1027,20 +1080,6 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
             if modified < report.started_at - chrono::Duration::minutes(5) { continue }
             if report.ended_at.is_some_and(|end| modified > end + chrono::Duration::minutes(10)) {
                 continue;
-            }
-            // A native Wine/Proton PID is not the Minecraft Windows guest PID.
-            // Prefix dumps are identified by EXE name and session time only.
-            if path.parent().is_some_and(|parent| parent.ends_with("CrashDumps")) {
-                let Some(file_name) = path.file_name() else { continue };
-                let name = file_name.to_string_lossy().to_ascii_lowercase();
-                if !name.contains("minecraft") {
-                    continue;
-                }
-                if report.compatibility_prefix.is_none()
-                    && !name.contains(&report.pid.to_string())
-                {
-                    continue;
-                }
             }
             candidates.push(path);
             if candidates.len() >= 4 { return candidates; }
@@ -1189,6 +1228,11 @@ mod tests {
         assert_eq!(classify_exit("gdk", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
         assert_eq!(classify_exit("uwp", WINDOWS_CONTROL_C_EXIT), ExitKind::Unknown);
         assert_eq!(classify_exit("wine", WINDOWS_CONTROL_C_EXIT), ExitKind::RunnerFailure);
+        assert_eq!(classify_linux_runner_signal(15), ExitKind::Unknown);
+        assert_eq!(classify_linux_runner_signal(2), ExitKind::Unknown);
+        assert_eq!(classify_linux_runner_signal(9), ExitKind::Unknown);
+        assert_eq!(classify_linux_runner_signal(11), ExitKind::RunnerFailure);
+        assert_eq!(classify_linux_runner_signal(6), ExitKind::RunnerFailure);
         assert!(exit_description(ExitKind::Unknown, WINDOWS_CONTROL_C_EXIT).contains("无法仅凭"));
         assert_eq!(classify_exit("proton", 1), ExitKind::RunnerFailure);
     }
@@ -1232,6 +1276,45 @@ mod tests {
         assert!(match_application_error(&event("0x112a", "invalid"), &report).is_none());
         report.process_created_at = None;
         assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_none());
+        report.kind = ExitKind::SuspectedCrash;
+        assert!(match_application_error(&event("0x112a", "0xabcd"), &report).is_none());
+        report.process_created_at = Some(0xABCD);
+        let unrelated = event("0x112a", "0xabcd")
+            .replace("Minecraft.Windows.exe", "MinecraftLauncher.exe");
+        assert!(match_application_error(&unrelated, &report).is_none());
+        let missing_generation = event("0x112a", "0xabcd")
+            .replace("AppStartTime", "OtherField");
+        assert!(match_application_error(&missing_generation, &report).is_none());
+    }
+
+    #[test]
+    fn shared_dumps_do_not_supply_unrelated_exception_evidence() {
+        let report = GameSessionReport {
+            schema_version: GAME_DIAGNOSTICS_SCHEMA,
+            id: Uuid::new_v4().to_string(),
+            task_id: "task".into(), version: "dev".into(),
+            game_directory: PathBuf::new(), platform: "gdk".into(),
+            pid: 44184, process_created_at: None,
+            compatibility_prefix: None, compatibility_logs: None,
+            compatibility_fault: None, early_exit: false,
+            started_at: Utc::now(), ended_at: None,
+            exit_code: Some(0xC0000005), exit_signal: None,
+            kind: ExitKind::SuspectedCrash, summary: String::new(),
+            acknowledged: false, wer_fault: None,
+            findings: Vec::new(), forensics: forensics::ForensicSummary::default(),
+            log_offsets: HashMap::new(),
+        };
+        assert!(dump_matches_session(&report, Path::new("Minecraft.Windows.exe.44184.dmp")));
+        assert!(!dump_matches_session(&report, Path::new("Minecraft.Windows.exe.441840.dmp")));
+        assert!(!dump_matches_session(&report, Path::new("OtherGame.exe.44184.dmp")));
+        assert!(!dump_matches_session(&report, Path::new("crash-2026.dmp")));
+        let linux = GameSessionReport {
+            compatibility_prefix: Some(PathBuf::from("/prefix")),
+            compatibility_logs: Some(PathBuf::from("/session-logs")),
+            platform: "proton".into(), ..report
+        };
+        assert!(!dump_matches_session(&linux, Path::new("/prefix/CrashDumps/Minecraft.Windows.exe.44184.dmp")));
+        assert!(dump_matches_session(&linux, Path::new("/session-logs/crash-reports/crash.dmp")));
     }
 
     #[test]
@@ -1264,6 +1347,8 @@ mod tests {
             Some(CompatibilityFault::WineDependencyFailure)
         );
         assert_eq!(classify_compatibility_output("exited with code 1"), None);
+        assert_eq!(classify_compatibility_output("unhandled exception handler installed"), None);
+        assert_eq!(classify_compatibility_output("no unhandled exception occurred"), None);
     }
 
     #[test]
