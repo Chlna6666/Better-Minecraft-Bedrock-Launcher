@@ -185,6 +185,13 @@ impl QueueFeedback {
         {
             return false;
         }
+        // Continue occasional ORDERED hardware probes even when independent
+        // Compute wins. Otherwise primary execution rates become stale after
+        // thermal throttling, workload changes or a driver power-state change.
+        // 24 is divisible by the 4-batch tagged-sample cadence.
+        if self.decisions.is_multiple_of(24) {
+            return false;
+        }
         // Draw time is GPU execution (but not the full frame). Cadence is
         // presentation scheduling, not a GPU metric. Together they only
         // indicate whether moving Compute off Graphics might be worthwhile.
