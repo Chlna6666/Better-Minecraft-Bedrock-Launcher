@@ -755,7 +755,12 @@ impl VulkanDevice {
         // images and unrelated upload/transfer allocations remain EXCLUSIVE.
         // This avoids per-Section cross-family ownership ping-pong and its
         // extra command buffers when the camera streams new chunks.
-        let share_compute = self.dedicated_compute_family_index.is_some()
+        // Avoid CONCURRENT's implementation-defined cache/ownership cost
+        // when a cheaper second graphics-family queue is already usable.
+        // The dedicated compute family is selected only when no such queue
+        // exists, and only native buffer compute may execute there.
+        let share_compute = self.sidecar_queue.is_none()
+            && self.dedicated_compute_family_index.is_some()
             && desc.usage.intersects(BufferUsage::STORAGE | BufferUsage::UNIFORM);
         let families = [
             self.graphics_queue_family_index,
