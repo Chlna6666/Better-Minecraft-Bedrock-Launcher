@@ -2037,7 +2037,7 @@ mod cache_tests {
     };
     use bedrock_render::{ChunkPos, Dimension};
     use bedrock_world::world::{OpenOptions, World};
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::path::PathBuf;
     use std::sync::mpsc::sync_channel;
 

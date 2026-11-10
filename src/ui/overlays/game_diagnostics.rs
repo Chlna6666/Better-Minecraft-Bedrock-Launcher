@@ -998,7 +998,8 @@ pub fn render_game_diagnostics_overlay(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::dialog_geometry;
+    use gpui::px;
 
     #[test]
     fn game_diagnostics_layout_never_exceeds_viewport() {

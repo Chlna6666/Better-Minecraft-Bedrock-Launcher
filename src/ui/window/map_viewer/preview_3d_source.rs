@@ -2280,7 +2280,7 @@ mod palette_collect_tests {
             format: bedrock_world::SubChunkFormat::Paletted {
                 version: 9,
                 storages: layers.iter().map(|layer| {
-                    bedrock_world::BlockPalette::with_unpacked_indices(
+                    ::bedrock_world::block::BlockPalette::with_unpacked_indices(
                         layer.iter().map(|name| BlockState {
                             name: (*name).to_owned(),
                             states: BTreeMap::new(),
