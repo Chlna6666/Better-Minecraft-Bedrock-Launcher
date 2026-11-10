@@ -804,6 +804,21 @@ pub trait SubmissionDevice {
         ))
     }
 
+    /// Native Compute submission with an optional fence-completed hardware
+    /// timestamp pair. The tag is recorded inside the exact native command
+    /// list executed on `queue`; backends that cannot measure it run the
+    /// batch normally, without inventing CPU-side GPU timing.
+    ///
+    /// The returned fence always identifies the actual producer queue.
+    fn submit_compute_batch_profiled_on_queue(
+        &mut self,
+        queue: crate::GpuQueueId,
+        dispatches: &[crate::ComputeDispatch<'_>],
+        _tag: GpuTimestampTag,
+    ) -> Result<SubmissionId> {
+        self.submit_compute_batch_on_queue(queue, dispatches)
+    }
+
     /// Submit actual GPU buffer copies on exactly this native physical
     /// queue. The returned SubmissionId must fence the GPU operations, NOT
     /// a checkpoint on a different queue. The caller declares both CopyRead
