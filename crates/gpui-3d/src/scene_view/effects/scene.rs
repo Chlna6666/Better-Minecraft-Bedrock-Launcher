@@ -285,24 +285,23 @@ impl EffectScene {
             passes.push(pass(
                 local.render_pass(),
                 msaa.map_or(self.targets.color.view, |m| m.color.view),
-                msaa.map_or(self.targets.depth.view, |m| m.depth.view),
+                self.targets.depth.view,
                 msaa.map(|_| self.targets.color.view),
                 opaque,
                 true,
             ));
             let surface = msaa.map_or(self.targets.surface.view, |m| m.surface.view);
-            let albedo = msaa.map_or(self.targets.albedo.view, |m| m.albedo.view);
             let mut attributes_plan = pass(
                 attributes_pass,
                 surface,
-                msaa.map_or(self.targets.surface_depth.view, |m| m.surface_depth.view),
+                self.targets.surface_depth.view,
                 msaa.map(|_| self.targets.surface.view),
                 attributes,
                 true,
             );
-            attributes_plan.color_attachments = Arc::from([surface, albedo]);
+            attributes_plan.color_attachments = Arc::from([surface, self.targets.albedo.view]);
             passes.push(attributes_plan);
-            self.capture = Some(view.clone());
+            self.capture = Some(capture);
             self.queued_capture = true;
         }
         Ok(())
@@ -322,12 +321,8 @@ impl EffectScene {
             return;
         }
         if self.ssr_hiz.is_none() {
-            let multisampled = self.msaa_sample_count > 1 && self.targets.msaa.is_some();
-            let source = if multisampled {
-                self.targets.msaa.as_ref().expect("MSAA targets").depth.view
-            } else {
-                self.targets.depth.view
-            };
+            let multisampled = self.targets.msaa.is_some();
+            let source = self.targets.depth.view;
             match SsrHiZ::new(device,context,self.targets.extent,source,multisampled) {
                 Ok(hiz) => self.ssr_hiz = Some(hiz),
                 Err(error) => {
@@ -403,10 +398,10 @@ impl EffectScene {
             resource: GpuResource::Buffer(id), access,
         };
         let msaa = self.targets.msaa.as_ref();
-        let hdr_depth = msaa.map_or(self.targets.depth.texture, |m| m.depth.texture);
+        let hdr_depth = self.targets.depth.texture;
         let hdr_color = self.targets.color.texture;
-        let surface_depth = msaa.map_or(self.targets.surface_depth.texture, |m| m.surface_depth.texture);
-        let albedo = msaa.map_or(self.targets.albedo.texture, |m| m.albedo.texture);
+        let surface_depth = self.targets.surface_depth.texture;
+        let albedo = self.targets.albedo.texture;
 
         // The light-tile Compute dispatch has no geometry/shadow dependency.
         // It legitimately runs before the Graphics submission on the GPU
@@ -569,16 +564,7 @@ impl EffectScene {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
             let targets = Targets::create(device, extent, msaa_sample_count)?;
-            for target in [
-                &targets.color,
-                &targets.depth,
-                &targets.surface,
-                &targets.surface_depth,
-                &targets.albedo,
-                &targets.resolved,
-            ] {
-                target.record(&mut cleanup);
-            }
+            targets.record(&mut cleanup);
             let frame = cleanup.record(uniform(device, backend)?, |d, id| {
                 let _ = d.destroy_buffer(id);
             });

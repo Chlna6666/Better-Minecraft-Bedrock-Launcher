@@ -382,14 +382,10 @@ impl Compositor {
         for (binding, view) in [
             (20, inputs.froxel.unwrap_or(t.color.view)),
             (0, inputs.color.unwrap_or(t.color.view)),
-            (1, inputs.depth),
+            (1, t.depth.view),
             (2, t.surface.view),
-            (3, inputs.surface_depth),
-            (4, if inputs.multisampled {
-                t.msaa.as_ref().map_or(t.albedo.view, |m| m.albedo.view)
-            } else {
-                t.albedo.view
-            }),
+            (3, t.surface_depth.view),
+            (4, t.albedo.view),
             (7, inputs.shadows[0]),
             (14, inputs.shadows[1]),
             (15, inputs.shadows[2]),
@@ -478,12 +474,6 @@ impl Compositor {
 }
 pub(super) struct Inputs<'a> {
     pub targets: &'a Targets,
-    /// Opaque depth sampled by the screen shader (single- or multisampled).
-    pub depth: TextureViewId,
-    /// Surface-pass depth sampled by the screen shader (single- or multisampled).
-    pub surface_depth: TextureViewId,
-    /// Unresolved multisample albedo is read directly by the MSAA screen shader.
-    pub multisampled: bool,
     pub uniform: BufferId,
     pub lights: (BufferId, u64),
     pub tiles: (BufferId, u64),

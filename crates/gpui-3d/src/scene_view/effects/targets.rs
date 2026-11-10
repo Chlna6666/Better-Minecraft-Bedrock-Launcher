@@ -5,15 +5,11 @@ pub(super) struct Target {
     pub texture: TextureId,
     pub view: TextureViewId,
 }
-/// Multisampled render-copies of the single-sample scene targets. When
-/// enabled, the three geometry passes render here (at the scene sample count)
-/// and resolve into the single-sample `color`/`surface`/`albedo` views.
+/// Multisampled color attachments with single-sample resolve destinations.
+/// The two depth attachments and albedo are sampled at their original sample count.
 pub(super) struct MsaaTargets {
     pub color: Target,
-    pub depth: Target,
     pub surface: Target,
-    pub surface_depth: Target,
-    pub albedo: Target,
 }
 pub(super) struct Targets {
     pub extent: Extent2d,
@@ -84,87 +80,58 @@ impl Targets {
         extent: Extent2d,
         msaa_sample_count: u32,
     ) -> gpui::Result<Self> {
-        let mut targets = Vec::new();
-        for format in [
-            Format::Rgba16Float,
-            Format::Depth32Float,
-            Format::Rgba16Float,
-            Format::Depth32Float,
-            Format::Rgba16Float,
-            Format::Rgba8Unorm,
-        ] {
-            match Target::create(device, extent, format, format == Format::Depth32Float, 1) {
-                Ok(target) => targets.push(target),
-                Err(error) => {
-                    for target in targets {
-                        let _ = target.destroy(device);
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        let mut targets = targets.into_iter();
-        let mut next = || {
-            targets
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("missing screen target"))
-        };
-        let base = Self {
-            extent,
-            color: next()?,
-            depth: next()?,
-            surface: next()?,
-            surface_depth: next()?,
-            albedo: next()?,
-            resolved: next()?,
-            msaa: None,
-        };
-        let msaa = if msaa_sample_count > 1 {
-            // All allocations belong to one transaction: a failure on the third
-            // or fifth MSAA image must retire earlier MSAA images AND the six
-            // single-sample targets rather than leaking GPU resources.
-            let mut allocated = Vec::with_capacity(5);
-            for (format, depth) in [
-                (Format::Rgba16Float, false),
-                (Format::Depth32Float, true),
-                (Format::Rgba16Float, false),
-                (Format::Depth32Float, true),
-                (Format::Rgba16Float, false),
-            ] {
-                match Target::create(device, extent, format, depth, msaa_sample_count) {
-                    Ok(target) => allocated.push(target),
-                    Err(error) => {
-                        for target in allocated {
-                            let _ = target.destroy(device);
-                        }
-                        let _ = base.destroy(device);
-                        return Err(error);
-                    }
-                }
-            }
-            let [color, depth, surface, surface_depth, albedo]: [Target; 5] =
-                allocated.try_into().unwrap_or_else(|_| unreachable!("five MSAA targets"));
-            Some(MsaaTargets {
-                color,
-                depth,
-                surface,
-                surface_depth,
-                albedo,
+        let mut cleanup = super::construction::Construction::default();
+        let result = (|| {
+            let mut create = |format, samples| -> gpui::Result<Target> {
+                let target = Target::create(
+                    device,
+                    extent,
+                    format,
+                    format == Format::Depth32Float,
+                    samples,
+                )?;
+                target.record(&mut cleanup);
+                Ok(target)
+            };
+            Ok(Self {
+                extent,
+                color: create(Format::Rgba16Float, 1)?,
+                depth: create(Format::Depth32Float, msaa_sample_count)?,
+                surface: create(Format::Rgba16Float, 1)?,
+                surface_depth: create(Format::Depth32Float, msaa_sample_count)?,
+                albedo: create(Format::Rgba16Float, msaa_sample_count)?,
+                resolved: create(Format::Rgba8Unorm, 1)?,
+                msaa: if msaa_sample_count > 1 {
+                    Some(MsaaTargets {
+                        color: create(Format::Rgba16Float, msaa_sample_count)?,
+                        surface: create(Format::Rgba16Float, msaa_sample_count)?,
+                    })
+                } else {
+                    None
+                },
             })
-        } else {
-            None
-        };
-        Ok(Self { msaa, ..base })
+        })();
+        cleanup.finish(device, result)
+    }
+    pub(super) fn record(&self, cleanup: &mut super::construction::Construction) {
+        for target in [
+            &self.color,
+            &self.depth,
+            &self.surface,
+            &self.surface_depth,
+            &self.albedo,
+            &self.resolved,
+        ] {
+            target.record(cleanup);
+        }
+        if let Some(msaa) = &self.msaa {
+            msaa.color.record(cleanup);
+            msaa.surface.record(cleanup);
+        }
     }
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         if let Some(msaa) = self.msaa {
-            for target in [
-                msaa.color,
-                msaa.depth,
-                msaa.surface,
-                msaa.surface_depth,
-                msaa.albedo,
-            ] {
+            for target in [msaa.color, msaa.surface] {
                 target.destroy(device)?;
             }
         }

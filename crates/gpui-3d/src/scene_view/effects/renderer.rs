@@ -379,17 +379,6 @@ impl EffectsRenderer {
         if state.groups.is_none() || state.group_key != Some(key) {
             let inputs = |frame, color| Inputs {
                 targets: &state.targets,
-                depth: state
-                    .targets
-                    .msaa
-                    .as_ref()
-                    .map_or(state.targets.depth.view, |m| m.depth.view),
-                surface_depth: state
-                    .targets
-                    .msaa
-                    .as_ref()
-                    .map_or(state.targets.surface_depth.view, |m| m.surface_depth.view),
-                multisampled,
                 uniform: frame,
                 lights: (light.0, light.1),
                 tiles: (state.tiles.buffer, state.tiles.bytes),
