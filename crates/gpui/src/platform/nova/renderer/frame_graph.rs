@@ -58,9 +58,6 @@ pub(super) enum Access {
 pub(super) enum Residency {
     Persistent,
     ExternallyOwned,
-    /// Reserved for future per-submission scratch textures with GPU-fence
-    /// scoped retirement. No currently allocated target uses this residency.
-    Transient,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,18 +76,6 @@ pub(super) struct ResourceLifetime {
     pub(super) first: usize,
     pub(super) last: usize,
     pub(super) residency: Residency,
-}
-
-impl ResourceLifetime {
-    /// An allocation may alias inside ONE already-fenced submission only
-    /// when both scratch lifetimes are known not to overlap. A caller must
-    /// separately prove the older GPU submission has retired before reuse.
-    pub(super) fn can_alias_in_submission(self, other: Self) -> bool {
-        self.resource != other.resource
-            && self.residency == Residency::Transient
-            && other.residency == Residency::Transient
-            && (self.last < other.first || other.last < self.first)
-    }
 }
 
 /// Topological order and dataflow metadata for a single presentation
@@ -451,37 +436,13 @@ mod tests {
     }
 
     #[test]
-    fn persistent_and_in_flight_resources_must_never_alias() {
+    fn graph_never_advertises_unfenced_transient_aliasable_targets() {
         let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent, false);
-        let mask = graph.lifetime(Resource::PathMask).expect("mask");
-        let element = graph.lifetime(Resource::ElementColor).expect("element");
-        assert!(!mask.can_alias_in_submission(element));
-        let transient_a = ResourceLifetime {
-            resource: Resource::PathMask,
-            first: 0,
-            last: 1,
-            residency: Residency::Transient,
-        };
-        let transient_b = ResourceLifetime {
-            resource: Resource::ElementColor,
-            first: 2,
-            last: 3,
-            residency: Residency::Transient,
-        };
-        assert!(transient_a.can_alias_in_submission(transient_b));
-        assert!(
-            !(ResourceLifetime {
-                first: 1,
-                ..transient_b
-            })
-            .can_alias_in_submission(transient_a)
-        );
-        assert!(
-            !(ResourceLifetime {
-                resource: transient_a.resource,
-                ..transient_b
-            })
-            .can_alias_in_submission(transient_a)
-        );
-    }
-}
+        let mask = graph.lifetime(Resource::PathMask).expect("path mask");
+        let element = graph.lifetime(Resource::ElementColor).expect("element color");
+        assert_eq!(mask.residency, Residency::Persistent);
+        assert_eq!(element.residency, Residency::Persistent);
+        if let Some(swapchain) = graph.lifetime(Resource::Swapchain) {
+            assert_eq!(swapchain.residency, Residency::ExternallyOwned);
+        }
+    }}
