@@ -27,6 +27,7 @@ const TOAST_MAX_WIDTH_PX: f32 = 400.0;
 const TOAST_SIDE_PADDING_PX: f32 = 24.0;
 const TOAST_CONTENT_GAP_PX: f32 = 8.0;
 const TOAST_ICON_PX: f32 = 16.0;
+const TOAST_CLOSE_HIT_SIZE_PX: f32 = 24.0;
 const TOAST_BODY_H_PX: f32 = 32.0;
 const TOAST_SLOT_H_PX: f32 = 40.0;
 const ERROR_TOAST_SLOT_H_PX: f32 = 80.0;
@@ -54,6 +55,8 @@ fn toast_width_for_message(message: &str) -> Pixels {
         + TOAST_ICON_PX
         + TOAST_CONTENT_GAP_PX
         + body_width
+        + TOAST_CONTENT_GAP_PX
+        + TOAST_CLOSE_HIT_SIZE_PX
         + TOAST_SIDE_PADDING_PX;
 
     px(estimated_width.clamp(TOAST_MIN_WIDTH_PX, TOAST_MAX_WIDTH_PX))
@@ -413,7 +416,7 @@ impl ToastState {
             } else {
                 DEFAULT_DURATION
             };
-            item.dismissed_at = None;
+            // Respect a manually dismissed pending toast when an async job completes.
             return;
         }
 
@@ -430,7 +433,7 @@ impl ToastState {
             } else {
                 DEFAULT_DURATION
             };
-            item.dismissed_at = None;
+            // Breadcrumb updates must not silently undo a manual dismissal.
         }
     }
 }
@@ -1099,6 +1102,41 @@ mod tests {
     }
 
     #[test]
+    fn dismissed_pending_toast_stays_dismissed_after_resolve() {
+        let mut state = ToastState::default();
+        let start = Instant::now();
+        let id = state.push(
+            Some(WindowId::from(1)), ToastKind::Info,
+            SharedString::from("installing"), Duration::from_secs(60), start,
+        );
+        let dismissed = start + Duration::from_millis(400);
+        state.dismiss(id, dismissed);
+        state.resolve(id, ToastKind::Success, SharedString::from("installed"), dismissed);
+        let toast = state.items.back().expect("toast remains during exit");
+        assert_eq!(toast.dismissed_at, Some(dismissed));
+        assert_eq!(toast.kind, ToastKind::Success);
+        state.prune_expired(dismissed + FADE_OUT + Duration::from_millis(1));
+        assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn dismiss_one_toast_does_not_dismiss_its_siblings() {
+        let mut state = ToastState::default();
+        let now = Instant::now();
+        let first = state.push(
+            Some(WindowId::from(1)), ToastKind::Info,
+            SharedString::from("first"), DEFAULT_DURATION, now,
+        );
+        let second = state.push(
+            Some(WindowId::from(1)), ToastKind::Info,
+            SharedString::from("second"), DEFAULT_DURATION, now,
+        );
+        state.dismiss(first, now);
+        assert!(state.items.iter().find(|item| item.id == first).unwrap().dismissed_at.is_some());
+        assert!(state.items.iter().find(|item| item.id == second).unwrap().dismissed_at.is_none());
+    }
+
+    #[test]
     fn toast_is_visible_only_in_its_target_window() {
         let mut state = ToastState::default();
         let now = Instant::now();
@@ -1126,6 +1164,33 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
         ),
         ToastKind::Error => (colors.danger, lucide_gpui::icon!(circle_x)),
     };
+
+    let close_id = item.id;
+    // Stop propagation: the close click must not open the error diagnostic report.
+    let close_button = div()
+        .id(SharedString::from(format!("toast-close-{}", close_id.0)))
+        .flex_none()
+        .w(px(TOAST_CLOSE_HIT_SIZE_PX))
+        .h(px(TOAST_CLOSE_HIT_SIZE_PX))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(colors.text_secondary)
+        .hover(|button| {
+            button.bg(Hsla { a: 0.16, ..colors.border })
+                .text_color(colors.text_primary)
+        })
+        .child(svg().path(lucide_gpui::icon!(x)).w(px(14.)).h(px(14.)))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            let now = Instant::now();
+            cx.update_global(|state: &mut ToastState, _cx| {
+                state.prune_expired(now);
+                state.dismiss(close_id, now);
+            });
+        });
 
     // 取消倒计时边框描边：不再渲染描边 canvas，因此这里不需要为边框预留 padding。
     div()
@@ -1195,6 +1260,7 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
                                     .child(t!("Diagnostics.toast.open_details")),
                             )
                         }),
-                ),
+                )
+                .child(close_button),
         )
 }
