@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const MAGIC: &[u8; 8] = b"BMCBSIDX";
@@ -91,10 +91,22 @@ fn source_revision(world: &Path) -> Option<u64> {
     Some(hash)
 }
 
-#[derive(Clone)]
 struct IndexedColumn {
     masks: BTreeMap<i8, [u64; 64]>,
-    probe: Arc<World3dChunkProbe>,
+    // A persistent index may contain thousands of SubChunks but the camera
+    // only needs portal graphs for the current view. Do not flood-fill every
+    // cached mask at startup or after each newly decoded DB column.
+    probe: OnceLock<Arc<World3dChunkProbe>>,
+}
+
+impl IndexedColumn {
+    fn new(masks: BTreeMap<i8, [u64; 64]>) -> Self {
+        Self { masks, probe: OnceLock::new() }
+    }
+
+    fn probe(&self, pos: ChunkPos) -> Arc<World3dChunkProbe> {
+        Arc::clone(self.probe.get_or_init(|| column_probe(pos, &self.masks)))
+    }
 }
 
 fn column_probe(pos: ChunkPos, masks: &BTreeMap<i8, [u64; 64]>) -> Arc<World3dChunkProbe> {
@@ -164,8 +176,7 @@ fn parse(data: &[u8], expected_revision: u64) -> Option<BTreeMap<ChunkPos, Index
                 return None;
             }
         }
-        let probe = column_probe(pos, &masks);
-        columns.insert(pos, IndexedColumn { masks, probe });
+        columns.insert(pos, IndexedColumn::new(masks));
     }
     input.is_empty().then_some(columns)
 }
@@ -273,7 +284,7 @@ impl VisibilityIndex {
     pub(super) fn len(&self) -> usize { self.entries.len() }
 
     pub(super) fn probes(&self) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + '_ {
-        self.entries.iter().map(|(&pos, value)| (pos, Arc::clone(&value.probe)))
+        self.entries.iter().map(|(&pos, value)| (pos, value.probe(pos)))
     }
 
     pub(super) fn candidate_bands(&self) -> impl Iterator<Item = (ChunkPos, i32)> + '_ {
@@ -293,8 +304,7 @@ impl VisibilityIndex {
         if self.entries.len() == MAX_COLUMNS && !self.entries.contains_key(&pos) {
             self.entries.pop_first();
         }
-        let probe = column_probe(pos, &masks);
-        self.entries.insert(pos, IndexedColumn { masks, probe });
+        self.entries.insert(pos, IndexedColumn::new(masks));
         self.epoch = self.epoch.wrapping_add(1);
         self.dirty = true;
     }
@@ -406,10 +416,7 @@ mod tests {
         partial[0] = 1;
         masks.insert(-2, partial);
         let mut entries = BTreeMap::new();
-        entries.insert(pos(5), IndexedColumn {
-            probe: column_probe(pos(5), &masks),
-            masks: masks.clone(),
-        });
+        entries.insert(pos(5), IndexedColumn::new(masks.clone()));
         let bytes = encode(&entries, 123);
         let decoded = parse(&bytes, 123).unwrap();
         assert_eq!(decoded.get(&pos(5)).unwrap().masks, masks);
@@ -424,9 +431,7 @@ mod tests {
     fn invalid_format_and_truncation_are_not_valid_occluders() {
         let mut entries = BTreeMap::new();
         let masks = BTreeMap::from([(0, [u64::MAX; 64])]);
-        entries.insert(pos(1), IndexedColumn {
-            probe: column_probe(pos(1), &masks), masks,
-        });
+        entries.insert(pos(1), IndexedColumn::new(masks));
         let bytes = encode(&entries, 4);
         for length in 0..bytes.len() {
             assert!(parse(&bytes[..length], 4).is_none());
