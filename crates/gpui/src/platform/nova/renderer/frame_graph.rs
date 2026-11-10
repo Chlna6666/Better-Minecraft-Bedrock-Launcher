@@ -445,5 +445,5 @@ mod tests {
         if let Some(swapchain) = graph.lifetime(Resource::Swapchain) {
             assert_eq!(swapchain.residency, Residency::ExternallyOwned);
         }
-     }
+    }
 }
