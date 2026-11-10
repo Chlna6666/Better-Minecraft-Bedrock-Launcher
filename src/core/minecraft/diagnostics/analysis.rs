@@ -127,7 +127,9 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
             add(&mut findings, CrashReason::InsufficientMemory, Confidence::Medium, source);
         }
         if has(&text, &["unimplemented function", "unimplemented api"]) {
-            add(&mut findings, CrashReason::UnsupportedWineApi, Confidence::High, source);
+            // Optional Wine API probes also emit "unimplemented" in healthy
+            // sessions. This is a symptom until tied to a fatal launcher error.
+            add(&mut findings, CrashReason::UnsupportedWineApi, Confidence::Medium, source);
         }
         if has(&text, &["err:module:import_dll", "dll not found", "failed to load dll",
             "library not found", "module not found", "libvulkan.so.1: cannot open",
@@ -136,7 +138,9 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
         }
         if has(&text, &["unhandled page fault", "wine: unhandled exception",
             "unhandled exception in"]) {
-            add(&mut findings, CrashReason::WineGuestException, Confidence::Medium, source);
+            // Wine logs do not identify whether the guest exception came from
+            // Minecraft or a helper process. Avoid overconfident attribution.
+            add(&mut findings, CrashReason::WineGuestException, Confidence::Low, source);
         }
         if has(&text, &["pressure-vessel-wrap: error", "wineserver: failed",
             "failed to initialize wine", "proton: fatal", "wineboot failed"]) {
@@ -496,7 +500,7 @@ mod tests {
         };
         let findings = analyze_with_forensics(&report, &[], &evidence);
         assert_eq!(findings[0].reason, CrashReason::AccessViolation);
-        assert_eq!(findings[0].confidence, Confidence::Medium);
+        assert_eq!(findings[0].confidence, Confidence::High);
         assert_eq!(findings[0].source, EvidenceSource::CrashDump);
         assert!(!findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
     }
