@@ -428,6 +428,52 @@ fn lazy_mesh_column(pos: ChunkPos, view: ViewState) -> bool {
     dot < 0.0 && dot * dot > distance_sq * forward_length_sq * 0.3025
 }
 
+/// Conservative Section-sphere rejection *before* model or vertex generation.
+/// Portal reachability answers whether a cave connects to outside air; this
+/// separate test answers whether the camera can see any part of a 64-block
+/// render band. The generous 75-degree half-cone and 48-block inflated sphere
+/// include the normal viewport and one-cell seams. Never reject the near
+/// interaction region, or a view with an invalid/zero forward vector.
+/// No GPU depth/Hi-Z query or CPU readback is involved.
+fn frustum_hidden_band(pos: ChunkPos, band: i32, view: ViewState) -> bool {
+    if pos.dimension != view.dimension {
+        return false;
+    }
+    let delta = [
+        f64::from(pos.x) * 16.0 + 8.0 - view.camera[0],
+        f64::from(band) * MESH_BAND_HEIGHT + 32.0 - view.camera[1],
+        f64::from(pos.z) * 16.0 + 8.0 - view.camera[2],
+    ];
+    let distance_sq = delta.iter().map(|d| d * d).sum::<f64>();
+    if distance_sq < (8.0 * 16.0_f64).powi(2) {
+        return false;
+    }
+    let forward = [
+        f64::from(view.forward_xz[0]),
+        f64::from(view.forward_y),
+        f64::from(view.forward_xz[1]),
+    ];
+    let forward_sq = forward.iter().map(|d| d * d).sum::<f64>();
+    if !distance_sq.is_finite() || !forward_sq.is_finite() || forward_sq < 0.25 {
+        return false;
+    }
+    const RADIUS: f64 = 48.0;
+    const COS_HALF_CONE: f64 = 0.258_819_045_102_520_74; // cos(75 degrees)
+    let distance = distance_sq.sqrt();
+    let dot = delta.iter().zip(forward).map(|(d, f)| d * f).sum::<f64>()
+        / forward_sq.sqrt();
+    dot + RADIUS < (distance - RADIUS) * COS_HALF_CONE
+}
+
+fn frustum_hidden_bands(
+    candidates: &BTreeSet<(ChunkPos, i32)>,
+    view: ViewState,
+) -> BTreeSet<(ChunkPos, i32)> {
+    candidates.iter().copied()
+        .filter(|&(pos, band)| frustum_hidden_band(pos, band, view))
+        .collect()
+}
+
 fn section_priority(pos: ChunkPos, section_y: i32, view: ViewState) -> (bool, u64) {
     let dx = f64::from(pos.x) * 16.0 + 8.0 - view.camera[0];
     let dy = f64::from(section_y) * MESH_BAND_HEIGHT + MESH_BAND_HEIGHT * 0.5 - view.camera[1];
@@ -820,7 +866,7 @@ mod view_tests {
         chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
         face_band_y, face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
         inside_cache_hysteresis, inside_view, intern_face_materials,
-        fully_hidden_mesh_columns, needs_unexpanded_rehydration,
+        fully_hidden_mesh_columns, frustum_hidden_band, needs_unexpanded_rehydration,
         premesh_opaque_terrain, skip_premesh_subchunk,
         is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
         mipmapped_texture, p3d,
@@ -857,6 +903,30 @@ mod view_tests {
         assert_eq!(fully_hidden_mesh_columns(&candidates, &hidden), HashSet::from([pos(0)]));
         assert!(!fully_hidden_mesh_columns(&candidates, &hidden).contains(&pos(3)));
         assert!(fully_hidden_mesh_columns(&candidates, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn conservative_frustum_rejects_far_back_and_above_before_meshing() {
+        let pos = |x, z| ChunkPos {
+            x, z, dimension: Dimension::Overworld,
+        };
+        let view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 96.0, 8.0],
+            forward_xz: [0.0, 1.0],
+            forward_y: 0.0,
+            radius: 32,
+            view_distance: 528.0,
+        };
+        assert!(!frustum_hidden_band(pos(0, 0), 1, view));
+        assert!(!frustum_hidden_band(pos(0, 18), 1, view));
+        assert!(frustum_hidden_band(pos(0, -18), 1, view));
+        assert!(frustum_hidden_band(pos(18, 0), 1, view));
+        assert!(frustum_hidden_band(pos(0, 18), 11, view));
+        let looking_up = super::ViewState { forward_xz: [0.0, 0.0],
+            forward_y: 1.0, ..view };
+        assert!(!frustum_hidden_band(pos(0, 0), 11, looking_up));
     }
 
     #[test]
