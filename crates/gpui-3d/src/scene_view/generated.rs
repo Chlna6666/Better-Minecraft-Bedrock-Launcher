@@ -1226,10 +1226,22 @@ fn create_many_impl(
             if let Some((faces, templates, arguments, _)) = arena.as_mut() {
                 mark_generated_mesh_uses(faces, templates, arguments, &pending, queue)?;
             }
-            let compute = if let Some(tag) = compute_tag {
-                device.submit_compute_batch_profiled_on_queue(queue, &dispatches, tag)?
+            let compute_result = if let Some(tag) = compute_tag {
+                device.submit_compute_batch_profiled_on_queue(queue, &dispatches, tag)
             } else {
-                device.submit_compute_batch_on_queue(queue, &dispatches)?
+                device.submit_compute_batch_on_queue(queue, &dispatches)
+            };
+            let compute = match compute_result {
+                Ok(submission) => submission,
+                Err(error) => {
+                    if let Some(model) = feedback.as_deref_mut() {
+                        model.native_failed();
+                    }
+                    // Do not silently resubmit on PRIMARY: the native error
+                    // may have occurred after Execute/queueSubmit, with its
+                    // allocations still conservatively marked in-flight.
+                    return Err(error.into());
+                }
             };
             if let Some(records) = accepted.as_deref_mut() {
                 records.push(compute);
