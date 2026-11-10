@@ -788,11 +788,7 @@ impl Dx12Device {
             // graphics queue's clock. Unsupported query clocks simply
             // produce no sample; they do not prevent GPU execution.
             let frequency = if dedicated_compute {
-                self.async_compute.as_ref().and_then(|q| {
-                    // SAFETY: Querying the live native queue's frequency
-                    // does not stall or synchronize a command list.
-                    unsafe { q.queue.GetTimestampFrequency() }.ok()
-                })
+                self.async_compute.as_ref().and_then(|q| q.timestamp_frequency_hz)
             } else if native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 1 }) {
                 self.sidecar_queue.as_ref().and_then(|q| {
                     unsafe { q.GetTimestampFrequency() }.ok()
