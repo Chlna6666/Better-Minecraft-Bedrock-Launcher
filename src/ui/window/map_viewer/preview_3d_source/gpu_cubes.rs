@@ -483,12 +483,27 @@ impl Preview3dMeshBuilder {
                             } else {
                                 (self.block_class_at(key), self.ambient_occludes_at(key))
                             };
-                        let class = match block_class {
-                            Some(Preview3dBlockClass::Opaque) => 1,
-                            Some(Preview3dBlockClass::TransparentGlass) => 2,
-                            Some(Preview3dBlockClass::Water) => 4,
-                            Some(Preview3dBlockClass::Lava) => 8,
-                            _ => 0,
+                        // An absent neighbor column is *unknown*, not
+                        // certified air. Mark its halo with only the fluid
+                        // bits so water/lava side instances cannot emit
+                        // full-height walls into unloaded Chunk seams.
+                        // Opaque cubes still see the cell as non-occluding.
+                        // When the neighbor is later decoded, ordinary seam
+                        // invalidation re-creates the correct exposed faces.
+                        let neighbour_column = ChunkKey::from_block(key);
+                        let unknown_column = neighbour_column != ChunkKey::from_pos(pos)
+                            && !self.block_chunks.contains_key(&neighbour_column)
+                            && !self.boundary_chunks.contains_key(&neighbour_column);
+                        let class = if unknown_column {
+                            4 | 8
+                        } else {
+                            match block_class {
+                                Some(Preview3dBlockClass::Opaque) => 1,
+                                Some(Preview3dBlockClass::TransparentGlass) => 2,
+                                Some(Preview3dBlockClass::Water) => 4,
+                                Some(Preview3dBlockClass::Lava) => 8,
+                                _ => 0,
+                            }
                         };
                         let index = ((z * size[1] + y) * size[0] + x) as usize;
                         classes[index] = class | if ao { 16 } else { 0 };
