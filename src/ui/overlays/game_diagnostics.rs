@@ -385,6 +385,11 @@ fn request_export(cx: &mut App, id: String) {
 fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
     let evidence = &report.forensics;
     let mut lines = Vec::new();
+    lines.push(t!("GameCrash.forensics.logsAnalyzed",
+        count = evidence.log_sources_analyzed).to_string());
+    if evidence.log_sources_analyzed == 0 {
+        lines.push(t!("GameCrash.forensics.noLogEvidence").to_string());
+    }
     if !evidence.missing_dependencies.is_empty() {
         let libraries = evidence.missing_dependencies.iter()
             .map(|issue| issue.identifier.as_str())
