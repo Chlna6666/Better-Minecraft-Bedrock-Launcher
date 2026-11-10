@@ -2204,7 +2204,8 @@ mod tests {
             .with_state("minecraft:cardinal_direction", "north");
         let chest_shape =
             model_shape_for_block_state(&chest).unwrap_or_else(|| panic!("missing chest shape"));
-        assert_eq!(chest_shape.cuboids.len(), 2);
+        // Body, overlapping lid and the 2x4x1 latch that the 64x64 chest sheet carries at (0,0).
+        assert_eq!(chest_shape.cuboids.len(), 3);
         assert!(
             chest_shape
                 .cuboids
@@ -2216,7 +2217,7 @@ mod tests {
                 .cuboids
                 .iter()
                 .all(|cuboid| cuboid.face_uvs.len() == 6),
-            "chest faces must sample the per-face 16x16 textures at full size"
+            "chest faces must unwrap the 64x64 entity sheet"
         );
 
         let shulker = BlockStateQuery::new("minecraft:blue_shulker_box");

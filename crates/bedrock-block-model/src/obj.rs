@@ -811,6 +811,14 @@ impl ObjTextureResolver {
                 }
             }
         }
+        if let Some(texture_key) = chest_entity_texture_key(block) {
+            // The in-world chest is an entity box on a 64x64 sheet. `blocks.json` only maps the
+            // block-item icons (`chest_top`/`chest_side`/`chest_front`), so the sheet has to be
+            // resolved first or every face samples an icon instead of its own unwrapped region.
+            if let Some((pack, source_path)) = self.texture_path_for_key(texture_key) {
+                return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+            }
+        }
         if block == "shulker_box" || block.ends_with("_shulker_box") {
             // Body/lid use the 64x64 entity skin; only the very top face uses the 16x16
             // `shulker_top_<color>` tile. Using the top tile on every face made the box a
@@ -4530,6 +4538,27 @@ fn bed_colour(block: &str) -> &str {
 /// Vanilla `blocks.json` maps every skull to the shared `skull` key, which points at
 /// `textures/blocks/soul_sand` as a placeholder. The real art lives in the entity textures, so
 /// heads must be redirected there or they render as soul sand.
+/// Maps a chest block to its 64x64 entity sheet.
+///
+/// The pack ships `normal`, `trapped`, `ender` and one `copper_<stage>` sheet per weathering
+/// stage; the textures directory holds no per-face tiles for the in-world model.
+fn chest_entity_texture_key(block: &str) -> Option<&'static str> {
+    match block {
+        "chest" => return Some("textures/entity/chest/normal"),
+        "trapped_chest" => return Some("textures/entity/chest/trapped"),
+        "ender_chest" => return Some("textures/entity/chest/ender"),
+        _ => {}
+    }
+    let prefix = block.strip_suffix("copper_chest")?;
+    let stage = prefix.strip_suffix('_').unwrap_or(prefix);
+    Some(match stage {
+        "exposed" | "waxed_exposed" => "textures/entity/chest/copper_exposed",
+        "weathered" | "waxed_weathered" => "textures/entity/chest/copper_weathered",
+        "oxidized" | "waxed_oxidized" => "textures/entity/chest/copper_oxidized",
+        _ => "textures/entity/chest/copper_default",
+    })
+}
+
 fn skull_entity_texture_key(block: &str) -> Option<&'static str> {
     match block {
         "skeleton_skull" => Some("textures/entity/skulls/skeleton"),

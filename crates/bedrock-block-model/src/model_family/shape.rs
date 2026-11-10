@@ -201,6 +201,34 @@ pub fn box_face_corners(min: [f32; 3], max: [f32; 3], face: BlockFace) -> [[f32;
     }
 }
 
+/// Per-face UVs for one authored box, unwrapped by `box_unwrap_uv` and normalised to `span`.
+///
+/// `min` and `max` are authoring pixels and `span` is the skin size the box reads, so a `64x64`
+/// entity sheet passes `[64.0, 64.0]`.
+#[must_use]
+pub fn box_unwrap_face_uvs(
+    min: [f32; 3],
+    max: [f32; 3],
+    origin: [f32; 2],
+    span: [f32; 2],
+) -> [(BlockFace, [[f32; 2]; 4]); 6] {
+    const FACES: [BlockFace; 6] = [
+        BlockFace::Up,
+        BlockFace::Down,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ];
+    FACES.map(|face| {
+        let uv = box_face_corners(min, max, face).map(|point| {
+            let [u, v] = box_unwrap_uv(face, origin, min, max, point);
+            [u / span[0], v / span[1]]
+        });
+        (face, uv)
+    })
+}
+
 /// The texture point an authored Bedrock cube samples at `point` on `face`.
 ///
 /// Every Bedrock cube unwraps as one strip of four side faces with the two caps above the front
