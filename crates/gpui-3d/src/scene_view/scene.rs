@@ -2877,6 +2877,9 @@ impl SceneResources {
                 // The flush call's arena borrow_mut temporaries live until the
                 // end of this if-let statement; bind the result first so the
                 // error path can re-borrow the same arenas to discard.
+                let mut accepted = self.tracked_native_queue.then(|| {
+                    self.accepted_native_submissions.borrow_mut()
+                });
                 let flushed = flush_pending_generated_meshes(
                     device,
                     &mut pending_gpu,
@@ -2892,8 +2895,7 @@ impl SceneResources {
                     &mut *self.argument_arena.borrow_mut(),
                     backend,
                     self.gpu_batch_id,
-                    self.tracked_native_queue.then(||self.accepted_native_submissions.borrow_mut())
-                        .as_deref_mut(),
+                    accepted.as_deref_mut(),
                 );
                 if let Err(error) = flushed {
                     discard_pending_meshes(
@@ -2910,6 +2912,9 @@ impl SceneResources {
                 pending_bytes = 0;
             }
         }
+        let mut accepted = self.tracked_native_queue.then(|| {
+            self.accepted_native_submissions.borrow_mut()
+        });
         let flushed = flush_pending_generated_meshes(
             device,
             &mut pending_gpu,
@@ -2925,8 +2930,7 @@ impl SceneResources {
             &mut *self.argument_arena.borrow_mut(),
             backend,
             self.gpu_batch_id,
-            self.tracked_native_queue.then(||self.accepted_native_submissions.borrow_mut())
-                .as_deref_mut(),
+            accepted.as_deref_mut(),
         );
         if let Err(error) = flushed {
             discard_pending_meshes(
