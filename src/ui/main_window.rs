@@ -346,19 +346,28 @@ impl MainWindowView {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if report.kind.is_abnormal() {
-                    handle.update(cx, |_, cx| {
+                    let opened = handle.update(cx, |_, cx| {
+                        let was_open = cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>()
+                            .pending.is_some();
                         cx.update_global(
                             |state: &mut crate::ui::state::game_diagnostics::GameDiagnosticsState, _| {
                                 state.receive_report(report);
                             },
                         );
+                        let is_open = cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>()
+                            .pending.is_some();
                         cx.notify();
+                        !was_open && is_open
                     })?;
-                    let _ = main_window.update(cx, |_, window, _| {
-                        window.show_window();
-                        window.restore_window();
-                        window.activate_window();
-                    });
+                    if opened {
+                        // Only the first newly-visible incident should steal focus.
+                        // Concurrent sessions and late WER updates join the queue.
+                        let _ = main_window.update(cx, |_, window, _| {
+                            window.show_window();
+                            window.restore_window();
+                            window.activate_window();
+                        });
+                    }
                 } else if crate::core::minecraft::diagnostics::active_sessions() == 0
                     && crate::config::config::read_config()
                         .is_ok_and(|cfg| cfg.game.launcher_visibility == "close")
