@@ -7,13 +7,15 @@
 //! application shutdown explicitly drains and joins this platform lifecycle thread.
 
 use parking_lot::Mutex;
+#[cfg(not(target_os = "windows"))]
+use std::thread::ThreadId;
 use std::{
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Sender},
     },
-    thread::{self, JoinHandle, ThreadId},
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -167,6 +169,7 @@ pub(crate) struct RenderOwner {
     id: u64,
     queue: Arc<Queue>,
     sender: Sender<Job>,
+    #[cfg(not(target_os = "windows"))]
     owner_thread: ThreadId,
     status: Arc<Status>,
     gpu_specs: GpuSpecs,
@@ -248,6 +251,7 @@ impl RenderOwner {
             id,
             queue,
             sender,
+            #[cfg(not(target_os = "windows"))]
             owner_thread: thread::current().id(),
             status,
             gpu_specs,
