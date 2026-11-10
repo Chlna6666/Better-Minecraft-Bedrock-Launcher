@@ -1,5 +1,6 @@
 //! Strict, bounded, privacy-conscious crash evidence parsing.
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +36,10 @@ pub enum LoaderIssueKind {
     DependencyFailure, SymbolFailure, HookFailure, RuntimeError,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeExceptionPhase { Seh, Veh }
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoaderIssue {
     pub loader: LoaderFamily,
@@ -43,6 +48,8 @@ pub struct LoaderIssue {
     pub module: Option<String>,
     pub exception_code: Option<u32>,
     pub win32_error: Option<u32>,
+    #[serde(default)]
+    pub phase: Option<NativeExceptionPhase>,
     /// Only a launch-scoped file/pipe can support elevated confidence.
     pub session_private: bool,
 }
@@ -162,6 +169,11 @@ fn loader_family(line: &str, source: &str) -> Option<LoaderFamily> {
         Some(LoaderFamily::LiteLoader)
     } else if lower.contains("[modloader]") {
         Some(LoaderFamily::Other)
+    } else if lower.contains("native-load result phase=")
+        || lower.contains("preloader.priority.failed")
+        || lower.contains("crash_report.captured phase=")
+    {
+        Some(LoaderFamily::BLoader)
     } else if source.contains("preloader") {
         Some(LoaderFamily::PreLoader)
     } else if source.contains("levilamina") {
@@ -208,8 +220,16 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
     let lower = line.to_ascii_lowercase();
     let kind = if lower.contains("raw seh exception, from <")
         || lower.contains("unhandled seh exception")
+        || lower.contains("unhandled exception 0x")
+        || lower.contains("crash_report.captured phase=")
     {
         LoaderIssueKind::NativeException
+    } else if lower.contains("native-load result phase=")
+        && lower.contains("state=failed")
+    {
+        LoaderIssueKind::LoaderLoadFailure
+    } else if lower.contains("preloader.priority.failed") {
+        LoaderIssueKind::LoaderLoadFailure
     } else if [
         "fail to load plugin", "failed to load plugin", "failed to load mod",
         "could not load mod", "failed to initialize mod",
@@ -232,6 +252,7 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
     } else if [
         "failed to install hook", "failed to hook", "hook initialization failed",
         "hook registration failed", "failed to register hook",
+        "hook failed", "hook install failed", "unable to install hook",
     ].iter().any(|pattern| lower.contains(pattern)) {
         LoaderIssueKind::HookFailure
     } else if [
@@ -262,6 +283,17 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
             None
         },
         win32_error: None,
+        phase: if kind == LoaderIssueKind::NativeException {
+            if lower.contains("raw seh exception") || lower.contains("phase=seh") {
+                Some(NativeExceptionPhase::Seh)
+            } else if lower.contains("phase=veh") {
+                Some(NativeExceptionPhase::Veh)
+            } else {
+                None
+            }
+        } else {
+            None
+        },
         session_private: private,
     })
 }
@@ -406,6 +438,70 @@ pub fn inspect_text(sources: &[(String, String)]) -> ForensicSummary {
         {
             out.wine_stack = Some(WineStack { module, frames, exception_code });
         }
+    }
+    out
+}
+
+
+/// Read only BLoader's machine-readable crash metadata, never raw registers,
+/// stack, account data, absolute paths or unvalidated mod attribution.
+/// BLoader crash JSON includes process_id and an offset-aware timestamp.
+/// Require both to match this native Minecraft session before accepting it.
+pub fn inspect_bloader_crash_json(
+    sources: &[(String, String)],
+    pid: u32,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    native_game: bool,
+) -> Vec<LoaderIssue> {
+    if !native_game { return Vec::new(); }
+    let mut out = Vec::new();
+    for (name, content) in sources.iter().take(32) {
+        if !name.ends_with(".json") || content.len() > 1024 * 1024 { continue; }
+        let Ok(report) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+        if !report.get("loader_version").and_then(|v| v.as_str())
+            .is_some_and(|version| !version.is_empty())
+            || !report.get("attribution").is_some_and(|value| value.is_object())
+            || report.get("recent_mod_events").is_none()
+        {
+            continue;
+        }
+        if report.get("process_id").and_then(|v| v.as_u64()) != Some(u64::from(pid)) {
+            continue;
+        }
+        let Some(timestamp) = report.get("timestamp")
+            .and_then(|value| value.as_str())
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+        else { continue; };
+        if timestamp < started_at - chrono::Duration::seconds(30)
+            || ended_at.is_some_and(|end| timestamp > end + chrono::Duration::seconds(120))
+        {
+            continue;
+        }
+        let phase = match report.get("phase").and_then(|v| v.as_str()) {
+            Some("seh") => Some(NativeExceptionPhase::Seh),
+            Some("veh") => Some(NativeExceptionPhase::Veh),
+            _ => continue,
+        };
+        let module = report.get("exception_module").and_then(|value| value.as_str())
+            .and_then(|full_path| full_path.rsplit(['\\', '/']).next())
+            .and_then(safe_name);
+        let exception_code = report.get("exception_code").and_then(|v| v.as_str())
+            .and_then(code_from);
+        if exception_code.is_none() { continue; }
+        out.push(LoaderIssue {
+            loader: LoaderFamily::BLoader,
+            kind: LoaderIssueKind::NativeException,
+            module,
+            exception_code,
+            win32_error: None,
+            phase,
+            session_private: true,
+        });
+        if out.len() == 4 { break; }
     }
     out
 }
