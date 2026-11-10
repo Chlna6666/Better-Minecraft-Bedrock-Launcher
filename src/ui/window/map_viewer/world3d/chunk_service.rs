@@ -5856,18 +5856,11 @@ fn collect_cached_chunk(
     }
     let pos = data.pos;
     let started = Instant::now();
-    let mut frame_displays = FrameDisplay::collect(&data);
-    if !hidden_bands.is_empty() {
-        // Frames and maps are independent of ordinary block-model records.
-        // Drop their distant hidden geometry now, not after generating a
-        // separate face and allocating/materializing its texture.
-        frame_displays.retain(|display| {
-            let y = display.position()[1];
-            (-2_i32..=2).any(|offset| {
-                !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64))
-            })
-        });
-    }
+    let frame_displays = FrameDisplay::collect_where(&data, |y| {
+        (-2_i32..=2).any(|offset| {
+            !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64))
+        })
+    });
     // Preserve the full decoded probe for future navigation and portal
     // promotion. Temporarily omit hidden 16-block slices only while the
     // heavyweight captured-model collector walks this column.
