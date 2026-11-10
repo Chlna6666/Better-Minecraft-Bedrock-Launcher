@@ -442,72 +442,6 @@ impl WindowInvalidator {
         true
     }
 
-    pub(crate) fn active_generic_dirty_view_count(&self) -> usize {
-        self.inner.borrow().active_generic_dirty_views.len()
-    }
-
-    pub(crate) fn active_targeted_element_count(&self) -> usize {
-        self.inner.borrow().active_targeted_elements.len()
-    }
-
-    /// Add a Render dependency before activating this frame's dirtiness.
-    /// Its retained paths must also be dirty for element replay, not only View routing.
-    pub(crate) fn invalidate_render_dependency(&self, entity: EntityId) -> Option<EntityId> {
-        let mut inner = self.inner.borrow_mut();
-        if !inner.pending_targeted_replay {
-            return None;
-        }
-        inner.pending_generic_dirty_views.insert(entity);
-        None
-    }
-
-    /// Returns one reconstructible subtree target strictly below ancestor.
-    ///
-    /// Nested paths belonging to the same direct View can use the outermost target.
-    /// Disjoint paths can use their shared registered cached View boundary, when
-    /// it is strictly inside this traversal ancestor. Distinct owners, unrelated
-    /// cache instances, unsupported scopes and generic dirtiness remain barriers.
-    pub(crate) fn single_reconcile_target_below(
-        &self,
-        ancestor: &GlobalElementId,
-        ancestor_owner: EntityId,
-        dispatch_tree: &DispatchTree,
-    ) -> Option<(EntityId, GlobalElementId)> {
-        let inner = self.inner.borrow();
-        if !inner.active_targeted_replay {
-            return None;
-        }
-
-        // Generic dirtiness is only a barrier when it belongs to this ancestor's view route.
-        // A prompt, drag overlay, inspector, or another retained root must not poison selective
-        // reconciliation of the application root. Views missing from the committed dispatch tree
-        // are outside this retained route and are conservatively handled by their own root.
-        if inner.active_generic_dirty_views.iter().any(|dirty_view| {
-            *dirty_view == ancestor_owner
-                || dispatch_tree
-                    .view_path_reversed(*dirty_view)
-                    .any(|view_id| view_id == ancestor_owner)
-        }) {
-            return None;
-        }
-
-        let mut selected = None;
-        for ((owner, target), scope) in &inner.active_targeted_elements {
-            if !global_element_path_is_strict_prefix(ancestor, target) {
-                continue;
-            }
-            if !matches!(
-                scope,
-                RetainedInvalidationScope::ReconcileSubtree
-                    | RetainedInvalidationScope::InvalidateSubtree
-            ) || !merge_reconcile_target(&mut selected, *owner, target, ancestor)
-            {
-                return None;
-            }
-        }
-        selected
-    }
-
     pub fn is_dirty(&self) -> bool {
         self.inner.borrow().dirty
     }
@@ -621,10 +555,6 @@ impl WindowInvalidator {
 
     pub(in crate::window) fn take_dirty_to_present_start(&self) -> Option<Instant> {
         self.inner.borrow_mut().dirty_to_present_started_at.take()
-    }
-
-    pub(in crate::window) fn pending_dirty_started_at(&self) -> Option<Instant> {
-        self.inner.borrow().dirty_to_present_started_at
     }
 
     pub(in crate::window) fn reset_dirty_to_present_epoch(&self, restart_if_dirty: bool) {
@@ -832,36 +762,6 @@ fn global_element_path_is_prefix(prefix: &GlobalElementId, path: &GlobalElementI
 
 fn global_element_path_is_strict_prefix(prefix: &GlobalElementId, path: &GlobalElementId) -> bool {
     prefix.0.len() < path.0.len() && global_element_path_is_prefix(prefix, path)
-}
-
-/// A fresh render of one directly dirty cached View visits every dirty
-/// path beneath that View boundary. Nested targets collapse to the outermost
-/// path; disjoint targets can collapse only to their registered common cached
-/// boundary, strictly below the traversal ancestor. Different View owners or
-/// unrelated cache instances must never share a splice target.
-fn merge_reconcile_target(
-    selected: &mut Option<(EntityId, GlobalElementId)>,
-    owner: EntityId,
-    target: &GlobalElementId,
-    _ancestor: &GlobalElementId,
-) -> bool {
-    match selected {
-        None => {
-            *selected = Some((owner, target.clone()));
-            true
-        }
-        Some((selected_owner, selected_target)) if *selected_owner == owner => {
-            if global_element_path_is_prefix(selected_target, target) {
-                true
-            } else if global_element_path_is_prefix(target, selected_target) {
-                *selected_target = target.clone();
-                true
-            } else {
-                false
-            }
-        }
-        Some(_) => false,
-    }
 }
 
 #[cfg(test)]
