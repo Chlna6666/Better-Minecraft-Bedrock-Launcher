@@ -53,11 +53,22 @@ impl FrameDisplay {
     }
 
     pub(super) fn collect(chunk: &ChunkData) -> Vec<Self> {
+        Self::collect_where(chunk, |_| true)
+    }
+
+    /// Filter by Section before reading block-state palettes or item-frame
+    /// NBT. Offscreen frame models never enter the CPU face/material pipeline.
+    pub(super) fn collect_where(
+        chunk: &ChunkData, visible_at_y: impl Fn(i32) -> bool,
+    ) -> Vec<Self> {
         chunk
             .block_entities
             .iter()
             .filter_map(|entity| {
                 let position = entity.position?;
+                if !visible_at_y(position[1]) {
+                    return None;
+                }
                 let block = chunk
                     .subchunks
                     .get(&i8::try_from(position[1].div_euclid(16)).ok()?)?
