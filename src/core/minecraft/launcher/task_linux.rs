@@ -888,9 +888,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             match crate::tasks::runtime::run_io_blocking(move || {
                 report.finish_compatibility(Ok(code), &output, true)
             }).await {
-                Ok(report) => append_task_log(
-                    task_id, format!("已保存启动期兼容层诊断：{}", report.id)
-                ),
+                Ok(report) => {
+                    append_task_log(task_id, format!("已保存启动期兼容层诊断：{}", report.id));
+                }
                 Err(error) => warn!(task_id, %error, "启动期诊断记录失败"),
             }
             return Err(format!("兼容运行器在启动检测期内退出（{status}）{detail}"));
