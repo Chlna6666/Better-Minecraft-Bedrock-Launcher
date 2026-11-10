@@ -454,6 +454,7 @@ impl NovaRenderer {
         self.live_resize_active = active;
     }
 
+    #[cfg(not(target_os = "windows"))]
     pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
     }
@@ -1340,6 +1341,7 @@ impl NovaRenderer {
         }
     }
 
+    #[cfg(any(test, not(target_os = "windows")))]
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
         self.pending_presentation_packet
             .as_ref()
