@@ -455,6 +455,20 @@ fn neighbor_affected_bands(min_y: i32, max_y: i32) -> (i32, i32) {
     )
 }
 
+/// Partial model snapshots are valid only while their omitted cave bands
+/// remain certified hidden. A newly visible target or adjacent seam request
+/// must restore its full decoded model set from the retained World.
+fn needs_unexpanded_rehydration(
+    pos: ChunkPos,
+    is_target: bool,
+    unexpanded: &BTreeSet<i32>,
+    deferred: &BTreeSet<(ChunkPos, i32)>,
+) -> bool {
+    !unexpanded.is_empty()
+        && (!is_target
+            || unexpanded.iter().any(|&band| !deferred.contains(&(pos, band))))
+}
+
 // A deferred column still owns real neighbor geometry. It may skip its own
 // GPU mesh, but must provide a full voxel/boundary mask while an adjacent
 // target is meshed; otherwise internal seam faces become visible until the
@@ -789,6 +803,7 @@ mod view_tests {
         chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
         face_band_y, face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
         inside_cache_hysteresis, inside_view, intern_face_materials,
+        needs_unexpanded_rehydration, premesh_opaque_terrain, skip_premesh_subchunk,
         is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
         mipmapped_texture, p3d,
         partition_section_faces, same_chunk_render_geometry, section_priority,
@@ -807,6 +822,45 @@ mod view_tests {
     use std::sync::Mutex;
     use std::sync::mpsc::{channel, sync_channel};
     use std::time::Duration;
+
+    #[test]
+    fn packed_palette_premesh_only_certifies_known_opaque_terrain() {
+        for name in [
+            "minecraft:stone", "minecraft:deepslate", "minecraft:iron_ore",
+            "minecraft:grass_block", "minecraft:bedrock",
+        ] {
+            assert!(premesh_opaque_terrain(name), "{name}");
+        }
+        for name in [
+            "minecraft:air", "minecraft:water", "minecraft:glass",
+            "minecraft:oak_stairs", "minecraft:oak_leaves",
+            "minecraft:grass", "custom:stone",
+        ] {
+            assert!(!premesh_opaque_terrain(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn hidden_band_expansion_keeps_only_neighbor_height_halos() {
+        let hidden = BTreeSet::from([-1, 0, 1]);
+        assert!(!skip_premesh_subchunk(-4, &hidden));
+        assert!(skip_premesh_subchunk(-3, &hidden));
+        assert!(skip_premesh_subchunk(1, &hidden));
+        assert!(!skip_premesh_subchunk(7, &hidden));
+        assert!(!skip_premesh_subchunk(8, &hidden));
+    }
+
+    #[test]
+    fn promoted_underground_bands_force_complete_rehydration() {
+        let pos = ChunkPos { x: -3, z: 7, dimension: Dimension::Overworld };
+        let missing = BTreeSet::from([0, 1]);
+        let mut deferred = BTreeSet::from([(pos, 0), (pos, 1)]);
+        assert!(!needs_unexpanded_rehydration(pos, true, &missing, &deferred));
+        assert!(needs_unexpanded_rehydration(pos, false, &missing, &deferred));
+        deferred.remove(&(pos, 0));
+        assert!(needs_unexpanded_rehydration(pos, true, &missing, &deferred));
+        assert!(!needs_unexpanded_rehydration(pos, true, &BTreeSet::new(), &deferred));
+    }
 
     #[test]
     fn deferred_neighbor_without_boundary_must_restore_seam_occupancy() {
@@ -2288,6 +2342,7 @@ impl CachedChunk {
                 },
             )
             .saturating_add(self.probe.storage_bytes)
+            .saturating_add(self.unexpanded_bands.len() * std::mem::size_of::<i32>())
             .saturating_add(self.frame_displays.capacity() * std::mem::size_of::<FrameDisplay>())
             .saturating_add(
                 self.frame_displays
@@ -2498,6 +2553,7 @@ fn load_batch_from_world(
         };
     let query_time = started.elapsed();
     let trace = trace_verbose();
+    let premesh_started = Instant::now();
     // The first pass only decodes packed block palettes. Its conservative
     // connectivity graph can suppress underground model expansion before the
     // expensive per-state/captured-model and texture stages begin.
@@ -2537,6 +2593,15 @@ fn load_batch_from_world(
     } else {
         BTreeSet::new()
     };
+    if trace && !hidden_before_models.is_empty() {
+        eprintln!(
+            "world3d premesh_skip ts={} columns={} hidden_bands={} preflight_ms={:.2}",
+            trace_timestamp_ms(),
+            positions.len(),
+            hidden_before_models.len(),
+            premesh_started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
     // Bedrock fades grass/foliage colors over the block and its eight neighbors. Build the
     // blended column tints once per batch so parallel chunk collection only reads them.
     let need_mesh_data = chunks.iter().any(|data| {
@@ -3470,12 +3535,12 @@ impl Worker {
                         target_set.contains(pos),
                         chunk.blocks.is_some(),
                         chunk.boundary.is_some(),
-                    ) || (!chunk.unexpanded_bands.is_empty()
-                        && (!target_set.contains(pos)
-                            // A previously omitted band became visible.
-                            || chunk.unexpanded_bands.iter().any(|band| {
-                                !self.deferred_bands.contains(&(*pos, *band))
-                            })))
+                    ) || needs_unexpanded_rehydration(
+                        *pos,
+                        target_set.contains(pos),
+                        &chunk.unexpanded_bands,
+                        &self.deferred_bands,
+                    )
                 })
             })
             .collect::<Vec<_>>();
@@ -5148,7 +5213,7 @@ fn premesh_opaque_terrain(name: &str) -> bool {
         name,
         "stone" | "deepslate" | "cobbled_deepslate" | "cobblestone"
             | "bedrock" | "dirt" | "coarse_dirt" | "rooted_dirt"
-            | "grass" | "grass_block" | "sand" | "red_sand"
+            | "grass_block" | "sand" | "red_sand"
             | "sandstone" | "red_sandstone" | "smooth_sandstone"
             | "smooth_red_sandstone" | "gravel" | "clay"
             | "granite" | "polished_granite" | "diorite" | "polished_diorite"
