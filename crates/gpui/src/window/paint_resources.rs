@@ -190,18 +190,6 @@ impl Window {
         )
     }
 
-    pub(crate) fn paint_svg_animated(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        path: SharedString,
-        transformation: TransformationMatrix,
-        color: Hsla,
-        animation_id: Option<SceneAnimationId>,
-        cx: &App,
-    ) -> Result<()> {
-        self.paint_svg_source(bounds, path, None, transformation, color, animation_id, cx)
-    }
-
     fn paint_svg_source(
         &mut self,
         bounds: Bounds<Pixels>,
