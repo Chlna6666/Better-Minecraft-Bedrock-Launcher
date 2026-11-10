@@ -2468,11 +2468,11 @@ mod tests {
         let mut bytes = Vec::new();
         let mut keys = Vec::new();
         for _iteration in 0..5 {
-            cache.encode(&repeated, light_count, &mut bytes, &mut keys).unwrap();
+            cache.encode(&repeated, &mut bytes, &mut keys).unwrap();
             assert_eq!(bytes, super::encode_draw_records(&repeated).unwrap());
             assert_eq!(keys.len(), repeated.len());
         }
-        cache.encode(&[], 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&[], &mut bytes, &mut keys).unwrap();
         assert_eq!(bytes, vec![0; super::DRAW_PARAMS_STRIDE as usize]);
     }
 
@@ -2494,19 +2494,19 @@ mod tests {
         let mut cache = super::DrawRecordCache::default();
         let mut bytes = Vec::new();
         let mut keys = Vec::new();
-        cache.encode(&[initial.clone()], 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&[initial.clone()], &mut bytes, &mut keys).unwrap();
         let old_key = keys[0];
         let old_bytes = bytes.clone();
-        cache.encode(&[modified.clone()], 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&[modified.clone()], &mut bytes, &mut keys).unwrap();
         assert_ne!(old_key, keys[0]);
         assert_ne!(old_bytes, bytes);
         assert_eq!(bytes, super::encode_draw_records(&[modified.clone()]).unwrap());
 
         let new_key = keys[0];
-        cache.encode(&[modified.clone(), modified.clone()], 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&[modified.clone(), modified.clone()], &mut bytes, &mut keys).unwrap();
         assert_eq!(keys, vec![new_key; 2]);
         assert_eq!(bytes, super::encode_draw_records(&[modified.clone(), modified]).unwrap());
-        cache.encode(&[initial.clone()], 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&[initial.clone()], &mut bytes, &mut keys).unwrap();
         assert_ne!(keys[0], old_key, "revisited snapshot must not alias an overwritten cache generation");
         assert_eq!(bytes, super::encode_draw_records(&[initial]).unwrap());
     }
@@ -2589,13 +2589,13 @@ mod tests {
         let mut cache = super::DrawRecordCache::default();
         let mut bytes = Vec::new();
         let mut keys = Vec::new();
-        cache.encode(&draws, 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         let first = keys[0];
-        cache.encode(&draws, 0, &mut bytes, &mut keys).unwrap();
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
         // Light count is a frame uniform; a streaming light delta must not
         // re-encode or re-upload the whole resident DrawParams table.
-        cache.encode(&draws, 2, &mut bytes, &mut keys).unwrap();
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
         assert_eq!(bytes, super::encode_draw_records(&draws).unwrap());
     }
