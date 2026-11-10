@@ -165,30 +165,6 @@ fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
 }
 
 impl FrameUpload {
-    pub(in crate::platform::nova) fn encode(
-        &mut self,
-        cache: &mut RetainedChunkCache,
-        scene: &crate::Scene,
-        retained_paint: &crate::window::retained::RetainedPaint,
-        presentation_animation_values: &[crate::SceneAnimationValue],
-        drawable_size: DrawableSize,
-        rendering_parameters: &RenderingParameters,
-        premultiplied_alpha: bool,
-        backdrop_blur_quality: BackdropBlurQuality,
-    ) -> FrameUploadSummary {
-        self.encode_frame(
-            cache,
-            scene,
-            retained_paint,
-            presentation_animation_values,
-            drawable_size,
-            drawable_size,
-            rendering_parameters,
-            premultiplied_alpha,
-            backdrop_blur_quality,
-        )
-    }
-
     pub(in crate::platform::nova) fn encode_frame(
         &mut self,
         cache: &mut RetainedChunkCache,
@@ -245,14 +221,6 @@ impl FrameUpload {
     /// Records independent window-color raster work and its final compositor descriptor.
     /// The descriptor shares the compositor shader ABI; it creates no Filter scope,
     /// Gaussian work, Filter target or texture copy.
-    pub(in crate::platform::nova) fn append_root_color(
-        &mut self,
-        drawable_size: DrawableSize,
-        summary: &mut FrameUploadSummary,
-    ) -> bool {
-        self.append_root_color_sized(drawable_size, drawable_size, summary)
-    }
-
     pub(in crate::platform::nova) fn append_root_color_sized(
         &mut self,
         drawable_size: DrawableSize,
