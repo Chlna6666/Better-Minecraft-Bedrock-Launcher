@@ -210,6 +210,8 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                                 };
                                 #[cfg(target_os = "windows")]
                                 let completed = crate::core::minecraft::diagnostics::enrich_windows_wer(completed).await;
+                                #[cfg(target_os = "windows")]
+                                crate::core::minecraft::diagnostics::publish_unconfirmed_windows_exit(&completed);
                                 if completed.kind.is_abnormal() {
                                     append_log(&monitor_task_id, completed.summary.clone());
                                     warn!(session_id = %completed.id, %pid, "游戏异常退出");
