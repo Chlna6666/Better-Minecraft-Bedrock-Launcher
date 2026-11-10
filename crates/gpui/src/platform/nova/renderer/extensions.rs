@@ -153,6 +153,7 @@ impl RendererRegistry {
         device: &mut dyn ExtensionDevice,
         context: crate::RendererExtensionContext,
         steps: &mut Vec<RenderCommand>,
+        mut register: impl FnMut(gfx_core::SubmissionId),
     ) -> Result<()> {
         let type_id = input.renderer_type();
         let before = self.passes.len();
@@ -160,7 +161,16 @@ impl RendererRegistry {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(input.create_renderer(device, context.clone())?),
         };
-        renderer.render(input, device, context, steps)?;
+        let result = renderer.render(input, device, context, steps);
+        // A generated Compute/Transfer submit can succeed before a later
+        // scene allocation fails. Drain those native producer IDs even on
+        // error so the GPU owner's nonblocking poll never loses their fences.
+        let mut accepted = Vec::new();
+        renderer.drain_accepted_native_submissions(&mut accepted);
+        for submission in accepted {
+            register(submission);
+        }
+        result?;
         renderer.drain_render_passes(&mut self.passes);
         let compute_before = self.compute_passes.len();
         renderer.drain_compute_passes(&mut self.compute_passes);
