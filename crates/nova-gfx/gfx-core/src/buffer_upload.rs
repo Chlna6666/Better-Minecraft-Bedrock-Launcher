@@ -23,14 +23,25 @@ pub struct BufferWrite<'a> {
 /// GPU-resident allocator for cross-queue retirement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpuBufferCopy {
+    /// Source buffer whose physical bytes are read by the native COPY queue.
     pub source: BufferId,
+    /// Starting byte offset in the source allocation.
     pub source_offset: u64,
+    /// Destination buffer whose physical bytes are overwritten.
     pub destination: BufferId,
+    /// Starting byte offset in the destination allocation.
     pub destination_offset: u64,
+    /// Number of bytes transferred, excluding any padding.
     pub bytes: u64,
 }
 
 impl GpuBufferCopy {
+    /// Validate nonempty ranges, checked offset arithmetic and distinct buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for zero length, same-buffer copies or overflow.
+    /// Device buffer bounds are validated separately by the native backend.
     pub fn validate(self) -> Result<()> {
         if self.bytes == 0 {
             return Err(Error::InvalidInput("GPU buffer copy cannot be empty".into()));
