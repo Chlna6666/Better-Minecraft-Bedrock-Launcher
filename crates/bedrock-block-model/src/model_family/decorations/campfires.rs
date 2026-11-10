@@ -124,7 +124,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     };
 
     let mut cuboids = Vec::with_capacity(5);
-    for mut model in north_boxes() {
+    for model in north_boxes() {
         let mut cuboid = ModelCuboid::new(model.min.map(px), model.max.map(px));
         for (face, uv) in model.uv {
             cuboid = cuboid.with_face_uv(face, uv);
@@ -138,7 +138,6 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
             cuboid = rotate_cuboid_clockwise(cuboid);
         }
         cuboids.push(cuboid);
-        model.lit = &[];
     }
 
     let mut shape = ModelShape::from_cuboids(cuboids);
