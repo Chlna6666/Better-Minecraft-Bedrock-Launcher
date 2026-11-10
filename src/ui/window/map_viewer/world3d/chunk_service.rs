@@ -1948,6 +1948,7 @@ mod cache_tests {
             version: bedrock_world::ChunkVersion::New,
             state_version: None,
             faces: 1,
+            unexpanded_bands: BTreeSet::new(),
         };
         let extra_bytes = boundary.estimated_cpu_bytes();
         assert!(cached.estimated_cpu_bytes() >= cached.bytes + extra_bytes);
@@ -1981,6 +1982,7 @@ mod cache_tests {
             version: bedrock_world::ChunkVersion::New,
             state_version: None,
             faces: 0,
+            unexpanded_bands: BTreeSet::new(),
         };
         let metadata_bytes = chunk.estimated_cpu_bytes() - chunk.bytes;
         chunk.discard_blocks();
@@ -2269,6 +2271,9 @@ struct CachedChunk {
     version: ChunkVersion,
     state_version: Option<i32>,
     faces: usize,
+    // Fully decoded in the Probe, but intentionally omitted from model
+    // collection. Promotion and neighbor seam requests must rehydrate them.
+    unexpanded_bands: BTreeSet<i32>,
 }
 
 impl CachedChunk {
@@ -2594,6 +2599,7 @@ struct Worker {
             Option<i32>,
             usize,
             Vec<FrameDisplay>,
+            BTreeSet<i32>,
         ),
     >,
     view: ViewState,
@@ -3092,6 +3098,9 @@ impl Worker {
                 match result {
                     Ok(Some(chunk)) => {
                         let deferred = chunk.blocks.is_none();
+                        self.deferred_bands.extend(
+                            chunk.unexpanded_bands.iter().map(|&band| (pos, band)),
+                        );
                         self.cache.insert(pos, chunk);
                         self.missing.remove(&pos);
                         self.failed_positions.remove(&pos);
@@ -3461,7 +3470,12 @@ impl Worker {
                         target_set.contains(pos),
                         chunk.blocks.is_some(),
                         chunk.boundary.is_some(),
-                    )
+                    ) || (!chunk.unexpanded_bands.is_empty()
+                        && (!target_set.contains(pos)
+                            // A previously omitted band became visible.
+                            || chunk.unexpanded_bands.iter().any(|band| {
+                                !self.deferred_bands.contains(&(*pos, *band))
+                            })))
                 })
             })
             .collect::<Vec<_>>();
@@ -3483,7 +3497,11 @@ impl Worker {
         // it is itself renderable. Do not promote it to a GPU mesh here: its
         // opaque-block snapshot only supplies neighbor face decisions.
         for pos in local_positions {
-            if !target_set.contains(&pos) {
+            if !target_set.contains(&pos)
+                && !self.cache.get(&pos).is_some_and(|chunk| {
+                    !chunk.unexpanded_bands.is_empty()
+                })
+            {
                 // A neighboring full column is needed for occupancy and AO
                 // decisions, not for its complete model/texture expansion.
                 // Build its compact halo once and keep the original blocks
@@ -3506,7 +3524,14 @@ impl Worker {
             let Some(mut chunk) = self.cache.remove(&pos) else {
                 continue;
             };
-            let blocks = match chunk.blocks.take() {
+            let reload_incomplete = !chunk.unexpanded_bands.is_empty()
+                && rehydrate_positions.contains(&pos);
+            let retained_partial = if reload_incomplete {
+                chunk.blocks.take()
+            } else {
+                None
+            };
+            let blocks = match if reload_incomplete { None } else { chunk.blocks.take() } {
                 Some(blocks) => blocks,
                 None => match rehydrated.remove(&pos).unwrap_or(Ok(None)) {
                     Ok(Some(mut loaded)) => {
@@ -3523,15 +3548,18 @@ impl Worker {
                         chunk.version = loaded.version;
                         chunk.state_version = loaded.state_version;
                         chunk.frame_displays = loaded.frame_displays;
+                        chunk.unexpanded_bands = loaded.unexpanded_bands;
                         blocks
                     }
                     Ok(None) => {
+                        chunk.blocks = retained_partial;
                         self.cache.insert(pos, chunk);
                         continue;
                     }
                     Err(error) => {
                         self.last_error = Some(error);
                         self.failed_chunks = self.failed_chunks.saturating_add(1);
+                        chunk.blocks = retained_partial;
                         self.cache.insert(pos, chunk);
                         continue;
                     }
@@ -3547,6 +3575,7 @@ impl Worker {
                     chunk.state_version,
                     chunk.faces,
                     chunk.frame_displays,
+                    chunk.unexpanded_bands,
                 ),
             );
         }
@@ -3555,7 +3584,7 @@ impl Worker {
         // so not-yet-meshed Sections can be culled without allocating a Mesh.
         let mut prospective_bands = BTreeSet::new();
         for &pos in &targets {
-            if let Some((probe, _, _, _, _)) = self.probe_stash.get(&pos) {
+            if let Some((probe, _, _, _, _, _)) = self.probe_stash.get(&pos) {
                 for &subchunk in probe.subchunks.keys() {
                     prospective_bands.insert((pos, i32::from(subchunk).div_euclid(4)));
                 }
@@ -3799,7 +3828,7 @@ impl Worker {
             let convert_started = Instant::now();
             let mut pending_sections = Vec::new();
             for (pos, section, faces) in gpu_sections {
-                if let Some((probe, _, _, _, _)) = self.probe_stash.get(&pos) {
+                if let Some((probe, _, _, _, _, _)) = self.probe_stash.get(&pos) {
                     completed_sections.entry(pos).or_default();
                     pending_sections.push((pos, section, faces, probe.clone()));
                 }
@@ -3808,7 +3837,7 @@ impl Worker {
                 if !targets.contains(&chunk_faces.pos) {
                     continue;
                 }
-                let Some((probe, _, _, _, frame_displays)) = self.probe_stash.get(&chunk_faces.pos)
+                let Some((probe, _, _, _, frame_displays, _)) = self.probe_stash.get(&chunk_faces.pos)
                 else {
                     continue;
                 };
@@ -4083,7 +4112,7 @@ impl Worker {
             eprintln!("world3d worker: face passes {pass_faces:?}");
         }
         for (pos, blocks) in builder.take_stream_chunks() {
-            let Some((probe, version, state_version, faces, frame_displays)) =
+            let Some((probe, version, state_version, faces, frame_displays, unexpanded_bands)) =
                 self.probe_stash.remove(&pos)
             else {
                 continue;
@@ -4100,6 +4129,7 @@ impl Worker {
                     version,
                     state_version,
                     faces,
+                    unexpanded_bands,
                 },
             );
         }
@@ -5342,6 +5372,7 @@ fn collect_lazy_probe_chunk(data: ChunkData) -> Result<Option<CachedChunk>, Stri
         version,
         state_version: None,
         faces: 0,
+        unexpanded_bands: BTreeSet::new(),
     }))
 }
 
@@ -5378,6 +5409,9 @@ fn collect_cached_chunk(
     let blocks =
         p3d::preview_3d_collect_chunk_blocks_with_biome_blend(&data, Some(models), biome_blend)
             .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?;
+    let unexpanded_bands = omitted.iter()
+        .map(|(y, _)| i32::from(*y).div_euclid(4))
+        .collect::<BTreeSet<_>>();
     data.subchunks.append(&mut omitted);
     let bytes = blocks.estimated_cpu_bytes();
     let version = data.version;
@@ -5408,6 +5442,7 @@ fn collect_cached_chunk(
         version,
         state_version: None,
         faces: 0,
+        unexpanded_bands,
     }))
 }
 
