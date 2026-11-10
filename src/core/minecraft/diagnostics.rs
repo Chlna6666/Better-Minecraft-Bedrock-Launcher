@@ -1042,7 +1042,13 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
                 .is_some_and(|root| dir.starts_with(root))
                 || report.compatibility_prefix.as_ref()
                     .is_some_and(|prefix| dir.starts_with(prefix));
-            let category = if compatibility_source { "runner" } else { "mod" };
+            let category = if compatibility_source {
+                "runner"
+            } else if is_mod_log_dir {
+                "mod-owned"
+            } else {
+                "mod"
+            };
             files.push((format!("logs/{category}-provider-{number:02}.{ext}"), path));
             number += 1;
         }
