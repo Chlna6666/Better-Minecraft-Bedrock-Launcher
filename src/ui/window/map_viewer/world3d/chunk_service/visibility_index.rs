@@ -25,6 +25,7 @@ const MAX_COLUMNS: usize = 16_384;
 const MAX_SECTIONS: usize = 48;
 const MAX_FILE_SIZE: u64 = 128 * 1024 * 1024;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(8);
+const VIEW_REVISION_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const OFFSET: u64 = 0xcbf29ce484222325;
 const PRIME: u64 = 0x100000001b3;
 
@@ -245,6 +246,7 @@ pub(super) struct VisibilityIndex {
     epoch: u64,
     dirty: bool,
     last_flush: Instant,
+    last_checked: Instant,
 }
 
 impl VisibilityIndex {
@@ -262,13 +264,22 @@ impl VisibilityIndex {
         Self {
             world: world.to_path_buf(), file, revision, entries,
             epoch: 1, dirty: false, last_flush: Instant::now(),
+            last_checked: Instant::now(),
         }
     }
 
     /// Re-scan LevelDB file *metadata*, not block values. Missing or changed
     /// files invalidate every old persistent proof. The caller must then
     /// reschedule any columns skipped using the previous index.
+    pub(super) fn refresh_if_due(&mut self) -> bool {
+        if self.last_checked.elapsed() < VIEW_REVISION_CHECK_INTERVAL {
+            return false;
+        }
+        self.refresh()
+    }
+
     pub(super) fn refresh(&mut self) -> bool {
+        self.last_checked = Instant::now();
         let new_revision = source_revision(&self.world);
         if new_revision == self.revision {
             return false;
@@ -388,6 +399,7 @@ mod tests {
             world: world.clone(), file: path.clone(), revision,
             entries: BTreeMap::new(), epoch: 1, dirty: false,
             last_flush: Instant::now(),
+            last_checked: Instant::now(),
         };
         index.upsert(pos(1), BTreeMap::from([(0, [u64::MAX; 64])]));
         index.upsert(pos(2), BTreeMap::from([(0, [0; 64])]));
