@@ -4978,7 +4978,14 @@ mod platform {
     ) -> Result<Dx12NativeQueue> {
         let queue = create_command_queue_of_type(device, kind)?;
         let fence = create_fence(device)?;
-        Ok(Dx12NativeQueue { queue, fence, next_fence_value: 1 })
+        // Query once during queue creation, never once per meshing batch.
+        // COMPUTE and DIRECT queues may have different native timestamp rates.
+        let timestamp_frequency_hz = unsafe { queue.GetTimestampFrequency() }
+            .ok()
+            .filter(|frequency| *frequency > 0);
+        Ok(Dx12NativeQueue {
+            queue, fence, next_fence_value: 1, timestamp_frequency_hz,
+        })
     }
 
     fn create_command_queue_of_type(
@@ -8258,6 +8265,7 @@ mod platform {
         queue: ID3D12CommandQueue,
         fence: ID3D12Fence,
         next_fence_value: u64,
+        timestamp_frequency_hz: Option<u64>,
     }
 
     struct Dx12Submission {
