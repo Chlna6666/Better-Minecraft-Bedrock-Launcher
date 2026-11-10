@@ -2882,7 +2882,7 @@ struct Worker {
     last_material_index_flush_at: Option<Instant>,
     visibility_index: VisibilityIndex,
     index_hidden_columns: HashSet<ChunkPos>,
-    index_plan_key: Option<(Dimension, i32, i32, i32, i32)>,
+    index_plan_key: Option<(Dimension, i32, i32, i32, i32, [i8; 3])>,
     index_plan_epoch: u64,
     index_plan_at: Instant,
 }
@@ -3522,18 +3522,36 @@ impl Worker {
             return;
         }
         let camera = self.view.camera.map(|value| value.floor() as i32);
+        // A quantized camera direction avoids full Portal recomputation on
+        // every 60-FPS mouse movement. The meshing cone is deliberately wider
+        // than the actual viewport so small heading changes cannot expose a
+        // deferred band before the next direction bucket is reached.
+        let direction = [
+            (self.view.forward_xz[0] * 8.0).round() as i8,
+            (self.view.forward_y * 8.0).round() as i8,
+            (self.view.forward_xz[1] * 8.0).round() as i8,
+        ];
         let key = (
-            self.view.dimension, camera[0], camera[1], camera[2], self.view.radius,
+            self.view.dimension, camera[0], camera[1], camera[2],
+            self.view.radius, direction,
         );
         let epoch = self.visibility_index.epoch();
         if self.index_plan_key == Some(key) {
-            if self.index_plan_epoch == epoch
-                || self.index_plan_at.elapsed() < Duration::from_millis(750)
-            {
+            if self.index_plan_epoch == epoch {
+                return;
+            }
+            if self.index_plan_at.elapsed() < Duration::from_millis(750) {
+                // A changed index invalidates previous hidden proofs
+                // immediately, but defer expensive graph reconstruction
+                // until the next bounded planning window.
+                self.index_hidden_columns.clear();
                 return;
             }
         }
-        let mut probes = self.visibility_index.probes().collect::<BTreeMap<_, _>>();
+        let (center_x, center_z) = self.view_center_chunk();
+        let mut probes = self.visibility_index.probes_in_view(
+            self.view.dimension, center_x, center_z, self.view.radius,
+        ).collect::<BTreeMap<_, _>>();
         // Live decoded geometry is more precise than the conservative disk
         // snapshot. Its solid masks always come from authoritative models.
         probes.extend(
@@ -3544,7 +3562,6 @@ impl Worker {
             self.probe_stash.iter()
                 .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
         );
-        let (center_x, center_z) = self.view_center_chunk();
         let candidates = self.visibility_index.candidate_bands()
             .filter(|(pos, _)| {
                 inside_view(
@@ -6209,7 +6226,6 @@ fn run_worker(
                     worker.deferred_columns.remove(&pos);
                     worker.dirty_meshes.insert(pos);
                 }
-                worker.index_plan_key = None;
                 worker.promote_deferred_db_reads();
                 worker.promote_visible_bands();
                 if old_center != new_center || old_radius != worker.view.radius {
