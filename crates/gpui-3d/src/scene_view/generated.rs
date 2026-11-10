@@ -738,30 +738,23 @@ fn prepare_generated(
                 .ok_or_else(|| anyhow!("generated lighting page address overflow"))?;
             templates[124..128].copy_from_slice(&absolute.to_le_bytes());
         }
-        let writes =
-            [(0, &cells), (1, &templates), (3, &args), (4, &params)].map(|(slot, data)| {
-                BufferWrite {
-                    descriptor: BufferWriteDescriptor {
-                        buffer: buffers[slot],
-                        offset: if shared_scratch[slot] {
-                            scratch_offsets[slot]
-                        } else {
-                            match slot {
-                                1 => template_offset,
-                                3 => argument_offset,
-                                _ => 0,
-                            }
-                        },
+        let staging = [(0, cells), (1, templates), (3, args), (4, params)]
+            .map(|(slot, data)| StagedBufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: buffers[slot],
+                    offset: if shared_scratch[slot] {
+                        scratch_offsets[slot]
+                    } else {
+                        match slot {
+                            1 => template_offset,
+                            3 => argument_offset,
+                            _ => 0,
+                        }
                     },
-                    data: data.as_slice(),
-                }
-            });
-        let staging = writes
-            .into_iter()
-            .map(|write| StagedBufferWrite {
-                descriptor: write.descriptor,
-                data: write.data.to_vec(),
+                },
+                data,
             })
+            .into_iter()
             .collect::<Vec<_>>();
         let bindings = specs
             .iter()
