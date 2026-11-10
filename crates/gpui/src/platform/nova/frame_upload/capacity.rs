@@ -361,22 +361,6 @@ impl FrameUpload {
         Arc::clone(&self.backdrop_source_atlas_tiles_cache)
     }
 
-    pub(in crate::platform::nova) fn uploaded_bytes(&self) -> usize {
-        self.globals
-            .len()
-            .saturating_add(self.text_raster_params.len())
-            .saturating_add(self.quads.len())
-            .saturating_add(self.shadows.len())
-            .saturating_add(self.path_rasterization_vertices.len())
-            .saturating_add(self.path_sprites.len())
-            .saturating_add(self.mono_sprites.len())
-            .saturating_add(self.poly_sprites.len())
-            .saturating_add(self.underlines.len())
-            .saturating_add(self.backdrop_blur_passes.len())
-            .saturating_add(self.backdrop_blurs.len())
-            .saturating_add(self.animation_values.len())
-    }
-
     pub(in crate::platform::nova) fn upload_breakdown(
         &self,
     ) -> crate::diagnostics::performance_metrics::FrameUploadBreakdown {
