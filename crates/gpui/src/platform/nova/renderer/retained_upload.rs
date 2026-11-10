@@ -39,9 +39,6 @@ impl StaticForegroundPartition {
         self.animated == 0 || self.static_prefix.saturating_mul(3) >= self.total().saturating_mul(2)
     }
 
-    fn has_contiguous_static_background(self) -> bool {
-        self.static_prefix > 0 && self.animated > 0 && self.static_after_dynamic == 0
-    }
 }
 
 fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition {
