@@ -62,26 +62,6 @@ impl RetainedPaint {
         self.revision = scene.revision;
     }
 
-    /// Transfers prepared metadata for an independently painted Filter source.
-    /// Only Paint revisions and Chunk ranges are retained; the source Scene remains the sole payload owner.
-    pub(crate) fn include(&mut self, mut source: Self) {
-        assert!(source.finished, "source Paint retention must be finalized");
-        self.sources.extend(source.sources.drain());
-        if !source.prepared_retained_quad_chunks.is_empty()
-            || !source.prepared_retained_monochrome_sprite_chunks.is_empty()
-        {
-            self.sources.insert(
-                source.revision,
-                std::sync::Arc::new(PreparedRetainedChunks {
-                    quads: std::mem::take(&mut source.prepared_retained_quad_chunks),
-                    monochrome_sprites: std::mem::take(
-                        &mut source.prepared_retained_monochrome_sprite_chunks,
-                    ),
-                }),
-            );
-        }
-    }
-
     /// Borrows ranges for this exact Paint generation, including independently captured sources.
     /// An unpaired generation is never allowed to consume stale prepared indices.
     pub(crate) fn chunks_for(&self, scene: &Scene) -> &[PreparedRetainedQuadChunk] {
