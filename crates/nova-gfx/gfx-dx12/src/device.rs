@@ -63,7 +63,7 @@ mod platform {
         RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
         RenderTarget, ResourceDevice, ResourceStats, SamplerDescriptor, SamplerId, ScissorRect,
         ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages,
-        StencilFaceState, StencilOp, StencilState, SubmissionDevice, SubmissionId,
+        StencilOp, StencilState, SubmissionDevice, SubmissionId,
         SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
         TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureTransferDevice,
         TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
