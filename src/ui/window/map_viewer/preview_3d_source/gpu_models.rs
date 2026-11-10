@@ -65,7 +65,11 @@ pub(super) struct ModelPlan {
 }
 
 impl ModelPlan {
-    pub(super) fn new(builder: &Preview3dMeshBuilder, blocks: &Preview3dChunkBlocks) -> Self {
+    pub(super) fn new(
+        builder: &Preview3dMeshBuilder,
+        blocks: &Preview3dChunkBlocks,
+        skip_cell: impl Fn(i32, bool) -> bool,
+    ) -> Self {
         let mut plan = Self {
             faces: Vec::new(),
             neighbours: Vec::new(),
@@ -78,6 +82,9 @@ impl ModelPlan {
         let mut models = HashMap::<ModelKey, Range<u32>>::default();
         for (records, glass) in [(&blocks.opaque_blocks, false), (&blocks.glass_blocks, true)] {
             for block in records {
+                if skip_cell(block.key.y, false) {
+                    continue;
+                }
                 let colors = FACE_DEFINITIONS
                     .map(|face| block.colors.color_for_normal(face.normal).map(f32::to_bits));
                 let key = ModelKey::Cube(block.material.clone(), colors, glass);
@@ -121,6 +128,11 @@ impl ModelPlan {
             (&blocks.glass_detail_blocks, true),
         ] {
             for block in records {
+                let custom = block.normalized_name.contains(':')
+                    && !block.normalized_name.starts_with("minecraft:");
+                if !custom && skip_cell(block.key.y, true) {
+                    continue;
+                }
                 let query = builder.preview_3d_detail_shape_query(block);
                 let key = ModelKey::Detail(
                     Arc::as_ptr(&block.shape) as usize,
@@ -192,6 +204,9 @@ impl ModelPlan {
         }
         for (records, water) in [(&blocks.water_blocks, true), (&blocks.lava_blocks, false)] {
             for block in records {
+                if skip_cell(block.key.y, false) {
+                    continue;
+                }
                 let key = ModelKey::Fluid(
                     block.material.clone(),
                     block.color.map(f32::to_bits),
