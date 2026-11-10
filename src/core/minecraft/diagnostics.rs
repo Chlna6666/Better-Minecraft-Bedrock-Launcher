@@ -1005,7 +1005,13 @@ fn text_files(report: &GameSessionReport) -> Vec<(String, PathBuf)> {
             if !matches!(ext.to_ascii_lowercase().as_str(), "log" | "txt" | "json") { continue }
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             let name = name.to_ascii_lowercase();
-            if report.compatibility_logs.as_ref() != Some(&dir)
+            // BLoader writes per-mod output into logs/mods/<mod>-<id>.log.
+            // Its scope/owner is retained in the log itself, but this shared
+            // directory must never be treated as session-private evidence.
+            let is_mod_log_dir = dir.file_name().is_some_and(|v| v == "mods")
+                && dir.parent().is_some_and(|parent| parent.ends_with("logs"));
+            if !is_mod_log_dir
+                && report.compatibility_logs.as_ref() != Some(&dir)
                 && report.compatibility_logs.as_ref().is_none_or(|logs| dir != logs.join("crash-reports"))
                 && !name.contains("crash")
                 && !name.contains("levilamina")
@@ -1130,6 +1136,28 @@ fn analyze_snapshot(
         }
     }
     let mut evidence = forensics::inspect_text(&sources);
+    // BLoader owns logs/crash-reports/crash-{veh,seh}-*.json. Unlike
+    // free-form loader lines these reports include a native process PID and
+    // offset-aware timestamp. Use only precisely correlated metadata.
+    for confirmed in forensics::inspect_bloader_crash_json(
+        &sources,
+        report.pid,
+        report.started_at,
+        report.ended_at,
+        report.compatibility_prefix.is_none(),
+    ) {
+        if let Some(existing) = evidence.loader_issues.iter_mut().find(|issue|
+            issue.loader == confirmed.loader
+            && issue.kind == confirmed.kind
+            && issue.exception_code == confirmed.exception_code
+            && issue.module == confirmed.module
+        ) {
+            existing.session_private = confirmed.session_private;
+            existing.phase = confirmed.phase;
+        } else if evidence.loader_issues.len() < 12 {
+            evidence.loader_issues.push(confirmed);
+        }
+    }
     evidence.minidumps = forensics::inspect_dumps(&dump_candidates(report));
     let findings = analysis::analyze_with_forensics(report, &sources, &evidence);
     (findings, evidence)
