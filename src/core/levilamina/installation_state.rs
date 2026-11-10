@@ -195,6 +195,48 @@ pub(super) fn validated_preloader_version(game_directory: &Path) -> Result<Optio
         .map(str::to_owned))
 }
 
+/// Repair only BMCBL's historical PreLoader manifest in its existing
+/// directory, during an explicit installer operation. This does not move,
+/// delete or reload PreLoader.dll and never runs on the game launch path.
+fn repair_preloader_manifest_type(game_directory: &Path) -> Result<(), String> {
+    let dir = game_directory.join("mods").join("PreLoader");
+    if !dir.join("PreLoader.dll").is_file() {
+        return Ok(());
+    }
+    let path = dir.join("manifest.json");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let raw = std::fs::read(&path)
+        .map_err(|error| format!("读取已有 PreLoader Manifest 失败 {}: {error}", path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|error| format!("解析已有 PreLoader Manifest 失败 {}: {error}", path.display()))?;
+    let is_previous_bmcbl_layout = matches!(
+        value.get("name").and_then(serde_json::Value::as_str),
+        Some("LeviLamina PreLoader" | "PreLoader")
+    ) && value.get("entry").and_then(serde_json::Value::as_str) == Some("PreLoader.dll")
+        && matches!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("preload" | "preload-native")
+        );
+    if !is_previous_bmcbl_layout {
+        return Ok(());
+    }
+    let object = value.as_object_mut().ok_or_else(|| "无效的 PreLoader Manifest".to_string())?;
+    object.insert("name".to_string(), serde_json::json!("PreLoader"));
+    object.insert("type".to_string(), serde_json::json!("preloader-bootstrap"));
+    let content = serde_json::to_vec_pretty(&value)
+        .map_err(|error| format!("序列化 PreLoader Manifest 失败: {error}"))?;
+    // Preserve the DLL entirely; rewriting metadata must not disrupt startup.
+    std::fs::write(&path, content)
+        .map_err(|error| format!("更新 PreLoader Manifest 类型失败 {}: {error}", path.display()))?;
+    tracing::info!(
+        path = %path.display(),
+        "已在原目录修复 PreLoader Manifest 类型为 preloader-bootstrap；DLL 未移动或删除"
+    );
+    Ok(())
+}
+
 fn read_mod_manifest_version(directory: &Path) -> Result<Option<String>, String> {
     let path = directory.join("manifest.json");
     if !path.is_file() {
@@ -233,6 +275,9 @@ fn read_lock(game_directory: &Path) -> Result<InstallLock, String> {
 }
 
 fn read_installed_packages_sync(game_directory: &Path) -> Result<Vec<InstalledPackage>, String> {
+    // This path runs only inside the explicit installer, never when launching
+    // Minecraft or reading version details.
+    repair_preloader_manifest_type(game_directory)?;
     let lock = read_lock(game_directory)?;
     let mut installed = Vec::with_capacity(lock.packages.len());
     for package in lock.packages {
