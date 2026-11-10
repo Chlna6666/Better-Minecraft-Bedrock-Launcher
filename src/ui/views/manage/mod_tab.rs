@@ -31,7 +31,7 @@ impl ManagePageView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if asset.folder_name.as_ref().starts_with("levilamina:") {
+        if asset.folder_name.to_string().starts_with("levilamina:") {
             toast::error(
                 cx,
                 SharedString::from("LeviLamina Mod 的加载类型由 LeviLamina 管理，不能改成 BLoader 类型"),
