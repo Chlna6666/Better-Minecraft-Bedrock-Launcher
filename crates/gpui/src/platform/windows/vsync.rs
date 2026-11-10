@@ -151,10 +151,6 @@ impl VSyncScheduler {
         (self.is_active() && self.unpaced.load(Ordering::Acquire)).then(native_unpaced_interval)
     }
 
-    pub(super) fn refresh_interval(&self) -> Duration {
-        Duration::from_nanos(self.refresh_interval_ns.load(Ordering::Acquire))
-    }
-
     pub(super) fn request_frame(&self) -> bool {
         if !self.is_active() {
             return false;
