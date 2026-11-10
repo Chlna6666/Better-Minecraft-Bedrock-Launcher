@@ -36,10 +36,30 @@ enum SidecarBridgeCpuPhase {
 /// Submission *call* duration is CPU time, not time executing the queued
 /// GPU commands. Native DrawIndirect timestamps and host fence-wait metrics
 /// remain separate; do not present these values as GPU compositor latency.
+// Native bridge samples must be explicitly requested, never activated by
+// debug_assertions: ordinary GPUI frames use the same consumer path.
+const SIDECAR_BRIDGE_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+fn explicit_sidecar_bridge_trace(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true"))
+}
+
 fn sidecar_bridge_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| cfg!(debug_assertions) ||
-        std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
+    *ENABLED.get_or_init(|| {
+        explicit_sidecar_bridge_trace(
+            std::env::var("GPUI_3D_TRACE_TIMINGS").ok().as_deref()
+        )
+    })
+}
+
+impl SidecarBridgeCpuTrace {
+    // A GUI consumer without a native offscreen producer is not 3D activity.
+    fn has_offscreen_activity(&self) -> bool {
+        self.producer_passes != 0
+            || self.native_producer_calls != 0
+            || self.linked_consumers != 0
+    }
 }
 
 fn record_sidecar_bridge_cpu(
@@ -81,11 +101,21 @@ fn record_sidecar_bridge_cpu(
         }
         let now = Instant::now();
         let window_start = trace.window_start.get_or_insert(now);
-        if now.saturating_duration_since(*window_start) < Duration::from_secs(1) {
+        if now.saturating_duration_since(*window_start) < SIDECAR_BRIDGE_REPORT_INTERVAL {
             return;
         }
-        eprintln!(
-            "gpui3d native_bridge_cpu producer_calls={} producer_passes={} independent_calls={} producer_avg_us={:.1} producer_max_us={} native_producer_calls={} native_producer_host_avg_us={:.1} consumer_calls={} consumer_commands={} linked_consumers={} consumer_avg_us={:.1} consumer_max_us={} pending_peak={} gpu_execution_time=not_measured_by_cpu_trace",
+        if !trace.has_offscreen_activity() {
+            // Do not generate repeated zero-producer reports while only GPUI
+            // paints the normal 2D window. Reset the sampling window too.
+            *trace = SidecarBridgeCpuTrace {
+                window_start: Some(now),
+                ..SidecarBridgeCpuTrace::default()
+            };
+            return;
+        }
+        log::info!(
+            target: "gpui::platform::nova::renderer::present",
+            "native_bridge_cpu producer_calls={} producer_passes={} independent_calls={} producer_avg_us={:.1} producer_max_us={} native_producer_calls={} native_producer_host_avg_us={:.1} consumer_calls={} consumer_commands={} linked_consumers={} consumer_avg_us={:.1} consumer_max_us={} pending_peak={} gpu_execution_time=not_measured_by_cpu_trace",
             trace.producer_calls,
             trace.producer_passes,
             trace.independent_calls,

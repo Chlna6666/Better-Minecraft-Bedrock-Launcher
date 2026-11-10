@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn bridge_trace_is_opt_in_even_in_dev_builds() {
+    assert!(!explicit_sidecar_bridge_trace(None));
+    assert!(!explicit_sidecar_bridge_trace(Some("0")));
+    assert!(!explicit_sidecar_bridge_trace(Some("false")));
+    assert!(explicit_sidecar_bridge_trace(Some("1")));
+    assert!(explicit_sidecar_bridge_trace(Some("true")));
+}
+
+#[test]
+fn bridge_does_not_report_idle_gui_consumers_as_3d() {
+    let mut trace = SidecarBridgeCpuTrace {
+        consumer_calls: 99,
+        consumer_commands: 1529,
+        max_pending: 1,
+        ..Default::default()
+    };
+    assert!(!trace.has_offscreen_activity());
+    trace.producer_passes = 1;
+    assert!(trace.has_offscreen_activity());
+    trace.producer_passes = 0;
+    trace.native_producer_calls = 1;
+    assert!(trace.has_offscreen_activity());
+    trace.native_producer_calls = 0;
+    trace.linked_consumers = 1;
+    assert!(trace.has_offscreen_activity());
+}
+
+#[test]
 fn producer_fence_survives_without_a_main_submission() {
     let producer = SubmissionId::from_parts(1, 1);
     let main = SubmissionId::from_parts(2, 1);
