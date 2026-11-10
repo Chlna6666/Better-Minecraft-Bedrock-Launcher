@@ -1147,6 +1147,30 @@ mod view_tests {
     }
 
     #[test]
+    fn db_reads_are_deferred_only_outside_the_near_and_forward_cones() {
+        let pos = |z| ChunkPos {
+            x: 0, z, dimension: Dimension::Overworld,
+        };
+        let mut view = super::ViewState {
+            generation: 1,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 90.0, 8.0],
+            forward_xz: [0.0, 1.0],
+            forward_y: 0.0,
+            radius: 32,
+            view_distance: 528.0,
+        };
+        assert!(!super::lazy_mesh_column(pos(-2), view));
+        assert!(!super::lazy_mesh_column(pos(12), view));
+        assert!(super::lazy_mesh_column(pos(-12), view));
+        view.forward_xz = [0.0, -1.0];
+        assert!(!super::lazy_mesh_column(pos(-12), view));
+        assert!(super::lazy_mesh_column(pos(12), view));
+        view.forward_xz = [0.0, 0.0]; // Looking vertically, yaw proves nothing.
+        assert!(!super::lazy_mesh_column(pos(-12), view));
+    }
+
+    #[test]
     fn rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state() {
         let pos = |z| ChunkPos {
             x: 0, z, dimension: Dimension::Overworld,
@@ -2695,6 +2719,10 @@ struct Worker {
     /// Unlike dirty_meshes, these are NOT automatically processed in the
     /// background while the camera still faces away.
     deferred_columns: BTreeSet<ChunkPos>,
+    /// Columns omitted before any LevelDB query while outside the camera's
+    /// conservative rear visibility cone. Unlike metadata-only columns these
+    /// have not been loaded, so a camera turn must reschedule their DB reads.
+    deferred_db_reads: BTreeSet<ChunkPos>,
     /// Height bands whose CPU/GPU materialization was postponed by portal
     /// culling. Reevaluate when the camera moves or adjacent probes arrive.
     deferred_bands: BTreeSet<(ChunkPos, i32)>,
@@ -2823,6 +2851,7 @@ impl Worker {
             lod_modes: HashMap::new(),
             dirty_meshes: BTreeSet::new(),
             deferred_columns: BTreeSet::new(),
+            deferred_db_reads: BTreeSet::new(),
             deferred_bands: BTreeSet::new(),
             urgent_chunks: BTreeSet::new(),
             retained_invalidated: BTreeSet::new(),
@@ -3333,6 +3362,30 @@ impl Worker {
         None
     }
 
+    /// Schedule delayed DB reads only when the camera can see them again.
+    /// The main ring cursor may already have passed these positions, so
+    /// reinsert promoted positions into the existing urgent read queue.
+    fn promote_deferred_db_reads(&mut self) {
+        let (center_x, center_z) = self.view_center_chunk();
+        self.deferred_db_reads.retain(|pos| {
+            inside_cache_hysteresis(
+                *pos, self.view.dimension, center_x, center_z, self.view.radius,
+            )
+        });
+        let newly_visible = self.deferred_db_reads.iter().copied()
+            .filter(|&pos| !lazy_mesh_column(pos, self.view))
+            .collect::<Vec<_>>();
+        for pos in newly_visible {
+            self.deferred_db_reads.remove(&pos);
+            if !self.cache.contains_key(&pos)
+                && !self.missing.contains(&pos)
+                && !self.failed_positions.contains(&pos)
+            {
+                self.urgent_chunks.insert(pos);
+            }
+        }
+    }
+
     fn next_batch(&mut self, center_x: i32, center_z: i32) -> Vec<ChunkPos> {
         let mut batch = Vec::with_capacity(LOAD_BATCH_CHUNKS);
         let urgent = take_visible_urgent_chunks(
@@ -3344,6 +3397,9 @@ impl Worker {
             LOAD_BATCH_CHUNKS,
         );
         for pos in urgent {
+            // Edit/invalidation requests bypass the ordinary rear-view
+            // suppression and are never lost behind a completed ring cursor.
+            self.deferred_db_reads.remove(&pos);
             if !self.cache.contains_key(&pos)
                 && !self.missing.contains(&pos)
                 && !self.failed_positions.contains(&pos)
@@ -3351,6 +3407,7 @@ impl Worker {
                 batch.push(pos);
             }
         }
+        let mut deferred_this_wave = 0usize;
         while batch.len() < LOAD_BATCH_CHUNKS {
             let Some(pos) = self.cursor.next(
                 self.view.dimension,
@@ -3361,13 +3418,33 @@ impl Worker {
             ) else {
                 break;
             };
-            if !self.cache.contains_key(&pos)
-                && !self.missing.contains(&pos)
-                && !self.failed_positions.contains(&pos)
-                && !batch.contains(&pos)
+            if self.cache.contains_key(&pos)
+                || self.missing.contains(&pos)
+                || self.failed_positions.contains(&pos)
+                || batch.contains(&pos)
             {
-                batch.push(pos);
+                continue;
             }
+            // The same conservative rear cone already defers full model
+            // expansion. Do not issue a LevelDB query solely to construct a
+            // Probe that cannot contribute to the current view. A later view
+            // transition promotes this key without restarting the cursor.
+            if lazy_mesh_column(pos, self.view) {
+                self.deferred_db_reads.insert(pos);
+                deferred_this_wave += 1;
+                continue;
+            }
+            self.deferred_db_reads.remove(&pos);
+            batch.push(pos);
+        }
+        if deferred_this_wave > 0 && trace_timings() {
+            eprintln!(
+                "world3d db_deferred gen={} deferred_in_wave={} deferred_total={} selected={}",
+                self.view.generation,
+                deferred_this_wave,
+                self.deferred_db_reads.len(),
+                batch.len(),
+            );
         }
         batch
     }
@@ -5018,6 +5095,7 @@ impl Worker {
             self.light_columns.remove(pos);
             self.light_fields.remove(pos);
             self.deferred_columns.remove(pos);
+            self.deferred_db_reads.remove(pos);
             self.deferred_bands.retain(|(column, _)| column != pos);
             self.urgent_chunks.insert(*pos);
         }
@@ -5807,6 +5885,7 @@ fn run_worker(
                     }
                     worker.dirty_meshes.clear();
                     worker.deferred_columns.clear();
+                    worker.deferred_db_reads.clear();
                     worker.deferred_bands.clear();
                     worker.lod_modes.clear();
                     worker.urgent_chunks.clear();
@@ -5838,6 +5917,7 @@ fn run_worker(
                     worker.deferred_columns.remove(&pos);
                     worker.dirty_meshes.insert(pos);
                 }
+                worker.promote_deferred_db_reads();
                 worker.promote_visible_bands();
                 if old_center != new_center || old_radius != worker.view.radius {
                     worker.failed_positions.clear();
