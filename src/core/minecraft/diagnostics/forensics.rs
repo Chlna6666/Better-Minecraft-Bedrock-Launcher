@@ -299,9 +299,22 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
 }
 
 fn loader_win32_code(line: &str) -> Option<u32> {
-    // A PreLoader "Error code: 127" is Win32, not NTSTATUS; never
-    // conflate it with the exception code that appears in an SEH report.
+    // A PreLoader "Error code: 127" is Win32, not NTSTATUS.
+    // BLoader's LoadLibraryW failures instead include an HRESULT such as
+    // 0x8007007E (HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND)).
     let lower = line.to_ascii_lowercase();
+    if lower.contains("loadlibrary") && lower.contains(" failed code=0x")
+        && let Some(index) = lower.find("failed code=0x")
+    {
+        let hex = lower[index + "failed code=0x".len()..].chars()
+            .take_while(|ch| ch.is_ascii_hexdigit()).collect::<String>();
+        if hex.len() == 8
+            && let Ok(hr) = u32::from_str_radix(&hex, 16)
+            && (hr & 0xFFFF_0000) == 0x8007_0000
+        {
+            return Some(hr & 0xFFFF);
+        }
+    }
     for key in ["error code:", "error: code[", "win32 error ", "windows error "] {
         if let Some(index) = lower.find(key) {
             let text = lower[index + key.len()..].trim_start();
@@ -708,6 +721,44 @@ mod tests {
         assert_eq!(issue.exception_code, Some(0xC0000409));
         assert!(!issue.session_private);
         assert!(evidence.failed_mods.is_empty());
+    }
+
+    #[test]
+    fn bloader_native_load_report_and_hresult_are_recognized() {
+        let text = "[BOOT] native-load result phase=dllmain state=failed stage=load name=TestMod.dll required=true detail=LoadLibraryW failed code=0x8007007E message=missing\n";
+        let details = inspect_text(&[("logs/bloader-runtime.log".into(), text.into())]);
+        assert_eq!(details.loader_issues.len(), 1);
+        let issue = &details.loader_issues[0];
+        assert_eq!(issue.loader, LoaderFamily::BLoader);
+        assert_eq!(issue.module.as_deref(), Some("TestMod.dll"));
+        assert_eq!(issue.win32_error, Some(126));
+        assert_eq!(issue.kind, LoaderIssueKind::LoaderLoadFailure);
+    }
+
+    #[test]
+    fn bloader_crash_json_requires_native_pid_and_timestamp() {
+        let start = Utc::now();
+        let text = serde_json::json!({
+            "loader_version": "0.2.99",
+            "timestamp": start.to_rfc3339(),
+            "process_id": 44184,
+            "exception_code": "0xC0000409",
+            "exception_module": "C:\\\\mods\\\\BLoader.dll",
+            "phase": "seh",
+            "attribution": {"owner_type": "loader"},
+            "recent_mod_events": "anything"
+        }).to_string();
+        let sources = vec![("logs/mod-provider-00.json".into(), text)];
+        let matched = inspect_bloader_crash_json(&sources, 44184, start, None, true);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].phase, Some(NativeExceptionPhase::Seh));
+        assert_eq!(matched[0].exception_code, Some(0xC0000409));
+        assert_eq!(matched[0].module.as_deref(), Some("BLoader.dll"));
+        assert!(matched[0].session_private);
+        assert!(inspect_bloader_crash_json(&sources, 44185, start, None, true).is_empty());
+        assert!(inspect_bloader_crash_json(&sources, 44184, start, None, false).is_empty());
+        assert!(inspect_bloader_crash_json(&sources, 44184,
+            start + chrono::Duration::minutes(10), None, true).is_empty());
     }
 
     #[test]
