@@ -37,6 +37,9 @@ pub(super) struct SceneResources {
     /// Native producer fences shared across the owner's SceneViews; drained
     /// at the GPUI boundary even if the Scene preparation returns an error.
     accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
+    /// Standalone SceneResources have no GPUI native-fence poller. Only the
+    /// Sidecar owner may enable dispatch to an independent native queue.
+    tracked_native_queue: bool,
     /// Per-publication ID shared by hardware compute and upload probes.
     pub(super) gpu_batch_id: u64,
     culling: Option<CullResources>,
@@ -648,6 +651,7 @@ impl SceneResources {
         Self::new_shared(
             device, backend, faces, templates, arguments,
             Rc::new(RefCell::new(Vec::new())),
+            false,
         )
     }
 
@@ -658,6 +662,7 @@ impl SceneResources {
         shared_template_arena: Rc<RefCell<MeshArena>>,
         shared_argument_arena: Rc<RefCell<MeshArena>>,
         accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
+        tracked_native_queue: bool,
     ) -> gpui::Result<Self> {
         let draw_capacity = 1;
         let light_capacity = 1;
@@ -726,6 +731,7 @@ impl SceneResources {
         Ok(Self {
             backend,
             accepted_native_submissions,
+            tracked_native_queue,
             culling: None,
             mesh_shader: None,
             mesh_draw_shader: None,
@@ -2886,7 +2892,8 @@ impl SceneResources {
                     &mut *self.argument_arena.borrow_mut(),
                     backend,
                     self.gpu_batch_id,
-                    &mut self.accepted_native_submissions.borrow_mut(),
+                    self.tracked_native_queue.then(||self.accepted_native_submissions.borrow_mut())
+                        .as_deref_mut(),
                 );
                 if let Err(error) = flushed {
                     discard_pending_meshes(
@@ -2918,7 +2925,8 @@ impl SceneResources {
             &mut *self.argument_arena.borrow_mut(),
             backend,
             self.gpu_batch_id,
-            &mut self.accepted_native_submissions.borrow_mut(),
+            self.tracked_native_queue.then(||self.accepted_native_submissions.borrow_mut())
+                .as_deref_mut(),
         );
         if let Err(error) = flushed {
             discard_pending_meshes(
@@ -4062,7 +4070,7 @@ fn flush_pending_generated_meshes(
     argument_arena: &mut MeshArena,
     backend: BackendKind,
     batch_id: u64,
-    accepted: &mut Vec<gfx_core::SubmissionId>,
+    accepted: Option<&mut Vec<gfx_core::SubmissionId>>,
 ) -> gpui::Result<()> {
     if !staged_gpu.is_empty() {
         let shaders = shaders.ok_or_else(|| anyhow!("missing GPU meshing shaders"))?;
@@ -4070,17 +4078,17 @@ fn flush_pending_generated_meshes(
             .iter()
             .map(|(_, mesh)| mesh.as_ref())
             .collect::<Vec<_>>();
-        let created = super::generated::create_many_pooled_native(
-            device,
-            &inputs,
-            shaders,
-            generated_arena,
-            template_arena,
-            argument_arena,
-            backend,
-            batch_id,
-            accepted,
-        )?;
+        let created = if let Some(accepted) = accepted {
+            super::generated::create_many_pooled_native(
+                device, &inputs, shaders, generated_arena, template_arena,
+                argument_arena, backend, batch_id, accepted,
+            )?
+        } else {
+            super::generated::create_many_pooled(
+                device, &inputs, shaders, generated_arena, template_arena,
+                argument_arena, backend, batch_id,
+            )?
+        };
         for ((id, _), resource) in staged_gpu.drain(..).zip(created) {
             if let Some(generated) = &resource.generated {
                 // Reused Argument Page/slot identifiers alone cannot reveal
