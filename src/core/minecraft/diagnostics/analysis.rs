@@ -9,7 +9,8 @@ pub enum CrashReason {
     VulkanUnavailable, GraphicsDeviceLost, InsufficientMemory, DiskFull,
     PermissionDenied, ModLoadFailure, LoaderFailure, AccessViolation,
     IllegalInstruction, StackOverflow, FastFail, RunnerExited, Unclassified,
-    InitializationFailure, InPageError, ArithmeticFault,
+    InitializationFailure, InPageError, ArithmeticFault, HeapCorruption,
+    UnhandledCppException,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,8 +69,11 @@ pub fn reason_from_windows_exception(code: u32) -> Option<CrashReason> {
         0xC000_001D | 0xC000_0096 => CrashReason::IllegalInstruction,
         0xC000_0094 => CrashReason::ArithmeticFault,
         0xC000_00FD => CrashReason::StackOverflow,
+        0xC000_0374 => CrashReason::HeapCorruption,
+        0xE06D_7363 => CrashReason::UnhandledCppException,
         0xC000_0135 => CrashReason::MissingDependency,
-        0xC000_0142 => CrashReason::InitializationFailure,
+        0xC000_007B | 0xC000_0139 | 0xC000_0142 =>
+            CrashReason::InitializationFailure,
         0xC000_0409 => CrashReason::FastFail,
         _ => return None,
     })
@@ -188,7 +192,8 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
             // An exit status alone cannot prove an exception was unhandled.
             let confidence = if matches!(reason,
                 CrashReason::AccessViolation | CrashReason::FastFail |
-                CrashReason::InPageError | CrashReason::ArithmeticFault
+                CrashReason::InPageError | CrashReason::ArithmeticFault |
+                CrashReason::HeapCorruption | CrashReason::UnhandledCppException
             ) {
                 Confidence::Low
             } else {
@@ -360,6 +365,10 @@ mod tests {
             (0xC000_0094, CrashReason::ArithmeticFault),
             (0xC000_0142, CrashReason::InitializationFailure),
             (0xC000_0096, CrashReason::IllegalInstruction),
+            (0xC000_0374, CrashReason::HeapCorruption),
+            (0xE06D_7363, CrashReason::UnhandledCppException),
+            (0xC000_007B, CrashReason::InitializationFailure),
+            (0xC000_0139, CrashReason::InitializationFailure),
         ];
         for (code, reason) in cases {
             assert_eq!(analyze(&report("gdk", Some(code)), &[])[0].reason, reason);
