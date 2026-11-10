@@ -1,13 +1,17 @@
 //! Minecraft game diagnostics UI. Launcher/Sentry crashes have a separate overlay.
 use crate::core::minecraft::diagnostics::{self, CrashExportOptions, ExitKind, GameSessionReport, CrashFinding, CrashReason, Confidence, EvidenceSource};
 use crate::ui::state::game_diagnostics::GameDiagnosticsState;
+use crate::ui::components::modal;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::components::scroll::ScrollableElement as _;
 use gpui::prelude::FluentBuilder as _;
-use gpui::AnimationExt as _;
 use gpui::*;
 use std::path::PathBuf;
-use std::time::Duration;
+
+/// Crash details must remain legible even above an image or animated theme.
+fn opaque(color: Hsla) -> Hsla {
+    Hsla { a: 1.0, ..color }
+}
 
 #[derive(Clone, Copy)]
 enum ExportField {
@@ -169,7 +173,7 @@ fn finding_card(finding: CrashFinding, colors: &ThemeColors) -> impl IntoElement
         )
         .child(
             div().min_w(px(0.)).rounded(px(7.))
-                .bg(colors.settings_field_bg).p(px(10.))
+                .bg(opaque(colors.settings_field_bg)).p(px(10.))
                 .flex().flex_col().gap(px(4.))
                 .child(
                     div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD)
@@ -500,20 +504,6 @@ fn dialog_geometry(window_width: Pixels, window_height: Pixels) -> DialogGeometr
     }
 }
 
-fn entrance_animation() -> Animation {
-    Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(190))
-            .fill_mode(FillMode::Both)
-            .ease(Easing::OutCubic),
-    )
-    .with_property(AnimationProperty::clipped_translation_opacity(
-        point(px(0.), px(12.)),
-        point(px(0.), px(0.)),
-        0.92,
-        1.0,
-    ))
-}
-
 pub fn render_game_diagnostics_overlay(
     colors: &ThemeColors,
     window_width: Pixels,
@@ -559,18 +549,15 @@ pub fn render_game_diagnostics_overlay(
         t!("GameCrash.ui.riskDump")
     };
 
-    let body = div()
-        .w(card_width)
-        .h(card_height)
+    let body = modal::modal_surface(
+        opaque(colors.settings_panel_bg),
+        colors.border,
+        card_width,
+        card_height,
+        px(14.),
+    )
         .min_w(px(0.))
         .min_h(px(0.))
-        .rounded(px(14.))
-        .border_1()
-        .border_color(colors.border)
-        .bg(colors.settings_panel_bg)
-        .overflow_hidden()
-        .flex()
-        .flex_col()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
@@ -758,7 +745,7 @@ pub fn render_game_diagnostics_overlay(
                                         .rounded(px(8.))
                                         .border_1()
                                         .border_color(colors.border)
-                                        .bg(colors.settings_field_bg)
+                                        .bg(opaque(colors.settings_field_bg))
                                         .p(px(12.))
                                         .overflow_hidden()
                                         .text_size(px(11.))
@@ -971,28 +958,13 @@ pub fn render_game_diagnostics_overlay(
                 ),
         );
 
-    let animated: AnyElement = if crate::core::ui_prefs::reduced_motion() {
-        body.into_any_element()
+    // Use the shared modal backdrop and surface instead of a custom transparent overlay.
+    let backdrop = hsla(0., 0., 0., 0.60);
+    if crate::core::ui_prefs::reduced_motion() {
+        Some(modal::animated_modal_layer(body, backdrop, 1.0, true).into_any_element())
     } else {
-        body.with_visual_animation(
-            SharedString::from(format!("game-crash-entrance:{}", report.id)),
-            entrance_animation(),
-        )
-        .expect("game diagnostics uses one retained opacity/translation animation")
-        .into_any_element()
-    };
-
-    Some(
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(hsla(0., 0., 0., 0.50))
-            .child(animated)
-            .into_any_element(),
-    )
+        Some(modal::modal_layer(body, backdrop))
+    }
 }
 
 
