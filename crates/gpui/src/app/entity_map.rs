@@ -190,12 +190,6 @@ impl EntityMap {
         );
     }
 
-    pub fn extend_accessed(&mut self, entities: &FxHashSet<EntityId>) {
-        self.accessed_entities
-            .get_mut()
-            .extend(entities.iter().copied());
-    }
-
     pub fn clear_accessed(&mut self) {
         self.accessed_entities.get_mut().clear();
     }
