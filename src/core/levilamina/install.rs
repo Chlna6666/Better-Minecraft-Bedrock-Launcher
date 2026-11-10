@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::watch;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::tasks::task_manager::{self, TaskSnapshot};
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
 use super::installation_state::{
     inspect_installation as inspect_installation_state, prepare_package_install,
-    read_installed_packages, uninstall_loader, update_lock, write_preloader_manifest,
+    read_installed_packages, uninstall_loader, update_lock, validated_preloader_version,
+    write_preloader_manifest,
 };
 use super::lip::{AssetKind, PackageId, render_template};
 use super::planner::{
@@ -203,20 +204,41 @@ async fn run_install(
     request: LeviLaminaInstallRequest,
     updates: Option<&watch::Sender<LeviLaminaInstallSnapshot>>,
 ) -> Result<(), String> {
+    let installing_levilamina = matches!(request, LeviLaminaInstallRequest::Loader { .. });
     let (game_directory, game_version, root) = root_package(&request)?;
     validate_game_directory(&game_directory).await?;
+    info!(
+        directory = %game_directory.display(),
+        version = %game_version,
+        "开始解析 LeviLamina Lip 安装依赖"
+    );
     let installed_packages = read_installed_packages(&game_directory).await?;
     let plan = resolve_packages(root, &game_version, &installed_packages).await?;
+    let required_preloader = if installing_levilamina {
+        Some(
+            plan.iter()
+                .find(|package| package.id.path.eq_ignore_ascii_case(PRELOADER_PACKAGE))
+                .ok_or_else(|| "LeviLamina 安装计划缺少 PreLoader 依赖，已阻止不完整安装".to_string())?
+                .manifest.version.clone(),
+        )
+    } else {
+        None
+    };
     let ordered = installation_order(&plan)?;
     for package in ordered {
         if package.disposition == PackageDisposition::Reuse {
-            debug!(
+            info!(
                 package = %package.id.display(),
                 version = %package.manifest.version,
-                "复用已安装 Lip 依赖，跳过下载和安装"
+                "Lip 依赖文件已验证，复用已安装版本"
             );
             continue;
         }
+        info!(
+            package = %package.id.display(),
+            version = %package.manifest.version,
+            "开始下载并安装 Lip 依赖"
+        );
         if let Some(updates) = updates {
             publish_stage(
                 updates,
@@ -226,6 +248,28 @@ async fn run_install(
             );
         }
         install_package(&game_directory, package, updates).await?;
+        info!(
+            package = %package.id.display(),
+            version = %package.manifest.version,
+            "Lip 依赖安装成功"
+        );
+    }
+    if let Some(expected) = required_preloader {
+        let installed = validated_preloader_version(&game_directory)?
+            .ok_or_else(|| format!(
+                "LeviLamina 安装后未找到 PreLoader.dll 或有效 preloader-bootstrap Manifest: {}",
+                game_directory.join("mods/PreLoader").display()
+            ))?;
+        if installed != expected {
+            return Err(format!(
+                "PreLoader 安装版本校验失败: expected={expected} actual={installed}"
+            ));
+        }
+        info!(
+            version = %installed,
+            path = %game_directory.join("mods/PreLoader/PreLoader.dll").display(),
+            "LeviLamina 依赖 PreLoader 已安装并校验通过"
+        );
     }
     Ok(())
 }
@@ -295,7 +339,12 @@ async fn install_package(
     package: &ResolvedPackage,
     updates: Option<&watch::Sender<LeviLaminaInstallSnapshot>>,
 ) -> Result<(), String> {
-    prepare_package_install(game_directory, &package.id).await?;
+    // Do not delete a working PreLoader before downloading its replacement:
+    // a network failure previously left LeviLamina without a bootstrap DLL.
+    // update_lock() replaces the old lock entry after successful installation.
+    if !package.id.path.eq_ignore_ascii_case(PRELOADER_PACKAGE) {
+        prepare_package_install(game_directory, &package.id).await?;
+    }
     if !package.variant.scripts.pre_install.is_empty()
         || !package.variant.scripts.install.is_empty()
         || !package.variant.scripts.post_install.is_empty()
