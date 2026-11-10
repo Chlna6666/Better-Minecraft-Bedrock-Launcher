@@ -1240,7 +1240,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     ) {
         // Take every accepted native producer, independent of whether
         // render() succeeded. No UI-side CPU fence polling or submission.
-        submissions.append(&mut self.accepted_native_submissions.borrow_mut());
+        submissions.append(&mut *self.accepted_native_submissions.borrow_mut());
     }
 
     fn has_native_offscreen_work(&self) -> bool {
