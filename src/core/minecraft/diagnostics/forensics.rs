@@ -200,6 +200,11 @@ fn subject_from_loader_line(line: &str) -> Option<String> {
             ch.is_whitespace() || matches!(ch,
                 ':' | ',' | ';' | '(' | ')' | '[' | ']' | '"' | '\'' | '!' | '=')
         });
+        // BLoader native-load lines carry the DLL as "name=Foo.dll".
+        // Keep only that value, never the original path or a key prefix.
+        let token = token.strip_prefix("name=")
+            .or_else(|| token.strip_prefix("module="))
+            .unwrap_or(token);
         let name = token.rsplit(['\\', '/']).next().unwrap_or("");
         let name = name.trim_matches(|ch: char| {
             matches!(ch, ':' | ',' | ';' | '(' | ')' | '[' | ']' | '!' )
@@ -282,7 +287,11 @@ fn loader_line_issue(line: &str, source: &str, private: bool) -> Option<LoaderIs
         } else {
             None
         },
-        win32_error: None,
+        win32_error: if kind == LoaderIssueKind::NativeException {
+            None
+        } else {
+            loader_win32_code(line)
+        },
         phase: if kind == LoaderIssueKind::NativeException {
             if lower.contains("raw seh exception") || lower.contains("phase=seh") {
                 Some(NativeExceptionPhase::Seh)
