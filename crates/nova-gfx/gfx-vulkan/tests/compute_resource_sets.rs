@@ -76,8 +76,12 @@ fn native_compute_submission_and_reverse_gpu_queue_wait() {
     let passes = [ComputeDispatch {
         shader, bindings: &bindings, workgroups: [1, 1, 1],
     }];
-    let producer = device.submit_compute_batch_on_queue(secondary, &passes)
-        .expect("actual secondary-queue shader execution");
+    let tag = gfx_core::GpuTimestampTag {
+        batch_id: 0xB123,
+        stage: gfx_core::GpuTimestampStage::GeneratedMesh,
+    };
+    let producer = device.submit_compute_batch_profiled_on_queue(secondary, &passes, tag)
+        .expect("actual secondary or dedicated Queue Family shader execution");
     let proof = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, producer)
         .expect("native queue-1 -> primary GPU semaphore");
     assert_eq!(proof.producer(), producer);
@@ -88,6 +92,17 @@ fn native_compute_submission_and_reverse_gpu_queue_wait() {
     // contaminating runtime frame-submission hot paths.
     device.wait_submission(primary).expect("primary wait finished");
     device.wait_submission(producer).expect("native compute producer finished");
+    let mut completed = Vec::new();
+    ResourceDevice::drain_gpu_work_timestamps(&mut device, &mut completed)
+        .expect("nonblocking completed timestamp readback");
+    if let Some(sample) = completed.iter().find(|sample| sample.tag == tag) {
+        assert!(sample.frequency_hz > 0);
+        assert!(sample.duration().is_some());
+    } else {
+        // Some compute-only queue families expose timestampValidBits == 0:
+        // missing GPU timing is correct, not an inferred zero-duration sample.
+        eprintln!("NOVA_GFX_SKIP=compute family exposes no native GPU timestamp clock");
+    }
     device.destroy_buffer(buffer).expect("destroy storage");
     device.destroy_shader_module(shader).expect("destroy shader");
 }
