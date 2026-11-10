@@ -2014,7 +2014,7 @@ pub(super) fn encode_frame_params(
 /// Encodes per-draw material state that is independent of the camera and viewport.
 #[cfg(test)]
 pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
-    encode_draw_records(&scene.draws, scene.lights.len())
+    encode_draw_records(&scene.draws)
 }
 
 /// Retained immutable draw parameter records. A large streamed world can render
@@ -2025,7 +2025,7 @@ pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
 /// MaterialId is stable across Material::clone, including cloned variants with
 /// changed fields. A per-snapshot generation therefore distinguishes immutable
 /// Arc<Material> snapshots while retaining the previous fast shared-material
-/// record cache. UV support and the number of lights also affect GPU bytes.
+/// record cache. UV support affects GPU bytes; light counts are stored in independent frame data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct DrawParamKey {
     material: MaterialId,
@@ -2065,7 +2065,6 @@ impl DrawRecordCache {
     pub(super) fn encode_resident_delta(
         &mut self,
         draws: &[PreparedDraw],
-        lights: usize,
         mapping: &[u32],
         dirty: &[usize],
         previous_keys: &[DrawParamKey],
@@ -2152,7 +2151,6 @@ impl DrawRecordCache {
     pub(super) fn encode_stable(
         &mut self,
         draws: &[PreparedDraw],
-        lights: usize,
         mapping: &[u32],
         high_water: usize,
         previous_keys: &[DrawParamKey],
@@ -2274,7 +2272,6 @@ impl DrawRecordCache {
     pub(super) fn encode(
         &mut self,
         draws: &[PreparedDraw],
-        lights: usize,
         bytes: &mut Vec<u8>,
         keys: &mut Vec<DrawParamKey>,
     ) -> gpui::Result<()> {
@@ -2336,22 +2333,20 @@ impl DrawRecordCache {
 }
 
 pub(crate) fn encode_draws_into(scene: &PreparedScene, bytes: &mut Vec<u8>) -> gpui::Result<()> {
-    encode_draw_records_into(&scene.draws, scene.lights.len(), bytes)
+    encode_draw_records_into(&scene.draws, bytes)
 }
 
 #[cfg(test)]
 pub(super) fn encode_draw_records(
     draws: &[crate::PreparedDraw],
-    lights: usize,
 ) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(draws.len().max(1) * DRAW_PARAMS_STRIDE as usize);
-    encode_draw_records_into(draws, lights, &mut bytes)?;
+    encode_draw_records_into(draws, &mut bytes)?;
     Ok(bytes)
 }
 
 fn encode_draw_records_into(
     draws: &[crate::PreparedDraw],
-    lights: usize,
     bytes: &mut Vec<u8>,
 ) -> gpui::Result<()> {
     let stride = DRAW_PARAMS_STRIDE as usize;
@@ -2472,9 +2467,9 @@ mod tests {
         let mut cache = super::DrawRecordCache::default();
         let mut bytes = Vec::new();
         let mut keys = Vec::new();
-        for light_count in [0, 0, 2, 2, 0] {
+        for _iteration in 0..5 {
             cache.encode(&repeated, light_count, &mut bytes, &mut keys).unwrap();
-            assert_eq!(bytes, super::encode_draw_records(&repeated, light_count).unwrap());
+            assert_eq!(bytes, super::encode_draw_records(&repeated).unwrap());
             assert_eq!(keys.len(), repeated.len());
         }
         cache.encode(&[], 0, &mut bytes, &mut keys).unwrap();
@@ -2505,15 +2500,15 @@ mod tests {
         cache.encode(&[modified.clone()], 0, &mut bytes, &mut keys).unwrap();
         assert_ne!(old_key, keys[0]);
         assert_ne!(old_bytes, bytes);
-        assert_eq!(bytes, super::encode_draw_records(&[modified.clone()], 0).unwrap());
+        assert_eq!(bytes, super::encode_draw_records(&[modified.clone()]).unwrap());
 
         let new_key = keys[0];
         cache.encode(&[modified.clone(), modified.clone()], 0, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys, vec![new_key; 2]);
-        assert_eq!(bytes, super::encode_draw_records(&[modified.clone(), modified], 0).unwrap());
+        assert_eq!(bytes, super::encode_draw_records(&[modified.clone(), modified]).unwrap());
         cache.encode(&[initial.clone()], 0, &mut bytes, &mut keys).unwrap();
         assert_ne!(keys[0], old_key, "revisited snapshot must not alias an overwritten cache generation");
-        assert_eq!(bytes, super::encode_draw_records(&[initial], 0).unwrap());
+        assert_eq!(bytes, super::encode_draw_records(&[initial]).unwrap());
     }
 
     #[test]
@@ -2550,7 +2545,7 @@ mod tests {
         let mut scratch = Vec::new();
         assert_eq!(
             cache.encode_stable(
-                std::slice::from_ref(&draw), 0, &mapping, 1,
+                std::slice::from_ref(&draw), &mapping, 1,
                 &[], &[], &mut next_keys, &mut next_bytes, &mut scratch,
             ).unwrap(), 1
         );
@@ -2559,7 +2554,7 @@ mod tests {
         assert_eq!(cache.records.len(), 8_192);
         assert_eq!(
             cache.encode_stable(
-                std::slice::from_ref(&draw), 0, &mapping, 1,
+                std::slice::from_ref(&draw), &mapping, 1,
                 &old_keys, &old_bytes, &mut next_keys, &mut next_bytes, &mut scratch,
             ).unwrap(), 0,
             "a full material cache must not redirty identical resident draw data"
@@ -2572,12 +2567,12 @@ mod tests {
         changed.material = Arc::new(cloned);
         assert_eq!(
             cache.encode_stable(
-                &[changed.clone()], 0, &mapping, 1,
+                &[changed.clone()], &mapping, 1,
                 &old_keys, &old_bytes, &mut next_keys, &mut next_bytes, &mut scratch,
             ).unwrap(), 1
         );
         assert_ne!(next_keys, old_keys);
-        assert_eq!(next_bytes, super::encode_draw_records(&[changed], 0).unwrap());
+        assert_eq!(next_bytes, super::encode_draw_records(&[changed]).unwrap());
         assert_eq!(live.len(), 8_192);
     }
 
@@ -2602,7 +2597,7 @@ mod tests {
         // re-encode or re-upload the whole resident DrawParams table.
         cache.encode(&draws, 2, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
-        assert_eq!(bytes, super::encode_draw_records(&draws, 2).unwrap());
+        assert_eq!(bytes, super::encode_draw_records(&draws).unwrap());
     }
 
     #[test]
