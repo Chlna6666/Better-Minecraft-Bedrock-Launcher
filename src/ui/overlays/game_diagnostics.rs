@@ -71,6 +71,10 @@ fn reason_title(reason: CrashReason) -> SharedString {
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.title"),
         CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.title"),
         CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.title"),
+        CrashReason::LoaderInitializationFailure => t!("GameCrash.reason.LoaderInitializationFailure.title"),
+        CrashReason::ModDependencyFailure => t!("GameCrash.reason.ModDependencyFailure.title"),
+        CrashReason::LoaderSymbolFailure => t!("GameCrash.reason.LoaderSymbolFailure.title"),
+        CrashReason::LoaderHookFailure => t!("GameCrash.reason.LoaderHookFailure.title"),
     }
 }
 
@@ -98,6 +102,10 @@ fn reason_detail(reason: CrashReason) -> SharedString {
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.detail"),
         CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.detail"),
         CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.detail"),
+        CrashReason::LoaderInitializationFailure => t!("GameCrash.reason.LoaderInitializationFailure.detail"),
+        CrashReason::ModDependencyFailure => t!("GameCrash.reason.ModDependencyFailure.detail"),
+        CrashReason::LoaderSymbolFailure => t!("GameCrash.reason.LoaderSymbolFailure.detail"),
+        CrashReason::LoaderHookFailure => t!("GameCrash.reason.LoaderHookFailure.detail"),
     }
 }
 
@@ -125,6 +133,10 @@ fn reason_action(reason: CrashReason) -> SharedString {
         CrashReason::ArithmeticFault => t!("GameCrash.reason.ArithmeticFault.action"),
         CrashReason::HeapCorruption => t!("GameCrash.reason.HeapCorruption.action"),
         CrashReason::UnhandledCppException => t!("GameCrash.reason.UnhandledCppException.action"),
+        CrashReason::LoaderInitializationFailure => t!("GameCrash.reason.LoaderInitializationFailure.action"),
+        CrashReason::ModDependencyFailure => t!("GameCrash.reason.ModDependencyFailure.action"),
+        CrashReason::LoaderSymbolFailure => t!("GameCrash.reason.LoaderSymbolFailure.action"),
+        CrashReason::LoaderHookFailure => t!("GameCrash.reason.LoaderHookFailure.action"),
     }
 }
 
@@ -386,6 +398,20 @@ fn request_export(cx: &mut App, id: String) {
     }
 }
 
+
+fn loader_kind_label(kind: crate::core::minecraft::diagnostics::forensics::LoaderIssueKind) -> SharedString {
+    use crate::core::minecraft::diagnostics::forensics::LoaderIssueKind as Kind;
+    match kind {
+        Kind::NativeException => t!("GameCrash.loader.NativeException"),
+        Kind::LoaderLoadFailure => t!("GameCrash.loader.LoaderLoadFailure"),
+        Kind::ModLoadFailure => t!("GameCrash.loader.ModLoadFailure"),
+        Kind::DependencyFailure => t!("GameCrash.loader.DependencyFailure"),
+        Kind::SymbolFailure => t!("GameCrash.loader.SymbolFailure"),
+        Kind::HookFailure => t!("GameCrash.loader.HookFailure"),
+        Kind::RuntimeError => t!("GameCrash.loader.RuntimeError"),
+    }
+}
+
 /// Show precise, sanitized forensic signals without attaching raw stack traces
 /// or pretending that shared logs establish a culprit or game PID.
 fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
@@ -395,6 +421,43 @@ fn forensic_lines(report: &GameSessionReport) -> Vec<String> {
         count = evidence.log_sources_analyzed).to_string());
     if evidence.log_sources_analyzed == 0 {
         lines.push(t!("GameCrash.forensics.noLogEvidence").to_string());
+    }
+    if !evidence.loader_issues.is_empty() {
+        use crate::core::minecraft::diagnostics::forensics::LoaderFamily;
+        for issue in &evidence.loader_issues {
+            let loader: String = match issue.loader {
+                LoaderFamily::BLoader => "BLoader",
+                LoaderFamily::PreLoader => "PreLoader",
+                LoaderFamily::LeviLamina => "LeviLamina",
+                LoaderFamily::LiteLoader => "LiteLoader",
+                LoaderFamily::Other => "Mod Loader",
+            }.to_string();
+            let mut details = Vec::<String>::new();
+            if let Some(module) = &issue.module {
+                details.push(module.clone());
+            }
+            if let Some(code) = issue.exception_code {
+                details.push(format!("NTSTATUS 0x{code:08X}"));
+            }
+            if let Some(code) = issue.win32_error {
+                details.push(format!("Win32 {code}"));
+            }
+            let suffix = if details.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", details.join(" · "))
+            };
+            lines.push(t!(
+                "GameCrash.forensics.loaderIssue",
+                loader = loader,
+                kind = loader_kind_label(issue.kind),
+                detail = suffix,
+            ).to_string());
+        }
+        lines.push(t!("GameCrash.forensics.loaderWarning").to_string());
+        if evidence.loader_issues.iter().any(|issue| !issue.session_private) {
+            lines.push(t!("GameCrash.forensics.shared").to_string());
+        }
     }
     if !evidence.missing_dependencies.is_empty() {
         let libraries = evidence.missing_dependencies.iter()
