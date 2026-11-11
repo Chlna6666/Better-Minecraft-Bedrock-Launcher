@@ -278,6 +278,45 @@ fn start_install(options: InstallOptions) -> Result<InstallHandle, InstallError>
 5. 已存在的问题在**下一次触及相关模块时**逐步治理。**本规范变更本身不授权
    批量重命名、不修改业务代码、不制造纯改名提交**；测试函数和外部约定名称按原有规则豁免。
 
+### 6.8 `frame` 命名与帧生命周期语义
+
+- **`frame` 是领域概念，不是通用后缀或万能上下文。** 在函数、方法、trait、
+  字段、参数、局部变量、模块和类型中使用 `frame` 前，必须说明它指的是：
+  CPU 侧准备/布局帧、GPU 命令录制帧、提交批次、交换链图像、实际呈现帧、
+  动画帧、采样时间区间，还是网络协议帧。不同概念不得仅靠 `frame` 一词混用。
+- 对 `*_frame`、`frame_*` 和独立的 `frame` 统一做**上下文与职责审查**，
+  不能只检查后缀；尤其审查 `render_frame`、`update_frame`、
+  `process_frame`、`prepare_frame`、`record_*_frame` 这种可能把多个阶段
+  合并或重复上下文的名称。先确定动作实际处理的**对象**，再判断是否需要
+  `frame` 限定，而不是机械把它替换成 `render`、`pass` 或 `present`。
+- **函数名突出真正的操作和目标。** 仅录制命令用 `record_*`/`encode_*`，
+  资源更新用 `update_*`/`upload_*`，提交用 `submit_*`，呈现用
+  `present_*`，调度用 `schedule_*`，具体渲染阶段用 `render_*`；
+  当类型或模块已经表明帧上下文时，避免再加 `_frame`。
+  例如 `record_render_step_list_frame` 应首先评估是否实际是在录制交换链
+  Render Pass 命令，若是可设计为 `record_swapchain_pass`；**必须先验证
+  方法行为，示例不是未经审查的重命名指令**。
+- **保留语义明确的惯用名称**：`begin_frame`/`end_frame` 仅用于真实帧边界；
+  `next_frame` 用于推进帧序列；`frame_index`、`frame_count`、
+  `frame_time` 表示具体索引、计数或时序；
+  `PresentFrameDescriptor`、`PresentedFrame`、`AnimatedFrame`、
+  `FrameUniforms` 等类型在含义准确时保留。不能因包含 `frame` 就强制改名。
+- **不得把 GPU 命令录制、队列提交、Present 误称为同一个 frame 操作**。
+  尤其在 `nova-gfx` / `gpui-3d` / GPUI Sidecar 中，`FrameId`、
+  `SubmissionId`、`SwapchainImage`、`RenderPass`、`PresentedFrame`
+  各有不同所有权、完成状态和生命周期；命名必须匹配实际返回值与同步语义，
+  不得为了缩短名称而隐藏 Fence、CPU/GPU 时序或错误路径。
+- **变量名按作用域判断**：在只有一个清楚的帧对象的短闭包/局部作用域中，
+  `frame` 可用；同时存在上帧/下帧、动画帧/呈现帧或 CPU/GPU 数据时，
+  用 `previous_frame`、`next_frame`、`animation_frame`、
+  `presented_frame` 等明确角色。`_frame` 作为 Rust 故意忽略未使用绑定
+  的惯用写法，不因这个前导下划线被判为长句式后缀问题；如果实际使用参数则
+  应正常命名。
+- AI 审查时记录“**名字 → 所属类型/模块 → 实际执行阶段 → 输入/返回语义**”：
+  如果仅凭 `_frame` 无法区分职责，先检查实现与调用方，再调整名称或抽取职责；
+  不对所有匹配项批量替换，不改协议、trait 或外部 API 约定的名字而不处理依赖。
+  **本规范更新只修改 AI 规范，不授权修改 Rust 业务代码。**
+
 ## 7. 文档规则
 
 - 中文是项目文档第一语言；crate `README.md` 为英文，必须有 `README.zh-CN.md`。
