@@ -317,6 +317,90 @@ fn start_install(options: InstallOptions) -> Result<InstallHandle, InstallError>
   不对所有匹配项批量替换，不改协议、trait 或外部 API 约定的名字而不处理依赖。
   **本规范更新只修改 AI 规范，不授权修改 Rust 业务代码。**
 
+### 6.9 构造器、工厂、转换与配置对象的边界（防止表面改名）
+
+- **先建模、后命名，禁止“重命名式重构”。** 将 `create_task_with_details(...)` 改成
+  `TaskOptions::from_parts(...).create()`，若仍沿用同一串位置参数、布尔模式、
+  隐式默认值与任务创建副作用，**不算遵循规范**。要审查接口拥有者、必要配置、
+  默认值、输入所有权、返回错误和调用链，而不是仅检查是否出现禁用单词。
+- **`new` 是普通构造入口，不因名字短而禁用。** 如
+  `TaskOptions::new(title, stage)` 创建纯配置；带可选属性时使用 builder
+  （`.detail(...)`、`.total(...)`、`.visibility(...)`）或结构体字面量。
+  若必填参数本身已过多，应进一步引入语义化的 `Request`/`Descriptor`，
+  而不是改成 `new_with_*`、`new_from_*`、`from_parts` 规避长度检查。
+  `Default` 仅在默认状态本身合法、含义明确时实现；
+  需要校验且可能失败的构造使用 `Result`（如 `try_new`）并保留失败信息。
+- **`from_*` 必须有来源语义，不是任意构造器别名。**
+  `From<T>` 表示惯用且不会失败的转换，`TryFrom<T>` 表示可失败转换；
+  `from_bytes`/`from_path` 等仅在输入确实是该数据表示时适用。
+  `from_parts` 只能用于领域中真实、稳定且有定义的「组成部分」
+  （例如明确的字节片段或解析组件），**禁止**作为多参数列表、布尔开关或
+  `new_with_*` 的统称。若方法创建通道、注册回调、启动监控、访问全局资源或
+  获取外部句柄，它是在**初始化/建立服务**，不应仅为避开 `new_with_backend`
+  而改成 `from_backend`；优先 `new(backend)`，或者由工厂/服务对象承担。
+  `from_*` 并非所有含初始化步骤的方法都绝对不可用，但须证明其调用者真正
+  将输入理解为转换来源，而不是只是一个工厂选项。
+- **纯配置对象不执行业务副作用。** `TaskOptions`/`*Options`/`*Descriptor`
+  的职责是收集、校验和携带配置，不应自动拥有 `create()`/`install()`/
+  `submit()`/`run()` 等注册全局任务、I/O、GPU 提交动作。
+  这类动作属于有权限和生命周期的 `create_task(options)`、
+  `TaskManager::create(options)`、`TaskScope::create_task(options)`、
+  `Device::submit(...)` 等调用者或服务。若 builder 的终结操作确有必要，
+  **builder 必须显式持有执行服务/上下文**（而非纯 Options），且要说明
+  所有权、错误及副作用；不要在配置结构体上偷加“便捷 create”。
+- **选项类型不等于“所有调用都要造对象”。** 两三个清楚的必要参数可以使用
+  `new(a, b)` 或简洁函数；大量易混淆的位置参数、可选字段和模式策略才适合
+  parameter object。避免 `None, false, None` 一列无意义的默认值。
+  builder 只配置真实的可选字段，`None` 应由默认配置表达；不要重复存放含义
+  相同的字段或为每种组合创建一个包装构造器。
+- **返回值与失败模式必须保真。** 从旧的 `create_task...` 改为新入口时，
+  不能偷偷把 `Result<TaskId, Error>` 改成只返回 `TaskId`、
+  `expect`/`unwrap`，也不能丢失重复 ID、无效 parent、取消/线程安全等校验。
+  若 API 真正需要同步或异步、不透明句柄、独立任务作用域，靠明确类型、服务
+  和错误契约表达；不能用 `.create()` 掩盖跨模块全局写入。
+- **能力、配置与状态谓词不得互换。**
+  `supports_*`/`can_*` 表达功能能力或前置条件；
+  `is_*_enabled`/`is_*_active` 表达当前配置/运行状态；
+  `is_*_visible` 表达可见性；
+  `should_*` 表达策略决策。
+  例如将全局开关 `task_visualization_enabled()` 改成
+  `supports_visualization()`，若它仍只读取启用配置，就属于**语义错误**，
+  而不是成功缩短名称；必须检查实现、配置来源和调用者条件。
+- **更新动作应区分增量、绝对量与元数据。** 使用 `ProgressUpdate` 等类型时，
+  明确 `advance_bytes` 与 `completed_bytes` 的不同含义，
+  `total_bytes` 和阶段修改的可选语义。不要让
+  `ProgressUpdate::new().total(x).stage(y)` 意外产生“进度增加 0 字节”
+  或覆盖上次状态的副作用；确保空更新的行为、原子性、通知频率与旧接口一致。
+  不要为了显得像 JS/TS 就引入额外分配、克隆或间接调用。
+- **本项目示意（名称需依据实际类型与返回值确定）：**
+
+  ```rust
+  // 反例：多参数被藏到 from_parts；Options.create() 偷偷创建全局任务。
+  // let id = TaskOptions::from_parts(None, title, detail, stage, None, false).create();
+
+  // 正例：TaskOptions 仅收集选项，创建操作由任务服务负责。
+  let options = TaskOptions::new(title, stage).detail(detail);
+  let task_id = create_task(options)?;
+
+  // 反例：仅把 new_with_backend 改成 from_backend，真实初始化行为未变。
+  // fn from_backend(backend: SessionBackend) -> Arc<Self> { ... }
+
+  // 若这是创建会话、通道和监控，命名为初始化；不是表示转换。
+  // fn new(backend: SessionBackend) -> Arc<Self> { ... }
+  ```
+
+  示例中的 `detail` 为非可选字符串，调用方持有 `Option<String>` 时应只对
+  `Some(detail)` 调用 builder；不得凭示例把 `None` 转为空字符串。
+- **AI 改动验收必须审查 Diff 而非仅审查结果名。**
+  对构造器/工厂/更新 API：列出「修改前契约 → 修改后契约」、
+  参数个数和角色、可选默认值、创建方/所有者、是否触发 I/O/状态写入、
+  `Result` 传播、调用方变更、兼容性与性能影响；
+  检查是否仅发生 `with_*` → `from_*`、`create_task(...)` →
+  `options.create()`、`*_enabled` → `supports_*` 等语义可疑替换。
+  必须优先复用工作区已有的 `TaskOptions::new` 和 `create_task` 等已建立入口；
+  不允许新增等价别名、薄包装或“方便 AI 搜索”的冗余 API。
+  **本规范追加不授权修改正在进行的本地大规模重命名、未提交文件或业务实现。**
+
 ## 7. 文档规则
 
 - 中文是项目文档第一语言；crate `README.md` 为英文，必须有 `README.zh-CN.md`。
