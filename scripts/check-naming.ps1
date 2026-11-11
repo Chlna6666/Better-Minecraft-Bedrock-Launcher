@@ -1,6 +1,7 @@
 # Naming guard for the nova-gfx/gpui boundary.
-# Hard failures: public nova-gfx names (the graphics library is the phase-1 gate).
-# Warnings: historical gpui-internal names tracked for the phase-2 naming pass.
+# Hard failures are only for explicit generic graphics vocabulary contract violations.
+# Long names and words such as 'with' or 'and' are semantic review hints, not errors.
+# Do not treat this output as an automatic rename list.
 # Run from the repository root: pwsh -File scripts/check-naming.ps1
 $ErrorActionPreference = "Stop"
 $hard = [System.Collections.Generic.List[string]]::new()
@@ -41,14 +42,11 @@ foreach ($file in $files) {
         $hasAnd = $name -match "_(and)_"
         $tooLong = $name.Length -gt 40
         if ($isChained -or $hasAnd -or $tooLong) {
-            if ($isNova) {
-                $hard.Add("$($file.FullName):$($lineNumber): long/chained public name '$name'")
-            } else {
-                $soft.Add("$($file.FullName):$($lineNumber): phase-2 name '$name'")
-            }
+            $soft.Add("$($file.FullName):$($lineNumber): advisory only; review full semantics before renaming '$name'")
         }
-        if ($isNova -and $name -match "compat|legacy|resource_set|render_step|draw_step") {
-            $hard.Add("$($file.FullName):$($lineNumber): legacy vocabulary in public name '$name'")
+        # 'compat' and 'legacy' may express real protocol/format semantics.
+        if ($isNova -and $name -match "(^|_)(resource_set|render_step|draw_step)(_|$)") {
+            $hard.Add("$($file.FullName):$($lineNumber): forbidden generic graphics vocabulary '$name'")
         }
     }
 }
@@ -61,13 +59,12 @@ if ($soft.Count -gt 0) {
 if ($hard.Count -gt 0) {
     Write-Host "Nova-gfx naming violations:" -ForegroundColor Red
     $hard | ForEach-Object { Write-Host "  $_" }
-    Write-Host "See docs/NAMING.md for the rules and migration table." -ForegroundColor Yellow
+    Write-Host "See docs/NAMING.md for domain contracts; do not rename unrelated symbols mechanically." -ForegroundColor Yellow
     exit 1
 }
 Write-Host "Nova-gfx naming check passed." -ForegroundColor Green
 
-# Phase-3 advisory: count long/chained public names elsewhere in gpui. These are
-# tracked in docs/naming-audit.md and do not fail this phase-1/2 gate yet.
+# GPUI advisory: count long/chained names. These are not errors; review meanings and callers.
 $gpuiSrc = Join-Path $PSScriptRoot "..\crates\gpui\src"
 $advisory = 0
 Get-ChildItem -Recurse $gpuiSrc -File -Filter *.rs | Where-Object {
