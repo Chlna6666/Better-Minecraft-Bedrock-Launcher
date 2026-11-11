@@ -227,16 +227,30 @@ fn optimize_png_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-fn generate_embedded_assets_rs(
-    assets_root: &Path,
-    virtual_prefix: &str,
+/// Configuration for one generated embedded-assets module. JS/TS-style parameter
+/// object so the caller supplies named fields instead of eight positionals.
+struct EmbeddedAssetsOptions<'a> {
+    assets_root: &'a Path,
+    virtual_prefix: &'a str,
     bundle_name: &'static str,
-    out_file_name: &str,
-    load_fn_name: &str,
-    list_fn_name: &str,
-    static_prefix: &str,
+    out_file_name: &'a str,
+    load_fn_name: &'a str,
+    list_fn_name: &'a str,
+    static_prefix: &'a str,
     optimize_png: bool,
-) -> BundleReport {
+}
+
+fn generate_embedded_assets_rs(options: EmbeddedAssetsOptions<'_>) -> BundleReport {
+    let EmbeddedAssetsOptions {
+        assets_root,
+        virtual_prefix,
+        bundle_name,
+        out_file_name,
+        load_fn_name,
+        list_fn_name,
+        static_prefix,
+        optimize_png,
+    } = options;
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let out_rs = out_dir.join(out_file_name);
     let embedded_dir = out_dir.join("embedded_assets").join(virtual_prefix);
@@ -361,26 +375,26 @@ fn generate_asset_bundles_rs() -> (BundleReport, BundleReport) {
     let icons_dir = manifest_dir.join("assets").join("icons");
     let optimize_png = env::var("PROFILE").as_deref() == Ok("release");
 
-    let images = generate_embedded_assets_rs(
-        &images_dir,
-        "images",
-        "images",
-        "image_assets.rs",
-        "load_image_asset",
-        "list_image_assets",
-        "IMAGE",
+    let images = generate_embedded_assets_rs(EmbeddedAssetsOptions {
+        assets_root: &images_dir,
+        virtual_prefix: "images",
+        bundle_name: "images",
+        out_file_name: "image_assets.rs",
+        load_fn_name: "load_image_asset",
+        list_fn_name: "list_image_assets",
+        static_prefix: "IMAGE",
         optimize_png,
-    );
-    let icons = generate_embedded_assets_rs(
-        &icons_dir,
-        "icons",
-        "icons",
-        "icon_assets.rs",
-        "load_icon_asset",
-        "list_icon_assets",
-        "ICON",
+    });
+    let icons = generate_embedded_assets_rs(EmbeddedAssetsOptions {
+        assets_root: &icons_dir,
+        virtual_prefix: "icons",
+        bundle_name: "icons",
+        out_file_name: "icon_assets.rs",
+        load_fn_name: "load_icon_asset",
+        list_fn_name: "list_icon_assets",
+        static_prefix: "ICON",
         optimize_png,
-    );
+    });
     (images, icons)
 }
 
@@ -466,13 +480,23 @@ fn locale_source_stats(manifest_dir: &Path) -> (usize, u64) {
 /// The final executable is linked after this build script runs, so its size is
 /// measured by scripts/size-report.ps1 and is intentionally reported as null
 /// here. The report still records the complete embedded-resource contribution.
-fn write_resource_size_report(
-    out_dir: &Path,
-    manifest_dir: &Path,
-    images: &BundleReport,
-    icons: &BundleReport,
+/// Inputs for the generated resource-size report.
+struct ResourceSizeReport<'a> {
+    out_dir: &'a Path,
+    manifest_dir: &'a Path,
+    images: &'a BundleReport,
+    icons: &'a BundleReport,
     bloader_embedded: u64,
-) {
+}
+
+fn write_resource_size_report(report: ResourceSizeReport<'_>) {
+    let ResourceSizeReport {
+        out_dir,
+        manifest_dir,
+        images,
+        icons,
+        bloader_embedded,
+    } = report;
     let (locale_source_files, locale_source_bytes) = locale_source_stats(manifest_dir);
     let locales_embedded = file_bytes(&out_dir.join("locales.bin"));
     let bloader_source_bytes =
@@ -793,7 +817,7 @@ fn dependency_metadata(
     let crate_manifest = dependency_manifest_path(dependency, lock_package);
     let (license, manifest_source_url) = crate_manifest
         .as_deref()
-        .map(read_package_license_and_source)
+        .map(read_package_metadata)
         .unwrap_or_else(|| (String::new(), String::new()));
 
     let source_url = if !manifest_source_url.is_empty() {
@@ -900,7 +924,7 @@ fn manifest_package_name(manifest: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-fn read_package_license_and_source(manifest: &Path) -> (String, String) {
+fn read_package_metadata(manifest: &Path) -> (String, String) {
     println!("cargo:rerun-if-changed={}", manifest.display());
 
     let Ok(content) = fs::read_to_string(manifest) else {
@@ -1058,13 +1082,13 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     build::locales::generate(&manifest_dir, &out_dir)
         .expect("failed to pack embedded language files");
-    write_resource_size_report(
-        &out_dir,
-        &manifest_dir,
-        &image_report,
-        &icon_report,
+    write_resource_size_report(ResourceSizeReport {
+        out_dir: &out_dir,
+        manifest_dir: &manifest_dir,
+        images: &image_report,
+        icons: &icon_report,
         bloader_embedded,
-    );
+    });
     let key_dir = manifest_dir
         .join("src")
         .join("core")
