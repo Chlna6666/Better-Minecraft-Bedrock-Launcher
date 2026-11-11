@@ -11,6 +11,8 @@ BMCBL 是基于 Rust + GPUI 的 Minecraft Bedrock 原生桌面启动器。Window
 - crate 职责、跨层依赖或 GPU/渲染改动：阅读 [系统架构](docs/ARCHITECTURE.md)；需要 crate 清单时再看 [CRATES](docs/CRATES.md)。
 - Rust API、标识符、模块、文件名或目录路径改动：阅读 [命名规范](docs/NAMING.md)；
   先结合完整模块路径和职责判断是否重复，不机械缩写、删除领域词或批量移动源码。
+  `inner`、`with`、`many`、`limit`、长名不是自动改名依据；
+  不得把 query/load/fingerprint 等核心动作机械改为 collect 等泛化动词。
 - 构建、feature、后端、测试或排障：阅读 [构建与测试](docs/BUILD_AND_TEST.md)。
 - 非局部变更、提交或文档流程：按需阅读 [贡献指南](docs/CONTRIBUTING.md)。
 - 文档修改：查阅 [文档地图与规范](docs/README.md) 及对应主题文档。
@@ -39,6 +41,8 @@ BMCBL 是基于 Rust + GPUI 的 Minecraft Bedrock 原生桌面启动器。Window
 - 先检查相关实现、调用方和当前工作区；保护已有用户修改，只改完成当前请求所需的文件。
 - 新建/移动 Rust 文件时先确定模块的领域所有者与路径，核对 `mod`、公开导出及资源/构建引用；
   文件名和目录名不能只根据长度、重复片段或个人语感机械重写。
+- 纯命名修改逐项检查完整函数体、参数、返回值、调用方、默认行为及限制；
+  只有新名称确实更准确时才能改，不得因正则命中、缩短名称或消除脚本告警批量改名。
 - 小型局部修复不要求形式化计划。涉及跨 crate、公共 API、持久化、并发/生命周期或渲染
   链路时，先界定目标、影响范围、平台/feature 和验收方式。
 - 根据改动风险运行最小且相关的检查；不要求每次运行完整工作区测试或所有后端矩阵。
